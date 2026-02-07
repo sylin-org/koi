@@ -125,6 +125,13 @@ impl MdnsDaemon {
         )))
     }
 
+    /// Stop an active browse by service type.
+    pub fn stop_browse(&self, service_type: &str) -> Result<()> {
+        self.inner
+            .stop_browse(service_type)
+            .map_err(|e| KoiError::Daemon(e.to_string()))
+    }
+
     /// Shut down the mdns-sd daemon.
     pub fn shutdown(&self) -> Result<()> {
         let _receiver = self

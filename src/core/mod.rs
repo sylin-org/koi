@@ -4,6 +4,8 @@ mod registry;
 
 pub use self::events::ServiceEvent;
 
+use std::sync::Arc;
+
 use self::daemon::MdnsDaemon;
 use self::registry::Registry;
 
@@ -96,14 +98,14 @@ pub const META_QUERY: &str = "_services._dns-sd._udp.local.";
 
 /// The core mDNS facade. All adapters interact through this.
 pub struct MdnsCore {
-    daemon: MdnsDaemon,
+    daemon: Arc<MdnsDaemon>,
     registry: Registry,
     event_tx: broadcast::Sender<ServiceEvent>,
 }
 
 impl MdnsCore {
     pub fn new() -> Result<Self> {
-        let daemon = MdnsDaemon::new()?;
+        let daemon = Arc::new(MdnsDaemon::new()?);
         let registry = Registry::new();
         let (event_tx, _) = broadcast::channel(256);
         Ok(Self {
@@ -115,6 +117,9 @@ impl MdnsCore {
 
     /// Start browsing for services of the given type.
     /// Pass `META_QUERY` to discover all service types on the network.
+    ///
+    /// The returned `BrowseHandle` calls `stop_browse` on drop, so the
+    /// underlying daemon resource is always cleaned up.
     pub fn browse(&self, service_type: &str) -> Result<browse::BrowseHandle> {
         let is_meta = service_type == META_QUERY;
         let browse_type = if is_meta {
@@ -124,7 +129,13 @@ impl MdnsCore {
         };
         let receiver = self.daemon.browse(&browse_type)?;
         let event_tx = self.event_tx.clone();
-        Ok(browse::BrowseHandle::new(receiver, event_tx, is_meta))
+        Ok(browse::BrowseHandle::new(
+            receiver,
+            event_tx,
+            is_meta,
+            browse_type,
+            self.daemon.clone(),
+        ))
     }
 
     /// Register a service on the local network.
@@ -187,16 +198,36 @@ impl MdnsCore {
 }
 
 pub mod browse {
+    use std::sync::Arc;
+
     use super::ServiceEvent;
-    use crate::core::daemon;
+    use crate::core::daemon::{self, MdnsDaemon};
     use mdns_sd::ServiceEvent as MdnsEvent;
     use tokio::sync::broadcast;
 
     /// Handle for an active browse operation.
+    ///
+    /// Owns the lifecycle of a single `stop_browse` call on the daemon.
+    /// When dropped, the browse is stopped automatically — no leaked
+    /// subscriptions in the mdns-sd engine.
     pub struct BrowseHandle {
         receiver: mdns_sd::Receiver<MdnsEvent>,
         event_tx: broadcast::Sender<ServiceEvent>,
         meta_query: bool,
+        browse_type: String,
+        daemon: Arc<MdnsDaemon>,
+    }
+
+    impl Drop for BrowseHandle {
+        fn drop(&mut self) {
+            if let Err(e) = self.daemon.stop_browse(&self.browse_type) {
+                tracing::debug!(
+                    error = %e,
+                    browse_type = %self.browse_type,
+                    "Failed to stop browse on drop"
+                );
+            }
+        }
     }
 
     impl BrowseHandle {
@@ -204,11 +235,15 @@ pub mod browse {
             receiver: mdns_sd::Receiver<MdnsEvent>,
             event_tx: broadcast::Sender<ServiceEvent>,
             meta_query: bool,
+            browse_type: String,
+            daemon: Arc<MdnsDaemon>,
         ) -> Self {
             Self {
                 receiver,
                 event_tx,
                 meta_query,
+                browse_type,
+                daemon,
             }
         }
 

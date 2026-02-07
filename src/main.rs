@@ -1,16 +1,15 @@
 mod adapters;
+mod commands;
 mod config;
 mod core;
+mod format;
 mod platform;
 mod protocol;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use clap::Parser;
 use config::{Cli, Command, Config};
-use protocol::response::{PipelineResponse, Response};
-use protocol::{RegisterPayload, ServiceRecord};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(env_filter)
         .init();
 
-    // Handle subcommands
+    // ── Verb subcommands ────────────────────────────────────────────
     if let Some(command) = &cli.command {
         return match command {
             Command::Install => {
@@ -48,47 +47,7 @@ async fn main() -> anyhow::Result<()> {
             }
             Command::Browse { service_type } => {
                 let core = Arc::new(core::MdnsCore::new()?);
-                let is_meta = service_type.is_none();
-                let browse_type =
-                    service_type
-                        .as_deref()
-                        .unwrap_or(crate::core::META_QUERY);
-                let handle = core.browse(browse_type)?;
-                let json = cli.json;
-                let dur = effective_timeout(cli.timeout, Some(DEFAULT_BROWSE_TIMEOUT));
-                tokio::select! {
-                    _ = async {
-                        while let Some(event) = handle.recv().await {
-                            if json {
-                                let resp = PipelineResponse::from_browse_event(event);
-                                println!("{}", serde_json::to_string(&resp).unwrap());
-                            } else {
-                                match event {
-                                    core::ServiceEvent::Resolved(record)
-                                    | core::ServiceEvent::Found(record) => {
-                                        if is_meta {
-                                            println!("{}", record.name);
-                                        } else {
-                                            print_service_line(&record);
-                                        }
-                                    }
-                                    core::ServiceEvent::Removed { name, .. } => {
-                                        println!("[removed]\t{name}");
-                                    }
-                                }
-                            }
-                        }
-                    } => {}
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = async {
-                        match dur {
-                            Some(d) => tokio::time::sleep(d).await,
-                            None => std::future::pending().await,
-                        }
-                    } => {}
-                }
-                let _ = core.shutdown();
-                Ok(())
+                commands::browse(core, service_type.as_deref(), cli.json, cli.timeout).await
             }
             Command::Register {
                 name,
@@ -97,116 +56,27 @@ async fn main() -> anyhow::Result<()> {
                 txt,
             } => {
                 let core = Arc::new(core::MdnsCore::new()?);
-                let txt_map = parse_txt(txt);
-                let payload = RegisterPayload {
-                    name: name.clone(),
-                    service_type: service_type.clone(),
-                    port: *port,
-                    txt: txt_map,
-                };
-                let result = core.register(payload)?;
-                if cli.json {
-                    let resp = PipelineResponse::clean(Response::Registered(result));
-                    println!("{}", serde_json::to_string(&resp).unwrap());
-                } else {
-                    println!(
-                        "Registered \"{}\" ({}) on port {} [id: {}]",
-                        result.name, result.service_type, result.port, result.id
-                    );
-                    eprintln!(
-                        "Service is being advertised. Press Ctrl+C to unregister and exit."
-                    );
-                }
-                // Keep process alive to maintain the mDNS advertisement
-                let dur = effective_timeout(cli.timeout, None);
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = async {
-                        match dur {
-                            Some(d) => tokio::time::sleep(d).await,
-                            None => std::future::pending().await,
-                        }
-                    } => {}
-                }
-                let _ = core.shutdown();
-                Ok(())
+                commands::register(core, name, service_type, *port, txt, cli.json, cli.timeout)
+                    .await
             }
             Command::Unregister { id } => {
                 let core = Arc::new(core::MdnsCore::new()?);
-                core.unregister(id)?;
-                if cli.json {
-                    let resp = PipelineResponse::clean(Response::Unregistered(id.clone()));
-                    println!("{}", serde_json::to_string(&resp).unwrap());
-                } else {
-                    println!("Unregistered {id}");
-                }
-                let _ = core.shutdown();
-                Ok(())
+                commands::unregister(core, id, cli.json)
             }
             Command::Resolve { instance } => {
                 let core = Arc::new(core::MdnsCore::new()?);
-                let record = core.resolve(instance).await?;
-                if cli.json {
-                    let resp = PipelineResponse::clean(Response::Resolved(record));
-                    println!("{}", serde_json::to_string(&resp).unwrap());
-                } else {
-                    print_resolved_detail(&record);
-                }
-                let _ = core.shutdown();
-                Ok(())
+                commands::resolve(core, instance, cli.json).await
             }
             Command::Subscribe { service_type } => {
                 let core = Arc::new(core::MdnsCore::new()?);
-                let handle = core.browse(service_type)?;
-                let json = cli.json;
-                let dur = effective_timeout(cli.timeout, Some(DEFAULT_BROWSE_TIMEOUT));
-                tokio::select! {
-                    _ = async {
-                        while let Some(event) = handle.recv().await {
-                            if json {
-                                let resp = PipelineResponse::from_subscribe_event(event);
-                                println!("{}", serde_json::to_string(&resp).unwrap());
-                            } else {
-                                match event {
-                                    core::ServiceEvent::Found(record) => {
-                                        print_subscribe_event("found", &record);
-                                    }
-                                    core::ServiceEvent::Resolved(record) => {
-                                        print_subscribe_event("resolved", &record);
-                                    }
-                                    core::ServiceEvent::Removed { name, service_type } => {
-                                        print_subscribe_event("removed", &ServiceRecord {
-                                            name,
-                                            service_type,
-                                            host: None,
-                                            ip: None,
-                                            port: None,
-                                            txt: Default::default(),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    } => {}
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = async {
-                        match dur {
-                            Some(d) => tokio::time::sleep(d).await,
-                            None => std::future::pending().await,
-                        }
-                    } => {}
-                }
-                let _ = core.shutdown();
-                Ok(())
+                commands::subscribe(core, service_type, cli.json, cli.timeout).await
             }
         };
     }
 
-    // Check if we should run as a Windows Service
+    // ── Windows Service dispatch ────────────────────────────────────
     #[cfg(windows)]
     {
-        // Try to dispatch as a Windows Service — this blocks if we're running under SCM.
-        // If it returns false, we're in console mode.
         if !cli.daemon && !is_piped_stdin() {
             if platform::windows::try_run_as_service() {
                 return Ok(());
@@ -214,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // CLI mode: stdin is a pipe, not a terminal
+    // ── Piped CLI mode ──────────────────────────────────────────────
     if is_piped_stdin() && !cli.daemon {
         let core = Arc::new(core::MdnsCore::new()?);
         adapters::cli::start(core.clone()).await?;
@@ -222,17 +92,13 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Daemon mode
+    // ── Daemon mode ─────────────────────────────────────────────────
     let config = Config::from_cli(&cli);
-
-    // Startup diagnostics
     startup_diagnostics(&config);
 
     let core = Arc::new(core::MdnsCore::new()?);
-
     let mut tasks = Vec::new();
 
-    // HTTP adapter
     if !config.no_http {
         let c = core.clone();
         let port = config.http_port;
@@ -243,7 +109,6 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
 
-    // IPC adapter
     if !config.no_ipc {
         let c = core.clone();
         let path = config.pipe_path.clone();
@@ -254,7 +119,6 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
 
-    // Platform service registration
     if let Err(e) = platform::register_service() {
         tracing::warn!(error = %e, "Platform service registration failed");
     }
@@ -265,13 +129,22 @@ async fn main() -> anyhow::Result<()> {
     shutdown_signal().await;
     tracing::info!("Shutting down...");
 
-    // Graceful shutdown: core first (sends goodbye packets), then adapters stop
+    // Graceful shutdown: stop adapters first, then core sends goodbye packets
+    for task in &tasks {
+        task.abort();
+    }
+    for task in tasks {
+        let _ = task.await;
+    }
+
     if let Err(e) = core.shutdown() {
         tracing::warn!(error = %e, "Error during shutdown");
     }
 
     Ok(())
 }
+
+// ── Infrastructure helpers ──────────────────────────────────────────
 
 /// Check if stdin is piped (not a terminal).
 fn is_piped_stdin() -> bool {
@@ -286,131 +159,33 @@ async fn shutdown_signal() {
         .expect("Failed to listen for Ctrl+C");
 }
 
-/// Print startup diagnostics.
+// ── Daemon startup diagnostics ──────────────────────────────────────
+
 fn startup_diagnostics(config: &Config) {
     tracing::info!("Koi v{} starting", env!("CARGO_PKG_VERSION"));
-
-    // Platform
     tracing::info!("Platform: {}", std::env::consts::OS);
 
-    // Network interfaces
-    log_network_interfaces();
+    match hostname::get() {
+        Ok(h) => tracing::info!("Hostname: {}", h.to_string_lossy()),
+        Err(e) => tracing::warn!(error = %e, "Could not determine hostname"),
+    }
 
-    // mDNS engine
     tracing::info!("mDNS engine: mdns-sd");
 
-    // HTTP
     if !config.no_http {
         tracing::info!("TCP {}: listening (HTTP adapter)", config.http_port);
     } else {
         tracing::info!("HTTP adapter: disabled");
     }
 
-    // IPC
     if !config.no_ipc {
         tracing::info!("IPC: {}", config.pipe_path.display());
     } else {
         tracing::info!("IPC adapter: disabled");
     }
 
-    // Firewall check (Windows)
     #[cfg(windows)]
     check_firewall_windows(config.http_port);
-}
-
-/// Log detected network interfaces.
-fn log_network_interfaces() {
-    match hostname::get() {
-        Ok(h) => tracing::info!("Hostname: {}", h.to_string_lossy()),
-        Err(e) => tracing::warn!(error = %e, "Could not determine hostname"),
-    }
-}
-
-/// Default timeout for browse/subscribe commands (seconds).
-const DEFAULT_BROWSE_TIMEOUT: u64 = 5;
-
-/// Resolve the effective timeout duration.
-/// - `Some(0)` → infinite (run forever)
-/// - `Some(n)` → n seconds
-/// - `None` → use the provided default (None = infinite)
-fn effective_timeout(explicit: Option<u64>, default_secs: Option<u64>) -> Option<std::time::Duration> {
-    match explicit {
-        Some(0) => None,
-        Some(secs) => Some(std::time::Duration::from_secs(secs)),
-        None => default_secs.map(std::time::Duration::from_secs),
-    }
-}
-
-// ── Verb subcommand helpers ──────────────────────────────────────────
-
-fn parse_txt(entries: &[String]) -> HashMap<String, String> {
-    entries
-        .iter()
-        .filter_map(|entry| {
-            entry
-                .split_once('=')
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-        })
-        .collect()
-}
-
-fn print_service_line(record: &ServiceRecord) {
-    let ip_port = match (&record.ip, record.port) {
-        (Some(ip), Some(port)) => format!("{ip}:{port}"),
-        (None, Some(port)) => format!("?:{port}"),
-        (Some(ip), None) => ip.clone(),
-        (None, None) => String::new(),
-    };
-    let host = record.host.as_deref().unwrap_or("");
-    let txt = format_txt(&record.txt);
-    if txt.is_empty() {
-        println!(
-            "{}\t{}\t{}\t{}",
-            record.name, record.service_type, ip_port, host
-        );
-    } else {
-        println!(
-            "{}\t{}\t{}\t{}\t{}",
-            record.name, record.service_type, ip_port, host, txt
-        );
-    }
-}
-
-fn print_resolved_detail(record: &ServiceRecord) {
-    println!("{}", record.name);
-    println!("  Type: {}", record.service_type);
-    if let Some(host) = &record.host {
-        println!("  Host: {host}");
-    }
-    if let Some(ip) = &record.ip {
-        println!("  IP:   {ip}");
-    }
-    if let Some(port) = record.port {
-        println!("  Port: {port}");
-    }
-    if !record.txt.is_empty() {
-        let txt = format_txt(&record.txt);
-        println!("  TXT:  {txt}");
-    }
-}
-
-fn print_subscribe_event(kind: &str, record: &ServiceRecord) {
-    let detail = match (&record.ip, record.port) {
-        (Some(ip), Some(port)) => format!("{ip}:{port}"),
-        _ => String::new(),
-    };
-    let host = record.host.as_deref().unwrap_or("");
-    println!(
-        "[{kind}]\t{}\t{}\t{}\t{}",
-        record.name, record.service_type, detail, host
-    );
-}
-
-fn format_txt(txt: &HashMap<String, String>) -> String {
-    txt.iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[cfg(windows)]
