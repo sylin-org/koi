@@ -2,10 +2,9 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use crate::core::{MdnsCore, ServiceEvent};
+use crate::core::MdnsCore;
 use crate::protocol::request::Request;
 use crate::protocol::response::{PipelineResponse, Response};
-use crate::protocol::{EventKind, ServiceRecord};
 
 /// Start the IPC adapter.
 /// Windows: Named Pipe at `\\.\pipe\koi`
@@ -124,21 +123,20 @@ async fn handle_line<W: AsyncWriteExt + Unpin>(
             let handle = match core.browse(&service_type) {
                 Ok(h) => h,
                 Err(e) => {
-                    write_line(writer, &error_response(&e)).await?;
+                    write_line(writer, &PipelineResponse::from_error(&e)).await?;
                     return Ok(());
                 }
             };
 
             while let Some(event) = handle.recv().await {
-                let resp = service_event_to_browse_response(event);
-                write_line(writer, &resp).await?;
+                write_line(writer, &PipelineResponse::from_browse_event(event)).await?;
             }
         }
 
         Request::Register(payload) => {
             let resp = match core.register(payload) {
                 Ok(result) => PipelineResponse::clean(Response::Registered(result)),
-                Err(e) => error_response(&e),
+                Err(e) => PipelineResponse::from_error(&e),
             };
             write_line(writer, &resp).await?;
         }
@@ -146,7 +144,7 @@ async fn handle_line<W: AsyncWriteExt + Unpin>(
         Request::Unregister(id) => {
             let resp = match core.unregister(&id) {
                 Ok(()) => PipelineResponse::clean(Response::Unregistered(id)),
-                Err(e) => error_response(&e),
+                Err(e) => PipelineResponse::from_error(&e),
             };
             write_line(writer, &resp).await?;
         }
@@ -154,7 +152,7 @@ async fn handle_line<W: AsyncWriteExt + Unpin>(
         Request::Resolve(instance) => {
             let resp = match core.resolve(&instance).await {
                 Ok(record) => PipelineResponse::clean(Response::Resolved(record)),
-                Err(e) => error_response(&e),
+                Err(e) => PipelineResponse::from_error(&e),
             };
             write_line(writer, &resp).await?;
         }
@@ -163,80 +161,18 @@ async fn handle_line<W: AsyncWriteExt + Unpin>(
             let handle = match core.browse(&service_type) {
                 Ok(h) => h,
                 Err(e) => {
-                    write_line(writer, &error_response(&e)).await?;
+                    write_line(writer, &PipelineResponse::from_error(&e)).await?;
                     return Ok(());
                 }
             };
 
             while let Some(event) = handle.recv().await {
-                let resp = service_event_to_event_response(event);
-                write_line(writer, &resp).await?;
+                write_line(writer, &PipelineResponse::from_subscribe_event(event)).await?;
             }
         }
     }
 
     Ok(())
-}
-
-fn service_event_to_browse_response(event: ServiceEvent) -> PipelineResponse {
-    match event {
-        ServiceEvent::Resolved(record) | ServiceEvent::Found(record) => {
-            PipelineResponse::clean(Response::Found(record))
-        }
-        ServiceEvent::Removed { name, service_type } => {
-            PipelineResponse::clean(Response::Event {
-                event: EventKind::Removed,
-                service: ServiceRecord {
-                    name,
-                    service_type,
-                    host: None,
-                    ip: None,
-                    port: 0,
-                    txt: Default::default(),
-                },
-            })
-        }
-    }
-}
-
-fn service_event_to_event_response(event: ServiceEvent) -> PipelineResponse {
-    match event {
-        ServiceEvent::Found(record) => PipelineResponse::clean(Response::Event {
-            event: EventKind::Found,
-            service: record,
-        }),
-        ServiceEvent::Resolved(record) => PipelineResponse::clean(Response::Event {
-            event: EventKind::Resolved,
-            service: record,
-        }),
-        ServiceEvent::Removed { name, service_type } => {
-            PipelineResponse::clean(Response::Event {
-                event: EventKind::Removed,
-                service: ServiceRecord {
-                    name,
-                    service_type,
-                    host: None,
-                    ip: None,
-                    port: 0,
-                    txt: Default::default(),
-                },
-            })
-        }
-    }
-}
-
-fn error_response(e: &crate::core::KoiError) -> PipelineResponse {
-    let (code, msg) = match e {
-        crate::core::KoiError::InvalidServiceType(_) => ("invalid_type", e.to_string()),
-        crate::core::KoiError::RegistrationNotFound(_) => ("not_found", e.to_string()),
-        crate::core::KoiError::ResolveTimeout(_) => ("resolve_timeout", e.to_string()),
-        crate::core::KoiError::Daemon(_) => ("daemon_error", e.to_string()),
-        crate::core::KoiError::Io(_) => ("io_error", e.to_string()),
-    };
-    PipelineResponse::clean(Response::Error {
-        error: code.into(),
-        message: msg,
-    })
 }
 
 async fn write_line<W: AsyncWriteExt + Unpin>(

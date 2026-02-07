@@ -29,8 +29,12 @@ pub struct Cli {
     pub no_ipc: bool,
 
     /// Output JSON instead of human-readable text (for verb subcommands)
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub json: bool,
+
+    /// Auto-exit after N seconds (browse/subscribe default: 5s, register: infinite, 0 = run forever)
+    #[arg(long, global = true, value_name = "SECONDS")]
+    pub timeout: Option<u64>,
 
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -82,7 +86,6 @@ pub struct Config {
     pub pipe_path: PathBuf,
     pub no_http: bool,
     pub no_ipc: bool,
-    pub daemon: bool,
 }
 
 impl Config {
@@ -93,7 +96,6 @@ impl Config {
             pipe_path,
             no_http: cli.no_http,
             no_ipc: cli.no_ipc,
-            daemon: cli.daemon,
         }
     }
 }
@@ -105,7 +107,6 @@ impl Default for Config {
             pipe_path: default_pipe_path(),
             no_http: false,
             no_ipc: false,
-            daemon: true,
         }
     }
 }

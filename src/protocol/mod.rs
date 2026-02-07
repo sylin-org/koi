@@ -16,7 +16,8 @@ pub struct ServiceRecord {
     pub host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip: Option<String>,
-    pub port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
     #[serde(default)]
     pub txt: HashMap<String, String>,
 }
@@ -62,12 +63,13 @@ mod tests {
             service_type: "_http._tcp".into(),
             host: None,
             ip: None,
-            port: 8080,
+            port: None,
             txt: HashMap::new(),
         };
         let json = serde_json::to_value(&record).unwrap();
         assert!(!json.as_object().unwrap().contains_key("host"));
         assert!(!json.as_object().unwrap().contains_key("ip"));
+        assert!(!json.as_object().unwrap().contains_key("port"));
     }
 
     #[test]
@@ -77,7 +79,7 @@ mod tests {
             service_type: "_http._tcp".into(),
             host: Some("server.local".into()),
             ip: Some("192.168.1.42".into()),
-            port: 8080,
+            port: Some(8080),
             txt: HashMap::from([("version".into(), "1.0".into())]),
         };
         let json = serde_json::to_string(&record).unwrap();
@@ -92,7 +94,7 @@ mod tests {
             service_type: "_http._tcp".into(),
             host: None,
             ip: None,
-            port: 80,
+            port: Some(80),
             txt: HashMap::new(),
         };
         let json = serde_json::to_value(&record).unwrap();

@@ -8,9 +8,9 @@ use axum::Router;
 use tokio_stream::Stream;
 use tower_http::cors::CorsLayer;
 
-use crate::core::{MdnsCore, ServiceEvent};
+use crate::core::MdnsCore;
 use crate::protocol::response::{PipelineResponse, Response};
-use crate::protocol::{EventKind, RegisterPayload, ServiceRecord};
+use crate::protocol::RegisterPayload;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct BrowseParams {
@@ -68,24 +68,7 @@ async fn browse_handler(
         loop {
             match handle.recv().await {
                 Some(event) => {
-                    let resp = match event {
-                        ServiceEvent::Resolved(record) | ServiceEvent::Found(record) => {
-                            PipelineResponse::clean(Response::Found(record))
-                        }
-                        ServiceEvent::Removed { name, service_type } => {
-                            PipelineResponse::clean(Response::Event {
-                                event: EventKind::Removed,
-                                service: ServiceRecord {
-                                    name,
-                                    service_type,
-                                    host: None,
-                                    ip: None,
-                                    port: 0,
-                                    txt: Default::default(),
-                                },
-                            })
-                        }
-                    };
+                    let resp = PipelineResponse::from_browse_event(event);
                     let data = serde_json::to_string(&resp).unwrap();
                     yield Ok::<_, std::convert::Infallible>(Event::default().data(data));
                 }
@@ -150,33 +133,7 @@ async fn events_handler(
         loop {
             match handle.recv().await {
                 Some(event) => {
-                    let resp = match event {
-                        ServiceEvent::Found(record) => {
-                            PipelineResponse::clean(Response::Event {
-                                event: EventKind::Found,
-                                service: record,
-                            })
-                        }
-                        ServiceEvent::Resolved(record) => {
-                            PipelineResponse::clean(Response::Event {
-                                event: EventKind::Resolved,
-                                service: record,
-                            })
-                        }
-                        ServiceEvent::Removed { name, service_type } => {
-                            PipelineResponse::clean(Response::Event {
-                                event: EventKind::Removed,
-                                service: ServiceRecord {
-                                    name,
-                                    service_type,
-                                    host: None,
-                                    ip: None,
-                                    port: 0,
-                                    txt: Default::default(),
-                                },
-                            })
-                        }
-                    };
+                    let resp = PipelineResponse::from_subscribe_event(event);
                     let data = serde_json::to_string(&resp).unwrap();
                     yield Ok::<_, std::convert::Infallible>(Event::default().data(data));
                 }
@@ -193,38 +150,19 @@ async fn health_handler() -> impl IntoResponse {
 }
 
 fn error_json(e: crate::core::KoiError) -> impl IntoResponse {
-    let (status_code, error_code) = match &e {
-        crate::core::KoiError::InvalidServiceType(_) => {
-            (axum::http::StatusCode::BAD_REQUEST, "invalid_type")
-        }
-        crate::core::KoiError::RegistrationNotFound(_) => {
-            (axum::http::StatusCode::NOT_FOUND, "not_found")
-        }
-        crate::core::KoiError::ResolveTimeout(_) => {
-            (axum::http::StatusCode::GATEWAY_TIMEOUT, "resolve_timeout")
-        }
-        crate::core::KoiError::Daemon(_) => {
-            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "daemon_error")
-        }
-        crate::core::KoiError::Io(_) => {
-            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "io_error")
-        }
+    let status_code = match &e {
+        crate::core::KoiError::InvalidServiceType(_) => axum::http::StatusCode::BAD_REQUEST,
+        crate::core::KoiError::RegistrationNotFound(_) => axum::http::StatusCode::NOT_FOUND,
+        crate::core::KoiError::ResolveTimeout(_) => axum::http::StatusCode::GATEWAY_TIMEOUT,
+        _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
     };
-    let resp = PipelineResponse::clean(Response::Error {
-        error: error_code.into(),
-        message: e.to_string(),
-    });
-    (status_code, Json(resp))
+    (status_code, Json(PipelineResponse::from_error(&e)))
 }
 
 fn error_event_stream(
     e: crate::core::KoiError,
 ) -> impl Stream<Item = std::result::Result<Event, std::convert::Infallible>> {
-    let resp = PipelineResponse::clean(Response::Error {
-        error: "error".into(),
-        message: e.to_string(),
-    });
-    let data = serde_json::to_string(&resp).unwrap();
+    let data = serde_json::to_string(&PipelineResponse::from_error(&e)).unwrap();
     async_stream::stream! {
         yield Ok(Event::default().data(data));
     }

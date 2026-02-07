@@ -167,6 +167,7 @@ impl MdnsCore {
     }
 
     /// Subscribe to all service events. Returns a broadcast receiver.
+    #[allow(dead_code)]
     pub fn subscribe(&self) -> broadcast::Receiver<ServiceEvent> {
         self.event_tx.subscribe()
     }
@@ -229,7 +230,7 @@ pub mod browse {
                                         service_type: String::new(),
                                         host: None,
                                         ip: None,
-                                        port: 0,
+                                        port: None,
                                         txt: Default::default(),
                                     };
                                     let event = ServiceEvent::Found(record);

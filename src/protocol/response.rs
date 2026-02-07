@@ -2,6 +2,7 @@ use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 
 use super::{EventKind, RegistrationResult, ServiceRecord};
+use crate::core::{KoiError, ServiceEvent};
 
 /// All possible outbound messages.
 /// Custom Serialize ensures the correct JSON shape for each variant:
@@ -66,6 +67,7 @@ impl Serialize for Response {
 /// Pipeline status for streaming responses.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
 pub enum PipelineStatus {
     Ongoing,
     Finished,
@@ -97,6 +99,7 @@ impl PipelineResponse {
     }
 
     /// Wrap a response with an ongoing status.
+    #[allow(dead_code)]
     pub fn ongoing(body: Response) -> Self {
         Self {
             body,
@@ -106,6 +109,7 @@ impl PipelineResponse {
     }
 
     /// Wrap a response with a finished status.
+    #[allow(dead_code)]
     pub fn finished(body: Response) -> Self {
         Self {
             body,
@@ -115,9 +119,70 @@ impl PipelineResponse {
     }
 
     /// Attach a warning to this response.
+    #[allow(dead_code)]
     pub fn with_warning(mut self, warning: impl Into<String>) -> Self {
         self.warning = Some(warning.into());
         self
+    }
+
+    /// Convert a browse event into a pipeline response.
+    /// Found/Resolved → `{"found": {...}}`, Removed → `{"event":"removed", ...}`
+    pub fn from_browse_event(event: ServiceEvent) -> Self {
+        match event {
+            ServiceEvent::Resolved(record) | ServiceEvent::Found(record) => {
+                Self::clean(Response::Found(record))
+            }
+            ServiceEvent::Removed { name, service_type } => Self::clean(Response::Event {
+                event: EventKind::Removed,
+                service: ServiceRecord {
+                    name,
+                    service_type,
+                    host: None,
+                    ip: None,
+                    port: None,
+                    txt: Default::default(),
+                },
+            }),
+        }
+    }
+
+    /// Convert a subscribe event into a pipeline response.
+    /// All variants → `{"event":"kind", "service": {...}}`
+    pub fn from_subscribe_event(event: ServiceEvent) -> Self {
+        let (kind, record) = match event {
+            ServiceEvent::Found(record) => (EventKind::Found, record),
+            ServiceEvent::Resolved(record) => (EventKind::Resolved, record),
+            ServiceEvent::Removed { name, service_type } => (
+                EventKind::Removed,
+                ServiceRecord {
+                    name,
+                    service_type,
+                    host: None,
+                    ip: None,
+                    port: None,
+                    txt: Default::default(),
+                },
+            ),
+        };
+        Self::clean(Response::Event {
+            event: kind,
+            service: record,
+        })
+    }
+
+    /// Convert a KoiError into a pipeline error response.
+    pub fn from_error(e: &KoiError) -> Self {
+        let (code, msg) = match e {
+            KoiError::InvalidServiceType(_) => ("invalid_type", e.to_string()),
+            KoiError::RegistrationNotFound(_) => ("not_found", e.to_string()),
+            KoiError::ResolveTimeout(_) => ("resolve_timeout", e.to_string()),
+            KoiError::Daemon(_) => ("daemon_error", e.to_string()),
+            KoiError::Io(_) => ("io_error", e.to_string()),
+        };
+        Self::clean(Response::Error {
+            error: code.into(),
+            message: msg,
+        })
     }
 }
 
@@ -132,7 +197,7 @@ mod tests {
             service_type: "_http._tcp".into(),
             host: Some("server.local".into()),
             ip: Some("192.168.1.42".into()),
-            port: 8080,
+            port: Some(8080),
             txt: HashMap::from([("version".into(), "2.1".into())]),
         }
     }

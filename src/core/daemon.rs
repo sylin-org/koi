@@ -184,7 +184,7 @@ pub(crate) fn resolved_to_record(resolved: &ResolvedService) -> ServiceRecord {
         service_type,
         host,
         ip,
-        port: resolved.get_port(),
+        port: Some(resolved.get_port()),
         txt,
     }
 }

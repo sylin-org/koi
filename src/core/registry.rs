@@ -40,6 +40,7 @@ impl Registry {
     }
 
     /// Get all registrations (for daemon recovery / re-registration).
+    #[allow(dead_code)]
     pub fn all(&self) -> Vec<(String, RegisterPayload)> {
         let services = self.services.lock().unwrap();
         services
@@ -49,6 +50,7 @@ impl Registry {
     }
 
     /// Number of active registrations.
+    #[allow(dead_code)]
     pub fn count(&self) -> usize {
         let services = self.services.lock().unwrap();
         services.len()

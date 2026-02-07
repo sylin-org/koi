@@ -10,7 +10,7 @@ use std::sync::Arc;
 use clap::Parser;
 use config::{Cli, Command, Config};
 use protocol::response::{PipelineResponse, Response};
-use protocol::{EventKind, RegisterPayload, ServiceRecord};
+use protocol::{RegisterPayload, ServiceRecord};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -48,40 +48,31 @@ async fn main() -> anyhow::Result<()> {
             }
             Command::Browse { service_type } => {
                 let core = Arc::new(core::MdnsCore::new()?);
+                let is_meta = service_type.is_none();
                 let browse_type =
                     service_type
                         .as_deref()
                         .unwrap_or(crate::core::META_QUERY);
                 let handle = core.browse(browse_type)?;
                 let json = cli.json;
+                let dur = effective_timeout(cli.timeout, Some(DEFAULT_BROWSE_TIMEOUT));
                 tokio::select! {
                     _ = async {
                         while let Some(event) = handle.recv().await {
-                            match &event {
-                                core::ServiceEvent::Resolved(record)
-                                | core::ServiceEvent::Found(record) => {
-                                    if json {
-                                        let resp = PipelineResponse::clean(Response::Found(record.clone()));
-                                        println!("{}", serde_json::to_string(&resp).unwrap());
-                                    } else {
-                                        print_service_line(record);
+                            if json {
+                                let resp = PipelineResponse::from_browse_event(event);
+                                println!("{}", serde_json::to_string(&resp).unwrap());
+                            } else {
+                                match event {
+                                    core::ServiceEvent::Resolved(record)
+                                    | core::ServiceEvent::Found(record) => {
+                                        if is_meta {
+                                            println!("{}", record.name);
+                                        } else {
+                                            print_service_line(&record);
+                                        }
                                     }
-                                }
-                                core::ServiceEvent::Removed { name, .. } => {
-                                    if json {
-                                        let resp = PipelineResponse::clean(Response::Event {
-                                            event: EventKind::Removed,
-                                            service: ServiceRecord {
-                                                name: name.clone(),
-                                                service_type: String::new(),
-                                                host: None,
-                                                ip: None,
-                                                port: 0,
-                                                txt: Default::default(),
-                                            },
-                                        });
-                                        println!("{}", serde_json::to_string(&resp).unwrap());
-                                    } else {
+                                    core::ServiceEvent::Removed { name, .. } => {
                                         println!("[removed]\t{name}");
                                     }
                                 }
@@ -89,6 +80,12 @@ async fn main() -> anyhow::Result<()> {
                         }
                     } => {}
                     _ = tokio::signal::ctrl_c() => {}
+                    _ = async {
+                        match dur {
+                            Some(d) => tokio::time::sleep(d).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {}
                 }
                 let _ = core.shutdown();
                 Ok(())
@@ -121,7 +118,16 @@ async fn main() -> anyhow::Result<()> {
                     );
                 }
                 // Keep process alive to maintain the mDNS advertisement
-                tokio::signal::ctrl_c().await?;
+                let dur = effective_timeout(cli.timeout, None);
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = async {
+                        match dur {
+                            Some(d) => tokio::time::sleep(d).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {}
+                }
                 let _ = core.shutdown();
                 Ok(())
             }
@@ -153,40 +159,42 @@ async fn main() -> anyhow::Result<()> {
                 let core = Arc::new(core::MdnsCore::new()?);
                 let handle = core.browse(service_type)?;
                 let json = cli.json;
+                let dur = effective_timeout(cli.timeout, Some(DEFAULT_BROWSE_TIMEOUT));
                 tokio::select! {
                     _ = async {
                         while let Some(event) = handle.recv().await {
-                            let (kind, record) = match event {
-                                core::ServiceEvent::Found(r) => ("found", r),
-                                core::ServiceEvent::Resolved(r) => ("resolved", r),
-                                core::ServiceEvent::Removed { name, service_type } => {
-                                    ("removed", ServiceRecord {
-                                        name,
-                                        service_type,
-                                        host: None,
-                                        ip: None,
-                                        port: 0,
-                                        txt: Default::default(),
-                                    })
-                                }
-                            };
                             if json {
-                                let event_kind = match kind {
-                                    "found" => EventKind::Found,
-                                    "resolved" => EventKind::Resolved,
-                                    _ => EventKind::Removed,
-                                };
-                                let resp = PipelineResponse::clean(Response::Event {
-                                    event: event_kind,
-                                    service: record,
-                                });
+                                let resp = PipelineResponse::from_subscribe_event(event);
                                 println!("{}", serde_json::to_string(&resp).unwrap());
                             } else {
-                                print_subscribe_event(kind, &record);
+                                match event {
+                                    core::ServiceEvent::Found(record) => {
+                                        print_subscribe_event("found", &record);
+                                    }
+                                    core::ServiceEvent::Resolved(record) => {
+                                        print_subscribe_event("resolved", &record);
+                                    }
+                                    core::ServiceEvent::Removed { name, service_type } => {
+                                        print_subscribe_event("removed", &ServiceRecord {
+                                            name,
+                                            service_type,
+                                            host: None,
+                                            ip: None,
+                                            port: None,
+                                            txt: Default::default(),
+                                        });
+                                    }
+                                }
                             }
                         }
                     } => {}
                     _ = tokio::signal::ctrl_c() => {}
+                    _ = async {
+                        match dur {
+                            Some(d) => tokio::time::sleep(d).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {}
                 }
                 let _ = core.shutdown();
                 Ok(())
@@ -318,6 +326,21 @@ fn log_network_interfaces() {
     }
 }
 
+/// Default timeout for browse/subscribe commands (seconds).
+const DEFAULT_BROWSE_TIMEOUT: u64 = 5;
+
+/// Resolve the effective timeout duration.
+/// - `Some(0)` → infinite (run forever)
+/// - `Some(n)` → n seconds
+/// - `None` → use the provided default (None = infinite)
+fn effective_timeout(explicit: Option<u64>, default_secs: Option<u64>) -> Option<std::time::Duration> {
+    match explicit {
+        Some(0) => None,
+        Some(secs) => Some(std::time::Duration::from_secs(secs)),
+        None => default_secs.map(std::time::Duration::from_secs),
+    }
+}
+
 // ── Verb subcommand helpers ──────────────────────────────────────────
 
 fn parse_txt(entries: &[String]) -> HashMap<String, String> {
@@ -333,8 +356,10 @@ fn parse_txt(entries: &[String]) -> HashMap<String, String> {
 
 fn print_service_line(record: &ServiceRecord) {
     let ip_port = match (&record.ip, record.port) {
-        (Some(ip), port) => format!("{ip}:{port}"),
-        (None, port) => format!("?:{port}"),
+        (Some(ip), Some(port)) => format!("{ip}:{port}"),
+        (None, Some(port)) => format!("?:{port}"),
+        (Some(ip), None) => ip.clone(),
+        (None, None) => String::new(),
     };
     let host = record.host.as_deref().unwrap_or("");
     let txt = format_txt(&record.txt);
@@ -360,7 +385,9 @@ fn print_resolved_detail(record: &ServiceRecord) {
     if let Some(ip) = &record.ip {
         println!("  IP:   {ip}");
     }
-    println!("  Port: {}", record.port);
+    if let Some(port) = record.port {
+        println!("  Port: {port}");
+    }
     if !record.txt.is_empty() {
         let txt = format_txt(&record.txt);
         println!("  TXT:  {txt}");
@@ -369,7 +396,7 @@ fn print_resolved_detail(record: &ServiceRecord) {
 
 fn print_subscribe_event(kind: &str, record: &ServiceRecord) {
     let detail = match (&record.ip, record.port) {
-        (Some(ip), port) if port > 0 => format!("{ip}:{port}"),
+        (Some(ip), Some(port)) => format!("{ip}:{port}"),
         _ => String::new(),
     };
     let host = record.host.as_deref().unwrap_or("");
