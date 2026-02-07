@@ -1,0 +1,26 @@
+# Build artifacts
+/target/
+/dist/
+
+# Cargo lock is committed for binaries
+# Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Environment / secrets
+.env
+*.pem
+*.key
+
+# Debug
+*.pdb
