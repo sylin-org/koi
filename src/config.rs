@@ -28,6 +28,10 @@ pub struct Cli {
     #[arg(long, env = "KOI_NO_IPC")]
     pub no_ipc: bool,
 
+    /// Output JSON instead of human-readable text (for verb subcommands)
+    #[arg(long)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -38,6 +42,38 @@ pub enum Command {
     Install,
     /// Uninstall the Koi system service
     Uninstall,
+    /// Browse for services of a given type on the local network
+    Browse {
+        /// Service type (e.g. "http", "_http._tcp"). Omit to discover all types.
+        service_type: Option<String>,
+    },
+    /// Register (advertise) a service on the local network
+    Register {
+        /// Service instance name
+        name: String,
+        /// Service type (e.g. "http", "_http._tcp")
+        service_type: String,
+        /// Port number
+        port: u16,
+        /// TXT record entries as KEY=VALUE pairs
+        #[arg(trailing_var_arg = true)]
+        txt: Vec<String>,
+    },
+    /// Unregister a previously registered service by its ID
+    Unregister {
+        /// Registration ID returned by the register command
+        id: String,
+    },
+    /// Resolve a specific service instance by its full name
+    Resolve {
+        /// Full instance name (e.g. "My Server._http._tcp.local.")
+        instance: String,
+    },
+    /// Subscribe to lifecycle events for a service type
+    Subscribe {
+        /// Service type (e.g. "http", "_http._tcp")
+        service_type: String,
+    },
 }
 
 /// Resolved configuration used at runtime.

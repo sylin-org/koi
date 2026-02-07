@@ -91,6 +91,9 @@ impl std::fmt::Display for ServiceType {
     }
 }
 
+/// DNS-SD meta-query type for discovering all service types on the network.
+pub const META_QUERY: &str = "_services._dns-sd._udp.local.";
+
 /// The core mDNS facade. All adapters interact through this.
 pub struct MdnsCore {
     daemon: MdnsDaemon,
@@ -111,11 +114,17 @@ impl MdnsCore {
     }
 
     /// Start browsing for services of the given type.
+    /// Pass `META_QUERY` to discover all service types on the network.
     pub fn browse(&self, service_type: &str) -> Result<browse::BrowseHandle> {
-        let st = ServiceType::parse(service_type)?;
-        let receiver = self.daemon.browse(st.as_str())?;
+        let is_meta = service_type == META_QUERY;
+        let browse_type = if is_meta {
+            META_QUERY.to_string()
+        } else {
+            ServiceType::parse(service_type)?.as_str().to_string()
+        };
+        let receiver = self.daemon.browse(&browse_type)?;
         let event_tx = self.event_tx.clone();
-        Ok(browse::BrowseHandle::new(receiver, event_tx))
+        Ok(browse::BrowseHandle::new(receiver, event_tx, is_meta))
     }
 
     /// Register a service on the local network.
@@ -186,14 +195,20 @@ pub mod browse {
     pub struct BrowseHandle {
         receiver: mdns_sd::Receiver<MdnsEvent>,
         event_tx: broadcast::Sender<ServiceEvent>,
+        meta_query: bool,
     }
 
     impl BrowseHandle {
         pub(super) fn new(
             receiver: mdns_sd::Receiver<MdnsEvent>,
             event_tx: broadcast::Sender<ServiceEvent>,
+            meta_query: bool,
         ) -> Self {
-            Self { receiver, event_tx }
+            Self {
+                receiver,
+                event_tx,
+                meta_query,
+            }
         }
 
         /// Receive the next service event asynchronously.
@@ -203,8 +218,30 @@ pub mod browse {
                     Ok(mdns_event) => {
                         let event = match mdns_event {
                             MdnsEvent::ServiceFound(_, fullname) => {
-                                tracing::debug!(fullname, "Service found (pending resolution)");
-                                continue;
+                                if self.meta_query {
+                                    // Meta-query: "found" instances are service types
+                                    let type_name = fullname
+                                        .trim_end_matches('.')
+                                        .trim_end_matches(".local")
+                                        .to_string();
+                                    let record = crate::protocol::ServiceRecord {
+                                        name: type_name,
+                                        service_type: String::new(),
+                                        host: None,
+                                        ip: None,
+                                        port: 0,
+                                        txt: Default::default(),
+                                    };
+                                    let event = ServiceEvent::Found(record);
+                                    let _ = self.event_tx.send(event.clone());
+                                    event
+                                } else {
+                                    tracing::debug!(
+                                        fullname,
+                                        "Service found (pending resolution)"
+                                    );
+                                    continue;
+                                }
                             }
                             MdnsEvent::ServiceResolved(resolved) => {
                                 let record = daemon::resolved_to_record(&resolved);

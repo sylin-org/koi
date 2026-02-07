@@ -4,10 +4,13 @@ mod core;
 mod platform;
 mod protocol;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use clap::Parser;
 use config::{Cli, Command, Config};
+use protocol::response::{PipelineResponse, Response};
+use protocol::{EventKind, RegisterPayload, ServiceRecord};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -42,6 +45,151 @@ async fn main() -> anyhow::Result<()> {
                 {
                     anyhow::bail!("Service uninstall is only supported on Windows. Use systemctl on Linux.");
                 }
+            }
+            Command::Browse { service_type } => {
+                let core = Arc::new(core::MdnsCore::new()?);
+                let browse_type =
+                    service_type
+                        .as_deref()
+                        .unwrap_or(crate::core::META_QUERY);
+                let handle = core.browse(browse_type)?;
+                let json = cli.json;
+                tokio::select! {
+                    _ = async {
+                        while let Some(event) = handle.recv().await {
+                            match &event {
+                                core::ServiceEvent::Resolved(record)
+                                | core::ServiceEvent::Found(record) => {
+                                    if json {
+                                        let resp = PipelineResponse::clean(Response::Found(record.clone()));
+                                        println!("{}", serde_json::to_string(&resp).unwrap());
+                                    } else {
+                                        print_service_line(record);
+                                    }
+                                }
+                                core::ServiceEvent::Removed { name, .. } => {
+                                    if json {
+                                        let resp = PipelineResponse::clean(Response::Event {
+                                            event: EventKind::Removed,
+                                            service: ServiceRecord {
+                                                name: name.clone(),
+                                                service_type: String::new(),
+                                                host: None,
+                                                ip: None,
+                                                port: 0,
+                                                txt: Default::default(),
+                                            },
+                                        });
+                                        println!("{}", serde_json::to_string(&resp).unwrap());
+                                    } else {
+                                        println!("[removed]\t{name}");
+                                    }
+                                }
+                            }
+                        }
+                    } => {}
+                    _ = tokio::signal::ctrl_c() => {}
+                }
+                let _ = core.shutdown();
+                Ok(())
+            }
+            Command::Register {
+                name,
+                service_type,
+                port,
+                txt,
+            } => {
+                let core = Arc::new(core::MdnsCore::new()?);
+                let txt_map = parse_txt(txt);
+                let payload = RegisterPayload {
+                    name: name.clone(),
+                    service_type: service_type.clone(),
+                    port: *port,
+                    txt: txt_map,
+                };
+                let result = core.register(payload)?;
+                if cli.json {
+                    let resp = PipelineResponse::clean(Response::Registered(result));
+                    println!("{}", serde_json::to_string(&resp).unwrap());
+                } else {
+                    println!(
+                        "Registered \"{}\" ({}) on port {} [id: {}]",
+                        result.name, result.service_type, result.port, result.id
+                    );
+                    eprintln!(
+                        "Service is being advertised. Press Ctrl+C to unregister and exit."
+                    );
+                }
+                // Keep process alive to maintain the mDNS advertisement
+                tokio::signal::ctrl_c().await?;
+                let _ = core.shutdown();
+                Ok(())
+            }
+            Command::Unregister { id } => {
+                let core = Arc::new(core::MdnsCore::new()?);
+                core.unregister(id)?;
+                if cli.json {
+                    let resp = PipelineResponse::clean(Response::Unregistered(id.clone()));
+                    println!("{}", serde_json::to_string(&resp).unwrap());
+                } else {
+                    println!("Unregistered {id}");
+                }
+                let _ = core.shutdown();
+                Ok(())
+            }
+            Command::Resolve { instance } => {
+                let core = Arc::new(core::MdnsCore::new()?);
+                let record = core.resolve(instance).await?;
+                if cli.json {
+                    let resp = PipelineResponse::clean(Response::Resolved(record));
+                    println!("{}", serde_json::to_string(&resp).unwrap());
+                } else {
+                    print_resolved_detail(&record);
+                }
+                let _ = core.shutdown();
+                Ok(())
+            }
+            Command::Subscribe { service_type } => {
+                let core = Arc::new(core::MdnsCore::new()?);
+                let handle = core.browse(service_type)?;
+                let json = cli.json;
+                tokio::select! {
+                    _ = async {
+                        while let Some(event) = handle.recv().await {
+                            let (kind, record) = match event {
+                                core::ServiceEvent::Found(r) => ("found", r),
+                                core::ServiceEvent::Resolved(r) => ("resolved", r),
+                                core::ServiceEvent::Removed { name, service_type } => {
+                                    ("removed", ServiceRecord {
+                                        name,
+                                        service_type,
+                                        host: None,
+                                        ip: None,
+                                        port: 0,
+                                        txt: Default::default(),
+                                    })
+                                }
+                            };
+                            if json {
+                                let event_kind = match kind {
+                                    "found" => EventKind::Found,
+                                    "resolved" => EventKind::Resolved,
+                                    _ => EventKind::Removed,
+                                };
+                                let resp = PipelineResponse::clean(Response::Event {
+                                    event: event_kind,
+                                    service: record,
+                                });
+                                println!("{}", serde_json::to_string(&resp).unwrap());
+                            } else {
+                                print_subscribe_event(kind, &record);
+                            }
+                        }
+                    } => {}
+                    _ = tokio::signal::ctrl_c() => {}
+                }
+                let _ = core.shutdown();
+                Ok(())
             }
         };
     }
@@ -168,6 +316,74 @@ fn log_network_interfaces() {
         Ok(h) => tracing::info!("Hostname: {}", h.to_string_lossy()),
         Err(e) => tracing::warn!(error = %e, "Could not determine hostname"),
     }
+}
+
+// ── Verb subcommand helpers ──────────────────────────────────────────
+
+fn parse_txt(entries: &[String]) -> HashMap<String, String> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .split_once('=')
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+        })
+        .collect()
+}
+
+fn print_service_line(record: &ServiceRecord) {
+    let ip_port = match (&record.ip, record.port) {
+        (Some(ip), port) => format!("{ip}:{port}"),
+        (None, port) => format!("?:{port}"),
+    };
+    let host = record.host.as_deref().unwrap_or("");
+    let txt = format_txt(&record.txt);
+    if txt.is_empty() {
+        println!(
+            "{}\t{}\t{}\t{}",
+            record.name, record.service_type, ip_port, host
+        );
+    } else {
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            record.name, record.service_type, ip_port, host, txt
+        );
+    }
+}
+
+fn print_resolved_detail(record: &ServiceRecord) {
+    println!("{}", record.name);
+    println!("  Type: {}", record.service_type);
+    if let Some(host) = &record.host {
+        println!("  Host: {host}");
+    }
+    if let Some(ip) = &record.ip {
+        println!("  IP:   {ip}");
+    }
+    println!("  Port: {}", record.port);
+    if !record.txt.is_empty() {
+        let txt = format_txt(&record.txt);
+        println!("  TXT:  {txt}");
+    }
+}
+
+fn print_subscribe_event(kind: &str, record: &ServiceRecord) {
+    let detail = match (&record.ip, record.port) {
+        (Some(ip), port) if port > 0 => format!("{ip}:{port}"),
+        _ => String::new(),
+    };
+    let host = record.host.as_deref().unwrap_or("");
+    println!(
+        "[{kind}]\t{}\t{}\t{}\t{}",
+        record.name, record.service_type, detail, host
+    );
+}
+
+fn format_txt(txt: &HashMap<String, String>) -> String {
+    txt.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(windows)]

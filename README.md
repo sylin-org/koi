@@ -167,6 +167,25 @@ This starts the HTTP API on port 5353 and the IPC adapter (Named Pipe on Windows
 
 ### CLI mode
 
+Koi provides human-friendly verb subcommands for all operations:
+
+```bash
+# Browse for HTTP services on the local network
+koi browse http
+
+# Register a service (keeps advertising until Ctrl+C)
+koi register "My App" http 8080 version=1.0
+
+# Resolve a specific service instance
+koi resolve "My Server._http._tcp.local."
+
+# Subscribe to lifecycle events
+koi subscribe http
+
+# Output JSON instead of human-readable text
+koi browse http --json
+```
+
 When stdin is piped, Koi reads NDJSON commands and writes NDJSON responses:
 
 ```bash
@@ -197,6 +216,7 @@ koi.exe uninstall
 | Log level | `--log-level` | `KOI_LOG` | `info` |
 | Disable HTTP | `--no-http` | `KOI_NO_HTTP` | — |
 | Disable IPC | `--no-ipc` | `KOI_NO_IPC` | — |
+| JSON output | `--json` | — | off (human-readable) |
 
 ### HTTP API
 
