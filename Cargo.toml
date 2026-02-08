@@ -5,6 +5,10 @@ edition = "2021"
 description = "Cross-platform mDNS service discovery daemon with HTTP, IPC, and CLI interfaces"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/sylin-org/koi"
+homepage = "https://sylin.org/koi"
+readme = "README.md"
+keywords = ["mdns", "dns-sd", "service-discovery", "bonjour", "avahi"]
+categories = ["network-programming", "command-line-utilities"]
 
 [[bin]]
 name = "koi"
