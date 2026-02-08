@@ -1,9 +1,6 @@
-# Koi
+# Koi 𓆝
 
-<center>
-**Local service discovery for everyone.**  
-°‧ 𓆝 𓆟 𓆞 ·｡  
-</center>
+**Local service discovery for everyone.**
 
 Koi is a cross-platform mDNS/DNS-SD daemon that exposes local network service discovery through a simple JSON API. It wraps the battle-tested [mdns-sd](https://github.com/keepsimple1/mdns-sd) library in a single binary with HTTP, IPC, and CLI interfaces — making mDNS accessible from any language, any container, any script.
 
