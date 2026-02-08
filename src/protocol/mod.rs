@@ -1,3 +1,4 @@
+pub mod error;
 pub mod request;
 pub mod response;
 
@@ -30,6 +31,9 @@ pub struct RegisterPayload {
     pub service_type: String,
     pub port: u16,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_secs: Option<u64>,
+    #[serde(default)]
     pub txt: HashMap<String, String>,
 }
 
@@ -41,6 +45,16 @@ pub struct RegistrationResult {
     #[serde(rename = "type")]
     pub service_type: String,
     pub port: u16,
+    pub mode: LeaseMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_secs: Option<u64>,
+}
+
+/// Result of a successful lease renewal (heartbeat).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RenewalResult {
+    pub id: String,
+    pub lease_secs: u64,
 }
 
 /// Service event kinds for subscribe streams.
@@ -50,6 +64,76 @@ pub enum EventKind {
     Found,
     Resolved,
     Removed,
+}
+
+/// How a registration stays alive.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum LeaseMode {
+    Session,
+    Heartbeat,
+    Permanent,
+}
+
+/// Wire-level registration state (domain `RegistrationState` carries
+/// temporal data; this is the display-only projection).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum LeaseState {
+    Alive,
+    Draining,
+}
+
+/// Why a registration was removed. Shared by logging and admin events.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum UnregisterReason {
+    Explicit,
+    SessionExpired,
+    HeartbeatExpired,
+    AdminForce,
+    Shutdown,
+}
+
+/// Full registration state as exposed to admin queries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminRegistration {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub service_type: String,
+    pub port: u16,
+    pub mode: LeaseMode,
+    pub state: LeaseState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remaining_secs: Option<u64>,
+    pub grace_secs: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub registered_at: String,
+    pub last_seen: String,
+    #[serde(default)]
+    pub txt: HashMap<String, String>,
+}
+
+/// Daemon status overview for admin queries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonStatus {
+    pub version: String,
+    pub uptime_secs: u64,
+    pub platform: String,
+    pub registrations: RegistrationCounts,
+}
+
+/// Registration counts by state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistrationCounts {
+    pub alive: usize,
+    pub draining: usize,
+    pub permanent: usize,
+    pub total: usize,
 }
 
 #[cfg(test)]
@@ -117,5 +201,68 @@ mod tests {
         let json = r#"{"name": "Bare", "type": "_http._tcp", "port": 80}"#;
         let payload: RegisterPayload = serde_json::from_str(json).unwrap();
         assert!(payload.txt.is_empty());
+    }
+
+    #[test]
+    fn register_payload_defaults_lease_to_none() {
+        let json = r#"{"name": "Bare", "type": "_http._tcp", "port": 80}"#;
+        let payload: RegisterPayload = serde_json::from_str(json).unwrap();
+        assert!(payload.lease_secs.is_none());
+    }
+
+    #[test]
+    fn register_payload_accepts_lease_secs() {
+        let json = r#"{"name": "Bare", "type": "_http._tcp", "port": 80, "lease_secs": 300}"#;
+        let payload: RegisterPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.lease_secs, Some(300));
+    }
+
+    #[test]
+    fn lease_mode_serializes_to_lowercase() {
+        assert_eq!(serde_json::to_value(LeaseMode::Session).unwrap(), "session");
+        assert_eq!(
+            serde_json::to_value(LeaseMode::Heartbeat).unwrap(),
+            "heartbeat"
+        );
+        assert_eq!(
+            serde_json::to_value(LeaseMode::Permanent).unwrap(),
+            "permanent"
+        );
+    }
+
+    #[test]
+    fn lease_state_serializes_to_lowercase() {
+        assert_eq!(serde_json::to_value(LeaseState::Alive).unwrap(), "alive");
+        assert_eq!(
+            serde_json::to_value(LeaseState::Draining).unwrap(),
+            "draining"
+        );
+    }
+
+    #[test]
+    fn unregister_reason_serializes_to_snake_case() {
+        assert_eq!(
+            serde_json::to_value(UnregisterReason::SessionExpired).unwrap(),
+            "session_expired"
+        );
+        assert_eq!(
+            serde_json::to_value(UnregisterReason::HeartbeatExpired).unwrap(),
+            "heartbeat_expired"
+        );
+        assert_eq!(
+            serde_json::to_value(UnregisterReason::AdminForce).unwrap(),
+            "admin_force"
+        );
+    }
+
+    #[test]
+    fn renewal_result_roundtrips() {
+        let r = RenewalResult {
+            id: "abc".into(),
+            lease_secs: 300,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let r2: RenewalResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(r, r2);
     }
 }

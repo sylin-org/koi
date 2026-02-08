@@ -1,20 +1,14 @@
-//! CLI subcommand handlers — the **application service layer**.
+//! Standalone-mode command handlers.
 //!
-//! Each function orchestrates a single verb: it takes the domain core,
-//! user-facing parameters, and produces output (human or JSON).
-//! Core creation and CLI parsing live in `main.rs`; formatting lives
-//! in `format.rs`.
+//! These create a local `MdnsCore` and operate directly on the mDNS engine.
+//! Used when no daemon is running (or `--standalone` is passed).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::core::{self, MdnsCore};
 use crate::format;
 use crate::protocol::response::{PipelineResponse, Response};
 use crate::protocol::{RegisterPayload, ServiceRecord};
-
-/// Default timeout for browse/subscribe commands (seconds).
-const DEFAULT_TIMEOUT: u64 = 5;
 
 // ── Browse ──────────────────────────────────────────────────────────
 
@@ -26,8 +20,8 @@ pub async fn browse(
 ) -> anyhow::Result<()> {
     let is_meta = service_type.is_none();
     let browse_type = service_type.unwrap_or(core::META_QUERY);
-    let handle = core.browse(browse_type)?;
-    let dur = effective_timeout(timeout, Some(DEFAULT_TIMEOUT));
+    let handle = core.browse(browse_type).await?;
+    let dur = super::effective_timeout(timeout, Some(super::DEFAULT_TIMEOUT));
 
     tokio::select! {
         _ = async {
@@ -61,7 +55,7 @@ pub async fn browse(
         } => {}
     }
 
-    let _ = core.shutdown();
+    let _ = core.shutdown().await;
     Ok(())
 }
 
@@ -80,7 +74,8 @@ pub async fn register(
         name: name.to_string(),
         service_type: service_type.to_string(),
         port,
-        txt: parse_txt(txt),
+        lease_secs: None,
+        txt: super::parse_txt(txt),
     };
 
     let result = core.register(payload)?;
@@ -97,7 +92,7 @@ pub async fn register(
 
     // Keep process alive to maintain the mDNS advertisement.
     // Register defaults to infinite (no timeout) unless explicitly set.
-    let dur = effective_timeout(timeout, None);
+    let dur = super::effective_timeout(timeout, None);
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = async {
@@ -108,13 +103,13 @@ pub async fn register(
         } => {}
     }
 
-    let _ = core.shutdown();
+    let _ = core.shutdown().await;
     Ok(())
 }
 
 // ── Unregister ──────────────────────────────────────────────────────
 
-pub fn unregister(
+pub async fn unregister(
     core: Arc<MdnsCore>,
     id: &str,
     json: bool,
@@ -126,7 +121,7 @@ pub fn unregister(
     } else {
         println!("Unregistered {id}");
     }
-    let _ = core.shutdown();
+    let _ = core.shutdown().await;
     Ok(())
 }
 
@@ -144,7 +139,7 @@ pub async fn resolve(
     } else {
         format::resolved_detail(&record);
     }
-    let _ = core.shutdown();
+    let _ = core.shutdown().await;
     Ok(())
 }
 
@@ -156,8 +151,8 @@ pub async fn subscribe(
     json: bool,
     timeout: Option<u64>,
 ) -> anyhow::Result<()> {
-    let handle = core.browse(service_type)?;
-    let dur = effective_timeout(timeout, Some(DEFAULT_TIMEOUT));
+    let handle = core.browse(service_type).await?;
+    let dur = super::effective_timeout(timeout, Some(super::DEFAULT_TIMEOUT));
 
     tokio::select! {
         _ = async {
@@ -196,35 +191,7 @@ pub async fn subscribe(
         } => {}
     }
 
-    let _ = core.shutdown();
+    let _ = core.shutdown().await;
     Ok(())
 }
 
-// ── Private helpers ─────────────────────────────────────────────────
-
-fn parse_txt(entries: &[String]) -> HashMap<String, String> {
-    entries
-        .iter()
-        .filter_map(|entry| {
-            entry
-                .split_once('=')
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-        })
-        .collect()
-}
-
-/// Resolve the effective timeout duration.
-///
-/// - `Some(0)` → infinite (run forever)
-/// - `Some(n)` → n seconds
-/// - `None` → fall back to the provided default (`None` default = infinite)
-fn effective_timeout(
-    explicit: Option<u64>,
-    default_secs: Option<u64>,
-) -> Option<std::time::Duration> {
-    match explicit {
-        Some(0) => None,
-        Some(secs) => Some(std::time::Duration::from_secs(secs)),
-        None => default_secs.map(std::time::Duration::from_secs),
-    }
-}

@@ -12,6 +12,7 @@ pub enum Request {
     Unregister(String),
     Resolve(String),
     Subscribe(String),
+    Heartbeat(String),
 }
 
 #[cfg(test)]
@@ -51,6 +52,13 @@ mod tests {
         let json = r#"{"subscribe": "_http._tcp"}"#;
         let req: Request = serde_json::from_str(json).unwrap();
         assert!(matches!(req, Request::Subscribe(ref s) if s == "_http._tcp"));
+    }
+
+    #[test]
+    fn heartbeat_request_parses() {
+        let json = r#"{"heartbeat": "a1b2c3d4"}"#;
+        let req: Request = serde_json::from_str(json).unwrap();
+        assert!(matches!(req, Request::Heartbeat(ref id) if id == "a1b2c3d4"));
     }
 
     #[test]

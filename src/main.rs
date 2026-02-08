@@ -1,4 +1,6 @@
 mod adapters;
+mod admin;
+mod client;
 mod commands;
 mod config;
 mod core;
@@ -7,20 +9,38 @@ mod platform;
 mod protocol;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
-use config::{Cli, Command, Config};
+use tokio_util::sync::CancellationToken;
+
+use config::{AdminCommand, Cli, Command, Config};
+
+/// Maximum time to wait for orderly shutdown before forcing exit.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Brief pause after cancellation to let in-flight requests complete.
+const SHUTDOWN_DRAIN: Duration = Duration::from_millis(500);
+
+/// Standard mDNS multicast port (used for firewall rule checks).
+#[cfg(windows)]
+const MDNS_PORT: u16 = 5353;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging
-    let env_filter = tracing_subscriber::EnvFilter::try_new(&cli.log_level)
+    let level = match cli.verbose {
+        0 => cli.log_level.as_str(),
+        1 => "debug",
+        _ => "trace",
+    };
+    let env_filter = tracing_subscriber::EnvFilter::try_new(level)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .init();
+
+    // Hold the non-blocking guards for the lifetime of main so logs flush on exit.
+    let _log_guards = init_logging(env_filter, cli.log_file.as_deref())?;
 
     // ── Verb subcommands ────────────────────────────────────────────
     if let Some(command) = &cli.command {
@@ -45,32 +65,14 @@ async fn main() -> anyhow::Result<()> {
                     anyhow::bail!("Service uninstall is only supported on Windows. Use systemctl on Linux.");
                 }
             }
-            Command::Browse { service_type } => {
-                let core = Arc::new(core::MdnsCore::new()?);
-                commands::browse(core, service_type.as_deref(), cli.json, cli.timeout).await
+            Command::Admin { command: admin_cmd } => {
+                let endpoint = resolve_endpoint(&cli)?;
+                dispatch_admin(admin_cmd, &endpoint, cli.json)
             }
-            Command::Register {
-                name,
-                service_type,
-                port,
-                txt,
-            } => {
-                let core = Arc::new(core::MdnsCore::new()?);
-                commands::register(core, name, service_type, *port, txt, cli.json, cli.timeout)
-                    .await
-            }
-            Command::Unregister { id } => {
-                let core = Arc::new(core::MdnsCore::new()?);
-                commands::unregister(core, id, cli.json)
-            }
-            Command::Resolve { instance } => {
-                let core = Arc::new(core::MdnsCore::new()?);
-                commands::resolve(core, instance, cli.json).await
-            }
-            Command::Subscribe { service_type } => {
-                let core = Arc::new(core::MdnsCore::new()?);
-                commands::subscribe(core, service_type, cli.json, cli.timeout).await
-            }
+            _ => match detect_mode(&cli) {
+                RunMode::Standalone => dispatch_standalone(command, &cli).await,
+                RunMode::Client { endpoint } => dispatch_client(command, &endpoint, &cli).await,
+            },
         };
     }
 
@@ -88,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
     if is_piped_stdin() && !cli.daemon {
         let core = Arc::new(core::MdnsCore::new()?);
         adapters::cli::start(core.clone()).await?;
-        let _ = core.shutdown();
+        let _ = core.shutdown().await;
         return Ok(());
     }
 
@@ -96,14 +98,22 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_cli(&cli);
     startup_diagnostics(&config);
 
-    let core = Arc::new(core::MdnsCore::new()?);
+    // Write breadcrumb so clients can discover the daemon
+    if !config.no_http {
+        let endpoint = format!("http://localhost:{}", config.http_port);
+        config::write_breadcrumb(&endpoint);
+    }
+
+    let cancel = CancellationToken::new();
+    let core = Arc::new(core::MdnsCore::with_cancel(cancel.clone())?);
     let mut tasks = Vec::new();
 
     if !config.no_http {
         let c = core.clone();
         let port = config.http_port;
+        let token = cancel.clone();
         tasks.push(tokio::spawn(async move {
-            if let Err(e) = adapters::http::start(c, port).await {
+            if let Err(e) = adapters::http::start(c, port, token).await {
                 tracing::error!(error = %e, "HTTP adapter failed");
             }
         }));
@@ -112,8 +122,9 @@ async fn main() -> anyhow::Result<()> {
     if !config.no_ipc {
         let c = core.clone();
         let path = config.pipe_path.clone();
+        let token = cancel.clone();
         tasks.push(tokio::spawn(async move {
-            if let Err(e) = adapters::pipe::start(c, path).await {
+            if let Err(e) = adapters::pipe::start(c, path, token).await {
                 tracing::error!(error = %e, "IPC adapter failed");
             }
         }));
@@ -129,19 +140,141 @@ async fn main() -> anyhow::Result<()> {
     shutdown_signal().await;
     tracing::info!("Shutting down...");
 
-    // Graceful shutdown: stop adapters first, then core sends goodbye packets
-    for task in &tasks {
-        task.abort();
-    }
-    for task in tasks {
-        let _ = task.await;
+    // Ordered shutdown with hard timeout
+    let shutdown = shutdown_sequence(cancel, tasks, &core);
+    if tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown)
+        .await
+        .is_err()
+    {
+        tracing::warn!("Shutdown timed out after {:?} — forcing exit", SHUTDOWN_TIMEOUT);
     }
 
-    if let Err(e) = core.shutdown() {
-        tracing::warn!(error = %e, "Error during shutdown");
-    }
+    config::delete_breadcrumb();
 
     Ok(())
+}
+
+// ── Mode detection ───────────────────────────────────────────────────
+
+enum RunMode {
+    Standalone,
+    Client { endpoint: String },
+}
+
+/// Determine whether to run standalone (local mDNS core) or as a client
+/// talking to an already-running daemon.
+fn detect_mode(cli: &Cli) -> RunMode {
+    if cli.standalone {
+        return RunMode::Standalone;
+    }
+    if let Some(endpoint) = &cli.endpoint {
+        return RunMode::Client {
+            endpoint: endpoint.clone(),
+        };
+    }
+    // Check breadcrumb — if a daemon is advertising its endpoint, use client mode
+    if let Some(endpoint) = config::read_breadcrumb() {
+        let c = client::KoiClient::new(&endpoint);
+        if c.health().is_ok() {
+            return RunMode::Client { endpoint };
+        }
+    }
+    RunMode::Standalone
+}
+
+/// Resolve an endpoint for admin commands (which always need a daemon).
+fn resolve_endpoint(cli: &Cli) -> anyhow::Result<String> {
+    if let Some(endpoint) = &cli.endpoint {
+        return Ok(endpoint.clone());
+    }
+    if let Some(endpoint) = config::read_breadcrumb() {
+        return Ok(endpoint);
+    }
+    anyhow::bail!(
+        "No daemon endpoint found. Is the daemon running? Use --endpoint to specify."
+    )
+}
+
+// ── Command dispatch ─────────────────────────────────────────────────
+
+async fn dispatch_standalone(command: &Command, cli: &Cli) -> anyhow::Result<()> {
+    let core = Arc::new(core::MdnsCore::new()?);
+    match command {
+        Command::Browse { service_type } => {
+            commands::standalone::browse(core, service_type.as_deref(), cli.json, cli.timeout).await
+        }
+        Command::Register {
+            name,
+            service_type,
+            port,
+            txt,
+        } => {
+            commands::standalone::register(
+                core,
+                name,
+                service_type,
+                *port,
+                txt,
+                cli.json,
+                cli.timeout,
+            )
+            .await
+        }
+        Command::Unregister { id } => commands::standalone::unregister(core, id, cli.json).await,
+        Command::Resolve { instance } => {
+            commands::standalone::resolve(core, instance, cli.json).await
+        }
+        Command::Subscribe { service_type } => {
+            commands::standalone::subscribe(core, service_type, cli.json, cli.timeout).await
+        }
+        _ => unreachable!(),
+    }
+}
+
+async fn dispatch_client(command: &Command, endpoint: &str, cli: &Cli) -> anyhow::Result<()> {
+    match command {
+        Command::Browse { service_type } => {
+            commands::client::browse(endpoint, service_type.as_deref(), cli.json, cli.timeout).await
+        }
+        Command::Register {
+            name,
+            service_type,
+            port,
+            txt,
+        } => {
+            commands::client::register(
+                endpoint,
+                name,
+                service_type,
+                *port,
+                txt,
+                cli.json,
+                cli.timeout,
+            )
+            .await
+        }
+        Command::Unregister { id } => commands::client::unregister(endpoint, id, cli.json),
+        Command::Resolve { instance } => commands::client::resolve(endpoint, instance, cli.json),
+        Command::Subscribe { service_type } => {
+            commands::client::subscribe(endpoint, service_type, cli.json, cli.timeout).await
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn dispatch_admin(
+    admin_cmd: &AdminCommand,
+    endpoint: &str,
+    json: bool,
+) -> anyhow::Result<()> {
+    match admin_cmd {
+        AdminCommand::Status => admin::status(endpoint, json),
+        AdminCommand::List => admin::list(endpoint, json),
+        AdminCommand::Inspect { id } => admin::inspect(endpoint, id, json),
+        AdminCommand::Unregister { id } => admin::unregister(endpoint, id, json),
+        AdminCommand::Drain { id } => admin::drain(endpoint, id, json),
+        AdminCommand::Revive { id } => admin::revive(endpoint, id, json),
+    }
 }
 
 // ── Infrastructure helpers ──────────────────────────────────────────
@@ -150,6 +283,26 @@ async fn main() -> anyhow::Result<()> {
 fn is_piped_stdin() -> bool {
     use std::io::IsTerminal;
     !std::io::stdin().is_terminal()
+}
+
+/// Ordered shutdown: cancel adapters → drain in-flight → wait for tasks → core goodbye.
+async fn shutdown_sequence(
+    cancel: CancellationToken,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    core: &core::MdnsCore,
+) {
+    cancel.cancel();
+
+    // Brief drain period for in-flight requests to complete
+    tokio::time::sleep(SHUTDOWN_DRAIN).await;
+
+    for task in tasks {
+        let _ = task.await;
+    }
+
+    if let Err(e) = core.shutdown().await {
+        tracing::warn!(error = %e, "Error during shutdown");
+    }
 }
 
 /// Wait for Ctrl+C or platform-specific shutdown signal.
@@ -188,6 +341,50 @@ fn startup_diagnostics(config: &Config) {
     check_firewall_windows(config.http_port);
 }
 
+// ── Logging setup ───────────────────────────────────────────────────
+
+/// Initialize tracing with stderr + optional file output.
+/// Returns guards that must be held for the lifetime of the program
+/// to ensure the non-blocking writers flush on shutdown.
+fn init_logging(
+    env_filter: tracing_subscriber::EnvFilter,
+    log_file: Option<&std::path::Path>,
+) -> anyhow::Result<Vec<tracing_appender::non_blocking::WorkerGuard>> {
+    use tracing_subscriber::prelude::*;
+
+    // Always use non-blocking stderr to avoid deadlocks when stderr is a
+    // redirected pipe that nobody reads (e.g. Windows service, test harness).
+    let (nb_stderr, stderr_guard) = tracing_appender::non_blocking(std::io::stderr());
+    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(nb_stderr);
+
+    if let Some(path) = log_file {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        let (nb_file, file_guard) = tracing_appender::non_blocking(file);
+        let file_layer = tracing_subscriber::fmt::layer().with_writer(nb_file);
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(stderr_layer)
+            .with(file_layer)
+            .init();
+
+        Ok(vec![stderr_guard, file_guard])
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(stderr_layer)
+            .init();
+
+        Ok(vec![stderr_guard])
+    }
+}
+
 #[cfg(windows)]
 fn check_firewall_windows(http_port: u16) {
     use std::process::Command as Cmd;
@@ -199,13 +396,14 @@ fn check_firewall_windows(http_port: u16) {
     match udp_check {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.contains("5353") && stdout.contains("UDP") {
-                tracing::info!("Firewall: UDP 5353 rule found");
+            let mdns_port_str = MDNS_PORT.to_string();
+            if stdout.contains(&mdns_port_str) && stdout.contains("UDP") {
+                tracing::info!("Firewall: UDP {MDNS_PORT} rule found");
             } else {
-                tracing::warn!("Koi may not receive mDNS traffic — no UDP 5353 inbound rule found.");
+                tracing::warn!("Koi may not receive mDNS traffic — no UDP {MDNS_PORT} inbound rule found.");
                 tracing::warn!("Run as administrator or execute:");
                 tracing::warn!(
-                    "  netsh advfirewall firewall add rule name=\"Koi mDNS (UDP)\" dir=in action=allow protocol=UDP localport=5353"
+                    "  netsh advfirewall firewall add rule name=\"Koi mDNS (UDP)\" dir=in action=allow protocol=UDP localport={MDNS_PORT}"
                 );
             }
             if stdout.contains(&http_port.to_string()) && stdout.contains("TCP") {

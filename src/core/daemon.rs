@@ -1,38 +1,99 @@
 use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent as MdnsEvent, ServiceInfo};
 use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 use crate::protocol::ServiceRecord;
 
 use super::{KoiError, Result};
 
-/// Wraps the single mdns-sd ServiceDaemon instance.
-/// This is the ONLY file that imports mdns_sd types.
+/// How long to wait for a service to resolve before giving up.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+// ── Worker operations ─────────────────────────────────────────────
+
+/// Operations dispatched to the dedicated mDNS worker thread.
+///
+/// All `ServiceDaemon` interactions are serialized through this queue
+/// so that the bounded internal channel in mdns-sd never blocks a
+/// tokio thread.
+enum MdnsOp {
+    Register(ServiceInfo),
+    Unregister(String), // fullname
+    Browse {
+        service_type: String,
+        reply: oneshot::Sender<std::result::Result<mdns_sd::Receiver<MdnsEvent>, String>>,
+    },
+    StopBrowse(String),
+    Shutdown {
+        reply: oneshot::Sender<std::result::Result<(), String>>,
+    },
+}
+
+// ── MdnsDaemon ────────────────────────────────────────────────────
+
+/// Wraps the mdns-sd `ServiceDaemon` behind a dedicated worker thread.
+///
+/// This is the ONLY file that imports mdns_sd types. All interactions
+/// with the daemon are serialized through an unbounded command queue,
+/// ensuring the daemon's bounded internal channel never blocks callers
+/// (especially tokio tasks).
+///
+/// Fire-and-forget operations (register, unregister, stop_browse)
+/// enqueue and return immediately. Operations that need a result
+/// (browse, shutdown) await a oneshot reply from the worker.
 pub(crate) struct MdnsDaemon {
-    inner: ServiceDaemon,
+    op_tx: Mutex<std::sync::mpsc::Sender<MdnsOp>>,
 }
 
 impl MdnsDaemon {
     pub fn new() -> Result<Self> {
-        let inner = ServiceDaemon::new().map_err(|e| KoiError::Daemon(e.to_string()))?;
-        Ok(Self { inner })
+        let daemon = ServiceDaemon::new().map_err(|e| KoiError::Daemon(e.to_string()))?;
+        let (op_tx, op_rx) = std::sync::mpsc::channel();
+
+        std::thread::Builder::new()
+            .name("koi-mdns-ops".into())
+            .spawn(move || worker_loop(daemon, op_rx))
+            .map_err(|e| KoiError::Daemon(format!("Failed to spawn mDNS worker: {e}")))?;
+
+        Ok(Self {
+            op_tx: Mutex::new(op_tx),
+        })
+    }
+
+    /// Send an operation to the worker thread.
+    fn send(&self, op: MdnsOp) -> Result<()> {
+        self.op_tx
+            .lock()
+            .unwrap()
+            .send(op)
+            .map_err(|_| KoiError::Daemon("mDNS worker stopped".into()))
     }
 
     /// Start browsing for a service type. Returns a receiver for events.
-    pub fn browse(&self, service_type: &str) -> Result<mdns_sd::Receiver<MdnsEvent>> {
-        self.inner
-            .browse(service_type)
-            .map_err(|e| KoiError::Daemon(e.to_string()))
+    pub async fn browse(&self, service_type: &str) -> Result<mdns_sd::Receiver<MdnsEvent>> {
+        let (tx, rx) = oneshot::channel();
+        self.send(MdnsOp::Browse {
+            service_type: service_type.to_string(),
+            reply: tx,
+        })?;
+        rx.await
+            .map_err(|_| KoiError::Daemon("mDNS worker dropped reply".into()))?
+            .map_err(KoiError::Daemon)
     }
 
-    /// Register a service on the network. Returns an opaque ID.
+    /// Register a service on the network (fire-and-forget).
+    ///
+    /// Validates inputs synchronously, then enqueues the registration
+    /// for the worker thread. Returns immediately.
     pub fn register(
         &self,
         name: &str,
         service_type: &str,
         port: u16,
         txt: &HashMap<String, String>,
-    ) -> Result<String> {
+    ) -> Result<()> {
         let hostname = hostname::get()
             .unwrap_or_else(|_| "localhost".into())
             .to_string_lossy()
@@ -55,26 +116,15 @@ impl MdnsDaemon {
         .enable_addr_auto();
 
         let fullname = service_info.get_fullname().to_string();
+        tracing::debug!(fullname, "Queued mDNS register");
 
-        self.inner
-            .register(service_info)
-            .map_err(|e| KoiError::Daemon(e.to_string()))?;
-
-        let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-        tracing::debug!(fullname, id, "Registered with mdns-sd daemon");
-        Ok(id)
+        self.send(MdnsOp::Register(service_info))
     }
 
-    /// Unregister a service by name and type.
+    /// Unregister a service by name and type (fire-and-forget).
     pub fn unregister(&self, name: &str, service_type: &str) -> Result<()> {
         let fullname = format!("{name}.{service_type}");
-
-        let _receiver = self
-            .inner
-            .unregister(&fullname)
-            .map_err(|e| KoiError::Daemon(e.to_string()))?;
-
-        Ok(())
+        self.send(MdnsOp::Unregister(fullname))
     }
 
     /// Resolve a specific service instance by its full name.
@@ -87,14 +137,10 @@ impl MdnsDaemon {
         }
         let service_type = parts[1];
 
-        let receiver = self
-            .inner
-            .browse(service_type)
-            .map_err(|e| KoiError::Daemon(e.to_string()))?;
+        let receiver = self.browse(service_type).await?;
 
         let target_name = parts[0];
-        let timeout = Duration::from_secs(5);
-        let deadline = tokio::time::Instant::now() + timeout;
+        let deadline = tokio::time::Instant::now() + RESOLVE_TIMEOUT;
 
         loop {
             tokio::select! {
@@ -103,7 +149,7 @@ impl MdnsDaemon {
                         Ok(MdnsEvent::ServiceResolved(resolved)) => {
                             let record = resolved_to_record(&resolved);
                             if record.name == target_name || resolved.get_fullname() == instance {
-                                let _ = self.inner.stop_browse(service_type);
+                                let _ = self.stop_browse(service_type);
                                 return Ok(record);
                             }
                         }
@@ -112,9 +158,9 @@ impl MdnsDaemon {
                     }
                 }
                 _ = tokio::time::sleep_until(deadline) => {
-                    let _ = self.inner.stop_browse(service_type);
+                    let _ = self.stop_browse(service_type);
                     return Err(KoiError::ResolveTimeout(format!(
-                        "Could not resolve {instance} within {timeout:?}"
+                        "Could not resolve {instance} within {RESOLVE_TIMEOUT:?}"
                     )));
                 }
             }
@@ -125,22 +171,63 @@ impl MdnsDaemon {
         )))
     }
 
-    /// Stop an active browse by service type.
+    /// Stop an active browse by service type (fire-and-forget).
     pub fn stop_browse(&self, service_type: &str) -> Result<()> {
-        self.inner
-            .stop_browse(service_type)
-            .map_err(|e| KoiError::Daemon(e.to_string()))
+        self.send(MdnsOp::StopBrowse(service_type.to_string()))
     }
 
     /// Shut down the mdns-sd daemon.
-    pub fn shutdown(&self) -> Result<()> {
-        let _receiver = self
-            .inner
-            .shutdown()
-            .map_err(|e| KoiError::Daemon(e.to_string()))?;
-        Ok(())
+    pub async fn shutdown(&self) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.send(MdnsOp::Shutdown { reply: tx })?;
+        rx.await
+            .map_err(|_| KoiError::Daemon("mDNS worker dropped reply".into()))?
+            .map_err(KoiError::Daemon)
     }
 }
+
+// ── Worker thread ─────────────────────────────────────────────────
+
+fn worker_loop(daemon: ServiceDaemon, rx: std::sync::mpsc::Receiver<MdnsOp>) {
+    tracing::debug!("mDNS worker thread started");
+
+    while let Ok(op) = rx.recv() {
+        match op {
+            MdnsOp::Register(info) => {
+                let fullname = info.get_fullname().to_string();
+                if let Err(e) = daemon.register(info) {
+                    tracing::warn!(fullname, error = %e, "mDNS register failed");
+                }
+            }
+            MdnsOp::Unregister(fullname) => {
+                if let Err(e) = daemon.unregister(&fullname) {
+                    tracing::warn!(fullname, error = %e, "mDNS unregister failed");
+                }
+            }
+            MdnsOp::Browse {
+                service_type,
+                reply,
+            } => {
+                let result = daemon.browse(&service_type).map_err(|e| e.to_string());
+                let _ = reply.send(result);
+            }
+            MdnsOp::StopBrowse(service_type) => {
+                if let Err(e) = daemon.stop_browse(&service_type) {
+                    tracing::debug!(service_type, error = %e, "mDNS stop_browse failed");
+                }
+            }
+            MdnsOp::Shutdown { reply } => {
+                let result = daemon.shutdown().map(|_| ()).map_err(|e| e.to_string());
+                let _ = reply.send(result);
+                break;
+            }
+        }
+    }
+
+    tracing::debug!("mDNS worker thread stopped");
+}
+
+// ── Service record conversion ─────────────────────────────────────
 
 /// Convert mdns-sd ResolvedService into our ServiceRecord.
 /// This is the ONE place this conversion happens.

@@ -1,7 +1,8 @@
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 
-use super::{EventKind, RegistrationResult, ServiceRecord};
+use super::error::ErrorCode;
+use super::{EventKind, RegistrationResult, RenewalResult, ServiceRecord};
 use crate::core::{KoiError, ServiceEvent};
 
 /// All possible outbound messages.
@@ -19,8 +20,9 @@ pub enum Response {
         event: EventKind,
         service: ServiceRecord,
     },
+    Renewed(RenewalResult),
     Error {
-        error: String,
+        error: ErrorCode,
         message: String,
     },
 }
@@ -52,6 +54,11 @@ impl Serialize for Response {
                 let mut map = serializer.serialize_map(Some(2))?;
                 map.serialize_entry("event", event)?;
                 map.serialize_entry("service", service)?;
+                map.end()
+            }
+            Response::Renewed(result) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("renewed", result)?;
                 map.end()
             }
             Response::Error { error, message } => {
@@ -172,16 +179,9 @@ impl PipelineResponse {
 
     /// Convert a KoiError into a pipeline error response.
     pub fn from_error(e: &KoiError) -> Self {
-        let (code, msg) = match e {
-            KoiError::InvalidServiceType(_) => ("invalid_type", e.to_string()),
-            KoiError::RegistrationNotFound(_) => ("not_found", e.to_string()),
-            KoiError::ResolveTimeout(_) => ("resolve_timeout", e.to_string()),
-            KoiError::Daemon(_) => ("daemon_error", e.to_string()),
-            KoiError::Io(_) => ("io_error", e.to_string()),
-        };
         Self::clean(Response::Error {
-            error: code.into(),
-            message: msg,
+            error: ErrorCode::from(e),
+            message: e.to_string(),
         })
     }
 }
@@ -246,9 +246,21 @@ mod tests {
     }
 
     #[test]
+    fn renewed_response_serializes_correctly() {
+        let resp = PipelineResponse::clean(Response::Renewed(crate::protocol::RenewalResult {
+            id: "a1b2c3".into(),
+            lease_secs: 300,
+        }));
+        let json = serde_json::to_value(&resp).unwrap();
+        let renewed = json.get("renewed").unwrap();
+        assert_eq!(renewed.get("id").unwrap(), "a1b2c3");
+        assert_eq!(renewed.get("lease_secs").unwrap(), 300);
+    }
+
+    #[test]
     fn error_response_serializes_correctly() {
         let resp = PipelineResponse::clean(Response::Error {
-            error: "not_found".into(),
+            error: crate::protocol::error::ErrorCode::NotFound,
             message: "No registration with id 'xyz'".into(),
         });
         let json = serde_json::to_value(&resp).unwrap();
@@ -266,6 +278,8 @@ mod tests {
             name: "My App".into(),
             service_type: "_http._tcp".into(),
             port: 8080,
+            mode: crate::protocol::LeaseMode::Permanent,
+            lease_secs: None,
         }));
         let json = serde_json::to_value(&resp).unwrap();
         let reg = json.get("registered").unwrap();

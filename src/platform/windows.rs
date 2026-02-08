@@ -98,13 +98,15 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             std::sync::Arc::new(crate::core::MdnsCore::new().expect("Failed to start mDNS core"));
         let config = crate::config::Config::default();
 
+        let cancel = tokio_util::sync::CancellationToken::new();
         let mut tasks = Vec::new();
 
         {
             let c = core.clone();
             let port = config.http_port;
+            let token = cancel.clone();
             tasks.push(tokio::spawn(async move {
-                if let Err(e) = crate::adapters::http::start(c, port).await {
+                if let Err(e) = crate::adapters::http::start(c, port, token).await {
                     tracing::error!(error = %e, "HTTP adapter failed");
                 }
             }));
@@ -113,14 +115,19 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         {
             let c = core.clone();
             let path = config.pipe_path.clone();
+            let token = cancel.clone();
             tasks.push(tokio::spawn(async move {
-                if let Err(e) = crate::adapters::pipe::start(c, path).await {
+                if let Err(e) = crate::adapters::pipe::start(c, path, token).await {
                     tracing::error!(error = %e, "IPC adapter failed");
                 }
             }));
         }
 
         let _ = shutdown_rx.await;
+        cancel.cancel();
+        for task in tasks {
+            let _ = task.await;
+        }
         let _ = core.shutdown();
     });
 
