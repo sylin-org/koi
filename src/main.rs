@@ -22,8 +22,20 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 /// Brief pause after cancellation to let in-flight requests complete.
 const SHUTDOWN_DRAIN: Duration = Duration::from_millis(500);
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // ── Windows Service dispatch ────────────────────────────────────
+    // Must happen before anything else — the SCM expects the service
+    // process to connect to the dispatcher almost immediately.
+    // try_run_as_service() calls service_dispatcher::start(), which
+    // returns Ok (and blocks) only when the SCM launched this process;
+    // otherwise it returns Err instantly and we fall through to normal CLI.
+    #[cfg(windows)]
+    {
+        if platform::windows::try_run_as_service() {
+            return Ok(());
+        }
+    }
+
     let cli = Cli::parse();
 
     // Initialize logging
@@ -38,62 +50,69 @@ async fn main() -> anyhow::Result<()> {
     // Hold the non-blocking guards for the lifetime of main so logs flush on exit.
     let _log_guards = init_logging(env_filter, cli.log_file.as_deref())?;
 
-    // ── Verb subcommands ────────────────────────────────────────────
+    // ── Synchronous subcommands (no runtime needed) ──────────────────
     if let Some(command) = &cli.command {
-        return match command {
+        match command {
             Command::Install => {
-                #[cfg(windows)]
-                {
-                    platform::windows::install()
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    platform::unix::install()
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    platform::macos::install()
-                }
-                #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-                {
-                    anyhow::bail!("Service install is not supported on this platform.")
-                }
+                return {
+                    #[cfg(windows)]
+                    {
+                        platform::windows::install()
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        platform::unix::install()
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        platform::macos::install()
+                    }
+                    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+                    {
+                        anyhow::bail!("Service install is not supported on this platform.")
+                    }
+                };
             }
             Command::Uninstall => {
-                #[cfg(windows)]
-                {
-                    platform::windows::uninstall()
-                }
-                #[cfg(target_os = "linux")]
-                {
-                    platform::unix::uninstall()
-                }
-                #[cfg(target_os = "macos")]
-                {
-                    platform::macos::uninstall()
-                }
-                #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-                {
-                    anyhow::bail!("Service uninstall is not supported on this platform.")
-                }
+                return {
+                    #[cfg(windows)]
+                    {
+                        platform::windows::uninstall()
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        platform::unix::uninstall()
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        platform::macos::uninstall()
+                    }
+                    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+                    {
+                        anyhow::bail!("Service uninstall is not supported on this platform.")
+                    }
+                };
             }
             Command::Admin { command: admin_cmd } => {
                 let endpoint = resolve_endpoint(&cli)?;
-                dispatch_admin(admin_cmd, &endpoint, cli.json)
+                return dispatch_admin(admin_cmd, &endpoint, cli.json);
             }
-            _ => match detect_mode(&cli) {
-                RunMode::Standalone => dispatch_standalone(command, &cli).await,
-                RunMode::Client { endpoint } => dispatch_client(command, &endpoint, &cli).await,
-            },
-        };
+            _ => {} // handled below in the async runtime
+        }
     }
 
-    // ── Windows Service dispatch ────────────────────────────────────
-    #[cfg(windows)]
-    {
-        if !cli.daemon && !is_piped_stdin() && platform::windows::try_run_as_service() {
-            return Ok(());
-        }
+    // ── Everything below needs a Tokio runtime ──────────────────────
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async_main(cli))
+}
+
+async fn async_main(cli: Cli) -> anyhow::Result<()> {
+    // ── Verb subcommands (async) ─────────────────────────────────────
+    if let Some(command) = &cli.command {
+        return match detect_mode(&cli) {
+            RunMode::Standalone => dispatch_standalone(command, &cli).await,
+            RunMode::Client { endpoint } => dispatch_client(command, &endpoint, &cli).await,
+        };
     }
 
     // ── Piped CLI mode ──────────────────────────────────────────────

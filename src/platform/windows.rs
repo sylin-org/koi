@@ -77,6 +77,10 @@ pub fn install() -> anyhow::Result<()> {
             existing.delete()?;
             drop(existing);
 
+            // The SCM marks deleted services for deferred removal.
+            // Poll until the old entry is fully purged before recreating.
+            wait_for_delete(&manager)?;
+
             // Re-create with updated config
             let info = build_service_info(&exe_path);
             let svc = manager.create_service(
@@ -149,22 +153,13 @@ pub fn install() -> anyhow::Result<()> {
     let fw_mdns = create_firewall_rule(FIREWALL_RULE_MDNS, "UDP", MDNS_PORT, &exe_path);
     let fw_http = create_firewall_rule(FIREWALL_RULE_HTTP, "TCP", http_port, &exe_path);
     if fw_mdns && fw_http {
-        println!(
-            "  Firewall rules set: {} (UDP {}) and {} (TCP {})",
-            FIREWALL_RULE_MDNS, MDNS_PORT, FIREWALL_RULE_HTTP, http_port
-        );
+        println!("  Firewall rules set (UDP {MDNS_PORT}, TCP {http_port})");
     } else {
         if !fw_mdns {
-            println!(
-                "  Warning: could not set firewall rule {} (UDP {})",
-                FIREWALL_RULE_MDNS, MDNS_PORT
-            );
+            println!("  Warning: could not set firewall rule for UDP {MDNS_PORT}");
         }
         if !fw_http {
-            println!(
-                "  Warning: could not set firewall rule {} (TCP {})",
-                FIREWALL_RULE_HTTP, http_port
-            );
+            println!("  Warning: could not set firewall rule for TCP {http_port}");
         }
     }
 
@@ -177,11 +172,24 @@ pub fn install() -> anyhow::Result<()> {
                 println!("  Service started");
             }
         }
-        Err(e) => println!("  Warning: could not start service: {e}"),
+        Err(e) => {
+            println!("  Warning: could not start service: {e}");
+            // Query status to help diagnose the failure
+            match service.query_status() {
+                Ok(status) => println!(
+                    "  Service state: {:?}, exit code: {:?}",
+                    status.current_state, status.exit_code
+                ),
+                Err(qe) => println!("  Could not query status: {qe}"),
+            }
+            println!("  Binary: {}", exe_path.display());
+            println!("  Try: sc start koi  (or check Event Viewer > Windows Logs > System)");
+        }
     }
 
     println!();
     println!("Koi mDNS service installed.");
+    println!("  \u{b0}\u{2027} \u{1f41f} \u{b7}\u{ff61} the local waters are calm");
 
     Ok(())
 }
@@ -241,10 +249,8 @@ pub fn uninstall() -> anyhow::Result<()> {
     let rm_http = remove_firewall_rule(FIREWALL_RULE_HTTP);
     if rm_mdns || rm_http {
         println!(
-            "  Firewall rules removed: {} (UDP {}) and {} (TCP {})",
-            FIREWALL_RULE_MDNS,
+            "  Firewall rules removed (UDP {}, TCP {})",
             MDNS_PORT,
-            FIREWALL_RULE_HTTP,
             crate::config::DEFAULT_HTTP_PORT
         );
     }
@@ -541,6 +547,25 @@ fn wait_for_stop(service: &windows_service::service::Service) -> anyhow::Result<
             }
             Ok(_) => continue,
             Err(e) => anyhow::bail!("Could not query service status: {e}"),
+        }
+    }
+}
+
+/// Poll until a deleted service is fully purged from the SCM database.
+/// The SCM defers actual removal until all handles are closed and the
+/// internal state is flushed; attempting to recreate before that fails.
+fn wait_for_delete(manager: &ServiceManager) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + SERVICE_STOP_TIMEOUT;
+    loop {
+        match manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
+            Err(_) => return Ok(()), // gone
+            Ok(_) if std::time::Instant::now() >= deadline => {
+                anyhow::bail!(
+                    "Old service entry not purged within {:?}",
+                    SERVICE_STOP_TIMEOUT
+                );
+            }
+            Ok(_) => std::thread::sleep(SERVICE_STOP_POLL),
         }
     }
 }

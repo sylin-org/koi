@@ -1,6 +1,6 @@
 [package]
 name = "koi-mdns"
-version = "0.1.202602080751"
+version = "0.1.202602080840"
 edition = "2021"
 description = "Cross-platform mDNS service discovery daemon with HTTP, IPC, and CLI interfaces"
 license = "Apache-2.0 OR MIT"

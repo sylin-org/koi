@@ -64,6 +64,8 @@ pub fn install() -> anyhow::Result<()> {
 
     println!();
     println!("Koi mDNS service installed.");
+    println!("  \u{b0}\u{2027} \u{1f41f} \u{b7}\u{ff61} the local waters are calm");
+    println!();
     println!("  Logs: /var/log/koi.log");
     println!("  Status: sudo launchctl list | grep {LABEL}");
 
