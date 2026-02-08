@@ -1,8 +1,8 @@
 use clap::{ArgAction, Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Default HTTP API port (also the standard mDNS port).
-pub const DEFAULT_HTTP_PORT: u16 = 5353;
+/// Default HTTP API port — "KOI" on a phone keypad (K=5, O=6, I=4).
+pub const DEFAULT_HTTP_PORT: u16 = 5641;
 
 /// Breadcrumb filename written by the daemon for client discovery.
 const BREADCRUMB_FILENAME: &str = "koi.endpoint";
@@ -30,7 +30,7 @@ pub struct Cli {
     pub daemon: bool,
 
     /// HTTP API port
-    #[arg(long, env = "KOI_PORT", default_value = "5353")]
+    #[arg(long, env = "KOI_PORT", default_value = "5641")]
     pub port: u16,
 
     /// IPC socket/pipe path (default: platform-specific)
@@ -65,7 +65,7 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "SECONDS")]
     pub timeout: Option<u64>,
 
-    /// Daemon endpoint for client/admin mode (e.g. "http://localhost:5353")
+    /// Daemon endpoint for client/admin mode (e.g. "http://localhost:5641")
     #[arg(long, env = "KOI_ENDPOINT", global = true)]
     pub endpoint: Option<String>,
 

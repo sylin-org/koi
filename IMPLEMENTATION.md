@@ -488,7 +488,7 @@ On startup, Koi should check whether UDP 5353 (mDNS multicast) is reachable and 
 WARN  Koi cannot receive mDNS traffic — UDP 5353 is blocked by Windows Firewall.
 WARN  Run as administrator or execute:
 WARN    netsh advfirewall firewall add rule name="Koi mDNS (UDP)" dir=in action=allow protocol=UDP localport=5353
-WARN    netsh advfirewall firewall add rule name="Koi HTTP (TCP)" dir=in action=allow protocol=TCP localport=5353
+WARN    netsh advfirewall firewall add rule name="Koi HTTP (TCP)" dir=in action=allow protocol=TCP localport=5641
 ```
 
 **Linux:** Check with `ss` or by attempting a test bind. If UDP 5353 is already bound (Avahi, systemd-resolved), log clearly:
@@ -545,9 +545,9 @@ INFO  Platform: Windows 11 (23H2)
 INFO  Network interfaces: Ethernet (192.168.1.42), Wi-Fi (disabled)
 INFO  mDNS engine: mdns-sd v0.17.1
 INFO  UDP 5353: ✓ bound successfully
-INFO  TCP 5353: ✓ listening (HTTP adapter)
+INFO  TCP 5641: ✓ listening (HTTP adapter)
 INFO  Named pipe: ✓ \\.\pipe\koi
-INFO  Firewall: ✓ UDP 5353 allowed, TCP 5353 allowed
+INFO  Firewall: ✓ UDP 5353 allowed, TCP 5641 allowed
 INFO  Ready.
 ```
 
@@ -558,7 +558,7 @@ INFO  Koi v0.1.0 starting
 INFO  Platform: Ubuntu 24.04
 INFO  Network interfaces: eth0 (192.168.1.42), docker0 (172.17.0.1)
 WARN  UDP 5353: bound (shared with avahi-daemon pid 892)
-INFO  TCP 5353: ✓ listening (HTTP adapter)
+INFO  TCP 5641: ✓ listening (HTTP adapter)
 INFO  Unix socket: ✓ /var/run/koi.sock
 WARN  Firewall: UFW active, UDP 5353 not explicitly allowed (may work via existing rules)
 INFO  Ready (with warnings).
@@ -640,14 +640,14 @@ Default level: `info`. During normal healthy operation, Koi should be **silent**
 
 - [ ] `echo '{"browse":"_http._tcp"}' | koi` discovers services on the LAN
 - [ ] `echo '{"register":{"name":"test","type":"_http._tcp","port":9999}}' | koi` makes a service visible to Avahi/Bonjour/dns-sd on other machines
-- [ ] `curl localhost:5353/v1/browse?type=_http._tcp` streams SSE events
-- [ ] `curl -X POST localhost:5353/v1/services -d '{...}'` registers a service
+- [ ] `curl localhost:5641/v1/browse?type=_http._tcp` streams SSE events
+- [ ] `curl -X POST localhost:5641/v1/services -d '{...}'` registers a service
 - [ ] Pipeline properties (`status`, `warning`) appear only when relevant
 - [ ] Runs as a Windows Service via `koi install` / `koi uninstall`
 - [ ] Runs as a systemd service via the provided unit file
 - [ ] Clean shutdown sends goodbye packets for all registered services
 - [ ] Unix socket / Named Pipe accepts NDJSON connections
-- [ ] Container on the same host can browse via `http://172.17.0.1:5353`
+- [ ] Container on the same host can browse via `http://172.17.0.1:5641`
 - [ ] Startup self-test verifies mDNS multicast, HTTP port, and IPC path
 - [ ] Firewall issues detected and diagnosed with actionable fix commands
 - [ ] Network interface changes handled without restart (re-announcement)

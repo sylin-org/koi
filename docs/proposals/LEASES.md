@@ -499,7 +499,7 @@ Written on daemon startup, deleted on clean shutdown.
 - Linux: `/var/run/koi/daemon.json`
 
 ```json
-{"endpoint": "http://0.0.0.0:5353", "pid": 4821, "started_at": "2026-02-07T20:00:00Z"}
+{"endpoint": "http://0.0.0.0:5641", "pid": 4821, "started_at": "2026-02-07T20:00:00Z"}
 ```
 
 ~15 lines. Stale files (dead PID) are detected and cleaned up during mode detection.
@@ -565,7 +565,7 @@ All admin commands are client-mode only. They fail fast with a clear message if 
 
 ```
 $ koi admin status
-Error: Koi daemon is not running at http://localhost:5353
+Error: Koi daemon is not running at http://localhost:5641
 Start it with: koi --daemon
 ```
 
@@ -576,7 +576,7 @@ Start it with: koi --daemon
 ```
 Koi v0.2.0 — running (pid 4821)
 Uptime:        2h 14m
-HTTP:          0.0.0.0:5353
+HTTP:          0.0.0.0:5641
 IPC:           \\.\pipe\koi
 
 Registrations: 3 alive, 1 draining, 0 permanent

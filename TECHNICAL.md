@@ -331,7 +331,7 @@ data: {"found": {"name": "Server B", "type": "_http._tcp", ...}, "status": "fini
 
 ### Default port
 
-Koi's HTTP adapter defaults to port **5353** (configurable). This is the same as the mDNS multicast port, but Koi binds TCP while mDNS uses UDP — no conflict.
+Koi's HTTP adapter defaults to port **5641** (configurable via `--port` or `KOI_PORT`). The port number spells "KOI" on a phone keypad (K=5, O=6, I=4).
 
 ### CORS
 
@@ -443,10 +443,10 @@ Koi runs on the host as a system service. It participates in mDNS on the physica
 │  ┌──────────┐    multicast     ┌──────────────────┐     │
 │  │   Koi    │◄────UDP 5353────►│  Physical LAN    │     │
 │  │  daemon  │                  │  (printers, IoT, │     │
-│  │          │    TCP 5353      │   other hosts)   │     │
+│  │          │    TCP 5641      │   other hosts)   │     │
 │  │  HTTP API│◄──────┐         └──────────────────┘     │
 │  └──────────┘       │                                   │
-│                     │ http://172.17.0.1:5353             │
+│                     │ http://172.17.0.1:5641             │
 │  ┌──────────────────┴──────────────────────────────┐    │
 │  │  Docker bridge (docker0)                        │    │
 │  │                                                  │    │
@@ -462,10 +462,10 @@ Koi runs on the host as a system service. It participates in mDNS on the physica
 
 | Docker environment | HTTP access | IPC access (zero network overhead) |
 |---|---|---|
-| Docker Desktop (Mac/Windows) | `host.docker.internal:5353` | Named pipe mount (Windows) |
-| Docker Engine (Linux) | `172.17.0.1:5353` (default gateway) | `-v /var/run/koi.sock:/var/run/koi.sock` |
+| Docker Desktop (Mac/Windows) | `host.docker.internal:5641` | Named pipe mount (Windows) |
+| Docker Engine (Linux) | `172.17.0.1:5641` (default gateway) | `-v /var/run/koi.sock:/var/run/koi.sock` |
 | Docker Compose | `host.docker.internal` with `extra_hosts` | Volume mount the socket |
-| Kubernetes (host network pods) | `localhost:5353` | `hostPath` volume |
+| Kubernetes (host network pods) | `localhost:5641` | `hostPath` volume |
 
 The socket mount option is significant — it gives containers mDNS access with zero TCP overhead and no exposed ports. The container writes JSON to the socket; Koi speaks multicast on the physical network. The container never needs network access to the host at all.
 
@@ -474,13 +474,13 @@ The socket mount option is significant — it gives containers mDNS access with 
 **Browse** — Discover services on the physical LAN that the container cannot reach via multicast:
 ```bash
 # Inside a container: find all printers on the office network
-curl http://172.17.0.1:5353/v1/browse?type=_ipp._tcp
+curl http://172.17.0.1:5641/v1/browse?type=_ipp._tcp
 ```
 
 **Register** — Advertise a containerized service on the LAN so non-container devices can find it:
 ```bash
 # Inside a container: announce a web service to the LAN
-curl -X POST http://172.17.0.1:5353/v1/services \
+curl -X POST http://172.17.0.1:5641/v1/services \
   -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
 ```
 
@@ -489,7 +489,7 @@ This makes the containerized service visible to mDNS browsers on the physical ne
 **Subscribe** — Stream real-time service events for dynamic service mesh behavior:
 ```bash
 # Inside a container: watch for new services appearing on the LAN
-curl http://172.17.0.1:5353/v1/events?type=_http._tcp
+curl http://172.17.0.1:5641/v1/events?type=_http._tcp
 ```
 
 ### Docker Compose examples
@@ -500,7 +500,7 @@ services:
   my-app:
     image: my-app:latest
     environment:
-      KOI_ENDPOINT: "http://host.docker.internal:5353"
+      KOI_ENDPOINT: "http://host.docker.internal:5641"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 ```
@@ -563,7 +563,7 @@ Koi is configured via CLI flags, environment variables, or a config file. CLI fl
 
 | Setting | Flag | Env var | Default |
 |---|---|---|---|
-| HTTP port | `--port` | `KOI_PORT` | `5353` |
+| HTTP port | `--port` | `KOI_PORT` | `5641` |
 | Pipe/socket path | `--pipe` | `KOI_PIPE` | Platform default |
 | Log level | `--log-level` | `KOI_LOG` | `info` |
 | Config file | `--config` | — | `/etc/koi/koi.toml` (Linux), `%ProgramData%\koi\koi.toml` (Windows) |
@@ -659,9 +659,9 @@ Status, warnings, and errors are operational concerns added by the pipeline, not
 
 The HTTP, IPC, and CLI adapters all speak the same JSON shapes but don't share adapter code. Each is a thin, independent module (~150 lines) that maps its transport to core API calls. This keeps each adapter simple enough to read in one sitting.
 
-### TCP 5353 for HTTP (same as mDNS UDP 5353)
+### Port 5641 — "KOI" on a phone keypad
 
-Koi's HTTP adapter defaults to TCP port 5353. Since mDNS uses UDP 5353, there is no conflict — TCP and UDP port spaces are independent. This makes the port number easy to remember and thematically appropriate.
+Koi's HTTP adapter defaults to TCP port 5641 (K=5, O=6, I=4, plus a `1` suffix). The port is IANA-unassigned, sits comfortably in the registered range (1024–49151), and is easy to remember.
 
 ### Explicitly deferred
 

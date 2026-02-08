@@ -219,7 +219,7 @@ Koi detects the daemon via a breadcrumb file written on startup. The detection i
 To force connection to a specific daemon:
 
 ```
-koi browse http --endpoint http://localhost:5353
+koi browse http --endpoint http://localhost:5641
 ```
 
 To force standalone mode (ignore any running daemon):
@@ -241,7 +241,7 @@ koi --daemon
 ```
 
 By default, the daemon listens on:
-- **HTTP**: port 5353 (all interfaces)
+- **HTTP**: port 5641 (all interfaces)
 - **IPC**: `\\.\pipe\koi` (Windows) or `$XDG_RUNTIME_DIR/koi.sock` (Linux)
 
 ### HTTP API
@@ -538,7 +538,7 @@ All daemon settings can be set via CLI flags or environment variables:
 
 | Flag            | Env var          | Default              | Description                      |
 |-----------------|------------------|----------------------|----------------------------------|
-| `--port`        | `KOI_PORT`       | `5353`               | HTTP API port                    |
+| `--port`        | `KOI_PORT`       | `5641`               | HTTP API port                    |
 | `--pipe`        | `KOI_PIPE`       | platform-specific    | IPC socket/pipe path             |
 | `--log-level`   | `KOI_LOG`        | `info`               | Log level (error/warn/info/debug/trace) |
 | `-v`, `--verbose` |                | off                  | Increase verbosity (`-v` = debug, `-vv` = trace) |

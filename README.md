@@ -8,14 +8,14 @@ Think of it as **Avahi for everywhere** — without the D-Bus dependency, withou
 
 ```bash
 # Browse for services
-curl http://localhost:5353/v1/browse?type=_http._tcp
+curl http://localhost:5641/v1/browse?type=_http._tcp
 
 # Register a service
-curl -X POST http://localhost:5353/v1/services \
+curl -X POST http://localhost:5641/v1/services \
   -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
 
 # Stream events in real time
-curl http://localhost:5353/v1/events?type=_http._tcp
+curl http://localhost:5641/v1/events?type=_http._tcp
 ```
 
 Or from the command line:
@@ -36,7 +36,7 @@ mDNS is the invisible backbone of local networking. Printers, smart speakers, Ai
 
 Koi fills the gap: a single daemon that speaks mDNS on the network side and JSON over HTTP/IPC/stdio on the application side. Any language with an HTTP client or the ability to spawn a process can discover and advertise services on the local network.
 
-**For containers, this changes everything.** When Koi runs as a service on the host, any container can reach it via the Docker host gateway (`http://172.17.0.1:5353`) or a mounted socket (`/var/run/koi.sock`). No `--network=host`. No macvlan. No mDNS reflectors. The container makes a plain HTTP call; Koi speaks multicast on the physical network. Containers gain full mDNS capabilities — browse, register, resolve, subscribe — without ever touching a multicast socket.
+**For containers, this changes everything.** When Koi runs as a service on the host, any container can reach it via the Docker host gateway (`http://172.17.0.1:5641`) or a mounted socket (`/var/run/koi.sock`). No `--network=host`. No macvlan. No mDNS reflectors. The container makes a plain HTTP call; Koi speaks multicast on the physical network. Containers gain full mDNS capabilities — browse, register, resolve, subscribe — without ever touching a multicast socket.
 
 ## Containers get mDNS
 
@@ -44,8 +44,8 @@ When Koi runs as a service on the host, every container on that machine gains mD
 
 ```bash
 # From inside any Docker container:
-curl http://host.docker.internal:5353/v1/browse?type=_http._tcp
-curl http://172.17.0.1:5353/v1/browse?type=_ipp._tcp
+curl http://host.docker.internal:5641/v1/browse?type=_http._tcp
+curl http://172.17.0.1:5641/v1/browse?type=_ipp._tcp
 ```
 
 The container doesn't need mDNS libraries, multicast socket access, or `--network=host`. It makes a plain HTTP request to the host, and Koi translates that into multicast mDNS on the physical network. Browse, register, resolve — all of it works from inside the most minimal scratch container.
@@ -76,7 +76,7 @@ Koi exposes the same JSON protocol over three transports:
 
 | Interface | Transport | Best for |
 |---|---|---|
-| **HTTP + SSE** | TCP (default: port 5353) | Containers, remote access, polyglot environments |
+| **HTTP + SSE** | TCP (default: port 5641) | Containers, remote access, polyglot environments |
 | **Named Pipe / UDS** | Local IPC | Same-host services, zero network overhead |
 | **CLI** | stdin/stdout | Scripting, testing, shell pipelines |
 
@@ -163,7 +163,7 @@ Start Koi as a foreground daemon with HTTP and IPC adapters:
 koi --daemon
 ```
 
-This starts the HTTP API on port 5353 and the IPC adapter (Named Pipe on Windows, Unix socket on Linux/macOS).
+This starts the HTTP API on port 5641 and the IPC adapter (Named Pipe on Windows, Unix socket on Linux/macOS).
 
 ### CLI mode
 
@@ -211,7 +211,7 @@ koi.exe uninstall
 
 | Setting | Flag | Env var | Default |
 |---|---|---|---|
-| HTTP port | `--port` | `KOI_PORT` | `5353` |
+| HTTP port | `--port` | `KOI_PORT` | `5641` |
 | Pipe/socket path | `--pipe` | `KOI_PIPE` | `\\.\pipe\koi` (Windows) / `/var/run/koi.sock` (Linux) |
 | Log level | `--log-level` | `KOI_LOG` | `info` |
 | Disable HTTP | `--no-http` | `KOI_NO_HTTP` | — |

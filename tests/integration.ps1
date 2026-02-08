@@ -26,7 +26,7 @@ Set-StrictMode -Version Latest
 
 # -- Test configuration -------------------------------------------------------
 
-$TestPort      = 15353
+$TestPort      = 15641
 $TestPipe      = '\\.\pipe\koi-test'
 $TestPipeName  = 'koi-test'
 $TestDir       = Join-Path $env:TEMP "koi-test-$(Get-Random)"
@@ -1401,7 +1401,7 @@ if ($Tier3) {
     try {
         & sc.exe start koi 2>&1 | Out-Null
         Start-Sleep -Seconds 3
-        $resp = Invoke-Http -Uri "http://127.0.0.1:5353/healthz" -TimeoutSec 5
+        $resp = Invoke-Http -Uri "http://127.0.0.1:5641/healthz" -TimeoutSec 5
         if ($resp.StatusCode -eq 200) {
             Pass 'service start + health check'
         } else {

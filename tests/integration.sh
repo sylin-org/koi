@@ -34,7 +34,7 @@ done
 
 # ── Test configuration ────────────────────────────────────────────────
 
-TEST_PORT=15353
+TEST_PORT=15641
 TEST_SOCKET="/tmp/koi-test-$$.sock"
 TEST_DIR=$(mktemp -d)
 TEST_LOG="$TEST_DIR/koi-test.log"
