@@ -4,6 +4,9 @@ pub mod windows;
 #[cfg(unix)]
 pub mod unix;
 
+#[cfg(target_os = "macos")]
+pub mod macos;
+
 /// Platform-specific service registration.
 /// On Windows, integrates with the Service Control Manager (SCM).
 /// On Linux, sends systemd sd_notify(READY=1).

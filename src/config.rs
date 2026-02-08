@@ -310,6 +310,50 @@ pub fn service_data_dir() -> PathBuf {
     PathBuf::from(program_data).join(APP_DIR_NAME)
 }
 
+// ── Service paths (Linux/systemd) ────────────────────────────────────
+
+/// systemd unit file path.
+#[cfg(target_os = "linux")]
+const UNIT_FILE_PATH: &str = "/etc/systemd/system/koi.service";
+
+/// Binary install path for service mode.
+#[cfg(target_os = "linux")]
+const INSTALL_BIN_PATH: &str = "/usr/local/bin/koi";
+
+/// Returns the systemd unit file path.
+#[cfg(target_os = "linux")]
+pub fn unit_file_path() -> PathBuf {
+    PathBuf::from(UNIT_FILE_PATH)
+}
+
+/// Returns the binary install path for service mode.
+#[cfg(target_os = "linux")]
+pub fn install_bin_path() -> PathBuf {
+    PathBuf::from(INSTALL_BIN_PATH)
+}
+
+// ── Service paths (macOS/launchd) ────────────────────────────────────
+
+/// launchd plist file path.
+#[cfg(target_os = "macos")]
+const PLIST_PATH: &str = "/Library/LaunchDaemons/org.sylin.koi.plist";
+
+/// Binary install path for service mode (macOS).
+#[cfg(target_os = "macos")]
+const MACOS_INSTALL_BIN_PATH: &str = "/usr/local/bin/koi";
+
+/// Returns the launchd plist file path.
+#[cfg(target_os = "macos")]
+pub fn plist_path() -> PathBuf {
+    PathBuf::from(PLIST_PATH)
+}
+
+/// Returns the binary install path for service mode (macOS).
+#[cfg(target_os = "macos")]
+pub fn install_bin_path() -> PathBuf {
+    PathBuf::from(MACOS_INSTALL_BIN_PATH)
+}
+
 // ── Default paths ────────────────────────────────────────────────────
 
 fn default_pipe_path() -> PathBuf {

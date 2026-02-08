@@ -46,9 +46,17 @@ async fn main() -> anyhow::Result<()> {
                 {
                     platform::windows::install()
                 }
-                #[cfg(not(windows))]
+                #[cfg(target_os = "linux")]
                 {
-                    anyhow::bail!("Service install is only supported on Windows. Use the systemd unit file on Linux.");
+                    platform::unix::install()
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    platform::macos::install()
+                }
+                #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+                {
+                    anyhow::bail!("Service install is not supported on this platform.")
                 }
             }
             Command::Uninstall => {
@@ -56,11 +64,17 @@ async fn main() -> anyhow::Result<()> {
                 {
                     platform::windows::uninstall()
                 }
-                #[cfg(not(windows))]
+                #[cfg(target_os = "linux")]
                 {
-                    anyhow::bail!(
-                        "Service uninstall is only supported on Windows. Use systemctl on Linux."
-                    );
+                    platform::unix::uninstall()
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    platform::macos::uninstall()
+                }
+                #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+                {
+                    anyhow::bail!("Service uninstall is not supported on this platform.")
                 }
             }
             Command::Admin { command: admin_cmd } => {
