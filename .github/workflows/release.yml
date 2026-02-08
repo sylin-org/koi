@@ -1,0 +1,204 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: koi
+
+jobs:
+  # ── Prepare ───────────────────────────────────────────────────────
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      description: ${{ steps.meta.outputs.description }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version metadata
+        id: meta
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          DESCRIPTION=$(jq -r '.description // empty' version.json)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "description=$DESCRIPTION" >> "$GITHUB_OUTPUT"
+          echo "Tag: $TAG"
+          echo "Version: $VERSION"
+          echo "Description: $DESCRIPTION"
+
+  # ── Test ──────────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --locked
+
+  # ── Build ─────────────────────────────────────────────────────────
+  build:
+    needs: [prepare, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            use_cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
+      # Patch Cargo.toml with the release version (same as build.ps1).
+      # This changes the version field, so we can't use --locked for the build
+      # (Cargo.lock references the old version). The lockfile deps are still pinned.
+      - name: Set version
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          rm -f Cargo.toml.bak
+          echo "Cargo.toml version set to $VERSION"
+          head -5 Cargo.toml
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.tag }}"
+          TARGET="${{ matrix.target }}"
+          ARCHIVE_DIR="${BIN_NAME}-${VERSION}-${TARGET}"
+          mkdir "$ARCHIVE_DIR"
+
+          # Copy binary
+          BIN_SUFFIX=""
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            BIN_SUFFIX=".exe"
+          fi
+          cp "target/${TARGET}/release/${BIN_NAME}${BIN_SUFFIX}" "$ARCHIVE_DIR/"
+
+          # Copy docs and licenses
+          cp README.md "$ARCHIVE_DIR/" 2>/dev/null || true
+          cp LICENSE* "$ARCHIVE_DIR/" 2>/dev/null || true
+
+          # Create archive
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            7z a "${ARCHIVE_DIR}.zip" "$ARCHIVE_DIR"
+            echo "ASSET=${ARCHIVE_DIR}.zip" >> "$GITHUB_ENV"
+          else
+            tar czf "${ARCHIVE_DIR}.tar.gz" "$ARCHIVE_DIR"
+            echo "ASSET=${ARCHIVE_DIR}.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - name: Checksum
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            sha256sum "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
+          else
+            shasum -a 256 "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
+          fi
+          cat "${{ env.ASSET }}.sha256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
+
+  # ── Release ───────────────────────────────────────────────────────
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Generate release notes
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.tag }}"
+          DESCRIPTION="${{ needs.prepare.outputs.description }}"
+
+          # Read the template and substitute
+          TEMPLATE=$(cat .github/release-template.md)
+          NOTES="${TEMPLATE//\$\{VERSION\}/$VERSION}"
+          NOTES="${NOTES//\$\{DESCRIPTION\}/$DESCRIPTION}"
+
+          # Build checksums table
+          CHECKSUMS=""
+          for f in artifacts/*.sha256; do
+            HASH=$(cut -d' ' -f1 "$f")
+            FILE=$(basename "${f%.sha256}")
+            CHECKSUMS="${CHECKSUMS}${HASH}  ${FILE}"$'\n'
+          done
+          NOTES="${NOTES//\$\{CHECKSUMS\}/$CHECKSUMS}"
+
+          echo "$NOTES" > release-notes.md
+          echo "--- Release notes ---"
+          cat release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ needs.prepare.outputs.tag }}" \
+            --draft \
+            --title "${{ needs.prepare.outputs.tag }}" \
+            --notes-file release-notes.md \
+            artifacts/*
