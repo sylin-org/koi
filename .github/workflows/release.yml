@@ -197,8 +197,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ needs.prepare.outputs.tag }}" \
+          TAG="${{ needs.prepare.outputs.tag }}"
+          # Clean slate: delete any existing release for this tag
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          gh release create "$TAG" \
             --draft \
-            --title "${{ needs.prepare.outputs.tag }}" \
+            --title "$TAG" \
             --notes-file release-notes.md \
             artifacts/*
