@@ -39,7 +39,6 @@ pub struct Registration {
     pub policy: LeasePolicy,
     pub last_seen: Instant,
     pub session_id: Option<SessionId>,
-    pub registered_at: Instant,
     registered_at_wall: SystemTime,
     last_seen_wall: SystemTime,
 }
@@ -246,7 +245,6 @@ impl Registry {
                     policy,
                     last_seen: now,
                     session_id,
-                    registered_at: now,
                     registered_at_wall: wall,
                     last_seen_wall: wall,
                 },

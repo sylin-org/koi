@@ -57,10 +57,6 @@ impl KoiClient {
         }
     }
 
-    pub fn endpoint(&self) -> &str {
-        &self.endpoint
-    }
-
     // ── Health ────────────────────────────────────────────────────
 
     /// Quick health check with a 200ms timeout.

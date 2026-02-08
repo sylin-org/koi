@@ -84,17 +84,6 @@ pub enum LeaseState {
     Draining,
 }
 
-/// Why a registration was removed. Shared by logging and admin events.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum UnregisterReason {
-    Explicit,
-    SessionExpired,
-    HeartbeatExpired,
-    AdminForce,
-    Shutdown,
-}
-
 /// Full registration state as exposed to admin queries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminRegistration {
@@ -236,22 +225,6 @@ mod tests {
         assert_eq!(
             serde_json::to_value(LeaseState::Draining).unwrap(),
             "draining"
-        );
-    }
-
-    #[test]
-    fn unregister_reason_serializes_to_snake_case() {
-        assert_eq!(
-            serde_json::to_value(UnregisterReason::SessionExpired).unwrap(),
-            "session_expired"
-        );
-        assert_eq!(
-            serde_json::to_value(UnregisterReason::HeartbeatExpired).unwrap(),
-            "heartbeat_expired"
-        );
-        assert_eq!(
-            serde_json::to_value(UnregisterReason::AdminForce).unwrap(),
-            "admin_force"
         );
     }
 

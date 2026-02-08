@@ -128,7 +128,6 @@ pub struct MdnsCore {
     registry: Arc<Registry>,
     event_tx: broadcast::Sender<ServiceEvent>,
     started_at: Instant,
-    cancel: CancellationToken,
 }
 
 impl MdnsCore {
@@ -180,13 +179,7 @@ impl MdnsCore {
             registry,
             event_tx,
             started_at,
-            cancel,
         })
-    }
-
-    /// Get a clone of the cancellation token for passing to adapters.
-    pub fn cancel_token(&self) -> CancellationToken {
-        self.cancel.clone()
     }
 
     /// Start browsing for services of the given type.
