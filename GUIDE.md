@@ -576,10 +576,11 @@ On Windows, Koi can run as a system service:
 koi install
 ```
 
-This registers Koi with the Service Control Manager. Start it with:
+This registers Koi with the Service Control Manager and starts it. To stop or restart:
 
 ```
-net start koi
+sc stop koi
+sc start koi
 ```
 
 To remove the service:

@@ -24,6 +24,9 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# Load System.Net.Http assembly for SSE streaming tests (HttpClient, etc.)
+Add-Type -AssemblyName System.Net.Http
+
 # -- Test configuration -------------------------------------------------------
 
 $TestPort      = 15641
@@ -317,7 +320,7 @@ function Invoke-Sse {
             # Skip empty lines, "event:" lines, etc.
         }
 
-        return $events
+        return ,$events
     } catch [System.OperationCanceledException] {
         # Includes TaskCanceledException (derived from OperationCanceledException)
         return @()

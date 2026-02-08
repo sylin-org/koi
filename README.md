@@ -196,12 +196,12 @@ echo '{"register": {"name": "My App", "type": "_http._tcp", "port": 8080}}' | ko
 ### Windows Service
 
 ```powershell
-# Install (run as Administrator)
+# Install and start (run as Administrator)
 koi.exe install
 
-# Start/stop via Service Control Manager
-sc start koi
+# Stop/restart via Service Control Manager
 sc stop koi
+sc start koi
 
 # Uninstall
 koi.exe uninstall
