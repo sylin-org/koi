@@ -1,6 +1,9 @@
 # Koi
 
+<center>
 **Local service discovery for everyone.**
+°‧ 𓆝 𓆟 𓆞 ·｡
+</center>
 
 Koi is a cross-platform mDNS/DNS-SD daemon that exposes local network service discovery through a simple JSON API. It wraps the battle-tested [mdns-sd](https://github.com/keepsimple1/mdns-sd) library in a single binary with HTTP, IPC, and CLI interfaces — making mDNS accessible from any language, any container, any script.
 
@@ -85,11 +88,11 @@ The container makes a plain HTTP request; Koi speaks multicast on the physical n
 
 ## Platform support
 
-| Platform | mDNS engine | Service integration |
-|---|---|---|
-| Windows | Pure Rust (no Bonjour needed) | Windows Service (SCM) |
-| Linux | Pure Rust (no Avahi needed) | systemd unit |
-| macOS | Pure Rust (no Bonjour needed) | launchd (planned) |
+| Platform | mDNS engine                   | Service integration   |
+| -------- | ----------------------------- | --------------------- |
+| Windows  | Pure Rust (no Bonjour needed) | Windows Service (SCM) |
+| Linux    | Pure Rust (no Avahi needed)   | systemd unit          |
+| macOS    | Pure Rust (no Bonjour needed) | launchd (planned)     |
 
 Zero OS dependencies. No Bonjour, no Avahi, no system mDNS service required.
 
@@ -97,14 +100,14 @@ Zero OS dependencies. No Bonjour, no Avahi, no system mDNS service required.
 
 Koi's HTTP API uses SSE (Server-Sent Events) for streaming and JSON for everything else.
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/v1/browse?type=_http._tcp` | SSE stream of discovered services |
-| `POST` | `/v1/services` | Register a service |
-| `DELETE` | `/v1/services/{id}` | Unregister a service |
-| `GET` | `/v1/resolve?name={instance}` | Resolve a specific service instance |
-| `GET` | `/v1/events?type=_http._tcp` | SSE stream of lifecycle events |
-| `GET` | `/healthz` | Health check |
+| Method   | Path                          | Description                         |
+| -------- | ----------------------------- | ----------------------------------- |
+| `GET`    | `/v1/browse?type=_http._tcp`  | SSE stream of discovered services   |
+| `POST`   | `/v1/services`                | Register a service                  |
+| `DELETE` | `/v1/services/{id}`           | Unregister a service                |
+| `GET`    | `/v1/resolve?name={instance}` | Resolve a specific service instance |
+| `GET`    | `/v1/events?type=_http._tcp`  | SSE stream of lifecycle events      |
+| `GET`    | `/healthz`                    | Health check                        |
 
 SSE streams close after 5 seconds of quiet by default. Set `idle_for=0` for infinite streaming, or `idle_for=15` to wait longer on slow networks.
 
@@ -127,14 +130,14 @@ echo '{"browse": "_http._tcp"}' | koi
 
 ## Configuration
 
-| Setting | Flag | Env var | Default |
-|---|---|---|---|
-| HTTP port | `--port` | `KOI_PORT` | `5641` |
-| Pipe/socket path | `--pipe` | `KOI_PIPE` | `\\.\pipe\koi` / `/var/run/koi.sock` |
-| Log level | `--log-level` | `KOI_LOG` | `info` |
-| Disable HTTP | `--no-http` | `KOI_NO_HTTP` | — |
-| Disable IPC | `--no-ipc` | `KOI_NO_IPC` | — |
-| JSON output | `--json` | — | off |
+| Setting          | Flag          | Env var       | Default                              |
+| ---------------- | ------------- | ------------- | ------------------------------------ |
+| HTTP port        | `--port`      | `KOI_PORT`    | `5641`                               |
+| Pipe/socket path | `--pipe`      | `KOI_PIPE`    | `\\.\pipe\koi` / `/var/run/koi.sock` |
+| Log level        | `--log-level` | `KOI_LOG`     | `info`                               |
+| Disable HTTP     | `--no-http`   | `KOI_NO_HTTP` | —                                    |
+| Disable IPC      | `--no-ipc`    | `KOI_NO_IPC`  | —                                    |
+| JSON output      | `--json`      | —             | off                                  |
 
 ## Installation
 
