@@ -109,11 +109,7 @@ pub async fn register(
 
 // ── Unregister ──────────────────────────────────────────────────────
 
-pub async fn unregister(
-    core: Arc<MdnsCore>,
-    id: &str,
-    json: bool,
-) -> anyhow::Result<()> {
+pub async fn unregister(core: Arc<MdnsCore>, id: &str, json: bool) -> anyhow::Result<()> {
     core.unregister(id)?;
     if json {
         let resp = PipelineResponse::clean(Response::Unregistered(id.to_string()));
@@ -127,11 +123,7 @@ pub async fn unregister(
 
 // ── Resolve ─────────────────────────────────────────────────────────
 
-pub async fn resolve(
-    core: Arc<MdnsCore>,
-    instance: &str,
-    json: bool,
-) -> anyhow::Result<()> {
+pub async fn resolve(core: Arc<MdnsCore>, instance: &str, json: bool) -> anyhow::Result<()> {
     let record = core.resolve(instance).await?;
     if json {
         let resp = PipelineResponse::clean(Response::Resolved(record));
@@ -194,4 +186,3 @@ pub async fn subscribe(
     let _ = core.shutdown().await;
     Ok(())
 }
-

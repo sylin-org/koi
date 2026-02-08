@@ -4,7 +4,9 @@
 
 .DESCRIPTION
     Reads version.json for major.minor, appends a timestamp build number,
-    patches Cargo.toml, builds, tests, and copies the binary to dist/.
+    patches Cargo.toml permanently, builds, tests, and copies the binary to dist/.
+
+    Cargo.toml keeps the real version after each build — no restore.
 
     Version format: major.minor.YYYYMMDDHHmm
     Example: 0.1.202502071430
@@ -41,59 +43,49 @@ Write-Host ""
 Write-Host "  Building Koi $version" -ForegroundColor Cyan
 Write-Host ""
 
-# Patch Cargo.toml version
+# Patch Cargo.toml version (permanent — no restore)
 $cargoToml = Join-Path $Root "Cargo.toml"
-$cargoContent = Get-Content $cargoToml -Raw
-# Only patch the version in [package] section (first occurrence)
-$patched = $cargoContent
-if ($cargoContent -match '(?m)^version\s*=\s*"[^"]*"') {
-    $patched = $cargoContent -replace '(?m)^version\s*=\s*"[^"]*"', "version = `"$version`""
-}
-Set-Content $cargoToml -Value $patched -NoNewline
+$content = Get-Content $cargoToml -Raw
+$content = $content -replace '(?m)^version\s*=\s*"[^"]*"', "version = `"$version`""
+Set-Content $cargoToml -Value $content -NoNewline
 
-try {
-    # Build
-    if ($DebugBuild) {
-        $targetDir = "debug"
-        cargo build
-    } else {
-        $targetDir = "release"
-        cargo build --release
-    }
+# Build
+if ($DebugBuild) {
+    $targetDir = "debug"
+    cargo build
+} else {
+    $targetDir = "release"
+    cargo build --release
+}
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "  BUILD FAILED" -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
+# Tests
+if (-not $SkipTests) {
+    Write-Host ""
+    Write-Host "  Running tests..." -ForegroundColor Cyan
+    Write-Host ""
+
+    if ($DebugBuild) { cargo test } else { cargo test --release }
     if ($LASTEXITCODE -ne 0) {
         Write-Host ""
-        Write-Host "  BUILD FAILED" -ForegroundColor Red
+        Write-Host "  TESTS FAILED" -ForegroundColor Red
         exit $LASTEXITCODE
     }
-
-    # Tests
-    if (-not $SkipTests) {
-        Write-Host ""
-        Write-Host "  Running tests..." -ForegroundColor Cyan
-        Write-Host ""
-
-        if ($DebugBuild) { cargo test } else { cargo test --release }
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host ""
-            Write-Host "  TESTS FAILED" -ForegroundColor Red
-            exit $LASTEXITCODE
-        }
-    }
-
-    # Copy to dist
-    $distDir = Join-Path $Root "dist"
-    if (-not (Test-Path $distDir)) { New-Item -ItemType Directory -Path $distDir | Out-Null }
-
-    $binary = Join-Path $Root "target" $targetDir "koi.exe"
-    Copy-Item $binary (Join-Path $distDir "koi.exe") -Force
-
-    Write-Host ""
-    Write-Host "  Build complete." -ForegroundColor Green
-    Write-Host "  Binary:  dist\koi.exe"
-    Write-Host "  Version: $version"
-    Write-Host ""
 }
-finally {
-    # Restore Cargo.toml to dev version so git stays clean
-    Set-Content $cargoToml -Value $cargoContent -NoNewline
-}
+
+# Copy to dist
+$distDir = Join-Path $Root "dist"
+if (-not (Test-Path $distDir)) { New-Item -ItemType Directory -Path $distDir | Out-Null }
+
+$binary = Join-Path $Root "target" $targetDir "koi.exe"
+Copy-Item $binary (Join-Path $distDir "koi.exe") -Force
+
+Write-Host ""
+Write-Host "  Build complete." -ForegroundColor Green
+Write-Host "  Binary:  dist\koi.exe"
+Write-Host "  Version: $version"
+Write-Host ""

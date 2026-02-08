@@ -240,9 +240,10 @@ async fn heartbeat_handler(
 ) -> impl IntoResponse {
     match core.heartbeat(&id) {
         Ok(lease_secs) => {
-            let resp = PipelineResponse::clean(Response::Renewed(
-                crate::protocol::RenewalResult { id, lease_secs },
-            ));
+            let resp = PipelineResponse::clean(Response::Renewed(crate::protocol::RenewalResult {
+                id,
+                lease_secs,
+            }));
             Json(resp).into_response()
         }
         Err(e) => error_json(e).into_response(),
@@ -251,15 +252,11 @@ async fn heartbeat_handler(
 
 // ── Admin ─────────────────────────────────────────────────────────────
 
-async fn admin_status_handler(
-    State(core): State<Arc<MdnsCore>>,
-) -> impl IntoResponse {
+async fn admin_status_handler(State(core): State<Arc<MdnsCore>>) -> impl IntoResponse {
     Json(core.admin_status())
 }
 
-async fn admin_registrations_handler(
-    State(core): State<Arc<MdnsCore>>,
-) -> impl IntoResponse {
+async fn admin_registrations_handler(State(core): State<Arc<MdnsCore>>) -> impl IntoResponse {
     let entries: Vec<_> = core
         .admin_registrations()
         .into_iter()

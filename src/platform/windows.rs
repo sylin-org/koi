@@ -155,10 +155,16 @@ pub fn install() -> anyhow::Result<()> {
         );
     } else {
         if !fw_mdns {
-            println!("  Warning: could not set firewall rule {} (UDP {})", FIREWALL_RULE_MDNS, MDNS_PORT);
+            println!(
+                "  Warning: could not set firewall rule {} (UDP {})",
+                FIREWALL_RULE_MDNS, MDNS_PORT
+            );
         }
         if !fw_http {
-            println!("  Warning: could not set firewall rule {} (TCP {})", FIREWALL_RULE_HTTP, http_port);
+            println!(
+                "  Warning: could not set firewall rule {} (TCP {})",
+                FIREWALL_RULE_HTTP, http_port
+            );
         }
     }
 
@@ -205,8 +211,7 @@ fn build_service_info(exe_path: &std::path::Path) -> ServiceInfo {
 pub fn uninstall() -> anyhow::Result<()> {
     println!("Uninstalling Koi mDNS service...");
 
-    let manager =
-        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
 
     match manager.open_service(
         SERVICE_NAME,
@@ -237,7 +242,9 @@ pub fn uninstall() -> anyhow::Result<()> {
     if rm_mdns || rm_http {
         println!(
             "  Firewall rules removed: {} (UDP {}) and {} (TCP {})",
-            FIREWALL_RULE_MDNS, MDNS_PORT, FIREWALL_RULE_HTTP,
+            FIREWALL_RULE_MDNS,
+            MDNS_PORT,
+            FIREWALL_RULE_HTTP,
             crate::config::DEFAULT_HTTP_PORT
         );
     }
@@ -284,8 +291,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         std::env::var("KOI_LOG").unwrap_or_else(|_| "info".to_string()),
     )
     .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let _log_guards = crate::init_logging(env_filter, Some(&log_path))
-        .unwrap_or_else(|_| vec![]); // Fall back to no logging rather than crashing
+    let _log_guards = crate::init_logging(env_filter, Some(&log_path)).unwrap_or_else(|_| vec![]); // Fall back to no logging rather than crashing
 
     let config = crate::config::Config::from_env();
 
@@ -293,19 +299,20 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
     let shutdown_tx = std::sync::Mutex::new(Some(shutdown_tx));
 
     // Register SCM handler — report StartPending while we spin up
-    let status_handle = service_control_handler::register(
-        SERVICE_NAME,
-        move |control_event| match control_event {
-            ServiceControl::Stop | ServiceControl::Shutdown => {
-                if let Some(tx) = shutdown_tx.lock().unwrap().take() {
-                    let _ = tx.send(());
+    let status_handle =
+        service_control_handler::register(
+            SERVICE_NAME,
+            move |control_event| match control_event {
+                ServiceControl::Stop | ServiceControl::Shutdown => {
+                    if let Some(tx) = shutdown_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    ServiceControlHandlerResult::NoError
                 }
-                ServiceControlHandlerResult::NoError
-            }
-            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-            _ => ServiceControlHandlerResult::NotImplemented,
-        },
-    )?;
+                ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+                _ => ServiceControlHandlerResult::NotImplemented,
+            },
+        )?;
 
     status_handle.set_service_status(ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
@@ -441,12 +448,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
 // ── Firewall helpers ────────────────────────────────────────────────
 
 /// Create a firewall rule. Returns `true` on success.
-fn create_firewall_rule(
-    name: &str,
-    protocol: &str,
-    port: u16,
-    exe_path: &std::path::Path,
-) -> bool {
+fn create_firewall_rule(name: &str, protocol: &str, port: u16, exe_path: &std::path::Path) -> bool {
     use std::process::Command;
 
     // Delete first for idempotency (ignore errors — rule may not exist)
@@ -485,7 +487,14 @@ pub(crate) fn check_firewall(http_port: u16) {
     use std::process::Command;
 
     let result = Command::new("netsh")
-        .args(["advfirewall", "firewall", "show", "rule", "name=all", "dir=in"])
+        .args([
+            "advfirewall",
+            "firewall",
+            "show",
+            "rule",
+            "name=all",
+            "dir=in",
+        ])
         .output();
 
     match result {
@@ -528,10 +537,7 @@ fn wait_for_stop(service: &windows_service::service::Service) -> anyhow::Result<
         match service.query_status() {
             Ok(status) if status.current_state == ServiceState::Stopped => return Ok(()),
             Ok(_) if std::time::Instant::now() >= deadline => {
-                anyhow::bail!(
-                    "Service did not stop within {:?}",
-                    SERVICE_STOP_TIMEOUT
-                );
+                anyhow::bail!("Service did not stop within {:?}", SERVICE_STOP_TIMEOUT);
             }
             Ok(_) => continue,
             Err(e) => anyhow::bail!("Could not query service status: {e}"),

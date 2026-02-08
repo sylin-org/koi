@@ -81,8 +81,9 @@ impl KoiClient {
             .post(&url)
             .send_json(json_val)
             .map_err(map_error)?;
-        let json: serde_json::Value =
-            resp.into_json().map_err(|e| ClientError::Decode(e.to_string()))?;
+        let json: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))?;
         extract(&json, "registered")
     }
 
@@ -94,13 +95,10 @@ impl KoiClient {
 
     pub fn heartbeat(&self, id: &str) -> Result<RenewalResult> {
         let url = format!("{}/v1/services/{id}/heartbeat", self.endpoint);
-        let resp = self
-            .agent
-            .put(&url)
-            .send_bytes(&[])
-            .map_err(map_error)?;
-        let json: serde_json::Value =
-            resp.into_json().map_err(|e| ClientError::Decode(e.to_string()))?;
+        let resp = self.agent.put(&url).send_bytes(&[]).map_err(map_error)?;
+        let json: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))?;
         extract(&json, "renewed")
     }
 
@@ -112,8 +110,9 @@ impl KoiClient {
             .query("name", instance)
             .call()
             .map_err(map_error)?;
-        let json: serde_json::Value =
-            resp.into_json().map_err(|e| ClientError::Decode(e.to_string()))?;
+        let json: serde_json::Value = resp
+            .into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))?;
         extract(&json, "resolved")
     }
 

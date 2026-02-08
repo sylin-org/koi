@@ -19,7 +19,7 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// so that the bounded internal channel in mdns-sd never blocks a
 /// tokio thread.
 enum MdnsOp {
-    Register(ServiceInfo),
+    Register(Box<ServiceInfo>),
     Unregister(String), // fullname
     Browse {
         service_type: String,
@@ -104,21 +104,14 @@ impl MdnsDaemon {
         let properties: Vec<(&str, &str)> =
             txt.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
 
-        let service_info = ServiceInfo::new(
-            service_type,
-            name,
-            &host,
-            "",
-            port,
-            &properties[..],
-        )
-        .map_err(|e| KoiError::Daemon(e.to_string()))?
-        .enable_addr_auto();
+        let service_info = ServiceInfo::new(service_type, name, &host, "", port, &properties[..])
+            .map_err(|e| KoiError::Daemon(e.to_string()))?
+            .enable_addr_auto();
 
         let fullname = service_info.get_fullname().to_string();
         tracing::debug!(fullname, "Queued mDNS register");
 
-        self.send(MdnsOp::Register(service_info))
+        self.send(MdnsOp::Register(Box::new(service_info)))
     }
 
     /// Unregister a service by name and type (fire-and-forget).
@@ -195,7 +188,7 @@ fn worker_loop(daemon: ServiceDaemon, rx: std::sync::mpsc::Receiver<MdnsOp>) {
         match op {
             MdnsOp::Register(info) => {
                 let fullname = info.get_fullname().to_string();
-                if let Err(e) = daemon.register(info) {
+                if let Err(e) = daemon.register(*info) {
                     tracing::warn!(fullname, error = %e, "mDNS register failed");
                 }
             }

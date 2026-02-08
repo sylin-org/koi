@@ -177,7 +177,8 @@ mod tests {
 
     #[test]
     fn register_payload_deserializes_from_json() {
-        let json = r#"{"name": "My App", "type": "_http._tcp", "port": 8080, "txt": {"version": "1.0"}}"#;
+        let json =
+            r#"{"name": "My App", "type": "_http._tcp", "port": 8080, "txt": {"version": "1.0"}}"#;
         let payload: RegisterPayload = serde_json::from_str(json).unwrap();
         assert_eq!(payload.name, "My App");
         assert_eq!(payload.service_type, "_http._tcp");

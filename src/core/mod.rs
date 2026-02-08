@@ -238,12 +238,10 @@ impl MdnsCore {
             InsertOutcome::Reconnected { old_payload, .. } => {
                 if old_payload.port != payload.port || old_payload.txt != payload.txt {
                     let _ = self.daemon.unregister(&old_payload.name, st.as_str());
-                    if let Err(e) = self.daemon.register(
-                        &payload.name,
-                        st.as_str(),
-                        payload.port,
-                        &payload.txt,
-                    ) {
+                    if let Err(e) =
+                        self.daemon
+                            .register(&payload.name, st.as_str(), payload.port, &payload.txt)
+                    {
                         tracing::warn!(
                             name = %payload.name,
                             error = %e,
@@ -257,9 +255,7 @@ impl MdnsCore {
         let id = outcome.id().to_string();
         let (mode, lease_secs) = match &policy {
             LeasePolicy::Session { .. } => (LeaseMode::Session, None),
-            LeasePolicy::Heartbeat { lease, .. } => {
-                (LeaseMode::Heartbeat, Some(lease.as_secs()))
-            }
+            LeasePolicy::Heartbeat { lease, .. } => (LeaseMode::Heartbeat, Some(lease.as_secs())),
             LeasePolicy::Permanent => (LeaseMode::Permanent, None),
         };
 
@@ -466,10 +462,7 @@ pub mod browse {
                                     let _ = self.event_tx.send(event.clone());
                                     event
                                 } else {
-                                    tracing::debug!(
-                                        fullname,
-                                        "Service found (pending resolution)"
-                                    );
+                                    tracing::debug!(fullname, "Service found (pending resolution)");
                                     continue;
                                 }
                             }

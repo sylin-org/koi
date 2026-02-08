@@ -49,7 +49,10 @@ pub enum InsertOutcome {
     New { id: String },
     /// Revived a DRAINING entry. Returns the old entry's ID and payload
     /// so the caller can update the daemon if the payload changed.
-    Reconnected { id: String, old_payload: RegisterPayload },
+    Reconnected {
+        id: String,
+        old_payload: RegisterPayload,
+    },
 }
 
 impl InsertOutcome {
@@ -270,11 +273,7 @@ impl Registry {
         Ok(lease_secs)
     }
 
-    pub(crate) fn drain_session_at(
-        &self,
-        session_id: &SessionId,
-        now: Instant,
-    ) -> Vec<String> {
+    pub(crate) fn drain_session_at(&self, session_id: &SessionId, now: Instant) -> Vec<String> {
         let mut regs = self.registrations.lock().unwrap();
         let mut drained = Vec::new();
         for (id, reg) in regs.iter_mut() {

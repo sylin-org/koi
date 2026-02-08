@@ -179,7 +179,9 @@ async fn handle_line<W: AsyncWriteExt + Unpin>(
         }
 
         Request::Register(payload) => {
-            let policy = LeasePolicy::Session { grace: SESSION_GRACE };
+            let policy = LeasePolicy::Session {
+                grace: SESSION_GRACE,
+            };
             let resp = match core.register_with_policy(payload, policy, Some(session_id.clone())) {
                 Ok(result) => PipelineResponse::clean(Response::Registered(result)),
                 Err(e) => PipelineResponse::from_error(&e),
@@ -219,10 +221,9 @@ async fn handle_line<W: AsyncWriteExt + Unpin>(
 
         Request::Heartbeat(id) => {
             let resp = match core.heartbeat(&id) {
-                Ok(lease_secs) => PipelineResponse::clean(Response::Renewed(RenewalResult {
-                    id,
-                    lease_secs,
-                })),
+                Ok(lease_secs) => {
+                    PipelineResponse::clean(Response::Renewed(RenewalResult { id, lease_secs }))
+                }
                 Err(e) => PipelineResponse::from_error(&e),
             };
             write_line(writer, &resp).await?;

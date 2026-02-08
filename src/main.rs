@@ -58,7 +58,9 @@ async fn main() -> anyhow::Result<()> {
                 }
                 #[cfg(not(windows))]
                 {
-                    anyhow::bail!("Service uninstall is only supported on Windows. Use systemctl on Linux.");
+                    anyhow::bail!(
+                        "Service uninstall is only supported on Windows. Use systemctl on Linux."
+                    );
                 }
             }
             Command::Admin { command: admin_cmd } => {
@@ -75,10 +77,8 @@ async fn main() -> anyhow::Result<()> {
     // ── Windows Service dispatch ────────────────────────────────────
     #[cfg(windows)]
     {
-        if !cli.daemon && !is_piped_stdin() {
-            if platform::windows::try_run_as_service() {
-                return Ok(());
-            }
+        if !cli.daemon && !is_piped_stdin() && platform::windows::try_run_as_service() {
+            return Ok(());
         }
     }
 
@@ -142,7 +142,10 @@ async fn main() -> anyhow::Result<()> {
         .await
         .is_err()
     {
-        tracing::warn!("Shutdown timed out after {:?} — forcing exit", SHUTDOWN_TIMEOUT);
+        tracing::warn!(
+            "Shutdown timed out after {:?} — forcing exit",
+            SHUTDOWN_TIMEOUT
+        );
     }
 
     config::delete_breadcrumb();
@@ -186,9 +189,7 @@ fn resolve_endpoint(cli: &Cli) -> anyhow::Result<String> {
     if let Some(endpoint) = config::read_breadcrumb() {
         return Ok(endpoint);
     }
-    anyhow::bail!(
-        "No daemon endpoint found. Is the daemon running? Use --endpoint to specify."
-    )
+    anyhow::bail!("No daemon endpoint found. Is the daemon running? Use --endpoint to specify.")
 }
 
 // ── Command dispatch ─────────────────────────────────────────────────
@@ -258,11 +259,7 @@ async fn dispatch_client(command: &Command, endpoint: &str, cli: &Cli) -> anyhow
     }
 }
 
-fn dispatch_admin(
-    admin_cmd: &AdminCommand,
-    endpoint: &str,
-    json: bool,
-) -> anyhow::Result<()> {
+fn dispatch_admin(admin_cmd: &AdminCommand, endpoint: &str, json: bool) -> anyhow::Result<()> {
     match admin_cmd {
         AdminCommand::Status => admin::status(endpoint, json),
         AdminCommand::List => admin::list(endpoint, json),

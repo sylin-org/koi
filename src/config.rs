@@ -220,9 +220,10 @@ impl Default for Config {
 pub fn breadcrumb_path() -> PathBuf {
     #[cfg(windows)]
     {
-        let local = std::env::var("LOCALAPPDATA")
-            .unwrap_or_else(|_| r"C:\ProgramData".to_string());
-        PathBuf::from(local).join(APP_DIR_NAME).join(BREADCRUMB_FILENAME)
+        let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+        PathBuf::from(local)
+            .join(APP_DIR_NAME)
+            .join(BREADCRUMB_FILENAME)
     }
     #[cfg(unix)]
     {

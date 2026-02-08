@@ -62,7 +62,9 @@ pub async fn start(core: Arc<MdnsCore>) -> anyhow::Result<()> {
             }
 
             Request::Register(payload) => {
-                let policy = LeasePolicy::Session { grace: SESSION_GRACE };
+                let policy = LeasePolicy::Session {
+                    grace: SESSION_GRACE,
+                };
                 let resp =
                     match core.register_with_policy(payload, policy, Some(session_id.clone())) {
                         Ok(result) => PipelineResponse::clean(Response::Registered(result)),
@@ -97,20 +99,16 @@ pub async fn start(core: Arc<MdnsCore>) -> anyhow::Result<()> {
                 };
 
                 while let Some(event) = handle.recv().await {
-                    write_response(
-                        &mut stdout,
-                        &PipelineResponse::from_subscribe_event(event),
-                    )
-                    .await?;
+                    write_response(&mut stdout, &PipelineResponse::from_subscribe_event(event))
+                        .await?;
                 }
             }
 
             Request::Heartbeat(id) => {
                 let resp = match core.heartbeat(&id) {
-                    Ok(lease_secs) => PipelineResponse::clean(Response::Renewed(RenewalResult {
-                        id,
-                        lease_secs,
-                    })),
+                    Ok(lease_secs) => {
+                        PipelineResponse::clean(Response::Renewed(RenewalResult { id, lease_secs }))
+                    }
                     Err(e) => PipelineResponse::from_error(&e),
                 };
                 write_response(&mut stdout, &resp).await?;
