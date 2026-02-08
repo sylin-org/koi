@@ -2,8 +2,8 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v[0-9]+.*"
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -27,8 +27,8 @@ jobs:
         id: meta
         shell: bash
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          VERSION="${TAG#v}"
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          TAG="v${VERSION}"
           DESCRIPTION=$(jq -r '.description // empty' version.json)
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -88,25 +88,13 @@ jobs:
         if: matrix.use_cross
         run: cargo install cross --locked
 
-      # Patch Cargo.toml with the release version (same as build.ps1).
-      # This changes the version field, so we can't use --locked for the build
-      # (Cargo.lock references the old version). The lockfile deps are still pinned.
-      - name: Set version
-        shell: bash
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
-          rm -f Cargo.toml.bak
-          echo "Cargo.toml version set to $VERSION"
-          head -5 Cargo.toml
-
       - name: Build
         shell: bash
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --release --locked --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release --locked --target ${{ matrix.target }}
           fi
 
       - name: Package
@@ -200,6 +188,12 @@ jobs:
           TAG="${{ needs.prepare.outputs.tag }}"
           # Clean slate: delete any existing release for this tag
           gh release delete "$TAG" --yes 2>/dev/null || true
+          # Delete existing tag if present (so we can re-tag at current commit)
+          git tag -d "$TAG" 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          # Create tag at current commit and release
+          git tag "$TAG"
+          git push origin "$TAG"
           gh release create "$TAG" \
             --draft \
             --title "$TAG" \

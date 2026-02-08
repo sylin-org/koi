@@ -12,14 +12,12 @@ cargo install koi-mdns
 
 **Or install as a system service** (recommended for always-on discovery):
 
-```powershell
+```bash
+# Linux / macOS
+sudo koi install
+
 # Windows (Administrator)
 koi install
-```
-
-```bash
-# Linux
-sudo systemctl enable --now koi
 ```
 
 ## Downloads
