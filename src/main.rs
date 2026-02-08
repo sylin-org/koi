@@ -22,10 +22,6 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 /// Brief pause after cancellation to let in-flight requests complete.
 const SHUTDOWN_DRAIN: Duration = Duration::from_millis(500);
 
-/// Standard mDNS multicast port (used for firewall rule checks).
-#[cfg(windows)]
-const MDNS_PORT: u16 = 5353;
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -314,7 +310,7 @@ async fn shutdown_signal() {
 
 // ── Daemon startup diagnostics ──────────────────────────────────────
 
-fn startup_diagnostics(config: &Config) {
+pub(crate) fn startup_diagnostics(config: &Config) {
     tracing::info!("Koi v{} starting", env!("CARGO_PKG_VERSION"));
     tracing::info!("Platform: {}", std::env::consts::OS);
 
@@ -338,7 +334,7 @@ fn startup_diagnostics(config: &Config) {
     }
 
     #[cfg(windows)]
-    check_firewall_windows(config.http_port);
+    platform::windows::check_firewall(config.http_port);
 }
 
 // ── Logging setup ───────────────────────────────────────────────────
@@ -346,7 +342,7 @@ fn startup_diagnostics(config: &Config) {
 /// Initialize tracing with stderr + optional file output.
 /// Returns guards that must be held for the lifetime of the program
 /// to ensure the non-blocking writers flush on shutdown.
-fn init_logging(
+pub(crate) fn init_logging(
     env_filter: tracing_subscriber::EnvFilter,
     log_file: Option<&std::path::Path>,
 ) -> anyhow::Result<Vec<tracing_appender::non_blocking::WorkerGuard>> {
@@ -382,41 +378,5 @@ fn init_logging(
             .init();
 
         Ok(vec![stderr_guard])
-    }
-}
-
-#[cfg(windows)]
-fn check_firewall_windows(http_port: u16) {
-    use std::process::Command as Cmd;
-
-    let udp_check = Cmd::new("netsh")
-        .args(["advfirewall", "firewall", "show", "rule", "name=all", "dir=in"])
-        .output();
-
-    match udp_check {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mdns_port_str = MDNS_PORT.to_string();
-            if stdout.contains(&mdns_port_str) && stdout.contains("UDP") {
-                tracing::info!("Firewall: UDP {MDNS_PORT} rule found");
-            } else {
-                tracing::warn!("Koi may not receive mDNS traffic — no UDP {MDNS_PORT} inbound rule found.");
-                tracing::warn!("Run as administrator or execute:");
-                tracing::warn!(
-                    "  netsh advfirewall firewall add rule name=\"Koi mDNS (UDP)\" dir=in action=allow protocol=UDP localport={MDNS_PORT}"
-                );
-            }
-            if stdout.contains(&http_port.to_string()) && stdout.contains("TCP") {
-                tracing::info!("Firewall: TCP {} rule found", http_port);
-            } else {
-                tracing::warn!(
-                    "  netsh advfirewall firewall add rule name=\"Koi HTTP (TCP)\" dir=in action=allow protocol=TCP localport={}",
-                    http_port
-                );
-            }
-        }
-        Err(e) => {
-            tracing::debug!(error = %e, "Could not check firewall rules");
-        }
     }
 }

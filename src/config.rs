@@ -169,6 +169,38 @@ impl Config {
             no_ipc: cli.no_ipc,
         }
     }
+
+    /// Build config from environment variables only.
+    /// Used by service mode where CLI args aren't available.
+    /// Reads: KOI_PORT, KOI_PIPE, KOI_NO_HTTP, KOI_NO_IPC.
+    pub fn from_env() -> Self {
+        let http_port = std::env::var("KOI_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_HTTP_PORT);
+
+        let pipe_path = std::env::var("KOI_PIPE")
+            .ok()
+            .map(PathBuf::from)
+            .unwrap_or_else(default_pipe_path);
+
+        let no_http = std::env::var("KOI_NO_HTTP")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let no_ipc = std::env::var("KOI_NO_IPC")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        Self {
+            http_port,
+            pipe_path,
+            no_http,
+            no_ipc,
+        }
+    }
 }
 
 impl Default for Config {
@@ -234,6 +266,45 @@ pub fn read_breadcrumb() -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+// ── Service log paths (Windows) ──────────────────────────────────────
+
+/// Well-known service log directory name under ProgramData.
+#[cfg(windows)]
+const SERVICE_LOG_DIR: &str = "koi\\logs";
+
+/// Well-known service log filename.
+#[cfg(windows)]
+const SERVICE_LOG_FILENAME: &str = "koi.log";
+
+/// Returns the well-known log file path for service mode.
+/// `%ProgramData%\koi\logs\koi.log`
+#[cfg(windows)]
+pub fn service_log_path() -> PathBuf {
+    let program_data =
+        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+    PathBuf::from(program_data)
+        .join(SERVICE_LOG_DIR)
+        .join(SERVICE_LOG_FILENAME)
+}
+
+/// Returns the well-known log directory for service mode.
+/// `%ProgramData%\koi\logs\`
+#[cfg(windows)]
+pub fn service_log_dir() -> PathBuf {
+    let program_data =
+        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+    PathBuf::from(program_data).join(SERVICE_LOG_DIR)
+}
+
+/// Returns the app data directory under ProgramData.
+/// `%ProgramData%\koi\`
+#[cfg(windows)]
+pub fn service_data_dir() -> PathBuf {
+    let program_data =
+        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+    PathBuf::from(program_data).join(APP_DIR_NAME)
 }
 
 // ── Default paths ────────────────────────────────────────────────────
