@@ -30,6 +30,9 @@ const SERVICE_STOP_POLL: Duration = Duration::from_millis(500);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 const SHUTDOWN_DRAIN: Duration = Duration::from_millis(500);
 
+/// Win32 ERROR_SERVICE_DOES_NOT_EXIST (1060).
+const ERROR_SERVICE_NOT_FOUND: i32 = 1060;
+
 // Generate the extern "system" function that the SCM expects.
 define_windows_service!(ffi_service_main, service_main);
 
@@ -41,6 +44,7 @@ define_windows_service!(ffi_service_main, service_main);
 /// already running). Configures recovery policy, description, firewall
 /// rules, and the service log directory.
 pub fn install() -> anyhow::Result<()> {
+    ensure_elevated("install")?;
     let exe_path = std::env::current_exe()?;
     println!("Installing Koi mDNS service...");
     println!("  Binary: {}", exe_path.display());
@@ -90,7 +94,9 @@ pub fn install() -> anyhow::Result<()> {
             println!("  Service updated");
             svc
         }
-        Err(_) => {
+        Err(windows_service::Error::Winapi(ref e))
+            if e.raw_os_error() == Some(ERROR_SERVICE_NOT_FOUND) =>
+        {
             // Fresh install
             let info = build_service_info(&exe_path);
             let svc = manager.create_service(
@@ -100,6 +106,7 @@ pub fn install() -> anyhow::Result<()> {
             println!("  Service installed (AutoStart)");
             svc
         }
+        Err(e) => return Err(e.into()),
     };
 
     // Description (best-effort, non-critical)
@@ -217,6 +224,7 @@ fn build_service_info(exe_path: &std::path::Path) -> ServiceInfo {
 /// breadcrumb, and cleans up empty log/data directories.
 /// Idempotent — safe to run even if the service was never installed.
 pub fn uninstall() -> anyhow::Result<()> {
+    ensure_elevated("uninstall")?;
     println!("Uninstalling Koi mDNS service...");
 
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
@@ -239,9 +247,12 @@ pub fn uninstall() -> anyhow::Result<()> {
             service.delete()?;
             println!("  Service removed");
         }
-        Err(_) => {
+        Err(windows_service::Error::Winapi(ref e))
+            if e.raw_os_error() == Some(ERROR_SERVICE_NOT_FOUND) =>
+        {
             println!("  Service not found, cleaning up remaining files...");
         }
+        Err(e) => return Err(e.into()),
     }
 
     // Firewall rules (best-effort)
@@ -530,6 +541,31 @@ pub(crate) fn check_firewall(http_port: u16) {
         Err(e) => {
             tracing::debug!(error = %e, "Could not check firewall rules");
         }
+    }
+}
+
+// ── Elevation check ─────────────────────────────────────────────────
+
+/// Bail early with a clear message when not running as Administrator.
+fn ensure_elevated(verb: &str) -> anyhow::Result<()> {
+    use std::process::Command;
+
+    // `net session` succeeds only in an elevated context.
+    let ok = Command::new("net")
+        .arg("session")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if ok {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "koi {verb} requires Administrator privileges \u{2014} \
+             right-click your terminal and choose \"Run as administrator\""
+        );
     }
 }
 
