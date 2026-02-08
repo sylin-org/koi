@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "koi-mdns"
-version = "0.1.0"
+version = "0.1.202602080704"
 dependencies = [
  "anyhow",
  "async-stream",
