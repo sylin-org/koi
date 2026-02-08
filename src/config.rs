@@ -8,6 +8,7 @@ pub const DEFAULT_HTTP_PORT: u16 = 5641;
 const BREADCRUMB_FILENAME: &str = "koi.endpoint";
 
 /// Application directory name used for breadcrumb storage.
+#[cfg(windows)]
 const APP_DIR_NAME: &str = "koi";
 
 /// Windows Named Pipe name for IPC.
@@ -173,6 +174,7 @@ impl Config {
     /// Build config from environment variables only.
     /// Used by service mode where CLI args aren't available.
     /// Reads: KOI_PORT, KOI_PIPE, KOI_NO_HTTP, KOI_NO_IPC.
+    #[cfg(windows)]
     pub fn from_env() -> Self {
         let http_port = std::env::var("KOI_PORT")
             .ok()
