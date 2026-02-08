@@ -222,11 +222,11 @@ koi.exe uninstall
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/v1/browse?type=_http._tcp` | SSE stream of discovered services |
+| `GET` | `/v1/browse?type=_http._tcp` | SSE stream of discovered services (closes after 5s idle; `idle_for=0` for infinite) |
 | `POST` | `/v1/services` | Register a service |
 | `DELETE` | `/v1/services/{id}` | Unregister a service |
 | `GET` | `/v1/resolve?name={instance}` | Resolve a specific service instance |
-| `GET` | `/v1/events?type=_http._tcp` | SSE stream of lifecycle events |
+| `GET` | `/v1/events?type=_http._tcp` | SSE stream of lifecycle events (closes after 5s idle; `idle_for=0` for infinite) |
 | `GET` | `/healthz` | Health check (`{"ok": true}`) |
 
 ## Use cases

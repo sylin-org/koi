@@ -269,7 +269,17 @@ Returns a Server-Sent Events stream. Each event's `data` field contains a JSON o
 data: {"found":{"name":"My NAS","type":"_http._tcp","host":"nas.local.","ip":"192.168.1.50","port":8080,"txt":{}}}
 ```
 
-The stream stays open until the client disconnects.
+The stream closes after 5 seconds of no new events (the network has gone quiet). To stream indefinitely, set `idle_for=0`:
+
+```
+GET /v1/browse?type=_http._tcp&idle_for=0
+```
+
+To wait longer for slow networks:
+
+```
+GET /v1/browse?type=_http._tcp&idle_for=15
+```
 
 #### Register a service
 
@@ -353,6 +363,8 @@ data: {"event":"found","service":{"name":"My NAS","type":"_http._tcp","host":"na
 data: {"event":"resolved","service":{...}}
 data: {"event":"removed","service":{"name":"My NAS","type":"_http._tcp","txt":{}}}
 ```
+
+The same `idle_for` parameter applies — default 5s, `idle_for=0` for infinite streaming.
 
 #### Error responses
 

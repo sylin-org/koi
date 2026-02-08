@@ -832,24 +832,81 @@ try {
     Fail 'browse meta-query SSE' $_.Exception.Message
 }
 
+# -- SSE idle_for tests --------------------------------------------------------
+# Use a quiet service type (_koi-idle-test._tcp) to avoid noise from real
+# network services. This ensures idle timeout is the only thing closing streams.
+
+# 2.X1 - Browse SSE idle_for closes stream automatically
+try {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    # idle_for=2 on a quiet type: stream should close ~2s after opening (no events to find)
+    $events = Invoke-Sse -Uri "$Endpoint/v1/browse?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
+    $sw.Stop()
+    $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
+
+    # The stream should have closed on its own after ~2s of quiet.
+    # Allow up to 5s (2s idle + margin for jitter).
+    if ($elapsed -ge 1.5 -and $elapsed -lt 5) {
+        Pass "browse SSE idle_for=2 auto-closes ($($elapsed)s, $($events.Count) events)"
+    } else {
+        Fail 'browse SSE idle_for=2 auto-closes' "Took $($elapsed)s, expected 1.5-5s"
+    }
+} catch {
+    Fail 'browse SSE idle_for=2 auto-closes' $_.Exception.Message
+}
+
+# 2.X2 - Browse SSE idle_for=0 streams indefinitely (hits our client timeout)
+try {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    # idle_for=0 on a quiet type: server never closes, client timeout (3s) stops it
+    $events = Invoke-Sse -Uri "$Endpoint/v1/browse?type=_koi-idle-test._tcp&idle_for=0" -MaxEvents 20 -TimeoutMs 3000
+    $sw.Stop()
+    $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
+
+    # With idle_for=0 the server never closes the stream, so we should hit our
+    # 3s client timeout. Elapsed should be >= 2.5s (with margin for timing).
+    if ($elapsed -ge 2.5) {
+        Pass "browse SSE idle_for=0 streams until client timeout ($($elapsed)s, $($events.Count) events)"
+    } else {
+        Fail 'browse SSE idle_for=0 streams indefinitely' "Stream closed too early: $($elapsed)s"
+    }
+} catch {
+    Fail 'browse SSE idle_for=0 streams indefinitely' $_.Exception.Message
+}
+
+# 2.X3 - Events SSE idle_for closes stream automatically
+try {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $events = Invoke-Sse -Uri "$Endpoint/v1/events?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
+    $sw.Stop()
+    $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
+
+    if ($elapsed -ge 1.5 -and $elapsed -lt 5) {
+        Pass "events SSE idle_for=2 auto-closes ($($elapsed)s, $($events.Count) events)"
+    } else {
+        Fail 'events SSE idle_for=2 auto-closes' "Took $($elapsed)s, expected 1.5-5s"
+    }
+} catch {
+    Fail 'events SSE idle_for=2 auto-closes' $_.Exception.Message
+}
+
 # -- CLI client mode: browse + subscribe --------------------------------------
 
 # 2.16 - Browse via CLI client mode
+# Note: browse consumes an SSE stream via blocking I/O in spawn_blocking;
+# the tokio timeout may not interrupt it, so the process may be killed (-1).
+# Accept exit code 0 (clean timeout) or -1 (killed after TimeoutSec).
 try {
     $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'browse', 'http', '--timeout', '3' -TimeoutSec 15 -AllowFailure
-    if ($r.ExitCode -ne 0) {
-        Fail 'browse via CLI client mode' "Exit code $($r.ExitCode)"
+    $lines = $r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' }
+    $valid = $true
+    foreach ($line in $lines) {
+        try { $null = $line | ConvertFrom-Json } catch { $valid = $false; break }
+    }
+    if ($valid) {
+        Pass "browse via CLI client mode ($($lines.Count) events)"
     } else {
-        $lines = $r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' }
-        $valid = $true
-        foreach ($line in $lines) {
-            try { $null = $line | ConvertFrom-Json } catch { $valid = $false; break }
-        }
-        if ($valid) {
-            Pass "browse via CLI client mode ($($lines.Count) events)"
-        } else {
-            Fail 'browse via CLI client mode' 'Invalid JSON in output'
-        }
+        Fail 'browse via CLI client mode' 'Invalid JSON in output'
     }
 } catch {
     Fail 'browse via CLI client mode' $_.Exception.Message

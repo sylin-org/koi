@@ -22,10 +22,15 @@ const DEFAULT_HEARTBEAT_LEASE: Duration = Duration::from_secs(90);
 /// Default grace period after a heartbeat lease expires before removal.
 const DEFAULT_HEARTBEAT_GRACE: Duration = Duration::from_secs(30);
 
+/// Default idle timeout for SSE streams (seconds).
+/// Stream closes after this duration with no new events.
+const DEFAULT_SSE_IDLE: Duration = Duration::from_secs(5);
+
 #[derive(Debug, serde::Deserialize)]
 pub struct BrowseParams {
     #[serde(rename = "type")]
     pub service_type: String,
+    pub idle_for: Option<u64>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -37,6 +42,19 @@ pub struct ResolveParams {
 pub struct EventsParams {
     #[serde(rename = "type")]
     pub service_type: String,
+    pub idle_for: Option<u64>,
+}
+
+/// Parse the `idle_for` query parameter into an optional duration.
+/// - `None` (absent) → `Some(DEFAULT_SSE_IDLE)` (5s default)
+/// - `Some(0)` → `None` (infinite, no timeout)
+/// - `Some(n)` → `Some(Duration::from_secs(n))`
+fn idle_duration(idle_for: Option<u64>) -> Option<Duration> {
+    match idle_for {
+        None => Some(DEFAULT_SSE_IDLE),
+        Some(0) => None,
+        Some(n) => Some(Duration::from_secs(n)),
+    }
 }
 
 /// Start the HTTP adapter on the given port with graceful shutdown support.
@@ -95,10 +113,18 @@ async fn browse_handler(
         Err(e) => return Sse::new(error_event_stream(e)).into_response(),
     };
 
+    let idle = idle_duration(params.idle_for);
     let handle = Arc::new(handle);
     let stream = async_stream::stream! {
         loop {
-            match handle.recv().await {
+            let next = match idle {
+                Some(dur) => match tokio::time::timeout(dur, handle.recv()).await {
+                    Ok(result) => result,
+                    Err(_) => break, // idle timeout — close stream
+                },
+                None => handle.recv().await,
+            };
+            match next {
                 Some(event) => {
                     let resp = PipelineResponse::from_browse_event(event);
                     let data = serde_json::to_string(&resp).unwrap();
@@ -161,10 +187,18 @@ async fn events_handler(
         Err(e) => return Sse::new(error_event_stream(e)).into_response(),
     };
 
+    let idle = idle_duration(params.idle_for);
     let handle = Arc::new(handle);
     let stream = async_stream::stream! {
         loop {
-            match handle.recv().await {
+            let next = match idle {
+                Some(dur) => match tokio::time::timeout(dur, handle.recv()).await {
+                    Ok(result) => result,
+                    Err(_) => break, // idle timeout — close stream
+                },
+                None => handle.recv().await,
+            };
+            match next {
                 Some(event) => {
                     let resp = PipelineResponse::from_subscribe_event(event);
                     let data = serde_json::to_string(&resp).unwrap();
