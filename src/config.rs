@@ -97,6 +97,9 @@ pub enum Command {
         service_type: String,
         /// Port number
         port: u16,
+        /// Pin the A record to a specific IP (default: advertise all)
+        #[arg(long)]
+        ip: Option<String>,
         /// TXT record entries as KEY=VALUE pairs
         #[arg(trailing_var_arg = true)]
         txt: Vec<String>,

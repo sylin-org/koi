@@ -61,11 +61,13 @@ pub async fn browse(
 
 // ── Register ────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub async fn register(
     core: Arc<MdnsCore>,
     name: &str,
     service_type: &str,
     port: u16,
+    ip: Option<&str>,
     txt: &[String],
     json: bool,
     timeout: Option<u64>,
@@ -74,6 +76,7 @@ pub async fn register(
         name: name.to_string(),
         service_type: service_type.to_string(),
         port,
+        ip: ip.map(String::from),
         lease_secs: None,
         txt: super::parse_txt(txt),
     };

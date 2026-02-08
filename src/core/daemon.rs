@@ -92,6 +92,7 @@ impl MdnsDaemon {
         name: &str,
         service_type: &str,
         port: u16,
+        ip: Option<&str>,
         txt: &HashMap<String, String>,
     ) -> Result<()> {
         let hostname = hostname::get()
@@ -104,12 +105,20 @@ impl MdnsDaemon {
         let properties: Vec<(&str, &str)> =
             txt.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
 
-        let service_info = ServiceInfo::new(service_type, name, &host, "", port, &properties[..])
-            .map_err(|e| KoiError::Daemon(e.to_string()))?
-            .enable_addr_auto();
+        let ip_str = ip.unwrap_or("");
+        let service_info =
+            ServiceInfo::new(service_type, name, &host, ip_str, port, &properties[..])
+                .map_err(|e| KoiError::Daemon(e.to_string()))?;
+
+        // Only auto-detect addresses when no explicit IP was provided.
+        let service_info = if ip.is_none() {
+            service_info.enable_addr_auto()
+        } else {
+            service_info
+        };
 
         let fullname = service_info.get_fullname().to_string();
-        tracing::debug!(fullname, "Queued mDNS register");
+        tracing::debug!(fullname, ?ip, "Queued mDNS register");
 
         self.send(MdnsOp::Register(Box::new(service_info)))
     }

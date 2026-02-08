@@ -30,6 +30,11 @@ pub struct RegisterPayload {
     #[serde(rename = "type")]
     pub service_type: String,
     pub port: u16,
+    /// Pin the A/AAAA record to a specific IP address.
+    /// When absent, all machine IPs are advertised (auto-detect).
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lease_secs: Option<u64>,

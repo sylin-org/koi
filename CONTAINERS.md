@@ -463,6 +463,30 @@ If you're using `--network=host` (where there's no port mapping), use the contai
 
 ---
 
+## IP pinning
+
+By default, Koi advertises **all** of the host's IP addresses in the mDNS A record. On machines with Docker bridges, WSL virtual adapters, or VPN interfaces, this can include addresses that other devices on the LAN can't reach (e.g. `172.17.0.1`, `127.0.0.1`).
+
+Use the `ip` field to pin the registration to a specific LAN address:
+
+```bash
+curl -s -X POST http://$KOI_HOST:5641/v1/services \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "My Service", "type": "_http._tcp", "port": 8080, "ip": "192.168.1.42"}'
+```
+
+Or from the CLI:
+
+```bash
+koi register "My Service" http 8080 --ip 192.168.1.42
+```
+
+When `ip` is present, only that address is advertised. When `ip` is absent, all machine IPs are included (the original auto-detect behavior).
+
+This is especially useful for container hosts where the host machine has multiple network interfaces and you want mDNS clients to connect to the correct one.
+
+---
+
 ## Kubernetes
 
 Koi runs on the node, not in a pod. Deploy it as a DaemonSet so every node has an instance:

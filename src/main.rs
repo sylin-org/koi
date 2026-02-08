@@ -237,6 +237,7 @@ async fn dispatch_standalone(command: &Command, cli: &Cli) -> anyhow::Result<()>
             name,
             service_type,
             port,
+            ip,
             txt,
         } => {
             commands::standalone::register(
@@ -244,6 +245,7 @@ async fn dispatch_standalone(command: &Command, cli: &Cli) -> anyhow::Result<()>
                 name,
                 service_type,
                 *port,
+                ip.as_deref(),
                 txt,
                 cli.json,
                 cli.timeout,
@@ -270,6 +272,7 @@ async fn dispatch_client(command: &Command, endpoint: &str, cli: &Cli) -> anyhow
             name,
             service_type,
             port,
+            ip,
             txt,
         } => {
             commands::client::register(
@@ -277,6 +280,7 @@ async fn dispatch_client(command: &Command, endpoint: &str, cli: &Cli) -> anyhow
                 name,
                 service_type,
                 *port,
+                ip.as_deref(),
                 txt,
                 cli.json,
                 cli.timeout,

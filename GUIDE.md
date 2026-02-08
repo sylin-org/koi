@@ -111,6 +111,12 @@ To add TXT record metadata, append key=value pairs:
 koi register "My App" http 8080 version=2.1 path=/api
 ```
 
+By default, Koi advertises all of the machine's IP addresses. To pin the mDNS A record to a specific IP (useful on multi-homed hosts or when Docker/WSL bridges add unwanted addresses):
+
+```
+koi register "My App" http 8080 --ip 192.168.1.42
+```
+
 To register for a fixed duration (useful in scripts):
 
 ```
@@ -198,7 +204,7 @@ The request format uses verb-keyed JSON:
 | Operation   | Request JSON                                                                                    |
 |-------------|-------------------------------------------------------------------------------------------------|
 | Browse      | `{"browse": "_http._tcp"}`                                                                      |
-| Register    | `{"register": {"name": "My App", "type": "_http._tcp", "port": 8080, "txt": {"key": "val"}}}` |
+| Register    | `{"register": {"name": "My App", "type": "_http._tcp", "port": 8080, "ip": "1.2.3.4", "txt": {"key": "val"}}}` |
 | Unregister  | `{"unregister": "a1b2c3d4"}`                                                                    |
 | Resolve     | `{"resolve": "My NAS._http._tcp.local."}`                                                       |
 | Subscribe   | `{"subscribe": "_http._tcp"}`                                                                    |

@@ -405,6 +405,7 @@ mod tests {
             name: name.to_string(),
             service_type: stype.to_string(),
             port: 8080,
+            ip: None,
             lease_secs: None,
             txt: HashMap::new(),
         }

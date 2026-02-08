@@ -159,11 +159,14 @@ Discover services of a given type. Browse is a stream — results arrive as they
 
 Advertise a service on the local network. Returns an opaque `id` for lifecycle management.
 
+The optional `ip` field pins the mDNS A record to a specific address. When omitted, all machine IPs are advertised (auto-detect).
+
 ```json
 → { "register": {
      "name": "My App",
      "type": "_http._tcp",
      "port": 8080,
+     "ip": "192.168.1.42",
      "txt": { "version": "1.0", "env": "prod" }
    }}
 

@@ -16,6 +16,9 @@ koi browse http
 # Register a service
 koi register "My App" http 8080 version=1.0
 
+# Register pinned to a specific IP (skip auto-detect)
+koi register "My App" http 8080 --ip 192.168.1.42
+
 # Resolve a specific instance
 koi resolve "My Server._http._tcp.local."
 ```
@@ -25,7 +28,7 @@ Or over HTTP — from any language, any container, any script:
 ```bash
 curl http://localhost:5641/v1/browse?type=_http._tcp
 curl -X POST http://localhost:5641/v1/services \
-  -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
+  -d '{"name": "My App", "type": "_http._tcp", "port": 8080, "ip": "192.168.1.42"}'
 ```
 
 ## Quick start

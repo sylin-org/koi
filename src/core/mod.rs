@@ -227,10 +227,13 @@ impl MdnsCore {
 
         match &outcome {
             InsertOutcome::New { id } => {
-                if let Err(e) =
-                    self.daemon
-                        .register(&payload.name, st.as_str(), payload.port, &payload.txt)
-                {
+                if let Err(e) = self.daemon.register(
+                    &payload.name,
+                    st.as_str(),
+                    payload.port,
+                    payload.ip.as_deref(),
+                    &payload.txt,
+                ) {
                     let _ = self.registry.remove(id);
                     return Err(e);
                 }
@@ -238,10 +241,13 @@ impl MdnsCore {
             InsertOutcome::Reconnected { old_payload, .. } => {
                 if old_payload.port != payload.port || old_payload.txt != payload.txt {
                     let _ = self.daemon.unregister(&old_payload.name, st.as_str());
-                    if let Err(e) =
-                        self.daemon
-                            .register(&payload.name, st.as_str(), payload.port, &payload.txt)
-                    {
+                    if let Err(e) = self.daemon.register(
+                        &payload.name,
+                        st.as_str(),
+                        payload.port,
+                        payload.ip.as_deref(),
+                        &payload.txt,
+                    ) {
                         tracing::warn!(
                             name = %payload.name,
                             error = %e,
