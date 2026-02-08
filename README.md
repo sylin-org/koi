@@ -176,6 +176,8 @@ Koi is an orchestration wrapper — the heavy lifting happens in [mdns-sd](https
 
 Dual licensed under Apache-2.0 and MIT. See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).
 
+Free to use, embed, bundle, and redistribute, commercially or otherwise. Just link back to this project somewhere reasonable (a README, an about page, a comment in your manifest). That's it.
+
 ## Contributing
 
 Contributions welcome. Please open an issue to discuss before submitting large changes.
