@@ -1,4 +1,4 @@
-# 🐟 Koi
+# Koi
 
 **Local service discovery for everyone.**
 
@@ -7,22 +7,47 @@ Koi is a cross-platform mDNS/DNS-SD daemon that exposes local network service di
 Think of it as **Avahi for everywhere** — without the D-Bus dependency, without the Linux-only limitation, without the configuration files.
 
 ```bash
-# Browse for services
-curl http://localhost:5641/v1/browse?type=_http._tcp
+# What's on my network?
+koi browse
+
+# Find all HTTP servers
+koi browse http
 
 # Register a service
-curl -X POST http://localhost:5641/v1/services \
-  -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
+koi register "My App" http 8080 version=1.0
 
-# Stream events in real time
-curl http://localhost:5641/v1/events?type=_http._tcp
+# Resolve a specific instance
+koi resolve "My Server._http._tcp.local."
 ```
 
-Or from the command line:
+Or over HTTP — from any language, any container, any script:
 
 ```bash
-echo '{"browse": "_http._tcp"}' | koi
-echo '{"register": {"name": "My App", "type": "_http._tcp", "port": 8080}}' | koi
+curl http://localhost:5641/v1/browse?type=_http._tcp
+curl -X POST http://localhost:5641/v1/services \
+  -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
+```
+
+## Quick start
+
+Install Koi as a system service (recommended):
+
+```powershell
+# Windows (run as Administrator)
+koi install
+```
+
+```bash
+# Linux
+sudo systemctl enable --now koi
+```
+
+That's it. Koi is now running on port 5641, ready for HTTP, IPC, and CLI clients.
+
+For temporary or interactive use, run in the foreground instead:
+
+```bash
+koi --daemon
 ```
 
 ## Why Koi exists
@@ -36,29 +61,24 @@ mDNS is the invisible backbone of local networking. Printers, smart speakers, Ai
 
 Koi fills the gap: a single daemon that speaks mDNS on the network side and JSON over HTTP/IPC/stdio on the application side. Any language with an HTTP client or the ability to spawn a process can discover and advertise services on the local network.
 
-**For containers, this changes everything.** When Koi runs as a service on the host, any container can reach it via the Docker host gateway (`http://172.17.0.1:5641`) or a mounted socket (`/var/run/koi.sock`). No `--network=host`. No macvlan. No mDNS reflectors. The container makes a plain HTTP call; Koi speaks multicast on the physical network. Containers gain full mDNS capabilities — browse, register, resolve, subscribe — without ever touching a multicast socket.
-
 ## Containers get mDNS
 
-When Koi runs as a service on the host, every container on that machine gains mDNS capabilities through Koi's HTTP API — no network mode changes, no multicast forwarding, no reflectors.
+When Koi runs on the host, every container gains full mDNS capabilities through plain HTTP — no `--network=host`, no macvlan, no mDNS reflectors.
 
 ```bash
 # From inside any Docker container:
 curl http://host.docker.internal:5641/v1/browse?type=_http._tcp
-curl http://172.17.0.1:5641/v1/browse?type=_ipp._tcp
 ```
 
-The container doesn't need mDNS libraries, multicast socket access, or `--network=host`. It makes a plain HTTP request to the host, and Koi translates that into multicast mDNS on the physical network. Browse, register, resolve — all of it works from inside the most minimal scratch container.
-
-This is the Docker-mDNS problem solved at the infrastructure level, not patched per-container.
+The container makes a plain HTTP request; Koi speaks multicast on the physical network. Browse, register, resolve — all of it works from inside the most minimal scratch container. See [CONTAINERS.md](CONTAINERS.md) for Docker Compose examples, startup patterns, and Kubernetes DaemonSet configuration.
 
 ## Features
 
-- **Browse** — discover services by type, with real-time streaming as new services appear
+- **Browse** — discover services by type, with real-time streaming
 - **Register** — advertise services on the local network via mDNS
 - **Unregister** — remove service advertisements with goodbye packets
-- **Resolve** — get full details (IP, port, TXT records) for a specific service instance
-- **Subscribe** — stream service lifecycle events (found, resolved, removed)
+- **Resolve** — get full details (IP, port, TXT records) for a specific instance
+- **Subscribe** — stream lifecycle events (found, resolved, removed)
 
 ## Platform support
 
@@ -68,67 +88,50 @@ This is the Docker-mDNS problem solved at the infrastructure level, not patched 
 | Linux | Pure Rust (no Avahi needed) | systemd unit |
 | macOS | Pure Rust (no Bonjour needed) | launchd (planned) |
 
-Zero OS dependencies. No Bonjour, no Avahi, no system mDNS service required. Koi manages its own multicast sockets directly via the [mdns-sd](https://github.com/keepsimple1/mdns-sd) crate.
+Zero OS dependencies. No Bonjour, no Avahi, no system mDNS service required.
 
-## Interfaces
+## HTTP API
 
-Koi exposes the same JSON protocol over three transports:
+Koi's HTTP API uses SSE (Server-Sent Events) for streaming and JSON for everything else.
 
-| Interface | Transport | Best for |
+| Method | Path | Description |
 |---|---|---|
-| **HTTP + SSE** | TCP (default: port 5641) | Containers, remote access, polyglot environments |
-| **Named Pipe / UDS** | Local IPC | Same-host services, zero network overhead |
-| **CLI** | stdin/stdout | Scripting, testing, shell pipelines |
+| `GET` | `/v1/browse?type=_http._tcp` | SSE stream of discovered services |
+| `POST` | `/v1/services` | Register a service |
+| `DELETE` | `/v1/services/{id}` | Unregister a service |
+| `GET` | `/v1/resolve?name={instance}` | Resolve a specific service instance |
+| `GET` | `/v1/events?type=_http._tcp` | SSE stream of lifecycle events |
+| `GET` | `/healthz` | Health check |
 
-All three speak identical JSON. A request looks the same whether it arrives over HTTP, gets read from a pipe, or comes in on stdin.
+SSE streams close after 5 seconds of quiet by default. Set `idle_for=0` for infinite streaming, or `idle_for=15` to wait longer on slow networks.
 
-## JSON protocol
+## CLI
 
-The protocol is verb-oriented. The top-level key is the intent — no envelopes, no indirection.
-
-**Browse** — discover services of a given type:
-```json
-→ { "browse": "_http._tcp" }
-← { "found": { "name": "My Web Server", "type": "_http._tcp", "host": "server.local", "ip": "192.168.1.42", "port": 8080, "txt": { "path": "/api" }}}
-← { "found": { "name": "Office Printer", "type": "_http._tcp", "host": "printer.local", "ip": "192.168.1.50", "port": 80, "txt": {} }}
+```bash
+koi browse http                              # discover HTTP services
+koi browse                                   # discover all service types
+koi register "My App" http 8080 version=1.0  # advertise a service
+koi resolve "My Server._http._tcp.local."    # resolve an instance
+koi subscribe http                           # stream lifecycle events
+koi browse http --json                       # output as NDJSON
 ```
 
-**Register** — advertise a service:
-```json
-→ { "register": { "name": "My App", "type": "_http._tcp", "port": 8080, "txt": { "version": "1.0" }}}
-← { "registered": { "id": "a1b2c3", "name": "My App", "type": "_http._tcp", "port": 8080 }}
+When stdin is piped, Koi reads NDJSON commands directly:
+
+```bash
+echo '{"browse": "_http._tcp"}' | koi
 ```
 
-**Resolve** — look up a specific service instance:
-```json
-→ { "resolve": "My Web Server._http._tcp.local." }
-← { "resolved": { "name": "My Web Server", "type": "_http._tcp", "host": "server.local", "ip": "192.168.1.42", "port": 8080, "txt": { "path": "/api" }}}
-```
+## Configuration
 
-**Unregister** — remove a service:
-```json
-→ { "unregister": "a1b2c3" }
-← { "unregistered": "a1b2c3" }
-```
-
-**Subscribe** — stream lifecycle events:
-```json
-→ { "subscribe": "_http._tcp" }
-← { "event": "found",    "service": { "name": "...", "type": "...", ... }}
-← { "event": "resolved", "service": { "name": "...", "type": "...", ... }}
-← { "event": "removed",  "service": { "name": "...", "type": "..." }}
-```
-
-Responses may include optional pipeline properties when the situation calls for it:
-
-| Property | Meaning |
-|---|---|
-| `"status": "ongoing"` | More data is expected for this result |
-| `"status": "finished"` | This result is complete |
-| `"warning": "..."` | Succeeded, but something is noteworthy |
-| `"error": "..."` | Operation failed |
-
-Their absence is the happy path — a clean response with no extra keys means everything went perfectly.
+| Setting | Flag | Env var | Default |
+|---|---|---|---|
+| HTTP port | `--port` | `KOI_PORT` | `5641` |
+| Pipe/socket path | `--pipe` | `KOI_PIPE` | `\\.\pipe\koi` / `/var/run/koi.sock` |
+| Log level | `--log-level` | `KOI_LOG` | `info` |
+| Disable HTTP | `--no-http` | `KOI_NO_HTTP` | — |
+| Disable IPC | `--no-ipc` | `KOI_NO_IPC` | — |
+| JSON output | `--json` | — | off |
 
 ## Installation
 
@@ -144,7 +147,6 @@ Requires [Rust](https://rustup.rs/) 1.75 or later.
 git clone https://github.com/sylin-org/koi.git
 cd koi
 cargo build --release
-# Binary is at target/release/koi (or koi.exe on Windows)
 ```
 
 Or install directly from crates.io:
@@ -153,101 +155,19 @@ Or install directly from crates.io:
 cargo install koi-mdns
 ```
 
-## Usage
+## Documentation
 
-### Daemon mode
-
-Start Koi as a foreground daemon with HTTP and IPC adapters:
-
-```bash
-koi --daemon
-```
-
-This starts the HTTP API on port 5641 and the IPC adapter (Named Pipe on Windows, Unix socket on Linux/macOS).
-
-### CLI mode
-
-Koi provides human-friendly verb subcommands for all operations:
-
-```bash
-# Browse for HTTP services on the local network
-koi browse http
-
-# Register a service (keeps advertising until Ctrl+C)
-koi register "My App" http 8080 version=1.0
-
-# Resolve a specific service instance
-koi resolve "My Server._http._tcp.local."
-
-# Subscribe to lifecycle events
-koi subscribe http
-
-# Output JSON instead of human-readable text
-koi browse http --json
-```
-
-When stdin is piped, Koi reads NDJSON commands and writes NDJSON responses:
-
-```bash
-echo '{"browse": "_http._tcp"}' | koi
-echo '{"register": {"name": "My App", "type": "_http._tcp", "port": 8080}}' | koi
-```
-
-### Windows Service
-
-```powershell
-# Install and start (run as Administrator)
-koi.exe install
-
-# Stop/restart via Service Control Manager
-sc stop koi
-sc start koi
-
-# Uninstall
-koi.exe uninstall
-```
-
-### Configuration
-
-| Setting | Flag | Env var | Default |
-|---|---|---|---|
-| HTTP port | `--port` | `KOI_PORT` | `5641` |
-| Pipe/socket path | `--pipe` | `KOI_PIPE` | `\\.\pipe\koi` (Windows) / `/var/run/koi.sock` (Linux) |
-| Log level | `--log-level` | `KOI_LOG` | `info` |
-| Disable HTTP | `--no-http` | `KOI_NO_HTTP` | — |
-| Disable IPC | `--no-ipc` | `KOI_NO_IPC` | — |
-| JSON output | `--json` | — | off (human-readable) |
-
-### HTTP API
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/v1/browse?type=_http._tcp` | SSE stream of discovered services (closes after 5s idle; `idle_for=0` for infinite) |
-| `POST` | `/v1/services` | Register a service |
-| `DELETE` | `/v1/services/{id}` | Unregister a service |
-| `GET` | `/v1/resolve?name={instance}` | Resolve a specific service instance |
-| `GET` | `/v1/events?type=_http._tcp` | SSE stream of lifecycle events (closes after 5s idle; `idle_for=0` for infinite) |
-| `GET` | `/healthz` | Health check (`{"ok": true}`) |
-
-## Use cases
-
-**Docker containers** — The core use case. Koi on the host gives every container full mDNS access via HTTP. No `--network=host`, no macvlan, no mDNS reflectors, no Avahi-in-a-container. A scratch image with `curl` can discover printers, Chromecast devices, Home Assistant, or any service advertising on the local network. Containers can also register services that appear on the LAN — something that's otherwise impossible from behind Docker's NAT bridge.
-
-**Windows development** — Full mDNS/DNS-SD without installing Bonjour, configuring the registry, or fighting the firewall.
-
-**Home automation** — Discover Home Assistant devices, printers, Chromecast, AirPlay speakers from scripts or tools that don't have native mDNS support.
-
-**IoT and LAN games** — Any application that needs peer discovery on a local network gets it through a simple HTTP call.
-
-**Polyglot environments** — Python, Node, .NET, Go, Java, PowerShell, bash — if it can make an HTTP request or spawn a process, it can use mDNS.
-
-## Standards compliance
-
-Koi implements [RFC 6762](https://tools.ietf.org/html/rfc6762) (mDNS) and [RFC 6763](https://tools.ietf.org/html/rfc6763) (DNS-SD) via the mdns-sd library, which supports probing, conflict resolution, known-answer suppression, goodbye packets, and cache flushing. See [TECHNICAL.md](TECHNICAL.md) for details.
+- [**User Guide**](GUIDE.md) — step-by-step walkthrough from first command to advanced usage
+- [**Container Guide**](CONTAINERS.md) — Docker, Compose, and Kubernetes integration
+- [**Technical Details**](TECHNICAL.md) — protocol spec, wire format, standards compliance
 
 ## Name
 
 Koi (鯉) are the fish that live in garden ponds. They're visible — they surface, they announce themselves by simply existing. You look into the pond and see what's there. That's service discovery: the network is the pond, the services are the koi. You peer in and see what's swimming.
+
+## Acknowledgments
+
+Koi is an orchestration wrapper — the heavy lifting happens in [mdns-sd](https://github.com/keepsimple1/mdns-sd), a pure-Rust mDNS/DNS-SD implementation by [@keepsimple1](https://github.com/keepsimple1). Their library handles probing, conflict resolution, known-answer suppression, goodbye packets, cache flushing, and all the multicast plumbing that makes service discovery actually work. Koi just gives it a friendly front door.
 
 ## License
 
