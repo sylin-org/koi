@@ -80,6 +80,79 @@ pub struct SetHookResponse {
     pub reload: String,
 }
 
+// ── Phase 3 — Failover + Lifecycle ──────────────────────────────────
+
+/// POST /promote request — TOTP-verified CA key transfer.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PromoteRequest {
+    pub totp_code: String,
+}
+
+/// POST /promote response — encrypted CA key, TOTP secret, and roster.
+///
+/// The standby decrypts the CA key with the passphrase provided during
+/// the `koi certmesh promote` flow. The passphrase is never sent over
+/// the wire — only the already-encrypted material is transferred.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PromoteResponse {
+    pub encrypted_ca_key: koi_crypto::keys::EncryptedKey,
+    pub encrypted_totp_secret: koi_crypto::keys::EncryptedKey,
+    pub roster_json: String,
+    pub ca_cert_pem: String,
+}
+
+/// POST /renew request — CA pushes renewed cert to a member.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RenewRequest {
+    pub hostname: String,
+    pub cert_pem: String,
+    pub key_pem: String,
+    pub ca_pem: String,
+    pub fullchain_pem: String,
+    pub fingerprint: String,
+    pub expires: String,
+}
+
+/// POST /renew response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RenewResponse {
+    pub hostname: String,
+    pub renewed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hook_result: Option<HookResult>,
+}
+
+/// Result of executing a reload hook after cert renewal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookResult {
+    pub success: bool,
+    pub command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+/// GET /roster response — signed manifest for standby sync.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RosterManifest {
+    pub roster_json: String,
+    pub signature: Vec<u8>,
+    pub ca_public_key: String,
+}
+
+/// POST /health request — member heartbeat.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HealthRequest {
+    pub hostname: String,
+    pub pinned_ca_fingerprint: String,
+}
+
+/// POST /health response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HealthResponse {
+    pub valid: bool,
+    pub ca_fingerprint: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +223,134 @@ mod tests {
         assert_eq!(ann.port, 5641);
         assert_eq!(ann.txt.get("role").unwrap(), "primary");
     }
+
+    // ── Phase 3 serde tests ──────────────────────────────────────────
+
+    #[test]
+    fn promote_request_serde_round_trip() {
+        let req = PromoteRequest {
+            totp_code: "654321".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: PromoteRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.totp_code, "654321");
+    }
+
+    #[test]
+    fn promote_response_serde_round_trip() {
+        let resp = PromoteResponse {
+            encrypted_ca_key: koi_crypto::keys::EncryptedKey {
+                ciphertext: vec![1, 2, 3],
+                salt: vec![4, 5, 6],
+                nonce: vec![7, 8, 9],
+            },
+            encrypted_totp_secret: koi_crypto::keys::EncryptedKey {
+                ciphertext: vec![10, 11],
+                salt: vec![12, 13],
+                nonce: vec![14, 15],
+            },
+            roster_json: r#"{"metadata":{}}"#.to_string(),
+            ca_cert_pem: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: PromoteResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.encrypted_ca_key.ciphertext, vec![1, 2, 3]);
+        assert_eq!(parsed.ca_cert_pem.len(), resp.ca_cert_pem.len());
+    }
+
+    #[test]
+    fn renew_request_serde_round_trip() {
+        let req = RenewRequest {
+            hostname: "stone-05".to_string(),
+            cert_pem: "cert".to_string(),
+            key_pem: "key".to_string(),
+            ca_pem: "ca".to_string(),
+            fullchain_pem: "chain".to_string(),
+            fingerprint: "abc123".to_string(),
+            expires: "2026-03-15T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: RenewRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.hostname, "stone-05");
+        assert_eq!(parsed.fingerprint, "abc123");
+    }
+
+    #[test]
+    fn renew_response_serde_round_trip() {
+        let resp = RenewResponse {
+            hostname: "stone-05".to_string(),
+            renewed: true,
+            hook_result: Some(HookResult {
+                success: true,
+                command: "systemctl reload nginx".to_string(),
+                output: Some("OK".to_string()),
+            }),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: RenewResponse = serde_json::from_str(&json).unwrap();
+        assert!(parsed.renewed);
+        assert!(parsed.hook_result.unwrap().success);
+    }
+
+    #[test]
+    fn renew_response_omits_none_hook_result() {
+        let resp = RenewResponse {
+            hostname: "stone-05".to_string(),
+            renewed: true,
+            hook_result: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(!json.contains("hook_result"));
+    }
+
+    #[test]
+    fn hook_result_omits_none_output() {
+        let hr = HookResult {
+            success: false,
+            command: "bad-cmd".to_string(),
+            output: None,
+        };
+        let json = serde_json::to_string(&hr).unwrap();
+        assert!(!json.contains("output"));
+    }
+
+    #[test]
+    fn roster_manifest_serde_round_trip() {
+        let manifest = RosterManifest {
+            roster_json: r#"{"members":[]}"#.to_string(),
+            signature: vec![1, 2, 3, 4, 5],
+            ca_public_key: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----\n".to_string(),
+        };
+        let json = serde_json::to_string(&manifest).unwrap();
+        let parsed: RosterManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.signature, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn health_request_serde_round_trip() {
+        let req = HealthRequest {
+            hostname: "stone-05".to_string(),
+            pinned_ca_fingerprint: "abcdef".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: HealthRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.hostname, "stone-05");
+        assert_eq!(parsed.pinned_ca_fingerprint, "abcdef");
+    }
+
+    #[test]
+    fn health_response_serde_round_trip() {
+        let resp = HealthResponse {
+            valid: true,
+            ca_fingerprint: "cafp123".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: HealthResponse = serde_json::from_str(&json).unwrap();
+        assert!(parsed.valid);
+        assert_eq!(parsed.ca_fingerprint, "cafp123");
+    }
+
+    // ── Phase 2 tests ──────────────────────────────────────────────────
 
     #[test]
     fn certmesh_status_serializes() {

@@ -40,7 +40,7 @@ pub fn list(endpoint: &str, json: bool) -> anyhow::Result<()> {
             "ID", "NAME", "TYPE", "PORT", "STATE", "MODE"
         );
         for reg in &registrations {
-            format::registration_row(reg);
+            print!("{}", format::registration_row(reg));
         }
     }
     Ok(())
@@ -55,7 +55,7 @@ pub fn inspect(endpoint: &str, id: &str, json: bool) -> anyhow::Result<()> {
         let body = serde_json::to_string_pretty(&reg)?;
         println!("{body}");
     } else {
-        format::registration_detail(&reg);
+        print!("{}", format::registration_detail(&reg));
     }
     Ok(())
 }

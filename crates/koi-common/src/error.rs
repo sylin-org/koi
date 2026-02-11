@@ -27,6 +27,13 @@ pub enum ErrorCode {
     RateLimited,
     EnrollmentClosed,
     CapabilityDisabled,
+    // Certmesh (Phase 3)
+    NotStandby,
+    PromotionFailed,
+    RenewalFailed,
+    InvalidManifest,
+    // Certmesh (Phase 4)
+    ScopeViolation,
 }
 
 impl ErrorCode {
@@ -44,8 +51,10 @@ impl ErrorCode {
             | Self::CapabilityDisabled => 503,
             Self::InvalidTotp => 401,
             Self::RateLimited => 429,
-            Self::EnrollmentClosed => 403,
-            Self::DaemonError | Self::IoError | Self::Internal => 500,
+            Self::EnrollmentClosed | Self::NotStandby | Self::ScopeViolation => 403,
+            Self::DaemonError | Self::IoError | Self::Internal
+            | Self::PromotionFailed | Self::RenewalFailed => 500,
+            Self::InvalidManifest => 400,
         }
     }
 }
@@ -95,10 +104,18 @@ mod tests {
             (ErrorCode::NotDraining, 409),
             // 429 Rate Limited
             (ErrorCode::RateLimited, 429),
+            // 400 Bad Request (Phase 3)
+            (ErrorCode::InvalidManifest, 400),
+            // 403 Forbidden (Phase 3)
+            (ErrorCode::NotStandby, 403),
+            // 403 Forbidden (Phase 4)
+            (ErrorCode::ScopeViolation, 403),
             // 500 Internal Server Error
             (ErrorCode::DaemonError, 500),
             (ErrorCode::IoError, 500),
             (ErrorCode::Internal, 500),
+            (ErrorCode::PromotionFailed, 500),
+            (ErrorCode::RenewalFailed, 500),
             // 503 Service Unavailable
             (ErrorCode::ShuttingDown, 503),
             (ErrorCode::CaNotInitialized, 503),
@@ -141,6 +158,10 @@ mod tests {
             (ErrorCode::RateLimited, "rate_limited"),
             (ErrorCode::EnrollmentClosed, "enrollment_closed"),
             (ErrorCode::CapabilityDisabled, "capability_disabled"),
+            (ErrorCode::NotStandby, "not_standby"),
+            (ErrorCode::PromotionFailed, "promotion_failed"),
+            (ErrorCode::RenewalFailed, "renewal_failed"),
+            (ErrorCode::InvalidManifest, "invalid_manifest"),
         ];
         for (code, expected_str) in &variants {
             let serialized = serde_json::to_value(code).unwrap();

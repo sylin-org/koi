@@ -175,11 +175,14 @@ fn display_create_results(
             })
         );
     } else {
-        format::certmesh_create_success(
-            hostname,
-            cert_dir,
-            trust_profile,
-            &ca::ca_fingerprint(ca_state),
+        print!(
+            "{}",
+            format::certmesh_create_success(
+                hostname,
+                cert_dir,
+                trust_profile,
+                &ca::ca_fingerprint(ca_state),
+            )
         );
     }
 
@@ -229,7 +232,7 @@ pub fn status(json: bool) -> anyhow::Result<()> {
                 }))?
             );
         } else {
-            format::certmesh_status(&r);
+            print!("{}", format::certmesh_status(&r));
         }
     } else {
         println!("CA initialized but roster not found.");
@@ -359,6 +362,87 @@ pub async fn join(endpoint: Option<&str>, json: bool) -> anyhow::Result<()> {
         println!("Enrolled as: {hostname}");
         println!("Certificates written to: {cert_path}");
     }
+    Ok(())
+}
+
+// ── Promote ─────────────────────────────────────────────────────────
+
+pub async fn promote(endpoint: Option<&str>, json: bool) -> anyhow::Result<()> {
+    let resolved_endpoint = match endpoint {
+        Some(ep) => ep.to_string(),
+        None => discover_ca().await?,
+    };
+
+    eprintln!("Enter the TOTP code from your authenticator app:");
+    let mut code = String::new();
+    std::io::stdin().read_line(&mut code)?;
+    let code = code.trim().to_string();
+
+    eprintln!("Enter the CA passphrase (used to encrypt the transferred key):");
+    let mut passphrase = String::new();
+    std::io::stdin().read_line(&mut passphrase)?;
+    let passphrase = passphrase.trim().to_string();
+
+    if passphrase.is_empty() {
+        anyhow::bail!("Passphrase cannot be empty.");
+    }
+
+    // Request promotion from the primary
+    let client = KoiClient::new(&resolved_endpoint);
+    let body = serde_json::json!({ "totp_code": code });
+    let resp = client.post_json("/v1/certmesh/promote", &body)?;
+
+    // Parse the promotion response
+    let promote_response: koi_certmesh::protocol::PromoteResponse =
+        serde_json::from_value(resp.clone())
+            .map_err(|e| anyhow::anyhow!("Failed to parse promotion response: {e}"))?;
+
+    // Decrypt and install the CA key, TOTP secret, and roster locally
+    let (ca_key, totp_secret, roster) =
+        koi_certmesh::failover::accept_promotion(&promote_response, &passphrase)?;
+
+    // Save to local disk
+    let ca_dir = koi_certmesh::ca::ca_dir();
+    std::fs::create_dir_all(&ca_dir)?;
+
+    let encrypted_key = koi_crypto::keys::encrypt_key(&ca_key, &passphrase)?;
+    koi_crypto::keys::save_encrypted_key(&koi_certmesh::ca::ca_key_path(), &encrypted_key)?;
+    std::fs::write(koi_certmesh::ca::ca_cert_path(), &promote_response.ca_cert_pem)?;
+
+    let encrypted_totp = koi_crypto::totp::encrypt_secret(&totp_secret, &passphrase)?;
+    koi_crypto::keys::save_encrypted_key(&koi_certmesh::ca::totp_secret_path(), &encrypted_totp)?;
+
+    koi_certmesh::roster::save_roster(&roster, &koi_certmesh::ca::roster_path())?;
+
+    // Update local member role to Standby
+    let hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "localhost".to_string());
+
+    let mut roster = koi_certmesh::roster::load_roster(&koi_certmesh::ca::roster_path())?;
+    if let Some(member) = roster.find_member_mut(&hostname) {
+        member.role = koi_certmesh::roster::MemberRole::Standby;
+        koi_certmesh::roster::save_roster(&roster, &koi_certmesh::ca::roster_path())?;
+    }
+
+    let _ = koi_certmesh::audit::append_entry(
+        "promoted_to_standby",
+        &[("hostname", &hostname)],
+    );
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "promoted": true,
+                "role": "standby",
+                "hostname": hostname,
+            })
+        );
+    } else {
+        print!("{}", format::promote_success(&hostname));
+    }
+
     Ok(())
 }
 

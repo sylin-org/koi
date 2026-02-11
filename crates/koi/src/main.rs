@@ -173,6 +173,9 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     CertmeshSubcommand::Join { endpoint } => {
                         commands::certmesh::join(endpoint.as_deref(), cli.json).await
                     }
+                    CertmeshSubcommand::Promote { endpoint } => {
+                        commands::certmesh::promote(endpoint.as_deref(), cli.json).await
+                    }
                 }
             }
             // Install, Uninstall, Version handled before runtime
@@ -294,6 +297,11 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         }
     }
 
+    // ── Phase 3: Background tasks based on certmesh role ──
+    if let Some(ref certmesh) = cores.certmesh {
+        spawn_certmesh_background_tasks(certmesh, &cancel, &mut tasks);
+    }
+
     if let Err(e) = platform::register_service() {
         tracing::warn!(error = %e, "Platform service registration failed");
     }
@@ -365,6 +373,193 @@ pub(crate) fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
     let core = koi_certmesh::CertmeshCore::locked(roster, profile);
     tracing::info!("Certmesh: CA initialized (locked, use `koi certmesh unlock` to decrypt)");
     Some(Arc::new(core))
+}
+
+/// Spawn certmesh background tasks based on the node's role.
+///
+/// - **Primary (unlocked)**: hourly renewal check loop
+/// - **Standby**: periodic roster sync from primary
+/// - **Member**: periodic health heartbeat to CA
+///
+/// All loops respect `CancellationToken` for orderly shutdown.
+fn spawn_certmesh_background_tasks(
+    certmesh: &Arc<koi_certmesh::CertmeshCore>,
+    cancel: &CancellationToken,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+) {
+    // ── Renewal check loop ──────────────────────────────────────────
+    // Runs on the primary when the CA is unlocked. If the CA is still
+    // locked at startup, the loop checks periodically and skips gracefully.
+    let cm = Arc::clone(certmesh);
+    let token = cancel.clone();
+    tasks.push(tokio::spawn(async move {
+        let interval = Duration::from_secs(
+            koi_certmesh::lifecycle::RENEWAL_CHECK_INTERVAL_SECS,
+        );
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = tokio::time::sleep(interval) => {
+                    let results = cm.renew_all_due().await;
+                    for (hostname, result) in &results {
+                        match result {
+                            Ok(hook) => {
+                                let hook_ok = hook.as_ref().map(|h| h.success).unwrap_or(true);
+                                if hook_ok {
+                                    tracing::info!(hostname, "Certificate renewed");
+                                } else {
+                                    tracing::warn!(hostname, "Certificate renewed but hook failed");
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(hostname, error = %e, "Certificate renewal failed");
+                            }
+                        }
+                    }
+                    if !results.is_empty() {
+                        tracing::info!(count = results.len(), "Renewal check complete");
+                    }
+                }
+            }
+        }
+    }));
+
+    // ── Standby roster sync loop ────────────────────────────────────
+    // Periodically pulls the signed roster manifest from the primary
+    // and installs it locally. Uses KoiClient (blocking) via spawn_blocking.
+    let cm = Arc::clone(certmesh);
+    let token = cancel.clone();
+    tasks.push(tokio::spawn(async move {
+        let interval = Duration::from_secs(
+            koi_certmesh::failover::ROSTER_SYNC_INTERVAL_SECS,
+        );
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = tokio::time::sleep(interval) => {
+                    // Only run if this node is a standby
+                    if cm.node_role().await != Some(koi_certmesh::roster::MemberRole::Standby) {
+                        continue;
+                    }
+
+                    let endpoint = match koi_config::breadcrumb::read_breadcrumb() {
+                        Some(ep) => ep,
+                        None => {
+                            tracing::debug!("Roster sync: no primary endpoint found");
+                            continue;
+                        }
+                    };
+
+                    // KoiClient is blocking (ureq) — run in a blocking task
+                    let manifest_json = tokio::task::spawn_blocking(move || {
+                        let client = client::KoiClient::new(&endpoint);
+                        client.get_roster_manifest()
+                    })
+                    .await;
+
+                    let manifest_json = match manifest_json {
+                        Ok(Ok(json)) => json,
+                        Ok(Err(e)) => {
+                            tracing::warn!(error = %e, "Roster sync: failed to fetch manifest");
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Roster sync: blocking task panicked");
+                            continue;
+                        }
+                    };
+
+                    // Deserialize and verify the manifest
+                    match serde_json::from_value::<koi_certmesh::protocol::RosterManifest>(manifest_json) {
+                        Ok(manifest) => {
+                            if let Err(e) = cm.accept_roster_sync(&manifest).await {
+                                tracing::warn!(error = %e, "Roster sync: verification failed");
+                            } else {
+                                tracing::debug!("Roster synced from primary");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Roster sync: invalid manifest format");
+                        }
+                    }
+                }
+            }
+        }
+    }));
+
+    // ── Member health heartbeat loop ────────────────────────────────
+    // Members periodically POST their pinned CA fingerprint to the CA
+    // endpoint. This validates the cert chain is still trusted.
+    let cm = Arc::clone(certmesh);
+    let token = cancel.clone();
+    tasks.push(tokio::spawn(async move {
+        let interval = Duration::from_secs(
+            koi_certmesh::health::HEARTBEAT_INTERVAL_SECS,
+        );
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                _ = tokio::time::sleep(interval) => {
+                    // Only run if this node is a regular member (not primary/standby)
+                    if cm.node_role().await != Some(koi_certmesh::roster::MemberRole::Member) {
+                        continue;
+                    }
+
+                    let hostname = match koi_certmesh::CertmeshCore::local_hostname() {
+                        Some(h) => h,
+                        None => continue,
+                    };
+
+                    let pinned_fp = match cm.pinned_ca_fingerprint().await {
+                        Some(fp) => fp,
+                        None => {
+                            tracing::debug!("Health heartbeat: no pinned CA fingerprint");
+                            continue;
+                        }
+                    };
+
+                    let endpoint = match koi_config::breadcrumb::read_breadcrumb() {
+                        Some(ep) => ep,
+                        None => {
+                            tracing::debug!("Health heartbeat: no CA endpoint found");
+                            continue;
+                        }
+                    };
+
+                    let request = serde_json::json!({
+                        "hostname": hostname,
+                        "pinned_ca_fingerprint": pinned_fp,
+                    });
+
+                    // KoiClient is blocking (ureq) — run in a blocking task
+                    let result = tokio::task::spawn_blocking(move || {
+                        let c = client::KoiClient::new(&endpoint);
+                        c.health_heartbeat(&request)
+                    })
+                    .await;
+
+                    match result {
+                        Ok(Ok(resp)) => {
+                            let valid = resp.get("valid").and_then(|v| v.as_bool()).unwrap_or(false);
+                            if valid {
+                                tracing::debug!("Health heartbeat: valid");
+                            } else {
+                                tracing::warn!("Health heartbeat: CA fingerprint mismatch");
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!(error = %e, "Health heartbeat: request failed");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Health heartbeat: blocking task panicked");
+                        }
+                    }
+                }
+            }
+        }
+    }));
+
+    tracing::debug!("Certmesh background tasks spawned");
 }
 
 // ── Infrastructure helpers ──────────────────────────────────────────

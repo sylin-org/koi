@@ -79,8 +79,8 @@ pub async fn discover(
                             Ok(val) => {
                                 if json {
                                     println!("{val}");
-                                } else {
-                                    format::browse_event_json(&val, is_meta);
+                                } else if let Some(line) = format::browse_event_json(&val, is_meta) {
+                                    print!("{line}");
                                 }
                             }
                             Err(e) => {
@@ -106,7 +106,7 @@ fn format_browse_standalone(event: &MdnsEvent, is_meta: bool) {
             if is_meta {
                 println!("{}", record.name);
             } else {
-                format::service_line(record);
+                print!("{}", format::service_line(record));
             }
         }
         MdnsEvent::Removed { name, .. } => {
@@ -230,7 +230,7 @@ pub async fn resolve(instance: &str, json: bool, mode: Mode) -> anyhow::Result<(
     if json {
         super::print_json(&PipelineResponse::clean(Response::Resolved(record)));
     } else {
-        format::resolved_detail(&record);
+        print!("{}", format::resolved_detail(&record));
     }
     Ok(())
 }
@@ -275,8 +275,8 @@ pub async fn subscribe(
                             Ok(val) => {
                                 if json {
                                     println!("{val}");
-                                } else {
-                                    format::subscribe_event_json(&val);
+                                } else if let Some(line) = format::subscribe_event_json(&val) {
+                                    print!("{line}");
                                 }
                             }
                             Err(e) => {
@@ -298,19 +298,22 @@ pub async fn subscribe(
 /// Format a standalone subscribe event for human output.
 fn format_subscribe_standalone(event: &MdnsEvent) {
     match event {
-        MdnsEvent::Found(record) => format::subscribe_event("found", record),
-        MdnsEvent::Resolved(record) => format::subscribe_event("resolved", record),
+        MdnsEvent::Found(record) => print!("{}", format::subscribe_event("found", record)),
+        MdnsEvent::Resolved(record) => print!("{}", format::subscribe_event("resolved", record)),
         MdnsEvent::Removed { name, service_type } => {
-            format::subscribe_event(
-                "removed",
-                &ServiceRecord {
-                    name: name.clone(),
-                    service_type: service_type.clone(),
-                    host: None,
-                    ip: None,
-                    port: None,
-                    txt: Default::default(),
-                },
+            print!(
+                "{}",
+                format::subscribe_event(
+                    "removed",
+                    &ServiceRecord {
+                        name: name.clone(),
+                        service_type: service_type.clone(),
+                        host: None,
+                        ip: None,
+                        port: None,
+                        txt: Default::default(),
+                    },
+                )
             );
         }
     }

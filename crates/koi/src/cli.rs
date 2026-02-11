@@ -217,6 +217,11 @@ pub enum CertmeshSubcommand {
         #[arg(long)]
         reload: String,
     },
+    /// Promote a member to standby CA (transfers encrypted CA key)
+    Promote {
+        /// CA endpoint (e.g. "http://ca-host:5641"). Omit to discover via mDNS.
+        endpoint: Option<String>,
+    },
 }
 
 /// Resolved configuration used at runtime.
@@ -395,5 +400,401 @@ mod tests {
     #[test]
     fn default_http_port_is_5641() {
         assert_eq!(DEFAULT_HTTP_PORT, 5641);
+    }
+
+    // ── CLI parsing tests ───────────────────────────────────────────
+
+    #[test]
+    fn parse_certmesh_promote_no_endpoint() {
+        let cli = Cli::try_parse_from(["koi", "certmesh", "promote"]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: CertmeshSubcommand::Promote { endpoint },
+            })) => {
+                assert!(endpoint.is_none());
+            }
+            other => panic!("Expected Certmesh Promote, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_promote_with_endpoint() {
+        let cli =
+            Cli::try_parse_from(["koi", "certmesh", "promote", "http://ca:5641"]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: CertmeshSubcommand::Promote { endpoint },
+            })) => {
+                assert_eq!(endpoint.as_deref(), Some("http://ca:5641"));
+            }
+            other => panic!("Expected Certmesh Promote, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_set_hook() {
+        let cli = Cli::try_parse_from([
+            "koi",
+            "certmesh",
+            "set-hook",
+            "--reload",
+            "systemctl restart nginx",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: CertmeshSubcommand::SetHook { reload },
+            })) => {
+                assert_eq!(reload, "systemctl restart nginx");
+            }
+            other => panic!("Expected Certmesh SetHook, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_create_with_all_options() {
+        let cli = Cli::try_parse_from([
+            "koi",
+            "certmesh",
+            "create",
+            "--profile",
+            "team",
+            "--operator",
+            "ops",
+            "--entropy",
+            "manual",
+            "--passphrase",
+            "my-secret",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command:
+                    CertmeshSubcommand::Create {
+                        profile,
+                        operator,
+                        entropy,
+                        passphrase,
+                    },
+            })) => {
+                assert_eq!(profile.as_deref(), Some("team"));
+                assert_eq!(operator.as_deref(), Some("ops"));
+                assert_eq!(entropy, "manual");
+                assert_eq!(passphrase.as_deref(), Some("my-secret"));
+            }
+            other => panic!("Expected Certmesh Create, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_global_json_flag() {
+        let cli = Cli::try_parse_from(["koi", "--json", "certmesh", "status"]).unwrap();
+        assert!(cli.json);
+    }
+
+    #[test]
+    fn parse_global_endpoint_flag() {
+        let cli = Cli::try_parse_from([
+            "koi",
+            "--endpoint",
+            "http://localhost:5641",
+            "certmesh",
+            "status",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.endpoint.as_deref(),
+            Some("http://localhost:5641")
+        );
+    }
+
+    // ── mDNS CLI parsing tests ──────────────────────────────────────
+
+    #[test]
+    fn parse_mdns_discover_no_type() {
+        let cli = Cli::try_parse_from(["koi", "mdns", "discover"]).unwrap();
+        match cli.command {
+            Some(Command::Mdns(MdnsCommand {
+                command: MdnsSubcommand::Discover { service_type },
+            })) => {
+                assert!(service_type.is_none());
+            }
+            other => panic!("Expected Mdns Discover, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mdns_discover_with_type() {
+        let cli = Cli::try_parse_from(["koi", "mdns", "discover", "_http._tcp"]).unwrap();
+        match cli.command {
+            Some(Command::Mdns(MdnsCommand {
+                command: MdnsSubcommand::Discover { service_type },
+            })) => {
+                assert_eq!(service_type.as_deref(), Some("_http._tcp"));
+            }
+            other => panic!("Expected Mdns Discover, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mdns_announce_all_args() {
+        let cli = Cli::try_parse_from([
+            "koi", "mdns", "announce", "My App", "_http._tcp", "8080",
+            "--ip", "10.0.0.1", "version=1.0", "env=prod",
+        ]).unwrap();
+        match cli.command {
+            Some(Command::Mdns(MdnsCommand {
+                command: MdnsSubcommand::Announce { name, service_type, port, ip, txt },
+            })) => {
+                assert_eq!(name, "My App");
+                assert_eq!(service_type, "_http._tcp");
+                assert_eq!(port, 8080);
+                assert_eq!(ip.as_deref(), Some("10.0.0.1"));
+                assert_eq!(txt, vec!["version=1.0", "env=prod"]);
+            }
+            other => panic!("Expected Mdns Announce, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mdns_announce_minimal() {
+        let cli = Cli::try_parse_from([
+            "koi", "mdns", "announce", "Svc", "_ssh._tcp", "22",
+        ]).unwrap();
+        match cli.command {
+            Some(Command::Mdns(MdnsCommand {
+                command: MdnsSubcommand::Announce { name, service_type, port, ip, txt },
+            })) => {
+                assert_eq!(name, "Svc");
+                assert_eq!(service_type, "_ssh._tcp");
+                assert_eq!(port, 22);
+                assert!(ip.is_none());
+                assert!(txt.is_empty());
+            }
+            other => panic!("Expected Mdns Announce, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mdns_unregister() {
+        let cli = Cli::try_parse_from(["koi", "mdns", "unregister", "abc12345"]).unwrap();
+        match cli.command {
+            Some(Command::Mdns(MdnsCommand {
+                command: MdnsSubcommand::Unregister { id },
+            })) => {
+                assert_eq!(id, "abc12345");
+            }
+            other => panic!("Expected Mdns Unregister, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mdns_resolve() {
+        let cli = Cli::try_parse_from([
+            "koi", "mdns", "resolve", "My Server._http._tcp.local.",
+        ]).unwrap();
+        match cli.command {
+            Some(Command::Mdns(MdnsCommand {
+                command: MdnsSubcommand::Resolve { instance },
+            })) => {
+                assert_eq!(instance, "My Server._http._tcp.local.");
+            }
+            other => panic!("Expected Mdns Resolve, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mdns_subscribe() {
+        let cli = Cli::try_parse_from(["koi", "mdns", "subscribe", "_http._tcp"]).unwrap();
+        match cli.command {
+            Some(Command::Mdns(MdnsCommand {
+                command: MdnsSubcommand::Subscribe { service_type },
+            })) => {
+                assert_eq!(service_type, "_http._tcp");
+            }
+            other => panic!("Expected Mdns Subscribe, got: {other:?}"),
+        }
+    }
+
+    // ── Admin subcommand parsing ────────────────────────────────────
+
+    #[test]
+    fn parse_mdns_admin_status() {
+        let cli = Cli::try_parse_from(["koi", "mdns", "admin", "status"]).unwrap();
+        match cli.command {
+            Some(Command::Mdns(MdnsCommand {
+                command: MdnsSubcommand::Admin(MdnsAdminCommand {
+                    command: AdminSubcommand::Status,
+                }),
+            })) => {}
+            other => panic!("Expected Admin Status, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mdns_admin_ls() {
+        let cli = Cli::try_parse_from(["koi", "mdns", "admin", "ls"]).unwrap();
+        match cli.command {
+            Some(Command::Mdns(MdnsCommand {
+                command: MdnsSubcommand::Admin(MdnsAdminCommand {
+                    command: AdminSubcommand::List,
+                }),
+            })) => {}
+            other => panic!("Expected Admin List, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mdns_admin_inspect() {
+        let cli = Cli::try_parse_from(["koi", "mdns", "admin", "inspect", "a1b2c3"]).unwrap();
+        match cli.command {
+            Some(Command::Mdns(MdnsCommand {
+                command: MdnsSubcommand::Admin(MdnsAdminCommand {
+                    command: AdminSubcommand::Inspect { id },
+                }),
+            })) => {
+                assert_eq!(id, "a1b2c3");
+            }
+            other => panic!("Expected Admin Inspect, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mdns_admin_unregister() {
+        let cli = Cli::try_parse_from(["koi", "mdns", "admin", "unregister", "xyz"]).unwrap();
+        match cli.command {
+            Some(Command::Mdns(MdnsCommand {
+                command: MdnsSubcommand::Admin(MdnsAdminCommand {
+                    command: AdminSubcommand::Unregister { id },
+                }),
+            })) => {
+                assert_eq!(id, "xyz");
+            }
+            other => panic!("Expected Admin Unregister, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mdns_admin_drain() {
+        let cli = Cli::try_parse_from(["koi", "mdns", "admin", "drain", "abc"]).unwrap();
+        match cli.command {
+            Some(Command::Mdns(MdnsCommand {
+                command: MdnsSubcommand::Admin(MdnsAdminCommand {
+                    command: AdminSubcommand::Drain { id },
+                }),
+            })) => {
+                assert_eq!(id, "abc");
+            }
+            other => panic!("Expected Admin Drain, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mdns_admin_revive() {
+        let cli = Cli::try_parse_from(["koi", "mdns", "admin", "revive", "def"]).unwrap();
+        match cli.command {
+            Some(Command::Mdns(MdnsCommand {
+                command: MdnsSubcommand::Admin(MdnsAdminCommand {
+                    command: AdminSubcommand::Revive { id },
+                }),
+            })) => {
+                assert_eq!(id, "def");
+            }
+            other => panic!("Expected Admin Revive, got: {other:?}"),
+        }
+    }
+
+    // ── Global flags with mDNS ──────────────────────────────────────
+
+    #[test]
+    fn parse_mdns_with_timeout() {
+        let cli = Cli::try_parse_from([
+            "koi", "--timeout", "30", "mdns", "discover",
+        ]).unwrap();
+        assert_eq!(cli.timeout, Some(30));
+    }
+
+    #[test]
+    fn parse_mdns_with_json_flag() {
+        let cli = Cli::try_parse_from(["koi", "--json", "mdns", "subscribe", "_http._tcp"]).unwrap();
+        assert!(cli.json);
+    }
+
+    #[test]
+    fn parse_mdns_with_verbose() {
+        let cli = Cli::try_parse_from(["koi", "-vv", "mdns", "discover"]).unwrap();
+        assert_eq!(cli.verbose, 2);
+    }
+
+    // ── Top-level commands ──────────────────────────────────────────
+
+    #[test]
+    fn parse_daemon_flag() {
+        let cli = Cli::try_parse_from(["koi", "--daemon"]).unwrap();
+        assert!(cli.daemon);
+    }
+
+    #[test]
+    fn parse_no_subcommand() {
+        let cli = Cli::try_parse_from(["koi"]).unwrap();
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn parse_version_subcommand() {
+        let cli = Cli::try_parse_from(["koi", "version"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Version)));
+    }
+
+    #[test]
+    fn parse_status_subcommand() {
+        let cli = Cli::try_parse_from(["koi", "status"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Status)));
+    }
+
+    #[test]
+    fn parse_install_subcommand() {
+        let cli = Cli::try_parse_from(["koi", "install"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Install)));
+    }
+
+    #[test]
+    fn parse_standalone_flag() {
+        let cli = Cli::try_parse_from(["koi", "--standalone", "mdns", "discover"]).unwrap();
+        assert!(cli.standalone);
+    }
+
+    // ── require_capability edge cases ───────────────────────────────
+
+    #[test]
+    fn require_capability_error_message_includes_env_var_hint() {
+        let config = Config {
+            no_mdns: true,
+            ..Config::default()
+        };
+        let msg = config.require_capability("mdns").unwrap_err().to_string();
+        assert!(
+            msg.contains("KOI_NO_MDNS"),
+            "error should mention env var: {msg}"
+        );
+    }
+
+    #[test]
+    fn require_capability_mdns_enabled_certmesh_disabled_mdns_works() {
+        let config = Config {
+            no_certmesh: true,
+            ..Config::default()
+        };
+        assert!(config.require_capability("mdns").is_ok());
+        assert!(config.require_capability("certmesh").is_err());
+    }
+
+    #[test]
+    fn config_default_pipe_path_is_not_empty() {
+        let config = Config::default();
+        assert!(
+            config.pipe_path.components().count() > 0,
+            "pipe path should not be empty"
+        );
     }
 }

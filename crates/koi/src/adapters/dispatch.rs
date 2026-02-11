@@ -122,3 +122,131 @@ pub async fn write_response<W: AsyncWriteExt + Unpin>(
     writer.write_all(b"\n").await?;
     writer.flush().await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koi_common::types::ServiceRecord;
+    use std::collections::HashMap;
+
+    // ── new_session_id ──────────────────────────────────────────────
+
+    #[test]
+    fn new_session_id_has_correct_length() {
+        let sid = new_session_id();
+        assert_eq!(sid.0.len(), 8); // SHORT_ID_LEN
+    }
+
+    #[test]
+    fn new_session_id_is_unique() {
+        let a = new_session_id();
+        let b = new_session_id();
+        assert_ne!(a.0, b.0);
+    }
+
+    #[test]
+    fn new_session_id_is_hex() {
+        let sid = new_session_id();
+        assert!(
+            sid.0.chars().all(|c| c.is_ascii_hexdigit()),
+            "session ID should be hex: {}",
+            sid.0
+        );
+    }
+
+    // ── write_response ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn write_response_outputs_ndjson() {
+        let resp = PipelineResponse::clean(Response::Unregistered("abc123".into()));
+        let mut buf = Vec::new();
+        write_response(&mut buf, &resp).await.unwrap();
+
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.ends_with('\n'));
+        let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert_eq!(parsed.get("unregistered").unwrap(), "abc123");
+    }
+
+    #[tokio::test]
+    async fn write_response_found_includes_record() {
+        let record = ServiceRecord {
+            name: "Test".into(),
+            service_type: "_http._tcp".into(),
+            host: Some("test.local".into()),
+            ip: Some("192.168.1.1".into()),
+            port: Some(80),
+            txt: HashMap::new(),
+        };
+        let resp = PipelineResponse::clean(Response::Found(record));
+        let mut buf = Vec::new();
+        write_response(&mut buf, &resp).await.unwrap();
+
+        let output = String::from_utf8(buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        let found = parsed.get("found").unwrap();
+        assert_eq!(found.get("name").unwrap(), "Test");
+    }
+
+    #[tokio::test]
+    async fn write_response_error_format() {
+        let resp = PipelineResponse::clean(Response::Error {
+            error: ErrorCode::NotFound,
+            message: "Registration not found".into(),
+        });
+        let mut buf = Vec::new();
+        write_response(&mut buf, &resp).await.unwrap();
+
+        let output = String::from_utf8(buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert_eq!(parsed.get("error").unwrap(), "not_found");
+        assert_eq!(parsed.get("message").unwrap(), "Registration not found");
+    }
+
+    #[tokio::test]
+    async fn write_response_renewed_format() {
+        let resp = PipelineResponse::clean(Response::Renewed(RenewalResult {
+            id: "test-id".into(),
+            lease_secs: 90,
+        }));
+        let mut buf = Vec::new();
+        write_response(&mut buf, &resp).await.unwrap();
+
+        let output = String::from_utf8(buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        let renewed = parsed.get("renewed").unwrap();
+        assert_eq!(renewed.get("id").unwrap(), "test-id");
+        assert_eq!(renewed.get("lease_secs").unwrap(), 90);
+    }
+
+    #[tokio::test]
+    async fn write_response_multiple_writes() {
+        let resp1 = PipelineResponse::clean(Response::Unregistered("a".into()));
+        let resp2 = PipelineResponse::clean(Response::Unregistered("b".into()));
+        let mut buf = Vec::new();
+        write_response(&mut buf, &resp1).await.unwrap();
+        write_response(&mut buf, &resp2).await.unwrap();
+
+        let output = String::from_utf8(buf).unwrap();
+        let lines: Vec<&str> = output.trim().split('\n').collect();
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn write_response_pipeline_ongoing_includes_status() {
+        let resp = PipelineResponse::ongoing(Response::Found(ServiceRecord {
+            name: "S".into(),
+            service_type: "_http._tcp".into(),
+            host: None,
+            ip: None,
+            port: None,
+            txt: HashMap::new(),
+        }));
+        let mut buf = Vec::new();
+        write_response(&mut buf, &resp).await.unwrap();
+
+        let output = String::from_utf8(buf).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert_eq!(parsed.get("status").unwrap(), "ongoing");
+    }
+}

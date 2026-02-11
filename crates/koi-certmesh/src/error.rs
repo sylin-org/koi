@@ -33,6 +33,19 @@ pub enum CertmeshError {
 
     #[error("{0}")]
     Internal(String),
+
+    // Phase 3 — Failover + Lifecycle
+    #[error("not a standby: {0}")]
+    NotStandby(String),
+
+    #[error("promotion failed: {0}")]
+    PromotionFailed(String),
+
+    #[error("renewal failed for {hostname}: {reason}")]
+    RenewalFailed { hostname: String, reason: String },
+
+    #[error("invalid roster manifest signature")]
+    InvalidManifest,
 }
 
 impl From<koi_crypto::keys::CryptoError> for CertmeshError {
@@ -53,6 +66,10 @@ impl From<&CertmeshError> for ErrorCode {
             CertmeshError::Crypto(_) | CertmeshError::Certificate(_) => ErrorCode::Internal,
             CertmeshError::Io(_) => ErrorCode::IoError,
             CertmeshError::Internal(_) => ErrorCode::Internal,
+            CertmeshError::NotStandby(_) => ErrorCode::NotStandby,
+            CertmeshError::PromotionFailed(_) => ErrorCode::PromotionFailed,
+            CertmeshError::RenewalFailed { .. } => ErrorCode::RenewalFailed,
+            CertmeshError::InvalidManifest => ErrorCode::InvalidManifest,
         }
     }
 }
@@ -108,6 +125,30 @@ mod tests {
                 CertmeshError::Internal("unexpected".into()),
                 ErrorCode::Internal,
                 500,
+            ),
+            // Phase 3
+            (
+                CertmeshError::NotStandby("stone-01".into()),
+                ErrorCode::NotStandby,
+                403,
+            ),
+            (
+                CertmeshError::PromotionFailed("transfer error".into()),
+                ErrorCode::PromotionFailed,
+                500,
+            ),
+            (
+                CertmeshError::RenewalFailed {
+                    hostname: "stone-05".into(),
+                    reason: "cert expired".into(),
+                },
+                ErrorCode::RenewalFailed,
+                500,
+            ),
+            (
+                CertmeshError::InvalidManifest,
+                ErrorCode::InvalidManifest,
+                400,
             ),
         ];
         for (error, expected_code, expected_status) in &cases {

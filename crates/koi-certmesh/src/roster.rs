@@ -27,6 +27,15 @@ pub struct RosterMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operator: Option<String>,
     pub enrollment_state: EnrollmentState,
+    /// When the enrollment window automatically closes (if set).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub enrollment_deadline: Option<DateTime<Utc>>,
+    /// Domain scope constraint (e.g. "lincoln-elementary.local").
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub allowed_domain: Option<String>,
+    /// Subnet scope constraint as CIDR (e.g. "192.168.1.0/24").
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub allowed_subnet: Option<String>,
 }
 
 /// Whether the mesh is accepting new members.
@@ -106,10 +115,44 @@ impl Roster {
                 trust_profile: profile,
                 operator,
                 enrollment_state,
+                enrollment_deadline: None,
+                allowed_domain: None,
+                allowed_subnet: None,
             },
             members: Vec::new(),
             revocation_list: Vec::new(),
         }
+    }
+
+    /// Check if enrollment is currently open, considering both state and deadline.
+    ///
+    /// Returns `true` only if the state is `Open` AND any deadline has not passed.
+    /// If the deadline has passed, this auto-closes enrollment and returns `false`.
+    pub fn is_enrollment_open(&mut self) -> bool {
+        if self.metadata.enrollment_state != EnrollmentState::Open {
+            return false;
+        }
+        if let Some(deadline) = self.metadata.enrollment_deadline {
+            if Utc::now() >= deadline {
+                self.metadata.enrollment_state = EnrollmentState::Closed;
+                self.metadata.enrollment_deadline = None;
+                tracing::info!("Enrollment window expired, auto-closed");
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Open the enrollment window, optionally with a deadline.
+    pub fn open_enrollment(&mut self, deadline: Option<DateTime<Utc>>) {
+        self.metadata.enrollment_state = EnrollmentState::Open;
+        self.metadata.enrollment_deadline = deadline;
+    }
+
+    /// Close the enrollment window and clear any deadline.
+    pub fn close_enrollment(&mut self) {
+        self.metadata.enrollment_state = EnrollmentState::Closed;
+        self.metadata.enrollment_deadline = None;
     }
 
     /// Find a member by hostname.

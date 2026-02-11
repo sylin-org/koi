@@ -12,20 +12,108 @@ use crate::certfiles;
 use crate::error::CertmeshError;
 use crate::profiles::TrustProfile;
 use crate::protocol::{JoinRequest, JoinResponse};
-use crate::roster::{
-    EnrollmentState, MemberRole, MemberStatus, Roster, RosterMember,
-};
+use crate::roster::{MemberRole, MemberStatus, Roster, RosterMember, RosterMetadata};
+
+/// Validate hostname against scope constraints (domain and subnet).
+///
+/// If `allowed_domain` is set, the hostname must end with that domain suffix
+/// (or match exactly). If `allowed_subnet` is set, the caller IP would be
+/// checked (subnet validation is deferred to the HTTP layer where IP is
+/// available — see `validate_subnet()`).
+pub fn validate_scope(
+    hostname: &str,
+    metadata: &RosterMetadata,
+) -> Result<(), CertmeshError> {
+    if let Some(ref domain) = metadata.allowed_domain {
+        let domain_lower = domain.to_lowercase();
+        let host_lower = hostname.to_lowercase();
+        // Hostname must either match the domain exactly or end with ".domain"
+        if host_lower != domain_lower && !host_lower.ends_with(&format!(".{domain_lower}")) {
+            let reason = format!(
+                "hostname '{}' outside domain '{}'",
+                hostname, domain
+            );
+            let _ = audit::append_entry(
+                "scope_violation",
+                &[("hostname", hostname), ("reason", &reason)],
+            );
+            return Err(CertmeshError::ScopeViolation(reason));
+        }
+    }
+    Ok(())
+}
+
+/// Validate an IP address against a CIDR subnet constraint.
+///
+/// Returns `Ok(())` if no subnet constraint is set or the IP is within range.
+pub fn validate_subnet(
+    ip: &str,
+    metadata: &RosterMetadata,
+) -> Result<(), CertmeshError> {
+    if let Some(ref cidr) = metadata.allowed_subnet {
+        if let Some((net_str, prefix_str)) = cidr.split_once('/') {
+            let net_ip: std::net::IpAddr = net_str.parse().map_err(|_| {
+                CertmeshError::ScopeViolation(format!("invalid subnet CIDR: {cidr}"))
+            })?;
+            let prefix_len: u32 = prefix_str.parse().map_err(|_| {
+                CertmeshError::ScopeViolation(format!("invalid prefix length in CIDR: {cidr}"))
+            })?;
+            let client_ip: std::net::IpAddr = ip.parse().map_err(|_| {
+                CertmeshError::ScopeViolation(format!("invalid IP address: {ip}"))
+            })?;
+            if !ip_in_subnet(client_ip, net_ip, prefix_len) {
+                let reason = format!("IP '{}' outside subnet '{}'", ip, cidr);
+                let _ = audit::append_entry(
+                    "scope_violation",
+                    &[("ip", ip), ("reason", &reason)],
+                );
+                return Err(CertmeshError::ScopeViolation(reason));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Check whether `ip` is within the CIDR subnet `net/prefix_len`.
+fn ip_in_subnet(ip: std::net::IpAddr, net: std::net::IpAddr, prefix_len: u32) -> bool {
+    match (ip, net) {
+        (std::net::IpAddr::V4(ip4), std::net::IpAddr::V4(net4)) => {
+            if prefix_len > 32 {
+                return false;
+            }
+            let mask = if prefix_len == 0 {
+                0u32
+            } else {
+                !0u32 << (32 - prefix_len)
+            };
+            (u32::from(ip4) & mask) == (u32::from(net4) & mask)
+        }
+        (std::net::IpAddr::V6(ip6), std::net::IpAddr::V6(net6)) => {
+            if prefix_len > 128 {
+                return false;
+            }
+            let mask = if prefix_len == 0 {
+                0u128
+            } else {
+                !0u128 << (128 - prefix_len)
+            };
+            (u128::from(ip6) & mask) == (u128::from(net6) & mask)
+        }
+        _ => false, // mismatched IP versions
+    }
+}
 
 /// Process an enrollment request from a joining member.
 ///
-/// 1. Check enrollment is open
-/// 2. Check rate limit
-/// 3. Verify TOTP code
+/// 1. Check enrollment is open (including deadline)
+/// 2. Verify TOTP code
+/// 3. Validate scope constraints
 /// 4. Check not already enrolled
-/// 5. Issue certificate
-/// 6. Write cert files
-/// 7. Add to roster
-/// 8. Audit log
+/// 5. Approval placeholder
+/// 6. Issue certificate
+/// 7. Write cert files
+/// 8. Add to roster
+/// 9. Audit log
 #[allow(clippy::too_many_arguments)]
 pub fn process_enrollment(
     ca: &CaState,
@@ -35,10 +123,10 @@ pub fn process_enrollment(
     request: &JoinRequest,
     hostname: &str,
     sans: &[String],
-    _profile: &TrustProfile,
+    profile: &TrustProfile,
 ) -> Result<(JoinResponse, IssuedCert), CertmeshError> {
-    // 1. Check enrollment is open
-    if roster.metadata.enrollment_state != EnrollmentState::Open {
+    // 1. Check enrollment is open (includes deadline auto-close)
+    if !roster.is_enrollment_open() {
         return Err(CertmeshError::EnrollmentClosed);
     }
 
@@ -55,12 +143,23 @@ pub fn process_enrollment(
         }
     }
 
+    // 3. Validate scope constraints
+    validate_scope(hostname, &roster.metadata)?;
+
     // 4. Check not already enrolled
     if roster.is_enrolled(hostname) {
         return Err(CertmeshError::AlreadyEnrolled(hostname.to_string()));
     }
 
-    // 5. Issue certificate
+    // 5. Approval placeholder — log warning if required but not yet implemented
+    if profile.requires_approval() {
+        tracing::warn!(
+            "Approval required by '{}' profile but not yet implemented — auto-approving",
+            profile
+        );
+    }
+
+    // 6. Issue certificate
     let issued = ca::issue_certificate(ca, hostname, sans)?;
 
     // 6. Write cert files
@@ -92,13 +191,19 @@ pub fn process_enrollment(
     };
     roster.members.push(member);
 
-    // 8. Audit log
+    // 9. Audit log
+    let operator_str = roster
+        .metadata
+        .operator
+        .as_deref()
+        .unwrap_or("self");
     let _ = audit::append_entry(
         "member_joined",
         &[
             ("hostname", hostname),
             ("fingerprint", &issued.fingerprint),
             ("role", role_str),
+            ("approved_by", operator_str),
         ],
     );
 

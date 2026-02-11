@@ -130,3 +130,48 @@ fn disabled_fallback_router(capability_name: &'static str) -> Router {
         )
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn disabled_fallback_returns_503() {
+        let app = disabled_fallback_router("mdns");
+        let req = Request::get("/browse").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn disabled_fallback_body_has_error_field() {
+        let app = disabled_fallback_router("certmesh");
+        let req = Request::get("/status").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.get("error").unwrap(), "capability_disabled");
+    }
+
+    #[tokio::test]
+    async fn disabled_fallback_message_includes_capability_name() {
+        let app = disabled_fallback_router("mdns");
+        let req = Request::get("/any").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let msg = json.get("message").unwrap().as_str().unwrap();
+        assert!(msg.contains("mdns"), "message should contain capability name: {msg}");
+    }
+
+    #[tokio::test]
+    async fn disabled_fallback_works_for_post() {
+        let app = disabled_fallback_router("certmesh");
+        let req = Request::post("/join").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+}

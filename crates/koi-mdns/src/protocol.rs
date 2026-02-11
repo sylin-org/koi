@@ -490,4 +490,64 @@ mod tests {
         assert_eq!(json.get("event").unwrap(), "found");
         assert!(json.get("service").is_some());
     }
+
+    // ── Pipeline helper free function tests ─────────────────────────
+
+    #[test]
+    fn browse_event_resolved_produces_found() {
+        let event = MdnsEvent::Resolved(test_record());
+        let resp = browse_event_to_pipeline(event);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json.get("found").is_some(), "should have 'found' key");
+        assert_eq!(
+            json.get("found").unwrap().get("name").unwrap(),
+            "Server A"
+        );
+    }
+
+    #[test]
+    fn browse_event_removed_produces_event_removed() {
+        let event = MdnsEvent::Removed {
+            name: "Gone._http._tcp.local.".into(),
+            service_type: "_http._tcp".into(),
+        };
+        let resp = browse_event_to_pipeline(event);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json.get("event").unwrap(), "removed");
+        assert_eq!(
+            json.get("service").unwrap().get("name").unwrap(),
+            "Gone._http._tcp.local."
+        );
+    }
+
+    #[test]
+    fn subscribe_event_found_produces_event_found() {
+        let event = MdnsEvent::Found(test_record());
+        let resp = subscribe_event_to_pipeline(event);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json.get("event").unwrap(), "found");
+        assert!(json.get("service").is_some());
+    }
+
+    #[test]
+    fn subscribe_event_resolved_produces_event_resolved() {
+        let event = MdnsEvent::Resolved(test_record());
+        let resp = subscribe_event_to_pipeline(event);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json.get("event").unwrap(), "resolved");
+        assert_eq!(
+            json.get("service").unwrap().get("name").unwrap(),
+            "Server A"
+        );
+    }
+
+    #[test]
+    fn error_to_pipeline_not_found() {
+        let err = MdnsError::RegistrationNotFound("xyz".into());
+        let resp = error_to_pipeline(&err);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json.get("error").unwrap(), "not_found");
+        let msg = json.get("message").unwrap().as_str().unwrap();
+        assert!(msg.contains("xyz"), "message should contain id: {msg}");
+    }
 }

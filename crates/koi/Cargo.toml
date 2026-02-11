@@ -36,5 +36,8 @@ ureq = { version = "2", features = ["json"] }
 uuid.workspace = true
 hostname = "0.4"
 
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"

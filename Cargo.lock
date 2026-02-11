@@ -1045,7 +1045,7 @@ dependencies = [
 
 [[package]]
 name = "koi"
-version = "0.2.202602111045"
+version = "0.2.202602111502"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1065,6 +1065,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "tower",
  "tower-http",
  "tracing",
  "tracing-appender",
@@ -1076,7 +1077,7 @@ dependencies = [
 
 [[package]]
 name = "koi-certmesh"
-version = "0.2.202602111045"
+version = "0.2.202602111502"
 dependencies = [
  "axum",
  "chrono",
@@ -1095,12 +1096,13 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tower",
  "tracing",
 ]
 
 [[package]]
 name = "koi-common"
-version = "0.2.202602111045"
+version = "0.2.202602111502"
 dependencies = [
  "serde",
  "serde_json",
@@ -1111,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "koi-config"
-version = "0.2.202602111045"
+version = "0.2.202602111502"
 dependencies = [
  "koi-common",
  "serde",
@@ -1121,7 +1123,7 @@ dependencies = [
 
 [[package]]
 name = "koi-crypto"
-version = "0.2.202602111045"
+version = "0.2.202602111502"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1142,21 +1144,21 @@ dependencies = [
 
 [[package]]
 name = "koi-dns"
-version = "0.2.202602111045"
+version = "0.2.202602111502"
 dependencies = [
  "koi-common",
 ]
 
 [[package]]
 name = "koi-health"
-version = "0.2.202602111045"
+version = "0.2.202602111502"
 dependencies = [
  "koi-common",
 ]
 
 [[package]]
 name = "koi-mdns"
-version = "0.2.202602111045"
+version = "0.2.202602111502"
 dependencies = [
  "async-stream",
  "axum",
@@ -1176,14 +1178,14 @@ dependencies = [
 
 [[package]]
 name = "koi-proxy"
-version = "0.2.202602111045"
+version = "0.2.202602111502"
 dependencies = [
  "koi-common",
 ]
 
 [[package]]
 name = "koi-truststore"
-version = "0.2.202602111045"
+version = "0.2.202602111502"
 dependencies = [
  "koi-common",
  "thiserror",

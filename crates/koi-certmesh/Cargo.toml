@@ -25,3 +25,6 @@ crossterm.workspace = true
 indicatif.workspace = true
 rand.workspace = true
 hostname.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

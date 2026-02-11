@@ -106,7 +106,8 @@ async fn browse_handler(
                 Some(event) => {
                     let resp = crate::protocol::browse_event_to_pipeline(event);
                     let data = serde_json::to_string(&resp).unwrap();
-                    yield Ok::<_, std::convert::Infallible>(Event::default().data(data));
+                    let id = uuid::Uuid::now_v7().to_string();
+                    yield Ok::<_, std::convert::Infallible>(Event::default().id(id).data(data));
                 }
                 None => break,
             }
@@ -180,7 +181,8 @@ async fn events_handler(
                 Some(event) => {
                     let resp = crate::protocol::subscribe_event_to_pipeline(event);
                     let data = serde_json::to_string(&resp).unwrap();
-                    yield Ok::<_, std::convert::Infallible>(Event::default().data(data));
+                    let id = uuid::Uuid::now_v7().to_string();
+                    yield Ok::<_, std::convert::Infallible>(Event::default().id(id).data(data));
                 }
                 None => break,
             }
@@ -275,7 +277,8 @@ fn error_event_stream(
 ) -> impl Stream<Item = std::result::Result<Event, std::convert::Infallible>> {
     let data = serde_json::to_string(&crate::protocol::error_to_pipeline(&e)).unwrap();
     async_stream::stream! {
-        yield Ok(Event::default().data(data));
+        let id = uuid::Uuid::now_v7().to_string();
+        yield Ok(Event::default().id(id).data(data));
     }
 }
 
@@ -375,5 +378,105 @@ mod tests {
         let json = r#"{"name": "My NAS._http._tcp.local."}"#;
         let params: ResolveParams = serde_json::from_str(json).unwrap();
         assert_eq!(params.name, "My NAS._http._tcp.local.");
+    }
+
+    // ── error_json helper ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn error_json_not_found_maps_to_404() {
+        let resp = error_json(MdnsError::RegistrationNotFound("abc".into())).into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn error_json_invalid_type_maps_to_400() {
+        let resp = error_json(MdnsError::InvalidServiceType("bad".into())).into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn error_json_body_is_json_with_error_field() {
+        let resp = error_json(MdnsError::RegistrationNotFound("xyz".into())).into_response();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("error").is_some());
+        assert!(json.get("message").is_some());
+    }
+
+    // ── EventsParams deserialization ─────────────────────────────────
+
+    #[test]
+    fn events_params_deserializes() {
+        let json = r#"{"type": "_http._tcp", "idle_for": 0}"#;
+        let params: EventsParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.service_type, "_http._tcp");
+        assert_eq!(params.idle_for, Some(0));
+    }
+
+    #[test]
+    fn events_params_without_idle_for() {
+        let json = r#"{"type": "_ssh._tcp"}"#;
+        let params: EventsParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.service_type, "_ssh._tcp");
+        assert!(params.idle_for.is_none());
+    }
+
+    // ── Constants ───────────────────────────────────────────────────
+
+    #[test]
+    fn default_heartbeat_lease_is_90s() {
+        assert_eq!(DEFAULT_HEARTBEAT_LEASE, Duration::from_secs(90));
+    }
+
+    #[test]
+    fn default_heartbeat_grace_is_30s() {
+        assert_eq!(DEFAULT_HEARTBEAT_GRACE, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn default_sse_idle_is_5s() {
+        assert_eq!(DEFAULT_SSE_IDLE, Duration::from_secs(5));
+    }
+
+    // ── policy_from_lease_secs edge cases ───────────────────────────
+
+    #[test]
+    fn policy_from_one_second_returns_heartbeat() {
+        let policy = policy_from_lease_secs(Some(1));
+        assert!(matches!(
+            policy,
+            LeasePolicy::Heartbeat { lease, .. }
+            if lease == Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn policy_from_u64_max_returns_heartbeat() {
+        let policy = policy_from_lease_secs(Some(u64::MAX));
+        assert!(matches!(policy, LeasePolicy::Heartbeat { .. }));
+    }
+
+    // ── UUIDv7 SSE event ID tests ───────────────────────────────────
+
+    #[test]
+    fn uuid_v7_is_valid_sse_id() {
+        let id = uuid::Uuid::now_v7().to_string();
+        assert_eq!(id.len(), 36, "UUIDv7 string should be 36 chars: {id}");
+        assert!(!id.contains('\n'), "must not contain newlines");
+        assert!(!id.contains('\r'), "must not contain carriage returns");
+    }
+
+    #[test]
+    fn uuid_v7_is_monotonic() {
+        let a = uuid::Uuid::now_v7().to_string();
+        let b = uuid::Uuid::now_v7().to_string();
+        assert!(a <= b, "UUIDv7 should be monotonic: {a} <= {b}");
+    }
+
+    #[test]
+    fn uuid_v7_is_unique() {
+        let ids: std::collections::HashSet<String> =
+            (0..100).map(|_| uuid::Uuid::now_v7().to_string()).collect();
+        assert_eq!(ids.len(), 100, "100 UUIDv7 IDs should all be unique");
     }
 }

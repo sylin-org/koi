@@ -219,6 +219,51 @@ impl KoiClient {
         Ok(())
     }
 
+    // ── Certmesh operations (Phase 3) ──────────────────────────────
+
+    /// GET /v1/certmesh/roster — fetch signed roster manifest.
+    pub fn get_roster_manifest(&self) -> Result<serde_json::Value> {
+        let url = format!("{}/v1/certmesh/roster", self.endpoint);
+        let resp = self.agent.get(&url).call().map_err(map_error)?;
+        resp.into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    /// POST /v1/certmesh/renew — push renewed cert to a member.
+    ///
+    /// `member_endpoint` is the member's HTTP endpoint, not the CA's.
+    /// Used when the primary pushes renewals to remote members.
+    #[allow(dead_code)]
+    pub fn push_renewal(
+        &self,
+        member_endpoint: &str,
+        request: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let url = format!("{member_endpoint}/v1/certmesh/renew");
+        let resp = self
+            .agent
+            .post(&url)
+            .send_json(request.clone())
+            .map_err(map_error)?;
+        resp.into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    /// POST /v1/certmesh/health — send health heartbeat.
+    pub fn health_heartbeat(
+        &self,
+        request: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let url = format!("{}/v1/certmesh/health", self.endpoint);
+        let resp = self
+            .agent
+            .post(&url)
+            .send_json(request.clone())
+            .map_err(map_error)?;
+        resp.into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
     // ── Private helpers ───────────────────────────────────────────
 
     /// Agent without read timeout for SSE streams.
@@ -318,4 +363,227 @@ fn extract<T: serde::de::DeserializeOwned>(json: &serde_json::Value, key: &str) 
         .and_then(|v| {
             serde_json::from_value(v.clone()).map_err(|e| ClientError::Decode(e.to_string()))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Test helpers ────────────────────────────────────────────────
+
+    fn cursor_stream(input: &str) -> SseStream {
+        SseStream::new(Box::new(std::io::Cursor::new(input.as_bytes().to_vec())))
+    }
+
+    /// A reader that always returns an error.
+    struct FailingReader;
+
+    impl Read for FailingReader {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "connection lost",
+            ))
+        }
+    }
+
+    // ── SseStream tests ─────────────────────────────────────────────
+
+    #[test]
+    fn sse_stream_yields_parsed_json() {
+        let mut stream =
+            cursor_stream("data: {\"found\":{\"name\":\"S\",\"type\":\"_http._tcp\"}}\n");
+        let item = stream.next().unwrap().unwrap();
+        assert_eq!(item.get("found").unwrap().get("name").unwrap(), "S");
+    }
+
+    #[test]
+    fn sse_stream_skips_empty_lines() {
+        let mut stream = cursor_stream("\n\ndata: {\"ok\":true}\n\n");
+        let item = stream.next().unwrap().unwrap();
+        assert_eq!(item.get("ok").unwrap(), true);
+        assert!(stream.next().is_none());
+    }
+
+    #[test]
+    fn sse_stream_skips_non_data_lines() {
+        let input = "event: message\nid: 42\n: comment\ndata: {\"v\":1}\n";
+        let mut stream = cursor_stream(input);
+        let item = stream.next().unwrap().unwrap();
+        assert_eq!(item.get("v").unwrap(), 1);
+    }
+
+    #[test]
+    fn sse_stream_returns_none_on_eof() {
+        let mut stream = cursor_stream("");
+        assert!(stream.next().is_none());
+    }
+
+    #[test]
+    fn sse_stream_handles_leading_space() {
+        let mut stream = cursor_stream("data: {\"a\":1}\n");
+        let item = stream.next().unwrap().unwrap();
+        assert_eq!(item.get("a").unwrap(), 1);
+    }
+
+    #[test]
+    fn sse_stream_handles_no_space() {
+        let mut stream = cursor_stream("data:{\"b\":2}\n");
+        let item = stream.next().unwrap().unwrap();
+        assert_eq!(item.get("b").unwrap(), 2);
+    }
+
+    #[test]
+    fn sse_stream_decode_error_on_invalid_json() {
+        let mut stream = cursor_stream("data: not-json\n");
+        let result = stream.next().unwrap();
+        assert!(matches!(result, Err(ClientError::Decode(_))));
+    }
+
+    #[test]
+    fn sse_stream_skips_empty_data() {
+        let mut stream = cursor_stream("data: \ndata: {\"ok\":true}\n");
+        let item = stream.next().unwrap().unwrap();
+        assert_eq!(item.get("ok").unwrap(), true);
+    }
+
+    #[test]
+    fn sse_stream_yields_multiple_events() {
+        let input = "data: {\"a\":1}\n\ndata: {\"b\":2}\n";
+        let mut stream = cursor_stream(input);
+        let first = stream.next().unwrap().unwrap();
+        assert_eq!(first.get("a").unwrap(), 1);
+        let second = stream.next().unwrap().unwrap();
+        assert_eq!(second.get("b").unwrap(), 2);
+    }
+
+    #[test]
+    fn sse_stream_transport_error_on_read_failure() {
+        let mut stream = SseStream::new(Box::new(FailingReader));
+        let result = stream.next().unwrap();
+        assert!(matches!(result, Err(ClientError::Transport(_))));
+    }
+
+    // ── extract() tests ─────────────────────────────────────────────
+
+    #[test]
+    fn extract_returns_value_at_key() {
+        let json = serde_json::json!({
+            "registered": {
+                "id": "abc", "name": "X", "type": "_http._tcp",
+                "port": 80, "mode": "session"
+            }
+        });
+        let result: RegistrationResult = extract(&json, "registered").unwrap();
+        assert_eq!(result.id, "abc");
+        assert_eq!(result.name, "X");
+    }
+
+    #[test]
+    fn extract_missing_key_returns_decode_error() {
+        let json = serde_json::json!({"other": 42});
+        let result: Result<serde_json::Value> = extract(&json, "registered");
+        match result {
+            Err(ClientError::Decode(msg)) => {
+                assert!(msg.contains("registered"), "msg: {msg}");
+            }
+            other => panic!("Expected Decode error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_error_key_returns_api_error() {
+        let json = serde_json::json!({"error": "not_found", "message": "gone"});
+        let result: Result<serde_json::Value> = extract(&json, "registered");
+        match result {
+            Err(ClientError::Api { error, message }) => {
+                assert_eq!(error, "not_found");
+                assert_eq!(message, "gone");
+            }
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_error_without_message_uses_default() {
+        let json = serde_json::json!({"error": "x"});
+        let result: Result<serde_json::Value> = extract(&json, "key");
+        match result {
+            Err(ClientError::Api { message, .. }) => {
+                assert_eq!(message, "Unknown error");
+            }
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_error_with_non_string_uses_unknown() {
+        let json = serde_json::json!({"error": 42, "message": "numeric error code"});
+        let result: Result<serde_json::Value> = extract(&json, "key");
+        match result {
+            Err(ClientError::Api { error, .. }) => {
+                assert_eq!(error, "unknown");
+            }
+            other => panic!("Expected Api error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_deserializes_nested_struct() {
+        let json = serde_json::json!({
+            "renewed": {"id": "test-id", "lease_secs": 90}
+        });
+        let result: RenewalResult = extract(&json, "renewed").unwrap();
+        assert_eq!(result.id, "test-id");
+        assert_eq!(result.lease_secs, 90);
+    }
+
+    // ── KoiClient::new() tests ──────────────────────────────────────
+
+    #[test]
+    fn client_new_strips_trailing_slash() {
+        let client = KoiClient::new("http://localhost:5641/");
+        assert_eq!(client.endpoint, "http://localhost:5641");
+    }
+
+    #[test]
+    fn client_new_preserves_clean_endpoint() {
+        let client = KoiClient::new("http://localhost:5641");
+        assert_eq!(client.endpoint, "http://localhost:5641");
+    }
+
+    #[test]
+    fn client_new_strips_multiple_trailing_slashes() {
+        let client = KoiClient::new("http://localhost:5641///");
+        assert_eq!(client.endpoint, "http://localhost:5641");
+    }
+
+    // ── ClientError Display tests ───────────────────────────────────
+
+    #[test]
+    fn client_error_unreachable_display() {
+        let err = ClientError::Unreachable("timeout".into());
+        let msg = err.to_string();
+        assert!(msg.contains("Daemon not reachable"), "msg: {msg}");
+        assert!(msg.contains("timeout"), "msg: {msg}");
+    }
+
+    #[test]
+    fn client_error_api_display() {
+        let err = ClientError::Api {
+            error: "not_found".into(),
+            message: "Registration not found".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("not_found"), "msg: {msg}");
+        assert!(msg.contains("Registration not found"), "msg: {msg}");
+    }
+
+    #[test]
+    fn client_error_decode_display() {
+        let err = ClientError::Decode("bad json".into());
+        let msg = err.to_string();
+        assert!(msg.contains("Invalid response"), "msg: {msg}");
+        assert!(msg.contains("bad json"), "msg: {msg}");
+    }
 }

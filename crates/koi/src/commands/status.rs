@@ -34,7 +34,7 @@ pub fn status(cli: &Cli, config: &Config) -> anyhow::Result<()> {
                         if cli.json {
                             println!("{}", serde_json::to_string_pretty(&status_json)?);
                         } else {
-                            format::unified_status(&status_json);
+                            print!("{}", format::unified_status(&status_json));
                         }
                         return Ok(());
                     }
@@ -108,4 +108,65 @@ fn offline_capabilities(config: &Config) -> Vec<CapabilityStatus> {
     }
 
     caps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offline_all_enabled_shows_not_running() {
+        let config = Config::default();
+        let caps = offline_capabilities(&config);
+        assert_eq!(caps[0].name, "mdns");
+        assert!(!caps[0].healthy);
+        assert!(
+            caps[0].summary.contains("not running"),
+            "mdns summary: {}",
+            caps[0].summary
+        );
+        assert_eq!(caps[1].name, "certmesh");
+        assert!(!caps[1].healthy);
+    }
+
+    #[test]
+    fn offline_mdns_disabled() {
+        let config = Config {
+            no_mdns: true,
+            ..Config::default()
+        };
+        let caps = offline_capabilities(&config);
+        assert_eq!(caps[0].name, "mdns");
+        assert_eq!(caps[0].summary, "disabled");
+    }
+
+    #[test]
+    fn offline_certmesh_disabled() {
+        let config = Config {
+            no_certmesh: true,
+            ..Config::default()
+        };
+        let caps = offline_capabilities(&config);
+        assert_eq!(caps[1].name, "certmesh");
+        assert_eq!(caps[1].summary, "disabled");
+    }
+
+    #[test]
+    fn offline_both_disabled() {
+        let config = Config {
+            no_mdns: true,
+            no_certmesh: true,
+            ..Config::default()
+        };
+        let caps = offline_capabilities(&config);
+        assert_eq!(caps[0].summary, "disabled");
+        assert_eq!(caps[1].summary, "disabled");
+    }
+
+    #[test]
+    fn offline_returns_two_capabilities() {
+        let config = Config::default();
+        let caps = offline_capabilities(&config);
+        assert_eq!(caps.len(), 2);
+    }
 }
