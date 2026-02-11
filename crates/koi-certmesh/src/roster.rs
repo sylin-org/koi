@@ -42,6 +42,7 @@ pub enum EnrollmentState {
 #[serde(rename_all = "snake_case")]
 pub enum MemberRole {
     Primary,
+    Standby,
     Member,
 }
 
@@ -66,6 +67,15 @@ pub struct RosterMember {
     pub cert_sans: Vec<String>,
     pub cert_path: String,
     pub status: MemberStatus,
+    /// Post-renewal reload hook command (Phase 3).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reload_hook: Option<String>,
+    /// Last health heartbeat timestamp (Phase 3).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_seen: Option<DateTime<Utc>>,
+    /// Pinned CA certificate fingerprint for cert pinning (Phase 3).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pinned_ca_fingerprint: Option<String>,
 }
 
 /// A revoked member record.
@@ -120,6 +130,33 @@ impl Roster {
             .iter()
             .filter(|m| m.status == MemberStatus::Active)
             .count()
+    }
+
+    /// Find the active primary member.
+    pub fn primary(&self) -> Option<&RosterMember> {
+        self.members
+            .iter()
+            .find(|m| m.role == MemberRole::Primary && m.status == MemberStatus::Active)
+    }
+
+    /// Find all active standby members.
+    pub fn standbys(&self) -> Vec<&RosterMember> {
+        self.members
+            .iter()
+            .filter(|m| m.role == MemberRole::Standby && m.status == MemberStatus::Active)
+            .collect()
+    }
+
+    /// Find a mutable reference to a member by hostname.
+    pub fn find_member_mut(&mut self, hostname: &str) -> Option<&mut RosterMember> {
+        self.members.iter_mut().find(|m| m.hostname == hostname)
+    }
+
+    /// Update the last_seen timestamp for a member.
+    pub fn touch_member(&mut self, hostname: &str) {
+        if let Some(m) = self.find_member_mut(hostname) {
+            m.last_seen = Some(Utc::now());
+        }
     }
 }
 
@@ -184,6 +221,9 @@ mod tests {
             cert_sans: vec!["stone-01".to_string(), "stone-01.local".to_string()],
             cert_path: "/home/koi/.koi/certs/stone-01".to_string(),
             status: MemberStatus::Active,
+            reload_hook: None,
+            last_seen: Some(Utc::now()),
+            pinned_ca_fingerprint: Some("cafp123".to_string()),
         });
 
         let json = serde_json::to_string(&r).unwrap();
@@ -226,11 +266,147 @@ mod tests {
             cert_sans: vec![],
             cert_path: String::new(),
             status: MemberStatus::Active,
+            reload_hook: None,
+            last_seen: None,
+            pinned_ca_fingerprint: None,
         });
 
         assert_eq!(r.active_count(), 1);
         assert!(r.is_enrolled("stone-01"));
         assert!(r.find_member("stone-01").is_some());
         assert!(r.find_member("stone-99").is_none());
+    }
+
+    #[test]
+    fn backward_compat_deserialize_without_new_fields() {
+        // Phase 2 roster JSON had no reload_hook, last_seen, or pinned_ca_fingerprint.
+        // Verify old JSON still deserializes cleanly via #[serde(default)].
+        let json = r#"{
+            "metadata": {
+                "created_at": "2026-02-01T00:00:00Z",
+                "trust_profile": "just_me",
+                "enrollment_state": "open"
+            },
+            "members": [{
+                "hostname": "old-host",
+                "role": "primary",
+                "enrolled_at": "2026-02-01T00:00:00Z",
+                "cert_fingerprint": "abc",
+                "cert_expires": "2026-03-01T00:00:00Z",
+                "cert_sans": ["old-host"],
+                "cert_path": "/certs/old-host",
+                "status": "active"
+            }]
+        }"#;
+        let r: Roster = serde_json::from_str(json).unwrap();
+        assert_eq!(r.members.len(), 1);
+        assert!(r.members[0].reload_hook.is_none());
+        assert!(r.members[0].last_seen.is_none());
+        assert!(r.members[0].pinned_ca_fingerprint.is_none());
+    }
+
+    #[test]
+    fn standby_role_serde() {
+        let json = r#""standby""#;
+        let role: MemberRole = serde_json::from_str(json).unwrap();
+        assert_eq!(role, MemberRole::Standby);
+
+        let serialized = serde_json::to_string(&MemberRole::Standby).unwrap();
+        assert_eq!(serialized, r#""standby""#);
+    }
+
+    #[test]
+    fn primary_and_standbys_helpers() {
+        let mut r = Roster::new(TrustProfile::JustMe, None);
+
+        // No primary yet
+        assert!(r.primary().is_none());
+        assert!(r.standbys().is_empty());
+
+        let make_member = |hostname: &str, role: MemberRole| RosterMember {
+            hostname: hostname.to_string(),
+            role,
+            enrolled_at: Utc::now(),
+            enrolled_by: None,
+            cert_fingerprint: "fp".to_string(),
+            cert_expires: Utc::now(),
+            cert_sans: vec![],
+            cert_path: String::new(),
+            status: MemberStatus::Active,
+            reload_hook: None,
+            last_seen: None,
+            pinned_ca_fingerprint: None,
+        };
+
+        r.members.push(make_member("stone-01", MemberRole::Primary));
+        r.members.push(make_member("stone-02", MemberRole::Standby));
+        r.members.push(make_member("stone-03", MemberRole::Member));
+        r.members.push(make_member("stone-04", MemberRole::Standby));
+
+        assert_eq!(r.primary().unwrap().hostname, "stone-01");
+        let standbys = r.standbys();
+        assert_eq!(standbys.len(), 2);
+        assert!(standbys.iter().any(|m| m.hostname == "stone-02"));
+        assert!(standbys.iter().any(|m| m.hostname == "stone-04"));
+    }
+
+    #[test]
+    fn find_member_mut_and_touch() {
+        let mut r = Roster::new(TrustProfile::JustMe, None);
+        r.members.push(RosterMember {
+            hostname: "stone-01".to_string(),
+            role: MemberRole::Primary,
+            enrolled_at: Utc::now(),
+            enrolled_by: None,
+            cert_fingerprint: "fp".to_string(),
+            cert_expires: Utc::now(),
+            cert_sans: vec![],
+            cert_path: String::new(),
+            status: MemberStatus::Active,
+            reload_hook: None,
+            last_seen: None,
+            pinned_ca_fingerprint: None,
+        });
+
+        // last_seen is None initially
+        assert!(r.members[0].last_seen.is_none());
+
+        // touch_member updates last_seen
+        r.touch_member("stone-01");
+        assert!(r.members[0].last_seen.is_some());
+
+        // touch_member on unknown host is a no-op
+        r.touch_member("nonexistent");
+
+        // find_member_mut allows direct mutation
+        let m = r.find_member_mut("stone-01").unwrap();
+        m.reload_hook = Some("systemctl restart nginx".to_string());
+        assert_eq!(
+            r.members[0].reload_hook.as_deref(),
+            Some("systemctl restart nginx"),
+        );
+    }
+
+    #[test]
+    fn new_fields_skip_serialization_when_none() {
+        let member = RosterMember {
+            hostname: "stone-01".to_string(),
+            role: MemberRole::Primary,
+            enrolled_at: Utc::now(),
+            enrolled_by: None,
+            cert_fingerprint: "fp".to_string(),
+            cert_expires: Utc::now(),
+            cert_sans: vec![],
+            cert_path: String::new(),
+            status: MemberStatus::Active,
+            reload_hook: None,
+            last_seen: None,
+            pinned_ca_fingerprint: None,
+        };
+        let json = serde_json::to_string(&member).unwrap();
+        // None fields should not appear in JSON
+        assert!(!json.contains("reload_hook"));
+        assert!(!json.contains("last_seen"));
+        assert!(!json.contains("pinned_ca_fingerprint"));
     }
 }

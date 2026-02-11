@@ -3,6 +3,8 @@
 //! These types define the JSON shapes for join requests/responses
 //! and status queries. They are the public API contract.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::profiles::TrustProfile;
@@ -47,6 +49,37 @@ pub struct MemberSummary {
     pub cert_expires: String,
 }
 
+/// Descriptor for mDNS self-announcement of the CA.
+///
+/// Produced by CertmeshCore, consumed by the binary crate to
+/// create an mDNS registration via MdnsCore. This avoids a
+/// direct dependency between koi-certmesh and koi-mdns.
+#[derive(Debug, Clone)]
+pub struct CaAnnouncement {
+    /// mDNS instance name (e.g. "koi-ca-stone-01").
+    pub name: String,
+    /// Port the CA is listening on.
+    pub port: u16,
+    /// TXT record key/value pairs (role, fingerprint, profile).
+    pub txt: HashMap<String, String>,
+}
+
+/// Request to set a post-renewal reload hook for this host.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SetHookRequest {
+    /// Hostname of the member setting the hook.
+    pub hostname: String,
+    /// Shell command to run after certificate renewal.
+    pub reload: String,
+}
+
+/// Response after setting a reload hook.
+#[derive(Debug, Serialize)]
+pub struct SetHookResponse {
+    pub hostname: String,
+    pub reload: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,6 +109,46 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("stone-05"));
         assert!(json.contains("ca_fingerprint"));
+    }
+
+    #[test]
+    fn set_hook_request_serde_round_trip() {
+        let req = SetHookRequest {
+            hostname: "stone-01".to_string(),
+            reload: "systemctl restart nginx".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: SetHookRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.hostname, "stone-01");
+        assert_eq!(parsed.reload, "systemctl restart nginx");
+    }
+
+    #[test]
+    fn set_hook_response_serializes() {
+        let resp = SetHookResponse {
+            hostname: "stone-01".to_string(),
+            reload: "systemctl restart nginx".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("stone-01"));
+        assert!(json.contains("systemctl restart nginx"));
+    }
+
+    #[test]
+    fn ca_announcement_has_correct_fields() {
+        use std::collections::HashMap;
+        let mut txt = HashMap::new();
+        txt.insert("role".to_string(), "primary".to_string());
+        txt.insert("profile".to_string(), "just_me".to_string());
+
+        let ann = CaAnnouncement {
+            name: "koi-ca-stone-01".to_string(),
+            port: 5641,
+            txt,
+        };
+        assert_eq!(ann.name, "koi-ca-stone-01");
+        assert_eq!(ann.port, 5641);
+        assert_eq!(ann.txt.get("role").unwrap(), "primary");
     }
 
     #[test]

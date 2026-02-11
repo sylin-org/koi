@@ -1,12 +1,26 @@
 //! Human-readable CLI output formatting.
 //!
-//! This is the **presentation layer** for verb subcommands.
+//! This is the **single presentation layer** for all CLI output.
 //! JSON output bypasses this module entirely — it goes through
 //! `PipelineResponse` serialization in the protocol layer.
 
 use std::collections::HashMap;
 
 use koi_common::types::ServiceRecord;
+use koi_mdns::protocol::AdminRegistration;
+
+// ── Admin display constants ─────────────────────────────────────────
+
+/// Max displayed length of registration IDs in tabular output.
+const ID_DISPLAY_LEN: usize = 8;
+
+/// Max displayed length of service names before truncation.
+const NAME_DISPLAY_MAX: usize = 18;
+
+/// Where to truncate service names (leaves room for "..." suffix).
+const NAME_TRUNCATE_AT: usize = 15;
+
+// ── mDNS formatting ─────────────────────────────────────────────────
 
 /// Print a single-line summary of a discovered service.
 ///
@@ -67,12 +81,129 @@ pub fn subscribe_event(kind: &str, record: &ServiceRecord) {
     );
 }
 
-/// Format TXT record entries as inline `key=value` pairs.
-fn txt_inline(txt: &HashMap<String, String>) -> String {
-    txt.iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join(" ")
+// ── Client-mode browse/subscribe formatting ─────────────────────────
+
+/// Format a browse event from a daemon SSE stream (JSON → human).
+pub fn browse_event_json(json: &serde_json::Value, is_meta: bool) {
+    if let Some(found) = json.get("found") {
+        if let Ok(record) = serde_json::from_value::<ServiceRecord>(found.clone()) {
+            if is_meta {
+                println!("{}", record.name);
+            } else {
+                service_line(&record);
+            }
+        }
+    } else if json.get("event").and_then(|e| e.as_str()) == Some("removed") {
+        if let Some(name) = json
+            .get("service")
+            .and_then(|s| s.get("name"))
+            .and_then(|n| n.as_str())
+        {
+            println!("[removed]\t{name}");
+        }
+    }
+}
+
+/// Format a subscribe event from a daemon SSE stream (JSON → human).
+pub fn subscribe_event_json(json: &serde_json::Value) {
+    if let Some(event_kind) = json.get("event").and_then(|e| e.as_str()) {
+        if let Some(service) = json.get("service") {
+            if let Ok(record) = serde_json::from_value::<ServiceRecord>(service.clone()) {
+                subscribe_event(event_kind, &record);
+            }
+        }
+    }
+}
+
+// ── Admin formatting ────────────────────────────────────────────────
+
+/// Print a single row in the admin registration table.
+pub fn registration_row(reg: &AdminRegistration) {
+    let id_short = if reg.id.len() > ID_DISPLAY_LEN {
+        &reg.id[..ID_DISPLAY_LEN]
+    } else {
+        &reg.id
+    };
+    let name_short = if reg.name.len() > NAME_DISPLAY_MAX {
+        format!("{}...", &reg.name[..NAME_TRUNCATE_AT])
+    } else {
+        reg.name.clone()
+    };
+    println!(
+        "{:<10} {:<20} {:<16} {:>5}  {:<10} {:<10}",
+        id_short,
+        name_short,
+        reg.service_type,
+        reg.port,
+        format!("{:?}", reg.state).to_lowercase(),
+        format!("{:?}", reg.mode).to_lowercase(),
+    );
+}
+
+/// Print detailed multi-line info for a single admin registration.
+pub fn registration_detail(reg: &AdminRegistration) {
+    println!("{}", reg.name);
+    println!("  ID:           {}", reg.id);
+    println!("  Type:         {}", reg.service_type);
+    println!("  Port:         {}", reg.port);
+    println!("  Mode:         {:?}", reg.mode);
+    println!("  State:        {:?}", reg.state);
+    if let Some(lease) = reg.lease_secs {
+        println!("  Lease:        {}s", lease);
+    }
+    if let Some(remaining) = reg.remaining_secs {
+        println!("  Remaining:    {}s", remaining);
+    }
+    println!("  Grace:        {}s", reg.grace_secs);
+    if let Some(session) = &reg.session_id {
+        println!("  Session:      {session}");
+    }
+    println!("  Registered:   {}", reg.registered_at);
+    println!("  Last seen:    {}", reg.last_seen);
+    if !reg.txt.is_empty() {
+        let txt = reg
+            .txt
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!("  TXT:          {txt}");
+    }
+}
+
+// ── Unified status formatting ───────────────────────────────────────
+
+/// Print the daemon's unified status response (JSON → human).
+pub fn unified_status(json: &serde_json::Value) {
+    let version = json
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let platform = json
+        .get("platform")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let uptime = json.get("uptime_secs").and_then(|v| v.as_u64());
+
+    println!("Koi v{version}");
+    println!("  Platform:  {platform}");
+    if let Some(secs) = uptime {
+        println!("  Uptime:    {secs}s");
+    }
+    println!("  Daemon:    running");
+
+    if let Some(caps) = json.get("capabilities").and_then(|v| v.as_array()) {
+        for cap in caps {
+            let name = cap.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let summary = cap.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+            let healthy = cap
+                .get("healthy")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let marker = if healthy { "+" } else { "-" };
+            println!("  [{marker}] {name}:  {summary}");
+        }
+    }
 }
 
 // ── Certmesh formatting ─────────────────────────────────────────────
@@ -128,4 +259,14 @@ pub fn certmesh_status(roster: &koi_certmesh::roster::Roster) {
             member.cert_path
         );
     }
+}
+
+// ── Shared helpers ──────────────────────────────────────────────────
+
+/// Format TXT record entries as inline `key=value` pairs.
+fn txt_inline(txt: &HashMap<String, String>) -> String {
+    txt.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }

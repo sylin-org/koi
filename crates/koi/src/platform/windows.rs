@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use windows_service::service::{
@@ -27,8 +28,34 @@ const RECOVERY_RESET_SECS: Duration = Duration::from_secs(86_400);
 const SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(30);
 const SERVICE_STOP_POLL: Duration = Duration::from_millis(500);
 
+const APP_DIR_NAME: &str = "koi";
+const SERVICE_LOG_DIR: &str = "koi\\logs";
+const SERVICE_LOG_FILENAME: &str = "koi.log";
+
 // Reuse shutdown constants from crate root (defined once in main.rs).
 use crate::{SHUTDOWN_TIMEOUT, SHUTDOWN_DRAIN};
+
+// ── Service paths ───────────────────────────────────────────────────
+
+pub fn service_log_path() -> PathBuf {
+    let program_data =
+        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+    PathBuf::from(program_data)
+        .join(SERVICE_LOG_DIR)
+        .join(SERVICE_LOG_FILENAME)
+}
+
+pub fn service_log_dir() -> PathBuf {
+    let program_data =
+        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+    PathBuf::from(program_data).join(SERVICE_LOG_DIR)
+}
+
+pub fn service_data_dir() -> PathBuf {
+    let program_data =
+        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+    PathBuf::from(program_data).join(APP_DIR_NAME)
+}
 
 /// Win32 ERROR_SERVICE_DOES_NOT_EXIST (1060).
 const ERROR_SERVICE_NOT_FOUND: i32 = 1060;
@@ -146,7 +173,7 @@ pub fn install() -> anyhow::Result<()> {
     let _ = service.set_failure_actions_on_non_crash_failures(true);
 
     // Log directory
-    let log_dir = crate::cli::service_log_dir();
+    let log_dir = service_log_dir();
     match std::fs::create_dir_all(&log_dir) {
         Ok(()) => println!("  Log directory: {}", log_dir.display()),
         Err(e) => println!("  Warning: could not create log directory: {e}"),
@@ -270,7 +297,7 @@ pub fn uninstall() -> anyhow::Result<()> {
     koi_config::breadcrumb::delete_breadcrumb();
 
     // Log directory — remove only if empty, otherwise inform the user
-    let log_dir = crate::cli::service_log_dir();
+    let log_dir = service_log_dir();
     match std::fs::remove_dir(&log_dir) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -278,7 +305,7 @@ pub fn uninstall() -> anyhow::Result<()> {
     }
 
     // Parent data directory — remove only if empty
-    let data_dir = crate::cli::service_data_dir();
+    let data_dir = service_data_dir();
     let _ = std::fs::remove_dir(&data_dir); // silent — either empty or has logs
 
     println!();
@@ -303,7 +330,7 @@ fn service_main(arguments: Vec<OsString>) {
 
 fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
     // Initialize logging to the well-known service log file.
-    let log_path = crate::cli::service_log_path();
+    let log_path = service_log_path();
     let env_filter = tracing_subscriber::EnvFilter::try_new(
         std::env::var("KOI_LOG").unwrap_or_else(|_| "info".to_string()),
     )
@@ -397,7 +424,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             let port = config.http_port;
             let token = cancel.clone();
             tasks.push(tokio::spawn(async move {
-                if let Err(e) = crate::start_http(c, port, token, started_at).await {
+                if let Err(e) = crate::adapters::http::start(c, port, token, started_at).await {
                     tracing::error!(error = %e, "HTTP adapter failed");
                 }
             }));

@@ -1,6 +1,17 @@
+use std::path::PathBuf;
 use std::process::Command;
 
 const LABEL: &str = "org.sylin.koi";
+
+// ── Service paths ───────────────────────────────────────────────────
+
+pub fn plist_path() -> PathBuf {
+    PathBuf::from("/Library/LaunchDaemons/org.sylin.koi.plist")
+}
+
+pub fn install_bin_path() -> PathBuf {
+    PathBuf::from("/usr/local/bin/koi")
+}
 
 /// Install Koi as a macOS LaunchDaemon.
 ///
@@ -10,8 +21,8 @@ pub fn install() -> anyhow::Result<()> {
     check_root("install")?;
 
     let exe_path = std::env::current_exe()?;
-    let install_path = crate::cli::install_bin_path();
-    let plist_path = crate::cli::plist_path();
+    let install_path = install_bin_path();
+    let plist_path = plist_path();
 
     println!("Installing Koi mDNS service...");
     println!("  Binary: {}", exe_path.display());
@@ -79,8 +90,8 @@ pub fn install() -> anyhow::Result<()> {
 pub fn uninstall() -> anyhow::Result<()> {
     check_root("uninstall")?;
 
-    let plist_path = crate::cli::plist_path();
-    let install_path = crate::cli::install_bin_path();
+    let plist_path = plist_path();
+    let install_path = install_bin_path();
 
     println!("Uninstalling Koi mDNS service...");
 
@@ -174,7 +185,7 @@ fn launchctl_bootout() -> bool {
     }
 
     // Fall back to legacy command
-    let plist_path = crate::cli::plist_path();
+    let plist_path = plist_path();
     let plist_str = plist_path.display().to_string();
     let result = Command::new("launchctl")
         .args(["unload", "-w", &plist_str])

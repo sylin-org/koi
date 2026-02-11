@@ -26,6 +26,10 @@ pub use error::CertmeshError;
 use profiles::TrustProfile;
 use roster::Roster;
 
+/// mDNS service type for CA discovery.
+/// Used by the binary crate to announce the CA via koi-mdns.
+pub const CERTMESH_SERVICE_TYPE: &str = "_certmesh._tcp";
+
 // ── Internal shared state ───────────────────────────────────────────
 
 /// Internal shared state for CertmeshCore and HTTP handlers.
@@ -138,6 +142,51 @@ impl CertmeshCore {
         let ca_guard = self.state.ca.lock().await;
         let roster = self.state.roster.lock().await;
         build_status(&ca_guard, &roster, &self.state.profile)
+    }
+
+    /// Produce an mDNS announcement descriptor if this node is an unlocked primary.
+    ///
+    /// Returns `None` if the CA is locked or this node is not primary.
+    /// The binary crate translates this into an mDNS `RegisterPayload`.
+    pub async fn ca_announcement(&self, http_port: u16) -> Option<protocol::CaAnnouncement> {
+        let ca_guard = self.state.ca.lock().await;
+        let ca = ca_guard.as_ref()?;
+
+        let roster = self.state.roster.lock().await;
+        let primary = roster.primary()?;
+
+        let mut txt = std::collections::HashMap::new();
+        txt.insert("role".to_string(), "primary".to_string());
+        txt.insert(
+            "fingerprint".to_string(),
+            ca::ca_fingerprint(ca),
+        );
+        txt.insert("profile".to_string(), self.state.profile.to_string());
+
+        Some(protocol::CaAnnouncement {
+            name: format!("koi-ca-{}", primary.hostname),
+            port: http_port,
+            txt,
+        })
+    }
+
+    /// Set the post-renewal reload hook for a member.
+    pub async fn set_reload_hook(
+        &self,
+        hostname: &str,
+        hook: &str,
+    ) -> Result<(), CertmeshError> {
+        let mut roster = self.state.roster.lock().await;
+        let member = roster.find_member_mut(hostname).ok_or_else(|| {
+            CertmeshError::Internal(format!("member not found: {hostname}"))
+        })?;
+        member.reload_hook = Some(hook.to_string());
+
+        let roster_path = ca::roster_path();
+        roster::save_roster(&roster, &roster_path)?;
+
+        tracing::info!(hostname, hook, "Reload hook set");
+        Ok(())
     }
 
     /// Unlock the CA with a passphrase.

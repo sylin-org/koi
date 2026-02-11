@@ -70,19 +70,84 @@ mod tests {
         );
     }
 
+    /// Exhaustive test covering every ErrorCode variant → HTTP status mapping.
+    /// Adding a new ErrorCode variant forces a compile error here until the
+    /// mapping is explicitly verified.
     #[test]
-    fn http_status_codes_are_correct() {
-        assert_eq!(ErrorCode::InvalidType.http_status(), 400);
-        assert_eq!(ErrorCode::NotFound.http_status(), 404);
-        assert_eq!(ErrorCode::AlreadyDraining.http_status(), 409);
-        assert_eq!(ErrorCode::ResolveTimeout.http_status(), 504);
-        assert_eq!(ErrorCode::DaemonError.http_status(), 500);
-        // Certmesh error codes
-        assert_eq!(ErrorCode::CaNotInitialized.http_status(), 503);
-        assert_eq!(ErrorCode::CaLocked.http_status(), 503);
-        assert_eq!(ErrorCode::InvalidTotp.http_status(), 401);
-        assert_eq!(ErrorCode::RateLimited.http_status(), 429);
-        assert_eq!(ErrorCode::EnrollmentClosed.http_status(), 403);
-        assert_eq!(ErrorCode::CapabilityDisabled.http_status(), 503);
+    fn all_error_code_variants_map_to_expected_http_status() {
+        let cases: Vec<(ErrorCode, u16)> = vec![
+            // 400 Bad Request
+            (ErrorCode::InvalidType, 400),
+            (ErrorCode::InvalidName, 400),
+            (ErrorCode::InvalidPayload, 400),
+            (ErrorCode::AmbiguousId, 400),
+            (ErrorCode::ParseError, 400),
+            // 401 Unauthorized
+            (ErrorCode::InvalidTotp, 401),
+            // 403 Forbidden
+            (ErrorCode::SessionMismatch, 403),
+            (ErrorCode::EnrollmentClosed, 403),
+            // 404 Not Found
+            (ErrorCode::NotFound, 404),
+            // 409 Conflict
+            (ErrorCode::Conflict, 409),
+            (ErrorCode::AlreadyDraining, 409),
+            (ErrorCode::NotDraining, 409),
+            // 429 Rate Limited
+            (ErrorCode::RateLimited, 429),
+            // 500 Internal Server Error
+            (ErrorCode::DaemonError, 500),
+            (ErrorCode::IoError, 500),
+            (ErrorCode::Internal, 500),
+            // 503 Service Unavailable
+            (ErrorCode::ShuttingDown, 503),
+            (ErrorCode::CaNotInitialized, 503),
+            (ErrorCode::CaLocked, 503),
+            (ErrorCode::CapabilityDisabled, 503),
+            // 504 Gateway Timeout
+            (ErrorCode::ResolveTimeout, 504),
+        ];
+        for (code, expected_status) in &cases {
+            assert_eq!(
+                code.http_status(),
+                *expected_status,
+                "{code:?} should map to HTTP {expected_status}"
+            );
+        }
+    }
+
+    /// Exhaustive serde round-trip for all ErrorCode variants.
+    #[test]
+    fn all_error_code_variants_roundtrip_through_json() {
+        let variants: Vec<(ErrorCode, &str)> = vec![
+            (ErrorCode::InvalidType, "invalid_type"),
+            (ErrorCode::InvalidName, "invalid_name"),
+            (ErrorCode::InvalidPayload, "invalid_payload"),
+            (ErrorCode::NotFound, "not_found"),
+            (ErrorCode::Conflict, "conflict"),
+            (ErrorCode::SessionMismatch, "session_mismatch"),
+            (ErrorCode::ResolveTimeout, "resolve_timeout"),
+            (ErrorCode::DaemonError, "daemon_error"),
+            (ErrorCode::IoError, "io_error"),
+            (ErrorCode::AlreadyDraining, "already_draining"),
+            (ErrorCode::NotDraining, "not_draining"),
+            (ErrorCode::AmbiguousId, "ambiguous_id"),
+            (ErrorCode::ParseError, "parse_error"),
+            (ErrorCode::ShuttingDown, "shutting_down"),
+            (ErrorCode::Internal, "internal"),
+            (ErrorCode::CaNotInitialized, "ca_not_initialized"),
+            (ErrorCode::CaLocked, "ca_locked"),
+            (ErrorCode::InvalidTotp, "invalid_totp"),
+            (ErrorCode::RateLimited, "rate_limited"),
+            (ErrorCode::EnrollmentClosed, "enrollment_closed"),
+            (ErrorCode::CapabilityDisabled, "capability_disabled"),
+        ];
+        for (code, expected_str) in &variants {
+            let serialized = serde_json::to_value(code).unwrap();
+            assert_eq!(serialized, *expected_str, "{code:?} should serialize to \"{expected_str}\"");
+
+            let deserialized: ErrorCode = serde_json::from_value(serialized).unwrap();
+            assert_eq!(&deserialized, code, "\"{expected_str}\" should deserialize back to {code:?}");
+        }
     }
 }

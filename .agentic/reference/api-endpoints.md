@@ -31,11 +31,23 @@ Route handlers are defined in `crates/koi-mdns/src/http.rs`.
 | POST | `/v1/mdns/admin/registrations/{id}/drain` | Begin grace period |
 | POST | `/v1/mdns/admin/registrations/{id}/revive` | Cancel draining |
 
+### Certmesh Operations
+
+All certmesh endpoints are mounted at `/v1/certmesh/` by the binary crate.
+Route handlers are defined in `crates/koi-certmesh/src/http.rs`.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| POST | `/v1/certmesh/join` | Join the certificate mesh (TOTP enrollment) |
+| GET | `/v1/certmesh/status` | Mesh status overview |
+| PUT | `/v1/certmesh/hook` | Set reload hook for a member |
+
 ### System
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/healthz` | Health check (200 OK) |
+| GET | `/v1/status` | Unified capability status (version, uptime, capabilities) |
+| GET | `/healthz` | Health check (200 "OK") |
 
 ---
 
@@ -136,6 +148,13 @@ Streaming responses include a `status` field:
 | `koi mdns admin unregister <id>` | Client | Force removal |
 | `koi mdns admin drain <id>` | Client | Start draining |
 | `koi mdns admin revive <id>` | Client | Cancel drain |
+| `koi certmesh create` | Local | Initialize private CA |
+| `koi certmesh join [endpoint]` | Network | Join existing mesh (mDNS CA discovery) |
+| `koi certmesh status` | Local | Show mesh status |
+| `koi certmesh unlock` | Local | Decrypt CA key |
+| `koi certmesh log` | Local | Show audit log |
+| `koi certmesh set-hook --reload CMD` | Local/Client | Set reload hook |
+| `koi status` | Standalone/Client | Unified capability status |
 | `koi install` | - | Install as OS service |
 | `koi uninstall` | - | Uninstall OS service |
 | `koi version` | - | Show version info |

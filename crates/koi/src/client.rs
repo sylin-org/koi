@@ -155,12 +155,23 @@ impl KoiClient {
     // ── Generic operations ─────────────────────────────────────────
 
     /// POST JSON to an arbitrary path and return the response as a JSON value.
-    #[allow(dead_code)]
     pub fn post_json(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
         let url = format!("{}{path}", self.endpoint);
         let resp = self
             .agent
             .post(&url)
+            .send_json(body.clone())
+            .map_err(map_error)?;
+        resp.into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    /// PUT JSON to an arbitrary path and return the response as a JSON value.
+    pub fn put_json(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}{path}", self.endpoint);
+        let resp = self
+            .agent
+            .put(&url)
             .send_json(body.clone())
             .map_err(map_error)?;
         resp.into_json()

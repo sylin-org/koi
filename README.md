@@ -8,26 +8,26 @@ Think of it as **Avahi for everywhere** — without the D-Bus dependency, withou
 
 ```bash
 # What's on my network?
-koi browse
+koi mdns discover
 
 # Find all HTTP servers
-koi browse http
+koi mdns discover http
 
 # Register a service
-koi register "My App" http 8080 version=1.0
+koi mdns announce "My App" http 8080 version=1.0
 
 # Register pinned to a specific IP (skip auto-detect)
-koi register "My App" http 8080 --ip 192.168.1.42
+koi mdns announce "My App" http 8080 --ip 192.168.1.42
 
 # Resolve a specific instance
-koi resolve "My Server._http._tcp.local."
+koi mdns resolve "My Server._http._tcp.local."
 ```
 
 Or over HTTP — from any language, any container, any script:
 
 ```bash
-curl http://localhost:5641/v1/browse?type=_http._tcp
-curl -X POST http://localhost:5641/v1/services \
+curl http://localhost:5641/v1/mdns/browse?type=_http._tcp
+curl -X POST http://localhost:5641/v1/mdns/services \
   -d '{"name": "My App", "type": "_http._tcp", "port": 8080, "ip": "192.168.1.42"}'
 ```
 
@@ -89,7 +89,7 @@ The container makes a plain HTTP request; Koi speaks multicast on the physical n
 | -------- | ----------------------------- | --------------------- |
 | Windows  | Pure Rust (no Bonjour needed) | Windows Service (SCM) |
 | Linux    | Pure Rust (no Avahi needed)   | systemd unit          |
-| macOS    | Pure Rust (no Bonjour needed) | launchd (planned)     |
+| macOS    | Pure Rust (no Bonjour needed) | launchd plist         |
 
 Zero OS dependencies. No Bonjour, no Avahi, no system mDNS service required.
 
@@ -97,26 +97,29 @@ Zero OS dependencies. No Bonjour, no Avahi, no system mDNS service required.
 
 Koi's HTTP API uses SSE (Server-Sent Events) for streaming and JSON for everything else.
 
-| Method   | Path                          | Description                         |
-| -------- | ----------------------------- | ----------------------------------- |
-| `GET`    | `/v1/browse?type=_http._tcp`  | SSE stream of discovered services   |
-| `POST`   | `/v1/services`                | Register a service                  |
-| `DELETE` | `/v1/services/{id}`           | Unregister a service                |
-| `GET`    | `/v1/resolve?name={instance}` | Resolve a specific service instance |
-| `GET`    | `/v1/events?type=_http._tcp`  | SSE stream of lifecycle events      |
-| `GET`    | `/healthz`                    | Health check                        |
+| Method   | Path                               | Description                         |
+| -------- | ---------------------------------- | ----------------------------------- |
+| `GET`    | `/v1/mdns/browse?type=_http._tcp`  | SSE stream of discovered services   |
+| `POST`   | `/v1/mdns/services`                | Register a service                  |
+| `DELETE` | `/v1/mdns/services/{id}`           | Unregister a service                |
+| `PUT`    | `/v1/mdns/services/{id}/heartbeat` | Renew heartbeat lease               |
+| `GET`    | `/v1/mdns/resolve?name={instance}` | Resolve a specific service instance |
+| `GET`    | `/v1/mdns/events?type=_http._tcp`  | SSE stream of lifecycle events      |
+| `GET`    | `/v1/status`                       | Unified capability status           |
+| `GET`    | `/healthz`                         | Health check                        |
 
 SSE streams close after 5 seconds of quiet by default. Set `idle_for=0` for infinite streaming, or `idle_for=15` to wait longer on slow networks.
 
 ## CLI
 
 ```bash
-koi browse http                              # discover HTTP services
-koi browse                                   # discover all service types
-koi register "My App" http 8080 version=1.0  # advertise a service
-koi resolve "My Server._http._tcp.local."    # resolve an instance
-koi subscribe http                           # stream lifecycle events
-koi browse http --json                       # output as NDJSON
+koi mdns discover http                              # discover HTTP services
+koi mdns discover                                   # discover all service types
+koi mdns announce "My App" http 8080 version=1.0    # advertise a service
+koi mdns resolve "My Server._http._tcp.local."      # resolve an instance
+koi mdns subscribe http                             # stream lifecycle events
+koi mdns discover http --json                       # output as NDJSON
+koi status                                          # unified capability status
 ```
 
 When stdin is piped, Koi reads NDJSON commands directly:

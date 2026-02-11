@@ -594,6 +594,31 @@ try {
     Fail 'certmesh log' $_.Exception.Message
 }
 
+# 1.C7 - Set reload hook (offline, direct roster edit)
+try {
+    $r = Invoke-Koi -KoiArgs 'certmesh', 'set-hook', '--reload', '"echo reload-ok"'
+    if ($r.Stdout -match 'Reload hook set') {
+        Pass 'certmesh set-hook sets reload hook (offline)'
+    } else {
+        Fail 'certmesh set-hook' "Output: $($r.Stdout.Substring(0, [Math]::Min(200, $r.Stdout.Length)))"
+    }
+} catch {
+    Fail 'certmesh set-hook' $_.Exception.Message
+}
+
+# 1.C8 - Verify set-hook persisted in roster JSON
+try {
+    $r = Invoke-Koi -KoiArgs 'certmesh', 'set-hook', '--reload', '"systemctl restart nginx"', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    if ($json.reload -eq 'systemctl restart nginx') {
+        Pass 'certmesh set-hook --json returns reload value'
+    } else {
+        Fail 'certmesh set-hook --json' "reload=$($json.reload)"
+    }
+} catch {
+    Fail 'certmesh set-hook --json' $_.Exception.Message
+}
+
 # ======================================================================
 #  TIER 1.T - Runtime Tunables
 # ======================================================================
@@ -1611,6 +1636,108 @@ try {
     }
 } catch {
     Fail 'Named Pipe: malformed JSON returns parse_error' $_.Exception.Message
+}
+
+# -- Heartbeat lifecycle: register → expire → removal ----------------------------
+
+# HL1 - Register with short lease, skip heartbeats, verify expiry
+# Uses lease_secs=6 (6s lease) + default 30s grace.
+# The reaper runs every 5s, so total wait = lease(6) + grace(30) + reaper(5) + margin(5) = ~46s.
+# This is a long-running test but it validates the full heartbeat lifecycle.
+$hlRegId = $null
+try {
+    $body = '{"name":"HeartbeatLifecycleTest","type":"_http._tcp","port":19996,"lease_secs":6}'
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+    $json = $resp.Content | ConvertFrom-Json
+    $hlRegId = $json.registered.id
+
+    if (-not $hlRegId) {
+        Fail 'heartbeat lifecycle: register' 'No ID returned'
+    } else {
+        # Verify it's alive
+        $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$hlRegId"
+        $insp = $inspResp.Content | ConvertFrom-Json
+        if ($insp.state -eq 'alive' -and $insp.mode -eq 'heartbeat') {
+            Pass 'heartbeat lifecycle: register + alive'
+        } else {
+            Fail 'heartbeat lifecycle: register + alive' "state=$($insp.state), mode=$($insp.mode)"
+        }
+
+        # Wait for lease to expire and enter draining (lease=6s + margin)
+        Log "Waiting 12s for lease expiry..."
+        Start-Sleep -Seconds 12
+
+        # Check draining state
+        try {
+            $inspResp2 = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$hlRegId"
+            $insp2 = $inspResp2.Content | ConvertFrom-Json
+            if ($insp2.state -eq 'draining') {
+                Pass 'heartbeat lifecycle: draining after lease expiry'
+            } else {
+                Fail 'heartbeat lifecycle: draining' "Expected draining, got: $($insp2.state)"
+            }
+        } catch {
+            # Might already be removed if timing is tight — that's also acceptable
+            Fail 'heartbeat lifecycle: draining' $_.Exception.Message
+        }
+
+        # Wait for grace period to elapse (30s grace + reaper 5s + margin)
+        Log "Waiting 40s for grace period + removal..."
+        Start-Sleep -Seconds 40
+
+        # Verify it's been removed (should return 404)
+        try {
+            $inspResp3 = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$hlRegId"
+            # If we get here without error, it hasn't been removed yet
+            Fail 'heartbeat lifecycle: removed after grace' "Registration still exists"
+        } catch {
+            # Expected: 404 means it was removed
+            if ($_.Exception.Message -match '404') {
+                Pass 'heartbeat lifecycle: removed after grace'
+            } else {
+                Fail 'heartbeat lifecycle: removed after grace' $_.Exception.Message
+            }
+        }
+    }
+} catch {
+    Fail 'heartbeat lifecycle' $_.Exception.Message
+}
+
+# HL2 - Register with short lease, send heartbeat, verify it stays alive
+$hl2RegId = $null
+try {
+    $body = '{"name":"HeartbeatKeepAlive","type":"_http._tcp","port":19997,"lease_secs":6}'
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+    $json = $resp.Content | ConvertFrom-Json
+    $hl2RegId = $json.registered.id
+
+    if (-not $hl2RegId) {
+        Fail 'heartbeat keepalive: register' 'No ID returned'
+    } else {
+        # Wait 4 seconds (before lease expires at 6s), then heartbeat
+        Start-Sleep -Seconds 4
+        $hbResp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/mdns/services/$hl2RegId/heartbeat"
+        $hbJson = $hbResp.Content | ConvertFrom-Json
+
+        if ($hbJson.renewed.id -eq $hl2RegId) {
+            # Wait another 4 seconds — should still be alive (heartbeat reset the lease)
+            Start-Sleep -Seconds 4
+            $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$hl2RegId"
+            $insp = $inspResp.Content | ConvertFrom-Json
+            if ($insp.state -eq 'alive') {
+                Pass 'heartbeat keepalive: stays alive with timely heartbeat'
+            } else {
+                Fail 'heartbeat keepalive' "Expected alive after heartbeat, got: $($insp.state)"
+            }
+        } else {
+            Fail 'heartbeat keepalive: heartbeat' "Unexpected heartbeat response"
+        }
+
+        # Clean up
+        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$hl2RegId" } catch {}
+    }
+} catch {
+    Fail 'heartbeat keepalive' $_.Exception.Message
 }
 
 # -- Stretch goal: concurrent registration burst --------------------------------

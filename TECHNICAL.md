@@ -1,7 +1,7 @@
 # Koi Technical Specification
 
-**Version:** 0.1.0-draft  
-**Status:** Pre-implementation
+**Version:** 0.2.0
+**Status:** Implemented
 
 ## Table of Contents
 
@@ -310,19 +310,21 @@ The HTTP adapter translates REST semantics to core API calls using Axum.
 
 | Method | Path | Core operation | Response |
 |---|---|---|---|
-| `GET` | `/v1/browse?type=_http._tcp` | `browse()` | SSE stream of `found` events |
-| `POST` | `/v1/services` | `register()` | JSON `registered` response |
-| `DELETE` | `/v1/services/{id}` | `unregister()` | JSON `unregistered` response |
-| `GET` | `/v1/resolve?name={instance}` | `resolve()` | JSON `resolved` response |
-| `GET` | `/v1/events?type=_http._tcp` | `subscribe()` | SSE stream of lifecycle events |
-| `GET` | `/healthz` | — | `{"ok": true}` |
+| `GET` | `/v1/mdns/browse?type=_http._tcp` | `browse()` | SSE stream of `found` events |
+| `POST` | `/v1/mdns/services` | `register()` | JSON `registered` response |
+| `DELETE` | `/v1/mdns/services/{id}` | `unregister()` | JSON `unregistered` response |
+| `PUT` | `/v1/mdns/services/{id}/heartbeat` | `heartbeat()` | JSON `renewed` response |
+| `GET` | `/v1/mdns/resolve?name={instance}` | `resolve()` | JSON `resolved` response |
+| `GET` | `/v1/mdns/events?type=_http._tcp` | `subscribe()` | SSE stream of lifecycle events |
+| `GET` | `/v1/status` | — | Unified capability status |
+| `GET` | `/healthz` | — | `"OK"` |
 
 ### SSE streaming
 
 Browse and subscribe endpoints use [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events). Each event is a JSON line:
 
 ```
-GET /v1/browse?type=_http._tcp
+GET /v1/mdns/browse?type=_http._tcp
 Accept: text/event-stream
 
 data: {"found": {"name": "Server A", "type": "_http._tcp", ...}}
@@ -577,29 +579,40 @@ Koi is configured via CLI flags, environment variables, or a config file. CLI fl
 
 ## Project Structure
 
+Koi v0.2 is a multi-crate Cargo workspace:
+
 ```
-src/
-├── main.rs              # Startup, config parsing, signal handling
-├── core/
-│   ├── mod.rs           # MdnsCore struct, public API, types
-│   ├── daemon.rs        # mdns-sd ServiceDaemon wrapper, single instance owner
-│   ├── registry.rs      # In-memory service registry, lifetime tracking
-│   └── events.rs        # Broadcast fan-out, subscription management
-├── adapters/
-│   ├── mod.rs
-│   ├── http.rs          # Axum routes → core calls, SSE streaming
-│   ├── pipe.rs          # Named pipe (Windows) / UDS (Unix) → core calls
-│   └── cli.rs           # stdin/stdout NDJSON → core calls
-├── platform/
-│   ├── mod.rs
-│   ├── windows.rs       # Windows Service (SCM) integration
-│   └── unix.rs          # systemd notify, daemonization
-└── config.rs            # CLI args (clap), config file, env vars
+crates/
+├── koi/                # Binary crate — CLI entry, wiring, adapters
+│   └── src/
+│       ├── main.rs           # Orchestrator: CLI parse, routing, daemon wiring, shutdown
+│       ├── cli.rs            # clap definitions (Cli, Command, Config)
+│       ├── client.rs         # KoiClient (ureq HTTP client for client/admin mode)
+│       ├── format.rs         # All human-readable CLI output
+│       ├── admin.rs          # Admin command execution
+│       ├── commands/
+│       │   ├── mod.rs        # Shared helpers (detect_mode, run_streaming, etc.)
+│       │   ├── mdns.rs       # mDNS commands (discover, announce, etc.)
+│       │   ├── certmesh.rs   # Certmesh commands (create, join, etc.)
+│       │   └── status.rs     # Unified status command
+│       ├── adapters/
+│       │   ├── http.rs       # HTTP server (Axum router, health, status)
+│       │   ├── pipe.rs       # Named pipe (Windows) / UDS (Unix) adapter
+│       │   ├── cli.rs        # stdin/stdout NDJSON adapter
+│       │   └── dispatch.rs   # Shared NDJSON dispatch logic
+│       └── platform/
+│           ├── windows.rs    # Windows Service (SCM), firewall, paths
+│           ├── unix.rs       # systemd, paths
+│           └── macos.rs      # launchd, paths
+├── koi-common/         # Shared kernel — types, errors, pipeline, id
+├── koi-mdns/           # mDNS domain — core, daemon, registry, protocol, http
+├── koi-config/         # Config & state — breadcrumb discovery
+├── koi-certmesh/       # Certificate mesh — CA, enrollment, roster
+├── koi-crypto/         # Cryptographic primitives — key gen, TOTP
+└── koi-truststore/     # Trust store — platform cert installation
 ```
 
-The `platform/` module is the only location with `#[cfg(target_os)]` conditional compilation. Everything else is pure cross-platform Rust.
-
-Feature flags can disable adapters at compile time for minimal builds, but the default includes everything.
+The `platform/` module is the only location with `#[cfg(target_os)]` conditional compilation. Everything else is pure cross-platform Rust. Domain crates depend on `koi-common` but never on each other.
 
 ---
 
@@ -679,5 +692,5 @@ The following were considered and deliberately excluded from v1:
 
 ---
 
-**Document Status:** Draft  
-**Last Updated:** 2026-02-07
+**Document Status:** Current
+**Last Updated:** 2026-02-11

@@ -17,7 +17,7 @@ pub fn routes(core: Arc<MdnsCore>) -> Router {
         .with_state(core)
 }
 
-// crates/koi/src/main.rs — mounts at /v1/mdns/
+// crates/koi/src/adapters/http.rs — mounts at /v1/mdns/
 app = app.nest("/v1/mdns", koi_mdns::http::routes(core));
 ```
 

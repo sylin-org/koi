@@ -167,6 +167,13 @@ koi mdns unregister <id>     # Remove a service
 koi mdns resolve <name>      # Resolve service
 koi mdns subscribe <type>    # Watch lifecycle events
 koi mdns admin <cmd>         # Admin operations
+koi certmesh create          # Initialize private CA
+koi certmesh join [endpoint] # Join existing mesh
+koi certmesh status          # Mesh status
+koi certmesh unlock          # Decrypt CA key
+koi certmesh log             # Audit log
+koi certmesh set-hook        # Set reload hook
+koi status                   # Unified capability status
 koi install                  # Install as OS service
 koi uninstall                # Uninstall OS service
 koi version                  # Show version
@@ -187,7 +194,7 @@ koi version                  # Show version
 - Use `#[cfg(feature = "...")]` for domain capabilities (use runtime tunables instead)
 - Expose domain internal state as `pub` (use opaque facade pattern — see "Domain Facade Pattern" below)
 - Duplicate session ID generation (use `koi_common::id::generate_short_id()`)
-- Duplicate adapter dispatch logic (use `adapters::dispatch` module)
+- Duplicate the streaming `select! { stream, ctrl_c, timeout }` skeleton (use `commands::run_streaming()`)
 - Define the same constant in multiple files (make `pub(crate)` and import)
 
 ## Always Do
@@ -199,7 +206,7 @@ koi version                  # Show version
 - Test serde round-trips for new protocol types
 - Check `config.require_capability()` before dispatching domain commands
 - Use `commands::print_json()` for CLI JSON output (handles serialization errors gracefully)
-- Use shared helpers (`build_register_payload`, `print_register_success`, `wait_for_signal_or_timeout`) instead of duplicating
+- Use shared helpers (`build_register_payload`, `print_register_success`, `run_streaming`) instead of duplicating
 - Re-export domain error types at crate root (e.g., `pub use error::CertmeshError`)
 
 ---
@@ -237,6 +244,40 @@ The pipe and CLI adapters share identical NDJSON request dispatch logic. This is
 - `write_response()` — serializes with graceful error handling (no `.unwrap()`)
 
 Each adapter only keeps its own session grace period and transport setup.
+
+### Binary Crate Module Structure
+
+The binary crate (`crates/koi/src/`) is organized by responsibility:
+
+```
+main.rs          — Pure orchestrator: CLI parse, routing, daemon wiring, shutdown
+cli.rs           — clap definitions (Cli, Command, Config)
+client.rs        — KoiClient (ureq HTTP client for client mode)
+format.rs        — ALL human-readable CLI output (single source of truth)
+admin.rs         — Admin command execution (delegates to KoiClient)
+commands/
+  mod.rs         — Shared helpers (detect_mode, run_streaming, print_json, etc.)
+  mdns.rs        — mDNS commands + admin routing (discover, announce, etc.)
+  certmesh.rs    — Certmesh commands (create, join, status, etc.)
+  status.rs      — Unified status command
+adapters/
+  mod.rs
+  http.rs        — HTTP server (AppState, routes, health, status handler)
+  pipe.rs        — Named Pipe / UDS adapter
+  cli.rs         — Piped stdin/stdout adapter
+  dispatch.rs    — Shared NDJSON dispatch logic
+platform/
+  mod.rs         — Platform abstraction
+  windows.rs     — SCM, firewall, service paths
+  unix.rs        — systemd, service paths
+  macos.rs       — launchd, service paths
+```
+
+Key design rules:
+- `main.rs` contains zero business logic — only routing and wiring
+- `format.rs` is the only file with `println!`-based presentation
+- Platform paths live in their respective `platform/` modules, not in `cli.rs`
+- Commands are organized by domain (`commands/mdns.rs`, `commands/certmesh.rs`)
 
 ### Serialization Safety
 

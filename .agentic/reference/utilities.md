@@ -70,6 +70,12 @@ Existing constants and types - don't reinvent these.
 |----------|-------|---------|
 | `DEFAULT_TIMEOUT` | 5s | CLI command timeout |
 
+### koi -- Certmesh Commands (`crates/koi/src/commands/certmesh.rs`)
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `CA_DISCOVERY_TIMEOUT` | 5s | mDNS browse timeout for CA discovery |
+
 ---
 
 ## Shared Helpers (Don't Duplicate)
@@ -88,12 +94,35 @@ Used by both `adapters::pipe` and `adapters::cli` — never duplicate this logic
 
 | Function | Purpose |
 |----------|---------|
+| `detect_mode()` | Determine standalone vs client mode (breadcrumb check) |
+| `resolve_endpoint()` | Resolve daemon endpoint for admin commands |
 | `print_json()` | Serialize to JSON with graceful error handling (no `.unwrap()`) |
 | `build_register_payload()` | Construct `RegisterPayload` from CLI args |
 | `print_register_success()` | Print registration result with ID and lease info |
-| `wait_for_signal_or_timeout()` | Wait for Ctrl+C or optional timeout (used by announce/subscribe) |
+| `wait_for_signal_or_timeout()` | Wait for Ctrl+C or optional timeout (used by announce) |
+| `run_streaming()` | Generic `select! { stream, ctrl_c, timeout }` skeleton (used by discover, subscribe) |
+| `effective_timeout()` | Resolve explicit/default timeout to `Option<Duration>` |
 
-Used by both `commands::standalone` and `commands::client` — never duplicate this logic.
+Used by `commands::mdns` and `commands::certmesh` — never duplicate this logic.
+
+### `format` (`crates/koi/src/format.rs`)
+
+Single source of truth for ALL human-readable CLI output.
+
+| Function | Purpose |
+|----------|---------|
+| `service_line()` | One-line service display (discover output) |
+| `resolved_detail()` | Multi-line resolved service details |
+| `subscribe_event()` | Lifecycle event line (found/resolved/removed) |
+| `browse_event_json()` | Format browse SSE JSON for CLI |
+| `subscribe_event_json()` | Format subscribe SSE JSON for CLI |
+| `registration_row()` | Admin list row (tabular format) |
+| `registration_detail()` | Admin inspect detail view |
+| `unified_status()` | Status command output |
+| `certmesh_create_success()` | Certmesh create success message |
+| `certmesh_status()` | Certmesh status display |
+
+No other module should contain `println!`-based presentation functions.
 
 ---
 
@@ -209,11 +238,14 @@ Used by both `commands::standalone` and `commands::client` — never duplicate t
 | Type | Location | Purpose |
 |------|----------|---------|
 | `Cli` | `cli.rs` | Top-level clap parser |
-| `Command` | `cli.rs` | Subcommand enum (Mdns, Install, etc.) |
+| `Command` | `cli.rs` | Subcommand enum (Mdns, Certmesh, Install, etc.) |
 | `MdnsSubcommand` | `cli.rs` | mDNS subcommands (Discover, Announce, etc.) |
+| `CertmeshSubcommand` | `cli.rs` | Certmesh subcommands (Create, Join, etc.) |
 | `AdminSubcommand` | `cli.rs` | Admin subcommands (Status, List, etc.) |
 | `Config` | `cli.rs` | Daemon runtime configuration |
+| `DaemonCores` | `main.rs` | Runtime state: `Option<Arc<Core>>` per domain |
 | `KoiClient` | `client.rs` | Blocking HTTP client (ureq) for client mode & admin |
+| `Mode` | `commands/mod.rs` | Execution mode enum (Standalone, Client) |
 
 ---
 

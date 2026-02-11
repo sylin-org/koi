@@ -56,3 +56,86 @@ impl From<&CertmeshError> for ErrorCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Exhaustive test: every CertmeshError variant maps to the expected
+    /// ErrorCode and HTTP status. Adding a new variant forces a compile
+    /// error until explicitly mapped.
+    #[test]
+    fn all_certmesh_error_variants_map_to_expected_error_code_and_http_status() {
+        let cases: Vec<(CertmeshError, ErrorCode, u16)> = vec![
+            (
+                CertmeshError::CaNotInitialized,
+                ErrorCode::CaNotInitialized,
+                503,
+            ),
+            (CertmeshError::CaLocked, ErrorCode::CaLocked, 503),
+            (CertmeshError::InvalidTotp, ErrorCode::InvalidTotp, 401),
+            (
+                CertmeshError::RateLimited { remaining_secs: 60 },
+                ErrorCode::RateLimited,
+                429,
+            ),
+            (
+                CertmeshError::EnrollmentClosed,
+                ErrorCode::EnrollmentClosed,
+                403,
+            ),
+            (
+                CertmeshError::AlreadyEnrolled("host-01".into()),
+                ErrorCode::Conflict,
+                409,
+            ),
+            (
+                CertmeshError::Crypto("bad key".into()),
+                ErrorCode::Internal,
+                500,
+            ),
+            (
+                CertmeshError::Certificate("bad cert".into()),
+                ErrorCode::Internal,
+                500,
+            ),
+            (
+                CertmeshError::Io(std::io::Error::new(std::io::ErrorKind::Other, "test")),
+                ErrorCode::IoError,
+                500,
+            ),
+            (
+                CertmeshError::Internal("unexpected".into()),
+                ErrorCode::Internal,
+                500,
+            ),
+        ];
+        for (error, expected_code, expected_status) in &cases {
+            let code = ErrorCode::from(error);
+            assert_eq!(
+                &code, expected_code,
+                "{error:?} should map to {expected_code:?}"
+            );
+            assert_eq!(
+                code.http_status(),
+                *expected_status,
+                "{error:?} → {expected_code:?} should have HTTP {expected_status}"
+            );
+        }
+    }
+
+    #[test]
+    fn crypto_error_converts_to_certmesh_error() {
+        let crypto_err =
+            koi_crypto::keys::CryptoError::Encryption("test failure".into());
+        let certmesh_err: CertmeshError = crypto_err.into();
+        assert!(matches!(certmesh_err, CertmeshError::Crypto(_)));
+        assert!(certmesh_err.to_string().contains("test failure"));
+    }
+
+    #[test]
+    fn rate_limited_error_includes_remaining_secs_in_message() {
+        let e = CertmeshError::RateLimited { remaining_secs: 42 };
+        assert!(e.to_string().contains("42"));
+    }
+}

@@ -8,12 +8,12 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 
 use crate::CertmeshState;
 use crate::error::CertmeshError;
-use crate::protocol::JoinRequest;
+use crate::protocol::{JoinRequest, SetHookRequest};
 
 /// Build the certmesh router with domain-owned routes.
 ///
@@ -22,6 +22,7 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
     Router::new()
         .route("/join", post(join_handler))
         .route("/status", get(status_handler))
+        .route("/hook", put(set_hook_handler))
         .with_state(state)
 }
 
@@ -104,6 +105,45 @@ async fn status_handler(
     let roster = state.roster.lock().await;
     let status = crate::build_status(&ca_guard, &roster, &state.profile);
     Json(status)
+}
+
+/// PUT /hook — Set a post-renewal reload hook for a member.
+async fn set_hook_handler(
+    State(state): State<Arc<CertmeshState>>,
+    Json(request): Json<SetHookRequest>,
+) -> impl IntoResponse {
+    // Verify the member exists
+    let mut roster = state.roster.lock().await;
+    match roster.find_member_mut(&request.hostname) {
+        Some(member) => {
+            member.reload_hook = Some(request.reload.clone());
+
+            let roster_path = crate::ca::roster_path();
+            if let Err(e) = crate::roster::save_roster(&roster, &roster_path) {
+                tracing::warn!(error = %e, "Failed to save roster after set-hook");
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &CertmeshError::Internal(format!("Failed to save roster: {e}")),
+                );
+            }
+
+            let resp = crate::protocol::SetHookResponse {
+                hostname: request.hostname,
+                reload: request.reload,
+            };
+            match serde_json::to_value(&resp) {
+                Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+                Err(e) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &CertmeshError::Internal(format!("Serialization error: {e}")),
+                ),
+            }
+        }
+        None => error_response(
+            StatusCode::NOT_FOUND,
+            &CertmeshError::Internal(format!("member not found: {}", request.hostname)),
+        ),
+    }
 }
 
 fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::Response {

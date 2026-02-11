@@ -75,6 +75,7 @@ pub fn process_enrollment(
     };
     let role_str = if is_primary { "primary" } else { "member" };
 
+    let ca_fp = ca::ca_fingerprint(ca);
     let member = RosterMember {
         hostname: hostname.to_string(),
         role,
@@ -85,6 +86,9 @@ pub fn process_enrollment(
         cert_sans: sans.to_vec(),
         cert_path: cert_dir.display().to_string(),
         status: MemberStatus::Active,
+        reload_hook: None,
+        last_seen: Some(Utc::now()),
+        pinned_ca_fingerprint: Some(ca_fp),
     };
     roster.members.push(member);
 

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Command;
 
 /// Send sd_notify(READY=1) for systemd Type=notify services.
@@ -10,6 +11,18 @@ pub fn notify_ready() -> anyhow::Result<()> {
         tracing::info!("Sent sd_notify READY=1");
     }
     Ok(())
+}
+
+// ── Service paths (Linux) ────────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+pub fn unit_file_path() -> PathBuf {
+    PathBuf::from("/etc/systemd/system/koi.service")
+}
+
+#[cfg(target_os = "linux")]
+pub fn install_bin_path() -> PathBuf {
+    PathBuf::from("/usr/local/bin/koi")
 }
 
 // ── Install / Uninstall (Linux only — systemd) ──────────────────────
@@ -26,8 +39,8 @@ pub fn install() -> anyhow::Result<()> {
     check_root("install")?;
 
     let exe_path = std::env::current_exe()?;
-    let install_path = crate::cli::install_bin_path();
-    let unit_path = crate::cli::unit_file_path();
+    let install_path = install_bin_path();
+    let unit_path = unit_file_path();
 
     println!("Installing Koi mDNS service...");
     println!("  Binary: {}", exe_path.display());
@@ -123,8 +136,8 @@ pub fn install() -> anyhow::Result<()> {
 pub fn uninstall() -> anyhow::Result<()> {
     check_root("uninstall")?;
 
-    let unit_path = crate::cli::unit_file_path();
-    let install_path = crate::cli::install_bin_path();
+    let unit_path = unit_file_path();
+    let install_path = install_bin_path();
 
     println!("Uninstalling Koi mDNS service...");
 

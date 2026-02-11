@@ -51,3 +51,86 @@ impl From<&MdnsError> for ErrorCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Exhaustive test: every MdnsError variant maps to the expected ErrorCode
+    /// and HTTP status. Adding a new variant forces a compile error until
+    /// explicitly mapped.
+    #[test]
+    fn all_mdns_error_variants_map_to_expected_error_code_and_http_status() {
+        let cases: Vec<(MdnsError, ErrorCode, u16)> = vec![
+            (
+                MdnsError::InvalidServiceType("bad".into()),
+                ErrorCode::InvalidType,
+                400,
+            ),
+            (
+                MdnsError::RegistrationNotFound("abc".into()),
+                ErrorCode::NotFound,
+                404,
+            ),
+            (
+                MdnsError::ResolveTimeout("srv".into()),
+                ErrorCode::ResolveTimeout,
+                504,
+            ),
+            (
+                MdnsError::Daemon("engine crash".into()),
+                ErrorCode::DaemonError,
+                500,
+            ),
+            (
+                MdnsError::Io(std::io::Error::new(std::io::ErrorKind::Other, "test")),
+                ErrorCode::IoError,
+                500,
+            ),
+            (
+                MdnsError::AlreadyDraining("abc".into()),
+                ErrorCode::AlreadyDraining,
+                409,
+            ),
+            (
+                MdnsError::NotDraining("abc".into()),
+                ErrorCode::NotDraining,
+                409,
+            ),
+            (
+                MdnsError::AmbiguousId("a1".into()),
+                ErrorCode::AmbiguousId,
+                400,
+            ),
+        ];
+        for (error, expected_code, expected_status) in &cases {
+            let code = ErrorCode::from(error);
+            assert_eq!(
+                &code, expected_code,
+                "{error:?} should map to {expected_code:?}"
+            );
+            assert_eq!(
+                code.http_status(),
+                *expected_status,
+                "{error:?} → {expected_code:?} should have HTTP {expected_status}"
+            );
+        }
+    }
+
+    #[test]
+    fn service_type_error_converts_to_mdns_error() {
+        let st_err = koi_common::types::ServiceTypeError::Invalid("bad_proto".into());
+        let mdns_err: MdnsError = st_err.into();
+        assert!(matches!(mdns_err, MdnsError::InvalidServiceType(_)));
+        assert!(mdns_err.to_string().contains("bad_proto"));
+    }
+
+    #[test]
+    fn error_display_messages_contain_context() {
+        let e = MdnsError::InvalidServiceType("_bad._xyz".into());
+        assert!(e.to_string().contains("_bad._xyz"));
+
+        let e = MdnsError::RegistrationNotFound("deadbeef".into());
+        assert!(e.to_string().contains("deadbeef"));
+    }
+}

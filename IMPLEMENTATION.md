@@ -10,7 +10,7 @@
 
 Koi wraps the `mdns-sd` Rust crate behind a JSON API exposed over HTTP, Unix domain sockets / Named Pipes, and stdin/stdout. It runs as a host service (Windows Service or systemd unit) and gives containers, scripts, and polyglot applications full mDNS browse/register/resolve/subscribe capabilities without touching multicast sockets themselves.
 
-The crate name is `koi-mdns`. The binary name is `koi`.
+The workspace name is `koi`. The binary name is `koi`. Domain crates: `koi-mdns`, `koi-certmesh`, `koi-common`, `koi-config`, `koi-crypto`, `koi-truststore`.
 
 ---
 
@@ -31,32 +31,40 @@ Three layers. Adapters are dumb pipes. Core owns everything meaningful. The mdns
 
 ## Project layout
 
+v0.2 is a multi-crate Cargo workspace. The binary crate orchestrates; domain crates own their logic.
+
 ```
-Cargo.toml
-src/
-├── main.rs
-├── config.rs
-├── core/
-│   ├── mod.rs          # MdnsCore + public API
-│   ├── daemon.rs       # mdns-sd wrapper
-│   ├── registry.rs     # registration tracking
-│   └── events.rs       # broadcast fan-out
-├── adapters/
-│   ├── mod.rs
-│   ├── http.rs
-│   ├── pipe.rs
-│   └── cli.rs
-├── platform/
-│   ├── mod.rs
-│   ├── windows.rs
-│   └── unix.rs
-└── protocol/
-    ├── mod.rs
-    ├── request.rs      # inbound JSON shapes
-    └── response.rs     # outbound JSON shapes
+crates/
+├── koi/                   # Binary crate
+│   └── src/
+│       ├── main.rs              # Pure orchestrator: CLI parse, routing, daemon wiring
+│       ├── cli.rs               # clap definitions (Cli, Command, Config)
+│       ├── client.rs            # KoiClient (ureq HTTP client)
+│       ├── format.rs            # ALL human-readable CLI output
+│       ├── admin.rs             # Admin command execution
+│       ├── commands/
+│       │   ├── mod.rs           # Shared helpers (detect_mode, run_streaming, etc.)
+│       │   ├── mdns.rs          # mDNS commands + admin routing
+│       │   ├── certmesh.rs      # Certmesh commands
+│       │   └── status.rs        # Unified status command
+│       ├── adapters/
+│       │   ├── http.rs          # HTTP server (Axum router, routes)
+│       │   ├── pipe.rs          # Named pipe / UDS adapter
+│       │   ├── cli.rs           # stdin/stdout NDJSON adapter
+│       │   └── dispatch.rs      # Shared NDJSON dispatch logic
+│       └── platform/
+│           ├── windows.rs       # Windows SCM, firewall, service paths
+│           ├── unix.rs          # systemd, service paths
+│           └── macos.rs         # launchd, service paths
+├── koi-common/            # Shared kernel (types, errors, pipeline)
+├── koi-mdns/              # mDNS domain (core, daemon, registry, protocol, http)
+├── koi-certmesh/          # Certificate mesh (CA, enrollment, roster)
+├── koi-crypto/            # Cryptographic primitives (keys, TOTP)
+├── koi-truststore/        # Platform trust store installation
+└── koi-config/            # Config & breadcrumb discovery
 ```
 
-Note the `protocol/` module. This is the **shared language** between adapters and core. It defines the JSON wire types — request enums, response enums, the service record shape. Adapters deserialize into protocol types, pass them to core, and serialize protocol types back out. This is the seam that prevents model duplication.
+Protocol types live in each domain crate (`koi-mdns/src/protocol.rs`, `koi-certmesh/src/protocol.rs`). Shared types live in `koi-common`. The binary crate contains no domain logic — only CLI parsing, adapter wiring, and formatting.
 
 ---
 
@@ -424,32 +432,33 @@ Every dependency is an audit surface and a compile time cost. Be miserly.
 
 ## Cargo.toml shape
 
+v0.2 uses a workspace with workspace-level dependency management:
+
 ```toml
-[package]
-name = "koi-mdns"
-version = "0.1.0"
-edition = "2021"
-description = "Cross-platform mDNS service discovery daemon with HTTP, IPC, and CLI interfaces"
-license = "Apache-2.0 OR MIT"
-repository = "https://github.com/sylin-org/koi"
+# Root Cargo.toml
+[workspace]
+members = ["crates/*"]
 
-[[bin]]
-name = "koi"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
 mdns-sd = "0.17"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-clap = { version = "4", features = ["derive"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-thiserror = "2"
+# ... etc — all versions managed at workspace level
+```
 
-[target.'cfg(windows)'.dependencies]
-windows-service = "0.7"
+Each crate references workspace dependencies:
+```toml
+# crates/koi/Cargo.toml
+[dependencies]
+koi-common = { path = "../koi-common" }
+koi-mdns = { path = "../koi-mdns" }
+koi-certmesh = { path = "../koi-certmesh" }
+koi-config = { path = "../koi-config" }
+axum.workspace = true
+tokio.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
 ```
 
 ---

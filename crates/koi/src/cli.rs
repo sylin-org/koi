@@ -202,8 +202,8 @@ pub enum CertmeshSubcommand {
     },
     /// Join an existing certificate mesh
     Join {
-        /// CA endpoint (e.g. "http://ca-host:5641")
-        endpoint: String,
+        /// CA endpoint (e.g. "http://ca-host:5641"). Omit to discover via mDNS.
+        endpoint: Option<String>,
     },
     /// Show certificate mesh status
     Status,
@@ -211,6 +211,12 @@ pub enum CertmeshSubcommand {
     Log,
     /// Unlock the CA (decrypt key from passphrase)
     Unlock,
+    /// Set a post-renewal reload hook for this host
+    SetHook {
+        /// Shell command to run after certificate renewal
+        #[arg(long)]
+        reload: String,
+    },
 }
 
 /// Resolved configuration used at runtime.
@@ -311,62 +317,6 @@ impl Default for Config {
     }
 }
 
-// ── Service log paths (Windows) ──────────────────────────────────────
-
-#[cfg(windows)]
-const APP_DIR_NAME: &str = "koi";
-#[cfg(windows)]
-const SERVICE_LOG_DIR: &str = "koi\\logs";
-#[cfg(windows)]
-const SERVICE_LOG_FILENAME: &str = "koi.log";
-
-#[cfg(windows)]
-pub fn service_log_path() -> PathBuf {
-    let program_data =
-        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
-    PathBuf::from(program_data)
-        .join(SERVICE_LOG_DIR)
-        .join(SERVICE_LOG_FILENAME)
-}
-
-#[cfg(windows)]
-pub fn service_log_dir() -> PathBuf {
-    let program_data =
-        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
-    PathBuf::from(program_data).join(SERVICE_LOG_DIR)
-}
-
-#[cfg(windows)]
-pub fn service_data_dir() -> PathBuf {
-    let program_data =
-        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
-    PathBuf::from(program_data).join(APP_DIR_NAME)
-}
-
-// ── Service paths (Linux/systemd) ────────────────────────────────────
-
-#[cfg(target_os = "linux")]
-pub fn unit_file_path() -> PathBuf {
-    PathBuf::from("/etc/systemd/system/koi.service")
-}
-
-#[cfg(target_os = "linux")]
-pub fn install_bin_path() -> PathBuf {
-    PathBuf::from("/usr/local/bin/koi")
-}
-
-// ── Service paths (macOS/launchd) ────────────────────────────────────
-
-#[cfg(target_os = "macos")]
-pub fn plist_path() -> PathBuf {
-    PathBuf::from("/Library/LaunchDaemons/org.sylin.koi.plist")
-}
-
-#[cfg(target_os = "macos")]
-pub fn install_bin_path() -> PathBuf {
-    PathBuf::from("/usr/local/bin/koi")
-}
-
 // ── Default paths ────────────────────────────────────────────────────
 
 fn default_pipe_path() -> PathBuf {
@@ -385,5 +335,65 @@ fn default_pipe_path() -> PathBuf {
     #[cfg(not(any(unix, windows)))]
     {
         PathBuf::from(UNIX_SOCKET_FILENAME)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Config::require_capability tests ─────────────────────────────
+
+    #[test]
+    fn require_capability_passes_when_enabled() {
+        let config = Config::default();
+        assert!(config.require_capability("mdns").is_ok());
+        assert!(config.require_capability("certmesh").is_ok());
+    }
+
+    #[test]
+    fn require_capability_fails_when_mdns_disabled() {
+        let config = Config {
+            no_mdns: true,
+            ..Config::default()
+        };
+        let result = config.require_capability("mdns");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("mdns"), "error message should mention 'mdns': {msg}");
+        assert!(msg.contains("disabled"), "error message should mention 'disabled': {msg}");
+    }
+
+    #[test]
+    fn require_capability_fails_when_certmesh_disabled() {
+        let config = Config {
+            no_certmesh: true,
+            ..Config::default()
+        };
+        let result = config.require_capability("certmesh");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn require_capability_unknown_name_passes() {
+        let config = Config::default();
+        assert!(config.require_capability("unknown").is_ok());
+    }
+
+    // ── Config::default tests ────────────────────────────────────────
+
+    #[test]
+    fn config_default_values() {
+        let config = Config::default();
+        assert_eq!(config.http_port, DEFAULT_HTTP_PORT);
+        assert!(!config.no_http);
+        assert!(!config.no_ipc);
+        assert!(!config.no_mdns);
+        assert!(!config.no_certmesh);
+    }
+
+    #[test]
+    fn default_http_port_is_5641() {
+        assert_eq!(DEFAULT_HTTP_PORT, 5641);
     }
 }

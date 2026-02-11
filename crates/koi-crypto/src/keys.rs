@@ -314,4 +314,63 @@ mod tests {
         let pem = kp.private_key_pem();
         assert!(pem.contains("BEGIN PRIVATE KEY"));
     }
+
+    // ── CryptoError variant coverage ─────────────────────────────────
+
+    #[test]
+    fn crypto_error_display_messages() {
+        let cases: Vec<(CryptoError, &str)> = vec![
+            (CryptoError::KeyEncoding("bad DER".into()), "bad DER"),
+            (CryptoError::Encryption("cipher fail".into()), "cipher fail"),
+            (CryptoError::Decryption("wrong pass".into()), "wrong pass"),
+            (CryptoError::KeyDerivation("argon fail".into()), "argon fail"),
+            (CryptoError::Serialization("json broken".into()), "json broken"),
+            (
+                CryptoError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "no file")),
+                "no file",
+            ),
+        ];
+        for (error, expected_substring) in cases {
+            let msg = error.to_string();
+            assert!(
+                msg.contains(expected_substring),
+                "{error:?} message should contain \"{expected_substring}\", got: \"{msg}\""
+            );
+        }
+    }
+
+    #[test]
+    fn decrypt_bytes_with_wrong_passphrase_returns_decryption_error() {
+        let plaintext = b"test data for encryption";
+        let encrypted = encrypt_bytes(plaintext, "correct").unwrap();
+        let result = decrypt_bytes(&encrypted, "wrong");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, CryptoError::Decryption(_)));
+    }
+
+    #[test]
+    fn decrypt_bytes_with_tampered_nonce_fails() {
+        let plaintext = b"tamper test data";
+        let mut encrypted = encrypt_bytes(plaintext, "pass").unwrap();
+        encrypted.nonce = vec![0u8; 12]; // replace nonce with zeros
+        let result = decrypt_bytes(&encrypted, "pass");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn encrypt_decrypt_bytes_round_trip() {
+        let plaintext = b"round trip bytes test";
+        let encrypted = encrypt_bytes(plaintext, "secret").unwrap();
+        let decrypted = decrypt_bytes(&encrypted, "secret").unwrap();
+        assert_eq!(&decrypted, plaintext);
+    }
+
+    #[test]
+    fn load_encrypted_key_from_nonexistent_file() {
+        let path = std::env::temp_dir().join("koi-crypto-nonexistent-12345.enc");
+        let result = load_encrypted_key(&path);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), CryptoError::Io(_)));
+    }
 }

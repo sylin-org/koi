@@ -294,3 +294,86 @@ fn policy_from_lease_secs(lease_secs: Option<u64>) -> LeasePolicy {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── idle_duration tests ──────────────────────────────────────────
+
+    #[test]
+    fn idle_duration_absent_returns_default_5s() {
+        let d = idle_duration(None);
+        assert_eq!(d, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn idle_duration_zero_returns_none_infinite() {
+        let d = idle_duration(Some(0));
+        assert_eq!(d, None);
+    }
+
+    #[test]
+    fn idle_duration_explicit_value() {
+        let d = idle_duration(Some(15));
+        assert_eq!(d, Some(Duration::from_secs(15)));
+    }
+
+    #[test]
+    fn idle_duration_one_second() {
+        let d = idle_duration(Some(1));
+        assert_eq!(d, Some(Duration::from_secs(1)));
+    }
+
+    // ── policy_from_lease_secs tests ─────────────────────────────────
+
+    #[test]
+    fn policy_from_none_returns_default_heartbeat() {
+        let policy = policy_from_lease_secs(None);
+        assert!(matches!(
+            policy,
+            LeasePolicy::Heartbeat { lease, grace }
+            if lease == Duration::from_secs(90) && grace == Duration::from_secs(30)
+        ));
+    }
+
+    #[test]
+    fn policy_from_zero_returns_permanent() {
+        let policy = policy_from_lease_secs(Some(0));
+        assert!(matches!(policy, LeasePolicy::Permanent));
+    }
+
+    #[test]
+    fn policy_from_custom_returns_heartbeat_with_custom_lease() {
+        let policy = policy_from_lease_secs(Some(300));
+        assert!(matches!(
+            policy,
+            LeasePolicy::Heartbeat { lease, grace }
+            if lease == Duration::from_secs(300) && grace == Duration::from_secs(30)
+        ));
+    }
+
+    // ── BrowseParams deserialization ─────────────────────────────────
+
+    #[test]
+    fn browse_params_deserializes_type_field() {
+        let json = r#"{"type": "_http._tcp"}"#;
+        let params: BrowseParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.service_type, "_http._tcp");
+        assert!(params.idle_for.is_none());
+    }
+
+    #[test]
+    fn browse_params_deserializes_idle_for() {
+        let json = r#"{"type": "_http._tcp", "idle_for": 10}"#;
+        let params: BrowseParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.idle_for, Some(10));
+    }
+
+    #[test]
+    fn resolve_params_deserializes_name() {
+        let json = r#"{"name": "My NAS._http._tcp.local."}"#;
+        let params: ResolveParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.name, "My NAS._http._tcp.local.");
+    }
+}
