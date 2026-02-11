@@ -9,3 +9,5 @@ repository.workspace = true
 [dependencies]
 koi-common.workspace = true
 tracing.workspace = true
+serde.workspace = true
+toml = "0.8"

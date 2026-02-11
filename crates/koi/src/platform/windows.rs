@@ -361,10 +361,14 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             }
         };
 
+        // Ensure data directory exists
+        koi_config::dirs::ensure_data_dir();
+
         // Startup diagnostics (logged to file)
         crate::startup_diagnostics(&config);
 
         let mut tasks = Vec::new();
+        let started_at = std::time::Instant::now();
 
         // HTTP adapter
         if !config.no_http {
@@ -372,7 +376,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             let port = config.http_port;
             let token = cancel.clone();
             tasks.push(tokio::spawn(async move {
-                if let Err(e) = crate::start_http(c, port, token).await {
+                if let Err(e) = crate::start_http(c, port, token, started_at).await {
                     tracing::error!(error = %e, "HTTP adapter failed");
                 }
             }));

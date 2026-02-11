@@ -79,6 +79,8 @@ pub enum Command {
     Uninstall,
     /// Show version information
     Version,
+    /// Show status of all capabilities
+    Status,
     /// mDNS service discovery
     #[cfg(feature = "mdns")]
     Mdns(MdnsCommand),

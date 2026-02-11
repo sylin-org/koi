@@ -141,6 +141,16 @@ impl KoiClient {
         Ok(SseStream::new(Box::new(resp.into_reader())))
     }
 
+    // ── Unified status ─────────────────────────────────────────────
+
+    /// Fetch unified status from `/v1/status`.
+    pub fn unified_status(&self) -> Result<serde_json::Value> {
+        let url = format!("{}/v1/status", self.endpoint);
+        let resp = self.agent.get(&url).call().map_err(map_error)?;
+        resp.into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
     // ── Admin operations ──────────────────────────────────────────
 
     pub fn admin_status(&self) -> Result<DaemonStatus> {

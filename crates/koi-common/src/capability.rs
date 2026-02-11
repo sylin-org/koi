@@ -1,4 +1,7 @@
+use serde::Serialize;
+
 /// Summary of a capability's current state for the unified dashboard.
+#[derive(Debug, Clone, Serialize)]
 pub struct CapabilityStatus {
     pub name: String,
     pub summary: String,

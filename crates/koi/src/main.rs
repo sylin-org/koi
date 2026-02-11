@@ -90,8 +90,21 @@ fn main() -> anyhow::Result<()> {
                 };
             }
             Command::Version => {
-                println!("koi {}", env!("CARGO_PKG_VERSION"));
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "version": env!("CARGO_PKG_VERSION"),
+                            "platform": std::env::consts::OS,
+                        })
+                    );
+                } else {
+                    println!("koi {}", env!("CARGO_PKG_VERSION"));
+                }
                 return Ok(());
+            }
+            Command::Status => {
+                return dispatch_status(&cli);
             }
             #[cfg(feature = "mdns")]
             Command::Mdns(mdns_cmd) => {
@@ -137,6 +150,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
     // ── Daemon mode ─────────────────────────────────────────────────
     let config = Config::from_cli(&cli);
+    koi_config::dirs::ensure_data_dir();
     startup_diagnostics(&config);
 
     // Write breadcrumb so clients can discover the daemon
@@ -147,6 +161,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
     let cancel = CancellationToken::new();
     let mut tasks = Vec::new();
+    let started_at = std::time::Instant::now();
 
     #[cfg(feature = "mdns")]
     let core = Arc::new(koi_mdns::MdnsCore::with_cancel(cancel.clone())?);
@@ -157,7 +172,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         let port = config.http_port;
         let token = cancel.clone();
         tasks.push(tokio::spawn(async move {
-            if let Err(e) = start_http(c, port, token).await {
+            if let Err(e) = start_http(c, port, token, started_at).await {
                 tracing::error!(error = %e, "HTTP adapter failed");
             }
         }));
@@ -221,16 +236,46 @@ pub(crate) async fn start_http(
     core: Arc<koi_mdns::MdnsCore>,
     port: u16,
     cancel: CancellationToken,
+    started_at: std::time::Instant,
 ) -> anyhow::Result<()> {
+    use axum::extract::State as AxumState;
+    use axum::response::Json;
     use axum::routing::get;
     use axum::Router;
+    use koi_common::capability::Capability;
     use tower_http::cors::CorsLayer;
 
-    let mut app = Router::new().route("/healthz", get(health));
+    #[derive(Clone)]
+    struct AppState {
+        core: Arc<koi_mdns::MdnsCore>,
+        started_at: std::time::Instant,
+    }
 
-    app = app.nest("/v1/mdns", koi_mdns::http::routes(core));
+    async fn unified_status_handler(
+        AxumState(state): AxumState<AppState>,
+    ) -> Json<serde_json::Value> {
+        let capabilities = vec![state.core.status()];
+        let uptime_secs = state.started_at.elapsed().as_secs();
+        Json(serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "platform": std::env::consts::OS,
+            "uptime_secs": uptime_secs,
+            "daemon": true,
+            "capabilities": capabilities,
+        }))
+    }
 
-    let app = app.layer(CorsLayer::permissive());
+    let app_state = AppState {
+        core: core.clone(),
+        started_at,
+    };
+
+    let app = Router::new()
+        .route("/healthz", get(health))
+        .route("/v1/status", get(unified_status_handler))
+        .with_state(app_state)
+        .nest("/v1/mdns", koi_mdns::http::routes(core))
+        .layer(CorsLayer::permissive());
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     tracing::info!("HTTP adapter listening on port {}", port);
@@ -387,6 +432,115 @@ fn dispatch_mdns_admin(
         AdminSubcommand::Unregister { id } => admin::unregister(endpoint, id, json),
         AdminSubcommand::Drain { id } => admin::drain(endpoint, id, json),
         AdminSubcommand::Revive { id } => admin::revive(endpoint, id, json),
+    }
+}
+
+// ── Status command ──────────────────────────────────────────────────
+
+fn offline_capabilities() -> Vec<koi_common::capability::CapabilityStatus> {
+    #[cfg(feature = "mdns")]
+    {
+        vec![koi_common::capability::CapabilityStatus {
+            name: "mdns".to_string(),
+            summary: "not running".to_string(),
+            healthy: false,
+        }]
+    }
+    #[cfg(not(feature = "mdns"))]
+    {
+        vec![]
+    }
+}
+
+fn dispatch_status(cli: &Cli) -> anyhow::Result<()> {
+    use koi_common::capability::CapabilityStatus;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct UnifiedStatus {
+        version: String,
+        platform: String,
+        daemon: bool,
+        capabilities: Vec<CapabilityStatus>,
+    }
+
+    // Try to connect to daemon first
+    if !cli.standalone {
+        if let Some(endpoint) = cli
+            .endpoint
+            .clone()
+            .or_else(koi_config::breadcrumb::read_breadcrumb)
+        {
+            let c = client::KoiClient::new(&endpoint);
+            if c.health().is_ok() {
+                match c.unified_status() {
+                    Ok(status_json) => {
+                        if cli.json {
+                            println!("{}", serde_json::to_string_pretty(&status_json)?);
+                        } else {
+                            format_unified_status(&status_json);
+                        }
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "Could not fetch unified status");
+                    }
+                }
+            }
+        }
+    }
+
+    // No daemon — report offline status with compile-time capabilities
+    let capabilities = offline_capabilities();
+
+    let status = UnifiedStatus {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        platform: std::env::consts::OS.to_string(),
+        daemon: false,
+        capabilities,
+    };
+
+    if cli.json {
+        println!("{}", serde_json::to_string_pretty(&status)?);
+    } else {
+        println!("Koi v{}", status.version);
+        println!("  Platform:  {}", status.platform);
+        println!("  Daemon:    not running");
+        for cap in &status.capabilities {
+            let marker = if cap.healthy { "+" } else { "-" };
+            println!("  [{}] {}:  {}", marker, cap.name, cap.summary);
+        }
+    }
+
+    Ok(())
+}
+
+fn format_unified_status(json: &serde_json::Value) {
+    let version = json
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let platform = json
+        .get("platform")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let uptime = json.get("uptime_secs").and_then(|v| v.as_u64());
+
+    println!("Koi v{version}");
+    println!("  Platform:  {platform}");
+    if let Some(secs) = uptime {
+        println!("  Uptime:    {secs}s");
+    }
+    println!("  Daemon:    running");
+
+    if let Some(caps) = json.get("capabilities").and_then(|v| v.as_array()) {
+        for cap in caps {
+            let name = cap.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let summary = cap.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+            let healthy = cap.get("healthy").and_then(|v| v.as_bool()).unwrap_or(false);
+            let marker = if healthy { "+" } else { "-" };
+            println!("  [{marker}] {name}:  {summary}");
+        }
     }
 }
 

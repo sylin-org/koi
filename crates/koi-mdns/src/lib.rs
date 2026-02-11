@@ -26,6 +26,7 @@ use std::time::Instant;
 use self::daemon::MdnsDaemon;
 use self::registry::{InsertOutcome, Registry};
 
+use koi_common::capability::{Capability, CapabilityStatus};
 use koi_common::id::generate_short_id;
 use koi_common::types::{ServiceRecord, ServiceType, SessionId, META_QUERY};
 use tokio::sync::broadcast;
@@ -304,5 +305,24 @@ impl MdnsCore {
     pub fn admin_revive(&self, id_or_prefix: &str) -> Result<()> {
         let full_id = self.registry.resolve_prefix(id_or_prefix)?;
         self.registry.force_revive(&full_id)
+    }
+}
+
+impl Capability for MdnsCore {
+    fn name(&self) -> &str {
+        "mdns"
+    }
+
+    fn status(&self) -> CapabilityStatus {
+        let counts = self.registry.counts();
+        let summary = format!(
+            "{} registered ({} alive, {} draining)",
+            counts.total, counts.alive, counts.draining
+        );
+        CapabilityStatus {
+            name: "mdns".to_string(),
+            summary,
+            healthy: true,
+        }
     }
 }

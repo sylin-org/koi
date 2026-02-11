@@ -423,7 +423,72 @@ try {
     Fail 'piped JSON mode accepted' $_.Exception.Message
 }
 
-# 1.7 - Verbose flag accepted
+# 1.7 - Version command (human)
+try {
+    $r = Invoke-Koi -KoiArgs 'version'
+    if ($r.Stdout -match 'koi \d+\.\d+') {
+        Pass 'koi version prints version string'
+    } else {
+        Fail 'koi version prints version string' "Unexpected output: $($r.Stdout.Trim())"
+    }
+} catch {
+    Fail 'koi version prints version string' $_.Exception.Message
+}
+
+# 1.8 - Version --json
+try {
+    $r = Invoke-Koi -KoiArgs 'version', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    if ($json.version -and $json.platform) {
+        Pass "koi version --json (v$($json.version), $($json.platform))"
+    } else {
+        Fail 'koi version --json' "Missing fields: version=$($json.version) platform=$($json.platform)"
+    }
+} catch {
+    Fail 'koi version --json' $_.Exception.Message
+}
+
+# 1.9 - Status offline (human)
+try {
+    $r = Invoke-Koi -KoiArgs 'status'
+    if ($r.Stdout -match '\[-\] mdns' -and $r.Stdout -match 'not running') {
+        Pass 'koi status (offline) shows [-] mdns not running'
+    } else {
+        Fail 'koi status (offline) shows [-] mdns not running' "Output: $($r.Stdout.Trim())"
+    }
+} catch {
+    Fail 'koi status (offline) shows [-] mdns not running' $_.Exception.Message
+}
+
+# 1.10 - Status offline --json
+try {
+    $r = Invoke-Koi -KoiArgs 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $mdnsCap = $caps | Where-Object { $_.name -eq 'mdns' }
+    if ($json.version -and $json.daemon -eq $false -and
+        $caps.Count -ge 1 -and $mdnsCap -and $mdnsCap.healthy -eq $false) {
+        Pass 'koi status --json (offline, daemon=false, mdns unhealthy)'
+    } else {
+        Fail 'koi status --json (offline)' "version=$($json.version) daemon=$($json.daemon) caps=$($caps.Count) mdns.healthy=$(if ($mdnsCap) { $mdnsCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'koi status --json (offline)' $_.Exception.Message
+}
+
+# 1.11 - Help includes status subcommand
+try {
+    $r = Invoke-Koi -KoiArgs '--help'
+    if ($r.Stdout -match 'status') {
+        Pass 'koi --help lists status subcommand'
+    } else {
+        Fail 'koi --help lists status subcommand' 'status not found in help output'
+    }
+} catch {
+    Fail 'koi --help lists status subcommand' $_.Exception.Message
+}
+
+# 1.12 - Verbose flag accepted
 try {
     $r = Invoke-Koi -KoiArgs 'mdns', 'discover', 'http', '--timeout', '1', '-v', '--standalone'
     Pass 'koi -v flag accepted'
@@ -431,7 +496,7 @@ try {
     Fail 'koi -v flag accepted' $_.Exception.Message
 }
 
-# 1.8 - Log file flag creates file
+# 1.13 - Log file flag creates file
 try {
     $logPath = Join-Path $TestDir 'test-logfile.log'
     $r = Invoke-Koi -KoiArgs 'mdns', 'discover', 'http', '--timeout', '2', '--log-file', "`"$logPath`"", '--standalone'
@@ -520,6 +585,65 @@ if (Test-Path $breadcrumbFile) {
     }
 } else {
     Fail 'breadcrumb file written with correct endpoint' 'Breadcrumb file not found'
+}
+
+# 2.2b - Unified status endpoint (/v1/status)
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/status"
+    $json = $resp.Content | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $mdnsCap = $caps | Where-Object { $_.name -eq 'mdns' }
+    if ($json.version -and
+        $json.platform -and
+        $json.daemon -eq $true -and
+        $null -ne $json.uptime_secs -and $json.uptime_secs -ge 0 -and
+        $caps.Count -ge 1 -and $mdnsCap -and $mdnsCap.healthy -eq $true) {
+        Pass "unified status endpoint (v$($json.version), uptime: $($json.uptime_secs)s, mdns: healthy)"
+    } else {
+        Fail 'unified status endpoint' "version=$($json.version) daemon=$($json.daemon) uptime=$($json.uptime_secs) caps=$($caps.Count) mdns.healthy=$(if ($mdnsCap) { $mdnsCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'unified status endpoint' $_.Exception.Message
+}
+
+# 2.2c - Status via CLI client mode (human)
+try {
+    $r = Invoke-Koi -KoiArgs 'status', '--endpoint', $Endpoint
+    if ($r.Stdout -match '\[\+\] mdns' -and $r.Stdout -match 'Daemon:\s+running') {
+        Pass 'koi status via CLI client mode (human)'
+    } else {
+        Fail 'koi status via CLI client mode (human)' "Output: $($r.Stdout.Substring(0, [Math]::Min(200, $r.Stdout.Length)))"
+    }
+} catch {
+    Fail 'koi status via CLI client mode (human)' $_.Exception.Message
+}
+
+# 2.2d - Status via CLI client mode (--json)
+try {
+    $r = Invoke-Koi -KoiArgs 'status', '--endpoint', $Endpoint, '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $mdnsCap = $caps | Where-Object { $_.name -eq 'mdns' }
+    if ($json.daemon -eq $true -and $json.version -and $mdnsCap -and $mdnsCap.healthy -eq $true) {
+        Pass "koi status --json via CLI client (daemon=true, mdns healthy)"
+    } else {
+        Fail 'koi status --json via CLI client' "daemon=$($json.daemon) version=$($json.version) mdns.healthy=$(if ($mdnsCap) { $mdnsCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'koi status --json via CLI client' $_.Exception.Message
+}
+
+# 2.2e - Status --standalone skips daemon even when running
+try {
+    $r = Invoke-Koi -KoiArgs 'status', '--standalone', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    if ($json.daemon -eq $false) {
+        Pass 'koi status --standalone reports daemon=false despite daemon running'
+    } else {
+        Fail 'koi status --standalone bypasses daemon' "Expected daemon=false, got daemon=$($json.daemon)"
+    }
+} catch {
+    Fail 'koi status --standalone bypasses daemon' $_.Exception.Message
 }
 
 # 2.3 - Register via HTTP
