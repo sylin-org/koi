@@ -1,5 +1,5 @@
 {
   "major": 0,
-  "minor": 1,
-  "description": "Initial release - browse, register, resolve, subscribe"
+  "minor": 2,
+  "description": "Workspace rebuild - multi-crate architecture, domain monikers, /v1/mdns/ routes"
 }

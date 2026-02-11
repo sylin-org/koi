@@ -1,0 +1,10 @@
+[package]
+name = "koi-dns"
+description = "Local DNS resolver domain for Koi (Phase 6)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+koi-common.workspace = true

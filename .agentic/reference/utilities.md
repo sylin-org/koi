@@ -6,22 +6,26 @@ Existing constants and types - don't reinvent these.
 
 ## Constants (Co-located, Not Centralized)
 
-### Core (`src/core/mod.rs`)
+### koi-common (`crates/koi-common/src/id.rs`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `SHORT_ID_LEN` | 8 | UUID prefix for registration IDs |
+
+### koi-mdns -- Core (`crates/koi-mdns/src/lib.rs`)
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
 | `BROADCAST_CHANNEL_CAPACITY` | 256 | Event subscriber channel size |
 | `REAPER_INTERVAL` | 5s | Lease expiry sweep frequency |
-| `SERVICE_NAME_MAX_LEN` | 15 | RFC 6763 service name limit |
 
-### Core Daemon (`src/core/daemon.rs`)
+### koi-mdns -- Daemon (`crates/koi-mdns/src/daemon.rs`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `RESOLVE_TIMEOUT` | 5s | mDNS resolve wait duration |
 
-### HTTP Adapter (`src/adapters/http.rs`)
+### koi-mdns -- HTTP (`crates/koi-mdns/src/http.rs`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
@@ -29,38 +33,38 @@ Existing constants and types - don't reinvent these.
 | `DEFAULT_HEARTBEAT_GRACE` | 30s | Grace period after expiry |
 | `DEFAULT_SSE_IDLE` | 5s | SSE stream idle timeout |
 
-### Pipe Adapter (`src/adapters/pipe.rs`)
+### koi -- Pipe Adapter (`crates/koi/src/adapters/pipe.rs`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `SESSION_GRACE` | 30s | IPC session grace period |
 
-### CLI Adapter (`src/adapters/cli.rs`)
+### koi -- CLI Adapter (`crates/koi/src/adapters/cli.rs`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `SESSION_GRACE` | 5s | Piped stdin grace period |
 
-### Main (`src/main.rs`)
+### koi -- Main (`crates/koi/src/main.rs`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `SHUTDOWN_TIMEOUT` | 20s | Hard shutdown limit |
 | `SHUTDOWN_DRAIN` | 500ms | In-flight request grace |
 
-### Config (`src/config.rs`)
+### koi -- CLI (`crates/koi/src/cli.rs`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `DEFAULT_HTTP_PORT` | 5641 | Default daemon port ("KOI" keypad) |
 
-### Client (`src/client.rs`)
+### koi -- Client (`crates/koi/src/client.rs`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `HEALTH_TIMEOUT` | 200ms | Quick daemon health probe |
 
-### Commands (`src/commands/mod.rs`)
+### koi -- Commands (`crates/koi/src/commands/mod.rs`)
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
@@ -68,13 +72,45 @@ Existing constants and types - don't reinvent these.
 
 ---
 
-## Wire Protocol Types (`src/protocol/`)
+## Shared Types (`koi-common`)
 
-### Data Types (`src/protocol/mod.rs`)
+### `koi_common::types`
 
 | Type | Purpose |
 |------|---------|
 | `ServiceRecord` | Core service data (name, type, host, ip, port, txt) |
+| `ServiceType` | Parsed `_name._proto` type with validation |
+| `EventKind` | Found / Resolved / Removed |
+| `SessionId` | Session identifier newtype |
+| `META_QUERY` | `"_services._dns-sd._udp.local."` constant |
+
+### `koi_common::error`
+
+| Type | Purpose |
+|------|---------|
+| `ErrorCode` | Wire error codes with `http_status()` mapping |
+
+### `koi_common::pipeline`
+
+| Type | Purpose |
+|------|---------|
+| `PipelineResponse<B>` | Generic pipeline wrapper with status/warning |
+| `PipelineStatus` | Ongoing / Finished |
+
+### `koi_common::id`
+
+| Function | Purpose |
+|----------|---------|
+| `generate_short_id()` | UUID v4 prefix (8 chars) |
+
+---
+
+## mDNS Domain Types (`koi-mdns`)
+
+### `koi_mdns::protocol`
+
+| Type | Purpose |
+|------|---------|
 | `RegisterPayload` | Registration request body |
 | `RegistrationResult` | Registration response (id, lease info) |
 | `RenewalResult` | Heartbeat renewal response |
@@ -83,28 +119,63 @@ Existing constants and types - don't reinvent these.
 | `AdminRegistration` | Full lifecycle view for admin commands |
 | `DaemonStatus` | Daemon overview (id, uptime, registrations) |
 | `RegistrationCounts` | Counts by state (alive, draining) |
+| `Request` | Inbound NDJSON request enum |
+| `Response` | Outbound response enum (custom Serialize) |
+| `MdnsPipelineResponse` | Type alias: `PipelineResponse<Response>` |
 
-### Request (`src/protocol/request.rs`)
+### `koi_mdns::protocol` (free functions)
 
-| Variant | JSON Shape |
-|---------|------------|
-| `Browse(String)` | `{"browse": "_http._tcp"}` |
-| `Register(RegisterPayload)` | `{"register": {...}}` |
-| `Unregister(String)` | `{"unregister": "id"}` |
-| `Heartbeat(String)` | `{"heartbeat": "id"}` |
+| Function | Purpose |
+|----------|---------|
+| `browse_event_to_pipeline()` | Convert browse event to pipeline response |
+| `subscribe_event_to_pipeline()` | Convert subscribe event to pipeline response |
+| `error_to_pipeline()` | Convert MdnsError to pipeline error response |
 
-### Response (`src/protocol/response.rs`)
+### `koi_mdns` (re-exports from `lib.rs`)
 
-| Variant | JSON Shape |
-|---------|------------|
-| `Found(ServiceRecord)` | `{"found": {...}}` |
-| `Registered(RegistrationResult)` | `{"registered": {...}}` |
-| `Renewed(RenewalResult)` | `{"renewed": {...}}` |
-| `Removed(String)` | `{"removed": "id"}` |
-| `Error(ErrorCode, String)` | `{"error": "code", "message": "..."}` |
-| `Event(...)` | `{"event": "type", "service": {...}}` |
+| Type | Purpose |
+|------|---------|
+| `MdnsCore` | Main domain facade (commands, state, events) |
+| `BrowseHandle` | RAII browse cleanup (closure on drop) |
+| `MdnsError` | Domain error enum (thiserror) |
+| `MdnsEvent` | Domain event enum (Found, Resolved, Removed) |
+| `LeasePolicy` | Session / Heartbeat(dur, grace) / Permanent |
 
-### Error Codes (`src/protocol/error.rs`)
+### Internal (not re-exported)
+
+| Type | Location | Purpose |
+|------|----------|---------|
+| `MdnsDaemon` | `daemon.rs` | mdns-sd wrapper (worker thread) |
+| `Registry` | `registry.rs` | Thread-safe registration store |
+| `Registration` | `registry.rs` | Single registration (payload + metadata) |
+
+---
+
+## Binary Crate Types (`koi`)
+
+| Type | Location | Purpose |
+|------|----------|---------|
+| `Cli` | `cli.rs` | Top-level clap parser |
+| `Command` | `cli.rs` | Subcommand enum (Mdns, Install, etc.) |
+| `MdnsSubcommand` | `cli.rs` | mDNS subcommands (Discover, Announce, etc.) |
+| `AdminSubcommand` | `cli.rs` | Admin subcommands (Status, List, etc.) |
+| `Config` | `cli.rs` | Daemon runtime configuration |
+| `KoiClient` | `client.rs` | Blocking HTTP client (ureq) for client mode & admin |
+
+---
+
+## Breadcrumb Discovery (`koi-config`)
+
+Daemon writes endpoint to breadcrumb file for client auto-discovery:
+
+| Platform | Path |
+|----------|------|
+| Windows | `%LOCALAPPDATA%\koi\koi.endpoint` |
+| Unix | `$XDG_RUNTIME_DIR/koi.endpoint` |
+
+---
+
+## Error Codes (`koi_common::error::ErrorCode`)
 
 | Code | HTTP Status | Meaning |
 |------|-------------|---------|
@@ -119,65 +190,19 @@ Existing constants and types - don't reinvent these.
 
 ---
 
-## Core Types (`src/core/`)
+## Dependencies (Workspace-managed)
 
-| Type | Location | Purpose |
-|------|----------|---------|
-| `MdnsCore` | `core/mod.rs` | Main facade for all mDNS operations |
-| `MdnsDaemon` | `core/daemon.rs` | mdns-sd wrapper (worker thread) |
-| `Registry` | `core/registry.rs` | Thread-safe registration store |
-| `Registration` | `core/registry.rs` | Single registration (payload + metadata) |
-| `SessionId` | `core/registry.rs` | Session identifier type |
-| `LeasePolicy` | `core/mod.rs` | Session / Heartbeat(dur, grace) / Permanent |
-| `ServiceType` | `core/mod.rs` | Parsed `_name._proto` type |
-| `BrowseHandle` | `core/mod.rs` | RAII browse cleanup (closure on drop) |
-| `KoiError` | `core/mod.rs` | Error enum (thiserror) |
-
----
-
-## Client (`src/client.rs`)
-
-| Type | Purpose |
-|------|---------|
-| `KoiClient` | Blocking HTTP client (ureq) for client mode & admin |
-
----
-
-## Config (`src/config.rs`)
-
-| Type | Purpose |
-|------|---------|
-| `Cli` | Top-level clap parser |
-| `Command` | Subcommand enum (Browse, Register, etc.) |
-| `AdminCommand` | Admin subcommand enum (Status, List, etc.) |
-| `Config` | Daemon configuration |
-
----
-
-## Breadcrumb Discovery
-
-Daemon writes endpoint to breadcrumb file for client auto-discovery:
-
-| Platform | Path |
-|----------|------|
-| Windows | `%LOCALAPPDATA%\koi\koi.endpoint` |
-| Unix | `$XDG_RUNTIME_DIR/koi.endpoint` |
-
----
-
-## Dependencies
-
-| Crate | Version | Purpose |
-|-------|---------|---------|
-| `mdns-sd` | 0.17 | mDNS/DNS-SD engine |
-| `axum` | 0.8 | HTTP framework |
-| `tokio` | 1 (full) | Async runtime |
-| `serde` / `serde_json` | - | Serialization |
-| `clap` | 4 (derive) | CLI parsing |
-| `tracing` | - | Structured logging |
-| `tower-http` | - | CORS middleware |
-| `thiserror` | - | Error derive macros |
-| `ureq` | 2 | Blocking HTTP client |
-| `uuid` | 1 (v4) | ID generation |
-| `tokio-util` | - | CancellationToken |
-| `windows-service` | 0.8 | Windows SCM (Windows only) |
+| Crate | Version | Used By | Purpose |
+|-------|---------|---------|---------|
+| `mdns-sd` | 0.17 | koi-mdns | mDNS/DNS-SD engine |
+| `axum` | 0.8 | koi-mdns, koi | HTTP framework |
+| `tokio` | 1 (full) | all | Async runtime |
+| `serde` / `serde_json` | 1 | all | Serialization |
+| `clap` | 4 (derive, env) | koi | CLI parsing |
+| `tracing` | 0.1 | all | Structured logging |
+| `tower-http` | 0.6 | koi | CORS middleware |
+| `thiserror` | 2 | koi-common, koi-mdns, koi | Error derive macros |
+| `ureq` | 2 | koi | Blocking HTTP client |
+| `uuid` | 1 (v4) | koi-common, koi | ID generation |
+| `tokio-util` | 0.7 | koi-mdns, koi | CancellationToken |
+| `windows-service` | 0.8 | koi (Windows) | Windows SCM |

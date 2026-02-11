@@ -1,0 +1,10 @@
+[package]
+name = "koi-proxy"
+description = "TLS-terminating reverse proxy domain for Koi (Phase 8)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+koi-common.workspace = true

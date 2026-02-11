@@ -1,0 +1,10 @@
+[package]
+name = "koi-certmesh"
+description = "Certificate mesh domain for Koi (Phase 2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+koi-common.workspace = true

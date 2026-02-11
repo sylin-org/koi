@@ -342,7 +342,7 @@ Write-Host "`n=== Tier 1: Standalone CLI ===" -ForegroundColor Cyan
 # 1.1 - Help
 try {
     $r = Invoke-Koi -KoiArgs '--help'
-    if ($r.Stdout -match 'browse' -and $r.Stdout -match 'register' -and $r.Stdout -match 'resolve') {
+    if ($r.Stdout -match 'mdns' -and $r.Stdout -match 'install' -and $r.Stdout -match 'version') {
         Pass 'koi --help shows subcommands'
     } else {
         Fail 'koi --help shows subcommands' 'Missing expected subcommands in output'
@@ -351,29 +351,29 @@ try {
     Fail 'koi --help shows subcommands' $_.Exception.Message
 }
 
-# 1.2 - Browse help
+# 1.2 - mDNS discover help
 try {
-    $r = Invoke-Koi -KoiArgs 'browse', '--help'
+    $r = Invoke-Koi -KoiArgs 'mdns', 'discover', '--help'
     if ($r.Stdout -match 'service.type' -or $r.Stdout -match 'SERVICE_TYPE' -or $r.Stdout -match '[sS]ervice type') {
-        Pass 'koi browse --help shows type argument'
+        Pass 'koi mdns discover --help shows type argument'
     } else {
-        Fail 'koi browse --help shows type argument' 'Missing type argument in output'
+        Fail 'koi mdns discover --help shows type argument' 'Missing type argument in output'
     }
 } catch {
-    Fail 'koi browse --help shows type argument' $_.Exception.Message
+    Fail 'koi mdns discover --help shows type argument' $_.Exception.Message
 }
 
-# 1.3 - Browse with timeout exits cleanly
+# 1.3 - Discover with timeout exits cleanly
 try {
-    $r = Invoke-Koi -KoiArgs 'browse', 'http', '--timeout', '2', '--standalone'
-    Pass 'koi browse --timeout exits cleanly'
+    $r = Invoke-Koi -KoiArgs 'mdns', 'discover', 'http', '--timeout', '2', '--standalone'
+    Pass 'koi mdns discover --timeout exits cleanly'
 } catch {
-    Fail 'koi browse --timeout exits cleanly' $_.Exception.Message
+    Fail 'koi mdns discover --timeout exits cleanly' $_.Exception.Message
 }
 
-# 1.4 - Browse JSON mode produces valid JSON
+# 1.4 - Discover JSON mode produces valid JSON
 try {
-    $r = Invoke-Koi -KoiArgs 'browse', 'http', '--timeout', '2', '--json', '--standalone'
+    $r = Invoke-Koi -KoiArgs 'mdns', 'discover', 'http', '--timeout', '2', '--json', '--standalone'
     # Output may be empty (no services found in 2s) - that's fine.
     # If there IS output, each non-empty line must be valid JSON.
     $lines = $r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' }
@@ -383,25 +383,25 @@ try {
         try { $null = $line | ConvertFrom-Json } catch { $valid = $false; $badLine = $line; break }
     }
     if ($valid) {
-        Pass 'koi browse --json produces valid NDJSON'
+        Pass 'koi mdns discover --json produces valid NDJSON'
     } else {
-        Fail 'koi browse --json produces valid NDJSON' "Invalid JSON line: $($badLine.Substring(0, [Math]::Min(80, $badLine.Length)))"
+        Fail 'koi mdns discover --json produces valid NDJSON' "Invalid JSON line: $($badLine.Substring(0, [Math]::Min(80, $badLine.Length)))"
     }
 } catch {
-    Fail 'koi browse --json produces valid NDJSON' $_.Exception.Message
+    Fail 'koi mdns discover --json produces valid NDJSON' $_.Exception.Message
 }
 
-# 1.5 - Register with timeout
+# 1.5 - Announce with timeout
 # Note: --timeout and --standalone go BEFORE TXT records because trailing_var_arg eats everything after positionals.
 try {
-    $r = Invoke-Koi -KoiArgs '--standalone', 'register', '--timeout', '2', 'IntegrationTest', 'http', '19999', 'test=true'
+    $r = Invoke-Koi -KoiArgs '--standalone', 'mdns', 'announce', '--timeout', '2', 'IntegrationTest', 'http', '19999', 'test=true'
     if ($r.Stdout -match 'Registered' -or $r.Stdout -match '"registered"') {
-        Pass 'koi register prints confirmation'
+        Pass 'koi mdns announce prints confirmation'
     } else {
-        Fail 'koi register prints confirmation' "Output did not contain registration confirmation: $($r.Stdout.Substring(0, [Math]::Min(100, $r.Stdout.Length)))"
+        Fail 'koi mdns announce prints confirmation' "Output did not contain registration confirmation: $($r.Stdout.Substring(0, [Math]::Min(100, $r.Stdout.Length)))"
     }
 } catch {
-    Fail 'koi register prints confirmation' $_.Exception.Message
+    Fail 'koi mdns announce prints confirmation' $_.Exception.Message
 }
 
 # 1.6 - Piped JSON mode (browse streams forever in piped mode, so allow timeout)
@@ -425,7 +425,7 @@ try {
 
 # 1.7 - Verbose flag accepted
 try {
-    $r = Invoke-Koi -KoiArgs 'browse', 'http', '--timeout', '1', '-v', '--standalone'
+    $r = Invoke-Koi -KoiArgs 'mdns', 'discover', 'http', '--timeout', '1', '-v', '--standalone'
     Pass 'koi -v flag accepted'
 } catch {
     Fail 'koi -v flag accepted' $_.Exception.Message
@@ -434,7 +434,7 @@ try {
 # 1.8 - Log file flag creates file
 try {
     $logPath = Join-Path $TestDir 'test-logfile.log'
-    $r = Invoke-Koi -KoiArgs 'browse', 'http', '--timeout', '2', '--log-file', "`"$logPath`"", '--standalone'
+    $r = Invoke-Koi -KoiArgs 'mdns', 'discover', 'http', '--timeout', '2', '--log-file', "`"$logPath`"", '--standalone'
     if (Test-Path $logPath) {
         Pass 'koi --log-file creates log file'
     } else {
@@ -499,9 +499,8 @@ if (-not $healthy) {
 # 2.1 - Health check + body assertion
 try {
     $resp = Invoke-Http -Uri "$Endpoint/healthz"
-    $healthJson = $resp.Content | ConvertFrom-Json
-    if ($resp.StatusCode -eq 200 -and $healthJson.ok -eq $true) {
-        Pass 'daemon health check ({"ok":true})'
+    if ($resp.StatusCode -eq 200 -and $resp.Content -eq 'OK') {
+        Pass 'daemon health check (OK)'
     } else {
         Fail 'daemon health check' "Unexpected body: $($resp.Content)"
     }
@@ -527,7 +526,7 @@ if (Test-Path $breadcrumbFile) {
 $regId = $null
 try {
     $body = '{"name":"DaemonTest","type":"_http._tcp","port":19998}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     if ($json.registered.id) {
         $regId = $json.registered.id
@@ -543,12 +542,12 @@ try {
 $txtRegId = $null
 try {
     $body = '{"name":"TxtTest","type":"_http._tcp","port":19997,"txt":{"env":"test","ver":"1"}}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $txtRegId = $json.registered.id
 
     # Verify via admin inspect — deep field assertion
-    $inspResp = Invoke-Http -Uri "$Endpoint/v1/admin/registrations/$txtRegId"
+    $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
     $insp = $inspResp.Content | ConvertFrom-Json
     # AdminRegistration fields: id, name, type, port, mode, state, lease_secs,
     # remaining_secs, grace_secs, session_id, registered_at, last_seen, txt
@@ -577,12 +576,12 @@ try {
 $leaseRegId = $null
 try {
     $body = '{"name":"LeaseTest","type":"_http._tcp","port":19994,"lease_secs":300}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $leaseRegId = $json.registered.id
     if ($json.registered.lease_secs -eq 300 -and $json.registered.mode -eq 'heartbeat') {
         # Heartbeat and verify lease round-trips
-        $hbResp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/services/$leaseRegId/heartbeat"
+        $hbResp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/mdns/services/$leaseRegId/heartbeat"
         $hbJson = $hbResp.Content | ConvertFrom-Json
         if ($hbJson.renewed.lease_secs -eq 300) {
             Pass 'register with lease_secs=300 + heartbeat round-trip'
@@ -600,7 +599,7 @@ try {
 $permanentRegId = $null
 try {
     $body = '{"name":"PermanentTest","type":"_http._tcp","port":19991,"lease_secs":0}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $permanentRegId = $json.registered.id
     # lease_secs is omitted (skip_serializing_if) for permanent — check via PSObject.Properties
@@ -616,7 +615,7 @@ try {
 
 # 2.7 - Admin status via CLI with deeper assertions
 try {
-    $r = Invoke-Koi -KoiArgs 'admin', 'status', '--endpoint', $Endpoint, '--json'
+    $r = Invoke-Koi -KoiArgs 'mdns', 'admin', 'status', '--endpoint', $Endpoint, '--json'
     $statusJson = $r.Stdout.Trim() | ConvertFrom-Json
     $regs = $statusJson.registrations
     if ($statusJson.version -and
@@ -632,9 +631,9 @@ try {
     Fail 'admin status' $_.Exception.Message
 }
 
-# 2.7 - Admin ls shows registrations (human output)
+# 2.7b - Admin ls shows registrations (human output)
 try {
-    $r = Invoke-Koi -KoiArgs 'admin', 'ls', '--endpoint', $Endpoint
+    $r = Invoke-Koi -KoiArgs 'mdns', 'admin', 'ls', '--endpoint', $Endpoint
     if ($r.Stdout -match 'DaemonTest' -and $r.Stdout -match 'TxtTest') {
         Pass 'admin ls shows registrations'
     } else {
@@ -646,7 +645,7 @@ try {
 
 # 2.8 - Admin ls --json mode
 try {
-    $r = Invoke-Koi -KoiArgs 'admin', 'ls', '--endpoint', $Endpoint, '--json'
+    $r = Invoke-Koi -KoiArgs 'mdns', 'admin', 'ls', '--endpoint', $Endpoint, '--json'
     $lsJson = $r.Stdout.Trim() | ConvertFrom-Json
     if ($lsJson -is [array] -and $lsJson.Count -ge 4) {
         $allHaveFields = $true
@@ -662,41 +661,41 @@ try {
             Fail 'admin ls --json' 'Some entries missing required fields (id, name, type, port, state)'
         }
     } else {
-        Fail 'admin ls --json' "Expected array with >=3 entries, got: $(if ($lsJson -is [array]) { $lsJson.Count } else { 'non-array' })"
+        Fail 'admin ls --json' "Expected array with >=4 entries, got: $(if ($lsJson -is [array]) { $lsJson.Count } else { 'non-array' })"
     }
 } catch {
     Fail 'admin ls --json' $_.Exception.Message
 }
 
 # 2.9 - Register via CLI client mode
-# Note: client-mode register auto-unregisters on exit (line 132 in client.rs),
+# Note: client-mode announce auto-unregisters on exit (line 137 in client.rs),
 # so the service is cleaned up when the --timeout fires.
 try {
-    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'register', '--timeout', '3', 'CLIClient', 'http', '17777' -TimeoutSec 15 -AllowFailure
+    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'announce', '--timeout', '3', 'CLIClient', 'http', '17777' -TimeoutSec 15 -AllowFailure
     if ($r.ExitCode -ne 0) {
-        Log "CLI client register stderr: $($r.Stderr.Trim())"
-        Fail 'register via CLI client mode' "Exit code $($r.ExitCode)"
+        Log "CLI client announce stderr: $($r.Stderr.Trim())"
+        Fail 'announce via CLI client mode' "Exit code $($r.ExitCode)"
     } else {
         if ($r.Stdout -match '"registered"') {
-            Pass 'register via CLI client mode'
+            Pass 'announce via CLI client mode'
         } else {
-            Fail 'register via CLI client mode' "No registered JSON in output"
+            Fail 'announce via CLI client mode' "No registered JSON in output"
         }
     }
 } catch {
-    Fail 'register via CLI client mode' $_.Exception.Message
+    Fail 'announce via CLI client mode' $_.Exception.Message
 }
 
 # 2.10 - Unregister via CLI client mode
-# Note: CLI register (2.9) auto-unregisters on exit, so we register a fresh
+# Note: CLI announce (2.9) auto-unregisters on exit, so we register a fresh
 # service via HTTP specifically for the CLI unregister test.
 try {
     $body = '{"name":"UnregTarget","type":"_http._tcp","port":19995,"lease_secs":0}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $unregTargetId = $json.registered.id
 
-    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'unregister', $unregTargetId
+    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'unregister', $unregTargetId
     $parsed = $r.Stdout.Trim() | ConvertFrom-Json
     if ($parsed.unregistered -eq $unregTargetId) {
         Pass 'unregister via CLI client mode'
@@ -710,7 +709,7 @@ try {
 # 2.11 - Heartbeat via HTTP
 if ($regId) {
     try {
-        $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/services/$regId/heartbeat"
+        $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/mdns/services/$regId/heartbeat"
         $json = $resp.Content | ConvertFrom-Json
         if ($json.renewed.id -eq $regId -and $json.renewed.lease_secs -gt 0) {
             Pass "heartbeat via HTTP (lease: $($json.renewed.lease_secs)s)"
@@ -728,7 +727,7 @@ if ($regId) {
 # Resolve the service we registered in 2.3. On some platforms mDNS may not
 # resolve services the same host registered; accept 504 but NOT 404/timeout.
 try {
-    $resp = Invoke-Http -Uri "$Endpoint/v1/resolve?name=DaemonTest._http._tcp.local." -TimeoutSec 10
+    $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/resolve?name=DaemonTest._http._tcp.local." -TimeoutSec 10
     $json = $resp.Content | ConvertFrom-Json
     if ($json.resolved.name -match 'DaemonTest') {
         Pass 'resolve via HTTP (found DaemonTest)'
@@ -746,7 +745,7 @@ try {
 
 # 2.13 - Resolve via CLI client (nonexistent, expect error)
 try {
-    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'resolve', 'nonexistent._http._tcp.local.' -TimeoutSec 10 -AllowFailure
+    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'resolve', 'nonexistent._http._tcp.local.' -TimeoutSec 10 -AllowFailure
     if ($r.ExitCode -ne 0) {
         Pass 'resolve via CLI client (nonexistent returns error)'
     } else {
@@ -764,7 +763,7 @@ try {
 
 # 2.14 - Browse SSE returns events
 try {
-    $events = Invoke-Sse -Uri "$Endpoint/v1/browse?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
     if ($events.Count -gt 0) {
         $hasFound = $false
         foreach ($ev in $events) {
@@ -787,7 +786,7 @@ try {
 
 # 2.15 - Events SSE returns lifecycle events
 try {
-    $events = Invoke-Sse -Uri "$Endpoint/v1/events?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/events?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
     if ($events.Count -gt 0) {
         $hasEvent = $false
         foreach ($ev in $events) {
@@ -810,7 +809,7 @@ try {
 
 # 2.17 - Browse meta-query via HTTP SSE (discovers service types)
 try {
-    $events = Invoke-Sse -Uri "$Endpoint/v1/browse?type=_services._dns-sd._udp.local." -MaxEvents 5 -TimeoutMs 4000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_services._dns-sd._udp.local." -MaxEvents 5 -TimeoutMs 4000
     if ($events.Count -gt 0) {
         # Meta-query returns found events where the name is a service type (e.g. "_http._tcp.local.")
         $hasType = $false
@@ -840,7 +839,7 @@ try {
 try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     # idle_for=2 on a quiet type: stream should close ~2s after opening (no events to find)
-    $events = Invoke-Sse -Uri "$Endpoint/v1/browse?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
     $sw.Stop()
     $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
 
@@ -859,7 +858,7 @@ try {
 try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     # idle_for=0 on a quiet type: server never closes, client timeout (3s) stops it
-    $events = Invoke-Sse -Uri "$Endpoint/v1/browse?type=_koi-idle-test._tcp&idle_for=0" -MaxEvents 20 -TimeoutMs 3000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_koi-idle-test._tcp&idle_for=0" -MaxEvents 20 -TimeoutMs 3000
     $sw.Stop()
     $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
 
@@ -877,7 +876,7 @@ try {
 # 2.X3 - Events SSE idle_for closes stream automatically
 try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $events = Invoke-Sse -Uri "$Endpoint/v1/events?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/events?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
     $sw.Stop()
     $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
 
@@ -890,34 +889,34 @@ try {
     Fail 'events SSE idle_for=2 auto-closes' $_.Exception.Message
 }
 
-# -- CLI client mode: browse + subscribe --------------------------------------
+# -- CLI client mode: discover + subscribe ------------------------------------
 
-# 2.16 - Browse via CLI client mode
-# Note: browse consumes an SSE stream via blocking I/O in spawn_blocking;
+# 2.16 - Discover via CLI client mode
+# Note: discover consumes an SSE stream via blocking I/O in spawn_blocking;
 # the tokio timeout may not interrupt it, so the process may be killed (-1).
 # Accept exit code 0 (clean timeout) or -1 (killed after TimeoutSec).
 try {
-    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'browse', 'http', '--timeout', '3' -TimeoutSec 15 -AllowFailure
+    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'discover', 'http', '--timeout', '3' -TimeoutSec 15 -AllowFailure
     $lines = $r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' }
     $valid = $true
     foreach ($line in $lines) {
         try { $null = $line | ConvertFrom-Json } catch { $valid = $false; break }
     }
     if ($valid) {
-        Pass "browse via CLI client mode ($($lines.Count) events)"
+        Pass "discover via CLI client mode ($($lines.Count) events)"
     } else {
-        Fail 'browse via CLI client mode' 'Invalid JSON in output'
+        Fail 'discover via CLI client mode' 'Invalid JSON in output'
     }
 } catch {
-    Fail 'browse via CLI client mode' $_.Exception.Message
+    Fail 'discover via CLI client mode' $_.Exception.Message
 }
 
-# 2.17 - Subscribe via CLI client mode
+# 2.17b - Subscribe via CLI client mode
 # Note: subscribe consumes an SSE stream via blocking I/O in spawn_blocking;
 # the tokio timeout may not interrupt it, so the process may be killed (-1).
 # Accept exit code 0 (clean timeout) or -1 (killed after TimeoutSec).
 try {
-    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'subscribe', '_http._tcp', '--timeout', '3' -TimeoutSec 10 -AllowFailure
+    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'subscribe', '_http._tcp', '--timeout', '3' -TimeoutSec 10 -AllowFailure
     $lines = $r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' }
     $valid = $true
     foreach ($line in $lines) {
@@ -940,7 +939,7 @@ if (-not $txtRegId) {
 
 # 2.18 - Revive non-draining (expect 409)
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/admin/registrations/$txtRegId/revive"
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId/revive"
     if ($errResp.StatusCode -eq 409) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'not_draining') {
@@ -957,7 +956,7 @@ try {
 
 # 2.19 - Admin drain
 try {
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/admin/registrations/$txtRegId/drain"
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId/drain"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.drained -eq $txtRegId) {
         Pass 'admin drain'
@@ -970,7 +969,7 @@ try {
 
 # 2.20 - Admin inspect shows draining state
 try {
-    $resp = Invoke-Http -Uri "$Endpoint/v1/admin/registrations/$txtRegId"
+    $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.state -eq 'draining') {
         Pass 'admin inspect shows draining state'
@@ -983,7 +982,7 @@ try {
 
 # 2.21 - Double-drain (expect 409)
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/admin/registrations/$txtRegId/drain"
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId/drain"
     if ($errResp.StatusCode -eq 409) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'already_draining') {
@@ -1000,7 +999,7 @@ try {
 
 # 2.22 - Admin revive
 try {
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/admin/registrations/$txtRegId/revive"
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId/revive"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.revived -eq $txtRegId) {
         Pass 'admin revive'
@@ -1013,7 +1012,7 @@ try {
 
 # 2.23 - Admin inspect shows alive after revive
 try {
-    $resp = Invoke-Http -Uri "$Endpoint/v1/admin/registrations/$txtRegId"
+    $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.state -eq 'alive') {
         Pass 'admin inspect shows alive after revive'
@@ -1026,7 +1025,7 @@ try {
 
 # 2.24 - Admin force-unregister
 try {
-    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/admin/registrations/$txtRegId"
+    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.unregistered -eq $txtRegId) {
         Pass 'admin force-unregister'
@@ -1039,7 +1038,7 @@ try {
 
 # 2.25 - Admin inspect after delete returns 404
 try {
-    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/admin/registrations/$txtRegId"
+    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
     if ($errResp.StatusCode -eq 404) {
         Pass 'admin inspect after delete returns 404'
     } else {
@@ -1055,7 +1054,7 @@ try {
 
 # 2.26 - Unregister nonexistent ID returns 404
 try {
-    $errResp = Invoke-HttpExpectError -Method DELETE -Uri "$Endpoint/v1/services/nonexistent_id_999"
+    $errResp = Invoke-HttpExpectError -Method DELETE -Uri "$Endpoint/v1/mdns/services/nonexistent_id_999"
     if ($errResp.StatusCode -eq 404) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'not_found') {
@@ -1072,7 +1071,7 @@ try {
 
 # 2.27 - Heartbeat nonexistent ID returns 404
 try {
-    $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/services/nonexistent_id_999/heartbeat"
+    $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/mdns/services/nonexistent_id_999/heartbeat"
     if ($errResp.StatusCode -eq 404) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'not_found') {
@@ -1089,7 +1088,7 @@ try {
 
 # 2.28 - Malformed JSON body returns 4xx
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/services" -Body '{broken json'
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/services" -Body '{broken json'
     if ($errResp.StatusCode -ge 400 -and $errResp.StatusCode -lt 500) {
         Pass "malformed JSON body returns $($errResp.StatusCode)"
     } else {
@@ -1102,7 +1101,7 @@ try {
 # 2.29 - Invalid service type via register returns 400
 # ServiceType::parse rejects invalid protocol (only tcp/udp allowed)
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/services" -Body '{"name":"Bad","type":"_x._xyz","port":9999}'
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/services" -Body '{"name":"Bad","type":"_x._xyz","port":9999}'
     if ($errResp.StatusCode -eq 400) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'invalid_type') {
@@ -1119,7 +1118,7 @@ try {
 
 # 2.30 - Invalid service type via browse SSE returns error event
 try {
-    $events = Invoke-Sse -Uri "$Endpoint/v1/browse?type=_x._xyz" -MaxEvents 1 -TimeoutMs 3000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_x._xyz" -MaxEvents 1 -TimeoutMs 3000
     if ($events.Count -gt 0 -and $events[0].error -eq 'invalid_type') {
         Pass 'invalid service type via browse SSE returns error event'
     } else {
@@ -1131,7 +1130,7 @@ try {
 
 # 2.31 - Browse without type param returns 400
 try {
-    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/browse"
+    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/mdns/browse"
     if ($errResp.StatusCode -eq 400) {
         Pass 'browse without type param returns 400'
     } else {
@@ -1143,7 +1142,7 @@ try {
 
 # 2.32 - Resolve without name param returns 400
 try {
-    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/resolve"
+    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/mdns/resolve"
     if ($errResp.StatusCode -eq 400) {
         Pass 'resolve without name param returns 400'
     } else {
@@ -1155,7 +1154,7 @@ try {
 
 # 2.33 - Register with empty body returns 422
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/services" -Body '{}'
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/services" -Body '{}'
     if ($errResp.StatusCode -eq 422) {
         Pass 'register with empty body returns 422'
     } else {
@@ -1176,7 +1175,7 @@ if ($regId -and $leaseRegId) {
         $prefixMatches = @($allIds | Where-Object { $_.StartsWith($prefix) })
         if ($prefixMatches.Count -ge 2) {
             try {
-                $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/admin/registrations/$prefix"
+                $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/mdns/admin/registrations/$prefix"
                 if ($errResp.StatusCode -eq 400) {
                     $errJson = $errResp.Content | ConvertFrom-Json
                     if ($errJson.error -eq 'ambiguous_id') {
@@ -1306,7 +1305,7 @@ try {
     $burstFailed = $false
     for ($i = 1; $i -le 5; $i++) {
         $body = "{`"name`":`"Burst$i`",`"type`":`"_http._tcp`",`"port`":$( 18000 + $i ),`"lease_secs`":0}"
-        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/services" -Body $body
+        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
         $json = $resp.Content | ConvertFrom-Json
         if ($json.registered.id) {
             $burstIds += $json.registered.id
@@ -1328,7 +1327,7 @@ try {
 
     # Clean up burst registrations
     foreach ($bid in $burstIds) {
-        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/services/$bid" } catch {}
+        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$bid" } catch {}
     }
 } catch {
     Fail 'concurrent registration burst' $_.Exception.Message
@@ -1360,7 +1359,7 @@ try {
         Start-Sleep -Milliseconds 1500
 
         # Check state via admin inspect (HTTP)
-        $inspResp = Invoke-Http -Uri "$Endpoint/v1/admin/registrations/$sessionDrainId"
+        $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$sessionDrainId"
         $insp = $inspResp.Content | ConvertFrom-Json
         if ($insp.state -eq 'draining') {
             Pass 'pipe disconnect triggers session draining'
@@ -1369,7 +1368,7 @@ try {
         }
 
         # Clean up via admin force-unregister
-        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/admin/registrations/$sessionDrainId" } catch {}
+        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/admin/registrations/$sessionDrainId" } catch {}
     } else {
         $pipe.Dispose()
         Fail 'pipe disconnect triggers session draining' 'Could not register service'
@@ -1383,7 +1382,7 @@ try {
 # 2.39 - Unregister DaemonTest via HTTP
 if ($regId) {
     try {
-        $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/services/$regId"
+        $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$regId"
         $json = $resp.Content | ConvertFrom-Json
         if ($json.unregistered -eq $regId) {
             Pass 'unregister via HTTP'
@@ -1399,10 +1398,10 @@ if ($regId) {
 
 # Clean up LeaseTest and PermanentTest if still alive
 if ($leaseRegId) {
-    try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/services/$leaseRegId" } catch {}
+    try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$leaseRegId" } catch {}
 }
 if ($permanentRegId) {
-    try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/services/$permanentRegId" } catch {}
+    try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$permanentRegId" } catch {}
 }
 
 # -- Shutdown -----------------------------------------------------------------

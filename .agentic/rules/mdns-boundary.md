@@ -1,16 +1,16 @@
 ---
-globs: src/core/daemon.rs
+globs: crates/koi-mdns/src/daemon.rs
 alwaysApply: false
 ---
 # mdns-sd Boundary Rules
 
 ## The Single Import Rule (CRITICAL)
-`core/daemon.rs` is the ONLY file that may import from the `mdns-sd` crate.
+`crates/koi-mdns/src/daemon.rs` is the ONLY file that may import from the `mdns-sd` crate.
 
 ### Rules
 - NEVER import `mdns_sd::*` in any other file
 - NEVER expose mdns-sd types (ServiceDaemon, ServiceInfo, ServiceEvent, ResolvedService) in public APIs
-- ALWAYS convert mdns-sd types to Koi protocol types at the boundary
+- ALWAYS convert mdns-sd types to Koi types at the boundary
 
 ### Worker Thread Pattern
 MdnsDaemon serializes all mdns-sd operations through a dedicated thread:

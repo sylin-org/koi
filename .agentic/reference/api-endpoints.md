@@ -4,29 +4,32 @@ Quick reference for all endpoints and wire protocol. For rules and patterns, see
 
 ---
 
-## HTTP Endpoints (`src/adapters/http.rs`)
+## HTTP Endpoints
+
+All mDNS endpoints are mounted at `/v1/mdns/` by the binary crate.
+Route handlers are defined in `crates/koi-mdns/src/http.rs`.
 
 ### Service Operations
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/v1/browse?type=_http._tcp&idle_for=5` | Browse for services (SSE stream) |
-| POST | `/v1/services` | Register a service |
-| DELETE | `/v1/services/{id}` | Unregister a service |
-| PUT | `/v1/services/{id}/heartbeat` | Renew heartbeat lease |
-| GET | `/v1/resolve?name=My+Service` | Resolve a service name |
-| GET | `/v1/events?type=_http._tcp&idle_for=0` | Subscribe to lifecycle events (SSE) |
+| GET | `/v1/mdns/browse?type=_http._tcp&idle_for=5` | Browse for services (SSE stream) |
+| POST | `/v1/mdns/services` | Register a service |
+| DELETE | `/v1/mdns/services/{id}` | Unregister a service |
+| PUT | `/v1/mdns/services/{id}/heartbeat` | Renew heartbeat lease |
+| GET | `/v1/mdns/resolve?name=My+Service` | Resolve a service name |
+| GET | `/v1/mdns/events?type=_http._tcp&idle_for=0` | Subscribe to lifecycle events (SSE) |
 
 ### Admin Operations
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/v1/admin/status` | Daemon status overview |
-| GET | `/v1/admin/registrations` | List all registrations |
-| GET | `/v1/admin/registrations/{id}` | Inspect single registration |
-| DELETE | `/v1/admin/registrations/{id}` | Force-remove registration |
-| POST | `/v1/admin/registrations/{id}/drain` | Begin grace period |
-| POST | `/v1/admin/registrations/{id}/revive` | Cancel draining |
+| GET | `/v1/mdns/admin/status` | Daemon status overview |
+| GET | `/v1/mdns/admin/registrations` | List all registrations |
+| GET | `/v1/mdns/admin/registrations/{id}` | Inspect single registration |
+| DELETE | `/v1/mdns/admin/registrations/{id}` | Force-remove registration |
+| POST | `/v1/mdns/admin/registrations/{id}/drain` | Begin grace period |
+| POST | `/v1/mdns/admin/registrations/{id}/revive` | Cancel draining |
 
 ### System
 
@@ -38,15 +41,15 @@ Quick reference for all endpoints and wire protocol. For rules and patterns, see
 
 ## Query Parameters
 
-**Browse / Events** (`/v1/browse`, `/v1/events`):
-- `type` — Service type (required), e.g. `_http._tcp`
-- `idle_for` — SSE idle timeout in seconds:
-  - Absent → 5s default
-  - `0` → infinite (never auto-close)
-  - `N` → close after N seconds of no events
+**Browse / Events** (`/v1/mdns/browse`, `/v1/mdns/events`):
+- `type` -- Service type (required), e.g. `_http._tcp`
+- `idle_for` -- SSE idle timeout in seconds:
+  - Absent -> 5s default
+  - `0` -> infinite (never auto-close)
+  - `N` -> close after N seconds of no events
 
-**Resolve** (`/v1/resolve`):
-- `name` — Service instance name to resolve (required)
+**Resolve** (`/v1/mdns/resolve`):
+- `name` -- Service instance name to resolve (required)
 
 ---
 
@@ -118,23 +121,24 @@ Streaming responses include a `status` field:
 
 ---
 
-## CLI Subcommands
+## CLI Subcommands (v0.2 Moniker Structure)
 
 | Command | Mode | Description |
 |---------|------|-------------|
-| `koi browse <type>` | Standalone/Client | Browse for services |
-| `koi register <args>` | Standalone/Client | Register a service |
-| `koi unregister <id>` | Standalone/Client | Remove a service |
-| `koi resolve <name>` | Standalone/Client | Resolve service |
-| `koi subscribe <type>` | Standalone/Client | Watch lifecycle events |
-| `koi admin status` | Client | Daemon status |
-| `koi admin list` | Client | List registrations |
-| `koi admin inspect <id>` | Client | Registration details |
-| `koi admin unregister <id>` | Client | Force removal |
-| `koi admin drain <id>` | Client | Start draining |
-| `koi admin revive <id>` | Client | Cancel drain |
+| `koi mdns discover [type]` | Standalone/Client | Browse for services |
+| `koi mdns announce <args>` | Standalone/Client | Register a service |
+| `koi mdns unregister <id>` | Standalone/Client | Remove a service |
+| `koi mdns resolve <name>` | Standalone/Client | Resolve service |
+| `koi mdns subscribe <type>` | Standalone/Client | Watch lifecycle events |
+| `koi mdns admin status` | Client | Daemon status |
+| `koi mdns admin ls` | Client | List registrations |
+| `koi mdns admin inspect <id>` | Client | Registration details |
+| `koi mdns admin unregister <id>` | Client | Force removal |
+| `koi mdns admin drain <id>` | Client | Start draining |
+| `koi mdns admin revive <id>` | Client | Cancel drain |
 | `koi install` | - | Install as OS service |
 | `koi uninstall` | - | Uninstall OS service |
+| `koi version` | - | Show version info |
 
 ---
 
