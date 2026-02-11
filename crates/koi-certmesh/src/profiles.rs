@@ -6,10 +6,11 @@
 use serde::{Deserialize, Serialize};
 
 /// Trust profile — drives security posture for the mesh.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustProfile {
     /// Personal homelab. No approval required, enrollment always open.
+    #[default]
     JustMe,
     /// Small office/lab. Approval required, operator tracked.
     MyTeam,

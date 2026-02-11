@@ -166,6 +166,14 @@ impl KoiClient {
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
+    /// GET JSON from an arbitrary path and return the response as a JSON value.
+    pub fn get_json(&self, path: &str) -> Result<serde_json::Value> {
+        let url = format!("{}{path}", self.endpoint);
+        let resp = self.agent.get(&url).call().map_err(map_error)?;
+        resp.into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
     /// PUT JSON to an arbitrary path and return the response as a JSON value.
     pub fn put_json(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
         let url = format!("{}{path}", self.endpoint);
@@ -215,6 +223,15 @@ impl KoiClient {
 
     pub fn admin_revive(&self, id: &str) -> Result<()> {
         let url = format!("{}/v1/mdns/admin/registrations/{id}/revive", self.endpoint);
+        self.agent.post(&url).call().map_err(map_error)?;
+        Ok(())
+    }
+
+    // ── Admin operations (system) ────────────────────────────────────
+
+    /// Request a graceful shutdown of the running daemon.
+    pub fn shutdown(&self) -> Result<()> {
+        let url = format!("{}/v1/admin/shutdown", self.endpoint);
         self.agent.post(&url).call().map_err(map_error)?;
         Ok(())
     }

@@ -206,7 +206,7 @@ pub enum RateLimitError {
 }
 
 /// Build the `otpauth://` URI for authenticator apps.
-fn build_totp_uri(secret: &TotpSecret, issuer: &str, account: &str) -> String {
+pub fn build_totp_uri(secret: &TotpSecret, issuer: &str, account: &str) -> String {
     use totp_rs::Secret;
 
     let encoded = Secret::Raw(secret.secret.clone())

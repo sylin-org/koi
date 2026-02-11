@@ -222,6 +222,29 @@ pub enum CertmeshSubcommand {
         /// CA endpoint (e.g. "http://ca-host:5641"). Omit to discover via mDNS.
         endpoint: Option<String>,
     },
+    // Phase 4 — Enrollment Policy
+    /// Open the enrollment window
+    OpenEnrollment {
+        /// Auto-close deadline (RFC 3339 or duration like "2h", "1d")
+        #[arg(long)]
+        until: Option<String>,
+    },
+    /// Close the enrollment window
+    CloseEnrollment,
+    /// Set enrollment scope constraints (domain/subnet)
+    SetPolicy {
+        /// Restrict enrollment to this domain suffix (e.g. "lincoln-elementary.local")
+        #[arg(long)]
+        domain: Option<String>,
+        /// Restrict enrollment to this CIDR subnet (e.g. "192.168.1.0/24")
+        #[arg(long)]
+        subnet: Option<String>,
+        /// Clear all scope constraints
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Rotate the TOTP enrollment secret
+    RotateTotp,
 }
 
 /// Resolved configuration used at runtime.
@@ -796,5 +819,131 @@ mod tests {
             config.pipe_path.components().count() > 0,
             "pipe path should not be empty"
         );
+    }
+
+    // ── Phase 4 — Enrollment policy CLI parsing ─────────────────────
+
+    #[test]
+    fn parse_certmesh_open_enrollment() {
+        let cli = Cli::try_parse_from(["koi", "certmesh", "open-enrollment"]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: CertmeshSubcommand::OpenEnrollment { until },
+            })) => {
+                assert!(until.is_none());
+            }
+            other => panic!("Expected OpenEnrollment, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_open_enrollment_with_deadline() {
+        let cli = Cli::try_parse_from([
+            "koi", "certmesh", "open-enrollment",
+            "--until", "2h",
+        ]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: CertmeshSubcommand::OpenEnrollment { until },
+            })) => {
+                assert_eq!(until.as_deref(), Some("2h"));
+            }
+            other => panic!("Expected OpenEnrollment, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_close_enrollment() {
+        let cli = Cli::try_parse_from(["koi", "certmesh", "close-enrollment"]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: CertmeshSubcommand::CloseEnrollment,
+            })) => {}
+            other => panic!("Expected CloseEnrollment, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_set_policy_domain() {
+        let cli = Cli::try_parse_from([
+            "koi", "certmesh", "set-policy",
+            "--domain", "lab.local",
+        ]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: CertmeshSubcommand::SetPolicy { domain, subnet, clear },
+            })) => {
+                assert_eq!(domain.as_deref(), Some("lab.local"));
+                assert!(subnet.is_none());
+                assert!(!clear);
+            }
+            other => panic!("Expected SetPolicy, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_set_policy_subnet() {
+        let cli = Cli::try_parse_from([
+            "koi", "certmesh", "set-policy",
+            "--subnet", "192.168.1.0/24",
+        ]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: CertmeshSubcommand::SetPolicy { domain, subnet, clear },
+            })) => {
+                assert!(domain.is_none());
+                assert_eq!(subnet.as_deref(), Some("192.168.1.0/24"));
+                assert!(!clear);
+            }
+            other => panic!("Expected SetPolicy, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_set_policy_clear() {
+        let cli = Cli::try_parse_from([
+            "koi", "certmesh", "set-policy",
+            "--clear",
+        ]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: CertmeshSubcommand::SetPolicy { domain, subnet, clear },
+            })) => {
+                assert!(domain.is_none());
+                assert!(subnet.is_none());
+                assert!(clear);
+            }
+            other => panic!("Expected SetPolicy, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_set_policy_both() {
+        let cli = Cli::try_parse_from([
+            "koi", "certmesh", "set-policy",
+            "--domain", "lab.local",
+            "--subnet", "10.0.0.0/8",
+        ]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: CertmeshSubcommand::SetPolicy { domain, subnet, clear },
+            })) => {
+                assert_eq!(domain.as_deref(), Some("lab.local"));
+                assert_eq!(subnet.as_deref(), Some("10.0.0.0/8"));
+                assert!(!clear);
+            }
+            other => panic!("Expected SetPolicy, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_rotate_totp() {
+        let cli = Cli::try_parse_from(["koi", "certmesh", "rotate-totp"]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: CertmeshSubcommand::RotateTotp,
+            })) => {}
+            other => panic!("Expected RotateTotp, got: {other:?}"),
+        }
     }
 }

@@ -162,6 +162,7 @@ mod tests {
             (ErrorCode::PromotionFailed, "promotion_failed"),
             (ErrorCode::RenewalFailed, "renewal_failed"),
             (ErrorCode::InvalidManifest, "invalid_manifest"),
+            (ErrorCode::ScopeViolation, "scope_violation"),
         ];
         for (code, expected_str) in &variants {
             let serialized = serde_json::to_value(code).unwrap();

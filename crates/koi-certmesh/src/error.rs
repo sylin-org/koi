@@ -46,6 +46,10 @@ pub enum CertmeshError {
 
     #[error("invalid roster manifest signature")]
     InvalidManifest,
+
+    // Phase 4 — Enrollment Policy
+    #[error("scope violation: {0}")]
+    ScopeViolation(String),
 }
 
 impl From<koi_crypto::keys::CryptoError> for CertmeshError {
@@ -70,6 +74,7 @@ impl From<&CertmeshError> for ErrorCode {
             CertmeshError::PromotionFailed(_) => ErrorCode::PromotionFailed,
             CertmeshError::RenewalFailed { .. } => ErrorCode::RenewalFailed,
             CertmeshError::InvalidManifest => ErrorCode::InvalidManifest,
+            CertmeshError::ScopeViolation(_) => ErrorCode::ScopeViolation,
         }
     }
 }
@@ -149,6 +154,12 @@ mod tests {
                 CertmeshError::InvalidManifest,
                 ErrorCode::InvalidManifest,
                 400,
+            ),
+            // Phase 4
+            (
+                CertmeshError::ScopeViolation("hostname outside domain".into()),
+                ErrorCode::ScopeViolation,
+                403,
             ),
         ];
         for (error, expected_code, expected_status) in &cases {

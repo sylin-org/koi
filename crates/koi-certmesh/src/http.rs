@@ -14,8 +14,9 @@ use axum::{Json, Router};
 use crate::CertmeshState;
 use crate::error::CertmeshError;
 use crate::protocol::{
-    HealthRequest, HealthResponse, JoinRequest, PromoteRequest, RenewRequest,
-    RenewResponse, SetHookRequest,
+    CreateCaRequest, CreateCaResponse, HealthRequest, HealthResponse, JoinRequest,
+    PolicyRequest, PromoteRequest, RenewRequest, RenewResponse, RotateTotpRequest,
+    RotateTotpResponse, SetHookRequest, UnlockRequest, UnlockResponse,
 };
 
 /// Build the certmesh router with domain-owned routes.
@@ -30,6 +31,15 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route("/renew", post(renew_handler))
         .route("/roster", get(roster_handler))
         .route("/health", post(health_handler))
+        // Service delegation — CA management
+        .route("/create", post(create_handler))
+        .route("/unlock", post(unlock_handler))
+        .route("/rotate-totp", post(rotate_totp_handler))
+        .route("/log", get(log_handler))
+        // Phase 4 — Enrollment Policy
+        .route("/enrollment/open", post(open_enrollment_handler))
+        .route("/enrollment/close", post(close_enrollment_handler))
+        .route("/policy", put(set_policy_handler))
         .with_state(state)
 }
 
@@ -70,6 +80,7 @@ async fn join_handler(
         }
     };
     let mut rate_limiter = state.rate_limiter.lock().await;
+    let profile = state.profile.lock().await;
 
     match crate::enrollment::process_enrollment(
         ca,
@@ -79,7 +90,7 @@ async fn join_handler(
         &request,
         &hostname,
         &sans,
-        &state.profile,
+        &profile,
     ) {
         Ok((response, _issued)) => {
             // Save roster after successful enrollment
@@ -110,7 +121,8 @@ async fn status_handler(
 ) -> impl IntoResponse {
     let ca_guard = state.ca.lock().await;
     let roster = state.roster.lock().await;
-    let status = crate::build_status(&ca_guard, &roster, &state.profile);
+    let profile = state.profile.lock().await;
+    let status = crate::build_status(&ca_guard, &roster, &profile);
     Json(status)
 }
 
@@ -151,6 +163,320 @@ async fn set_hook_handler(
             &CertmeshError::Internal(format!("member not found: {}", request.hostname)),
         ),
     }
+}
+
+// ── Service delegation handlers ─────────────────────────────────────
+
+/// POST /create — Initialize a new CA via the running service.
+async fn create_handler(
+    State(state): State<Arc<CertmeshState>>,
+    Json(request): Json<CreateCaRequest>,
+) -> impl IntoResponse {
+    // Decode hex entropy
+    let entropy = match decode_hex(&request.entropy_hex) {
+        Some(bytes) if bytes.len() == 32 => bytes,
+        Some(bytes) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &CertmeshError::Internal(format!(
+                    "entropy must be exactly 32 bytes, got {}",
+                    bytes.len()
+                )),
+            );
+        }
+        None => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &CertmeshError::Internal("invalid hex entropy".to_string()),
+            );
+        }
+    };
+
+    // Reject if CA already initialized
+    if crate::ca::is_ca_initialized() {
+        return error_response(
+            StatusCode::CONFLICT,
+            &CertmeshError::Internal("CA is already initialized".to_string()),
+        );
+    }
+
+    // Create CA
+    let ca_state = match crate::ca::create_ca(&request.passphrase, &entropy) {
+        Ok(ca) => ca,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    };
+    let ca_fingerprint = crate::ca::ca_fingerprint(&ca_state);
+
+    // Generate TOTP secret
+    let totp_secret = koi_crypto::totp::generate_secret();
+    let encrypted_totp = match koi_crypto::totp::encrypt_secret(&totp_secret, &request.passphrase) {
+        Ok(enc) => enc,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e)),
+    };
+    if let Err(e) = koi_crypto::keys::save_encrypted_key(&crate::ca::totp_secret_path(), &encrypted_totp) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e));
+    }
+
+    let totp_uri = koi_crypto::totp::build_totp_uri(&totp_secret, "Koi Certmesh", "enrollment");
+
+    // Create roster
+    let new_roster = crate::roster::Roster::new(request.profile, request.operator.clone());
+    let roster_path = crate::ca::roster_path();
+    if let Err(e) = crate::roster::save_roster(&new_roster, &roster_path) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::Io(e));
+    }
+
+    // Install CA cert in OS trust store (best-effort)
+    if let Err(e) = koi_truststore::install_ca_cert(&ca_state.cert_pem, "koi-certmesh") {
+        tracing::warn!(error = %e, "Could not install CA cert in trust store");
+    }
+
+    // Update in-memory state
+    *state.ca.lock().await = Some(ca_state);
+    let state_secret = koi_crypto::totp::TotpSecret::from_bytes(totp_secret.as_bytes().to_vec());
+    *state.totp_secret.lock().await = Some(state_secret);
+    *state.roster.lock().await = new_roster;
+    *state.profile.lock().await = request.profile;
+
+    let _ = crate::audit::append_entry(
+        "pond_initialized",
+        &[
+            ("profile", &request.profile.to_string()),
+            ("operator", request.operator.as_deref().unwrap_or("none")),
+        ],
+    );
+
+    tracing::info!(profile = %request.profile, "CA initialized via service");
+
+    let response = CreateCaResponse {
+        totp_uri,
+        ca_fingerprint,
+    };
+    match serde_json::to_value(&response) {
+        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CertmeshError::Internal(format!("Serialization error: {e}")),
+        ),
+    }
+}
+
+/// POST /unlock — Decrypt the CA key.
+async fn unlock_handler(
+    State(state): State<Arc<CertmeshState>>,
+    Json(request): Json<UnlockRequest>,
+) -> impl IntoResponse {
+    let ca_state = match crate::ca::load_ca(&request.passphrase) {
+        Ok(ca) => ca,
+        Err(e) => {
+            let code = koi_common::error::ErrorCode::from(&e);
+            let status = StatusCode::from_u16(code.http_status())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            return error_response(status, &e);
+        }
+    };
+
+    // Load TOTP secret
+    let totp_path = crate::ca::totp_secret_path();
+    if totp_path.exists() {
+        match koi_crypto::keys::load_encrypted_key(&totp_path) {
+            Ok(encrypted) => {
+                match koi_crypto::totp::decrypt_secret(&encrypted, &request.passphrase) {
+                    Ok(secret) => {
+                        *state.totp_secret.lock().await = Some(secret);
+                    }
+                    Err(e) => tracing::warn!(error = %e, "Failed to decrypt TOTP secret"),
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "Failed to load TOTP secret"),
+        }
+    }
+
+    *state.ca.lock().await = Some(ca_state);
+    tracing::info!("CA unlocked via service");
+
+    let response = UnlockResponse { success: true };
+    match serde_json::to_value(&response) {
+        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CertmeshError::Internal(format!("Serialization error: {e}")),
+        ),
+    }
+}
+
+/// POST /rotate-totp — Rotate the TOTP enrollment secret.
+async fn rotate_totp_handler(
+    State(state): State<Arc<CertmeshState>>,
+    Json(request): Json<RotateTotpRequest>,
+) -> impl IntoResponse {
+    // Verify CA is unlocked
+    let ca_guard = state.ca.lock().await;
+    if ca_guard.is_none() {
+        return if crate::ca::is_ca_initialized() {
+            error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
+        } else {
+            error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaNotInitialized)
+        };
+    }
+    drop(ca_guard);
+
+    let new_secret = koi_crypto::totp::generate_secret();
+    let encrypted = match koi_crypto::totp::encrypt_secret(&new_secret, &request.passphrase) {
+        Ok(enc) => enc,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e)),
+    };
+    if let Err(e) = koi_crypto::keys::save_encrypted_key(&crate::ca::totp_secret_path(), &encrypted) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e));
+    }
+
+    let totp_uri = koi_crypto::totp::build_totp_uri(&new_secret, "Koi Certmesh", "enrollment");
+    *state.totp_secret.lock().await = Some(new_secret);
+
+    tracing::info!("TOTP secret rotated via service");
+    let _ = crate::audit::append_entry("totp_rotated", &[]);
+
+    let response = RotateTotpResponse { totp_uri };
+    match serde_json::to_value(&response) {
+        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CertmeshError::Internal(format!("Serialization error: {e}")),
+        ),
+    }
+}
+
+/// GET /log — Return audit log entries.
+async fn log_handler(
+    State(_state): State<Arc<CertmeshState>>,
+) -> impl IntoResponse {
+    match crate::audit::read_log() {
+        Ok(entries) => {
+            let response = crate::protocol::AuditLogResponse { entries };
+            match serde_json::to_value(&response) {
+                Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+                Err(e) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &CertmeshError::Internal(format!("Serialization error: {e}")),
+                ),
+            }
+        }
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CertmeshError::Io(e),
+        ),
+    }
+}
+
+// ── Phase 4 handlers ────────────────────────────────────────────────
+
+/// POST /enrollment/open — Open the enrollment window.
+async fn open_enrollment_handler(
+    State(state): State<Arc<CertmeshState>>,
+    body: Option<Json<serde_json::Value>>,
+) -> impl IntoResponse {
+    let deadline = body
+        .and_then(|Json(v)| v.get("deadline")?.as_str().map(String::from))
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+
+    let mut roster = state.roster.lock().await;
+    roster.open_enrollment(deadline);
+
+    let roster_path = crate::ca::roster_path();
+    if let Err(e) = crate::roster::save_roster(&roster, &roster_path) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CertmeshError::Internal(format!("Failed to save roster: {e}")),
+        );
+    }
+
+    let _ = crate::audit::append_entry(
+        "enrollment_opened",
+        &[("deadline", &deadline.map(|d| d.to_rfc3339()).unwrap_or_else(|| "none".to_string()))],
+    );
+
+    let body = serde_json::json!({
+        "enrollment_state": "open",
+        "deadline": deadline.map(|d| d.to_rfc3339()),
+    });
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+/// POST /enrollment/close — Close the enrollment window.
+async fn close_enrollment_handler(
+    State(state): State<Arc<CertmeshState>>,
+) -> impl IntoResponse {
+    let mut roster = state.roster.lock().await;
+    roster.close_enrollment();
+
+    let roster_path = crate::ca::roster_path();
+    if let Err(e) = crate::roster::save_roster(&roster, &roster_path) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CertmeshError::Internal(format!("Failed to save roster: {e}")),
+        );
+    }
+
+    let _ = crate::audit::append_entry("enrollment_closed", &[]);
+
+    let body = serde_json::json!({ "enrollment_state": "closed" });
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+/// PUT /policy — Set enrollment scope constraints.
+async fn set_policy_handler(
+    State(state): State<Arc<CertmeshState>>,
+    Json(request): Json<PolicyRequest>,
+) -> impl IntoResponse {
+    // Validate subnet CIDR format if provided
+    if let Some(ref cidr) = request.allowed_subnet {
+        if let Some((net_str, prefix_str)) = cidr.split_once('/') {
+            if net_str.parse::<std::net::IpAddr>().is_err() {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    &CertmeshError::ScopeViolation(format!("invalid subnet CIDR: {cidr}")),
+                );
+            }
+            if prefix_str.parse::<u32>().is_err() {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    &CertmeshError::ScopeViolation(format!("invalid prefix length in CIDR: {cidr}")),
+                );
+            }
+        } else {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &CertmeshError::ScopeViolation(format!("invalid CIDR format (expected x.x.x.x/N): {cidr}")),
+            );
+        }
+    }
+
+    let mut roster = state.roster.lock().await;
+    roster.metadata.allowed_domain = request.allowed_domain.clone();
+    roster.metadata.allowed_subnet = request.allowed_subnet.clone();
+
+    let roster_path = crate::ca::roster_path();
+    if let Err(e) = crate::roster::save_roster(&roster, &roster_path) {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CertmeshError::Internal(format!("Failed to save roster: {e}")),
+        );
+    }
+
+    let _ = crate::audit::append_entry(
+        "policy_updated",
+        &[
+            ("allowed_domain", request.allowed_domain.as_deref().unwrap_or("none")),
+            ("allowed_subnet", request.allowed_subnet.as_deref().unwrap_or("none")),
+        ],
+    );
+
+    let body = serde_json::json!({
+        "allowed_domain": request.allowed_domain,
+        "allowed_subnet": request.allowed_subnet,
+    });
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 // ── Phase 3 handlers ────────────────────────────────────────────────
@@ -378,6 +704,17 @@ async fn health_handler(
     }
 }
 
+/// Decode a hex string into bytes. Returns `None` on invalid hex.
+fn decode_hex(hex: &str) -> Option<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect()
+}
+
 fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::Response {
     let code = koi_common::error::ErrorCode::from(error);
     let body = serde_json::json!({
@@ -407,13 +744,16 @@ mod tests {
                     trust_profile: TrustProfile::JustMe,
                     operator: None,
                     enrollment_state: EnrollmentState::Closed,
+                    enrollment_deadline: None,
+                    allowed_domain: None,
+                    allowed_subnet: None,
                 },
                 members: vec![],
                 revocation_list: vec![],
             }),
             totp_secret: tokio::sync::Mutex::new(None),
             rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
-            profile: TrustProfile::JustMe,
+            profile: tokio::sync::Mutex::new(TrustProfile::JustMe),
         })
     }
 
@@ -612,5 +952,110 @@ mod tests {
         assert!(json.get("error").is_some(), "missing error field");
         let msg = json.get("message").unwrap().as_str().unwrap();
         assert!(msg.contains("nobody"), "message should contain hostname: {msg}");
+    }
+
+    // ── Phase 4 — Enrollment policy endpoint tests ──────────────────
+
+    #[tokio::test]
+    async fn open_enrollment_returns_200() {
+        let app = routes(test_state());
+        let req = Request::post("/enrollment/open")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.get("enrollment_state").unwrap().as_str().unwrap(), "open");
+    }
+
+    #[tokio::test]
+    async fn open_enrollment_with_deadline() {
+        let app = routes(test_state());
+        let req = Request::post("/enrollment/open")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"deadline":"2026-12-31T23:59:59Z"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("deadline").unwrap().as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn open_enrollment_accepts_empty_body() {
+        let app = routes(test_state());
+        let req = Request::post("/enrollment/open")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn close_enrollment_returns_200() {
+        let app = routes(test_state());
+        let req = Request::post("/enrollment/close")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.get("enrollment_state").unwrap().as_str().unwrap(), "closed");
+    }
+
+    #[tokio::test]
+    async fn set_policy_returns_200() {
+        let app = routes(test_state());
+        let req = Request::put("/policy")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.get("allowed_domain").unwrap().as_str().unwrap(), "lab.local");
+        assert_eq!(json.get("allowed_subnet").unwrap().as_str().unwrap(), "192.168.1.0/24");
+    }
+
+    #[tokio::test]
+    async fn set_policy_invalid_cidr_returns_400() {
+        let app = routes(test_state());
+        let req = Request::put("/policy")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"allowed_subnet":"not-a-cidr"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn set_policy_invalid_cidr_ip_returns_400() {
+        let app = routes(test_state());
+        let req = Request::put("/policy")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"allowed_subnet":"xyz.abc/24"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn set_policy_clears_with_nulls() {
+        let app = routes(test_state());
+        let req = Request::put("/policy")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("allowed_domain").unwrap().is_null());
+        assert!(json.get("allowed_subnet").unwrap().is_null());
     }
 }

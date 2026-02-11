@@ -15,8 +15,9 @@ const UNIX_FALLBACK_RUNTIME_DIR: &str = "/var/run";
 pub fn breadcrumb_path() -> PathBuf {
     #[cfg(windows)]
     {
-        let local = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| r"C:\ProgramData".to_string());
-        PathBuf::from(local)
+        let program_data =
+            std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+        PathBuf::from(program_data)
             .join(APP_DIR_NAME)
             .join(BREADCRUMB_FILENAME)
     }

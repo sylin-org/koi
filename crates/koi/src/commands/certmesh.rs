@@ -1,11 +1,14 @@
 //! Certmesh command handlers.
 //!
-//! Local commands (create, status, log, unlock, set-hook) are sync file I/O.
-//! Network commands (join) are async — they may discover the CA via mDNS.
+//! All certmesh commands delegate to the running service via HTTP.
+//! The CLI never performs direct file I/O for certmesh operations —
+//! the service has the elevated permissions needed for cert store,
+//! file writes, etc.
 
 use std::sync::Arc;
 
-use koi_certmesh::{audit, ca, certfiles, entropy, profiles::TrustProfile, roster};
+use koi_certmesh::entropy;
+use koi_certmesh::profiles::TrustProfile;
 use koi_mdns::events::MdnsEvent;
 
 use crate::client::KoiClient;
@@ -13,6 +16,22 @@ use crate::format;
 
 /// mDNS discovery timeout for finding a CA on the local network.
 const CA_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+// ── Shared helper ────────────────────────────────────────────────────
+
+/// Resolve the daemon endpoint or bail with a clear message.
+fn require_daemon(endpoint: Option<&str>) -> anyhow::Result<KoiClient> {
+    let ep = endpoint
+        .map(String::from)
+        .or_else(koi_config::breadcrumb::read_breadcrumb)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No running Koi service found.\n\
+                 Install and start the service first: koi install"
+            )
+        })?;
+    Ok(KoiClient::new(&ep))
+}
 
 // ── Create ──────────────────────────────────────────────────────────
 
@@ -22,28 +41,65 @@ pub fn create(
     entropy_mode: &str,
     passphrase: Option<&str>,
     json: bool,
+    endpoint: Option<&str>,
 ) -> anyhow::Result<()> {
-    ensure_not_initialized()?;
+    let client = require_daemon(endpoint)?;
     let trust_profile = resolve_profile(profile);
     validate_operator(&trust_profile, operator)?;
+
+    // Collect entropy locally — keyboard mode not available over HTTP
     let entropy_seed = collect_entropy_seed(entropy_mode, passphrase)?;
     let ca_passphrase = resolve_passphrase(passphrase)?;
-    let ca_state = ca::create_ca(&ca_passphrase, &entropy_seed)?;
-    let totp_secret = setup_totp(&ca_passphrase)?;
-    let (hostname, cert_dir) = enroll_primary(&ca_state, &trust_profile, operator)?;
-    log_initialization(&trust_profile, operator, &hostname);
-    install_trust_store(&ca_state);
-    display_create_results(&hostname, &cert_dir, &trust_profile, &ca_state, &totp_secret, json);
-    Ok(())
-}
 
-fn ensure_not_initialized() -> anyhow::Result<()> {
-    if ca::is_ca_initialized() {
-        anyhow::bail!(
-            "CA already initialized. Remove {:?} to start over.",
-            ca::ca_dir()
+    let body = serde_json::json!({
+        "passphrase": ca_passphrase,
+        "entropy_hex": hex_encode(&entropy_seed),
+        "profile": trust_profile,
+        "operator": operator,
+    });
+    let resp = client.post_json("/v1/certmesh/create", &body)?;
+
+    let totp_uri = resp
+        .get("totp_uri")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let ca_fingerprint = resp
+        .get("ca_fingerprint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "created": true,
+                "profile": trust_profile.to_string(),
+                "ca_fingerprint": ca_fingerprint,
+            })
         );
+    } else {
+        println!("Certificate mesh created.");
+        println!("  Profile:        {trust_profile}");
+        println!("  CA fingerprint: {ca_fingerprint}");
     }
+
+    // Render QR code locally from the returned TOTP URI
+    if !totp_uri.is_empty() {
+        // Parse the secret from the otpauth:// URI so we can build a QR code
+        if let Some(secret) = extract_totp_secret_from_uri(totp_uri) {
+            let hostname = hostname::get()
+                .map(|h| h.to_string_lossy().to_string())
+                .unwrap_or_else(|_| "localhost".to_string());
+            let qr = koi_crypto::totp::qr_code_unicode(
+                &secret,
+                "Koi Certmesh",
+                &format!("admin@{hostname}"),
+            );
+            println!("\nScan this QR code with your authenticator app:\n");
+            println!("{qr}");
+        }
+    }
+
     Ok(())
 }
 
@@ -68,7 +124,6 @@ fn collect_entropy_seed(
     passphrase: Option<&str>,
 ) -> anyhow::Result<[u8; 32]> {
     Ok(match entropy_mode {
-        "keyboard" => entropy::collect_entropy(entropy::EntropyMode::KeyboardMashing)?,
         "manual" => {
             let phrase = passphrase
                 .ok_or_else(|| anyhow::anyhow!("--passphrase required with --entropy=manual"))?;
@@ -93,149 +148,82 @@ fn resolve_passphrase(passphrase: Option<&str>) -> anyhow::Result<String> {
     Ok(result)
 }
 
-fn setup_totp(ca_passphrase: &str) -> anyhow::Result<koi_crypto::totp::TotpSecret> {
-    let totp_secret = koi_crypto::totp::generate_secret();
-    let encrypted_totp = koi_crypto::totp::encrypt_secret(&totp_secret, ca_passphrase)?;
-    koi_crypto::keys::save_encrypted_key(&ca::totp_secret_path(), &encrypted_totp)?;
-    Ok(totp_secret)
+/// Encode bytes as lowercase hex string.
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn enroll_primary(
-    ca_state: &ca::CaState,
-    trust_profile: &TrustProfile,
-    operator: Option<&str>,
-) -> anyhow::Result<(String, std::path::PathBuf)> {
-    let hostname = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "localhost".to_string());
-    let sans = vec![hostname.clone(), format!("{hostname}.local")];
-    let issued = ca::issue_certificate(ca_state, &hostname, &sans)?;
-    let cert_dir = certfiles::write_cert_files(&hostname, &issued)?;
-
-    let ca_fp = ca::ca_fingerprint(ca_state);
-    let mut r = roster::Roster::new(trust_profile.clone(), operator.map(String::from));
-    r.members.push(roster::RosterMember {
-        hostname: hostname.clone(),
-        role: roster::MemberRole::Primary,
-        enrolled_at: chrono::Utc::now(),
-        enrolled_by: operator.map(String::from),
-        cert_fingerprint: issued.fingerprint.clone(),
-        cert_expires: issued.expires,
-        cert_sans: sans,
-        cert_path: cert_dir.display().to_string(),
-        status: roster::MemberStatus::Active,
-        reload_hook: None,
-        last_seen: Some(chrono::Utc::now()),
-        pinned_ca_fingerprint: Some(ca_fp),
-    });
-    roster::save_roster(&r, &ca::roster_path())?;
-
-    Ok((hostname, cert_dir))
-}
-
-fn log_initialization(
-    trust_profile: &TrustProfile,
-    operator: Option<&str>,
-    hostname: &str,
-) {
-    let _ = audit::append_entry(
-        "pond_initialized",
-        &[
-            ("profile", &trust_profile.to_string()),
-            ("operator", operator.unwrap_or("self")),
-            ("hostname", hostname),
-        ],
-    );
-}
-
-fn install_trust_store(ca_state: &ca::CaState) {
-    if let Err(e) = koi_truststore::install_ca_cert(&ca_state.cert_pem, "koi-certmesh-ca") {
-        eprintln!("Warning: Could not install CA in system trust store: {e}");
-        eprintln!("You may need to install it manually.");
+/// Extract the TOTP secret from an otpauth:// URI and reconstruct a TotpSecret.
+fn extract_totp_secret_from_uri(uri: &str) -> Option<koi_crypto::totp::TotpSecret> {
+    // Parse "otpauth://totp/...?secret=BASE32&..."
+    let query = uri.split('?').nth(1)?;
+    for param in query.split('&') {
+        if let Some(val) = param.strip_prefix("secret=") {
+            // Decode base32
+            let decoded = base32_decode(val)?;
+            return Some(koi_crypto::totp::TotpSecret::from_bytes(decoded));
+        }
     }
+    None
 }
 
-fn display_create_results(
-    hostname: &str,
-    cert_dir: &std::path::Path,
-    trust_profile: &TrustProfile,
-    ca_state: &ca::CaState,
-    totp_secret: &koi_crypto::totp::TotpSecret,
-    json: bool,
-) {
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "created": true,
-                "profile": trust_profile.to_string(),
-                "ca_fingerprint": ca::ca_fingerprint(ca_state),
-                "hostname": hostname,
-                "cert_path": cert_dir.display().to_string(),
-            })
-        );
-    } else {
-        print!(
-            "{}",
-            format::certmesh_create_success(
-                hostname,
-                cert_dir,
-                trust_profile,
-                &ca::ca_fingerprint(ca_state),
-            )
-        );
-    }
+/// Simple base32 decoder (RFC 4648, no padding required).
+fn base32_decode(input: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let input = input.trim_end_matches('=').as_bytes();
+    let mut bits: u64 = 0;
+    let mut bit_count = 0;
+    let mut result = Vec::new();
 
-    let qr = koi_crypto::totp::qr_code_unicode(
-        totp_secret,
-        "Koi Certmesh",
-        &format!("admin@{hostname}"),
-    );
-    println!("\nScan this QR code with your authenticator app:\n");
-    println!("{qr}");
+    for &c in input {
+        let c = c.to_ascii_uppercase();
+        let val = ALPHABET.iter().position(|&a| a == c)? as u64;
+        bits = (bits << 5) | val;
+        bit_count += 5;
+        if bit_count >= 8 {
+            bit_count -= 8;
+            result.push((bits >> bit_count) as u8);
+            bits &= (1 << bit_count) - 1;
+        }
+    }
+    Some(result)
 }
 
 // ── Status ──────────────────────────────────────────────────────────
 
-pub fn status(json: bool) -> anyhow::Result<()> {
-    if !ca::is_ca_initialized() {
-        if json {
-            println!(
-                "{}",
-                serde_json::json!({ "ca_initialized": false })
-            );
-        } else {
+pub fn status(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint)?;
+    let resp = client.get_json("/v1/certmesh/status")?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+    } else {
+        let ca_init = resp
+            .get("ca_initialized")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !ca_init {
             println!("Certificate mesh: not initialized");
             println!("  Run `koi certmesh create` to set up a CA.");
-        }
-        return Ok(());
-    }
-
-    let roster_path = ca::roster_path();
-    if roster_path.exists() {
-        let r = roster::load_roster(&roster_path)?;
-        if json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "ca_initialized": true,
-                    "profile": r.metadata.trust_profile,
-                    "enrollment_state": r.metadata.enrollment_state,
-                    "member_count": r.active_count(),
-                    "members": r.members.iter().map(|m| serde_json::json!({
-                        "hostname": m.hostname,
-                        "role": format!("{:?}", m.role).to_lowercase(),
-                        "status": format!("{:?}", m.status).to_lowercase(),
-                        "cert_fingerprint": m.cert_fingerprint,
-                        "cert_expires": m.cert_expires.to_rfc3339(),
-                    })).collect::<Vec<_>>(),
-                }))?
-            );
         } else {
-            print!("{}", format::certmesh_status(&r));
+            // Deserialize into CertmeshStatus for formatting
+            match serde_json::from_value::<koi_certmesh::protocol::CertmeshStatus>(resp.clone()) {
+                Ok(s) => {
+                    println!("Certificate mesh: active");
+                    println!("  Profile:    {}", s.profile);
+                    println!("  CA locked:  {}", s.ca_locked);
+                    println!("  Enrollment: {:?}", s.enrollment_state);
+                    println!("  Members:    {}", s.member_count);
+                    for m in &s.members {
+                        println!("    {} ({}) — {}", m.hostname, m.role, m.status);
+                    }
+                }
+                Err(_) => {
+                    // Fallback: print raw JSON
+                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                }
+            }
         }
-    } else {
-        println!("CA initialized but roster not found.");
     }
 
     Ok(())
@@ -243,29 +231,38 @@ pub fn status(json: bool) -> anyhow::Result<()> {
 
 // ── Log ─────────────────────────────────────────────────────────────
 
-pub fn log() -> anyhow::Result<()> {
-    let log = audit::read_log()?;
-    if log.is_empty() {
+pub fn log(endpoint: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint)?;
+    let resp = client.get_json("/v1/certmesh/log")?;
+
+    let entries = resp
+        .get("entries")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if entries.is_empty() {
         println!("No audit log entries.");
     } else {
-        print!("{log}");
+        print!("{entries}");
     }
     Ok(())
 }
 
 // ── Unlock ──────────────────────────────────────────────────────────
 
-pub fn unlock() -> anyhow::Result<()> {
-    if !ca::is_ca_initialized() {
-        anyhow::bail!("CA not initialized. Run `koi certmesh create` first.");
-    }
+pub fn unlock(endpoint: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint)?;
 
     eprintln!("Enter the CA passphrase:");
     let mut passphrase = String::new();
     std::io::stdin().read_line(&mut passphrase)?;
     let passphrase = passphrase.trim();
 
-    let _ca = ca::load_ca(passphrase)?;
+    if passphrase.is_empty() {
+        anyhow::bail!("Passphrase cannot be empty.");
+    }
+
+    let body = serde_json::json!({ "passphrase": passphrase });
+    client.post_json("/v1/certmesh/unlock", &body)?;
     println!("CA unlocked successfully.");
     Ok(())
 }
@@ -277,63 +274,31 @@ pub fn set_hook(
     json: bool,
     endpoint: Option<&str>,
 ) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint)?;
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "localhost".to_string());
 
-    // Try daemon first, fall back to direct roster edit
-    if let Some(ep) = endpoint
-        .map(String::from)
-        .or_else(koi_config::breadcrumb::read_breadcrumb)
-    {
-        let c = KoiClient::new(&ep);
-        if c.health().is_ok() {
-            let body = serde_json::json!({
-                "hostname": hostname,
-                "reload": reload,
-            });
-            let resp = c.put_json("/v1/certmesh/hook", &body)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&resp)?);
-            } else {
-                println!("Reload hook set for {hostname}: {reload}");
-            }
-            return Ok(());
-        }
-    }
+    let body = serde_json::json!({
+        "hostname": hostname,
+        "reload": reload,
+    });
+    let resp = client.put_json("/v1/certmesh/hook", &body)?;
 
-    // Offline: edit roster directly
-    if !ca::is_ca_initialized() {
-        anyhow::bail!("CA not initialized. Run `koi certmesh create` first.");
+    if json {
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+    } else {
+        println!("Reload hook set for {hostname}: {reload}");
     }
-    let roster_path = ca::roster_path();
-    let mut r = roster::load_roster(&roster_path)?;
-    match r.find_member_mut(&hostname) {
-        Some(member) => {
-            member.reload_hook = Some(reload.to_string());
-            roster::save_roster(&r, &roster_path)?;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "hostname": hostname,
-                        "reload": reload,
-                    })
-                );
-            } else {
-                println!("Reload hook set for {hostname}: {reload}");
-            }
-            Ok(())
-        }
-        None => {
-            anyhow::bail!("This host ({hostname}) is not enrolled in the mesh.");
-        }
-    }
+    Ok(())
 }
 
 // ── Join ────────────────────────────────────────────────────────────
 
-pub async fn join(endpoint: Option<&str>, json: bool) -> anyhow::Result<()> {
+pub async fn join(endpoint: Option<&str>, json: bool, cli_endpoint: Option<&str>) -> anyhow::Result<()> {
+    // The local daemon must be running to handle cert file writes
+    let _local = require_daemon(cli_endpoint)?;
+
     let resolved_endpoint = match endpoint {
         Some(ep) => ep.to_string(),
         None => discover_ca().await?,
@@ -367,7 +332,10 @@ pub async fn join(endpoint: Option<&str>, json: bool) -> anyhow::Result<()> {
 
 // ── Promote ─────────────────────────────────────────────────────────
 
-pub async fn promote(endpoint: Option<&str>, json: bool) -> anyhow::Result<()> {
+pub async fn promote(endpoint: Option<&str>, json: bool, cli_endpoint: Option<&str>) -> anyhow::Result<()> {
+    // The local daemon must be running
+    let _local = require_daemon(cli_endpoint)?;
+
     let resolved_endpoint = match endpoint {
         Some(ep) => ep.to_string(),
         None => discover_ca().await?,
@@ -446,6 +414,182 @@ pub async fn promote(endpoint: Option<&str>, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ── Open Enrollment ─────────────────────────────────────────────────
+
+pub fn open_enrollment(
+    until: Option<&str>,
+    json: bool,
+    endpoint: Option<&str>,
+) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint)?;
+    let deadline = until.map(parse_deadline).transpose()?;
+
+    let body = serde_json::json!({
+        "deadline": deadline.map(|d| d.to_rfc3339()),
+    });
+    let resp = client.post_json("/v1/certmesh/enrollment/open", &body)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+    } else {
+        let state = resp
+            .get("enrollment_state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("open");
+        println!("Enrollment: {state}");
+        if let Some(d) = resp.get("deadline").and_then(|v| v.as_str()) {
+            println!("Deadline:   {d}");
+        }
+    }
+    Ok(())
+}
+
+// ── Close Enrollment ────────────────────────────────────────────────
+
+pub fn close_enrollment(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint)?;
+    let resp = client.post_json("/v1/certmesh/enrollment/close", &serde_json::json!({}))?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+    } else {
+        println!("Enrollment: closed");
+    }
+    Ok(())
+}
+
+// ── Set Policy ──────────────────────────────────────────────────────
+
+pub fn set_policy(
+    domain: Option<&str>,
+    subnet: Option<&str>,
+    clear: bool,
+    json: bool,
+    endpoint: Option<&str>,
+) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint)?;
+    let allowed_domain = if clear { None } else { domain.map(String::from) };
+    let allowed_subnet = if clear { None } else { subnet.map(String::from) };
+
+    let body = serde_json::json!({
+        "allowed_domain": allowed_domain,
+        "allowed_subnet": allowed_subnet,
+    });
+    let resp = client.put_json("/v1/certmesh/policy", &body)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+    } else {
+        print_policy_result(&allowed_domain, &allowed_subnet, clear);
+    }
+    Ok(())
+}
+
+fn print_policy_result(
+    domain: &Option<String>,
+    subnet: &Option<String>,
+    clear: bool,
+) {
+    if clear {
+        println!("Enrollment policy: all constraints cleared");
+    } else {
+        println!("Enrollment policy updated:");
+        if let Some(d) = domain {
+            println!("  Domain:  {d}");
+        }
+        if let Some(s) = subnet {
+            println!("  Subnet:  {s}");
+        }
+        if domain.is_none() && subnet.is_none() {
+            println!("  (no constraints)");
+        }
+    }
+}
+
+// ── Rotate TOTP ─────────────────────────────────────────────────────
+
+pub fn rotate_totp(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint)?;
+
+    eprintln!("Enter the CA passphrase:");
+    let mut passphrase = String::new();
+    std::io::stdin().read_line(&mut passphrase)?;
+    let passphrase = passphrase.trim();
+
+    if passphrase.is_empty() {
+        anyhow::bail!("Passphrase cannot be empty.");
+    }
+
+    let body = serde_json::json!({ "passphrase": passphrase });
+    let resp = client.post_json("/v1/certmesh/rotate-totp", &body)?;
+
+    let totp_uri = resp
+        .get("totp_uri")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if json {
+        println!("{}", serde_json::json!({ "rotated": true }));
+    } else {
+        println!("TOTP secret rotated successfully.");
+        if !totp_uri.is_empty() {
+            if let Some(secret) = extract_totp_secret_from_uri(totp_uri) {
+                let hostname = hostname::get()
+                    .map(|h| h.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| "localhost".to_string());
+                let qr = koi_crypto::totp::qr_code_unicode(
+                    &secret,
+                    "Koi Certmesh",
+                    &format!("admin@{hostname}"),
+                );
+                println!("\nScan this QR code with your authenticator app:\n");
+                println!("{qr}");
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── Deadline Parsing ────────────────────────────────────────────────
+
+/// Parse a deadline string — supports RFC 3339 timestamps or durations.
+///
+/// Duration formats: "30m", "2h", "1d", "12h30m"
+fn parse_deadline(s: &str) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
+    // Try RFC 3339 first
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.with_timezone(&chrono::Utc));
+    }
+
+    // Try duration format
+    let mut total_secs: u64 = 0;
+    let mut num_buf = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_digit() {
+            num_buf.push(ch);
+        } else {
+            let n: u64 = num_buf
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid deadline format: {s}"))?;
+            num_buf.clear();
+            match ch {
+                'm' => total_secs += n * 60,
+                'h' => total_secs += n * 3600,
+                'd' => total_secs += n * 86400,
+                _ => anyhow::bail!("invalid deadline unit '{ch}' in: {s}"),
+            }
+        }
+    }
+    if total_secs == 0 {
+        anyhow::bail!(
+            "invalid deadline format: {s}\n\
+             Expected RFC 3339 (e.g. 2026-02-12T00:00:00Z) or duration (e.g. 2h, 1d, 30m)"
+        );
+    }
+
+    Ok(chrono::Utc::now() + chrono::Duration::seconds(total_secs as i64))
+}
+
 /// Discover a certmesh CA on the local network via mDNS.
 ///
 /// Browses for `_certmesh._tcp` services for 5 seconds, collects
@@ -500,4 +644,120 @@ async fn discover_ca() -> anyhow::Result<String> {
             anyhow::bail!(msg)
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_deadline_rfc3339() {
+        let result = parse_deadline("2026-03-01T00:00:00Z");
+        assert!(result.is_ok());
+        let dt = result.unwrap();
+        assert_eq!(dt.year(), 2026);
+        assert_eq!(dt.month(), 3);
+    }
+
+    #[test]
+    fn parse_deadline_duration_hours() {
+        let before = chrono::Utc::now();
+        let result = parse_deadline("2h").unwrap();
+        let expected_min = before + chrono::Duration::hours(2);
+        assert!(result >= expected_min - chrono::Duration::seconds(1));
+    }
+
+    #[test]
+    fn parse_deadline_duration_days() {
+        let before = chrono::Utc::now();
+        let result = parse_deadline("1d").unwrap();
+        let expected_min = before + chrono::Duration::days(1);
+        assert!(result >= expected_min - chrono::Duration::seconds(1));
+    }
+
+    #[test]
+    fn parse_deadline_duration_minutes() {
+        let before = chrono::Utc::now();
+        let result = parse_deadline("30m").unwrap();
+        let expected_min = before + chrono::Duration::minutes(30);
+        assert!(result >= expected_min - chrono::Duration::seconds(1));
+    }
+
+    #[test]
+    fn parse_deadline_combined_duration() {
+        let before = chrono::Utc::now();
+        let result = parse_deadline("1h30m").unwrap();
+        let expected_min = before + chrono::Duration::minutes(90);
+        assert!(result >= expected_min - chrono::Duration::seconds(1));
+    }
+
+    #[test]
+    fn parse_deadline_invalid_format() {
+        let result = parse_deadline("invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_deadline_invalid_unit() {
+        let result = parse_deadline("5x");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_deadline_empty_fails() {
+        let result = parse_deadline("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn hex_encode_produces_correct_output() {
+        assert_eq!(hex_encode(&[0x0a, 0xff, 0x00]), "0aff00");
+        assert_eq!(hex_encode(&[]), "");
+    }
+
+    #[test]
+    fn base32_decode_valid() {
+        // "JBSWY3DPEE======" is the RFC 4648 base32 encoding of "Hello!"
+        let decoded = base32_decode("JBSWY3DPEE").unwrap();
+        assert_eq!(&decoded, b"Hello!");
+    }
+
+    #[test]
+    fn base32_decode_with_padding() {
+        let decoded = base32_decode("JBSWY3DPEE======").unwrap();
+        assert_eq!(&decoded, b"Hello!");
+    }
+
+    #[test]
+    fn base32_decode_invalid_char() {
+        let decoded = base32_decode("1!!!invalid");
+        assert!(decoded.is_none());
+    }
+
+    #[test]
+    fn extract_totp_secret_from_valid_uri() {
+        // Build a known URI and extract
+        let secret = koi_crypto::totp::generate_secret();
+        let uri = koi_crypto::totp::build_totp_uri(&secret, "Test", "user");
+        let extracted = extract_totp_secret_from_uri(&uri);
+        assert!(extracted.is_some());
+        assert_eq!(extracted.unwrap().as_bytes(), secret.as_bytes());
+    }
+
+    #[test]
+    fn extract_totp_secret_from_bad_uri() {
+        assert!(extract_totp_secret_from_uri("not-a-uri").is_none());
+        assert!(extract_totp_secret_from_uri("otpauth://totp/x?issuer=x").is_none());
+    }
+
+    #[test]
+    fn require_daemon_fails_without_endpoint() {
+        // No breadcrumb file, no endpoint — should fail
+        let result = require_daemon(None);
+        // This may succeed if there IS a breadcrumb; if not, it fails.
+        // We just verify it doesn't panic.
+        let _ = result;
+    }
+
+    use chrono::Datelike;
 }

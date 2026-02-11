@@ -2,39 +2,29 @@ use std::path::PathBuf;
 
 /// Root data directory for Koi.
 ///
-/// All Koi data is machine-local (CA keys, roster, certs, logs, state).
-/// None of it should roam across machines via AD roaming profiles.
+/// All Koi data is machine-scoped (CA keys, roster, certs, logs, state).
+/// The user never owns the data — certificates belong to the machine.
 ///
-/// - Linux: `~/.koi/`
-/// - macOS: `~/Library/Application Support/koi/`
-/// - Windows: `%LOCALAPPDATA%\koi\`
+/// - Linux: `/var/lib/koi/`
+/// - macOS: `/Library/Application Support/koi/`
+/// - Windows: `%ProgramData%\koi\`
 pub fn koi_data_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("koi");
-        }
+        PathBuf::from("/Library/Application Support/koi")
     }
 
     #[cfg(windows)]
     {
-        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(local).join("koi");
-        }
+        let program_data = std::env::var("ProgramData")
+            .unwrap_or_else(|_| r"C:\ProgramData".to_string());
+        PathBuf::from(program_data).join("koi")
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
     {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(".koi");
-        }
+        PathBuf::from("/var/lib/koi")
     }
-
-    // Fallback
-    PathBuf::from(".koi")
 }
 
 /// Runtime state directory.
@@ -60,8 +50,8 @@ mod tests {
     fn data_dir_ends_with_koi() {
         let dir = koi_data_dir();
         assert!(
-            dir.ends_with("koi") || dir.ends_with(".koi"),
-            "data dir should end with 'koi' or '.koi': {dir:?}"
+            dir.ends_with("koi"),
+            "data dir should end with 'koi': {dir:?}"
         );
     }
 
@@ -107,34 +97,34 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_uses_localappdata() {
+    fn windows_uses_programdata() {
         let dir = koi_data_dir();
-        // On Windows, should be under LOCALAPPDATA (not APPDATA/roaming)
         let dir_str = dir.to_string_lossy().to_lowercase();
         assert!(
-            dir_str.contains("local"),
-            "Windows data dir should use LOCALAPPDATA: {dir:?}"
+            dir_str.contains("programdata"),
+            "Windows data dir should use ProgramData: {dir:?}"
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_uses_library_application_support() {
+    fn macos_uses_system_library() {
         let dir = koi_data_dir();
         let dir_str = dir.to_string_lossy();
         assert!(
-            dir_str.contains("Library") && dir_str.contains("Application Support"),
-            "macOS data dir should be in Library/Application Support: {dir:?}"
+            dir_str.starts_with("/Library/Application Support"),
+            "macOS data dir should be in /Library/Application Support: {dir:?}"
         );
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
     #[test]
-    fn linux_uses_dot_koi() {
+    fn linux_uses_var_lib() {
         let dir = koi_data_dir();
+        let dir_str = dir.to_string_lossy();
         assert!(
-            dir.ends_with(".koi"),
-            "Linux data dir should end with .koi: {dir:?}"
+            dir_str.starts_with("/var/lib/koi"),
+            "Linux data dir should be /var/lib/koi: {dir:?}"
         );
     }
 }

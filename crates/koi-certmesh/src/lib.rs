@@ -42,7 +42,7 @@ pub(crate) struct CertmeshState {
     pub(crate) roster: tokio::sync::Mutex<Roster>,
     pub(crate) totp_secret: tokio::sync::Mutex<Option<koi_crypto::totp::TotpSecret>>,
     pub(crate) rate_limiter: tokio::sync::Mutex<RateLimiter>,
-    pub(crate) profile: TrustProfile,
+    pub(crate) profile: tokio::sync::Mutex<TrustProfile>,
 }
 
 // ── CertmeshCore — domain facade ────────────────────────────────────
@@ -69,7 +69,7 @@ impl CertmeshCore {
                 roster: tokio::sync::Mutex::new(roster),
                 totp_secret: tokio::sync::Mutex::new(Some(totp_secret)),
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
-                profile,
+                profile: tokio::sync::Mutex::new(profile),
             }),
         }
     }
@@ -82,7 +82,23 @@ impl CertmeshCore {
                 roster: tokio::sync::Mutex::new(roster),
                 totp_secret: tokio::sync::Mutex::new(None),
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
-                profile,
+                profile: tokio::sync::Mutex::new(profile),
+            }),
+        }
+    }
+
+    /// Create a CertmeshCore in uninitialized state (no CA created yet).
+    ///
+    /// HTTP routes are still mounted so `/create` is reachable on a fresh install.
+    /// All operations that require an initialized CA will return `CaNotInitialized`.
+    pub fn uninitialized() -> Self {
+        Self {
+            state: Arc::new(CertmeshState {
+                ca: tokio::sync::Mutex::new(None),
+                roster: tokio::sync::Mutex::new(Roster::empty()),
+                totp_secret: tokio::sync::Mutex::new(None),
+                rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
+                profile: tokio::sync::Mutex::new(TrustProfile::default()),
             }),
         }
     }
@@ -92,6 +108,83 @@ impl CertmeshCore {
     /// The binary crate mounts this at `/v1/certmesh/`.
     pub fn routes(&self) -> Router {
         http::routes(Arc::clone(&self.state))
+    }
+
+    /// Initialize a new CA from scratch (called via HTTP from CLI).
+    ///
+    /// Creates the CA key pair, self-signed cert, TOTP secret, roster,
+    /// installs the CA cert in the OS trust store, and returns the TOTP
+    /// provisioning URI so the CLI can display a QR code.
+    pub async fn create_ca(
+        &self,
+        passphrase: &str,
+        entropy: &[u8],
+        profile: TrustProfile,
+        operator: Option<&str>,
+    ) -> Result<protocol::CreateCaResponse, CertmeshError> {
+        // Reject if CA already initialized
+        if ca::is_ca_initialized() {
+            return Err(CertmeshError::Internal(
+                "CA is already initialized".to_string(),
+            ));
+        }
+
+        // Create CA
+        let ca_state = ca::create_ca(passphrase, entropy)?;
+        let ca_fingerprint = ca::ca_fingerprint(&ca_state);
+
+        // Generate TOTP secret
+        let totp_secret = koi_crypto::totp::generate_secret();
+        let encrypted_totp = koi_crypto::totp::encrypt_secret(&totp_secret, passphrase)?;
+        koi_crypto::keys::save_encrypted_key(&ca::totp_secret_path(), &encrypted_totp)?;
+
+        // Build TOTP URI for QR code
+        let totp_uri = koi_crypto::totp::build_totp_uri(
+            &totp_secret,
+            "Koi Certmesh",
+            "enrollment",
+        );
+
+        // Create roster
+        let new_roster = Roster::new(profile, operator.map(String::from));
+        let roster_path = ca::roster_path();
+        roster::save_roster(&new_roster, &roster_path)?;
+
+        // Install CA cert in OS trust store (best-effort)
+        if let Err(e) = koi_truststore::install_ca_cert(&ca_state.cert_pem, "koi-certmesh") {
+            tracing::warn!(error = %e, "Could not install CA cert in trust store");
+        }
+
+        // Update in-memory state
+        *self.state.ca.lock().await = Some(ca_state);
+        // Create a copy from raw bytes for state (original consumed by totp_uri)
+        let state_secret = koi_crypto::totp::TotpSecret::from_bytes(
+            totp_secret.as_bytes().to_vec(),
+        );
+        *self.state.totp_secret.lock().await = Some(state_secret);
+        *self.state.roster.lock().await = new_roster;
+        *self.state.profile.lock().await = profile;
+
+        // Audit log
+        let _ = audit::append_entry(
+            "pond_initialized",
+            &[
+                ("profile", &profile.to_string()),
+                ("operator", operator.unwrap_or("none")),
+            ],
+        );
+
+        tracing::info!(profile = %profile, "CA initialized via service");
+
+        Ok(protocol::CreateCaResponse {
+            totp_uri,
+            ca_fingerprint,
+        })
+    }
+
+    /// Read the audit log entries.
+    pub fn read_audit_log(&self) -> Result<String, CertmeshError> {
+        audit::read_log().map_err(CertmeshError::Io)
     }
 
     /// Process an enrollment request. Returns the join response on success.
@@ -119,6 +212,7 @@ impl CertmeshCore {
             .as_ref()
             .ok_or(CertmeshError::CaLocked)?;
         let mut rate_limiter = self.state.rate_limiter.lock().await;
+        let profile = self.state.profile.lock().await;
 
         let (response, _issued) = enrollment::process_enrollment(
             ca,
@@ -128,7 +222,7 @@ impl CertmeshCore {
             request,
             &hostname,
             &sans,
-            &self.state.profile,
+            &profile,
         )?;
 
         // Save roster after successful enrollment
@@ -144,7 +238,8 @@ impl CertmeshCore {
     pub async fn certmesh_status(&self) -> protocol::CertmeshStatus {
         let ca_guard = self.state.ca.lock().await;
         let roster = self.state.roster.lock().await;
-        build_status(&ca_guard, &roster, &self.state.profile)
+        let profile = self.state.profile.lock().await;
+        build_status(&ca_guard, &roster, &profile)
     }
 
     /// Produce an mDNS announcement descriptor if this node is an unlocked primary.
@@ -164,7 +259,8 @@ impl CertmeshCore {
             "fingerprint".to_string(),
             ca::ca_fingerprint(ca),
         );
-        txt.insert("profile".to_string(), self.state.profile.to_string());
+        let profile = self.state.profile.lock().await;
+        txt.insert("profile".to_string(), profile.to_string());
 
         Some(protocol::CaAnnouncement {
             name: format!("koi-ca-{}", primary.hostname),
@@ -211,6 +307,122 @@ impl CertmeshCore {
 
         tracing::info!("CA unlocked");
         Ok(())
+    }
+
+    // ── Phase 4 — Enrollment Policy ─────────────────────────────────
+
+    /// Open the enrollment window, optionally with a deadline.
+    pub async fn open_enrollment(
+        &self,
+        deadline: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<(), CertmeshError> {
+        let mut roster = self.state.roster.lock().await;
+        roster.open_enrollment(deadline);
+
+        let roster_path = ca::roster_path();
+        roster::save_roster(&roster, &roster_path)?;
+
+        if let Some(d) = deadline {
+            tracing::info!(deadline = %d, "Enrollment window opened with deadline");
+        } else {
+            tracing::info!("Enrollment window opened (no deadline)");
+        }
+        let _ = audit::append_entry(
+            "enrollment_opened",
+            &[("deadline", &deadline.map(|d| d.to_rfc3339()).unwrap_or_else(|| "none".to_string()))],
+        );
+        Ok(())
+    }
+
+    /// Close the enrollment window.
+    pub async fn close_enrollment(&self) -> Result<(), CertmeshError> {
+        let mut roster = self.state.roster.lock().await;
+        roster.close_enrollment();
+
+        let roster_path = ca::roster_path();
+        roster::save_roster(&roster, &roster_path)?;
+
+        tracing::info!("Enrollment window closed");
+        let _ = audit::append_entry("enrollment_closed", &[]);
+        Ok(())
+    }
+
+    /// Set scope constraints (domain and/or subnet).
+    pub async fn set_policy(
+        &self,
+        allowed_domain: Option<String>,
+        allowed_subnet: Option<String>,
+    ) -> Result<(), CertmeshError> {
+        // Validate subnet CIDR format before saving
+        if let Some(ref cidr) = allowed_subnet {
+            if let Some((net_str, prefix_str)) = cidr.split_once('/') {
+                net_str.parse::<std::net::IpAddr>().map_err(|_| {
+                    CertmeshError::ScopeViolation(format!("invalid subnet CIDR: {cidr}"))
+                })?;
+                prefix_str.parse::<u32>().map_err(|_| {
+                    CertmeshError::ScopeViolation(format!("invalid prefix length in CIDR: {cidr}"))
+                })?;
+            } else {
+                return Err(CertmeshError::ScopeViolation(
+                    format!("invalid CIDR format (expected x.x.x.x/N): {cidr}"),
+                ));
+            }
+        }
+
+        let mut roster = self.state.roster.lock().await;
+        roster.metadata.allowed_domain = allowed_domain.clone();
+        roster.metadata.allowed_subnet = allowed_subnet.clone();
+
+        let roster_path = ca::roster_path();
+        roster::save_roster(&roster, &roster_path)?;
+
+        tracing::info!(
+            domain = ?allowed_domain,
+            subnet = ?allowed_subnet,
+            "Enrollment policy updated"
+        );
+        let _ = audit::append_entry(
+            "policy_updated",
+            &[
+                ("allowed_domain", allowed_domain.as_deref().unwrap_or("none")),
+                ("allowed_subnet", allowed_subnet.as_deref().unwrap_or("none")),
+            ],
+        );
+        Ok(())
+    }
+
+    /// Rotate the TOTP secret — generates a new secret, encrypts, and saves.
+    ///
+    /// Returns the TOTP provisioning URI for QR code display.
+    pub async fn rotate_totp(
+        &self,
+        passphrase: &str,
+    ) -> Result<String, CertmeshError> {
+        // Verify CA is unlocked
+        let ca_guard = self.state.ca.lock().await;
+        if ca_guard.is_none() {
+            return Err(if ca::is_ca_initialized() {
+                CertmeshError::CaLocked
+            } else {
+                CertmeshError::CaNotInitialized
+            });
+        }
+        drop(ca_guard);
+
+        let new_secret = koi_crypto::totp::generate_secret();
+        let encrypted = koi_crypto::totp::encrypt_secret(&new_secret, passphrase)?;
+        koi_crypto::keys::save_encrypted_key(&ca::totp_secret_path(), &encrypted)?;
+
+        let totp_uri = koi_crypto::totp::build_totp_uri(
+            &new_secret,
+            "Koi Certmesh",
+            "enrollment",
+        );
+        *self.state.totp_secret.lock().await = Some(new_secret);
+
+        tracing::info!("TOTP secret rotated");
+        let _ = audit::append_entry("totp_rotated", &[]);
+        Ok(totp_uri)
     }
 
     // ── Phase 3 — Lifecycle ────────────────────────────────────────
@@ -439,6 +651,13 @@ impl Capability for CertmeshCore {
             .map(|guard| guard.active_count())
             .unwrap_or(0);
 
+        let profile = self
+            .state
+            .profile
+            .try_lock()
+            .map(|p| *p)
+            .unwrap_or_default();
+
         let summary = if !ca_initialized {
             "CA not initialized".to_string()
         } else if ca_locked {
@@ -446,7 +665,7 @@ impl Capability for CertmeshCore {
         } else {
             format!(
                 "{} ({} member{})",
-                self.state.profile,
+                profile,
                 member_count,
                 if member_count == 1 { "" } else { "s" }
             )
@@ -472,8 +691,14 @@ pub(crate) fn build_status(
     protocol::CertmeshStatus {
         ca_initialized: ca::is_ca_initialized(),
         ca_locked: ca_guard.is_none(),
-        profile: profile.clone(),
+        profile: *profile,
         enrollment_state: roster.metadata.enrollment_state.clone(),
+        enrollment_deadline: roster
+            .metadata
+            .enrollment_deadline
+            .map(|d| d.to_rfc3339()),
+        allowed_domain: roster.metadata.allowed_domain.clone(),
+        allowed_subnet: roster.metadata.allowed_subnet.clone(),
         member_count: roster.active_count(),
         members: roster
             .members
@@ -955,5 +1180,186 @@ mod tests {
         let status = build_status(&None, &roster, &TrustProfile::JustMe);
         assert_eq!(status.members[0].role, "standby");
         assert_eq!(status.members[0].status, "active");
+    }
+
+    // ── Phase 4 — Enrollment policy facade tests ────────────────────
+
+    #[tokio::test]
+    async fn open_enrollment_changes_state() {
+        let ca = make_test_ca();
+        let roster = Roster::new(TrustProfile::MyOrganization, Some("Admin".into()));
+        let core = make_unlocked_core(ca, roster);
+
+        // Initially closed
+        let status = core.certmesh_status().await;
+        assert_eq!(status.enrollment_state, roster::EnrollmentState::Closed);
+
+        // Open
+        core.open_enrollment(None).await.unwrap();
+        let status = core.certmesh_status().await;
+        assert_eq!(status.enrollment_state, roster::EnrollmentState::Open);
+        assert!(status.enrollment_deadline.is_none());
+    }
+
+    #[tokio::test]
+    async fn open_enrollment_with_deadline() {
+        let ca = make_test_ca();
+        let roster = Roster::new(TrustProfile::MyOrganization, Some("Admin".into()));
+        let core = make_unlocked_core(ca, roster);
+
+        let deadline = Utc::now() + Duration::hours(2);
+        core.open_enrollment(Some(deadline)).await.unwrap();
+
+        let status = core.certmesh_status().await;
+        assert_eq!(status.enrollment_state, roster::EnrollmentState::Open);
+        assert!(status.enrollment_deadline.is_some());
+    }
+
+    #[tokio::test]
+    async fn close_enrollment_changes_state() {
+        let ca = make_test_ca();
+        let roster = Roster::new(TrustProfile::JustMe, None);
+        let core = make_unlocked_core(ca, roster);
+
+        // Initially open for JustMe
+        let status = core.certmesh_status().await;
+        assert_eq!(status.enrollment_state, roster::EnrollmentState::Open);
+
+        // Close
+        core.close_enrollment().await.unwrap();
+        let status = core.certmesh_status().await;
+        assert_eq!(status.enrollment_state, roster::EnrollmentState::Closed);
+    }
+
+    #[tokio::test]
+    async fn set_policy_updates_constraints() {
+        let ca = make_test_ca();
+        let roster = Roster::new(TrustProfile::JustMe, None);
+        let core = make_unlocked_core(ca, roster);
+
+        core.set_policy(
+            Some("lab.local".to_string()),
+            Some("192.168.1.0/24".to_string()),
+        )
+        .await
+        .unwrap();
+
+        let status = core.certmesh_status().await;
+        assert_eq!(status.allowed_domain.as_deref(), Some("lab.local"));
+        assert_eq!(status.allowed_subnet.as_deref(), Some("192.168.1.0/24"));
+    }
+
+    #[tokio::test]
+    async fn set_policy_clears_constraints() {
+        let ca = make_test_ca();
+        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        roster.metadata.allowed_domain = Some("old.local".to_string());
+        let core = make_unlocked_core(ca, roster);
+
+        core.set_policy(None, None).await.unwrap();
+
+        let status = core.certmesh_status().await;
+        assert!(status.allowed_domain.is_none());
+        assert!(status.allowed_subnet.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_policy_rejects_invalid_cidr() {
+        let ca = make_test_ca();
+        let roster = Roster::new(TrustProfile::JustMe, None);
+        let core = make_unlocked_core(ca, roster);
+
+        let result = core
+            .set_policy(None, Some("not-a-cidr".to_string()))
+            .await;
+        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
+    }
+
+    #[tokio::test]
+    async fn set_policy_rejects_cidr_with_bad_ip() {
+        let ca = make_test_ca();
+        let roster = Roster::new(TrustProfile::JustMe, None);
+        let core = make_unlocked_core(ca, roster);
+
+        let result = core
+            .set_policy(None, Some("xyz.abc/24".to_string()))
+            .await;
+        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
+    }
+
+    #[tokio::test]
+    async fn rotate_totp_fails_when_ca_locked() {
+        let roster = Roster::new(TrustProfile::JustMe, None);
+        let core = make_locked_core(roster);
+        let result = core.rotate_totp("test-pass").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn build_status_includes_policy_fields() {
+        let ca = make_test_ca();
+        let mut roster = Roster::new(TrustProfile::MyOrganization, Some("Admin".into()));
+        roster.metadata.allowed_domain = Some("school.local".to_string());
+        roster.metadata.allowed_subnet = Some("10.0.0.0/8".to_string());
+        roster.metadata.enrollment_deadline =
+            Some(Utc::now() + Duration::hours(1));
+
+        let status = build_status(&Some(ca), &roster, &TrustProfile::MyOrganization);
+        assert_eq!(status.allowed_domain.as_deref(), Some("school.local"));
+        assert_eq!(status.allowed_subnet.as_deref(), Some("10.0.0.0/8"));
+        assert!(status.enrollment_deadline.is_some());
+    }
+
+    // ── CertmeshCore::uninitialized() state ─────────────────────────
+
+    #[tokio::test]
+    async fn uninitialized_core_status_shows_empty_roster() {
+        let core = CertmeshCore::uninitialized();
+        let status = core.certmesh_status().await;
+        // ca_initialized reflects filesystem state, not in-memory state.
+        // ca_locked is false because we have no CA at all (not locked, just absent).
+        assert_eq!(status.member_count, 0);
+        assert!(status.members.is_empty());
+        // The in-memory CA is None, so ca_locked should be true
+        // (None means "no key loaded" which is the locked state).
+        assert!(status.ca_locked);
+    }
+
+    #[tokio::test]
+    async fn uninitialized_core_enroll_returns_error() {
+        let core = CertmeshCore::uninitialized();
+        let request = protocol::JoinRequest {
+            totp_code: "123456".to_string(),
+        };
+        let result = core.enroll(&request).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn uninitialized_core_promote_returns_error() {
+        let core = CertmeshCore::uninitialized();
+        let result = core.promote("passphrase").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn uninitialized_core_roster_manifest_returns_error() {
+        let core = CertmeshCore::uninitialized();
+        let result = core.roster_manifest().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn uninitialized_core_renew_all_due_returns_empty() {
+        let core = CertmeshCore::uninitialized();
+        let results = core.renew_all_due().await;
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn uninitialized_core_rotate_totp_returns_error() {
+        let core = CertmeshCore::uninitialized();
+        let result = core.rotate_totp("passphrase").await;
+        assert!(result.is_err());
     }
 }

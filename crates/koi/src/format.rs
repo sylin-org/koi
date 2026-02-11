@@ -217,69 +217,6 @@ pub fn unified_status(json: &serde_json::Value) -> String {
     out
 }
 
-// ── Certmesh formatting ─────────────────────────────────────────────
-
-/// Format a success message after CA creation.
-pub fn certmesh_create_success(
-    hostname: &str,
-    cert_dir: &std::path::Path,
-    profile: &koi_certmesh::profiles::TrustProfile,
-    ca_fingerprint: &str,
-) -> String {
-    let mut out = String::from("\nCertificate mesh created!\n");
-    let _ = writeln!(out, "  Profile:      {profile}");
-    let _ = writeln!(out, "  CA fingerprint: {ca_fingerprint}");
-    let _ = writeln!(out, "  Primary host: {hostname}");
-    let _ = writeln!(out, "  Certificates: {}", cert_dir.display());
-    out
-}
-
-/// Format the roster status for `koi certmesh status`.
-pub fn certmesh_status(roster: &koi_certmesh::roster::Roster) -> String {
-    let mut out = String::from("Certificate Mesh Status\n");
-    let _ = writeln!(out, "  Profile:    {}", roster.metadata.trust_profile);
-    let _ = writeln!(
-        out,
-        "  Enrollment: {:?}",
-        roster.metadata.enrollment_state
-    );
-    if let Some(op) = &roster.metadata.operator {
-        let _ = writeln!(out, "  Operator:   {op}");
-    }
-    let _ = writeln!(
-        out,
-        "  Members:    {} active",
-        roster.active_count()
-    );
-    let _ = writeln!(out);
-
-    for member in &roster.members {
-        let role = format!("{:?}", member.role).to_lowercase();
-        let status = format!("{:?}", member.status).to_lowercase();
-        let _ = writeln!(
-            out,
-            "  {} ({role}, {status})",
-            member.hostname
-        );
-        let _ = writeln!(
-            out,
-            "    Fingerprint: {}",
-            member.cert_fingerprint
-        );
-        let _ = writeln!(
-            out,
-            "    Expires:     {}",
-            member.cert_expires.format("%Y-%m-%d")
-        );
-        let _ = writeln!(
-            out,
-            "    Cert path:   {}",
-            member.cert_path
-        );
-    }
-    out
-}
-
 // ── Phase 3 certmesh formatting ────────────────────────────────────
 
 /// Format success message after promoting a host to standby CA.
@@ -334,7 +271,6 @@ fn txt_inline(txt: &HashMap<String, String>) -> String {
 mod tests {
     use super::*;
     use koi_mdns::protocol::{LeaseMode, LeaseState};
-    use std::path::Path;
 
     fn test_record() -> ServiceRecord {
         ServiceRecord {
@@ -696,87 +632,6 @@ mod tests {
         assert!(out.contains("Koi vunknown"));
         assert!(out.contains("Platform:  unknown"));
         assert!(!out.contains("Uptime:"));
-    }
-
-    // ── certmesh_create_success ─────────────────────────────────────
-
-    #[test]
-    fn certmesh_create_success_output() {
-        let out = certmesh_create_success(
-            "stone-01",
-            Path::new("/home/koi/.koi/certs"),
-            &koi_certmesh::profiles::TrustProfile::JustMe,
-            "abc123def456",
-        );
-        assert!(out.contains("Certificate mesh created!"));
-        assert!(out.contains("Profile:      Just Me"));
-        assert!(out.contains("CA fingerprint: abc123def456"));
-        assert!(out.contains("Primary host: stone-01"));
-        assert!(out.contains("Certificates:"));
-    }
-
-    // ── certmesh_status ─────────────────────────────────────────────
-
-    #[test]
-    fn certmesh_status_output() {
-        use chrono::Utc;
-        use koi_certmesh::profiles::TrustProfile;
-        use koi_certmesh::roster::*;
-
-        let roster = Roster {
-            metadata: RosterMetadata {
-                created_at: Utc::now(),
-                trust_profile: TrustProfile::MyTeam,
-                operator: Some("ops-team".into()),
-                enrollment_state: EnrollmentState::Open,
-            },
-            members: vec![RosterMember {
-                hostname: "stone-01".into(),
-                role: MemberRole::Primary,
-                enrolled_at: Utc::now(),
-                enrolled_by: None,
-                cert_fingerprint: "fp123".into(),
-                cert_expires: Utc::now(),
-                cert_sans: vec!["stone-01".into()],
-                cert_path: "/certs/stone-01".into(),
-                status: MemberStatus::Active,
-                reload_hook: None,
-                last_seen: None,
-                pinned_ca_fingerprint: None,
-            }],
-            revocation_list: vec![],
-        };
-        let out = certmesh_status(&roster);
-        assert!(out.contains("Certificate Mesh Status"));
-        assert!(out.contains("Profile:    My Team"));
-        assert!(out.contains("Enrollment: Open"));
-        assert!(out.contains("Operator:   ops-team"));
-        assert!(out.contains("Members:    1 active"));
-        assert!(out.contains("stone-01 (primary, active)"));
-        assert!(out.contains("Fingerprint: fp123"));
-        assert!(out.contains("Cert path:   /certs/stone-01"));
-    }
-
-    #[test]
-    fn certmesh_status_no_operator() {
-        use chrono::Utc;
-        use koi_certmesh::profiles::TrustProfile;
-        use koi_certmesh::roster::*;
-
-        let roster = Roster {
-            metadata: RosterMetadata {
-                created_at: Utc::now(),
-                trust_profile: TrustProfile::JustMe,
-                operator: None,
-                enrollment_state: EnrollmentState::Closed,
-            },
-            members: vec![],
-            revocation_list: vec![],
-        };
-        let out = certmesh_status(&roster);
-        assert!(!out.contains("Operator:"));
-        assert!(out.contains("Enrollment: Closed"));
-        assert!(out.contains("Members:    0 active"));
     }
 
     // ── promote_success ─────────────────────────────────────────────

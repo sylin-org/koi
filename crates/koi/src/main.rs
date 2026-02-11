@@ -155,26 +155,39 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             }
             Command::Certmesh(cm_cmd) => {
                 config.require_capability("certmesh")?;
+                let ep = cli.endpoint.as_deref();
                 match &cm_cmd.command {
                     CertmeshSubcommand::Create { profile, operator, entropy, passphrase } => {
                         commands::certmesh::create(
                             profile.as_deref(), operator.as_deref(), entropy,
-                            passphrase.as_deref(), cli.json,
+                            passphrase.as_deref(), cli.json, ep,
                         )
                     }
-                    CertmeshSubcommand::Status => commands::certmesh::status(cli.json),
-                    CertmeshSubcommand::Log => commands::certmesh::log(),
-                    CertmeshSubcommand::Unlock => commands::certmesh::unlock(),
+                    CertmeshSubcommand::Status => commands::certmesh::status(cli.json, ep),
+                    CertmeshSubcommand::Log => commands::certmesh::log(ep),
+                    CertmeshSubcommand::Unlock => commands::certmesh::unlock(ep),
                     CertmeshSubcommand::SetHook { reload } => {
-                        commands::certmesh::set_hook(
-                            reload, cli.json, cli.endpoint.as_deref(),
-                        )
+                        commands::certmesh::set_hook(reload, cli.json, ep)
                     }
                     CertmeshSubcommand::Join { endpoint } => {
-                        commands::certmesh::join(endpoint.as_deref(), cli.json).await
+                        commands::certmesh::join(endpoint.as_deref(), cli.json, ep).await
                     }
                     CertmeshSubcommand::Promote { endpoint } => {
-                        commands::certmesh::promote(endpoint.as_deref(), cli.json).await
+                        commands::certmesh::promote(endpoint.as_deref(), cli.json, ep).await
+                    }
+                    CertmeshSubcommand::OpenEnrollment { until } => {
+                        commands::certmesh::open_enrollment(until.as_deref(), cli.json, ep)
+                    }
+                    CertmeshSubcommand::CloseEnrollment => {
+                        commands::certmesh::close_enrollment(cli.json, ep)
+                    }
+                    CertmeshSubcommand::SetPolicy { domain, subnet, clear } => {
+                        commands::certmesh::set_policy(
+                            domain.as_deref(), subnet.as_deref(), *clear, cli.json, ep,
+                        )
+                    }
+                    CertmeshSubcommand::RotateTotp => {
+                        commands::certmesh::rotate_totp(cli.json, ep)
                     }
                 }
             }
@@ -350,26 +363,27 @@ pub(crate) struct DaemonCores {
     pub(crate) certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
 }
 
-/// Attempt to initialize the certmesh core for daemon mode.
+/// Initialize the certmesh core for daemon mode.
 ///
+/// Always returns `Some` so HTTP routes are mounted even before `koi certmesh create`.
 /// If a CA is initialized, creates a locked core with the roster.
-/// If not initialized, returns None (certmesh CLI commands still work).
+/// If not initialized, creates an uninitialized core (routes are reachable for `/create`).
 pub(crate) fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
     if !koi_certmesh::ca::is_ca_initialized() {
-        tracing::info!("Certmesh: CA not initialized");
-        return None;
+        tracing::info!("Certmesh: CA not initialized — routes mounted for /create");
+        return Some(Arc::new(koi_certmesh::CertmeshCore::uninitialized()));
     }
 
     let roster_path = koi_certmesh::ca::roster_path();
     let roster = match koi_certmesh::roster::load_roster(&roster_path) {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!(error = %e, "Failed to load certmesh roster");
-            return None;
+            tracing::warn!(error = %e, "Failed to load certmesh roster — using uninitialized state");
+            return Some(Arc::new(koi_certmesh::CertmeshCore::uninitialized()));
         }
     };
 
-    let profile = roster.metadata.trust_profile.clone();
+    let profile = roster.metadata.trust_profile;
     let core = koi_certmesh::CertmeshCore::locked(roster, profile);
     tracing::info!("Certmesh: CA initialized (locked, use `koi certmesh unlock` to decrypt)");
     Some(Arc::new(core))

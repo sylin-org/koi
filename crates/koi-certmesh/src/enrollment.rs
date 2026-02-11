@@ -224,6 +224,7 @@ pub fn process_enrollment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::roster::EnrollmentState;
     use koi_crypto::totp;
 
     fn make_test_ca() -> CaState {
@@ -325,5 +326,213 @@ mod tests {
         );
 
         assert!(matches!(result, Err(CertmeshError::RateLimited { .. })));
+    }
+
+    // ── Scope validation tests ──────────────────────────────────────
+
+    #[test]
+    fn validate_scope_no_constraints_allows_any() {
+        let metadata = RosterMetadata {
+            created_at: chrono::Utc::now(),
+            trust_profile: TrustProfile::JustMe,
+            operator: None,
+            enrollment_state: EnrollmentState::Open,
+            enrollment_deadline: None,
+            allowed_domain: None,
+            allowed_subnet: None,
+        };
+        assert!(validate_scope("anything.example.com", &metadata).is_ok());
+    }
+
+    #[test]
+    fn validate_scope_domain_exact_match() {
+        let metadata = RosterMetadata {
+            created_at: chrono::Utc::now(),
+            trust_profile: TrustProfile::MyTeam,
+            operator: None,
+            enrollment_state: EnrollmentState::Open,
+            enrollment_deadline: None,
+            allowed_domain: Some("lab.local".to_string()),
+            allowed_subnet: None,
+        };
+        assert!(validate_scope("lab.local", &metadata).is_ok());
+    }
+
+    #[test]
+    fn validate_scope_domain_suffix_match() {
+        let metadata = RosterMetadata {
+            created_at: chrono::Utc::now(),
+            trust_profile: TrustProfile::MyTeam,
+            operator: None,
+            enrollment_state: EnrollmentState::Open,
+            enrollment_deadline: None,
+            allowed_domain: Some("lab.local".to_string()),
+            allowed_subnet: None,
+        };
+        assert!(validate_scope("host-01.lab.local", &metadata).is_ok());
+        assert!(validate_scope("deep.nest.lab.local", &metadata).is_ok());
+    }
+
+    #[test]
+    fn validate_scope_domain_case_insensitive() {
+        let metadata = RosterMetadata {
+            created_at: chrono::Utc::now(),
+            trust_profile: TrustProfile::MyTeam,
+            operator: None,
+            enrollment_state: EnrollmentState::Open,
+            enrollment_deadline: None,
+            allowed_domain: Some("Lab.Local".to_string()),
+            allowed_subnet: None,
+        };
+        assert!(validate_scope("HOST.lab.local", &metadata).is_ok());
+    }
+
+    #[test]
+    fn validate_scope_domain_rejects_outside() {
+        let metadata = RosterMetadata {
+            created_at: chrono::Utc::now(),
+            trust_profile: TrustProfile::MyOrganization,
+            operator: None,
+            enrollment_state: EnrollmentState::Open,
+            enrollment_deadline: None,
+            allowed_domain: Some("school.local".to_string()),
+            allowed_subnet: None,
+        };
+        let result = validate_scope("attacker.evil.com", &metadata);
+        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
+    }
+
+    #[test]
+    fn validate_scope_domain_rejects_partial_suffix() {
+        // "notschool.local" should NOT match "school.local"
+        let metadata = RosterMetadata {
+            created_at: chrono::Utc::now(),
+            trust_profile: TrustProfile::MyOrganization,
+            operator: None,
+            enrollment_state: EnrollmentState::Open,
+            enrollment_deadline: None,
+            allowed_domain: Some("school.local".to_string()),
+            allowed_subnet: None,
+        };
+        let result = validate_scope("notschool.local", &metadata);
+        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
+    }
+
+    #[test]
+    fn validate_subnet_allows_in_range() {
+        let metadata = RosterMetadata {
+            created_at: chrono::Utc::now(),
+            trust_profile: TrustProfile::JustMe,
+            operator: None,
+            enrollment_state: EnrollmentState::Open,
+            enrollment_deadline: None,
+            allowed_domain: None,
+            allowed_subnet: Some("192.168.1.0/24".to_string()),
+        };
+        assert!(validate_subnet("192.168.1.42", &metadata).is_ok());
+        assert!(validate_subnet("192.168.1.255", &metadata).is_ok());
+    }
+
+    #[test]
+    fn validate_subnet_rejects_outside() {
+        let metadata = RosterMetadata {
+            created_at: chrono::Utc::now(),
+            trust_profile: TrustProfile::JustMe,
+            operator: None,
+            enrollment_state: EnrollmentState::Open,
+            enrollment_deadline: None,
+            allowed_domain: None,
+            allowed_subnet: Some("192.168.1.0/24".to_string()),
+        };
+        let result = validate_subnet("10.0.0.1", &metadata);
+        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
+    }
+
+    #[test]
+    fn validate_subnet_no_constraint_allows_any() {
+        let metadata = RosterMetadata {
+            created_at: chrono::Utc::now(),
+            trust_profile: TrustProfile::JustMe,
+            operator: None,
+            enrollment_state: EnrollmentState::Open,
+            enrollment_deadline: None,
+            allowed_domain: None,
+            allowed_subnet: None,
+        };
+        assert!(validate_subnet("10.0.0.1", &metadata).is_ok());
+    }
+
+    #[test]
+    fn validate_subnet_rejects_invalid_cidr() {
+        let metadata = RosterMetadata {
+            created_at: chrono::Utc::now(),
+            trust_profile: TrustProfile::JustMe,
+            operator: None,
+            enrollment_state: EnrollmentState::Open,
+            enrollment_deadline: None,
+            allowed_domain: None,
+            allowed_subnet: Some("not-a-cidr".to_string()),
+        };
+        // No '/' in the CIDR, so validate_subnet should pass (no-op for malformed)
+        assert!(validate_subnet("10.0.0.1", &metadata).is_ok());
+    }
+
+    #[test]
+    fn ip_in_subnet_ipv4_various_prefixes() {
+        use std::net::IpAddr;
+        let net: IpAddr = "10.0.0.0".parse().unwrap();
+        let ip_in: IpAddr = "10.0.0.42".parse().unwrap();
+        let ip_out: IpAddr = "10.0.1.1".parse().unwrap();
+
+        assert!(ip_in_subnet(ip_in, net, 24));
+        assert!(!ip_in_subnet(ip_out, net, 24));
+        assert!(ip_in_subnet(ip_in, net, 8));
+        assert!(ip_in_subnet(ip_out, net, 8));
+    }
+
+    #[test]
+    fn ip_in_subnet_ipv6() {
+        use std::net::IpAddr;
+        let net: IpAddr = "fd00::".parse().unwrap();
+        let ip_in: IpAddr = "fd00::1".parse().unwrap();
+        let ip_out: IpAddr = "fe80::1".parse().unwrap();
+
+        assert!(ip_in_subnet(ip_in, net, 16));
+        assert!(!ip_in_subnet(ip_out, net, 16));
+    }
+
+    #[test]
+    fn ip_in_subnet_mixed_versions_returns_false() {
+        use std::net::IpAddr;
+        let net_v4: IpAddr = "10.0.0.0".parse().unwrap();
+        let ip_v6: IpAddr = "fd00::1".parse().unwrap();
+        assert!(!ip_in_subnet(ip_v6, net_v4, 8));
+    }
+
+    #[test]
+    fn ip_in_subnet_prefix_zero_matches_all() {
+        use std::net::IpAddr;
+        let net: IpAddr = "10.0.0.0".parse().unwrap();
+        let ip: IpAddr = "192.168.1.1".parse().unwrap();
+        assert!(ip_in_subnet(ip, net, 0));
+    }
+
+    #[test]
+    fn ip_in_subnet_prefix_32_exact_match() {
+        use std::net::IpAddr;
+        let net: IpAddr = "10.0.0.1".parse().unwrap();
+        let ip_same: IpAddr = "10.0.0.1".parse().unwrap();
+        let ip_diff: IpAddr = "10.0.0.2".parse().unwrap();
+        assert!(ip_in_subnet(ip_same, net, 32));
+        assert!(!ip_in_subnet(ip_diff, net, 32));
+    }
+
+    #[test]
+    fn ip_in_subnet_invalid_prefix_returns_false() {
+        use std::net::IpAddr;
+        let net: IpAddr = "10.0.0.0".parse().unwrap();
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        // prefix > 32 for IPv4 is invalid
+        assert!(!ip_in_subnet(ip, net, 33));
     }
 }

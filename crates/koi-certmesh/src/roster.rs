@@ -101,6 +101,23 @@ pub struct RevokedMember {
 const ROSTER_FILENAME: &str = "roster.json";
 
 impl Roster {
+    /// Create a minimal empty roster (for uninitialized state).
+    pub fn empty() -> Self {
+        Self {
+            metadata: RosterMetadata {
+                created_at: Utc::now(),
+                trust_profile: TrustProfile::default(),
+                operator: None,
+                enrollment_state: EnrollmentState::Closed,
+                enrollment_deadline: None,
+                allowed_domain: None,
+                allowed_subnet: None,
+            },
+            members: Vec::new(),
+            revocation_list: Vec::new(),
+        }
+    }
+
     /// Create a new empty roster with the given profile.
     pub fn new(profile: TrustProfile, operator: Option<String>) -> Self {
         let enrollment_state = if profile.enrollment_default_open() {
@@ -428,6 +445,101 @@ mod tests {
             r.members[0].reload_hook.as_deref(),
             Some("systemctl restart nginx"),
         );
+    }
+
+    // ── Phase 4 — Enrollment window tests ──────────────────────────
+
+    #[test]
+    fn open_and_close_enrollment() {
+        let mut r = Roster::new(TrustProfile::MyOrganization, Some("Admin".into()));
+        assert_eq!(r.metadata.enrollment_state, EnrollmentState::Closed);
+        assert!(!r.is_enrollment_open());
+
+        r.open_enrollment(None);
+        assert_eq!(r.metadata.enrollment_state, EnrollmentState::Open);
+        assert!(r.is_enrollment_open());
+
+        r.close_enrollment();
+        assert_eq!(r.metadata.enrollment_state, EnrollmentState::Closed);
+        assert!(!r.is_enrollment_open());
+    }
+
+    #[test]
+    fn enrollment_with_deadline_auto_closes() {
+        use chrono::Duration;
+        let mut r = Roster::new(TrustProfile::JustMe, None);
+
+        // Set deadline in the past
+        let past = Utc::now() - Duration::seconds(10);
+        r.open_enrollment(Some(past));
+
+        // Should auto-close
+        assert!(!r.is_enrollment_open());
+        assert_eq!(r.metadata.enrollment_state, EnrollmentState::Closed);
+        assert!(r.metadata.enrollment_deadline.is_none());
+    }
+
+    #[test]
+    fn enrollment_with_future_deadline_stays_open() {
+        use chrono::Duration;
+        let mut r = Roster::new(TrustProfile::JustMe, None);
+
+        let future = Utc::now() + Duration::hours(2);
+        r.open_enrollment(Some(future));
+
+        assert!(r.is_enrollment_open());
+        assert_eq!(r.metadata.enrollment_state, EnrollmentState::Open);
+        assert!(r.metadata.enrollment_deadline.is_some());
+    }
+
+    #[test]
+    fn close_enrollment_clears_deadline() {
+        use chrono::Duration;
+        let mut r = Roster::new(TrustProfile::JustMe, None);
+        r.open_enrollment(Some(Utc::now() + Duration::hours(1)));
+        assert!(r.metadata.enrollment_deadline.is_some());
+
+        r.close_enrollment();
+        assert!(r.metadata.enrollment_deadline.is_none());
+    }
+
+    #[test]
+    fn roster_metadata_scope_fields_serialize_when_set() {
+        let mut r = Roster::new(TrustProfile::MyTeam, None);
+        r.metadata.allowed_domain = Some("lab.local".to_string());
+        r.metadata.allowed_subnet = Some("192.168.1.0/24".to_string());
+
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("allowed_domain"));
+        assert!(json.contains("lab.local"));
+        assert!(json.contains("allowed_subnet"));
+        assert!(json.contains("192.168.1.0/24"));
+    }
+
+    #[test]
+    fn roster_metadata_scope_fields_skip_when_none() {
+        let r = Roster::new(TrustProfile::JustMe, None);
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("allowed_domain"));
+        assert!(!json.contains("allowed_subnet"));
+        assert!(!json.contains("enrollment_deadline"));
+    }
+
+    #[test]
+    fn backward_compat_phase3_roster_without_phase4_fields() {
+        // Phase 3 roster JSON had no allowed_domain, allowed_subnet, enrollment_deadline.
+        let json = r#"{
+            "metadata": {
+                "created_at": "2026-02-01T00:00:00Z",
+                "trust_profile": "just_me",
+                "enrollment_state": "open"
+            },
+            "members": []
+        }"#;
+        let r: Roster = serde_json::from_str(json).unwrap();
+        assert!(r.metadata.allowed_domain.is_none());
+        assert!(r.metadata.allowed_subnet.is_none());
+        assert!(r.metadata.enrollment_deadline.is_none());
     }
 
     #[test]
