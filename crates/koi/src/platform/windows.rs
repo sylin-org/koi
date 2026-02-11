@@ -28,33 +28,24 @@ const RECOVERY_RESET_SECS: Duration = Duration::from_secs(86_400);
 const SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(30);
 const SERVICE_STOP_POLL: Duration = Duration::from_millis(500);
 
-const APP_DIR_NAME: &str = "koi";
-const SERVICE_LOG_DIR: &str = "koi\\logs";
 const SERVICE_LOG_FILENAME: &str = "koi.log";
 
 // Reuse shutdown constants from crate root (defined once in main.rs).
 use crate::{SHUTDOWN_TIMEOUT, SHUTDOWN_DRAIN};
 
 // ── Service paths ───────────────────────────────────────────────────
+// All paths derive from koi_common::paths which uses %ProgramData%\koi\.
 
 pub fn service_log_path() -> PathBuf {
-    let program_data =
-        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
-    PathBuf::from(program_data)
-        .join(SERVICE_LOG_DIR)
-        .join(SERVICE_LOG_FILENAME)
+    koi_common::paths::koi_log_dir().join(SERVICE_LOG_FILENAME)
 }
 
 pub fn service_log_dir() -> PathBuf {
-    let program_data =
-        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
-    PathBuf::from(program_data).join(SERVICE_LOG_DIR)
+    koi_common::paths::koi_log_dir()
 }
 
 pub fn service_data_dir() -> PathBuf {
-    let program_data =
-        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
-    PathBuf::from(program_data).join(APP_DIR_NAME)
+    koi_common::paths::koi_data_dir()
 }
 
 /// Win32 ERROR_SERVICE_DOES_NOT_EXIST (1060).
@@ -245,14 +236,40 @@ fn build_service_info(exe_path: &std::path::Path) -> ServiceInfo {
 
 // ── Uninstall ───────────────────────────────────────────────────────
 
+/// Check if the Koi service is installed (read-only, no elevation needed).
+fn is_service_installed() -> bool {
+    let Ok(manager) =
+        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+    else {
+        return false;
+    };
+    manager
+        .open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+        .is_ok()
+}
+
 /// Uninstall the Koi Windows Service and clean up all artifacts.
 ///
 /// Stops the service if running, removes firewall rules, deletes
 /// breadcrumb, and cleans up empty log/data directories.
-/// Idempotent — safe to run even if the service was never installed.
 pub fn uninstall() -> anyhow::Result<()> {
+    // Check if installed BEFORE requiring elevation
+    if !is_service_installed() {
+        println!("Koi is not installed as a service. Nothing to uninstall.");
+        return Ok(());
+    }
+
     ensure_elevated("uninstall")?;
     println!("Uninstalling Koi mDNS service...");
+
+    // Best-effort graceful shutdown via HTTP (before SCM stop)
+    if let Some(ep) = koi_config::breadcrumb::read_breadcrumb() {
+        let client = crate::client::KoiClient::new(&ep);
+        if client.shutdown().is_ok() {
+            // Give the service a moment to begin shutting down
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
 
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
 
@@ -261,7 +278,7 @@ pub fn uninstall() -> anyhow::Result<()> {
         ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE,
     ) {
         Ok(service) => {
-            // Stop if running
+            // Stop if still running (fallback after graceful shutdown)
             if let Ok(status) = service.query_status() {
                 if status.current_state != ServiceState::Stopped {
                     print!("  Stopping service...");

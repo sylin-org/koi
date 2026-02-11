@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::extract::State as AxumState;
 use axum::response::Json;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use koi_common::capability::Capability;
 use tokio_util::sync::CancellationToken;
@@ -22,6 +22,7 @@ struct AppState {
     mdns: Option<Arc<koi_mdns::MdnsCore>>,
     certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
     started_at: std::time::Instant,
+    cancel: CancellationToken,
 }
 
 // ── Entrypoint ──────────────────────────────────────────────────────
@@ -36,11 +37,13 @@ pub async fn start(
         mdns: cores.mdns.clone(),
         certmesh: cores.certmesh.clone(),
         started_at,
+        cancel: cancel.clone(),
     };
 
     let mut app = Router::new()
         .route("/healthz", get(health))
         .route("/v1/status", get(unified_status_handler))
+        .route("/v1/admin/shutdown", post(shutdown_handler))
         .with_state(app_state);
 
     // Mount domain routes or fallback routers
@@ -112,6 +115,14 @@ async fn unified_status_handler(
         "daemon": true,
         "capabilities": capabilities,
     }))
+}
+
+async fn shutdown_handler(
+    AxumState(state): AxumState<AppState>,
+) -> Json<serde_json::Value> {
+    tracing::info!("Shutdown requested via admin endpoint");
+    state.cancel.cancel();
+    Json(serde_json::json!({ "status": "shutting_down" }))
 }
 
 /// Returns a router that responds 503 for any request to a disabled capability.
