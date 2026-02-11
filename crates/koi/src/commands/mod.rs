@@ -39,3 +39,54 @@ pub(crate) fn effective_timeout(
         None => default_secs.map(Duration::from_secs),
     }
 }
+
+/// Print a serializable value as JSON, handling serialization errors
+/// gracefully instead of panicking.
+pub(crate) fn print_json<T: serde::Serialize>(value: &T) {
+    match serde_json::to_string(value) {
+        Ok(json) => println!("{json}"),
+        Err(e) => eprintln!("Error: failed to serialize response: {e}"),
+    }
+}
+
+/// Build a `RegisterPayload` from CLI arguments.
+pub(crate) fn build_register_payload(
+    name: &str,
+    service_type: &str,
+    port: u16,
+    ip: Option<&str>,
+    txt: &[String],
+) -> koi_mdns::protocol::RegisterPayload {
+    koi_mdns::protocol::RegisterPayload {
+        name: name.to_string(),
+        service_type: service_type.to_string(),
+        port,
+        ip: ip.map(String::from),
+        lease_secs: None,
+        txt: parse_txt(txt),
+    }
+}
+
+/// Print the human-readable registration success message.
+pub(crate) fn print_register_success(
+    result: &koi_mdns::protocol::RegistrationResult,
+) {
+    println!(
+        "Registered \"{}\" ({}) on port {} [id: {}]",
+        result.name, result.service_type, result.port, result.id
+    );
+    eprintln!("Service is being advertised. Press Ctrl+C to unregister and exit.");
+}
+
+/// Wait for Ctrl+C or an optional timeout, whichever comes first.
+pub(crate) async fn wait_for_signal_or_timeout(timeout: Option<Duration>) {
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = async {
+            match timeout {
+                Some(d) => tokio::time::sleep(d).await,
+                None => std::future::pending().await,
+            }
+        } => {}
+    }
+}

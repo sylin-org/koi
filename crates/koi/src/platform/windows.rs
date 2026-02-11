@@ -27,8 +27,8 @@ const RECOVERY_RESET_SECS: Duration = Duration::from_secs(86_400);
 const SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(30);
 const SERVICE_STOP_POLL: Duration = Duration::from_millis(500);
 
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
-const SHUTDOWN_DRAIN: Duration = Duration::from_millis(500);
+// Reuse shutdown constants from crate root (defined once in main.rs).
+use crate::{SHUTDOWN_TIMEOUT, SHUTDOWN_DRAIN};
 
 /// Win32 ERROR_SERVICE_DOES_NOT_EXIST (1060).
 const ERROR_SERVICE_NOT_FOUND: i32 = 1060;
@@ -321,8 +321,10 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             SERVICE_NAME,
             move |control_event| match control_event {
                 ServiceControl::Stop | ServiceControl::Shutdown => {
-                    if let Some(tx) = shutdown_tx.lock().unwrap().take() {
-                        let _ = tx.send(());
+                    if let Ok(mut guard) = shutdown_tx.lock() {
+                        if let Some(tx) = guard.take() {
+                            let _ = tx.send(());
+                        }
                     }
                     ServiceControlHandlerResult::NoError
                 }
@@ -344,21 +346,40 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let cancel = tokio_util::sync::CancellationToken::new();
-        let core = match koi_mdns::MdnsCore::with_cancel(cancel.clone()) {
-            Ok(c) => std::sync::Arc::new(c),
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to start mDNS core");
-                let _ = status_handle.set_service_status(ServiceStatus {
-                    service_type: ServiceType::OWN_PROCESS,
-                    current_state: ServiceState::Stopped,
-                    controls_accepted: ServiceControlAccept::empty(),
-                    exit_code: ServiceExitCode::Win32(1),
-                    checkpoint: 0,
-                    wait_hint: Duration::default(),
-                    process_id: None,
-                });
-                return;
+
+        // Conditionally create domain cores based on config
+        let mdns_core = if !config.no_mdns {
+            match koi_mdns::MdnsCore::with_cancel(cancel.clone()) {
+                Ok(c) => Some(std::sync::Arc::new(c)),
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to start mDNS core");
+                    let _ = status_handle.set_service_status(ServiceStatus {
+                        service_type: ServiceType::OWN_PROCESS,
+                        current_state: ServiceState::Stopped,
+                        controls_accepted: ServiceControlAccept::empty(),
+                        exit_code: ServiceExitCode::Win32(1),
+                        checkpoint: 0,
+                        wait_hint: Duration::default(),
+                        process_id: None,
+                    });
+                    return;
+                }
             }
+        } else {
+            tracing::info!("mDNS capability disabled");
+            None
+        };
+
+        let certmesh_core = if !config.no_certmesh {
+            crate::init_certmesh_core()
+        } else {
+            tracing::info!("Certmesh capability disabled");
+            None
+        };
+
+        let cores = crate::DaemonCores {
+            mdns: mdns_core,
+            certmesh: certmesh_core,
         };
 
         // Ensure data directory exists
@@ -372,7 +393,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
 
         // HTTP adapter
         if !config.no_http {
-            let c = core.clone();
+            let c = cores.clone();
             let port = config.http_port;
             let token = cancel.clone();
             tasks.push(tokio::spawn(async move {
@@ -382,16 +403,20 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             }));
         }
 
-        // IPC adapter
+        // IPC adapter (mDNS only — skip if mDNS disabled)
         if !config.no_ipc {
-            let c = core.clone();
-            let path = config.pipe_path.clone();
-            let token = cancel.clone();
-            tasks.push(tokio::spawn(async move {
-                if let Err(e) = crate::adapters::pipe::start(c, path, token).await {
-                    tracing::error!(error = %e, "IPC adapter failed");
-                }
-            }));
+            if let Some(ref mdns) = cores.mdns {
+                let c = mdns.clone();
+                let path = config.pipe_path.clone();
+                let token = cancel.clone();
+                tasks.push(tokio::spawn(async move {
+                    if let Err(e) = crate::adapters::pipe::start(c, path, token).await {
+                        tracing::error!(error = %e, "IPC adapter failed");
+                    }
+                }));
+            } else {
+                tracing::info!("IPC adapter skipped (mDNS disabled)");
+            }
         }
 
         // Write breadcrumb for client discovery
@@ -435,8 +460,10 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             for task in tasks {
                 let _ = task.await;
             }
-            if let Err(e) = core.shutdown().await {
-                tracing::warn!(error = %e, "Error during shutdown");
+            if let Some(mdns) = &cores.mdns {
+                if let Err(e) = mdns.shutdown().await {
+                    tracing::warn!(error = %e, "mDNS shutdown error");
+                }
             }
         };
 

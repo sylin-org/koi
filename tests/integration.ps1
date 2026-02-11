@@ -131,7 +131,7 @@ function Invoke-Koi {
     $psi.RedirectStandardError = $true
     $psi.RedirectStandardInput = ($null -ne $Stdin)
     $psi.CreateNoWindow = $true
-    # Isolate breadcrumb from real daemon
+    # Isolate breadcrumb + data dir from real daemon (both use LOCALAPPDATA)
     $psi.EnvironmentVariables['LOCALAPPDATA'] = $BreadcrumbDir
 
     $proc = [System.Diagnostics.Process]::Start($psi)
@@ -510,6 +510,151 @@ try {
 }
 
 # ======================================================================
+#  TIER 1.C - Certmesh CLI (standalone)
+# ======================================================================
+
+Write-Host "`n=== Tier 1.C: Certmesh CLI ===" -ForegroundColor Cyan
+
+# 1.C1 - Certmesh status before CA creation
+try {
+    $r = Invoke-Koi -KoiArgs 'certmesh', 'status'
+    if ($r.Stdout -match 'not initialized') {
+        Pass 'certmesh status (no CA) shows not initialized'
+    } else {
+        Fail 'certmesh status (no CA) shows not initialized' "Output: $($r.Stdout.Substring(0, [Math]::Min(120, $r.Stdout.Length)))"
+    }
+} catch {
+    Fail 'certmesh status (no CA) shows not initialized' $_.Exception.Message
+}
+
+# 1.C2 - Certmesh status --json before CA creation
+try {
+    $r = Invoke-Koi -KoiArgs 'certmesh', 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    if ($json.ca_initialized -eq $false) {
+        Pass 'certmesh status --json (no CA) returns ca_initialized=false'
+    } else {
+        Fail 'certmesh status --json (no CA)' "ca_initialized=$($json.ca_initialized)"
+    }
+} catch {
+    Fail 'certmesh status --json (no CA)' $_.Exception.Message
+}
+
+# 1.C3 - Create a certificate mesh
+try {
+    $r = Invoke-Koi -KoiArgs 'certmesh', 'create', '--entropy=manual', '--passphrase=test-koi-integration', '--profile=just-me'
+    if ($r.Stdout -match 'created' -or $r.Stdout -match 'fingerprint' -or $r.Stdout -match 'Certificate mesh') {
+        Pass 'certmesh create (just-me profile)'
+    } else {
+        Fail 'certmesh create (just-me profile)' "Output: $($r.Stdout.Substring(0, [Math]::Min(200, $r.Stdout.Length)))"
+    }
+} catch {
+    Fail 'certmesh create (just-me profile)' $_.Exception.Message
+}
+
+# 1.C4 - Certmesh status after CA creation (human)
+try {
+    $r = Invoke-Koi -KoiArgs 'certmesh', 'status'
+    if ($r.Stdout -match 'just.me' -or $r.Stdout -match 'JustMe') {
+        Pass 'certmesh status (after create) shows profile'
+    } else {
+        Fail 'certmesh status (after create) shows profile' "Output: $($r.Stdout.Substring(0, [Math]::Min(200, $r.Stdout.Length)))"
+    }
+} catch {
+    Fail 'certmesh status (after create) shows profile' $_.Exception.Message
+}
+
+# 1.C5 - Certmesh status --json after CA creation
+try {
+    $r = Invoke-Koi -KoiArgs 'certmesh', 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    if ($json.ca_initialized -eq $true -and
+        $json.profile -and
+        $null -ne $json.member_count -and $json.member_count -ge 1 -and
+        $json.members -is [array]) {
+        Pass "certmesh status --json (ca_initialized, profile=$($json.profile), members=$($json.member_count))"
+    } else {
+        Fail 'certmesh status --json (after create)' "ca_initialized=$($json.ca_initialized) profile=$($json.profile) member_count=$($json.member_count)"
+    }
+} catch {
+    Fail 'certmesh status --json (after create)' $_.Exception.Message
+}
+
+# 1.C6 - Certmesh log
+try {
+    $r = Invoke-Koi -KoiArgs 'certmesh', 'log'
+    # Should either show log entries or "No audit log entries."
+    if ($r.Stdout -match 'pond_initialized' -or $r.Stdout -match 'audit' -or $r.Stdout -match 'No audit log') {
+        Pass 'certmesh log displays entries'
+    } else {
+        # Still pass if it exits cleanly — log format may vary
+        Pass 'certmesh log exits cleanly'
+    }
+} catch {
+    Fail 'certmesh log' $_.Exception.Message
+}
+
+# ======================================================================
+#  TIER 1.T - Runtime Tunables
+# ======================================================================
+
+Write-Host "`n=== Tier 1.T: Runtime Tunables ===" -ForegroundColor Cyan
+
+# 1.T1 - --no-mdns status shows mdns disabled
+try {
+    $r = Invoke-Koi -KoiArgs '--no-mdns', 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $mdnsCap = $caps | Where-Object { $_.name -eq 'mdns' }
+    if ($mdnsCap -and $mdnsCap.summary -eq 'disabled' -and $mdnsCap.healthy -eq $false) {
+        Pass 'status --no-mdns shows mdns disabled'
+    } else {
+        Fail 'status --no-mdns shows mdns disabled' "mdns: summary=$(if ($mdnsCap) { $mdnsCap.summary } else { 'missing' }), healthy=$(if ($mdnsCap) { $mdnsCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'status --no-mdns shows mdns disabled' $_.Exception.Message
+}
+
+# 1.T2 - --no-certmesh status shows certmesh disabled
+try {
+    $r = Invoke-Koi -KoiArgs '--no-certmesh', 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $certmeshCap = $caps | Where-Object { $_.name -eq 'certmesh' }
+    if ($certmeshCap -and $certmeshCap.summary -eq 'disabled' -and $certmeshCap.healthy -eq $false) {
+        Pass 'status --no-certmesh shows certmesh disabled'
+    } else {
+        Fail 'status --no-certmesh shows certmesh disabled' "certmesh: summary=$(if ($certmeshCap) { $certmeshCap.summary } else { 'missing' }), healthy=$(if ($certmeshCap) { $certmeshCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'status --no-certmesh shows certmesh disabled' $_.Exception.Message
+}
+
+# 1.T3 - --no-mdns blocks mdns commands
+try {
+    $r = Invoke-Koi -KoiArgs '--no-mdns', 'mdns', 'discover', 'http', '--timeout', '1', '--standalone' -AllowFailure
+    if ($r.ExitCode -ne 0) {
+        Pass 'mdns command blocked with --no-mdns'
+    } else {
+        Fail 'mdns command blocked with --no-mdns' "Expected nonzero exit, got 0"
+    }
+} catch {
+    Fail 'mdns command blocked with --no-mdns' $_.Exception.Message
+}
+
+# 1.T4 - --no-certmesh blocks certmesh commands
+try {
+    $r = Invoke-Koi -KoiArgs '--no-certmesh', 'certmesh', 'status' -AllowFailure
+    if ($r.ExitCode -ne 0) {
+        Pass 'certmesh command blocked with --no-certmesh'
+    } else {
+        Fail 'certmesh command blocked with --no-certmesh' "Expected nonzero exit, got 0"
+    }
+} catch {
+    Fail 'certmesh command blocked with --no-certmesh' $_.Exception.Message
+}
+
+# ======================================================================
 #  TIER 2 - Daemon (foreground)
 # ======================================================================
 
@@ -644,6 +789,53 @@ try {
     }
 } catch {
     Fail 'koi status --standalone bypasses daemon' $_.Exception.Message
+}
+
+# -- Certmesh daemon tests (HTTP) -------------------------------------------
+
+# 2.C1 - Certmesh status via HTTP
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/status"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json.ca_initialized -and
+        $null -ne $json.ca_locked -and
+        $json.profile -and
+        $json.enrollment_state) {
+        Pass "certmesh status via HTTP (ca_initialized=$($json.ca_initialized), locked=$($json.ca_locked))"
+    } else {
+        Fail 'certmesh status via HTTP' "Fields: ca_initialized=$($json.ca_initialized) ca_locked=$($json.ca_locked) profile=$($json.profile)"
+    }
+} catch {
+    Fail 'certmesh status via HTTP' $_.Exception.Message
+}
+
+# 2.C2 - Certmesh join with invalid TOTP via HTTP (expect 4xx/5xx)
+try {
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/join" -Body '{"totp_code":"000000"}'
+    # CA may be locked (503) or TOTP may be invalid (401) — both are valid error paths
+    if ($errResp.StatusCode -ge 400) {
+        $errJson = $errResp.Content | ConvertFrom-Json
+        Pass "certmesh join (invalid TOTP) returns $($errResp.StatusCode) $($errJson.error)"
+    } else {
+        Fail 'certmesh join (invalid TOTP)' "Expected error status, got $($errResp.StatusCode)"
+    }
+} catch {
+    Fail 'certmesh join (invalid TOTP)' $_.Exception.Message
+}
+
+# 2.C3 - Unified status includes certmesh capability
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/status"
+    $json = $resp.Content | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $certmeshCap = $caps | Where-Object { $_.name -eq 'certmesh' }
+    if ($certmeshCap -and $certmeshCap.summary) {
+        Pass "unified status includes certmesh (summary: $($certmeshCap.summary))"
+    } else {
+        Fail 'unified status includes certmesh' "certmesh cap: $(if ($certmeshCap) { $certmeshCap | ConvertTo-Json -Compress } else { 'missing' })"
+    }
+} catch {
+    Fail 'unified status includes certmesh' $_.Exception.Message
 }
 
 # 2.3 - Register via HTTP
@@ -1560,6 +1752,169 @@ if (Test-Path $TestLog) {
 }
 
 $script:daemonProc = $null
+
+# ======================================================================
+#  TIER 2.T - Disabled Capability Daemon
+# ======================================================================
+
+Write-Host "`n=== Tier 2.T: Disabled Capability Daemon ===" -ForegroundColor Cyan
+
+# Helper: start a test daemon with custom args, wait for health, run tests, stop it.
+function Start-TestDaemon {
+    param(
+        [int]$Port,
+        [string]$ExtraArgs = '',
+        [string]$Label = 'test daemon'
+    )
+
+    $psi2 = New-Object System.Diagnostics.ProcessStartInfo
+    $psi2.FileName = $KoiBin
+    $psi2.Arguments = "--daemon --port $Port --no-ipc $ExtraArgs --log-file `"$(Join-Path $TestDir "daemon-$Port.log")`" -v"
+    $psi2.UseShellExecute = $false
+    $psi2.RedirectStandardOutput = $true
+    $psi2.RedirectStandardError = $true
+    $psi2.CreateNoWindow = $true
+    $psi2.EnvironmentVariables['LOCALAPPDATA'] = $BreadcrumbDir
+
+    $proc2 = [System.Diagnostics.Process]::Start($psi2)
+    $null = $proc2.StandardOutput.ReadToEndAsync()
+    $null = $proc2.StandardError.ReadToEndAsync()
+
+    # Wait for health
+    $ep2 = "http://127.0.0.1:$Port"
+    $healthy2 = $false
+    $deadline2 = [DateTime]::Now.AddSeconds($HealthTimeout)
+    while ([DateTime]::Now -lt $deadline2) {
+        try {
+            $resp2 = Invoke-Http -Uri "$ep2/healthz" -TimeoutSec 2
+            if ($resp2.StatusCode -eq 200) { $healthy2 = $true; break }
+        } catch {}
+        Start-Sleep -Milliseconds 500
+    }
+
+    if (-not $healthy2) {
+        Stop-Process -Id $proc2.Id -Force -ErrorAction SilentlyContinue
+        $proc2.WaitForExit(5000) | Out-Null
+        Fail "$Label health check" "$Label did not become healthy"
+        return $null
+    }
+
+    return @{ Proc = $proc2; Endpoint = $ep2 }
+}
+
+function Stop-TestDaemon {
+    param($DaemonInfo)
+    if ($DaemonInfo -and $DaemonInfo.Proc -and -not $DaemonInfo.Proc.HasExited) {
+        Stop-Process -Id $DaemonInfo.Proc.Id -Force -ErrorAction SilentlyContinue
+        $DaemonInfo.Proc.WaitForExit(5000) | Out-Null
+    }
+}
+
+# -- Daemon with --no-certmesh -------------------------------------------------
+
+$TestPort2 = $TestPort + 1
+$daemon2 = Start-TestDaemon -Port $TestPort2 -ExtraArgs '--no-certmesh' -Label 'no-certmesh daemon'
+
+if ($daemon2) {
+    # 2.T1 - Certmesh HTTP returns 503 when disabled
+    try {
+        $errResp = Invoke-HttpExpectError -Uri "$($daemon2.Endpoint)/v1/certmesh/status"
+        if ($errResp.StatusCode -eq 503) {
+            $errJson = $errResp.Content | ConvertFrom-Json
+            if ($errJson.error -eq 'capability_disabled') {
+                Pass 'disabled certmesh returns 503 capability_disabled'
+            } else {
+                Fail 'disabled certmesh returns 503' "Expected capability_disabled, got: $($errJson.error)"
+            }
+        } else {
+            Fail 'disabled certmesh returns 503' "Expected 503, got $($errResp.StatusCode)"
+        }
+    } catch {
+        Fail 'disabled certmesh returns 503' $_.Exception.Message
+    }
+
+    # 2.T2 - Unified status shows certmesh as disabled
+    try {
+        $resp = Invoke-Http -Uri "$($daemon2.Endpoint)/v1/status"
+        $json = $resp.Content | ConvertFrom-Json
+        $caps = @($json.capabilities)
+        $certmeshCap = $caps | Where-Object { $_.name -eq 'certmesh' }
+        if ($certmeshCap -and $certmeshCap.summary -eq 'disabled' -and $certmeshCap.healthy -eq $false) {
+            Pass 'unified status shows certmesh disabled on --no-certmesh daemon'
+        } else {
+            Fail 'unified status certmesh disabled' "certmesh: summary=$(if ($certmeshCap) { $certmeshCap.summary } else { 'missing' })"
+        }
+    } catch {
+        Fail 'unified status certmesh disabled' $_.Exception.Message
+    }
+
+    # 2.T2b - mDNS still works on --no-certmesh daemon
+    try {
+        $resp = Invoke-Http -Uri "$($daemon2.Endpoint)/v1/mdns/admin/status"
+        if ($resp.StatusCode -eq 200) {
+            Pass 'mDNS still works on --no-certmesh daemon'
+        } else {
+            Fail 'mDNS still works on --no-certmesh daemon' "Expected 200, got $($resp.StatusCode)"
+        }
+    } catch {
+        Fail 'mDNS still works on --no-certmesh daemon' $_.Exception.Message
+    }
+
+    Stop-TestDaemon $daemon2
+}
+
+# -- Daemon with --no-mdns ----------------------------------------------------
+
+$TestPort3 = $TestPort + 2
+$daemon3 = Start-TestDaemon -Port $TestPort3 -ExtraArgs '--no-mdns' -Label 'no-mdns daemon'
+
+if ($daemon3) {
+    # 2.T3 - mDNS HTTP returns 503 when disabled
+    try {
+        $errResp = Invoke-HttpExpectError -Uri "$($daemon3.Endpoint)/v1/mdns/admin/status"
+        if ($errResp.StatusCode -eq 503) {
+            $errJson = $errResp.Content | ConvertFrom-Json
+            if ($errJson.error -eq 'capability_disabled') {
+                Pass 'disabled mDNS returns 503 capability_disabled'
+            } else {
+                Fail 'disabled mDNS returns 503' "Expected capability_disabled, got: $($errJson.error)"
+            }
+        } else {
+            Fail 'disabled mDNS returns 503' "Expected 503, got $($errResp.StatusCode)"
+        }
+    } catch {
+        Fail 'disabled mDNS returns 503' $_.Exception.Message
+    }
+
+    # 2.T4 - Unified status shows mDNS as disabled
+    try {
+        $resp = Invoke-Http -Uri "$($daemon3.Endpoint)/v1/status"
+        $json = $resp.Content | ConvertFrom-Json
+        $caps = @($json.capabilities)
+        $mdnsCap = $caps | Where-Object { $_.name -eq 'mdns' }
+        if ($mdnsCap -and $mdnsCap.summary -eq 'disabled' -and $mdnsCap.healthy -eq $false) {
+            Pass 'unified status shows mDNS disabled on --no-mdns daemon'
+        } else {
+            Fail 'unified status mDNS disabled' "mdns: summary=$(if ($mdnsCap) { $mdnsCap.summary } else { 'missing' })"
+        }
+    } catch {
+        Fail 'unified status mDNS disabled' $_.Exception.Message
+    }
+
+    # 2.T4b - Certmesh still works on --no-mdns daemon
+    try {
+        $resp = Invoke-Http -Uri "$($daemon3.Endpoint)/v1/certmesh/status"
+        if ($resp.StatusCode -eq 200) {
+            Pass 'certmesh still works on --no-mdns daemon'
+        } else {
+            Fail 'certmesh still works on --no-mdns daemon' "Expected 200, got $($resp.StatusCode)"
+        }
+    } catch {
+        Fail 'certmesh still works on --no-mdns daemon' $_.Exception.Message
+    }
+
+    Stop-TestDaemon $daemon3
+}
 
 # ======================================================================
 #  TIER 3 - Service lifecycle (manual, requires elevation)

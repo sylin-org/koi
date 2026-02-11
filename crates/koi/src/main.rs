@@ -5,7 +5,6 @@ pub(crate) mod cli;
 mod commands;
 mod format;
 mod platform;
-mod wiring;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,13 +12,13 @@ use std::time::Duration;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
-use cli::{AdminSubcommand, Cli, Command, Config, MdnsSubcommand};
+use cli::{AdminSubcommand, CertmeshSubcommand, Cli, Command, Config, MdnsSubcommand};
 
 /// Maximum time to wait for orderly shutdown before forcing exit.
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Brief pause after cancellation to let in-flight requests complete.
-const SHUTDOWN_DRAIN: Duration = Duration::from_millis(500);
+pub(crate) const SHUTDOWN_DRAIN: Duration = Duration::from_millis(500);
 
 fn main() -> anyhow::Result<()> {
     // ── Windows Service dispatch ────────────────────────────────────
@@ -33,6 +32,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let cli = Cli::parse();
+    let config = Config::from_cli(&cli);
 
     // Initialize logging
     let level = match cli.verbose {
@@ -104,29 +104,33 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             Command::Status => {
-                return dispatch_status(&cli);
+                return dispatch_status(&cli, &config);
             }
-            #[cfg(feature = "mdns")]
             Command::Mdns(mdns_cmd) => {
+                config.require_capability("mdns")?;
                 // Admin subcommands are sync — handle before runtime
                 if let MdnsSubcommand::Admin(admin_cmd) = &mdns_cmd.command {
                     let endpoint = resolve_endpoint(&cli)?;
                     return dispatch_mdns_admin(&admin_cmd.command, &endpoint, cli.json);
                 }
             }
+            Command::Certmesh(cm_cmd) => {
+                config.require_capability("certmesh")?;
+                return dispatch_certmesh_sync(&cm_cmd.command, &cli);
+            }
         }
     }
 
     // ── Everything below needs a Tokio runtime ──────────────────────
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async_main(cli))
+    rt.block_on(async_main(cli, config))
 }
 
-async fn async_main(cli: Cli) -> anyhow::Result<()> {
+async fn async_main(cli: Cli, config: Config) -> anyhow::Result<()> {
     // ── Moniker subcommands (async) ─────────────────────────────────
     if let Some(command) = &cli.command {
-        #[cfg(feature = "mdns")]
         if let Command::Mdns(mdns_cmd) = command {
+            // Capability check already done in main()
             return match detect_mode(&cli) {
                 RunMode::Standalone => dispatch_mdns_standalone(&mdns_cmd.command, &cli).await,
                 RunMode::Client { endpoint } => {
@@ -140,8 +144,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     }
 
     // ── Piped CLI mode ──────────────────────────────────────────────
-    #[cfg(feature = "mdns")]
     if is_piped_stdin() && !cli.daemon {
+        if config.no_mdns {
+            anyhow::bail!(
+                "Piped mode requires the mDNS capability. \
+                 Remove --no-mdns or unset KOI_NO_MDNS to enable it."
+            );
+        }
         let core = Arc::new(koi_mdns::MdnsCore::new()?);
         adapters::cli::start(core.clone()).await?;
         let _ = core.shutdown().await;
@@ -149,7 +158,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     }
 
     // ── Daemon mode ─────────────────────────────────────────────────
-    let config = Config::from_cli(&cli);
     koi_config::dirs::ensure_data_dir();
     startup_diagnostics(&config);
 
@@ -163,12 +171,35 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     let mut tasks = Vec::new();
     let started_at = std::time::Instant::now();
 
-    #[cfg(feature = "mdns")]
-    let core = Arc::new(koi_mdns::MdnsCore::with_cancel(cancel.clone())?);
+    // ── Create domain cores based on config ──
+    let mdns_core = if !config.no_mdns {
+        match koi_mdns::MdnsCore::with_cancel(cancel.clone()) {
+            Ok(core) => Some(Arc::new(core)),
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to initialize mDNS core");
+                None
+            }
+        }
+    } else {
+        tracing::info!("mDNS capability: disabled");
+        None
+    };
 
-    #[cfg(feature = "mdns")]
+    let certmesh_core = if !config.no_certmesh {
+        init_certmesh_core()
+    } else {
+        tracing::info!("Certmesh capability: disabled");
+        None
+    };
+
+    let cores = DaemonCores {
+        mdns: mdns_core.clone(),
+        certmesh: certmesh_core,
+    };
+
+    // ── HTTP adapter ──
     if !config.no_http {
-        let c = core.clone();
+        let c = cores.clone();
         let port = config.http_port;
         let token = cancel.clone();
         tasks.push(tokio::spawn(async move {
@@ -178,10 +209,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         }));
     }
 
+    // ── IPC adapter (only if mDNS is enabled — IPC speaks mDNS NDJSON protocol) ──
     if !config.no_ipc {
-        #[cfg(feature = "mdns")]
-        {
-            let c = core.clone();
+        if let Some(ref mdns) = mdns_core {
+            let c = mdns.clone();
             let path = config.pipe_path.clone();
             let token = cancel.clone();
             tasks.push(tokio::spawn(async move {
@@ -189,6 +220,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     tracing::error!(error = %e, "IPC adapter failed");
                 }
             }));
+        } else {
+            tracing::info!("IPC adapter: skipped (mDNS disabled)");
         }
     }
 
@@ -209,9 +242,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         for task in tasks {
             let _ = task.await;
         }
-        #[cfg(feature = "mdns")]
-        if let Err(e) = core.shutdown().await {
-            tracing::warn!(error = %e, "Error during shutdown");
+        if let Some(ref core) = mdns_core {
+            if let Err(e) = core.shutdown().await {
+                tracing::warn!(error = %e, "Error during mDNS shutdown");
+            }
         }
     };
     if tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown)
@@ -229,11 +263,45 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ── Daemon cores ──────────────────────────────────────────────────────
+
+/// Runtime state for a running daemon. Each domain core is present
+/// only if its capability is enabled via Config.
+#[derive(Clone)]
+pub(crate) struct DaemonCores {
+    pub(crate) mdns: Option<Arc<koi_mdns::MdnsCore>>,
+    pub(crate) certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
+}
+
+/// Attempt to initialize the certmesh core for daemon mode.
+///
+/// If a CA is initialized, creates a locked core with the roster.
+/// If not initialized, returns None (certmesh CLI commands still work).
+pub(crate) fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
+    if !koi_certmesh::ca::is_ca_initialized() {
+        tracing::info!("Certmesh: CA not initialized");
+        return None;
+    }
+
+    let roster_path = koi_certmesh::ca::roster_path();
+    let roster = match koi_certmesh::roster::load_roster(&roster_path) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load certmesh roster");
+            return None;
+        }
+    };
+
+    let profile = roster.metadata.trust_profile.clone();
+    let core = koi_certmesh::CertmeshCore::locked(roster, profile);
+    tracing::info!("Certmesh: CA initialized (locked, use `koi certmesh unlock` to decrypt)");
+    Some(Arc::new(core))
+}
+
 // ── HTTP server startup ─────────────────────────────────────────────
 
-#[cfg(feature = "mdns")]
 pub(crate) async fn start_http(
-    core: Arc<koi_mdns::MdnsCore>,
+    cores: DaemonCores,
     port: u16,
     cancel: CancellationToken,
     started_at: std::time::Instant,
@@ -247,14 +315,38 @@ pub(crate) async fn start_http(
 
     #[derive(Clone)]
     struct AppState {
-        core: Arc<koi_mdns::MdnsCore>,
+        mdns: Option<Arc<koi_mdns::MdnsCore>>,
+        certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
         started_at: std::time::Instant,
     }
 
     async fn unified_status_handler(
         AxumState(state): AxumState<AppState>,
     ) -> Json<serde_json::Value> {
-        let capabilities = vec![state.core.status()];
+        use koi_common::capability::CapabilityStatus;
+
+        let mut capabilities = Vec::new();
+
+        if let Some(ref core) = state.mdns {
+            capabilities.push(core.status());
+        } else {
+            capabilities.push(CapabilityStatus {
+                name: "mdns".to_string(),
+                summary: "disabled".to_string(),
+                healthy: false,
+            });
+        }
+
+        if let Some(ref core) = state.certmesh {
+            capabilities.push(core.status());
+        } else {
+            capabilities.push(CapabilityStatus {
+                name: "certmesh".to_string(),
+                summary: "disabled".to_string(),
+                healthy: false,
+            });
+        }
+
         let uptime_secs = state.started_at.elapsed().as_secs();
         Json(serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
@@ -266,16 +358,30 @@ pub(crate) async fn start_http(
     }
 
     let app_state = AppState {
-        core: core.clone(),
+        mdns: cores.mdns.clone(),
+        certmesh: cores.certmesh.clone(),
         started_at,
     };
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/healthz", get(health))
         .route("/v1/status", get(unified_status_handler))
-        .with_state(app_state)
-        .nest("/v1/mdns", koi_mdns::http::routes(core))
-        .layer(CorsLayer::permissive());
+        .with_state(app_state);
+
+    // ── Mount domain routes or fallback routers ──
+    if let Some(ref mdns_core) = cores.mdns {
+        app = app.nest("/v1/mdns", koi_mdns::http::routes(mdns_core.clone()));
+    } else {
+        app = app.nest("/v1/mdns", disabled_fallback_router("mdns"));
+    }
+
+    if let Some(ref certmesh_core) = cores.certmesh {
+        app = app.nest("/v1/certmesh", certmesh_core.routes());
+    } else {
+        app = app.nest("/v1/certmesh", disabled_fallback_router("certmesh"));
+    }
+
+    app = app.layer(CorsLayer::permissive());
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     tracing::info!("HTTP adapter listening on port {}", port);
@@ -292,6 +398,23 @@ pub(crate) async fn start_http(
 
 async fn health() -> &'static str {
     "OK"
+}
+
+/// Returns a router that responds 503 for any request to a disabled capability.
+fn disabled_fallback_router(capability_name: &'static str) -> axum::Router {
+    axum::Router::new().fallback(move || async move {
+        let body = serde_json::json!({
+            "error": "capability_disabled",
+            "message": format!(
+                "The '{}' capability is disabled on this daemon.",
+                capability_name
+            ),
+        });
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(body),
+        )
+    })
 }
 
 // ── Mode detection ───────────────────────────────────────────────────
@@ -335,7 +458,6 @@ fn resolve_endpoint(cli: &Cli) -> anyhow::Result<String> {
 
 // ── mDNS command dispatch ────────────────────────────────────────────
 
-#[cfg(feature = "mdns")]
 async fn dispatch_mdns_standalone(
     subcmd: &MdnsSubcommand,
     cli: &Cli,
@@ -373,11 +495,12 @@ async fn dispatch_mdns_standalone(
         MdnsSubcommand::Subscribe { service_type } => {
             commands::standalone::subscribe(core, service_type, cli.json, cli.timeout).await
         }
-        MdnsSubcommand::Admin(_) => unreachable!("handled in main()"),
+        MdnsSubcommand::Admin(_) => {
+            anyhow::bail!("Admin commands are handled synchronously; this path should not be reached")
+        }
     }
 }
 
-#[cfg(feature = "mdns")]
 async fn dispatch_mdns_client(
     subcmd: &MdnsSubcommand,
     endpoint: &str,
@@ -415,11 +538,12 @@ async fn dispatch_mdns_client(
         MdnsSubcommand::Subscribe { service_type } => {
             commands::client::subscribe(endpoint, service_type, cli.json, cli.timeout).await
         }
-        MdnsSubcommand::Admin(_) => unreachable!("handled in main()"),
+        MdnsSubcommand::Admin(_) => {
+            anyhow::bail!("Admin commands are handled synchronously; this path should not be reached")
+        }
     }
 }
 
-#[cfg(feature = "mdns")]
 fn dispatch_mdns_admin(
     admin_cmd: &AdminSubcommand,
     endpoint: &str,
@@ -435,24 +559,273 @@ fn dispatch_mdns_admin(
     }
 }
 
-// ── Status command ──────────────────────────────────────────────────
+// ── Certmesh command dispatch ───────────────────────────────────────
 
-fn offline_capabilities() -> Vec<koi_common::capability::CapabilityStatus> {
-    #[cfg(feature = "mdns")]
-    {
-        vec![koi_common::capability::CapabilityStatus {
-            name: "mdns".to_string(),
-            summary: "not running".to_string(),
-            healthy: false,
-        }]
-    }
-    #[cfg(not(feature = "mdns"))]
-    {
-        vec![]
+fn dispatch_certmesh_sync(
+    subcmd: &CertmeshSubcommand,
+    cli: &Cli,
+) -> anyhow::Result<()> {
+    use koi_certmesh::{
+        audit, ca, certfiles, entropy, profiles::TrustProfile, roster,
+    };
+
+    match subcmd {
+        CertmeshSubcommand::Create {
+            profile,
+            operator,
+            entropy: entropy_mode,
+            passphrase,
+        } => {
+            if ca::is_ca_initialized() {
+                anyhow::bail!("CA already initialized. Remove {:?} to start over.", ca::ca_dir());
+            }
+
+            let trust_profile = profile
+                .as_deref()
+                .and_then(TrustProfile::from_str_loose)
+                .unwrap_or(TrustProfile::JustMe);
+
+            if trust_profile.requires_operator() && operator.is_none() {
+                anyhow::bail!(
+                    "The '{}' profile requires --operator <name>.",
+                    trust_profile
+                );
+            }
+
+            // Collect entropy
+            let entropy_seed = match entropy_mode.as_str() {
+                "keyboard" => entropy::collect_entropy(entropy::EntropyMode::KeyboardMashing)?,
+                "manual" => {
+                    let phrase = passphrase
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("--passphrase required with --entropy=manual"))?;
+                    entropy::collect_entropy(entropy::EntropyMode::Manual(phrase.to_string()))?
+                }
+                _ => entropy::collect_entropy(entropy::EntropyMode::AutoPassphrase)?,
+            };
+
+            // Prompt for CA passphrase
+            let ca_passphrase = passphrase
+                .as_deref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    eprintln!("Enter a passphrase to protect the CA key:");
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line).unwrap_or_default();
+                    line.trim().to_string()
+                });
+
+            if ca_passphrase.is_empty() {
+                anyhow::bail!("Passphrase cannot be empty.");
+            }
+
+            // Create CA
+            let ca_state = ca::create_ca(&ca_passphrase, &entropy_seed)?;
+
+            // Generate and save TOTP secret
+            let totp_secret = koi_crypto::totp::generate_secret();
+            let encrypted_totp = koi_crypto::totp::encrypt_secret(&totp_secret, &ca_passphrase)?;
+            koi_crypto::keys::save_encrypted_key(&ca::totp_secret_path(), &encrypted_totp)?;
+
+            // Create roster
+            let mut r = roster::Roster::new(trust_profile.clone(), operator.clone());
+
+            // Self-enroll this host as primary
+            let hostname = hostname::get()
+                .map(|h| h.to_string_lossy().to_string())
+                .unwrap_or_else(|_| "localhost".to_string());
+            let sans = vec![hostname.clone(), format!("{hostname}.local")];
+            let issued = ca::issue_certificate(&ca_state, &hostname, &sans)?;
+            let cert_dir = certfiles::write_cert_files(&hostname, &issued)?;
+
+            r.members.push(roster::RosterMember {
+                hostname: hostname.clone(),
+                role: roster::MemberRole::Primary,
+                enrolled_at: chrono::Utc::now(),
+                enrolled_by: operator.clone(),
+                cert_fingerprint: issued.fingerprint.clone(),
+                cert_expires: issued.expires,
+                cert_sans: sans,
+                cert_path: cert_dir.display().to_string(),
+                status: roster::MemberStatus::Active,
+            });
+
+            roster::save_roster(&r, &ca::roster_path())?;
+
+            // Audit log
+            let _ = audit::append_entry(
+                "pond_initialized",
+                &[
+                    ("profile", &trust_profile.to_string()),
+                    ("operator", operator.as_deref().unwrap_or("self")),
+                    ("hostname", &hostname),
+                ],
+            );
+
+            // Install root CA in trust store (best-effort)
+            if let Err(e) = koi_truststore::install_ca_cert(&ca_state.cert_pem, "koi-certmesh-ca") {
+                eprintln!("Warning: Could not install CA in system trust store: {e}");
+                eprintln!("You may need to install it manually.");
+            }
+
+            // Display results
+            format::certmesh_create_success(
+                &hostname,
+                &cert_dir,
+                &trust_profile,
+                &ca::ca_fingerprint(&ca_state),
+            );
+
+            // Show QR code for TOTP
+            let qr = koi_crypto::totp::qr_code_unicode(
+                &totp_secret,
+                "Koi Certmesh",
+                &format!("admin@{hostname}"),
+            );
+            println!("\nScan this QR code with your authenticator app:\n");
+            println!("{qr}");
+
+            Ok(())
+        }
+
+        CertmeshSubcommand::Status => {
+            if !ca::is_ca_initialized() {
+                if cli.json {
+                    println!("{}", serde_json::json!({
+                        "ca_initialized": false,
+                    }));
+                } else {
+                    println!("Certificate mesh: not initialized");
+                    println!("  Run `koi certmesh create` to set up a CA.");
+                }
+                return Ok(());
+            }
+
+            let roster_path = ca::roster_path();
+            if roster_path.exists() {
+                let r = roster::load_roster(&roster_path)?;
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                        "ca_initialized": true,
+                        "profile": r.metadata.trust_profile,
+                        "enrollment_state": r.metadata.enrollment_state,
+                        "member_count": r.active_count(),
+                        "members": r.members.iter().map(|m| serde_json::json!({
+                            "hostname": m.hostname,
+                            "role": format!("{:?}", m.role).to_lowercase(),
+                            "status": format!("{:?}", m.status).to_lowercase(),
+                            "cert_fingerprint": m.cert_fingerprint,
+                            "cert_expires": m.cert_expires.to_rfc3339(),
+                        })).collect::<Vec<_>>(),
+                    }))?);
+                } else {
+                    format::certmesh_status(&r);
+                }
+            } else {
+                println!("CA initialized but roster not found.");
+            }
+
+            Ok(())
+        }
+
+        CertmeshSubcommand::Log => {
+            let log = audit::read_log()?;
+            if log.is_empty() {
+                println!("No audit log entries.");
+            } else {
+                print!("{log}");
+            }
+            Ok(())
+        }
+
+        CertmeshSubcommand::Unlock => {
+            if !ca::is_ca_initialized() {
+                anyhow::bail!("CA not initialized. Run `koi certmesh create` first.");
+            }
+
+            eprintln!("Enter the CA passphrase:");
+            let mut passphrase = String::new();
+            std::io::stdin().read_line(&mut passphrase)?;
+            let passphrase = passphrase.trim();
+
+            let _ca = ca::load_ca(passphrase)?;
+            println!("CA unlocked successfully.");
+            Ok(())
+        }
+
+        CertmeshSubcommand::Join { endpoint } => {
+            eprintln!("Enter the TOTP code from your authenticator app:");
+            let mut code = String::new();
+            std::io::stdin().read_line(&mut code)?;
+            let code = code.trim().to_string();
+
+            let client = client::KoiClient::new(endpoint);
+            let body = serde_json::json!({ "totp_code": code });
+            let resp = client.post_json("/v1/certmesh/join", &body)?;
+
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+            } else {
+                let hostname = resp
+                    .get("hostname")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let cert_path = resp
+                    .get("cert_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                println!("Enrolled as: {hostname}");
+                println!("Certificates written to: {cert_path}");
+            }
+            Ok(())
+        }
     }
 }
 
-fn dispatch_status(cli: &Cli) -> anyhow::Result<()> {
+// ── Status command ──────────────────────────────────────────────────
+
+fn offline_capabilities(config: &Config) -> Vec<koi_common::capability::CapabilityStatus> {
+    use koi_common::capability::CapabilityStatus;
+
+    let mut caps = Vec::new();
+
+    if config.no_mdns {
+        caps.push(CapabilityStatus {
+            name: "mdns".to_string(),
+            summary: "disabled".to_string(),
+            healthy: false,
+        });
+    } else {
+        caps.push(CapabilityStatus {
+            name: "mdns".to_string(),
+            summary: "not running".to_string(),
+            healthy: false,
+        });
+    }
+
+    if config.no_certmesh {
+        caps.push(CapabilityStatus {
+            name: "certmesh".to_string(),
+            summary: "disabled".to_string(),
+            healthy: false,
+        });
+    } else {
+        let certmesh_summary = if koi_certmesh::ca::is_ca_initialized() {
+            "CA initialized (daemon not running)".to_string()
+        } else {
+            "CA not initialized".to_string()
+        };
+        caps.push(CapabilityStatus {
+            name: "certmesh".to_string(),
+            summary: certmesh_summary,
+            healthy: false,
+        });
+    }
+
+    caps
+}
+
+fn dispatch_status(cli: &Cli, config: &Config) -> anyhow::Result<()> {
     use koi_common::capability::CapabilityStatus;
     use serde::Serialize;
 
@@ -490,8 +863,8 @@ fn dispatch_status(cli: &Cli) -> anyhow::Result<()> {
         }
     }
 
-    // No daemon — report offline status with compile-time capabilities
-    let capabilities = offline_capabilities();
+    // No daemon — report offline status
+    let capabilities = offline_capabilities(config);
 
     let status = UnifiedStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -554,9 +927,9 @@ fn is_piped_stdin() -> bool {
 
 /// Wait for Ctrl+C or platform-specific shutdown signal.
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("Failed to listen for Ctrl+C");
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        tracing::error!(error = %e, "Failed to listen for Ctrl+C");
+    }
 }
 
 // ── Daemon startup diagnostics ──────────────────────────────────────
@@ -570,7 +943,15 @@ pub(crate) fn startup_diagnostics(config: &Config) {
         Err(e) => tracing::warn!(error = %e, "Could not determine hostname"),
     }
 
-    tracing::info!("mDNS engine: mdns-sd");
+    if config.no_mdns {
+        tracing::info!("mDNS capability: disabled");
+    } else {
+        tracing::info!("mDNS engine: mdns-sd");
+    }
+
+    if config.no_certmesh {
+        tracing::info!("Certmesh capability: disabled");
+    }
 
     if !config.no_http {
         tracing::info!("TCP {}: listening (HTTP adapter)", config.http_port);

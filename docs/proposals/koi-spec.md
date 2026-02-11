@@ -511,7 +511,7 @@ Koi writes certificate files to a well-known, predictable location:
 
 This follows the same convention used by Let's Encrypt, Caddy, and every major ACME client. Services are configured once to point at these paths. When certmesh renews, it overwrites the files in place.
 
-On Linux, the default path is `~/.koi/certs/`. On macOS, `~/Library/Application Support/koi/certs/`. On Windows, `%APPDATA%\koi\certs\`. The path is printed during enrollment and available via `koi certmesh status`.
+On Linux, the default path is `~/.koi/certs/`. On macOS, `~/Library/Application Support/koi/certs/`. On Windows, `%LOCALAPPDATA%\koi\certs\`. The path is printed during enrollment and available via `koi certmesh status`.
 
 #### Three Consumption Scenarios
 

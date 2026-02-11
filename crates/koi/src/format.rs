@@ -74,3 +74,58 @@ fn txt_inline(txt: &HashMap<String, String>) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+// ── Certmesh formatting ─────────────────────────────────────────────
+
+/// Print a success message after CA creation.
+pub fn certmesh_create_success(
+    hostname: &str,
+    cert_dir: &std::path::Path,
+    profile: &koi_certmesh::profiles::TrustProfile,
+    ca_fingerprint: &str,
+) {
+    println!("\nCertificate mesh created!");
+    println!("  Profile:      {profile}");
+    println!("  CA fingerprint: {ca_fingerprint}");
+    println!("  Primary host: {hostname}");
+    println!("  Certificates: {}", cert_dir.display());
+}
+
+/// Print the roster status for `koi certmesh status`.
+pub fn certmesh_status(roster: &koi_certmesh::roster::Roster) {
+    println!("Certificate Mesh Status");
+    println!("  Profile:    {}", roster.metadata.trust_profile);
+    println!(
+        "  Enrollment: {:?}",
+        roster.metadata.enrollment_state
+    );
+    if let Some(op) = &roster.metadata.operator {
+        println!("  Operator:   {op}");
+    }
+    println!(
+        "  Members:    {} active",
+        roster.active_count()
+    );
+    println!();
+
+    for member in &roster.members {
+        let role = format!("{:?}", member.role).to_lowercase();
+        let status = format!("{:?}", member.status).to_lowercase();
+        println!(
+            "  {} ({role}, {status})",
+            member.hostname
+        );
+        println!(
+            "    Fingerprint: {}",
+            member.cert_fingerprint
+        );
+        println!(
+            "    Expires:     {}",
+            member.cert_expires.format("%Y-%m-%d")
+        );
+        println!(
+            "    Cert path:   {}",
+            member.cert_path
+        );
+    }
+}

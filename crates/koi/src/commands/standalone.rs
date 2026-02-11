@@ -8,7 +8,7 @@ use std::sync::Arc;
 use koi_common::pipeline::PipelineResponse;
 use koi_common::types::{ServiceRecord, META_QUERY};
 use koi_mdns::events::MdnsEvent;
-use koi_mdns::protocol::{self as mdns_protocol, RegisterPayload, Response};
+use koi_mdns::protocol::{self as mdns_protocol, Response};
 use koi_mdns::MdnsCore;
 
 use crate::format;
@@ -31,7 +31,7 @@ pub async fn browse(
             while let Some(event) = handle.recv().await {
                 if json {
                     let resp = mdns_protocol::browse_event_to_pipeline(event);
-                    println!("{}", serde_json::to_string(&resp).unwrap());
+                    super::print_json(&resp);
                 } else {
                     match event {
                         MdnsEvent::Resolved(record)
@@ -75,38 +75,19 @@ pub async fn register(
     json: bool,
     timeout: Option<u64>,
 ) -> anyhow::Result<()> {
-    let payload = RegisterPayload {
-        name: name.to_string(),
-        service_type: service_type.to_string(),
-        port,
-        ip: ip.map(String::from),
-        lease_secs: None,
-        txt: super::parse_txt(txt),
-    };
+    let payload = super::build_register_payload(name, service_type, port, ip, txt);
 
     let result = core.register(payload)?;
     if json {
         let resp = PipelineResponse::clean(Response::Registered(result));
-        println!("{}", serde_json::to_string(&resp).unwrap());
+        super::print_json(&resp);
     } else {
-        println!(
-            "Registered \"{}\" ({}) on port {} [id: {}]",
-            result.name, result.service_type, result.port, result.id
-        );
-        eprintln!("Service is being advertised. Press Ctrl+C to unregister and exit.");
+        super::print_register_success(&result);
     }
 
     // Keep process alive to maintain the mDNS advertisement.
     let dur = super::effective_timeout(timeout, None);
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = async {
-            match dur {
-                Some(d) => tokio::time::sleep(d).await,
-                None => std::future::pending().await,
-            }
-        } => {}
-    }
+    super::wait_for_signal_or_timeout(dur).await;
 
     let _ = core.shutdown().await;
     Ok(())
@@ -118,7 +99,7 @@ pub async fn unregister(core: Arc<MdnsCore>, id: &str, json: bool) -> anyhow::Re
     core.unregister(id)?;
     if json {
         let resp = PipelineResponse::clean(Response::Unregistered(id.to_string()));
-        println!("{}", serde_json::to_string(&resp).unwrap());
+        super::print_json(&resp);
     } else {
         println!("Unregistered {id}");
     }
@@ -132,7 +113,7 @@ pub async fn resolve(core: Arc<MdnsCore>, instance: &str, json: bool) -> anyhow:
     let record = core.resolve(instance).await?;
     if json {
         let resp = PipelineResponse::clean(Response::Resolved(record));
-        println!("{}", serde_json::to_string(&resp).unwrap());
+        super::print_json(&resp);
     } else {
         format::resolved_detail(&record);
     }
@@ -156,7 +137,7 @@ pub async fn subscribe(
             while let Some(event) = handle.recv().await {
                 if json {
                     let resp = mdns_protocol::subscribe_event_to_pipeline(event);
-                    println!("{}", serde_json::to_string(&resp).unwrap());
+                    super::print_json(&resp);
                 } else {
                     match event {
                         MdnsEvent::Found(record) => {

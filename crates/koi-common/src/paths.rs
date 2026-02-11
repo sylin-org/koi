@@ -2,9 +2,12 @@ use std::path::PathBuf;
 
 /// Root data directory for Koi.
 ///
+/// All Koi data is machine-local (CA keys, roster, certs, logs, state).
+/// None of it should roam across machines via AD roaming profiles.
+///
 /// - Linux: `~/.koi/`
 /// - macOS: `~/Library/Application Support/koi/`
-/// - Windows: `%APPDATA%\koi\`
+/// - Windows: `%LOCALAPPDATA%\koi\`
 pub fn koi_data_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
@@ -18,8 +21,8 @@ pub fn koi_data_dir() -> PathBuf {
 
     #[cfg(windows)]
     {
-        if let Some(appdata) = std::env::var_os("APPDATA") {
-            return PathBuf::from(appdata).join("koi");
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(local).join("koi");
         }
     }
 

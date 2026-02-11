@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use koi_common::pipeline::PipelineResponse;
 use koi_common::types::{ServiceRecord, META_QUERY};
-use koi_mdns::protocol::{RegisterPayload, Response};
+use koi_mdns::protocol::Response;
 
 use crate::client::KoiClient;
 use crate::format;
@@ -76,27 +76,16 @@ pub async fn register(
     timeout: Option<u64>,
 ) -> anyhow::Result<()> {
     let client = KoiClient::new(endpoint);
-    let payload = RegisterPayload {
-        name: name.to_string(),
-        service_type: service_type.to_string(),
-        port,
-        ip: ip.map(String::from),
-        lease_secs: None,
-        txt: super::parse_txt(txt),
-    };
+    let payload = super::build_register_payload(name, service_type, port, ip, txt);
 
     let result = client.register(&payload)?;
     let id = result.id.clone();
 
     if json {
         let resp = PipelineResponse::clean(Response::Registered(result.clone()));
-        println!("{}", serde_json::to_string(&resp).unwrap());
+        super::print_json(&resp);
     } else {
-        println!(
-            "Registered \"{}\" ({}) on port {} [id: {}]",
-            result.name, result.service_type, result.port, result.id
-        );
-        eprintln!("Service is being advertised. Press Ctrl+C to unregister and exit.");
+        super::print_register_success(&result);
     }
 
     // Start heartbeat loop if the registration has a lease
@@ -123,15 +112,7 @@ pub async fn register(
     }
 
     let dur = super::effective_timeout(timeout, None);
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = async {
-            match dur {
-                Some(d) => tokio::time::sleep(d).await,
-                None => std::future::pending().await,
-            }
-        } => {}
-    }
+    super::wait_for_signal_or_timeout(dur).await;
 
     stop.store(true, Ordering::Relaxed);
     let _ = client.unregister(&id);
@@ -145,7 +126,7 @@ pub fn unregister(endpoint: &str, id: &str, json: bool) -> anyhow::Result<()> {
     client.unregister(id)?;
     if json {
         let resp = PipelineResponse::clean(Response::Unregistered(id.to_string()));
-        println!("{}", serde_json::to_string(&resp).unwrap());
+        super::print_json(&resp);
     } else {
         println!("Unregistered {id}");
     }
@@ -159,7 +140,7 @@ pub fn resolve(endpoint: &str, instance: &str, json: bool) -> anyhow::Result<()>
     let record = client.resolve(instance)?;
     if json {
         let resp = PipelineResponse::clean(Response::Resolved(record));
-        println!("{}", serde_json::to_string(&resp).unwrap());
+        super::print_json(&resp);
     } else {
         format::resolved_detail(&record);
     }

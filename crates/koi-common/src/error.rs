@@ -20,6 +20,13 @@ pub enum ErrorCode {
     ParseError,
     ShuttingDown,
     Internal,
+    // Certmesh (Phase 2)
+    CaNotInitialized,
+    CaLocked,
+    InvalidTotp,
+    RateLimited,
+    EnrollmentClosed,
+    CapabilityDisabled,
 }
 
 impl ErrorCode {
@@ -33,7 +40,11 @@ impl ErrorCode {
             Self::NotFound => 404,
             Self::Conflict | Self::AlreadyDraining | Self::NotDraining => 409,
             Self::ResolveTimeout => 504,
-            Self::ShuttingDown => 503,
+            Self::ShuttingDown | Self::CaNotInitialized | Self::CaLocked
+            | Self::CapabilityDisabled => 503,
+            Self::InvalidTotp => 401,
+            Self::RateLimited => 429,
+            Self::EnrollmentClosed => 403,
             Self::DaemonError | Self::IoError | Self::Internal => 500,
         }
     }
@@ -66,5 +77,12 @@ mod tests {
         assert_eq!(ErrorCode::AlreadyDraining.http_status(), 409);
         assert_eq!(ErrorCode::ResolveTimeout.http_status(), 504);
         assert_eq!(ErrorCode::DaemonError.http_status(), 500);
+        // Certmesh error codes
+        assert_eq!(ErrorCode::CaNotInitialized.http_status(), 503);
+        assert_eq!(ErrorCode::CaLocked.http_status(), 503);
+        assert_eq!(ErrorCode::InvalidTotp.http_status(), 401);
+        assert_eq!(ErrorCode::RateLimited.http_status(), 429);
+        assert_eq!(ErrorCode::EnrollmentClosed.http_status(), 403);
+        assert_eq!(ErrorCode::CapabilityDisabled.http_status(), 503);
     }
 }

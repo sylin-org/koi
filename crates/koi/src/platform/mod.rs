@@ -26,3 +26,14 @@ pub fn register_service() -> anyhow::Result<()> {
         Ok(())
     }
 }
+
+/// Check that the current process is running as root/administrator.
+/// Bails with a clear message if not elevated.
+#[cfg(unix)]
+pub fn check_root(verb: &str) -> anyhow::Result<()> {
+    let output = std::process::Command::new("id").arg("-u").output();
+    match output {
+        Ok(o) if String::from_utf8_lossy(&o.stdout).trim() == "0" => Ok(()),
+        _ => anyhow::bail!("koi {verb} requires root \u{2014} try: sudo koi {verb}"),
+    }
+}

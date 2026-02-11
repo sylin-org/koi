@@ -72,6 +72,31 @@ Existing constants and types - don't reinvent these.
 
 ---
 
+## Shared Helpers (Don't Duplicate)
+
+### `adapters::dispatch` (`crates/koi/src/adapters/dispatch.rs`)
+
+| Function | Purpose |
+|----------|---------|
+| `new_session_id()` | Create session ID via `koi_common::id::generate_short_id()` |
+| `handle_line()` | Parse NDJSON request, dispatch to MdnsCore, write responses |
+| `write_response()` | Serialize pipeline response with graceful fallback (no `.unwrap()`) |
+
+Used by both `adapters::pipe` and `adapters::cli` — never duplicate this logic.
+
+### `commands` (`crates/koi/src/commands/mod.rs`)
+
+| Function | Purpose |
+|----------|---------|
+| `print_json()` | Serialize to JSON with graceful error handling (no `.unwrap()`) |
+| `build_register_payload()` | Construct `RegisterPayload` from CLI args |
+| `print_register_success()` | Print registration result with ID and lease info |
+| `wait_for_signal_or_timeout()` | Wait for Ctrl+C or optional timeout (used by announce/subscribe) |
+
+Used by both `commands::standalone` and `commands::client` — never duplicate this logic.
+
+---
+
 ## Shared Types (`koi-common`)
 
 ### `koi_common::types`
@@ -151,6 +176,34 @@ Existing constants and types - don't reinvent these.
 
 ---
 
+## Certmesh Domain Types (`koi-certmesh`)
+
+### `koi_certmesh` (re-exports from `lib.rs`)
+
+| Type | Purpose |
+|------|---------|
+| `CertmeshCore` | Main domain facade (enrollment, status, CA init/unlock) |
+| `CertmeshError` | Domain error enum (thiserror) |
+
+### `koi_certmesh::protocol`
+
+| Type | Purpose |
+|------|---------|
+| `JoinRequest` | Enrollment request (member_id, totp, csr) |
+| `JoinResponse` | Enrollment response (cert chain, CA fingerprint) |
+| `CertmeshStatus` | Status overview (ca_initialized, member_count, etc.) |
+
+### Internal (not re-exported)
+
+| Type | Location | Purpose |
+|------|----------|---------|
+| `CertmeshState` | `lib.rs` | `pub(crate)` shared state (CA, roster, TOTP, rate limiter) |
+| `CaState` | `ca.rs` | Certificate authority state (key pair, cert) |
+| `Roster` | `roster.rs` | Enrolled members registry |
+| `TrustProfile` | `protocol.rs` | CA policy (key size, validity, enrollment mode) |
+
+---
+
 ## Binary Crate Types (`koi`)
 
 | Type | Location | Purpose |
@@ -161,6 +214,20 @@ Existing constants and types - don't reinvent these.
 | `AdminSubcommand` | `cli.rs` | Admin subcommands (Status, List, etc.) |
 | `Config` | `cli.rs` | Daemon runtime configuration |
 | `KoiClient` | `client.rs` | Blocking HTTP client (ureq) for client mode & admin |
+
+---
+
+## Data Directory (`koi-common::paths`)
+
+All Koi data is machine-local. Nothing roams via AD roaming profiles.
+
+| Platform | Data Dir | Env Var |
+|----------|----------|---------|
+| Windows | `%LOCALAPPDATA%\koi\` | `LOCALAPPDATA` |
+| macOS | `~/Library/Application Support/koi/` | `HOME` |
+| Linux | `~/.koi/` | `HOME` |
+
+Sub-directories: `certs/`, `state/`, `logs/`, `certmesh/ca/`
 
 ---
 
@@ -187,6 +254,12 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 | `session_mismatch` | 403 | Wrong session for operation |
 | `shutting_down` | 503 | Daemon is shutting down |
 | `internal` | 500 | Internal error |
+| `ca_not_initialized` | 503 | CA not yet created |
+| `ca_locked` | 503 | CA key is locked |
+| `invalid_totp` | 401 | Bad TOTP code |
+| `rate_limited` | 429 | Too many requests |
+| `enrollment_closed` | 403 | Enrollment not open |
+| `capability_disabled` | 503 | Capability disabled at runtime |
 
 ---
 
@@ -206,3 +279,7 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 | `uuid` | 1 (v4) | koi-common, koi | ID generation |
 | `tokio-util` | 0.7 | koi-mdns, koi | CancellationToken |
 | `windows-service` | 0.8 | koi (Windows) | Windows SCM |
+| `ring` | 0.17 | koi-crypto | Cryptographic primitives |
+| `rcgen` | 0.13 | koi-crypto | X.509 certificate generation |
+| `totp-rs` | 5 | koi-crypto | TOTP enrollment codes |
+| `chrono` | 0.4 | koi-certmesh | Timestamp handling |

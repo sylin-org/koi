@@ -7,6 +7,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::time::Duration;
 
 use koi_common::types::ServiceRecord;
+
 use koi_mdns::protocol::{
     AdminRegistration, DaemonStatus, RegisterPayload, RegistrationResult, RenewalResult,
 };
@@ -71,7 +72,7 @@ impl KoiClient {
         Ok(())
     }
 
-    // ── Service operations ────────────────────────────────────────
+    // ── Service operations (mDNS) ──────────────────────────────────
 
     pub fn register(&self, payload: &RegisterPayload) -> Result<RegistrationResult> {
         let url = format!("{}/v1/mdns/services", self.endpoint);
@@ -151,7 +152,22 @@ impl KoiClient {
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
-    // ── Admin operations ──────────────────────────────────────────
+    // ── Generic operations ─────────────────────────────────────────
+
+    /// POST JSON to an arbitrary path and return the response as a JSON value.
+    #[allow(dead_code)]
+    pub fn post_json(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}{path}", self.endpoint);
+        let resp = self
+            .agent
+            .post(&url)
+            .send_json(body.clone())
+            .map_err(map_error)?;
+        resp.into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    // ── Admin operations (mDNS) ──────────────────────────────────
 
     pub fn admin_status(&self) -> Result<DaemonStatus> {
         let url = format!("{}/v1/mdns/admin/status", self.endpoint);

@@ -8,3 +8,5 @@ repository.workspace = true
 
 [dependencies]
 koi-common.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

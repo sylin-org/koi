@@ -131,13 +131,7 @@ pub fn uninstall() -> anyhow::Result<()> {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-fn check_root(verb: &str) -> anyhow::Result<()> {
-    let output = Command::new("id").arg("-u").output();
-    match output {
-        Ok(o) if String::from_utf8_lossy(&o.stdout).trim() == "0" => Ok(()),
-        _ => anyhow::bail!("koi {verb} requires root \u{2014} try: sudo koi {verb}"),
-    }
-}
+use super::check_root;
 
 /// Check if the daemon is loaded in launchd.
 fn launchctl_is_loaded() -> bool {

@@ -51,6 +51,14 @@ pub struct Cli {
     #[arg(long, env = "KOI_NO_IPC")]
     pub no_ipc: bool,
 
+    /// Disable the mDNS capability
+    #[arg(long, env = "KOI_NO_MDNS")]
+    pub no_mdns: bool,
+
+    /// Disable the certmesh capability
+    #[arg(long, env = "KOI_NO_CERTMESH")]
+    pub no_certmesh: bool,
+
     /// Output JSON instead of human-readable text
     #[arg(long, global = true)]
     pub json: bool,
@@ -82,8 +90,9 @@ pub enum Command {
     /// Show status of all capabilities
     Status,
     /// mDNS service discovery
-    #[cfg(feature = "mdns")]
     Mdns(MdnsCommand),
+    /// Certificate mesh (private CA, enrollment, trust)
+    Certmesh(CertmeshCommand),
 }
 
 #[derive(Args, Debug)]
@@ -168,12 +177,50 @@ pub enum AdminSubcommand {
     },
 }
 
+#[derive(Args, Debug)]
+pub struct CertmeshCommand {
+    #[command(subcommand)]
+    pub command: CertmeshSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CertmeshSubcommand {
+    /// Create a new certificate mesh (initializes CA)
+    Create {
+        /// Trust profile: just-me, team, organization
+        #[arg(long)]
+        profile: Option<String>,
+        /// Operator name (required for team/organization profiles)
+        #[arg(long)]
+        operator: Option<String>,
+        /// Entropy mode: keyboard, passphrase, manual
+        #[arg(long, default_value = "passphrase")]
+        entropy: String,
+        /// Manual passphrase (only used with --entropy=manual)
+        #[arg(long)]
+        passphrase: Option<String>,
+    },
+    /// Join an existing certificate mesh
+    Join {
+        /// CA endpoint (e.g. "http://ca-host:5641")
+        endpoint: String,
+    },
+    /// Show certificate mesh status
+    Status,
+    /// Show the audit log
+    Log,
+    /// Unlock the CA (decrypt key from passphrase)
+    Unlock,
+}
+
 /// Resolved configuration used at runtime.
 pub struct Config {
     pub http_port: u16,
     pub pipe_path: PathBuf,
     pub no_http: bool,
     pub no_ipc: bool,
+    pub no_mdns: bool,
+    pub no_certmesh: bool,
 }
 
 impl Config {
@@ -184,7 +231,26 @@ impl Config {
             pipe_path,
             no_http: cli.no_http,
             no_ipc: cli.no_ipc,
+            no_mdns: cli.no_mdns,
+            no_certmesh: cli.no_certmesh,
         }
+    }
+
+    /// Returns an error if the named capability is disabled.
+    pub fn require_capability(&self, name: &str) -> anyhow::Result<()> {
+        let disabled = match name {
+            "mdns" => self.no_mdns,
+            "certmesh" => self.no_certmesh,
+            _ => false,
+        };
+        if disabled {
+            anyhow::bail!(
+                "The '{name}' capability is disabled. \
+                 Remove --no-{name} or unset KOI_NO_{} to enable it.",
+                name.to_uppercase().replace('-', "_")
+            );
+        }
+        Ok(())
     }
 
     /// Build config from environment variables only.
@@ -211,11 +277,23 @@ impl Config {
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let no_mdns = std::env::var("KOI_NO_MDNS")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let no_certmesh = std::env::var("KOI_NO_CERTMESH")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
         Self {
             http_port,
             pipe_path,
             no_http,
             no_ipc,
+            no_mdns,
+            no_certmesh,
         }
     }
 }
@@ -227,6 +305,8 @@ impl Default for Config {
             pipe_path: default_pipe_path(),
             no_http: false,
             no_ipc: false,
+            no_mdns: false,
+            no_certmesh: false,
         }
     }
 }
