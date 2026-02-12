@@ -1408,46 +1408,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "koi"
-version = "0.2.202602121523"
-dependencies = [
- "anyhow",
- "async-stream",
- "axum",
- "chrono",
- "clap",
- "crossterm",
- "hickory-proto",
- "hostname",
- "koi-certmesh",
- "koi-client",
- "koi-common",
- "koi-config",
- "koi-crypto",
- "koi-dns",
- "koi-health",
- "koi-proxy",
- "koi-service",
- "koi-truststore",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tower",
- "tower-http",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "url",
- "uuid",
- "windows-service",
-]
-
-[[package]]
 name = "koi-certmesh"
-version = "0.2.202602121523"
+version = "0.2.202602121544"
 dependencies = [
  "axum",
  "chrono",
@@ -1472,12 +1434,12 @@ dependencies = [
 
 [[package]]
 name = "koi-client"
-version = "0.2.202602121523"
+version = "0.2.202602121544"
 dependencies = [
  "hickory-proto",
  "koi-common",
  "koi-health",
- "koi-service",
+ "koi-mdns",
  "serde",
  "serde_json",
  "thiserror",
@@ -1486,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "koi-common"
-version = "0.2.202602121523"
+version = "0.2.202602121544"
 dependencies = [
  "axum",
  "serde",
@@ -1498,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "koi-config"
-version = "0.2.202602121523"
+version = "0.2.202602121544"
 dependencies = [
  "koi-common",
  "serde",
@@ -1509,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "koi-crypto"
-version = "0.2.202602121523"
+version = "0.2.202602121544"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1530,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "koi-dns"
-version = "0.2.202602121523"
+version = "0.2.202602121544"
 dependencies = [
  "axum",
  "hickory-proto",
@@ -1539,7 +1501,7 @@ dependencies = [
  "koi-certmesh",
  "koi-common",
  "koi-config",
- "koi-service",
+ "koi-mdns",
  "serde",
  "serde_json",
  "thiserror",
@@ -1550,7 +1512,7 @@ dependencies = [
 
 [[package]]
 name = "koi-embedded"
-version = "0.2.202602121523"
+version = "0.2.202602121544"
 dependencies = [
  "axum",
  "futures-util",
@@ -1561,8 +1523,8 @@ dependencies = [
  "koi-config",
  "koi-dns",
  "koi-health",
+ "koi-mdns",
  "koi-proxy",
- "koi-service",
  "reqwest",
  "serde",
  "serde_json",
@@ -1575,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "koi-health"
-version = "0.2.202602121523"
+version = "0.2.202602121544"
 dependencies = [
  "axum",
  "chrono",
@@ -1583,8 +1545,8 @@ dependencies = [
  "koi-certmesh",
  "koi-common",
  "koi-dns",
+ "koi-mdns",
  "koi-proxy",
- "koi-service",
  "reqwest",
  "serde",
  "serde_json",
@@ -1595,8 +1557,66 @@ dependencies = [
 ]
 
 [[package]]
+name = "koi-mdns"
+version = "0.2.202602121544"
+dependencies = [
+ "async-stream",
+ "axum",
+ "hostname",
+ "koi-common",
+ "mdns-sd",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tower-http",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "koi-net"
+version = "0.2.202602121544"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "axum",
+ "chrono",
+ "clap",
+ "crossterm",
+ "hickory-proto",
+ "hostname",
+ "koi-certmesh",
+ "koi-client",
+ "koi-common",
+ "koi-config",
+ "koi-crypto",
+ "koi-dns",
+ "koi-health",
+ "koi-mdns",
+ "koi-proxy",
+ "koi-truststore",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "windows-service",
+]
+
+[[package]]
 name = "koi-proxy"
-version = "0.2.202602121523"
+version = "0.2.202602121544"
 dependencies = [
  "axum",
  "axum-server",
@@ -1622,28 +1642,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "koi-service"
-version = "0.2.202602121523"
-dependencies = [
- "async-stream",
- "axum",
- "hostname",
- "koi-common",
- "mdns-sd",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tower-http",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "koi-truststore"
-version = "0.2.202602121523"
+version = "0.2.202602121544"
 dependencies = [
  "koi-common",
  "thiserror",

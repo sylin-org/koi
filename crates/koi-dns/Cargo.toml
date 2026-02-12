@@ -1,6 +1,6 @@
 [package]
 name = "koi-dns"
-description = "Local DNS resolver domain for Koi (Phase 6)"
+description = "Local DNS resolver with mDNS, certmesh, and static record integration"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

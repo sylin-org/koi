@@ -1,6 +1,6 @@
 [package]
 name = "koi-crypto"
-description = "Cryptographic utilities for Koi (Phase 2)"
+description = "Key management, TOTP, signing, and encryption primitives for local network trust"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
