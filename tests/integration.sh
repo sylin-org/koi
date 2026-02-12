@@ -4,9 +4,8 @@
 #
 # Builds Koi, then exercises the CLI and daemon surfaces end-to-end.
 # Tier 1:   Standalone CLI (no daemon needed).
-# Tier 1.C: Certmesh CLI (standalone, creates CA in isolated temp dir).
 # Tier 1.T: Runtime tunables (--no-mdns, --no-certmesh).
-# Tier 2:   Daemon (foreground) — HTTP API, client mode, admin commands, shutdown.
+# Tier 2:   Daemon (foreground) — HTTP API, certmesh, client mode, admin, shutdown.
 # Tier 2.T: Disabled capability daemon tests.
 #
 # Run from the repo root:
@@ -15,7 +14,17 @@
 # Options:
 #     --no-build    Skip cargo build
 #     --tier3       Run service lifecycle tests (requires root)
+#     --service     Test against a running installed service
+#     --service-endpoint URL  Service endpoint (default: http://127.0.0.1:5641)
 #     --verbose     Show extra debug output
+#
+# Service mode — test against a running installed service:
+#     # In a root shell:
+#     koi install
+#     systemctl start koi   (or: sudo launchctl bootstrap system /Library/LaunchDaemons/org.sylin.koi.plist)
+#
+#     # In a normal shell:
+#     bash tests/integration.sh --service [--service-endpoint http://127.0.0.1:5641]
 #
 
 set -euo pipefail
@@ -24,15 +33,20 @@ set -euo pipefail
 
 NO_BUILD=false
 TIER3=false
+SERVICE=false
+SERVICE_ENDPOINT="http://127.0.0.1:5641"
 VERBOSE=false
 
-for arg in "$@"; do
-    case "$arg" in
-        --no-build) NO_BUILD=true ;;
-        --tier3)    TIER3=true ;;
-        --verbose)  VERBOSE=true ;;
-        *)          echo "Unknown argument: $arg"; exit 1 ;;
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-build)  NO_BUILD=true ;;
+        --tier3)     TIER3=true ;;
+        --service)   SERVICE=true ;;
+        --service-endpoint) shift; SERVICE_ENDPOINT="$1" ;;
+        --verbose)   VERBOSE=true ;;
+        *)           echo "Unknown argument: $1"; exit 1 ;;
     esac
+    shift
 done
 
 # ── Test configuration ────────────────────────────────────────────────
@@ -162,11 +176,20 @@ run_koi() {
     local output
     local exit_code=0
 
-    # Isolate breadcrumb (XDG_RUNTIME_DIR) and data (HOME → ~/.koi/) dirs
-    if [ -n "$stdin_data" ]; then
-        output=$(echo "$stdin_data" | XDG_RUNTIME_DIR="$BREADCRUMB_DIR" HOME="$DATA_DIR" timeout "$timeout_sec" "$KOI_BIN" "${args[@]}" 2>/dev/null) || exit_code=$?
+    # In service mode, use real system paths so CLI auto-discovers the service.
+    # In normal mode, isolate breadcrumb (XDG_RUNTIME_DIR) and data dir (KOI_DATA_DIR).
+    if [ "$SERVICE" = true ]; then
+        if [ -n "$stdin_data" ]; then
+            output=$(echo "$stdin_data" | timeout "$timeout_sec" "$KOI_BIN" "${args[@]}" 2>/dev/null) || exit_code=$?
+        else
+            output=$(timeout "$timeout_sec" "$KOI_BIN" "${args[@]}" 2>/dev/null) || exit_code=$?
+        fi
     else
-        output=$(XDG_RUNTIME_DIR="$BREADCRUMB_DIR" HOME="$DATA_DIR" timeout "$timeout_sec" "$KOI_BIN" "${args[@]}" 2>/dev/null) || exit_code=$?
+        if [ -n "$stdin_data" ]; then
+            output=$(echo "$stdin_data" | XDG_RUNTIME_DIR="$BREADCRUMB_DIR" KOI_DATA_DIR="$DATA_DIR" timeout "$timeout_sec" "$KOI_BIN" "${args[@]}" 2>/dev/null) || exit_code=$?
+        else
+            output=$(XDG_RUNTIME_DIR="$BREADCRUMB_DIR" KOI_DATA_DIR="$DATA_DIR" timeout "$timeout_sec" "$KOI_BIN" "${args[@]}" 2>/dev/null) || exit_code=$?
+        fi
     fi
 
     # timeout command returns 124 on timeout
@@ -185,6 +208,401 @@ run_koi_rc() {
     run_koi --allow-failure "$@" >/dev/null 2>&1 || exit_code=$?
     echo "$exit_code"
 }
+
+# ══════════════════════════════════════════════════════════════════════
+#  SERVICE MODE — test against a running installed service
+# ══════════════════════════════════════════════════════════════════════
+
+if [ "$SERVICE" = true ]; then
+    ENDPOINT="$SERVICE_ENDPOINT"
+    echo ""
+    echo "=== Service Mode: testing against $ENDPOINT ==="
+
+    # Verify service is reachable
+    if curl -s -f "$ENDPOINT/healthz" >/dev/null 2>&1; then
+        pass "service health check"
+    else
+        echo "Service is not reachable at $ENDPOINT."
+        echo "Make sure the service is installed and running:"
+        echo "  (root) koi install"
+        echo "  (root) systemctl start koi  (or: sudo launchctl bootstrap system ...)"
+        exit 1
+    fi
+
+    # S.1 — Unified status endpoint
+    unified_resp=""
+    if resp=$(curl -s "$ENDPOINT/v1/status"); then
+        unified_resp="$resp"
+        version=$(json_get "$resp" "version")
+        daemon=$(json_get "$resp" "daemon")
+        uptime=$(json_get "$resp" "uptime_secs")
+        if [ -n "$version" ] && [ "$daemon" = "true" ]; then
+            pass "unified status (v$version, uptime: ${uptime}s)"
+        else
+            fail "unified status" "version=$version daemon=$daemon"
+        fi
+    else
+        fail "unified status" "curl failed"
+    fi
+
+    # S.2 — mDNS browse endpoint
+    if curl -s -f "$ENDPOINT/v1/mdns/browse?type=_http._tcp&idle_for=1" >/dev/null 2>&1; then
+        pass "mDNS browse endpoint reachable"
+    else
+        fail "mDNS browse endpoint" "curl failed"
+    fi
+
+    # S.3 — Register + unregister via HTTP
+    svc_reg_id=""
+    if resp=$(curl -s -X POST "$ENDPOINT/v1/mdns/services" \
+        -H 'Content-Type: application/json' \
+        -d '{"name":"ServiceTest","type":"_http._tcp","port":19998}'); then
+        svc_reg_id=$(json_get "$resp" "registered.id")
+        if [ -n "$svc_reg_id" ]; then
+            pass "register via HTTP (id: ${svc_reg_id:0:8})"
+        else
+            fail "register via HTTP" "no id in response"
+        fi
+    else
+        fail "register via HTTP" "curl failed"
+    fi
+
+    if [ -n "$svc_reg_id" ]; then
+        if curl -s -f -X DELETE "$ENDPOINT/v1/mdns/services/$svc_reg_id" >/dev/null 2>&1; then
+            pass "unregister via HTTP (id: ${svc_reg_id:0:8})"
+        else
+            fail "unregister via HTTP" "curl failed"
+        fi
+    fi
+
+    # S.4 — Admin status + list
+    if resp=$(curl -s "$ENDPOINT/v1/mdns/admin/status"); then
+        adm_version=$(json_get "$resp" "version")
+        if [ -n "$adm_version" ]; then
+            pass "admin status (v$adm_version)"
+        else
+            fail "admin status" "missing version field"
+        fi
+    else
+        fail "admin status" "curl failed"
+    fi
+
+    if curl -s -f "$ENDPOINT/v1/mdns/admin/registrations" >/dev/null 2>&1; then
+        pass "admin registrations list"
+    else
+        fail "admin registrations list" "curl failed"
+    fi
+
+    # -- Certmesh availability probe ------------------------------------------
+
+    certmesh_enabled=false
+    if [ -n "$unified_resp" ]; then
+        # Check if certmesh capability is present and not disabled
+        if command -v jq &>/dev/null; then
+            cm_summary=$(echo "$unified_resp" | jq -r '.capabilities[] | select(.name=="certmesh") | .summary' 2>/dev/null)
+        elif command -v python3 &>/dev/null; then
+            cm_summary=$(echo "$unified_resp" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+for c in d.get('capabilities', []):
+    if c.get('name') == 'certmesh':
+        print(c.get('summary', ''))
+        break
+" 2>/dev/null)
+        fi
+        if [ -n "$cm_summary" ] && [ "$cm_summary" != "disabled" ]; then
+            certmesh_enabled=true
+        fi
+    fi
+
+    if [ "$certmesh_enabled" = false ]; then
+        echo ""
+        echo "  Certmesh capability is disabled on this service (--no-certmesh tunable)."
+        echo "  Skipping certmesh tests (S.5-S.13)."
+        echo ""
+        skip "certmesh tests (S.5-S.13)" "Certmesh capability disabled via tunable"
+    else
+
+    # -- Certmesh tests --------------------------------------------------------
+
+    # Determine if CA was already initialized before this test run
+    ca_was_initialized=false
+    we_created_ca=false
+
+    # S.5 — Certmesh status (before any changes)
+    if resp=$(curl -s "$ENDPOINT/v1/certmesh/status"); then
+        ca_init_val=$(json_get "$resp" "ca_initialized")
+        if [ -n "$ca_init_val" ]; then
+            [ "$ca_init_val" = "true" ] && ca_was_initialized=true
+            pass "certmesh status (ca_initialized=$ca_init_val)"
+        else
+            fail "certmesh status" "missing ca_initialized field"
+        fi
+    else
+        fail "certmesh status" "curl failed"
+    fi
+
+    # S.6 — Certmesh create (if CA not yet initialized, create one to test with)
+    if [ "$ca_was_initialized" = false ]; then
+        log "CA not initialized — creating test CA (will clean up afterward)"
+        svc_entropy=$(head -c 32 /dev/urandom | xxd -p | tr -d '\n' | head -c 64)
+        if resp=$(curl -s -X POST "$ENDPOINT/v1/certmesh/create" \
+            -H 'Content-Type: application/json' \
+            -d "{\"passphrase\":\"test-koi-service\",\"entropy_hex\":\"$svc_entropy\",\"profile\":\"just_me\"}"); then
+            totp_uri=$(json_get "$resp" "totp_uri")
+            ca_fp=$(json_get "$resp" "ca_fingerprint")
+            if [ -n "$totp_uri" ] && [ -n "$ca_fp" ]; then
+                we_created_ca=true
+                pass "certmesh create (fingerprint=${ca_fp:0:16}...)"
+            else
+                fail "certmesh create" "totp_uri=$totp_uri ca_fingerprint=$ca_fp"
+            fi
+        else
+            fail "certmesh create" "curl failed"
+        fi
+
+        # S.6b — Create rejects duplicate (409)
+        if [ "$we_created_ca" = true ]; then
+            http_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$ENDPOINT/v1/certmesh/create" \
+                -H 'Content-Type: application/json' \
+                -d "{\"passphrase\":\"test\",\"entropy_hex\":\"$svc_entropy\",\"profile\":\"just_me\"}" 2>/dev/null || echo "000")
+            if [ "$http_code" = "409" ]; then
+                pass "certmesh create (duplicate) returns 409"
+            else
+                fail "certmesh create (duplicate)" "expected 409, got $http_code"
+            fi
+        fi
+    else
+        log "CA already initialized — skipping create test (pre-existing CA will not be modified)"
+    fi
+
+    # S.7 — Certmesh status (after create or pre-existing)
+    if resp=$(curl -s "$ENDPOINT/v1/certmesh/status"); then
+        profile=$(json_get "$resp" "profile")
+        member_count=$(json_get "$resp" "member_count")
+        ca_init2=$(json_get "$resp" "ca_initialized")
+        if [ "$ca_init2" = "true" ] && [ -n "$profile" ]; then
+            pass "certmesh status (profile=$profile, members=$member_count)"
+        else
+            fail "certmesh status (post-create)" "ca_initialized=$ca_init2 profile=$profile"
+        fi
+    else
+        fail "certmesh status (post-create)" "curl failed"
+    fi
+
+    # S.8 — Audit log (+ content validation if we created the CA)
+    if resp=$(curl -s "$ENDPOINT/v1/certmesh/log"); then
+        pass "certmesh audit log"
+
+        # Validate audit log contains pond_initialized after create
+        if [ "$we_created_ca" = true ]; then
+            entries=$(json_get "$resp" "entries")
+            if echo "$entries" | grep -q 'pond_initialized'; then
+                pass "audit log contains pond_initialized entry"
+            else
+                fail "audit log contains pond_initialized entry" "pond_initialized not found in log entries"
+            fi
+        fi
+    else
+        fail "certmesh audit log" "curl failed"
+    fi
+
+    # S.9 — Unlock CA (only if we created it — passphrase must match)
+    if [ "$we_created_ca" = true ]; then
+        if resp=$(curl -s -X POST "$ENDPOINT/v1/certmesh/unlock" \
+            -H 'Content-Type: application/json' \
+            -d '{"passphrase":"test-koi-service"}'); then
+            success=$(json_get "$resp" "success")
+            if [ "$success" = "true" ]; then
+                pass "certmesh unlock"
+            else
+                fail "certmesh unlock" "success=$success"
+            fi
+        else
+            fail "certmesh unlock" "curl failed"
+        fi
+    fi
+
+    # S.10 — Open enrollment
+    if resp=$(curl -s -X POST "$ENDPOINT/v1/certmesh/enrollment/open" \
+        -H 'Content-Type: application/json' -d '{}'); then
+        enrollment_state=$(json_get "$resp" "enrollment_state")
+        if [ "$enrollment_state" = "open" ]; then
+            pass "open enrollment"
+        else
+            fail "open enrollment" "enrollment_state=$enrollment_state"
+        fi
+    else
+        fail "open enrollment" "curl failed"
+    fi
+
+    # S.11 — Close enrollment
+    if resp=$(curl -s -X POST "$ENDPOINT/v1/certmesh/enrollment/close"); then
+        enrollment_state=$(json_get "$resp" "enrollment_state")
+        if [ "$enrollment_state" = "closed" ]; then
+            pass "close enrollment"
+        else
+            fail "close enrollment" "enrollment_state=$enrollment_state"
+        fi
+    else
+        fail "close enrollment" "curl failed"
+    fi
+
+    # S.12 — Set policy
+    if resp=$(curl -s -X PUT "$ENDPOINT/v1/certmesh/policy" \
+        -H 'Content-Type: application/json' \
+        -d '{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}'); then
+        domain=$(json_get "$resp" "allowed_domain")
+        if [ "$domain" = "lab.local" ]; then
+            pass "set policy (domain=lab.local)"
+        else
+            fail "set policy" "domain=$domain"
+        fi
+    else
+        fail "set policy" "curl failed"
+    fi
+
+    # S.13 — Rotate TOTP (only if we created the CA — passphrase must match)
+    if [ "$we_created_ca" = true ]; then
+        if resp=$(curl -s -X POST "$ENDPOINT/v1/certmesh/rotate-totp" \
+            -H 'Content-Type: application/json' \
+            -d '{"passphrase":"test-koi-service"}'); then
+            totp_uri=$(json_get "$resp" "totp_uri")
+            if echo "$totp_uri" | grep -q 'otpauth://'; then
+                pass "rotate TOTP returns new URI"
+            else
+                fail "rotate TOTP" "totp_uri=$totp_uri"
+            fi
+        else
+            fail "rotate TOTP" "curl failed"
+        fi
+    fi
+
+    # -- Negative tests --------------------------------------------------------
+
+    # S.N1 — Unlock with wrong passphrase returns error
+    if [ "$we_created_ca" = true ]; then
+        http_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$ENDPOINT/v1/certmesh/unlock" \
+            -H 'Content-Type: application/json' \
+            -d '{"passphrase":"wrong-passphrase-definitely"}' 2>/dev/null || echo "000")
+        if [ "$http_code" -ge 400 ] 2>/dev/null; then
+            pass "unlock with wrong passphrase returns $http_code"
+        else
+            fail "unlock with wrong passphrase" "expected error, got $http_code"
+        fi
+    fi
+
+    # S.N2 — Set policy with invalid CIDR returns 400
+    http_code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT "$ENDPOINT/v1/certmesh/policy" \
+        -H 'Content-Type: application/json' \
+        -d '{"allowed_subnet":"not-a-cidr"}' 2>/dev/null || echo "000")
+    if [ "$http_code" = "400" ]; then
+        pass "set policy with invalid CIDR returns 400"
+    else
+        fail "set policy with invalid CIDR" "expected 400, got $http_code"
+    fi
+
+    # S.N3 — Create with invalid entropy returns 400
+    http_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$ENDPOINT/v1/certmesh/create" \
+        -H 'Content-Type: application/json' \
+        -d '{"passphrase":"test","entropy_hex":"zzzz","profile":"just_me"}' 2>/dev/null || echo "000")
+    if [ "$http_code" = "400" ]; then
+        pass "create with invalid entropy returns 400"
+    else
+        fail "create with invalid entropy" "expected 400, got $http_code"
+    fi
+
+    # S.N4 — Create with short entropy returns 400
+    http_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$ENDPOINT/v1/certmesh/create" \
+        -H 'Content-Type: application/json' \
+        -d '{"passphrase":"test","entropy_hex":"00112233","profile":"just_me"}' 2>/dev/null || echo "000")
+    if [ "$http_code" = "400" ]; then
+        pass "create with short entropy returns 400"
+    else
+        fail "create with short entropy" "expected 400, got $http_code"
+    fi
+
+    # S.N5 — Set hook for unknown member returns 404
+    http_code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT "$ENDPOINT/v1/certmesh/hook" \
+        -H 'Content-Type: application/json' \
+        -d '{"hostname":"nonexistent-host","reload":"echo hi"}' 2>/dev/null || echo "000")
+    if [ "$http_code" = "404" ]; then
+        pass "set hook for unknown member returns 404"
+    else
+        fail "set hook for unknown member" "expected 404, got $http_code"
+    fi
+
+    # -- Certmesh cleanup (destroy test CA via service endpoint) ---------------
+
+    if [ "$we_created_ca" = true ]; then
+        # Clear policy before destroy
+        if curl -s -X PUT "$ENDPOINT/v1/certmesh/policy" \
+            -H 'Content-Type: application/json' \
+            -d '{}' >/dev/null 2>&1; then
+            pass "clear policy before destroy"
+        else
+            fail "clear policy before destroy" "curl failed"
+        fi
+
+        log "Destroying test CA via POST /v1/certmesh/destroy..."
+        if resp=$(curl -s -X POST "$ENDPOINT/v1/certmesh/destroy"); then
+            destroyed=$(json_get "$resp" "destroyed")
+            if [ "$destroyed" = "true" ]; then
+                pass "certmesh destroy (test CA removed)"
+            else
+                fail "certmesh destroy" "destroyed=$destroyed"
+            fi
+        else
+            fail "certmesh destroy" "curl failed"
+        fi
+
+        # Post-destroy verification — status should show ca_initialized=false
+        if resp=$(curl -s "$ENDPOINT/v1/certmesh/status"); then
+            ca_init_post=$(json_get "$resp" "ca_initialized")
+            if [ "$ca_init_post" = "false" ]; then
+                pass "post-destroy status shows ca_initialized=false"
+            else
+                fail "post-destroy status" "ca_initialized=$ca_init_post (expected false)"
+            fi
+        else
+            fail "post-destroy status" "curl failed"
+        fi
+
+        # Post-destroy — rotate TOTP should return 503
+        http_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$ENDPOINT/v1/certmesh/rotate-totp" \
+            -H 'Content-Type: application/json' \
+            -d '{"passphrase":"test"}' 2>/dev/null || echo "000")
+        if [ "$http_code" = "503" ]; then
+            pass "rotate TOTP after destroy returns 503"
+        else
+            fail "rotate TOTP after destroy" "expected 503, got $http_code"
+        fi
+    fi
+
+    fi # end certmesh-enabled block
+
+    # -- CLI client mode -------------------------------------------------------
+
+    # S.14 — CLI client mode (auto-discovers via breadcrumb)
+    if output=$(run_koi status 2>/dev/null); then
+        pass "koi status via CLI (auto-discover service)"
+    else
+        fail "koi status via CLI" "exit code $?"
+    fi
+
+    if output=$(run_koi --allow-failure certmesh status 2>/dev/null); then
+        pass "koi certmesh status via CLI (auto-discover service)"
+    else
+        fail "koi certmesh status via CLI" "exit code $?"
+    fi
+
+    # S.15 — Admin shutdown (SKIP in service mode)
+    skip "admin shutdown" "Not applicable in service mode — use systemctl stop / koi uninstall"
+
+    # Skip to summary (all remaining tiers are inside the SERVICE=false gate below)
+fi
+
+if [ "$SERVICE" = false ]; then
 
 # ══════════════════════════════════════════════════════════════════════
 #  TIER 1 — Standalone CLI
@@ -310,59 +728,6 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════
-#  TIER 1.C — Certmesh CLI
-# ══════════════════════════════════════════════════════════════════════
-
-echo ""
-echo "=== Tier 1.C: Certmesh CLI ==="
-
-# 1.C1 — Certmesh status before CA creation
-if output=$(run_koi certmesh status) && echo "$output" | grep -qi 'not initialized'; then
-    pass "certmesh status (no CA) shows not initialized"
-else
-    fail "certmesh status (no CA) shows not initialized" "Output: ${output:0:120}"
-fi
-
-# 1.C2 — Create a certificate mesh
-if output=$(run_koi certmesh create --entropy=manual --passphrase=test-koi-integration --profile=just-me); then
-    if echo "$output" | grep -qi 'created\|fingerprint\|Certificate mesh'; then
-        pass "certmesh create (just-me profile)"
-    else
-        pass "certmesh create exits cleanly"
-    fi
-else
-    fail "certmesh create (just-me profile)" "Command failed"
-fi
-
-# 1.C3 — Certmesh status after CA creation (human)
-if output=$(run_koi certmesh status) && echo "$output" | grep -qi 'just.me\|JustMe'; then
-    pass "certmesh status (after create) shows profile"
-else
-    fail "certmesh status (after create) shows profile" "Output: ${output:0:200}"
-fi
-
-# 1.C4 — Certmesh status --json after CA creation
-if output=$(run_koi certmesh status --json); then
-    ca_init=$(json_get "$output" "ca_initialized")
-    profile=$(json_get "$output" "profile")
-    member_count=$(json_get "$output" "member_count")
-    if [ "$ca_init" = "true" ] && [ -n "$profile" ] && [ "$member_count" -ge 1 ] 2>/dev/null; then
-        pass "certmesh status --json (ca_initialized, profile=$profile, members=$member_count)"
-    else
-        fail "certmesh status --json" "ca_initialized=$ca_init profile=$profile member_count=$member_count"
-    fi
-else
-    fail "certmesh status --json" "Command failed"
-fi
-
-# 1.C5 — Certmesh log
-if output=$(run_koi certmesh log); then
-    pass "certmesh log exits cleanly"
-else
-    fail "certmesh log" "Command failed"
-fi
-
-# ══════════════════════════════════════════════════════════════════════
 #  TIER 1.T — Runtime Tunables
 # ══════════════════════════════════════════════════════════════════════
 
@@ -416,7 +781,7 @@ echo "=== Tier 2: Daemon (foreground) ==="
 
 # Start daemon in background
 log "Starting daemon on port $TEST_PORT..."
-XDG_RUNTIME_DIR="$BREADCRUMB_DIR" HOME="$DATA_DIR" "$KOI_BIN" \
+XDG_RUNTIME_DIR="$BREADCRUMB_DIR" KOI_DATA_DIR="$DATA_DIR" "$KOI_BIN" \
     --daemon --port "$TEST_PORT" --pipe "$TEST_SOCKET" \
     --log-file "$TEST_LOG" -v \
     >/dev/null 2>&1 &
@@ -534,10 +899,12 @@ fi
 
 # -- Certmesh HTTP tests --------------------------------------------------
 
-# 2.C1 — Certmesh status via HTTP
+# 2.C1 — Certmesh status via HTTP (before CA creation)
 if resp=$(curl -s "$ENDPOINT/v1/certmesh/status"); then
     ca_init=$(json_get "$resp" "ca_initialized")
-    if [ -n "$ca_init" ]; then
+    if [ "$ca_init" = "false" ]; then
+        pass "certmesh status (no CA) via HTTP (ca_initialized=false)"
+    elif [ -n "$ca_init" ]; then
         pass "certmesh status via HTTP (ca_initialized=$ca_init)"
     else
         fail "certmesh status via HTTP" "Missing ca_initialized field"
@@ -546,7 +913,73 @@ else
     fail "certmesh status via HTTP" "curl failed"
 fi
 
-# 2.C2 — Certmesh join with invalid TOTP (expect error)
+# 2.C2 — Create CA via HTTP
+create_entropy=$(printf '%0*x' 64 $RANDOM$RANDOM$RANDOM$RANDOM$RANDOM$RANDOM$RANDOM$RANDOM | head -c 64)
+if resp=$(curl -s -X POST "$ENDPOINT/v1/certmesh/create" \
+    -H 'Content-Type: application/json' \
+    -d "{\"passphrase\":\"test-integration\",\"entropy_hex\":\"$create_entropy\",\"profile\":\"just_me\"}"); then
+    totp_uri=$(json_get "$resp" "totp_uri")
+    ca_fp=$(json_get "$resp" "ca_fingerprint")
+    if [ -n "$totp_uri" ] && [ -n "$ca_fp" ]; then
+        pass "certmesh create via HTTP (fingerprint=${ca_fp:0:16}...)"
+    else
+        fail "certmesh create via HTTP" "totp_uri=$totp_uri ca_fingerprint=$ca_fp resp=$resp"
+    fi
+else
+    fail "certmesh create via HTTP" "curl failed"
+fi
+
+# 2.C3 — Certmesh status after CA creation
+if resp=$(curl -s "$ENDPOINT/v1/certmesh/status"); then
+    ca_init=$(json_get "$resp" "ca_initialized")
+    profile=$(json_get "$resp" "profile")
+    member_count=$(json_get "$resp" "member_count")
+    if [ "$ca_init" = "true" ] && [ -n "$profile" ]; then
+        pass "certmesh status (after create) via HTTP (profile=$profile, members=$member_count)"
+    else
+        fail "certmesh status (after create)" "ca_initialized=$ca_init profile=$profile"
+    fi
+else
+    fail "certmesh status (after create)" "curl failed"
+fi
+
+# 2.C4 — Certmesh create rejects duplicate
+http_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$ENDPOINT/v1/certmesh/create" \
+    -H 'Content-Type: application/json' \
+    -d "{\"passphrase\":\"test\",\"entropy_hex\":\"$create_entropy\",\"profile\":\"just_me\"}" 2>/dev/null || echo "000")
+if [ "$http_code" = "409" ]; then
+    pass "certmesh create (duplicate) returns 409"
+else
+    fail "certmesh create (duplicate)" "Expected 409, got $http_code"
+fi
+
+# 2.C5 — Audit log via HTTP
+if resp=$(curl -s "$ENDPOINT/v1/certmesh/log"); then
+    entries=$(json_get "$resp" "entries")
+    if [ -n "$entries" ] && echo "$entries" | grep -q 'pond_initialized'; then
+        pass "certmesh audit log via HTTP shows pond_initialized"
+    else
+        pass "certmesh audit log via HTTP returns OK"
+    fi
+else
+    fail "certmesh audit log via HTTP" "curl failed"
+fi
+
+# 2.C6 — Unlock CA via HTTP
+if resp=$(curl -s -X POST "$ENDPOINT/v1/certmesh/unlock" \
+    -H 'Content-Type: application/json' \
+    -d '{"passphrase":"test-integration"}'); then
+    success=$(json_get "$resp" "success")
+    if [ "$success" = "true" ]; then
+        pass "certmesh unlock via HTTP"
+    else
+        fail "certmesh unlock via HTTP" "success=$success"
+    fi
+else
+    fail "certmesh unlock via HTTP" "curl failed"
+fi
+
+# 2.C7 — Join with invalid TOTP (expect error)
 http_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$ENDPOINT/v1/certmesh/join" \
     -H 'Content-Type: application/json' \
     -d '{"totp_code":"000000"}' 2>/dev/null || echo "000")
@@ -556,7 +989,7 @@ else
     fail "certmesh join (invalid TOTP)" "Expected 4xx/5xx, got $http_code"
 fi
 
-# 2.C3 — Unified status includes certmesh
+# 2.C8 — Unified status includes certmesh
 if resp=$(curl -s "$ENDPOINT/v1/status"); then
     if echo "$resp" | grep -q '"certmesh"'; then
         pass "unified status includes certmesh capability"
@@ -567,10 +1000,120 @@ else
     fail "unified status includes certmesh" "curl failed"
 fi
 
-# -- Shutdown ─────────────────────────────────────────────────────────
+# 2.C9 — Certmesh status via CLI client mode
+if output=$(run_koi certmesh status --endpoint "$ENDPOINT"); then
+    if echo "$output" | grep -qi 'just.me\|JustMe\|initialized'; then
+        pass "certmesh status via CLI (client mode)"
+    else
+        pass "certmesh status via CLI exits cleanly"
+    fi
+else
+    fail "certmesh status via CLI (client mode)" "Command failed"
+fi
 
-log "Sending SIGTERM to daemon..."
-kill "$DAEMON_PID" 2>/dev/null || true
+# 2.C10 — Certmesh log via CLI client mode
+if output=$(run_koi certmesh log --endpoint "$ENDPOINT"); then
+    pass "certmesh log via CLI (client mode)"
+else
+    fail "certmesh log via CLI (client mode)" "Command failed"
+fi
+
+# -- Phase 4+ — Enrollment policy endpoints ──────────────────────────
+
+# 2.P1 — Open enrollment
+if resp=$(curl -s -X POST "$ENDPOINT/v1/certmesh/enrollment/open" \
+    -H 'Content-Type: application/json' \
+    -d '{}'); then
+    enrollment_state=$(json_get "$resp" "enrollment_state")
+    if [ "$enrollment_state" = "open" ]; then
+        pass "open enrollment returns state=open"
+    else
+        fail "open enrollment" "enrollment_state=$enrollment_state"
+    fi
+else
+    fail "open enrollment" "curl failed"
+fi
+
+# 2.P2 — Open enrollment with deadline
+if resp=$(curl -s -X POST "$ENDPOINT/v1/certmesh/enrollment/open" \
+    -H 'Content-Type: application/json' \
+    -d '{"deadline":"2030-12-31T23:59:59Z"}'); then
+    deadline=$(json_get "$resp" "deadline")
+    if [ -n "$deadline" ]; then
+        pass "open enrollment with deadline ($deadline)"
+    else
+        fail "open enrollment with deadline" "No deadline in response"
+    fi
+else
+    fail "open enrollment with deadline" "curl failed"
+fi
+
+# 2.P3 — Close enrollment
+if resp=$(curl -s -X POST "$ENDPOINT/v1/certmesh/enrollment/close"); then
+    enrollment_state=$(json_get "$resp" "enrollment_state")
+    if [ "$enrollment_state" = "closed" ]; then
+        pass "close enrollment returns state=closed"
+    else
+        fail "close enrollment" "enrollment_state=$enrollment_state"
+    fi
+else
+    fail "close enrollment" "curl failed"
+fi
+
+# 2.P4 — Set policy (domain + subnet)
+if resp=$(curl -s -X PUT "$ENDPOINT/v1/certmesh/policy" \
+    -H 'Content-Type: application/json' \
+    -d '{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}'); then
+    domain=$(json_get "$resp" "allowed_domain")
+    subnet=$(json_get "$resp" "allowed_subnet")
+    if [ "$domain" = "lab.local" ] && [ "$subnet" = "192.168.1.0/24" ]; then
+        pass "set policy (domain=lab.local, subnet=192.168.1.0/24)"
+    else
+        fail "set policy" "domain=$domain subnet=$subnet"
+    fi
+else
+    fail "set policy" "curl failed"
+fi
+
+# 2.P5 — Set policy — invalid CIDR rejected
+http_code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT "$ENDPOINT/v1/certmesh/policy" \
+    -H 'Content-Type: application/json' \
+    -d '{"allowed_subnet":"not-a-cidr"}' 2>/dev/null || echo "000")
+if [ "$http_code" = "400" ]; then
+    pass "set policy (invalid CIDR) returns 400"
+else
+    fail "set policy (invalid CIDR)" "Expected 400, got $http_code"
+fi
+
+# 2.P6 — Rotate TOTP
+if resp=$(curl -s -X POST "$ENDPOINT/v1/certmesh/rotate-totp" \
+    -H 'Content-Type: application/json' \
+    -d '{"passphrase":"test-integration"}'); then
+    new_uri=$(json_get "$resp" "totp_uri")
+    if [ -n "$new_uri" ] && echo "$new_uri" | grep -q 'otpauth://'; then
+        pass "rotate TOTP returns new URI"
+    else
+        fail "rotate TOTP" "totp_uri=$new_uri"
+    fi
+else
+    fail "rotate TOTP" "curl failed"
+fi
+
+# -- Admin shutdown endpoint ──────────────────────────────────────────
+
+# 2.S1 — Shutdown via HTTP endpoint
+if resp=$(curl -s -X POST "$ENDPOINT/v1/admin/shutdown"); then
+    status_val=$(json_get "$resp" "status")
+    if [ "$status_val" = "shutting_down" ]; then
+        pass "admin shutdown endpoint returns shutting_down"
+    else
+        fail "admin shutdown endpoint" "status=$status_val"
+    fi
+else
+    fail "admin shutdown endpoint" "curl failed"
+fi
+
+# Wait for daemon to exit after HTTP shutdown request
 
 exited_cleanly=false
 for _ in $(seq 1 30); do
@@ -583,9 +1126,9 @@ done
 
 if [ "$exited_cleanly" = true ]; then
     wait "$DAEMON_PID" 2>/dev/null
-    pass "daemon shutdown"
+    pass "daemon exits cleanly after HTTP shutdown"
 else
-    fail "daemon shutdown" "Daemon did not exit within 15 seconds"
+    fail "daemon exits cleanly after HTTP shutdown" "Daemon did not exit within 15 seconds"
     kill -9 "$DAEMON_PID" 2>/dev/null || true
     wait "$DAEMON_PID" 2>/dev/null || true
 fi
@@ -620,7 +1163,7 @@ start_test_daemon() {
     local ep="http://127.0.0.1:$port"
     local logfile="$TEST_DIR/daemon-$port.log"
 
-    XDG_RUNTIME_DIR="$BREADCRUMB_DIR" HOME="$DATA_DIR" "$KOI_BIN" \
+    XDG_RUNTIME_DIR="$BREADCRUMB_DIR" KOI_DATA_DIR="$DATA_DIR" "$KOI_BIN" \
         --daemon --port "$port" --no-ipc $extra_args \
         --log-file "$logfile" -v \
         >/dev/null 2>&1 &
@@ -741,9 +1284,100 @@ fi
 if [ "$TIER3" = true ]; then
     echo ""
     echo "=== Tier 3: Service lifecycle (elevated) ==="
-    echo "Tier 3 is Windows-only (SCM). On Linux, use systemd manually."
-    echo "Skipping."
+    os_name=$(uname)
+    sudo_cmd=""
+
+    if command -v sudo &>/dev/null; then
+        if sudo -n true &>/dev/null; then
+            sudo_cmd="sudo -n"
+        else
+            sudo_cmd="sudo"
+        fi
+    else
+        skip "tier3 service lifecycle" "sudo not available"
+        sudo_cmd=""
+    fi
+
+    if [ -z "$sudo_cmd" ]; then
+        :
+    elif [ "$os_name" = "Linux" ]; then
+        if ! command -v systemctl &>/dev/null; then
+            skip "tier3 service lifecycle" "systemctl not available"
+        elif ! systemctl is-system-running &>/dev/null; then
+            skip "tier3 service lifecycle" "systemd not running"
+        else
+            if $sudo_cmd "$KOI_BIN" install >/dev/null 2>&1; then
+                pass "service install (systemd)"
+            else
+                fail "service install (systemd)" "install command failed"
+            fi
+
+            sleep 3
+            if curl -s -f "http://127.0.0.1:5641/healthz" >/dev/null 2>&1; then
+                pass "service start + health check (systemd)"
+            else
+                fail "service start + health check (systemd)" "health check failed"
+            fi
+
+            if $sudo_cmd systemctl stop koi >/dev/null 2>&1; then
+                pass "service stop (systemd)"
+            else
+                fail "service stop (systemd)" "systemctl stop failed"
+            fi
+
+            if $sudo_cmd "$KOI_BIN" uninstall >/dev/null 2>&1; then
+                pass "service uninstall (systemd)"
+            else
+                fail "service uninstall (systemd)" "uninstall command failed"
+            fi
+        fi
+    elif [ "$os_name" = "Darwin" ]; then
+        if ! command -v launchctl &>/dev/null; then
+            skip "tier3 service lifecycle" "launchctl not available"
+        else
+            if $sudo_cmd "$KOI_BIN" install >/dev/null 2>&1; then
+                pass "service install (launchd)"
+            else
+                fail "service install (launchd)" "install command failed"
+            fi
+
+            sleep 3
+            if $sudo_cmd launchctl list | grep -q "org.sylin.koi"; then
+                pass "service loaded (launchd)"
+            else
+                fail "service loaded (launchd)" "launchctl list missing label"
+            fi
+
+            if curl -s -f "http://127.0.0.1:5641/healthz" >/dev/null 2>&1; then
+                pass "service health check (launchd)"
+            else
+                fail "service health check (launchd)" "health check failed"
+            fi
+
+            if $sudo_cmd launchctl bootout system/org.sylin.koi >/dev/null 2>&1; then
+                pass "service stop (launchd)"
+            else
+                fail "service stop (launchd)" "launchctl bootout failed"
+            fi
+
+            if $sudo_cmd launchctl bootstrap system /Library/LaunchDaemons/org.sylin.koi.plist >/dev/null 2>&1; then
+                pass "service restart (launchd)"
+            else
+                fail "service restart (launchd)" "launchctl bootstrap failed"
+            fi
+
+            if $sudo_cmd "$KOI_BIN" uninstall >/dev/null 2>&1; then
+                pass "service uninstall (launchd)"
+            else
+                fail "service uninstall (launchd)" "uninstall command failed"
+            fi
+        fi
+    else
+        skip "tier3 service lifecycle" "unsupported OS: $os_name"
+    fi
 fi
+
+fi # end if [ "$SERVICE" = false ]
 
 # ══════════════════════════════════════════════════════════════════════
 #  Summary

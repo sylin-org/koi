@@ -84,3 +84,60 @@ pub fn is_ca_installed(name: &str) -> bool {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Error type tests ───────────────────────────────────────────────
+
+    #[test]
+    fn error_command_failed_display() {
+        let err = TrustStoreError::CommandFailed("certutil exit code 1: access denied".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("certutil"), "message: {msg}");
+        assert!(msg.contains("access denied"), "message: {msg}");
+    }
+
+    #[test]
+    fn error_io_display() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
+        let err = TrustStoreError::from(io_err);
+        let msg = err.to_string();
+        assert!(msg.contains("permission denied"), "message: {msg}");
+    }
+
+    #[test]
+    fn error_unsupported_display() {
+        let err = TrustStoreError::Unsupported;
+        assert!(err.to_string().contains("not supported"));
+    }
+
+    #[test]
+    fn error_is_debug() {
+        let err = TrustStoreError::CommandFailed("test".to_string());
+        let debug = format!("{err:?}");
+        assert!(debug.contains("CommandFailed"));
+    }
+
+    // ── is_ca_installed ────────────────────────────────────────────────
+
+    #[test]
+    fn is_ca_installed_returns_bool() {
+        // Should not panic regardless of whether the cert exists
+        let result = is_ca_installed("nonexistent-cert-for-koi-test");
+        assert!(!result, "a nonexistent cert should not be installed");
+    }
+
+    // ── install_ca_cert ────────────────────────────────────────────────
+
+    #[test]
+    fn install_ca_cert_with_invalid_pem_does_not_panic() {
+        // The function may fail (command errors, permission denied) but should
+        // never panic. We only verify it returns a Result, not that it succeeds.
+        let result = install_ca_cert("not-a-real-pem", "koi-test-invalid");
+        // On CI/test environments this will likely fail with permission errors
+        // or command errors, which is expected and fine.
+        assert!(result.is_ok() || result.is_err());
+    }
+}

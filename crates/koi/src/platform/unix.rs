@@ -130,54 +130,61 @@ pub fn install() -> anyhow::Result<()> {
 
 /// Uninstall the Koi systemd service and clean up artifacts.
 ///
-/// Stops the service if running, removes the unit file, and cleans up
-/// the breadcrumb file. Idempotent — safe to run even if never installed.
+/// Checks if installed before requiring root. Sends a graceful shutdown
+/// signal via HTTP before stopping via systemd.
 #[cfg(target_os = "linux")]
 pub fn uninstall() -> anyhow::Result<()> {
-    check_root("uninstall")?;
-
     let unit_path = unit_file_path();
     let install_path = install_bin_path();
 
+    // Check if installed BEFORE requiring elevation
+    if !unit_path.exists() {
+        println!("Koi is not installed as a systemd service. Nothing to uninstall.");
+        return Ok(());
+    }
+
+    check_root("uninstall")?;
     println!("Uninstalling Koi mDNS service...");
 
-    let service_exists = unit_path.exists();
-
-    if service_exists {
-        // Stop if running
-        if systemctl_check("is-active") {
-            print!("  Stopping service...");
-            let _ = Command::new("systemctl")
-                .args(["stop", SERVICE_NAME])
-                .output();
-            println!(" done.");
+    // Best-effort graceful shutdown via HTTP
+    if let Some(ep) = koi_config::breadcrumb::read_breadcrumb() {
+        let client = crate::client::KoiClient::new(&ep);
+        if client.shutdown().is_ok() {
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
+    }
 
-        // Disable
-        match Command::new("systemctl")
-            .args(["disable", SERVICE_NAME])
-            .output()
-        {
-            Ok(o) if o.status.success() => println!("  Service disabled"),
-            _ => {}
-        }
+    // Stop if running
+    if systemctl_check("is-active") {
+        print!("  Stopping service...");
+        let _ = Command::new("systemctl")
+            .args(["stop", SERVICE_NAME])
+            .output();
+        println!(" done.");
+    }
 
-        // Remove unit file
-        print!("  Removing {}...", unit_path.display());
-        match std::fs::remove_file(&unit_path) {
-            Ok(()) => println!(" done."),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => println!(" already removed."),
-            Err(e) => println!(" warning: {e}"),
-        }
+    // Disable
+    match Command::new("systemctl")
+        .args(["disable", SERVICE_NAME])
+        .output()
+    {
+        Ok(o) if o.status.success() => println!("  Service disabled"),
+        _ => {}
+    }
 
-        // Reload systemd
-        print!("  Reloading systemd...");
-        match Command::new("systemctl").args(["daemon-reload"]).output() {
-            Ok(o) if o.status.success() => println!(" done."),
-            _ => println!(" warning."),
-        }
-    } else {
-        println!("  Service not found, cleaning up remaining files...");
+    // Remove unit file
+    print!("  Removing {}...", unit_path.display());
+    match std::fs::remove_file(&unit_path) {
+        Ok(()) => println!(" done."),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => println!(" already removed."),
+        Err(e) => println!(" warning: {e}"),
+    }
+
+    // Reload systemd
+    print!("  Reloading systemd...");
+    match Command::new("systemctl").args(["daemon-reload"]).output() {
+        Ok(o) if o.status.success() => println!(" done."),
+        _ => println!(" warning."),
     }
 
     // Daemon discovery file
@@ -230,4 +237,24 @@ WantedBy=multi-user.target
 ",
         bin_path.display()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unit_paths_are_expected() {
+        assert!(unit_file_path().ends_with("koi.service"));
+        assert!(install_bin_path().ends_with("/usr/local/bin/koi"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unit_file_contains_execstart_and_notify() {
+        let unit = generate_unit_file(&std::path::PathBuf::from("/usr/local/bin/koi"));
+        assert!(unit.contains("ExecStart=/usr/local/bin/koi --daemon"));
+        assert!(unit.contains("Type=notify"));
+    }
 }

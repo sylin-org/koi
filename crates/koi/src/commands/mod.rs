@@ -1,15 +1,22 @@
 //! CLI command handlers, organized by domain.
 //!
 //! - `mdns` — mDNS commands (discover, announce, unregister, resolve, subscribe).
-//! - `certmesh` — Certificate mesh commands (create, join, status, log, unlock, set-hook).
+//! - `certmesh` — Certificate mesh commands (create, join, status, log, compliance, unlock, set-hook).
+//! - `dns` — DNS commands (serve, lookup, add/remove/list).
+//! - `health` — Health commands (status, watch, add/remove, log).
+//! - `proxy` — Proxy commands (add/remove/list/status).
 //!
 //! Shared infrastructure (mode detection, payload builders, formatting) lives here.
 
 pub mod certmesh;
+pub mod dns;
+pub mod health;
 pub mod mdns;
+pub mod proxy;
 pub mod status;
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::time::Duration;
 
 use crate::cli::Cli;
@@ -58,6 +65,40 @@ pub(crate) fn resolve_endpoint(cli: &Cli) -> anyhow::Result<String> {
         return Ok(endpoint);
     }
     anyhow::bail!("No daemon endpoint found. Is the daemon running? Use --endpoint to specify.")
+}
+
+pub(crate) async fn with_mode<T, LFut, CFut, L, C>(
+    mode: Mode,
+    local: L,
+    client_fn: C,
+) -> anyhow::Result<T>
+where
+    L: FnOnce() -> LFut,
+    C: FnOnce(KoiClient) -> CFut,
+    LFut: Future<Output = anyhow::Result<T>>,
+    CFut: Future<Output = anyhow::Result<T>>,
+{
+    match mode {
+        Mode::Standalone => local().await,
+        Mode::Client { endpoint } => {
+            let client = KoiClient::new(&endpoint);
+            client_fn(client).await
+        }
+    }
+}
+
+pub(crate) fn with_mode_sync<T, L, C>(mode: Mode, local: L, client_fn: C) -> anyhow::Result<T>
+where
+    L: FnOnce() -> anyhow::Result<T>,
+    C: FnOnce(KoiClient) -> anyhow::Result<T>,
+{
+    match mode {
+        Mode::Standalone => local(),
+        Mode::Client { endpoint } => {
+            let client = KoiClient::new(&endpoint);
+            client_fn(client)
+        }
+    }
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────

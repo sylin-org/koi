@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::profiles::TrustProfile;
+use koi_common::persist;
 
 /// The complete roster — serialized to `~/.koi/certmesh/roster.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +28,15 @@ pub struct RosterMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operator: Option<String>,
     pub enrollment_state: EnrollmentState,
+    /// When the enrollment window automatically closes (if set).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub enrollment_deadline: Option<DateTime<Utc>>,
+    /// Domain scope constraint (e.g. "lincoln-elementary.local").
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub allowed_domain: Option<String>,
+    /// Subnet scope constraint as CIDR (e.g. "192.168.1.0/24").
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub allowed_subnet: Option<String>,
 }
 
 /// Whether the mesh is accepting new members.
@@ -54,6 +64,16 @@ pub enum MemberStatus {
     Revoked,
 }
 
+/// Proxy configuration persisted per member (Phase 8).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyConfigEntry {
+    pub name: String,
+    pub listen_port: u16,
+    pub backend: String,
+    #[serde(default)]
+    pub allow_remote: bool,
+}
+
 /// A member enrolled in the mesh.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RosterMember {
@@ -76,6 +96,9 @@ pub struct RosterMember {
     /// Pinned CA certificate fingerprint for cert pinning (Phase 3).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pinned_ca_fingerprint: Option<String>,
+    /// Proxy entries configured on this host (Phase 8).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proxy_entries: Vec<ProxyConfigEntry>,
 }
 
 /// A revoked member record.
@@ -92,6 +115,23 @@ pub struct RevokedMember {
 const ROSTER_FILENAME: &str = "roster.json";
 
 impl Roster {
+    /// Create a minimal empty roster (for uninitialized state).
+    pub fn empty() -> Self {
+        Self {
+            metadata: RosterMetadata {
+                created_at: Utc::now(),
+                trust_profile: TrustProfile::default(),
+                operator: None,
+                enrollment_state: EnrollmentState::Closed,
+                enrollment_deadline: None,
+                allowed_domain: None,
+                allowed_subnet: None,
+            },
+            members: Vec::new(),
+            revocation_list: Vec::new(),
+        }
+    }
+
     /// Create a new empty roster with the given profile.
     pub fn new(profile: TrustProfile, operator: Option<String>) -> Self {
         let enrollment_state = if profile.enrollment_default_open() {
@@ -106,10 +146,44 @@ impl Roster {
                 trust_profile: profile,
                 operator,
                 enrollment_state,
+                enrollment_deadline: None,
+                allowed_domain: None,
+                allowed_subnet: None,
             },
             members: Vec::new(),
             revocation_list: Vec::new(),
         }
+    }
+
+    /// Check if enrollment is currently open, considering both state and deadline.
+    ///
+    /// Returns `true` only if the state is `Open` AND any deadline has not passed.
+    /// If the deadline has passed, this auto-closes enrollment and returns `false`.
+    pub fn is_enrollment_open(&mut self) -> bool {
+        if self.metadata.enrollment_state != EnrollmentState::Open {
+            return false;
+        }
+        if let Some(deadline) = self.metadata.enrollment_deadline {
+            if Utc::now() >= deadline {
+                self.metadata.enrollment_state = EnrollmentState::Closed;
+                self.metadata.enrollment_deadline = None;
+                tracing::info!("Enrollment window expired, auto-closed");
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Open the enrollment window, optionally with a deadline.
+    pub fn open_enrollment(&mut self, deadline: Option<DateTime<Utc>>) {
+        self.metadata.enrollment_state = EnrollmentState::Open;
+        self.metadata.enrollment_deadline = deadline;
+    }
+
+    /// Close the enrollment window and clear any deadline.
+    pub fn close_enrollment(&mut self) {
+        self.metadata.enrollment_state = EnrollmentState::Closed;
+        self.metadata.enrollment_deadline = None;
     }
 
     /// Find a member by hostname.
@@ -122,6 +196,38 @@ impl Roster {
         self.members
             .iter()
             .any(|m| m.hostname == hostname && m.status == MemberStatus::Active)
+    }
+
+    /// Check if a hostname has been revoked.
+    pub fn is_revoked(&self, hostname: &str) -> bool {
+        self.revocation_list
+            .iter()
+            .any(|r| r.hostname == hostname)
+    }
+
+    /// Revoke a member and record the revocation entry.
+    pub fn revoke_member(
+        &mut self,
+        hostname: &str,
+        operator: Option<String>,
+        reason: Option<String>,
+    ) -> Result<(), String> {
+        let member = self
+            .find_member_mut(hostname)
+            .ok_or_else(|| format!("member not found: {hostname}"))?;
+
+        if member.status == MemberStatus::Revoked {
+            return Ok(());
+        }
+
+        member.status = MemberStatus::Revoked;
+        self.revocation_list.push(RevokedMember {
+            hostname: hostname.to_string(),
+            revoked_at: Utc::now(),
+            revoked_by: operator,
+            reason,
+        });
+        Ok(())
     }
 
     /// Number of active members.
@@ -167,21 +273,14 @@ pub fn roster_path(certmesh_dir: &Path) -> PathBuf {
 
 /// Save the roster to disk as pretty-printed JSON.
 pub fn save_roster(roster: &Roster, path: &Path) -> Result<(), std::io::Error> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(roster)
-        .map_err(std::io::Error::other)?;
-    std::fs::write(path, json)?;
+    persist::write_json_pretty(path, roster)?;
     tracing::debug!(path = %path.display(), "Roster saved");
     Ok(())
 }
 
 /// Load the roster from disk.
 pub fn load_roster(path: &Path) -> Result<Roster, std::io::Error> {
-    let json = std::fs::read_to_string(path)?;
-    serde_json::from_str(&json)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    persist::read_json(path)
 }
 
 #[cfg(test)]
@@ -224,6 +323,7 @@ mod tests {
             reload_hook: None,
             last_seen: Some(Utc::now()),
             pinned_ca_fingerprint: Some("cafp123".to_string()),
+            proxy_entries: Vec::new(),
         });
 
         let json = serde_json::to_string(&r).unwrap();
@@ -269,6 +369,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         });
 
         assert_eq!(r.active_count(), 1);
@@ -336,6 +437,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         };
 
         r.members.push(make_member("stone-01", MemberRole::Primary));
@@ -366,6 +468,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         });
 
         // last_seen is None initially
@@ -387,6 +490,101 @@ mod tests {
         );
     }
 
+    // ── Phase 4 — Enrollment window tests ──────────────────────────
+
+    #[test]
+    fn open_and_close_enrollment() {
+        let mut r = Roster::new(TrustProfile::MyOrganization, Some("Admin".into()));
+        assert_eq!(r.metadata.enrollment_state, EnrollmentState::Closed);
+        assert!(!r.is_enrollment_open());
+
+        r.open_enrollment(None);
+        assert_eq!(r.metadata.enrollment_state, EnrollmentState::Open);
+        assert!(r.is_enrollment_open());
+
+        r.close_enrollment();
+        assert_eq!(r.metadata.enrollment_state, EnrollmentState::Closed);
+        assert!(!r.is_enrollment_open());
+    }
+
+    #[test]
+    fn enrollment_with_deadline_auto_closes() {
+        use chrono::Duration;
+        let mut r = Roster::new(TrustProfile::JustMe, None);
+
+        // Set deadline in the past
+        let past = Utc::now() - Duration::seconds(10);
+        r.open_enrollment(Some(past));
+
+        // Should auto-close
+        assert!(!r.is_enrollment_open());
+        assert_eq!(r.metadata.enrollment_state, EnrollmentState::Closed);
+        assert!(r.metadata.enrollment_deadline.is_none());
+    }
+
+    #[test]
+    fn enrollment_with_future_deadline_stays_open() {
+        use chrono::Duration;
+        let mut r = Roster::new(TrustProfile::JustMe, None);
+
+        let future = Utc::now() + Duration::hours(2);
+        r.open_enrollment(Some(future));
+
+        assert!(r.is_enrollment_open());
+        assert_eq!(r.metadata.enrollment_state, EnrollmentState::Open);
+        assert!(r.metadata.enrollment_deadline.is_some());
+    }
+
+    #[test]
+    fn close_enrollment_clears_deadline() {
+        use chrono::Duration;
+        let mut r = Roster::new(TrustProfile::JustMe, None);
+        r.open_enrollment(Some(Utc::now() + Duration::hours(1)));
+        assert!(r.metadata.enrollment_deadline.is_some());
+
+        r.close_enrollment();
+        assert!(r.metadata.enrollment_deadline.is_none());
+    }
+
+    #[test]
+    fn roster_metadata_scope_fields_serialize_when_set() {
+        let mut r = Roster::new(TrustProfile::MyTeam, None);
+        r.metadata.allowed_domain = Some("lab.local".to_string());
+        r.metadata.allowed_subnet = Some("192.168.1.0/24".to_string());
+
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("allowed_domain"));
+        assert!(json.contains("lab.local"));
+        assert!(json.contains("allowed_subnet"));
+        assert!(json.contains("192.168.1.0/24"));
+    }
+
+    #[test]
+    fn roster_metadata_scope_fields_skip_when_none() {
+        let r = Roster::new(TrustProfile::JustMe, None);
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("allowed_domain"));
+        assert!(!json.contains("allowed_subnet"));
+        assert!(!json.contains("enrollment_deadline"));
+    }
+
+    #[test]
+    fn backward_compat_phase3_roster_without_phase4_fields() {
+        // Phase 3 roster JSON had no allowed_domain, allowed_subnet, enrollment_deadline.
+        let json = r#"{
+            "metadata": {
+                "created_at": "2026-02-01T00:00:00Z",
+                "trust_profile": "just_me",
+                "enrollment_state": "open"
+            },
+            "members": []
+        }"#;
+        let r: Roster = serde_json::from_str(json).unwrap();
+        assert!(r.metadata.allowed_domain.is_none());
+        assert!(r.metadata.allowed_subnet.is_none());
+        assert!(r.metadata.enrollment_deadline.is_none());
+    }
+
     #[test]
     fn new_fields_skip_serialization_when_none() {
         let member = RosterMember {
@@ -402,6 +600,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         };
         let json = serde_json::to_string(&member).unwrap();
         // None fields should not appear in JSON

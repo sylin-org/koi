@@ -20,9 +20,11 @@ On Windows, install Koi as a service (run as Administrator):
 koi install
 ```
 
-On Linux, use the systemd unit or run in the foreground:
+On Linux/macOS, install as a system service or run in the foreground:
 
 ```bash
+sudo koi install
+# or
 koi --daemon
 ```
 
@@ -40,6 +42,64 @@ OK
 ```
 
 That's it. The container made a plain HTTP request to the host, and Koi responded. If you see `OK`, every mDNS operation is available to that container.
+
+---
+
+## Container profiles
+
+Pick a usage profile based on what your container needs. Each profile maps to a small set of endpoints.
+
+### Profile A — Discovery only (mDNS)
+
+Use this when the container only needs to discover LAN services.
+
+```bash
+# Browse services
+curl -s "http://$KOI_HOST:5641/v1/mdns/browse?type=_http._tcp"
+
+# Resolve a specific instance
+curl -s "http://$KOI_HOST:5641/v1/mdns/resolve?name=My%20NAS._http._tcp.local."
+```
+
+### Profile B — Discovery + naming (mDNS + DNS)
+
+Use this when containers need friendly names mapped to LAN IPs.
+
+```bash
+# DNS lookup
+curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
+
+# Add a static entry
+curl -s -X POST http://$KOI_HOST:5641/v1/dns/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"grafana","ip":"192.168.1.42"}'
+```
+
+### Profile C — Discovery + naming + health
+
+Use this when containers rely on shared health checks (HTTP/TCP).
+
+```bash
+# Add a TCP check
+curl -s -X POST http://$KOI_HOST:5641/v1/health/checks \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"db","kind":"tcp","target":"10.0.0.10:5432"}'
+
+# Health status
+curl -s http://$KOI_HOST:5641/v1/health/status
+```
+
+### Profile D — Full stack (mDNS + DNS + health + certmesh + proxy)
+
+Use this when containers manage TLS endpoints or need certmesh policy controls.
+
+```bash
+# Certmesh status
+curl -s http://$KOI_HOST:5641/v1/certmesh/status
+
+# Proxy status
+curl -s http://$KOI_HOST:5641/v1/proxy/status
+```
 
 ### Reaching the host
 
@@ -405,6 +465,116 @@ for line in response.iter_lines(decode_unicode=True):
 
 ---
 
+## DNS from containers
+
+Containers can use Koi's DNS resolver to map friendly names to LAN IPs.
+
+### Lookup a local name
+
+```bash
+curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
+```
+
+```json
+{"name":"grafana.lan.","ips":["192.168.1.42"],"source":"static"}
+```
+
+### List known names
+
+```bash
+curl -s "http://$KOI_HOST:5641/v1/dns/list"
+```
+
+### Add and remove static entries
+
+```bash
+curl -s -X POST http://$KOI_HOST:5641/v1/dns/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"grafana","ip":"192.168.1.42"}'
+
+curl -s -X DELETE http://$KOI_HOST:5641/v1/dns/entries/grafana
+```
+
+If you need to start or stop the resolver from a container, use:
+
+```bash
+curl -s -X POST http://$KOI_HOST:5641/v1/dns/admin/start
+curl -s -X POST http://$KOI_HOST:5641/v1/dns/admin/stop
+```
+
+---
+
+## Health checks from containers
+
+Use Koi to maintain a shared health view for services that containers depend on.
+
+### Add a TCP check
+
+```bash
+curl -s -X POST http://$KOI_HOST:5641/v1/health/checks \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"db","kind":"tcp","target":"10.0.0.10:5432"}'
+```
+
+### Add an HTTP check
+
+```bash
+curl -s -X POST http://$KOI_HOST:5641/v1/health/checks \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"api","kind":"http","target":"http://10.0.0.20:8080/health"}'
+```
+
+### View and remove checks
+
+```bash
+curl -s http://$KOI_HOST:5641/v1/health/status
+curl -s http://$KOI_HOST:5641/v1/health/checks
+curl -s -X DELETE http://$KOI_HOST:5641/v1/health/checks/db
+```
+
+---
+
+## Certmesh from containers
+
+Containers can call certmesh endpoints for status, audit logs, and policy management.
+Certificate creation and enrollment are still best managed on the host so the trust
+store and cert files live in the host data directory.
+
+```bash
+curl -s http://$KOI_HOST:5641/v1/certmesh/status
+curl -s http://$KOI_HOST:5641/v1/certmesh/log
+curl -s -X POST http://$KOI_HOST:5641/v1/certmesh/enrollment/open -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST http://$KOI_HOST:5641/v1/certmesh/enrollment/close
+```
+
+If you do enroll from a container, the `/v1/certmesh/join` response includes PEM
+material you can store in the container, but it will not update the host trust store.
+
+---
+
+## Proxy configuration from containers
+
+The proxy capability lets you terminate TLS on the host using certmesh-managed
+certificates and forward traffic to local backends.
+
+### Add a proxy entry
+
+```bash
+curl -s -X POST http://$KOI_HOST:5641/v1/proxy/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"app","listen_port":443,"backend":"http://127.0.0.1:8080"}'
+```
+
+### List or remove entries
+
+```bash
+curl -s http://$KOI_HOST:5641/v1/proxy/status
+curl -s http://$KOI_HOST:5641/v1/proxy/entries
+curl -s -X DELETE http://$KOI_HOST:5641/v1/proxy/entries/app
+```
+
+---
+
 ## IPC via mounted socket
 
 HTTP works for most cases, but if you want zero network overhead for same-host containers, you can mount Koi's Unix domain socket into the container.
@@ -647,4 +817,29 @@ curl -s http://$KOI_HOST:5641/v1/mdns/events?type=_http._tcp
 
 # Discover all service types
 curl -s http://$KOI_HOST:5641/v1/mdns/browse?type=_services._dns-sd._udp.local.
+
+# DNS lookup
+curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
+
+# DNS list
+curl -s http://$KOI_HOST:5641/v1/dns/list
+
+# Add a DNS entry
+curl -s -X POST http://$KOI_HOST:5641/v1/dns/entries \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"grafana","ip":"192.168.1.42"}'
+
+# Health status
+curl -s http://$KOI_HOST:5641/v1/health/status
+
+# Add a health check
+curl -s -X POST http://$KOI_HOST:5641/v1/health/checks \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"db","kind":"tcp","target":"10.0.0.10:5432"}'
+
+# Certmesh status
+curl -s http://$KOI_HOST:5641/v1/certmesh/status
+
+# Proxy status
+curl -s http://$KOI_HOST:5641/v1/proxy/status
 ```

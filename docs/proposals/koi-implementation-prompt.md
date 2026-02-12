@@ -210,24 +210,20 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 3. **CLI migration.** Existing commands move under `koi mdns <command>`:
    - `koi discover` → `koi mdns discover`
    - `koi announce` → `koi mdns announce`
-   - Add backward-compatible aliases at the root level that print deprecation notices:
-     ```
-     Warning: `koi discover` is deprecated. Use `koi mdns discover`.
-     This alias will be removed in the next release.
-     ```
+   - No backward-compatible aliases (greenfield, break-and-rebuild).
    - Add `koi status` (unified dashboard — shows mDNS status for now)
    - Add `koi version` (build info, git hash, feature flags)
    - Wire up `--json` flag on all commands (outputs JSON instead of human-readable)
 
 4. **REST API migration.** Namespace existing endpoints:
-   - `/discover` → `/v1/mdns/discover`
-   - `/status` → `/v1/mdns/status`
-   - Old endpoints return 301 redirects with `Location` header for one release cycle.
+   - `/discover` → `/v1/mdns/browse`
+   - `/status` → `/v1/mdns/admin/status`
+   - Old endpoints return 404 (legacy endpoints removed).
    - Add `/v1/status` (unified status endpoint)
 
 5. **Verify.** Run the complete existing test suite. Every test must pass with no modifications to test logic (path updates in test setup are fine).
 
-**Deliverable:** A working binary with `koi mdns discover`, `koi mdns status`, backward-compatible aliases, `--json` flag, and the workspace structure ready for new crates.
+**Deliverable:** A working binary with `koi mdns discover`, `koi mdns status`, `--json` flag, and the workspace structure ready for new crates.
 
 ---
 
@@ -254,17 +250,17 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - Last-seen timestamp tracking per discovered service (for health)
    - Event system: notify when a service appears, disappears, or changes
 
-4. **Config infrastructure.** Establish the `~/.koi/` directory structure:
+4. **Config infrastructure.** Establish the machine-scoped data directory structure:
    ```
-   ~/.koi/
+/var/lib/koi/
      config.toml        # Global config
      certs/             # Certificate files (created by certmesh)
      state/             # Runtime state
      logs/              # Audit and health logs
    ```
-   Platform-specific paths via `dirs` crate. Config is TOML.
+   Platform-specific paths via `dirs` crate (e.g., `%ProgramData%\koi\` on Windows). Config is TOML.
 
-**Deliverable:** Enhanced mDNS with event system, `~/.koi/` directory structure, `koi status` showing mDNS health, `--json` on all commands.
+**Deliverable:** Enhanced mDNS with event system, machine-scoped data directory structure, `koi status` showing mDNS health, `--json` on all commands.
 
 ---
 
@@ -284,7 +280,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - ECDSA P-256 keypair generation via `p256` crate
    - Root CA certificate via `rcgen`
    - Encrypt private key at rest with Argon2id + AES-256-GCM
-   - Write CA files to `~/.koi/certmesh/ca/`
+   - Write CA files to `/var/lib/koi/certmesh/ca/` (or `%ProgramData%\koi\certmesh\ca\` on Windows)
 
 3. **TOTP enrollment.** (koi-certmesh/enrollment.rs, koi-crypto/totp.rs)
    - Generate TOTP secret, encrypt alongside CA key
@@ -300,7 +296,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 5. **Certificate issuance.** (koi-certmesh/ca.rs, koi-certmesh/certfiles.rs)
    - SAN auto-population from mDNS knowledge: hostname, FQDN, mDNS name, all LAN IPs
    - Sign service cert with root CA
-   - Write cert files to standard path (`~/.koi/certs/<hostname>/`):
+   - Write cert files to standard path (`/var/lib/koi/certs/<hostname>/` on Linux, `%ProgramData%\koi\certs\<hostname>\` on Windows):
      - `cert.pem` — service certificate
      - `key.pem` — service private key
      - `ca.pem` — root CA public certificate
@@ -328,7 +324,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 **Deliverable:** `koi certmesh create`, `koi certmesh join`, working TLS between two machines, cert files at standard path, trust store installation, audit log.
 
-**Test:** Machine A creates mesh, Machine B joins via TOTP. Both machines can `curl https://stone-01.lan` without cert errors. Cert files exist at `~/.koi/certs/`.
+**Test:** Machine A creates mesh, Machine B joins via TOTP. Both machines can `curl https://stone-01.lan` without cert errors. Cert files exist at `/var/lib/koi/certs/` (or `%ProgramData%\koi\certs\`).
 
 ---
 
@@ -349,6 +345,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - 60-second grace period before promotion
    - Deterministic tiebreaker (lowest hostname alphabetically)
    - Old primary returns → defers to new primary
+   - **Implemented.**
 
 3. **Cert renewal.** (koi-certmesh/lifecycle.rs)
    - At day 20 of 30-day lifetime, CA mints fresh certs
@@ -384,6 +381,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 **Steps:**
 
 1. **Approval workflow.** Interactive prompt on CA terminal during enrollment. Uses `tokio::sync::mpsc` channel between API handler and terminal.
+   - **Plan to implement.**
 
 2. **Enrollment windows.** `open-enrollment --duration`, `close-enrollment`. Auto-close timer. TOTP codes rejected outside windows.
 
@@ -392,8 +390,10 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 4. **Scope constraints.** Domain and subnet validation on cert issuance. Refuse and log requests outside scope.
 
 5. **Compliance summary.** `koi certmesh compliance` — adapts to trust profile. Simple health check for personal, full audit summary for organization.
+   - **Plan to implement.**
 
 6. **TOTP rotation.** `koi certmesh rotate-secret` — new QR code, old codes invalidated, existing members unaffected.
+   - **Plan to implement.** (CLI uses `rotate-totp`, mismatch acceptable.)
 
 **Deliverable:** Full institutional workflow. Organization profile requires approval + operator + scope.
 
@@ -412,6 +412,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 3. **Revocation.** `koi certmesh revoke <host>` — add to revocation list, push with roster sync. Members check list on certmesh connections.
 
 4. **TPM integration.** (koi-crypto/tpm.rs) Feature-gated. Detect TPM 2.0, seal CA key in hardware. Fail gracefully to software encryption if unavailable.
+   - **Plan to implement.**
 
 5. **Security hardening.** `zeroize` on all key material structs. Constant-time TOTP comparison. Cert pinning enforcement.
 
@@ -505,7 +506,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 1. **HTTPS listener.** (koi-proxy/listener.rs)
    - `axum` + `rustls` using cert files from standard cert path
-   - Cert hot-reload: watch `~/.koi/certs/<hostname>/` with `notify` crate, reload `rustls` config when files change
+   - Cert hot-reload: watch `/var/lib/koi/certs/<hostname>/` with `notify` crate, reload `rustls` config when files change
    - Listen on configured port
 
 2. **HTTP forwarding.** (koi-proxy/forwarder.rs)
@@ -520,10 +521,72 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 4. **Proxy config.** (koi-proxy/config.rs)
    - `koi proxy add/remove/list/status`
-   - Persist proxy entries in `~/.koi/config.toml` and roster
+   - Persist proxy entries in `/var/lib/koi/config.toml` and roster
    - Multiple proxies per machine, each with different listen port
+   - **Implemented.**
 
 5. **Integration with health.** Proxy's backend connectivity check is a natural health signal. Wire proxy status into health's data sources.
+   - **Implemented.**
+
+---
+
+## Gap Closure Plan (Current Workspace)
+
+### Phase 3 — Failover Detection (Implemented)
+
+**Goal:** Trigger standby promotion based on `_certmesh._tcp` mDNS presence with the 60s grace + deterministic tiebreaker.
+
+**Tasks completed**
+1. Failover monitor loop added in the daemon near `spawn_certmesh_background_tasks`.
+2. `_certmesh._tcp` subscriptions track primary presence and TXT fingerprint match.
+3. Promotion gated by `should_promote()` and `tiebreaker_wins()`.
+4. Promotion/demotion updates local roster role.
+5. Audit entries and structured logs emitted for state changes.
+
+**Acceptance**
+- Primary offline → standby promotes within 60s; primary return demotes to standby without conflict.
+
+### Phase 4 — Approval Workflow + Compliance (Planned)
+
+**Goal:** Implement operator approval prompt and compliance summary output.
+
+**Status:** Enrollment windows exist, but approval prompts and compliance reporting are still missing.
+
+**Tasks**
+1. Add an approval channel between HTTP handler and a new CLI-side approval prompt task.
+2. Block enrollment until approval decision returns (approve/deny/timeout).
+3. Add a `koi certmesh compliance` command + `/v1/certmesh/compliance` endpoint.
+4. Build a policy summary from roster metadata + audit log counts.
+
+**Acceptance**
+- Organization profile requires approval + operator attribution; compliance output matches profile.
+
+### Phase 5 — TPM Integration (Planned)
+
+**Goal:** Real TPM 2.0 sealing when feature `tpm` is enabled.
+
+**Status:** TPM module exists as a stub; real sealing is not implemented yet.
+
+**Tasks**
+1. Implement TPM detection + sealing using `tss-esapi`.
+2. Gate on feature flag and fail gracefully to software-only.
+3. Add tests to validate the software fallback path.
+
+**Acceptance**
+- On supported hardware, CA key ciphertext is sealed; on unsupported, logs show graceful fallback.
+
+### Phase 8 — Proxy Persistence + Remote Backend Warning (Implemented)
+
+**Goal:** Persist proxy entries in both config + roster, and warn on remote backends.
+
+**Tasks completed**
+1. Roster model includes per-host proxy entries.
+2. Add/remove writes through both config.toml and roster.
+3. Warning log emitted when `--backend-remote` is set (includes host).
+4. Health uses the proxy list to generate backend checks.
+
+**Acceptance**
+- Proxy entries survive restart and are visible via roster; remote backend use logs a warning.
 
 **Deliverable:** `koi proxy add grafana --listen 443 --backend http://localhost:3000` results in `https://grafana.lan` working in any browser on the network.
 

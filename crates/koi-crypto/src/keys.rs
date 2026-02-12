@@ -108,8 +108,15 @@ pub fn encrypt_key(
         .to_pkcs8_der()
         .map_err(|e| CryptoError::KeyEncoding(e.to_string()))?;
     let plaintext = der.as_bytes();
+    let encrypted = encrypt_bytes(plaintext, passphrase)?;
 
-    encrypt_bytes(plaintext, passphrase)
+    if crate::tpm::is_available() {
+        if let Err(e) = crate::tpm::seal_key_material("koi-certmesh-ca", &encrypted.ciphertext) {
+            tracing::warn!(error = %e, "TPM sealing failed; falling back to software-only protection");
+        }
+    }
+
+    Ok(encrypted)
 }
 
 /// Decrypt a CA keypair from encrypted storage.
@@ -124,6 +131,13 @@ pub fn decrypt_key(
 
     plaintext.zeroize();
 
+    Ok(CaKeyPair { signing_key })
+}
+
+/// Decode a CA keypair from a PKCS#8 PEM string.
+pub fn ca_keypair_from_pem(pem: &str) -> Result<CaKeyPair, CryptoError> {
+    let signing_key = SigningKey::from_pkcs8_pem(pem)
+        .map_err(|e| CryptoError::KeyEncoding(e.to_string()))?;
     Ok(CaKeyPair { signing_key })
 }
 

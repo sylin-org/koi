@@ -2,6 +2,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use std::collections::HashSet;
+
 use windows_service::service::{
     ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
     ServiceErrorControl, ServiceExitCode, ServiceFailureActions, ServiceFailureResetPeriod,
@@ -16,9 +18,8 @@ const DISPLAY_NAME: &str = "Koi mDNS Service";
 const SERVICE_DESCRIPTION: &str =
     "Koi mDNS/DNS-SD daemon \u{2014} local service discovery for HTTP, IPC, and CLI clients";
 
-const FIREWALL_RULE_MDNS: &str = "Koi mDNS (UDP)";
-const FIREWALL_RULE_HTTP: &str = "Koi HTTP (TCP)";
-const MDNS_PORT: u16 = 5353;
+const FIREWALL_RULE_MDNS_LEGACY: &str = "Koi mDNS (UDP)";
+const FIREWALL_RULE_HTTP_LEGACY: &str = "Koi HTTP (TCP)";
 
 const RECOVERY_DELAY_FIRST: Duration = Duration::from_secs(5);
 const RECOVERY_DELAY_SECOND: Duration = Duration::from_secs(10);
@@ -28,33 +29,24 @@ const RECOVERY_RESET_SECS: Duration = Duration::from_secs(86_400);
 const SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(30);
 const SERVICE_STOP_POLL: Duration = Duration::from_millis(500);
 
-const APP_DIR_NAME: &str = "koi";
-const SERVICE_LOG_DIR: &str = "koi\\logs";
 const SERVICE_LOG_FILENAME: &str = "koi.log";
 
 // Reuse shutdown constants from crate root (defined once in main.rs).
 use crate::{SHUTDOWN_TIMEOUT, SHUTDOWN_DRAIN};
 
 // ── Service paths ───────────────────────────────────────────────────
+// All paths derive from koi_common::paths which uses %ProgramData%\koi\.
 
 pub fn service_log_path() -> PathBuf {
-    let program_data =
-        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
-    PathBuf::from(program_data)
-        .join(SERVICE_LOG_DIR)
-        .join(SERVICE_LOG_FILENAME)
+    koi_common::paths::koi_log_dir().join(SERVICE_LOG_FILENAME)
 }
 
 pub fn service_log_dir() -> PathBuf {
-    let program_data =
-        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
-    PathBuf::from(program_data).join(SERVICE_LOG_DIR)
+    koi_common::paths::koi_log_dir()
 }
 
 pub fn service_data_dir() -> PathBuf {
-    let program_data =
-        std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
-    PathBuf::from(program_data).join(APP_DIR_NAME)
+    koi_common::paths::koi_data_dir()
 }
 
 /// Win32 ERROR_SERVICE_DOES_NOT_EXIST (1060).
@@ -180,21 +172,34 @@ pub fn install() -> anyhow::Result<()> {
     }
 
     // Firewall rules (best-effort, never abort)
-    let http_port = std::env::var("KOI_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(crate::cli::DEFAULT_HTTP_PORT);
-    let fw_mdns = create_firewall_rule(FIREWALL_RULE_MDNS, "UDP", MDNS_PORT, &exe_path);
-    let fw_http = create_firewall_rule(FIREWALL_RULE_HTTP, "TCP", http_port, &exe_path);
-    if fw_mdns && fw_http {
-        println!("  Firewall rules set (UDP {MDNS_PORT}, TCP {http_port})");
-    } else {
-        if !fw_mdns {
-            println!("  Warning: could not set firewall rule for UDP {MDNS_PORT}");
+    let config = crate::cli::Config::from_env();
+    let ports = firewall_ports_for_config(&config);
+    let mut ok = Vec::new();
+    let mut failed = Vec::new();
+
+    // Clean up legacy rule names so we don't leave duplicates behind.
+    let _ = remove_firewall_rule(FIREWALL_RULE_MDNS_LEGACY);
+    let _ = remove_firewall_rule(FIREWALL_RULE_HTTP_LEGACY);
+
+    for port in &ports {
+        let rule_name = firewall_rule_name(port);
+        if create_firewall_rule(&rule_name, port.protocol.as_str(), port.port, &exe_path) {
+            ok.push(port.clone());
+        } else {
+            failed.push(port.clone());
         }
-        if !fw_http {
-            println!("  Warning: could not set firewall rule for TCP {http_port}");
-        }
+    }
+
+    if !ok.is_empty() {
+        println!("  Firewall rules set ({})", firewall_ports_summary(&ok));
+    }
+    for port in &failed {
+        println!(
+            "  Warning: could not set firewall rule for {} {} ({})",
+            port.protocol.as_str(),
+            port.port,
+            port.name
+        );
     }
 
     // Start the service
@@ -245,14 +250,40 @@ fn build_service_info(exe_path: &std::path::Path) -> ServiceInfo {
 
 // ── Uninstall ───────────────────────────────────────────────────────
 
+/// Check if the Koi service is installed (read-only, no elevation needed).
+fn is_service_installed() -> bool {
+    let Ok(manager) =
+        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+    else {
+        return false;
+    };
+    manager
+        .open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+        .is_ok()
+}
+
 /// Uninstall the Koi Windows Service and clean up all artifacts.
 ///
 /// Stops the service if running, removes firewall rules, deletes
 /// breadcrumb, and cleans up empty log/data directories.
-/// Idempotent — safe to run even if the service was never installed.
 pub fn uninstall() -> anyhow::Result<()> {
+    // Check if installed BEFORE requiring elevation
+    if !is_service_installed() {
+        println!("Koi is not installed as a service. Nothing to uninstall.");
+        return Ok(());
+    }
+
     ensure_elevated("uninstall")?;
     println!("Uninstalling Koi mDNS service...");
+
+    // Best-effort graceful shutdown via HTTP (before SCM stop)
+    if let Some(ep) = koi_config::breadcrumb::read_breadcrumb() {
+        let client = crate::client::KoiClient::new(&ep);
+        if client.shutdown().is_ok() {
+            // Give the service a moment to begin shutting down
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
 
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
 
@@ -261,7 +292,7 @@ pub fn uninstall() -> anyhow::Result<()> {
         ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE,
     ) {
         Ok(service) => {
-            // Stop if running
+            // Stop if still running (fallback after graceful shutdown)
             if let Ok(status) = service.query_status() {
                 if status.current_state != ServiceState::Stopped {
                     print!("  Stopping service...");
@@ -283,14 +314,20 @@ pub fn uninstall() -> anyhow::Result<()> {
     }
 
     // Firewall rules (best-effort)
-    let rm_mdns = remove_firewall_rule(FIREWALL_RULE_MDNS);
-    let rm_http = remove_firewall_rule(FIREWALL_RULE_HTTP);
-    if rm_mdns || rm_http {
-        println!(
-            "  Firewall rules removed (UDP {}, TCP {})",
-            MDNS_PORT,
-            crate::cli::DEFAULT_HTTP_PORT
-        );
+    let config = crate::cli::Config::from_env();
+    let ports = firewall_ports_for_config(&config);
+    let mut removed = Vec::new();
+    for port in &ports {
+        if remove_firewall_rule(&firewall_rule_name(port)) {
+            removed.push(port.clone());
+        }
+    }
+    let legacy_removed = remove_firewall_rule(FIREWALL_RULE_MDNS_LEGACY)
+        | remove_firewall_rule(FIREWALL_RULE_HTTP_LEGACY);
+    if !removed.is_empty() {
+        println!("  Firewall rules removed ({})", firewall_ports_summary(&removed));
+    } else if legacy_removed {
+        println!("  Firewall rules removed");
     }
 
     // Daemon discovery file
@@ -404,9 +441,72 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             None
         };
 
+        let dns_runtime = if !config.no_dns {
+            match koi_dns::DnsCore::new(
+                config.dns_config(),
+                mdns_core.clone(),
+                certmesh_core.clone(),
+            )
+            .await
+            {
+                Ok(core) => {
+                    let runtime = std::sync::Arc::new(koi_dns::DnsRuntime::new(core));
+                    if let Err(e) = runtime.start().await {
+                        tracing::error!(error = %e, "Failed to start DNS server");
+                    }
+                    Some(runtime)
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to initialize DNS core");
+                    None
+                }
+            }
+        } else {
+            tracing::info!("DNS capability disabled");
+            None
+        };
+
+        let health_runtime = if !config.no_health {
+            let core = std::sync::Arc::new(
+                koi_health::HealthCore::new(mdns_core.clone(), dns_runtime.clone()).await,
+            );
+            let runtime = std::sync::Arc::new(koi_health::HealthRuntime::new(core));
+            if let Err(e) = runtime.start().await {
+                tracing::error!(error = %e, "Failed to start health checks");
+            }
+            Some(runtime)
+        } else {
+            tracing::info!("Health capability disabled");
+            None
+        };
+
+        let proxy_runtime = if !config.no_proxy {
+            match koi_proxy::ProxyCore::new() {
+                Ok(core) => {
+                    let runtime = std::sync::Arc::new(koi_proxy::ProxyRuntime::new(
+                        std::sync::Arc::new(core),
+                    ));
+                    if let Err(e) = runtime.start_all().await {
+                        tracing::error!(error = %e, "Failed to start proxy listeners");
+                    }
+                    Some(runtime)
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to initialize proxy core");
+                    None
+                }
+            }
+        } else {
+            tracing::info!("Proxy capability disabled");
+            None
+        };
+
         let cores = crate::DaemonCores {
             mdns: mdns_core,
             certmesh: certmesh_core,
+            dns: dns_runtime.clone(),
+            health: health_runtime.clone(),
+            proxy: proxy_runtime.clone(),
         };
 
         // Ensure data directory exists
@@ -492,6 +592,15 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                     tracing::warn!(error = %e, "mDNS shutdown error");
                 }
             }
+            if let Some(dns) = dns_runtime {
+                dns.stop().await;
+            }
+            if let Some(health) = health_runtime {
+                let _ = health.stop().await;
+            }
+            if let Some(proxy) = proxy_runtime {
+                let _ = proxy.stop_all().await;
+            }
         };
 
         if tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown)
@@ -556,10 +665,53 @@ fn remove_firewall_rule(name: &str) -> bool {
     matches!(result, Ok(output) if output.status.success())
 }
 
-/// Check firewall status for mDNS and HTTP ports.
+fn firewall_ports_for_config(config: &crate::cli::Config) -> Vec<koi_common::firewall::FirewallPort> {
+    use koi_common::firewall::{FirewallPort, FirewallProtocol};
+
+    let mut ports = Vec::new();
+    if !config.no_mdns {
+        ports.extend(koi_mdns::firewall_ports());
+    }
+    if !config.no_http {
+        ports.push(FirewallPort::new("HTTP", FirewallProtocol::Tcp, config.http_port));
+    }
+    if !config.no_dns {
+        ports.extend(koi_dns::firewall_ports(&config.dns_config()));
+    }
+
+    let mut seen = HashSet::new();
+    ports
+        .into_iter()
+        .filter(|port| seen.insert((port.protocol, port.port)))
+        .collect()
+}
+
+fn firewall_rule_name(port: &koi_common::firewall::FirewallPort) -> String {
+    format!(
+        "Koi {} ({} {})",
+        port.name,
+        port.protocol.as_str(),
+        port.port
+    )
+}
+
+fn firewall_ports_summary(ports: &[koi_common::firewall::FirewallPort]) -> String {
+    ports
+        .iter()
+        .map(|port| format!("{} {} ({})", port.protocol.as_str(), port.port, port.name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Check firewall status for enabled capability ports.
 /// Called by startup_diagnostics in daemon mode.
-pub(crate) fn check_firewall(http_port: u16) {
+pub(crate) fn check_firewall(config: &crate::cli::Config) {
     use std::process::Command;
+
+    let ports = firewall_ports_for_config(config);
+    if ports.is_empty() {
+        return;
+    }
 
     let result = Command::new("netsh")
         .args([
@@ -575,25 +727,25 @@ pub(crate) fn check_firewall(http_port: u16) {
     match result {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let mdns_str = MDNS_PORT.to_string();
-            if stdout.contains(&mdns_str) && stdout.contains("UDP") {
-                tracing::info!("Firewall: UDP {MDNS_PORT} rule found");
-            } else {
-                tracing::warn!(
-                    "Koi may not receive mDNS traffic \u{2014} no UDP {MDNS_PORT} inbound rule found."
-                );
-                tracing::warn!("Run as administrator or execute:");
-                tracing::warn!(
-                    "  netsh advfirewall firewall add rule name=\"{FIREWALL_RULE_MDNS}\" dir=in action=allow protocol=UDP localport={MDNS_PORT}"
-                );
-            }
-            if stdout.contains(&http_port.to_string()) && stdout.contains("TCP") {
-                tracing::info!("Firewall: TCP {} rule found", http_port);
-            } else {
-                tracing::warn!(
-                    "  netsh advfirewall firewall add rule name=\"{FIREWALL_RULE_HTTP}\" dir=in action=allow protocol=TCP localport={}",
-                    http_port
-                );
+            for port in &ports {
+                let port_str = port.port.to_string();
+                let proto = port.protocol.as_str();
+                if stdout.contains(&port_str) && stdout.contains(proto) {
+                    tracing::info!("Firewall: {} {} rule found", proto, port.port);
+                } else {
+                    let rule_name = firewall_rule_name(port);
+                    tracing::warn!(
+                        "Koi may not receive {} traffic \u{2014} no {} {} inbound rule found.",
+                        port.name,
+                        proto,
+                        port.port
+                    );
+                    tracing::warn!("Run as administrator or execute:");
+                    tracing::warn!(
+                        "  netsh advfirewall firewall add rule name=\"{rule_name}\" dir=in action=allow protocol={proto} localport={}",
+                        port.port
+                    );
+                }
             }
         }
         Err(e) => {
@@ -661,5 +813,43 @@ fn wait_for_delete(manager: &ServiceManager) -> anyhow::Result<()> {
             }
             Ok(_) => std::thread::sleep(SERVICE_STOP_POLL),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn with_temp_data_dir<F, T>(f: F) -> T
+    where
+        F: FnOnce() -> T,
+    {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("koi-win-path-test-{nanos}"));
+        let prev = std::env::var("KOI_DATA_DIR").ok();
+        std::env::set_var("KOI_DATA_DIR", &dir);
+        let result = f();
+        match prev {
+            Some(v) => std::env::set_var("KOI_DATA_DIR", v),
+            None => std::env::remove_var("KOI_DATA_DIR"),
+        }
+        result
+    }
+
+    #[test]
+    fn service_paths_respect_data_dir_override() {
+        with_temp_data_dir(|| {
+            let data_dir = service_data_dir();
+            let log_dir = service_log_dir();
+            let log_path = service_log_path();
+
+            assert!(log_dir.starts_with(&data_dir));
+            assert!(log_path.starts_with(&log_dir));
+            assert!(log_path.ends_with("koi.log"));
+        });
     }
 }

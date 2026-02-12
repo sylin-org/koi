@@ -276,6 +276,19 @@ pub fn ca_fingerprint(ca: &CaState) -> String {
     pinning::fingerprint_sha256(&ca.cert_der)
 }
 
+/// Get the SHA-256 fingerprint of the CA certificate on disk.
+pub fn ca_fingerprint_from_disk() -> Result<String, CertmeshError> {
+    let cert_path = ca_cert_path();
+    if !cert_path.exists() {
+        return Err(CertmeshError::CaNotInitialized);
+    }
+
+    let cert_pem = std::fs::read_to_string(&cert_path)?;
+    let parsed = pem::parse(&cert_pem)
+        .map_err(|e| CertmeshError::Certificate(e.to_string()))?;
+    Ok(pinning::fingerprint_sha256(parsed.contents()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

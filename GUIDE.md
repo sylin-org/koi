@@ -6,6 +6,7 @@ This guide covers the basics. Each capability has a detailed reference:
 
 - **[mDNS — Service Discovery](docs/guide-mdns.md)** — find, advertise, and monitor services on your network
 - **[Certmesh — Certificate Mesh](docs/guide-certmesh.md)** — private CA, TOTP enrollment, mutual TLS trust
+- **[DNS — Local Resolver](docs/guide-dns.md)** — map friendly hostnames to local IPs
 
 ---
 
@@ -45,6 +46,9 @@ Koi is organized into **capabilities** — independent domains that can be enabl
 |---|---|---|
 | **mdns** | mDNS/DNS-SD service discovery | `koi mdns ...` |
 | **certmesh** | Private CA, certificate enrollment | `koi certmesh ...` |
+| **dns** | Local DNS resolver for `.lan` names | `koi dns ...` |
+| **health** | Machine/service health view | `koi health ...` |
+| **proxy** | TLS-terminating local reverse proxy | `koi proxy ...` |
 
 Check the status of all capabilities:
 
@@ -89,6 +93,14 @@ GET /v1/status
 ```
 
 Returns version, uptime, platform, and the status of each capability.
+
+### Admin shutdown
+
+```
+POST /v1/admin/shutdown
+```
+
+Requests a graceful daemon shutdown.
 
 ---
 
@@ -151,6 +163,12 @@ All daemon settings can be set via CLI flags or environment variables:
 | `--no-ipc` | `KOI_NO_IPC` | `false` | Disable the IPC adapter |
 | `--no-mdns` | `KOI_NO_MDNS` | `false` | Disable the mDNS capability |
 | `--no-certmesh` | `KOI_NO_CERTMESH` | `false` | Disable the certmesh capability |
+| `--no-dns` | `KOI_NO_DNS` | `false` | Disable the DNS capability |
+| `--no-health` | `KOI_NO_HEALTH` | `false` | Disable the health capability |
+| `--no-proxy` | `KOI_NO_PROXY` | `false` | Disable the proxy capability |
+| `--dns-port` | `KOI_DNS_PORT` | `53` | DNS server port |
+| `--dns-zone` | `KOI_DNS_ZONE` | `lan` | Local DNS zone suffix |
+| `--dns-public` | `KOI_DNS_PUBLIC` | `false` | Allow queries from non-private clients |
 
 When `-v` is used, it takes precedence over `--log-level`.
 
@@ -161,6 +179,8 @@ koi --port 8053 -v                       # custom port, debug logging
 koi -vv --log-file /var/log/koi.log      # trace-level with log file
 koi --no-http                            # IPC only
 koi --no-certmesh                        # disable certmesh capability
+koi --no-dns                             # disable DNS capability
+KOI_DNS_PORT=15353 koi                   # run DNS on a high port
 KOI_PORT=9090 KOI_LOG=trace koi          # all via environment
 ```
 
@@ -184,6 +204,48 @@ koi uninstall     # stop and remove
 On Windows, manage with `sc stop koi` / `sc start koi`. On Linux, use `systemctl`.
 
 ---
+
+## DNS usage
+
+Koi can act as a lightweight resolver for a local zone (default: `.lan`).
+It combines static entries, certmesh SANs, and mDNS aliases, and forwards
+non-local queries upstream.
+
+### Start the resolver
+
+Standalone (foreground):
+
+```
+koi dns serve
+```
+
+Daemon (background):
+
+```
+koi dns serve --endpoint http://localhost:5641
+```
+
+### Add static entries
+
+```
+koi dns add grafana 10.0.0.42
+koi dns add grafana.lan 10.0.0.42
+koi dns remove grafana
+```
+
+### Query and list
+
+```
+koi dns lookup grafana
+koi dns lookup grafana --record-type AAAA
+koi dns list
+```
+
+### Stop (daemon mode)
+
+```
+koi dns stop --endpoint http://localhost:5641
+```
 
 ## How modes are chosen
 
@@ -222,6 +284,35 @@ koi certmesh join [ENDPOINT]                     # join existing mesh (discovers
 koi certmesh unlock                              # decrypt CA key
 koi certmesh log                                 # show audit log
 koi certmesh set-hook --reload "COMMAND"         # set renewal hook
+koi certmesh promote [ENDPOINT]                  # promote standby CA
+koi certmesh open-enrollment [--until DURATION]  # open enrollment window
+koi certmesh close-enrollment                    # close enrollment window
+koi certmesh set-policy [--domain ...] [--subnet ...] [--clear]
+koi certmesh rotate-totp                         # rotate TOTP secret
+koi certmesh destroy                             # destroy all certmesh state
+
+# DNS
+koi dns serve                                    # start resolver
+koi dns stop                                     # stop resolver (daemon mode)
+koi dns status                                   # resolver status
+koi dns lookup NAME [--record-type A|AAAA|ANY]   # query a name
+koi dns add NAME IP [--ttl SECS]                 # static entry
+koi dns remove NAME                              # remove static entry
+koi dns list                                     # list all resolvable names
+
+# Health
+koi health status                                # health snapshot
+koi health watch                                 # live watch view
+koi health add NAME --http URL                   # add HTTP check
+koi health add NAME --tcp HOST:PORT              # add TCP check
+koi health remove NAME                           # remove check
+koi health log                                   # show health transitions
+
+# Proxy
+koi proxy add NAME --listen 443 --backend http://127.0.0.1:8080
+koi proxy remove NAME
+koi proxy status
+koi proxy list
 
 # Global
 koi status                                       # unified capability status

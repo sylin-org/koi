@@ -22,6 +22,12 @@ pub enum CertmeshError {
     #[error("already enrolled: {0}")]
     AlreadyEnrolled(String),
 
+    #[error("not found: {0}")]
+    NotFound(String),
+
+    #[error("revoked: {0}")]
+    Revoked(String),
+
     #[error("crypto error: {0}")]
     Crypto(String),
 
@@ -33,6 +39,35 @@ pub enum CertmeshError {
 
     #[error("{0}")]
     Internal(String),
+
+    #[error("invalid backup: {0}")]
+    BackupInvalid(String),
+
+    // Phase 3 — Failover + Lifecycle
+    #[error("not a standby: {0}")]
+    NotStandby(String),
+
+    #[error("promotion failed: {0}")]
+    PromotionFailed(String),
+
+    #[error("renewal failed for {hostname}: {reason}")]
+    RenewalFailed { hostname: String, reason: String },
+
+    #[error("invalid roster manifest signature")]
+    InvalidManifest,
+
+    // Phase 4 — Enrollment Policy
+    #[error("scope violation: {0}")]
+    ScopeViolation(String),
+
+    #[error("enrollment denied by operator")]
+    ApprovalDenied,
+
+    #[error("enrollment approval timed out")]
+    ApprovalTimeout,
+
+    #[error("enrollment approval unavailable")]
+    ApprovalUnavailable,
 }
 
 impl From<koi_crypto::keys::CryptoError> for CertmeshError {
@@ -50,9 +85,20 @@ impl From<&CertmeshError> for ErrorCode {
             CertmeshError::RateLimited { .. } => ErrorCode::RateLimited,
             CertmeshError::EnrollmentClosed => ErrorCode::EnrollmentClosed,
             CertmeshError::AlreadyEnrolled(_) => ErrorCode::Conflict,
+            CertmeshError::NotFound(_) => ErrorCode::NotFound,
+            CertmeshError::Revoked(_) => ErrorCode::Revoked,
             CertmeshError::Crypto(_) | CertmeshError::Certificate(_) => ErrorCode::Internal,
             CertmeshError::Io(_) => ErrorCode::IoError,
             CertmeshError::Internal(_) => ErrorCode::Internal,
+            CertmeshError::BackupInvalid(_) => ErrorCode::InvalidPayload,
+            CertmeshError::NotStandby(_) => ErrorCode::NotStandby,
+            CertmeshError::PromotionFailed(_) => ErrorCode::PromotionFailed,
+            CertmeshError::RenewalFailed { .. } => ErrorCode::RenewalFailed,
+            CertmeshError::InvalidManifest => ErrorCode::InvalidManifest,
+            CertmeshError::ScopeViolation(_) => ErrorCode::ScopeViolation,
+            CertmeshError::ApprovalDenied => ErrorCode::ApprovalDenied,
+            CertmeshError::ApprovalTimeout => ErrorCode::ApprovalTimeout,
+            CertmeshError::ApprovalUnavailable => ErrorCode::ApprovalUnavailable,
         }
     }
 }
@@ -90,6 +136,16 @@ mod tests {
                 409,
             ),
             (
+                CertmeshError::NotFound("missing".into()),
+                ErrorCode::NotFound,
+                404,
+            ),
+            (
+                CertmeshError::Revoked("stone-01".into()),
+                ErrorCode::Revoked,
+                403,
+            ),
+            (
                 CertmeshError::Crypto("bad key".into()),
                 ErrorCode::Internal,
                 500,
@@ -108,6 +164,48 @@ mod tests {
                 CertmeshError::Internal("unexpected".into()),
                 ErrorCode::Internal,
                 500,
+            ),
+            (
+                CertmeshError::BackupInvalid("bad magic".into()),
+                ErrorCode::InvalidPayload,
+                400,
+            ),
+            // Phase 3
+            (
+                CertmeshError::NotStandby("stone-01".into()),
+                ErrorCode::NotStandby,
+                403,
+            ),
+            (
+                CertmeshError::PromotionFailed("transfer error".into()),
+                ErrorCode::PromotionFailed,
+                500,
+            ),
+            (
+                CertmeshError::RenewalFailed {
+                    hostname: "stone-05".into(),
+                    reason: "cert expired".into(),
+                },
+                ErrorCode::RenewalFailed,
+                500,
+            ),
+            (
+                CertmeshError::InvalidManifest,
+                ErrorCode::InvalidManifest,
+                400,
+            ),
+            // Phase 4
+            (
+                CertmeshError::ScopeViolation("hostname outside domain".into()),
+                ErrorCode::ScopeViolation,
+                403,
+            ),
+            (CertmeshError::ApprovalDenied, ErrorCode::ApprovalDenied, 403),
+            (CertmeshError::ApprovalTimeout, ErrorCode::ApprovalTimeout, 504),
+            (
+                CertmeshError::ApprovalUnavailable,
+                ErrorCode::ApprovalUnavailable,
+                503,
             ),
         ];
         for (error, expected_code, expected_status) in &cases {

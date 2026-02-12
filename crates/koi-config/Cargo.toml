@@ -10,4 +10,5 @@ repository.workspace = true
 koi-common.workspace = true
 tracing.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml = "0.8"

@@ -85,35 +85,42 @@ pub fn install() -> anyhow::Result<()> {
 
 /// Uninstall the Koi LaunchDaemon and clean up artifacts.
 ///
-/// Unloads the daemon if loaded, removes the plist file, and cleans up
-/// the breadcrumb file. Idempotent — safe to run even if never installed.
+/// Checks if installed before requiring root. Sends a graceful shutdown
+/// signal via HTTP before unloading the daemon.
 pub fn uninstall() -> anyhow::Result<()> {
-    check_root("uninstall")?;
-
-    let plist_path = plist_path();
+    let plist = plist_path();
     let install_path = install_bin_path();
 
+    // Check if installed BEFORE requiring elevation
+    if !plist.exists() {
+        println!("Koi is not installed as a launchd daemon. Nothing to uninstall.");
+        return Ok(());
+    }
+
+    check_root("uninstall")?;
     println!("Uninstalling Koi mDNS service...");
 
-    let plist_exists = plist_path.exists();
-
-    if plist_exists {
-        // Unload if loaded
-        if launchctl_is_loaded() {
-            print!("  Unloading daemon...");
-            let _ = launchctl_bootout();
-            println!(" done.");
+    // Best-effort graceful shutdown via HTTP
+    if let Some(ep) = koi_config::breadcrumb::read_breadcrumb() {
+        let client = crate::client::KoiClient::new(&ep);
+        if client.shutdown().is_ok() {
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
+    }
 
-        // Remove plist
-        print!("  Removing {}...", plist_path.display());
-        match std::fs::remove_file(&plist_path) {
-            Ok(()) => println!(" done."),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => println!(" already removed."),
-            Err(e) => println!(" warning: {e}"),
-        }
-    } else {
-        println!("  Daemon not found, cleaning up remaining files...");
+    // Unload if loaded
+    if launchctl_is_loaded() {
+        print!("  Unloading daemon...");
+        let _ = launchctl_bootout();
+        println!(" done.");
+    }
+
+    // Remove plist
+    print!("  Removing {}...", plist.display());
+    match std::fs::remove_file(&plist) {
+        Ok(()) => println!(" done."),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => println!(" already removed."),
+        Err(e) => println!(" warning: {e}"),
     }
 
     // Daemon discovery file
@@ -228,4 +235,22 @@ fn generate_plist(bin_path: &std::path::Path) -> String {
         label = LABEL,
         bin = bin_path.display()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plist_paths_are_expected() {
+        assert!(plist_path().ends_with("org.sylin.koi.plist"));
+        assert!(install_bin_path().ends_with("/usr/local/bin/koi"));
+    }
+
+    #[test]
+    fn plist_contains_label_and_binary() {
+        let plist = generate_plist(&std::path::PathBuf::from("/usr/local/bin/koi"));
+        assert!(plist.contains("org.sylin.koi"));
+        assert!(plist.contains("/usr/local/bin/koi"));
+    }
 }

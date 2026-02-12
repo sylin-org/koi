@@ -522,17 +522,17 @@ Methods mirror the HTTP API surface:
 | Method | HTTP call |
 |---|---|
 | `health()` | GET /healthz (200ms timeout) |
-| `register(payload)` | POST /v1/services |
-| `unregister(id)` | DELETE /v1/services/{id} |
-| `heartbeat(id)` | PUT /v1/services/{id}/heartbeat |
-| `resolve(instance)` | GET /v1/resolve?name=... |
-| `browse_stream(type)` | GET /v1/browse?type=... (SSE) |
-| `admin_status()` | GET /v1/admin/status |
-| `admin_registrations()` | GET /v1/admin/registrations |
-| `admin_inspect(id)` | GET /v1/admin/registrations/{id} |
-| `admin_force_unregister(id)` | DELETE /v1/admin/registrations/{id} |
-| `admin_drain(id)` | POST /v1/admin/registrations/{id}/drain |
-| `admin_revive(id)` | POST /v1/admin/registrations/{id}/revive |
+| `register(payload)` | POST /v1/mdns/services |
+| `unregister(id)` | DELETE /v1/mdns/services/{id} |
+| `heartbeat(id)` | PUT /v1/mdns/services/{id}/heartbeat |
+| `resolve(instance)` | GET /v1/mdns/resolve?name=... |
+| `browse_stream(type)` | GET /v1/mdns/browse?type=... (SSE) |
+| `admin_status()` | GET /v1/mdns/admin/status |
+| `admin_registrations()` | GET /v1/mdns/admin/registrations |
+| `admin_inspect(id)` | GET /v1/mdns/admin/registrations/{id} |
+| `admin_force_unregister(id)` | DELETE /v1/mdns/admin/registrations/{id} |
+| `admin_drain(id)` | POST /v1/mdns/admin/registrations/{id}/drain |
+| `admin_revive(id)` | POST /v1/mdns/admin/registrations/{id}/revive |
 
 SSE parsing: line-by-line BufReader, strip `data: ` prefix, parse JSON. Koi-specific — handles only our single-line data format.
 
@@ -541,10 +541,10 @@ SSE parsing: line-by-line BufReader, strip `data: ` prefix, parse JSON. Koi-spec
 POST → heartbeat loop → Ctrl+C → DELETE:
 
 ```
-1. POST /v1/services → RegistrationResult (includes lease duration)
+1. POST /v1/mdns/services → RegistrationResult (includes lease duration)
 2. Spawn heartbeat thread (PUT at lease/2 interval)
 3. Wait for Ctrl+C
-4. DELETE /v1/services/{id}
+4. DELETE /v1/mdns/services/{id}
 5. Exit
 ```
 
@@ -622,15 +622,15 @@ All admin commands support `--json` for machine-readable output.
 
 | Method | Path | Description |
 |---|---|---|
-| `PUT` | `/v1/services/{id}/heartbeat` | Renew lease |
-| `GET` | `/v1/admin/status` | Daemon overview |
-| `GET` | `/v1/admin/registrations` | List all with lease state |
-| `GET` | `/v1/admin/registrations/{id}` | Inspect (prefix match) |
-| `DELETE` | `/v1/admin/registrations/{id}` | Force-unregister |
-| `POST` | `/v1/admin/registrations/{id}/drain` | Force-drain |
-| `POST` | `/v1/admin/registrations/{id}/revive` | Revive |
+| `PUT` | `/v1/mdns/services/{id}/heartbeat` | Renew lease |
+| `GET` | `/v1/mdns/admin/status` | Daemon overview |
+| `GET` | `/v1/mdns/admin/registrations` | List all with lease state |
+| `GET` | `/v1/mdns/admin/registrations/{id}` | Inspect (prefix match) |
+| `DELETE` | `/v1/mdns/admin/registrations/{id}` | Force-unregister |
+| `POST` | `/v1/mdns/admin/registrations/{id}/drain` | Force-drain |
+| `POST` | `/v1/mdns/admin/registrations/{id}/revive` | Revive |
 
-The `/v1/admin/` namespace is a boundary — future auth/ACL can gate it separately from `/v1/services/`.
+The `/v1/mdns/admin/` namespace is a boundary — future auth/ACL can gate it separately from `/v1/mdns/services/`.
 
 ### Config
 
@@ -688,7 +688,7 @@ New: `lease` (effective duration; 0 for session/permanent) and `mode` (`"session
 ← {"renewed": "a1b2c3d4", "lease": 90}
 ```
 
-HTTP: `PUT /v1/services/{id}/heartbeat`
+HTTP: `PUT /v1/mdns/services/{id}/heartbeat`
 - 200 → lease renewed, keep going
 - 404 → registration gone, stop heartbeating
 
@@ -799,7 +799,7 @@ core.register_with_policy(payload, policy, None)
 New routes:
 
 ```rust
-.route("/v1/services/{id}/heartbeat", put(heartbeat_handler))
+.route("/v1/mdns/services/{id}/heartbeat", put(heartbeat_handler))
 .route("/v1/admin/status", get(admin_status_handler))
 .route("/v1/admin/registrations", get(admin_registrations_handler))
 .route("/v1/admin/registrations/{id}", get(admin_inspect_handler))

@@ -8,3 +8,17 @@ repository.workspace = true
 
 [dependencies]
 koi-common.workspace = true
+koi-certmesh.workspace = true
+koi-dns.workspace = true
+koi-mdns.workspace = true
+koi-proxy.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+reqwest.workspace = true
+hickory-proto.workspace = true
+axum.workspace = true
+tracing.workspace = true

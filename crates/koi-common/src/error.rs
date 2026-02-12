@@ -27,6 +27,18 @@ pub enum ErrorCode {
     RateLimited,
     EnrollmentClosed,
     CapabilityDisabled,
+    // Certmesh (Phase 3)
+    NotStandby,
+    PromotionFailed,
+    RenewalFailed,
+    InvalidManifest,
+    // Certmesh (Phase 4)
+    ScopeViolation,
+    ApprovalDenied,
+    ApprovalTimeout,
+    ApprovalUnavailable,
+    // Certmesh (Phase 5)
+    Revoked,
 }
 
 impl ErrorCode {
@@ -44,8 +56,14 @@ impl ErrorCode {
             | Self::CapabilityDisabled => 503,
             Self::InvalidTotp => 401,
             Self::RateLimited => 429,
-            Self::EnrollmentClosed => 403,
-            Self::DaemonError | Self::IoError | Self::Internal => 500,
+            Self::EnrollmentClosed | Self::NotStandby | Self::ScopeViolation
+            | Self::ApprovalDenied => 403,
+            Self::Revoked => 403,
+            Self::DaemonError | Self::IoError | Self::Internal
+            | Self::PromotionFailed | Self::RenewalFailed => 500,
+            Self::InvalidManifest => 400,
+            Self::ApprovalTimeout => 504,
+            Self::ApprovalUnavailable => 503,
         }
     }
 }
@@ -95,17 +113,29 @@ mod tests {
             (ErrorCode::NotDraining, 409),
             // 429 Rate Limited
             (ErrorCode::RateLimited, 429),
+            // 400 Bad Request (Phase 3)
+            (ErrorCode::InvalidManifest, 400),
+            // 403 Forbidden (Phase 3)
+            (ErrorCode::NotStandby, 403),
+            // 403 Forbidden (Phase 4)
+            (ErrorCode::ScopeViolation, 403),
+            (ErrorCode::Revoked, 403),
+            (ErrorCode::ApprovalDenied, 403),
             // 500 Internal Server Error
             (ErrorCode::DaemonError, 500),
             (ErrorCode::IoError, 500),
             (ErrorCode::Internal, 500),
+            (ErrorCode::PromotionFailed, 500),
+            (ErrorCode::RenewalFailed, 500),
             // 503 Service Unavailable
             (ErrorCode::ShuttingDown, 503),
             (ErrorCode::CaNotInitialized, 503),
             (ErrorCode::CaLocked, 503),
             (ErrorCode::CapabilityDisabled, 503),
+            (ErrorCode::ApprovalUnavailable, 503),
             // 504 Gateway Timeout
             (ErrorCode::ResolveTimeout, 504),
+            (ErrorCode::ApprovalTimeout, 504),
         ];
         for (code, expected_status) in &cases {
             assert_eq!(
@@ -141,6 +171,15 @@ mod tests {
             (ErrorCode::RateLimited, "rate_limited"),
             (ErrorCode::EnrollmentClosed, "enrollment_closed"),
             (ErrorCode::CapabilityDisabled, "capability_disabled"),
+            (ErrorCode::NotStandby, "not_standby"),
+            (ErrorCode::PromotionFailed, "promotion_failed"),
+            (ErrorCode::RenewalFailed, "renewal_failed"),
+            (ErrorCode::InvalidManifest, "invalid_manifest"),
+            (ErrorCode::ScopeViolation, "scope_violation"),
+            (ErrorCode::Revoked, "revoked"),
+            (ErrorCode::ApprovalDenied, "approval_denied"),
+            (ErrorCode::ApprovalTimeout, "approval_timeout"),
+            (ErrorCode::ApprovalUnavailable, "approval_unavailable"),
         ];
         for (code, expected_str) in &variants {
             let serialized = serde_json::to_value(code).unwrap();

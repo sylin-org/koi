@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 
+use koi_common::api::{error_body, ErrorBody};
 use koi_common::error::ErrorCode;
 use koi_common::types::{EventKind, ServiceRecord};
 
@@ -141,10 +142,7 @@ pub enum Response {
         service: ServiceRecord,
     },
     Renewed(RenewalResult),
-    Error {
-        error: ErrorCode,
-        message: String,
-    },
+    Error(ErrorBody),
 }
 
 impl Serialize for Response {
@@ -181,10 +179,10 @@ impl Serialize for Response {
                 map.serialize_entry("renewed", result)?;
                 map.end()
             }
-            Response::Error { error, message } => {
+            Response::Error(body) => {
                 let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("error", error)?;
-                map.serialize_entry("message", message)?;
+                map.serialize_entry("error", &body.error)?;
+                map.serialize_entry("message", &body.message)?;
                 map.end()
             }
         }
@@ -245,10 +243,10 @@ pub fn subscribe_event_to_pipeline(event: MdnsEvent) -> MdnsPipelineResponse {
 
 /// Convert an MdnsError into a pipeline error response.
 pub fn error_to_pipeline(e: &MdnsError) -> MdnsPipelineResponse {
-    PipelineResponse::clean(Response::Error {
-        error: ErrorCode::from(e),
-        message: e.to_string(),
-    })
+    PipelineResponse::clean(Response::Error(error_body(
+        ErrorCode::from(e),
+        e.to_string(),
+    )))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -445,10 +443,10 @@ mod tests {
 
     #[test]
     fn error_response_serializes_correctly() {
-        let resp = MdnsPipelineResponse::clean(Response::Error {
-            error: ErrorCode::NotFound,
-            message: "No registration with id 'xyz'".into(),
-        });
+        let resp = MdnsPipelineResponse::clean(Response::Error(error_body(
+            ErrorCode::NotFound,
+            "No registration with id 'xyz'",
+        )));
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json.get("error").unwrap(), "not_found");
         assert_eq!(
@@ -489,5 +487,65 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json.get("event").unwrap(), "found");
         assert!(json.get("service").is_some());
+    }
+
+    // ── Pipeline helper free function tests ─────────────────────────
+
+    #[test]
+    fn browse_event_resolved_produces_found() {
+        let event = MdnsEvent::Resolved(test_record());
+        let resp = browse_event_to_pipeline(event);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json.get("found").is_some(), "should have 'found' key");
+        assert_eq!(
+            json.get("found").unwrap().get("name").unwrap(),
+            "Server A"
+        );
+    }
+
+    #[test]
+    fn browse_event_removed_produces_event_removed() {
+        let event = MdnsEvent::Removed {
+            name: "Gone._http._tcp.local.".into(),
+            service_type: "_http._tcp".into(),
+        };
+        let resp = browse_event_to_pipeline(event);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json.get("event").unwrap(), "removed");
+        assert_eq!(
+            json.get("service").unwrap().get("name").unwrap(),
+            "Gone._http._tcp.local."
+        );
+    }
+
+    #[test]
+    fn subscribe_event_found_produces_event_found() {
+        let event = MdnsEvent::Found(test_record());
+        let resp = subscribe_event_to_pipeline(event);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json.get("event").unwrap(), "found");
+        assert!(json.get("service").is_some());
+    }
+
+    #[test]
+    fn subscribe_event_resolved_produces_event_resolved() {
+        let event = MdnsEvent::Resolved(test_record());
+        let resp = subscribe_event_to_pipeline(event);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json.get("event").unwrap(), "resolved");
+        assert_eq!(
+            json.get("service").unwrap().get("name").unwrap(),
+            "Server A"
+        );
+    }
+
+    #[test]
+    fn error_to_pipeline_not_found() {
+        let err = MdnsError::RegistrationNotFound("xyz".into());
+        let resp = error_to_pipeline(&err);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json.get("error").unwrap(), "not_found");
+        let msg = json.get("message").unwrap().as_str().unwrap();
+        assert!(msg.contains("xyz"), "message should contain id: {msg}");
     }
 }
