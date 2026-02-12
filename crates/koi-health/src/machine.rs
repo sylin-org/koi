@@ -1,4 +1,4 @@
-﻿use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -75,10 +75,8 @@ pub fn collect_machine_health(
 ) -> Vec<MachineHealth> {
     let roster_members = load_active_members();
 
-    let mut hostnames: HashSet<String> = roster_members
-        .iter()
-        .map(|m| m.hostname.clone())
-        .collect();
+    let mut hostnames: HashSet<String> =
+        roster_members.iter().map(|m| m.hostname.clone()).collect();
     hostnames.extend(mdns_snapshot.keys().cloned());
 
     let mut machines = Vec::new();
@@ -121,14 +119,11 @@ pub fn collect_machine_health(
             None => ServiceStatus::Unknown,
         };
 
-        let dns_resolves = dns
-            .as_ref()
-            .map(|runtime| runtime.core())
-            .map(|core| {
-                core.resolve_local(&hostname, RecordType::A)
-                    .or_else(|| core.resolve_local(&hostname, RecordType::AAAA))
-                    .is_some()
-            });
+        let dns_resolves = dns.as_ref().map(|runtime| runtime.core()).map(|core| {
+            core.resolve_local(&hostname, RecordType::A)
+                .or_else(|| core.resolve_local(&hostname, RecordType::AAAA))
+                .is_some()
+        });
 
         machines.push(MachineHealth {
             hostname,

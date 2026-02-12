@@ -1,4 +1,4 @@
-﻿use std::net::IpAddr;
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc, Mutex};
@@ -12,8 +12,8 @@ use koi_common::types::{EventKind, ServiceRecord};
 use koi_config::state::{load_dns_state, save_dns_state, DnsEntry};
 use koi_dns::{DnsLookupResult, DnsRuntime};
 use koi_health::{HealthCheck, HealthRuntime};
-use koi_mdns::{BrowseHandle as MdnsBrowseHandle, MdnsCore, MdnsEvent};
 use koi_mdns::protocol::{RegisterPayload, RegistrationResult};
+use koi_mdns::{BrowseHandle as MdnsBrowseHandle, MdnsCore, MdnsEvent};
 use koi_proxy::{ProxyEntry, ProxyRuntime};
 
 use crate::{map_join_error, KoiError, KoiEvent};
@@ -89,23 +89,23 @@ impl KoiHandle {
     pub fn mdns(&self) -> Result<MdnsHandle, KoiError> {
         match &self.backend {
             HandleBackend::Embedded { mdns, .. } => {
-                let core = mdns
-                    .as_ref()
-                    .ok_or(KoiError::DisabledCapability("mdns"))?;
-                Ok(MdnsHandle::new_embedded(Arc::clone(core), self.events.clone()))
+                let core = mdns.as_ref().ok_or(KoiError::DisabledCapability("mdns"))?;
+                Ok(MdnsHandle::new_embedded(
+                    Arc::clone(core),
+                    self.events.clone(),
+                ))
             }
-            HandleBackend::Remote { client } => {
-                Ok(MdnsHandle::new_remote(Arc::clone(client), self.events.clone()))
-            }
+            HandleBackend::Remote { client } => Ok(MdnsHandle::new_remote(
+                Arc::clone(client),
+                self.events.clone(),
+            )),
         }
     }
 
     pub fn dns(&self) -> Result<DnsHandle, KoiError> {
         match &self.backend {
             HandleBackend::Embedded { dns, .. } => {
-                let runtime = dns
-                    .as_ref()
-                    .ok_or(KoiError::DisabledCapability("dns"))?;
+                let runtime = dns.as_ref().ok_or(KoiError::DisabledCapability("dns"))?;
                 Ok(DnsHandle::new_embedded(
                     Arc::clone(runtime),
                     self.events.clone(),
@@ -138,9 +138,7 @@ impl KoiHandle {
                     .ok_or(KoiError::DisabledCapability("certmesh"))?;
                 Ok(CertmeshHandle::new_embedded(Arc::clone(core)))
             }
-            HandleBackend::Remote { client } => {
-                Ok(CertmeshHandle::new_remote(Arc::clone(client)))
-            }
+            HandleBackend::Remote { client } => Ok(CertmeshHandle::new_remote(Arc::clone(client))),
         }
     }
 
@@ -266,7 +264,9 @@ impl MdnsHandle {
                         Err(_) => return,
                     };
                     for item in stream {
-                        let Ok(json) = item else { break; };
+                        let Ok(json) = item else {
+                            break;
+                        };
                         if let Some(event) = mdns_event_from_pipeline(json) {
                             if tx.blocking_send(event).is_err() {
                                 break;
@@ -371,12 +371,11 @@ impl DnsHandle {
             DnsBackend::Remote { client } => {
                 let name = name.to_string();
                 let client = Arc::clone(client);
-                let result = tokio::task::spawn_blocking(move || {
-                    client.dns_lookup(&name, record_type)
-                })
-                .await
-                .ok()
-                .and_then(|res| res.ok());
+                let result =
+                    tokio::task::spawn_blocking(move || client.dns_lookup(&name, record_type))
+                        .await
+                        .ok()
+                        .and_then(|res| res.ok());
                 let json = match result {
                     Some(json) => json,
                     None => return None,
@@ -391,7 +390,9 @@ impl DnsHandle {
             DnsBackend::Embedded { runtime } => runtime.core().list_names(),
             DnsBackend::Remote { client } => {
                 let result = client.dns_list();
-                let Ok(json) = result else { return Vec::new(); };
+                let Ok(json) = result else {
+                    return Vec::new();
+                };
                 json.get("names")
                     .and_then(|v| v.as_array())
                     .map(|arr| {
@@ -584,8 +585,12 @@ pub struct CertmeshHandle {
 }
 
 enum CertmeshBackend {
-    Embedded { core: Arc<koi_certmesh::CertmeshCore> },
-    Remote { client: Arc<KoiClient> },
+    Embedded {
+        core: Arc<koi_certmesh::CertmeshCore>,
+    },
+    Remote {
+        client: Arc<KoiClient>,
+    },
 }
 
 impl CertmeshHandle {
@@ -739,26 +744,21 @@ fn parse_dns_lookup(json: serde_json::Value) -> Option<DnsLookupResult> {
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
         .to_string();
-    let ips = json
-        .get("ips")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|ip| ip.as_str())
-                .filter_map(|ip| ip.parse::<IpAddr>().ok())
-                .collect::<Vec<_>>()
-        })?;
+    let ips = json.get("ips").and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|ip| ip.as_str())
+            .filter_map(|ip| ip.parse::<IpAddr>().ok())
+            .collect::<Vec<_>>()
+    })?;
     Some(DnsLookupResult { name, ips, source })
 }
 
 fn parse_dns_entries(json: serde_json::Value) -> Result<Vec<DnsEntry>, KoiError> {
-    let entries = json
-        .get("entries")
-        .ok_or_else(|| {
-            KoiError::Dns(koi_dns::DnsError::Io(std::io::Error::other(
-                "missing entries",
-            )))
-        })?;
+    let entries = json.get("entries").ok_or_else(|| {
+        KoiError::Dns(koi_dns::DnsError::Io(std::io::Error::other(
+            "missing entries",
+        )))
+    })?;
     let entries = serde_json::from_value(entries.clone()).map_err(|e| {
         KoiError::Dns(koi_dns::DnsError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -771,16 +771,15 @@ fn parse_dns_entries(json: serde_json::Value) -> Result<Vec<DnsEntry>, KoiError>
 fn parse_proxy_entries(json: serde_json::Value) -> Result<Vec<ProxyEntry>, KoiError> {
     let entries = json
         .get("entries")
-        .ok_or_else(|| {
-            KoiError::Proxy(koi_proxy::ProxyError::Io("missing entries".to_string()))
-        })?
+        .ok_or_else(|| KoiError::Proxy(koi_proxy::ProxyError::Io("missing entries".to_string())))?
         .clone();
-    serde_json::from_value(entries).map_err(|e| {
-        KoiError::Proxy(koi_proxy::ProxyError::Io(e.to_string()))
-    })
+    serde_json::from_value(entries)
+        .map_err(|e| KoiError::Proxy(koi_proxy::ProxyError::Io(e.to_string())))
 }
 
-fn extract_capability_status(json: serde_json::Value) -> Option<koi_common::capability::CapabilityStatus> {
+fn extract_capability_status(
+    json: serde_json::Value,
+) -> Option<koi_common::capability::CapabilityStatus> {
     let caps = json.get("capabilities")?.as_array()?;
     for cap in caps {
         if cap.get("name")?.as_str()? == "certmesh" {
@@ -790,7 +789,10 @@ fn extract_capability_status(json: serde_json::Value) -> Option<koi_common::capa
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let healthy = cap.get("healthy").and_then(|v| v.as_bool()).unwrap_or(false);
+            let healthy = cap
+                .get("healthy")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             return Some(koi_common::capability::CapabilityStatus {
                 name,
                 summary,
@@ -820,7 +822,10 @@ fn mdns_event_from_pipeline(json: serde_json::Value) -> Option<MdnsEvent> {
     }
     if let Some(event) = json.get("event") {
         let kind: EventKind = serde_json::from_value(event.clone()).ok()?;
-        let service = json.get("service").cloned().unwrap_or(serde_json::Value::Null);
+        let service = json
+            .get("service")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         let record: ServiceRecord = serde_json::from_value(service).ok()?;
         return match kind {
             EventKind::Found => Some(MdnsEvent::Found(record)),

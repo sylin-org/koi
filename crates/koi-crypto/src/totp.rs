@@ -96,9 +96,7 @@ pub fn verify_code(secret: &TotpSecret, code: &str) -> bool {
         let code_bytes = code.as_bytes();
         let expected_bytes = expected.as_bytes();
 
-        if code_bytes.len() == expected_bytes.len()
-            && code_bytes.ct_eq(expected_bytes).into()
-        {
+        if code_bytes.len() == expected_bytes.len() && code_bytes.ct_eq(expected_bytes).into() {
             return true;
         }
     }
@@ -106,10 +104,7 @@ pub fn verify_code(secret: &TotpSecret, code: &str) -> bool {
 }
 
 /// Encrypt a TOTP secret for storage at rest.
-pub fn encrypt_secret(
-    secret: &TotpSecret,
-    passphrase: &str,
-) -> Result<EncryptedKey, CryptoError> {
+pub fn encrypt_secret(secret: &TotpSecret, passphrase: &str) -> Result<EncryptedKey, CryptoError> {
     encrypt_bytes(&secret.secret, passphrase)
 }
 
@@ -209,9 +204,7 @@ pub enum RateLimitError {
 pub fn build_totp_uri(secret: &TotpSecret, issuer: &str, account: &str) -> String {
     use totp_rs::Secret;
 
-    let encoded = Secret::Raw(secret.secret.clone())
-        .to_encoded()
-        .to_string();
+    let encoded = Secret::Raw(secret.secret.clone()).to_encoded().to_string();
     format!(
         "otpauth://totp/{}:{}?secret={}&issuer={}&algorithm=SHA1&digits=6&period=30",
         issuer, account, encoded, issuer
@@ -219,9 +212,7 @@ pub fn build_totp_uri(secret: &TotpSecret, issuer: &str, account: &str) -> Strin
 }
 
 /// Build a totp-rs TOTP instance from our secret.
-fn build_totp(
-    secret: &TotpSecret,
-) -> Result<totp_rs::TOTP, totp_rs::TotpUrlError> {
+fn build_totp(secret: &TotpSecret) -> Result<totp_rs::TOTP, totp_rs::TotpUrlError> {
     use totp_rs::{Algorithm, Secret, TOTP};
 
     TOTP::new(

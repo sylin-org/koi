@@ -35,10 +35,7 @@ pub fn members_needing_renewal(roster: &Roster) -> Vec<&RosterMember> {
 ///
 /// Delegates to `ca::issue_certificate()` — the roster member's
 /// existing `cert_sans` are reused so the renewed cert is equivalent.
-pub fn renew_member_cert(
-    ca: &CaState,
-    member: &RosterMember,
-) -> Result<IssuedCert, CertmeshError> {
+pub fn renew_member_cert(ca: &CaState, member: &RosterMember) -> Result<IssuedCert, CertmeshError> {
     ca::issue_certificate(ca, &member.hostname, &member.cert_sans)
 }
 
@@ -98,12 +95,12 @@ pub fn renew_and_update_member(
     roster: &mut Roster,
     hostname: &str,
 ) -> Result<Option<HookResult>, CertmeshError> {
-    let member = roster.find_member(hostname).ok_or_else(|| {
-        CertmeshError::RenewalFailed {
+    let member = roster
+        .find_member(hostname)
+        .ok_or_else(|| CertmeshError::RenewalFailed {
             hostname: hostname.to_string(),
             reason: "member not found in roster".to_string(),
-        }
-    })?;
+        })?;
 
     // Snapshot fields we need before mutating the roster
     let sans = member.cert_sans.clone();
@@ -116,12 +113,12 @@ pub fn renew_and_update_member(
     let cert_dir = certfiles::write_cert_files(hostname, &issued)?;
 
     // Update roster member
-    let member = roster.find_member_mut(hostname).ok_or_else(|| {
-        CertmeshError::RenewalFailed {
+    let member = roster
+        .find_member_mut(hostname)
+        .ok_or_else(|| CertmeshError::RenewalFailed {
             hostname: hostname.to_string(),
             reason: "member vanished during renewal".to_string(),
-        }
-    })?;
+        })?;
     member.cert_fingerprint = issued.fingerprint.clone();
     member.cert_expires = issued.expires;
     member.cert_path = cert_dir.display().to_string();
@@ -378,7 +375,11 @@ mod tests {
         let result = execute_reload_hook(cmd);
         assert!(result.success);
         // stderr is captured in the output
-        assert!(result.output.as_deref().unwrap_or("").contains("stderr_msg"));
+        assert!(result
+            .output
+            .as_deref()
+            .unwrap_or("")
+            .contains("stderr_msg"));
     }
 
     #[test]
@@ -407,7 +408,10 @@ mod tests {
         let member = roster.find_member("stone-08").unwrap();
         // New cert should expire ~30 days from now
         let days_until_expiry = (member.cert_expires - Utc::now()).num_days();
-        assert!(days_until_expiry >= 29, "cert should expire in ~30 days, got {days_until_expiry}");
+        assert!(
+            days_until_expiry >= 29,
+            "cert should expire in ~30 days, got {days_until_expiry}"
+        );
     }
 
     #[test]
@@ -421,7 +425,10 @@ mod tests {
         let member = roster.find_member("stone-09").unwrap();
         // SHA-256 fingerprints are 64 lowercase hex characters
         assert_eq!(member.cert_fingerprint.len(), 64);
-        assert!(member.cert_fingerprint.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(member
+            .cert_fingerprint
+            .chars()
+            .all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -445,7 +452,10 @@ mod tests {
         let issued = renew_member_cert(&ca, &member).unwrap();
         // fullchain should contain both service cert and CA cert
         let cert_count = issued.fullchain_pem.matches("BEGIN CERTIFICATE").count();
-        assert_eq!(cert_count, 2, "fullchain should have exactly 2 certificates");
+        assert_eq!(
+            cert_count, 2,
+            "fullchain should have exactly 2 certificates"
+        );
     }
 
     #[test]
@@ -453,7 +463,11 @@ mod tests {
         let ca = make_test_ca();
         let mut roster = Roster::new(TrustProfile::JustMe, None);
         let mut member = make_member("stone-12", 5);
-        let cmd = if cfg!(windows) { "cmd /C exit 1" } else { "exit 1" };
+        let cmd = if cfg!(windows) {
+            "cmd /C exit 1"
+        } else {
+            "exit 1"
+        };
         member.reload_hook = Some(cmd.to_string());
         roster.members.push(member);
 

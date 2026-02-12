@@ -1,4 +1,4 @@
-﻿//! HTTP client for communicating with a running Koi daemon.
+//! HTTP client for communicating with a running Koi daemon.
 //!
 //! Uses blocking `ureq` — no async runtime dependency on the client path.
 //! All paths use `/v1/mdns/` prefix for mDNS domain routes.
@@ -379,10 +379,7 @@ impl KoiClient {
     }
 
     /// POST /v1/certmesh/health — send health heartbeat.
-    pub fn health_heartbeat(
-        &self,
-        request: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    pub fn health_heartbeat(&self, request: &serde_json::Value) -> Result<serde_json::Value> {
         let url = format!("{}/v1/certmesh/health", self.endpoint);
         let resp = self
             .agent

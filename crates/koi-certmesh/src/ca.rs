@@ -8,10 +8,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Duration, Utc};
 use koi_crypto::keys::{self, CaKeyPair, CryptoError};
 use koi_crypto::pinning;
-use rcgen::{
-    BasicConstraints, CertificateParams, DnType, IsCa, KeyPair,
-    KeyUsagePurpose, SanType,
-};
+use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose, SanType};
 
 use crate::error::CertmeshError;
 
@@ -103,10 +100,7 @@ fn build_ca_params() -> Result<CertificateParams, CertmeshError> {
         .push(DnType::OrganizationName, "Koi");
 
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::CrlSign,
-    ];
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
 
     let not_before = Utc::now();
     let not_after = not_before + Duration::days(CA_VALIDITY_YEARS * 365);
@@ -122,16 +116,13 @@ fn build_ca_params() -> Result<CertificateParams, CertmeshError> {
 ///
 /// Generates a keypair, creates a self-signed root CA certificate,
 /// encrypts the key with the passphrase, and writes everything to disk.
-pub fn create_ca(
-    passphrase: &str,
-    entropy_seed: &[u8],
-) -> Result<CaState, CertmeshError> {
+pub fn create_ca(passphrase: &str, entropy_seed: &[u8]) -> Result<CaState, CertmeshError> {
     let ca_key = keys::generate_ca_keypair(entropy_seed);
 
     // Build rcgen KeyPair from our P-256 key
     let key_pem = ca_key.private_key_pem();
-    let rcgen_key = KeyPair::from_pem(&key_pem)
-        .map_err(|e| CertmeshError::Certificate(e.to_string()))?;
+    let rcgen_key =
+        KeyPair::from_pem(&key_pem).map_err(|e| CertmeshError::Certificate(e.to_string()))?;
 
     // Build CA params and self-sign (rcgen 0.13: params consumed, key by ref)
     let ca_params = build_ca_params()?;
@@ -174,25 +165,23 @@ pub fn load_ca(passphrase: &str) -> Result<CaState, CertmeshError> {
     }
 
     let encrypted = keys::load_encrypted_key(&key_path)?;
-    let ca_key = keys::decrypt_key(&encrypted, passphrase)
-        .map_err(|e| match e {
-            CryptoError::Decryption(_) => CertmeshError::Crypto(
-                "wrong passphrase or corrupted key file".into(),
-            ),
-            other => CertmeshError::Crypto(other.to_string()),
-        })?;
+    let ca_key = keys::decrypt_key(&encrypted, passphrase).map_err(|e| match e {
+        CryptoError::Decryption(_) => {
+            CertmeshError::Crypto("wrong passphrase or corrupted key file".into())
+        }
+        other => CertmeshError::Crypto(other.to_string()),
+    })?;
 
     let cert_pem = std::fs::read_to_string(&cert_path)?;
 
     // Parse the cert PEM to get DER for fingerprinting
-    let parsed = pem::parse(&cert_pem)
-        .map_err(|e| CertmeshError::Certificate(e.to_string()))?;
+    let parsed = pem::parse(&cert_pem).map_err(|e| CertmeshError::Certificate(e.to_string()))?;
     let cert_der = parsed.contents().to_vec();
 
     // Rebuild rcgen KeyPair for signing operations
     let key_pem_str = ca_key.private_key_pem();
-    let rcgen_key = KeyPair::from_pem(&key_pem_str)
-        .map_err(|e| CertmeshError::Certificate(e.to_string()))?;
+    let rcgen_key =
+        KeyPair::from_pem(&key_pem_str).map_err(|e| CertmeshError::Certificate(e.to_string()))?;
 
     // Re-create the self-signed CA cert for use as issuer in signed_by()
     let ca_params = build_ca_params()?;
@@ -218,8 +207,7 @@ pub fn issue_certificate(
     sans: &[String],
 ) -> Result<IssuedCert, CertmeshError> {
     // Generate a new keypair for the member
-    let member_key = KeyPair::generate()
-        .map_err(|e| CertmeshError::Certificate(e.to_string()))?;
+    let member_key = KeyPair::generate().map_err(|e| CertmeshError::Certificate(e.to_string()))?;
 
     // Build params with DNS SANs
     let dns_sans: Vec<String> = sans
@@ -228,8 +216,8 @@ pub fn issue_certificate(
         .cloned()
         .collect();
 
-    let mut cert_params = CertificateParams::new(dns_sans)
-        .map_err(|e| CertmeshError::Certificate(e.to_string()))?;
+    let mut cert_params =
+        CertificateParams::new(dns_sans).map_err(|e| CertmeshError::Certificate(e.to_string()))?;
 
     cert_params
         .distinguished_name
@@ -284,8 +272,7 @@ pub fn ca_fingerprint_from_disk() -> Result<String, CertmeshError> {
     }
 
     let cert_pem = std::fs::read_to_string(&cert_path)?;
-    let parsed = pem::parse(&cert_pem)
-        .map_err(|e| CertmeshError::Certificate(e.to_string()))?;
+    let parsed = pem::parse(&cert_pem).map_err(|e| CertmeshError::Certificate(e.to_string()))?;
     Ok(pinning::fingerprint_sha256(parsed.contents()))
 }
 

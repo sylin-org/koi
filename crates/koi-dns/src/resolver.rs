@@ -1,4 +1,4 @@
-﻿use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -8,7 +8,9 @@ use hickory_proto::op::{Header, ResponseCode};
 use hickory_proto::rr::{Name, RData, Record, RecordType};
 use hickory_resolver::{Resolver, TokioResolver};
 use hickory_server::authority::MessageResponseBuilder;
-use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo, ServerFuture};
+use hickory_server::server::{
+    Request, RequestHandler, ResponseHandler, ResponseInfo, ServerFuture,
+};
 use koi_certmesh::roster::Roster;
 use koi_common::capability::{Capability, CapabilityStatus};
 use koi_common::types::{ServiceRecord, META_QUERY};
@@ -138,7 +140,8 @@ impl DnsCore {
     pub fn snapshot(&self) -> RecordsSnapshot {
         let state = self.state.load();
         let roster = load_roster();
-        let mdns_records = self.mdns_cache
+        let mdns_records = self
+            .mdns_cache
             .as_ref()
             .map(|c| c.snapshot())
             .unwrap_or_default();
@@ -203,7 +206,10 @@ impl DnsCore {
 
         let resolver = self.upstream.as_ref()?;
         let query_name = Name::from_ascii(name).ok()?;
-        let lookup = resolver.lookup(query_name.clone(), record_type).await.ok()?;
+        let lookup = resolver
+            .lookup(query_name.clone(), record_type)
+            .await
+            .ok()?;
         let mut ips = Vec::new();
         for record in lookup.record_iter() {
             if let Some(ip) = rdata_ip_addr(record.data()) {
@@ -517,20 +523,38 @@ impl RequestHandler for DnsHandler {
                 Err(_) => {
                     let builder = MessageResponseBuilder::from_message_request(request);
                     let response = builder.error_msg(request.header(), ResponseCode::FormErr);
-                    return response_handle.send_response(response).await.unwrap_or_else(|_| ResponseInfo::from(header_from_request(request.header(), ResponseCode::FormErr)));
+                    return response_handle
+                        .send_response(response)
+                        .await
+                        .unwrap_or_else(|_| {
+                            ResponseInfo::from(header_from_request(
+                                request.header(),
+                                ResponseCode::FormErr,
+                            ))
+                        });
                 }
             };
 
             if !self.core.config.allow_public_clients && !is_local_client(&request.src()) {
                 let builder = MessageResponseBuilder::from_message_request(request);
                 let response = builder.error_msg(info.header, ResponseCode::Refused);
-                return response_handle.send_response(response).await.unwrap_or_else(|_| ResponseInfo::from(header_from_request(info.header, ResponseCode::Refused)));
+                return response_handle
+                    .send_response(response)
+                    .await
+                    .unwrap_or_else(|_| {
+                        ResponseInfo::from(header_from_request(info.header, ResponseCode::Refused))
+                    });
             }
 
             if !self.core.rate_limiter.allow() {
                 let builder = MessageResponseBuilder::from_message_request(request);
                 let response = builder.error_msg(info.header, ResponseCode::ServFail);
-                return response_handle.send_response(response).await.unwrap_or_else(|_| ResponseInfo::from(header_from_request(info.header, ResponseCode::ServFail)));
+                return response_handle
+                    .send_response(response)
+                    .await
+                    .unwrap_or_else(|_| {
+                        ResponseInfo::from(header_from_request(info.header, ResponseCode::ServFail))
+                    });
             }
 
             let query = info.query;
@@ -548,12 +572,19 @@ impl RequestHandler for DnsHandler {
                     Some(result) => {
                         let name = Name::from(query_name);
                         for ip in result.ips {
-                            let record = Record::from_rdata(name.clone(), self.core.config.local_ttl, RData::from(ip));
+                            let record = Record::from_rdata(
+                                name.clone(),
+                                self.core.config.local_ttl,
+                                RData::from(ip),
+                            );
                             answers.push(record);
                         }
                     }
                     None => {
-                        response_code = if matches!(query_type, RecordType::A | RecordType::AAAA | RecordType::ANY) {
+                        response_code = if matches!(
+                            query_type,
+                            RecordType::A | RecordType::AAAA | RecordType::ANY
+                        ) {
                             ResponseCode::NXDomain
                         } else {
                             ResponseCode::NotImp
@@ -564,12 +595,17 @@ impl RequestHandler for DnsHandler {
                 let lookup = resolver.lookup(Name::from(query_name), query_type).await;
                 match lookup {
                     Ok(result) => {
-                        answers.extend(result.record_iter().filter(|r| {
-                            match query_type {
-                                RecordType::ANY => matches!(r.record_type(), RecordType::A | RecordType::AAAA),
-                                _ => r.record_type() == query_type,
-                            }
-                        }).cloned());
+                        answers.extend(
+                            result
+                                .record_iter()
+                                .filter(|r| match query_type {
+                                    RecordType::ANY => {
+                                        matches!(r.record_type(), RecordType::A | RecordType::AAAA)
+                                    }
+                                    _ => r.record_type() == query_type,
+                                })
+                                .cloned(),
+                        );
                     }
                     Err(e) => {
                         tracing::debug!(error = %e, "Upstream lookup failed");
@@ -593,7 +629,10 @@ impl RequestHandler for DnsHandler {
                 std::iter::empty(),
             );
 
-            response_handle.send_response(response).await.unwrap_or_else(|_| ResponseInfo::from(header))
+            response_handle
+                .send_response(response)
+                .await
+                .unwrap_or_else(|_| ResponseInfo::from(header))
         })
     }
 }

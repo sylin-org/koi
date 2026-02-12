@@ -16,8 +16,8 @@ pub use zone::DnsZone;
 
 /// Firewall ports required by the DNS capability.
 pub fn firewall_ports(config: &DnsConfig) -> Vec<FirewallPort> {
-	vec![
-		FirewallPort::new("DNS", FirewallProtocol::Udp, config.port),
-		FirewallPort::new("DNS", FirewallProtocol::Tcp, config.port),
-	]
+    vec![
+        FirewallPort::new("DNS", FirewallProtocol::Udp, config.port),
+        FirewallPort::new("DNS", FirewallProtocol::Tcp, config.port),
+    ]
 }

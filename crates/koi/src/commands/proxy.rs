@@ -1,10 +1,15 @@
-﻿//! Proxy command handlers.
+//! Proxy command handlers.
 
 use koi_proxy::config::ProxyEntry;
 
 use crate::commands::{print_json, with_mode, Mode};
 
-fn build_entry(name: &str, listen: u16, backend: &str, allow_remote: bool) -> anyhow::Result<ProxyEntry> {
+fn build_entry(
+    name: &str,
+    listen: u16,
+    backend: &str,
+    allow_remote: bool,
+) -> anyhow::Result<ProxyEntry> {
     let url = url::Url::parse(backend)?;
     koi_proxy::ensure_backend_allowed(&url, allow_remote)?;
     if allow_remote {
@@ -88,7 +93,10 @@ pub async fn list(mode: Mode, json: bool) -> anyhow::Result<()> {
                 println!("No proxy entries configured.");
             } else {
                 for entry in entries {
-                    println!("{} -> {} (listen {})", entry.name, entry.backend, entry.listen_port);
+                    println!(
+                        "{} -> {} (listen {})",
+                        entry.name, entry.backend, entry.listen_port
+                    );
                 }
             }
             Ok(())
@@ -104,7 +112,10 @@ pub async fn list(mode: Mode, json: bool) -> anyhow::Result<()> {
                     for entry in entries {
                         let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                         let backend = entry.get("backend").and_then(|v| v.as_str()).unwrap_or("?");
-                        let listen = entry.get("listen_port").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let listen = entry
+                            .get("listen_port")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
                         println!("{} -> {} (listen {})", name, backend, listen);
                     }
                 }
@@ -127,7 +138,10 @@ pub async fn status(mode: Mode, json: bool) -> anyhow::Result<()> {
             } else {
                 println!("Proxy entries:");
                 for entry in entries {
-                    println!("  {} -> {} (listen {})", entry.name, entry.backend, entry.listen_port);
+                    println!(
+                        "  {} -> {} (listen {})",
+                        entry.name, entry.backend, entry.listen_port
+                    );
                 }
             }
             Ok(())
@@ -144,7 +158,10 @@ pub async fn status(mode: Mode, json: bool) -> anyhow::Result<()> {
                     for entry in proxies {
                         let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                         let backend = entry.get("backend").and_then(|v| v.as_str()).unwrap_or("?");
-                        let listen = entry.get("listen_port").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let listen = entry
+                            .get("listen_port")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
                         println!("  {} -> {} (listen {})", name, backend, listen);
                     }
                 }

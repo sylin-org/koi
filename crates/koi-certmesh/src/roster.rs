@@ -200,9 +200,7 @@ impl Roster {
 
     /// Check if a hostname has been revoked.
     pub fn is_revoked(&self, hostname: &str) -> bool {
-        self.revocation_list
-            .iter()
-            .any(|r| r.hostname == hostname)
+        self.revocation_list.iter().any(|r| r.hostname == hostname)
     }
 
     /// Revoke a member and record the revocation entry.
@@ -299,10 +297,7 @@ mod tests {
 
     #[test]
     fn new_roster_organization_closed() {
-        let r = Roster::new(
-            TrustProfile::MyOrganization,
-            Some("Admin".to_string()),
-        );
+        let r = Roster::new(TrustProfile::MyOrganization, Some("Admin".to_string()));
         assert_eq!(r.metadata.enrollment_state, EnrollmentState::Closed);
         assert_eq!(r.metadata.operator.as_deref(), Some("Admin"));
     }

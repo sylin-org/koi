@@ -71,7 +71,10 @@ pub async fn start(
     }
 
     if let Some(ref health_runtime) = cores.health {
-        app = app.nest("/v1/health", koi_health::http::routes(health_runtime.core()));
+        app = app.nest(
+            "/v1/health",
+            koi_health::http::routes(health_runtime.core()),
+        );
     } else {
         app = app.nest("/v1/health", disabled_fallback_router("health"));
     }
@@ -243,7 +246,9 @@ mod tests {
         let app = disabled_fallback_router("certmesh");
         let req = Request::get("/status").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json.get("error").unwrap(), "capability_disabled");
     }
@@ -253,10 +258,15 @@ mod tests {
         let app = disabled_fallback_router("mdns");
         let req = Request::get("/any").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let msg = json.get("message").unwrap().as_str().unwrap();
-        assert!(msg.contains("mdns"), "message should contain capability name: {msg}");
+        assert!(
+            msg.contains("mdns"),
+            "message should contain capability name: {msg}"
+        );
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,7 +43,10 @@ pub async fn run_checks_loop(core: Arc<HealthCore>, cancel: CancellationToken) {
     }
 }
 
-pub async fn run_checks_once(core: &HealthCore, states: &Arc<RwLock<HashMap<String, ServiceCheckState>>>) {
+pub async fn run_checks_once(
+    core: &HealthCore,
+    states: &Arc<RwLock<HashMap<String, ServiceCheckState>>>,
+) {
     let mut checks = core.list_checks().await;
     checks.extend(proxy_checks());
     if checks.is_empty() {

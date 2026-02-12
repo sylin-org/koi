@@ -1,7 +1,7 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
-use koi_common::paths;
 use koi_certmesh::roster::ProxyConfigEntry;
+use koi_common::paths;
 
 use crate::ProxyError;
 
@@ -96,7 +96,8 @@ pub fn save_entries(entries: &[ProxyEntry]) -> Result<(), ProxyError> {
 
     let mut root = if path.exists() {
         let raw = std::fs::read_to_string(&path).map_err(|e| ProxyError::Io(e.to_string()))?;
-        raw.parse::<toml::Value>().unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()))
+        raw.parse::<toml::Value>()
+            .unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()))
     } else {
         toml::Value::Table(toml::map::Map::new())
     };

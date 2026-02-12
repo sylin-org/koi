@@ -476,7 +476,8 @@ mod tests {
         let manifest = RosterManifest {
             roster_json: r#"{"members":[]}"#.to_string(),
             signature: vec![1, 2, 3, 4, 5],
-            ca_public_key: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----\n".to_string(),
+            ca_public_key: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----\n"
+                .to_string(),
         };
         let json = serde_json::to_string(&manifest).unwrap();
         let parsed: RosterManifest = serde_json::from_str(&json).unwrap();

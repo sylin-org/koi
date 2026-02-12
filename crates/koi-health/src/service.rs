@@ -1,4 +1,4 @@
-﻿use std::time::Duration;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -40,8 +40,8 @@ pub fn validate_check(check: &HealthCheckConfig) -> Result<(), String> {
 
     match check.kind {
         ServiceCheckKind::Http => {
-            let url = reqwest::Url::parse(&check.target)
-                .map_err(|e| format!("invalid URL: {e}"))?;
+            let url =
+                reqwest::Url::parse(&check.target).map_err(|e| format!("invalid URL: {e}"))?;
             match url.scheme() {
                 "http" | "https" => Ok(()),
                 _ => Err("URL must be http or https".to_string()),

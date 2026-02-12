@@ -126,10 +126,8 @@ mod tests {
 
     #[test]
     fn ongoing_with_warning_includes_both() {
-        let resp = PipelineResponse::ongoing(TestBody {
-            value: "x".into(),
-        })
-        .with_warning("heads up");
+        let resp =
+            PipelineResponse::ongoing(TestBody { value: "x".into() }).with_warning("heads up");
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json.get("status").unwrap(), "ongoing");
         assert_eq!(json.get("warning").unwrap(), "heads up");

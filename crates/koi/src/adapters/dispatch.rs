@@ -12,7 +12,9 @@ use koi_common::api::error_body;
 use koi_common::error::ErrorCode;
 use koi_common::pipeline::PipelineResponse;
 use koi_common::types::SessionId;
-use koi_mdns::protocol::{self as mdns_protocol, MdnsPipelineResponse, RenewalResult, Request, Response};
+use koi_mdns::protocol::{
+    self as mdns_protocol, MdnsPipelineResponse, RenewalResult, Request, Response,
+};
 use koi_mdns::{LeasePolicy, MdnsCore};
 
 /// Create a new session ID using the shared short-ID generator.
@@ -117,8 +119,9 @@ pub async fn write_response<W: AsyncWriteExt + Unpin>(
 ) -> std::io::Result<()> {
     // PipelineResponse<Response> serialization is infallible for well-formed types,
     // but we handle the error rather than panicking in production code.
-    let out = serde_json::to_string(resp)
-        .unwrap_or_else(|e| format!("{{\"error\":\"internal\",\"message\":\"serialization failed: {e}\"}}"));
+    let out = serde_json::to_string(resp).unwrap_or_else(|e| {
+        format!("{{\"error\":\"internal\",\"message\":\"serialization failed: {e}\"}}")
+    });
     writer.write_all(out.as_bytes()).await?;
     writer.write_all(b"\n").await?;
     writer.flush().await

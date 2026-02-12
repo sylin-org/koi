@@ -22,8 +22,8 @@ pub fn koi_data_dir() -> PathBuf {
 
     #[cfg(windows)]
     {
-        let program_data = std::env::var("ProgramData")
-            .unwrap_or_else(|_| r"C:\ProgramData".to_string());
+        let program_data =
+            std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
         PathBuf::from(program_data).join("koi")
     }
 

@@ -143,7 +143,10 @@ mod tests {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        assert!(content.is_none(), "whitespace-only breadcrumb should return None");
+        assert!(
+            content.is_none(),
+            "whitespace-only breadcrumb should return None"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

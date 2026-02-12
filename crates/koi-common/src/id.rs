@@ -21,7 +21,8 @@ mod tests {
     fn generate_short_id_is_lowercase_hex() {
         let id = generate_short_id();
         assert!(
-            id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            id.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "ID should be lowercase hex: {id}"
         );
     }

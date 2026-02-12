@@ -63,9 +63,7 @@ fn collect_keyboard_entropy() -> Result<[u8; ENTROPY_BYTES], std::io::Error> {
     let start = Instant::now();
 
     loop {
-        if event::poll(std::time::Duration::from_millis(100))
-            .map_err(std::io::Error::other)?
-        {
+        if event::poll(std::time::Duration::from_millis(100)).map_err(std::io::Error::other)? {
             if let Event::Key(KeyEvent { code, .. }) =
                 event::read().map_err(std::io::Error::other)?
             {
@@ -111,12 +109,11 @@ fn collect_keyboard_entropy() -> Result<[u8; ENTROPY_BYTES], std::io::Error> {
 fn collect_passphrase_entropy() -> Result<[u8; ENTROPY_BYTES], std::io::Error> {
     // Simple word list for passphrase generation
     const WORDS: &[&str] = &[
-        "correct", "horse", "battery", "staple", "orange", "diamond",
-        "forest", "meadow", "river", "mountain", "sunset", "thunder",
-        "crystal", "velvet", "garden", "bridge", "harbor", "falcon",
-        "marble", "silver", "copper", "anchor", "beacon", "castle",
-        "dragon", "ember", "frost", "gentle", "hollow", "ivory",
-        "jungle", "kettle", "lantern", "mystic", "noble", "oracle",
+        "correct", "horse", "battery", "staple", "orange", "diamond", "forest", "meadow", "river",
+        "mountain", "sunset", "thunder", "crystal", "velvet", "garden", "bridge", "harbor",
+        "falcon", "marble", "silver", "copper", "anchor", "beacon", "castle", "dragon", "ember",
+        "frost", "gentle", "hollow", "ivory", "jungle", "kettle", "lantern", "mystic", "noble",
+        "oracle",
     ];
 
     let mut rng_bytes = [0u8; 8];

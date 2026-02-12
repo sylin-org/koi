@@ -99,10 +99,7 @@ pub fn generate_ca_keypair(entropy_seed: &[u8]) -> CaKeyPair {
 ///
 /// Uses Argon2id to derive an AES-256 key from the passphrase,
 /// then encrypts the PKCS#8 DER-encoded private key with AES-256-GCM.
-pub fn encrypt_key(
-    key: &CaKeyPair,
-    passphrase: &str,
-) -> Result<EncryptedKey, CryptoError> {
+pub fn encrypt_key(key: &CaKeyPair, passphrase: &str) -> Result<EncryptedKey, CryptoError> {
     let der = key
         .signing_key
         .to_pkcs8_der()
@@ -120,10 +117,7 @@ pub fn encrypt_key(
 }
 
 /// Decrypt a CA keypair from encrypted storage.
-pub fn decrypt_key(
-    encrypted: &EncryptedKey,
-    passphrase: &str,
-) -> Result<CaKeyPair, CryptoError> {
+pub fn decrypt_key(encrypted: &EncryptedKey, passphrase: &str) -> Result<CaKeyPair, CryptoError> {
     let mut plaintext = decrypt_bytes(encrypted, passphrase)?;
 
     let signing_key = SigningKey::from_pkcs8_der(&plaintext)
@@ -136,16 +130,13 @@ pub fn decrypt_key(
 
 /// Decode a CA keypair from a PKCS#8 PEM string.
 pub fn ca_keypair_from_pem(pem: &str) -> Result<CaKeyPair, CryptoError> {
-    let signing_key = SigningKey::from_pkcs8_pem(pem)
-        .map_err(|e| CryptoError::KeyEncoding(e.to_string()))?;
+    let signing_key =
+        SigningKey::from_pkcs8_pem(pem).map_err(|e| CryptoError::KeyEncoding(e.to_string()))?;
     Ok(CaKeyPair { signing_key })
 }
 
 /// Save an encrypted key to a JSON file.
-pub fn save_encrypted_key(
-    path: &Path,
-    encrypted: &EncryptedKey,
-) -> Result<(), CryptoError> {
+pub fn save_encrypted_key(path: &Path, encrypted: &EncryptedKey) -> Result<(), CryptoError> {
     let json = serde_json::to_string_pretty(encrypted)
         .map_err(|e| CryptoError::Serialization(e.to_string()))?;
 
@@ -161,16 +152,13 @@ pub fn save_encrypted_key(
 /// Load an encrypted key from a JSON file.
 pub fn load_encrypted_key(path: &Path) -> Result<EncryptedKey, CryptoError> {
     let json = std::fs::read_to_string(path)?;
-    let encrypted: EncryptedKey = serde_json::from_str(&json)
-        .map_err(|e| CryptoError::Serialization(e.to_string()))?;
+    let encrypted: EncryptedKey =
+        serde_json::from_str(&json).map_err(|e| CryptoError::Serialization(e.to_string()))?;
     Ok(encrypted)
 }
 
 /// Encrypt arbitrary bytes with passphrase-derived AES-256-GCM.
-pub fn encrypt_bytes(
-    plaintext: &[u8],
-    passphrase: &str,
-) -> Result<EncryptedKey, CryptoError> {
+pub fn encrypt_bytes(plaintext: &[u8], passphrase: &str) -> Result<EncryptedKey, CryptoError> {
     let mut salt = vec![0u8; SALT_LEN];
     OsRng.fill_bytes(&mut salt);
 
@@ -178,8 +166,8 @@ pub fn encrypt_bytes(
     OsRng.fill_bytes(&mut nonce_bytes);
 
     let aes_key = derive_aes_key(passphrase, &salt)?;
-    let cipher = Aes256Gcm::new_from_slice(&aes_key)
-        .map_err(|e| CryptoError::Encryption(e.to_string()))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&aes_key).map_err(|e| CryptoError::Encryption(e.to_string()))?;
 
     let nonce_arr: [u8; NONCE_LEN] = nonce_bytes
         .clone()
@@ -198,13 +186,10 @@ pub fn encrypt_bytes(
 }
 
 /// Decrypt bytes encrypted with `encrypt_bytes`.
-pub fn decrypt_bytes(
-    encrypted: &EncryptedKey,
-    passphrase: &str,
-) -> Result<Vec<u8>, CryptoError> {
+pub fn decrypt_bytes(encrypted: &EncryptedKey, passphrase: &str) -> Result<Vec<u8>, CryptoError> {
     let aes_key = derive_aes_key(passphrase, &encrypted.salt)?;
-    let cipher = Aes256Gcm::new_from_slice(&aes_key)
-        .map_err(|e| CryptoError::Decryption(e.to_string()))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&aes_key).map_err(|e| CryptoError::Decryption(e.to_string()))?;
 
     let nonce_arr: [u8; NONCE_LEN] = encrypted
         .nonce
@@ -337,8 +322,14 @@ mod tests {
             (CryptoError::KeyEncoding("bad DER".into()), "bad DER"),
             (CryptoError::Encryption("cipher fail".into()), "cipher fail"),
             (CryptoError::Decryption("wrong pass".into()), "wrong pass"),
-            (CryptoError::KeyDerivation("argon fail".into()), "argon fail"),
-            (CryptoError::Serialization("json broken".into()), "json broken"),
+            (
+                CryptoError::KeyDerivation("argon fail".into()),
+                "argon fail",
+            ),
+            (
+                CryptoError::Serialization("json broken".into()),
+                "json broken",
+            ),
             (
                 CryptoError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "no file")),
                 "no file",

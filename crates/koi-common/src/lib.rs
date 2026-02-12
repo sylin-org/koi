@@ -6,7 +6,7 @@ pub mod firewall;
 pub mod http;
 pub mod id;
 pub mod paths;
-pub mod pipeline;
 pub mod persist;
+pub mod pipeline;
 pub mod test;
 pub mod types;

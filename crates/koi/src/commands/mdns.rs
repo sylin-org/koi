@@ -79,7 +79,8 @@ pub async fn discover(
                             Ok(val) => {
                                 if json {
                                     println!("{val}");
-                                } else if let Some(line) = format::browse_event_json(&val, is_meta) {
+                                } else if let Some(line) = format::browse_event_json(&val, is_meta)
+                                {
                                     print!("{line}");
                                 }
                             }
@@ -153,8 +154,7 @@ pub async fn announce(
                 let heartbeat_client = KoiClient::new(&endpoint);
                 let heartbeat_id = id.clone();
                 let stop_clone = stop.clone();
-                let interval =
-                    Duration::from_secs(lease_secs.max(MIN_HEARTBEAT_LEASE_FLOOR) / 2);
+                let interval = Duration::from_secs(lease_secs.max(MIN_HEARTBEAT_LEASE_FLOOR) / 2);
 
                 std::thread::spawn(move || loop {
                     std::thread::sleep(interval);
@@ -184,7 +184,9 @@ pub async fn announce(
 /// Print registration result (shared across standalone and client modes).
 fn print_registration(result: &koi_mdns::protocol::RegistrationResult, json: bool) {
     if json {
-        super::print_json(&PipelineResponse::clean(Response::Registered(result.clone())));
+        super::print_json(&PipelineResponse::clean(Response::Registered(
+            result.clone(),
+        )));
     } else {
         super::print_register_success(result);
     }
@@ -251,9 +253,7 @@ pub async fn subscribe(
             super::run_streaming(timeout, Some(super::DEFAULT_TIMEOUT), || async {
                 while let Some(event) = handle.recv().await {
                     if json {
-                        super::print_json(
-                            &mdns_protocol::subscribe_event_to_pipeline(event),
-                        );
+                        super::print_json(&mdns_protocol::subscribe_event_to_pipeline(event));
                     } else {
                         format_subscribe_standalone(&event);
                     }

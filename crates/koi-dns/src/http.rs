@@ -1,4 +1,4 @@
-﻿use std::sync::Arc;
+use std::sync::Arc;
 
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Json};
@@ -175,11 +175,14 @@ async fn add_entry_handler(
     }
 
     let mut state = load_dns_state().unwrap_or_default();
-    upsert_entry(&mut state, DnsEntry {
-        name,
-        ip: payload.ip,
-        ttl: payload.ttl,
-    });
+    upsert_entry(
+        &mut state,
+        DnsEntry {
+            name,
+            ip: payload.ip,
+            ttl: payload.ttl,
+        },
+    );
 
     if let Err(e) = save_dns_state(&state) {
         return error_response(

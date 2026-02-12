@@ -226,7 +226,10 @@ pub fn promote_success(hostname: &str) -> String {
     let _ = writeln!(out, "  Role:     standby");
     let _ = writeln!(out);
     let _ = writeln!(out, "This node now holds an encrypted copy of the CA key.");
-    let _ = writeln!(out, "It will take over automatically if the primary goes offline.");
+    let _ = writeln!(
+        out,
+        "It will take over automatically if the primary goes offline."
+    );
     out
 }
 
@@ -327,10 +330,7 @@ mod tests {
 
     #[test]
     fn txt_inline_multiple_entries() {
-        let txt = HashMap::from([
-            ("a".into(), "1".into()),
-            ("b".into(), "2".into()),
-        ]);
+        let txt = HashMap::from([("a".into(), "1".into()), ("b".into(), "2".into())]);
         let result = txt_inline(&txt);
         // HashMap ordering is non-deterministic, so check both parts
         assert!(result.contains("a=1"));

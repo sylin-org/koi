@@ -1,7 +1,7 @@
 mod adapters;
 mod admin;
-mod client;
 pub(crate) mod cli;
+mod client;
 mod commands;
 mod format;
 mod platform;
@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
-use cli::{CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, HealthSubcommand, MdnsSubcommand, ProxySubcommand};
+use cli::{
+    CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, HealthSubcommand, MdnsSubcommand,
+    ProxySubcommand,
+};
 use koi_common::types::ServiceRecord;
 
 /// Maximum time to wait for orderly shutdown before forcing exit.
@@ -129,15 +132,32 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     MdnsSubcommand::Discover { service_type } => {
                         let mode = commands::detect_mode(&cli);
                         commands::mdns::discover(
-                            service_type.as_deref(), cli.json, cli.timeout, mode,
-                        ).await
+                            service_type.as_deref(),
+                            cli.json,
+                            cli.timeout,
+                            mode,
+                        )
+                        .await
                     }
-                    MdnsSubcommand::Announce { name, service_type, port, ip, txt } => {
+                    MdnsSubcommand::Announce {
+                        name,
+                        service_type,
+                        port,
+                        ip,
+                        txt,
+                    } => {
                         let mode = commands::detect_mode(&cli);
                         commands::mdns::announce(
-                            name, service_type, *port, ip.as_deref(), txt,
-                            cli.json, cli.timeout, mode,
-                        ).await
+                            name,
+                            service_type,
+                            *port,
+                            ip.as_deref(),
+                            txt,
+                            cli.json,
+                            cli.timeout,
+                            mode,
+                        )
+                        .await
                     }
                     MdnsSubcommand::Unregister { id } => {
                         let mode = commands::detect_mode(&cli);
@@ -149,9 +169,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     }
                     MdnsSubcommand::Subscribe { service_type } => {
                         let mode = commands::detect_mode(&cli);
-                        commands::mdns::subscribe(
-                            service_type, cli.json, cli.timeout, mode,
-                        ).await
+                        commands::mdns::subscribe(service_type, cli.json, cli.timeout, mode).await
                     }
                 }
             }
@@ -159,12 +177,19 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 config.require_capability("certmesh")?;
                 let ep = cli.endpoint.as_deref();
                 match &cm_cmd.command {
-                    CertmeshSubcommand::Create { profile, operator, entropy, passphrase } => {
-                        commands::certmesh::create(
-                            profile.as_deref(), operator.as_deref(), entropy,
-                            passphrase.as_deref(), cli.json, ep,
-                        )
-                    }
+                    CertmeshSubcommand::Create {
+                        profile,
+                        operator,
+                        entropy,
+                        passphrase,
+                    } => commands::certmesh::create(
+                        profile.as_deref(),
+                        operator.as_deref(),
+                        entropy,
+                        passphrase.as_deref(),
+                        cli.json,
+                        ep,
+                    ),
                     CertmeshSubcommand::Status => commands::certmesh::status(cli.json, ep),
                     CertmeshSubcommand::Log => commands::certmesh::log(ep),
                     CertmeshSubcommand::Compliance => commands::certmesh::compliance(cli.json, ep),
@@ -184,14 +209,18 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     CertmeshSubcommand::CloseEnrollment => {
                         commands::certmesh::close_enrollment(cli.json, ep)
                     }
-                    CertmeshSubcommand::SetPolicy { domain, subnet, clear } => {
-                        commands::certmesh::set_policy(
-                            domain.as_deref(), subnet.as_deref(), *clear, cli.json, ep,
-                        )
-                    }
-                    CertmeshSubcommand::RotateTotp => {
-                        commands::certmesh::rotate_totp(cli.json, ep)
-                    }
+                    CertmeshSubcommand::SetPolicy {
+                        domain,
+                        subnet,
+                        clear,
+                    } => commands::certmesh::set_policy(
+                        domain.as_deref(),
+                        subnet.as_deref(),
+                        *clear,
+                        cli.json,
+                        ep,
+                    ),
+                    CertmeshSubcommand::RotateTotp => commands::certmesh::rotate_totp(cli.json, ep),
                     CertmeshSubcommand::Backup { path } => {
                         commands::certmesh::backup(path, cli.json, ep)
                     }
@@ -201,9 +230,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     CertmeshSubcommand::Revoke { hostname, reason } => {
                         commands::certmesh::revoke(hostname, reason.as_deref(), cli.json, ep)
                     }
-                    CertmeshSubcommand::Destroy => {
-                        commands::certmesh::destroy(cli.json, ep)
-                    }
+                    CertmeshSubcommand::Destroy => commands::certmesh::destroy(cli.json, ep),
                 }
             }
             Command::Dns(dns_cmd) => {
@@ -373,7 +400,8 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     };
 
     let health_runtime = if !config.no_health {
-        let core = Arc::new(koi_health::HealthCore::new(mdns_core.clone(), dns_runtime.clone()).await);
+        let core =
+            Arc::new(koi_health::HealthCore::new(mdns_core.clone(), dns_runtime.clone()).await);
         let runtime = Arc::new(koi_health::HealthRuntime::new(core));
         if let Err(e) = runtime.start().await {
             tracing::error!(error = %e, "Failed to start health checks");
@@ -557,9 +585,7 @@ fn spawn_certmesh_background_tasks(
     let cm = Arc::clone(certmesh);
     let token = cancel.clone();
     tasks.push(tokio::spawn(async move {
-        let interval = Duration::from_secs(
-            koi_certmesh::lifecycle::RENEWAL_CHECK_INTERVAL_SECS,
-        );
+        let interval = Duration::from_secs(koi_certmesh::lifecycle::RENEWAL_CHECK_INTERVAL_SECS);
         loop {
             tokio::select! {
                 _ = token.cancelled() => break,
@@ -955,9 +981,7 @@ fn prompt_enrollment_approval(
     hostname: &str,
     profile: koi_certmesh::profiles::TrustProfile,
 ) -> koi_certmesh::ApprovalDecision {
-    eprintln!(
-        "Enrollment approval requested for '{hostname}' (profile: {profile})"
-    );
+    eprintln!("Enrollment approval requested for '{hostname}' (profile: {profile})");
     let approve = read_yes_no("Approve enrollment? [y/N]: ");
     if !approve {
         return koi_certmesh::ApprovalDecision::Denied;

@@ -20,19 +20,13 @@ use crate::roster::{MemberRole, MemberStatus, Roster, RosterMember, RosterMetada
 /// (or match exactly). If `allowed_subnet` is set, the caller IP would be
 /// checked (subnet validation is deferred to the HTTP layer where IP is
 /// available — see `validate_subnet()`).
-pub fn validate_scope(
-    hostname: &str,
-    metadata: &RosterMetadata,
-) -> Result<(), CertmeshError> {
+pub fn validate_scope(hostname: &str, metadata: &RosterMetadata) -> Result<(), CertmeshError> {
     if let Some(ref domain) = metadata.allowed_domain {
         let domain_lower = domain.to_lowercase();
         let host_lower = hostname.to_lowercase();
         // Hostname must either match the domain exactly or end with ".domain"
         if host_lower != domain_lower && !host_lower.ends_with(&format!(".{domain_lower}")) {
-            let reason = format!(
-                "hostname '{}' outside domain '{}'",
-                hostname, domain
-            );
+            let reason = format!("hostname '{}' outside domain '{}'", hostname, domain);
             let _ = audit::append_entry(
                 "scope_violation",
                 &[("hostname", hostname), ("reason", &reason)],
@@ -46,10 +40,7 @@ pub fn validate_scope(
 /// Validate an IP address against a CIDR subnet constraint.
 ///
 /// Returns `Ok(())` if no subnet constraint is set or the IP is within range.
-pub fn validate_subnet(
-    ip: &str,
-    metadata: &RosterMetadata,
-) -> Result<(), CertmeshError> {
+pub fn validate_subnet(ip: &str, metadata: &RosterMetadata) -> Result<(), CertmeshError> {
     if let Some(ref cidr) = metadata.allowed_subnet {
         if let Some((net_str, prefix_str)) = cidr.split_once('/') {
             let net_ip: std::net::IpAddr = net_str.parse().map_err(|_| {
@@ -58,15 +49,12 @@ pub fn validate_subnet(
             let prefix_len: u32 = prefix_str.parse().map_err(|_| {
                 CertmeshError::ScopeViolation(format!("invalid prefix length in CIDR: {cidr}"))
             })?;
-            let client_ip: std::net::IpAddr = ip.parse().map_err(|_| {
-                CertmeshError::ScopeViolation(format!("invalid IP address: {ip}"))
-            })?;
+            let client_ip: std::net::IpAddr = ip
+                .parse()
+                .map_err(|_| CertmeshError::ScopeViolation(format!("invalid IP address: {ip}")))?;
             if !ip_in_subnet(client_ip, net_ip, prefix_len) {
                 let reason = format!("IP '{}' outside subnet '{}'", ip, cidr);
-                let _ = audit::append_entry(
-                    "scope_violation",
-                    &[("ip", ip), ("reason", &reason)],
-                );
+                let _ = audit::append_entry("scope_violation", &[("ip", ip), ("reason", &reason)]);
                 return Err(CertmeshError::ScopeViolation(reason));
             }
         }
@@ -182,7 +170,9 @@ pub fn process_enrollment(
         hostname: hostname.to_string(),
         role,
         enrolled_at: Utc::now(),
-        enrolled_by: approved_by.clone().or_else(|| roster.metadata.operator.clone()),
+        enrolled_by: approved_by
+            .clone()
+            .or_else(|| roster.metadata.operator.clone()),
         cert_fingerprint: issued.fingerprint.clone(),
         cert_expires: issued.expires,
         cert_sans: sans.to_vec(),

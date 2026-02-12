@@ -71,10 +71,7 @@ pub fn routes(core: Arc<MdnsCore>) -> Router {
             "/admin/registrations/{id}",
             get(admin_inspect_handler).delete(admin_unregister_handler),
         )
-        .route(
-            "/admin/registrations/{id}/drain",
-            post(admin_drain_handler),
-        )
+        .route("/admin/registrations/{id}/drain", post(admin_drain_handler))
         .route(
             "/admin/registrations/{id}/revive",
             post(admin_revive_handler),
@@ -211,7 +208,9 @@ async fn admin_status_handler(Extension(core): Extension<Arc<MdnsCore>>) -> impl
     Json(core.admin_status())
 }
 
-async fn admin_registrations_handler(Extension(core): Extension<Arc<MdnsCore>>) -> impl IntoResponse {
+async fn admin_registrations_handler(
+    Extension(core): Extension<Arc<MdnsCore>>,
+) -> impl IntoResponse {
     let entries: Vec<_> = core
         .admin_registrations()
         .into_iter()
@@ -397,7 +396,9 @@ mod tests {
     #[tokio::test]
     async fn error_json_body_is_json_with_error_field() {
         let resp = error_json(MdnsError::RegistrationNotFound("xyz".into())).into_response();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("error").is_some());
         assert!(json.get("message").is_some());

@@ -1,4 +1,4 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -95,7 +95,9 @@ where
 {
     use tokio::io::AsyncWriteExt;
 
-    writer.write_all(serde_json::to_string(&value)?.as_bytes()).await?;
+    writer
+        .write_all(serde_json::to_string(&value)?.as_bytes())
+        .await?;
     writer.write_all(b"\n").await?;
     let line = reader.next_line().await?.ok_or("empty response")?;
     let value: serde_json::Value = serde_json::from_str(&line)?;
@@ -159,9 +161,10 @@ async fn start_http_server(
     proxy: std::sync::Arc<koi_proxy::ProxyRuntime>,
 ) -> Result<(SocketAddr, CancellationToken), Box<dyn std::error::Error>> {
     let app = Router::new()
-        .route("/healthz", get(|| async {
-            axum::Json(serde_json::json!({"ok": true}))
-        }))
+        .route(
+            "/healthz",
+            get(|| async { axum::Json(serde_json::json!({"ok": true})) }),
+        )
         .nest("/v1/mdns", koi_mdns::http::routes(mdns))
         .nest("/v1/dns", koi_dns::http::routes(dns))
         .nest("/v1/health", koi_health::http::routes(health))
@@ -304,7 +307,9 @@ async fn run_http_tests(
     }
 
     let lookup_resp: serde_json::Value = client
-        .get(format!("{base_url}/v1/dns/lookup?name=http-test.lan&type=A"))
+        .get(format!(
+            "{base_url}/v1/dns/lookup?name=http-test.lan&type=A"
+        ))
         .send()
         .await?
         .json()
@@ -863,9 +868,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ttl: None,
     };
     let _ = dns.add_entry(entry)?;
-    let event = wait_for_event(&mut rx, Duration::from_secs(2), |event| {
-        matches!(event, KoiEvent::DnsUpdated { name, .. } if name == "embedded-test.lan")
-    })
+    let event = wait_for_event(
+        &mut rx,
+        Duration::from_secs(2),
+        |event| matches!(event, KoiEvent::DnsUpdated { name, .. } if name == "embedded-test.lan"),
+    )
     .await;
     if event.is_some() {
         harness.pass("dns: event emitted");
@@ -902,7 +909,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if removed_event.is_some() {
         harness.pass("dns: remove emits empty update");
     } else {
-        harness.fail("dns: remove emits empty update", "no removal update received");
+        harness.fail(
+            "dns: remove emits empty update",
+            "no removal update received",
+        );
     }
 
     // Health: run a TCP check against a local listener.
@@ -932,13 +942,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|svc| svc.status);
     match status {
         Some(ServiceStatus::Up) => harness.pass("health: tcp check up"),
-        Some(other) => harness.fail("health: tcp check up", &format!("unexpected status: {other:?}")),
+        Some(other) => harness.fail(
+            "health: tcp check up",
+            &format!("unexpected status: {other:?}"),
+        ),
         None => harness.fail("health: tcp check up", "service missing"),
     }
 
-    let event = wait_for_event(&mut rx, Duration::from_secs(3), |event| {
-        matches!(event, KoiEvent::HealthChanged { name, .. } if name == "tcp-local")
-    })
+    let event = wait_for_event(
+        &mut rx,
+        Duration::from_secs(3),
+        |event| matches!(event, KoiEvent::HealthChanged { name, .. } if name == "tcp-local"),
+    )
     .await;
     if event.is_some() {
         harness.pass("health: event emitted");
@@ -976,10 +991,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(_) => harness.fail("mdns: register + browse", "no events within timeout"),
             }
 
-            match mdns
-                .resolve("koi-embedded-test._koi._tcp.local.")
-                .await
-            {
+            match mdns.resolve("koi-embedded-test._koi._tcp.local.").await {
                 Ok(record) if record.port == Some(51515) => {
                     harness.pass("mdns: resolve registered service");
                 }

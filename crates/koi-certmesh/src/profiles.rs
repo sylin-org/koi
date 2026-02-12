@@ -107,8 +107,14 @@ mod tests {
 
     #[test]
     fn profile_serializes_to_snake_case() {
-        assert_eq!(serde_json::to_value(TrustProfile::JustMe).unwrap(), "just_me");
-        assert_eq!(serde_json::to_value(TrustProfile::MyTeam).unwrap(), "my_team");
+        assert_eq!(
+            serde_json::to_value(TrustProfile::JustMe).unwrap(),
+            "just_me"
+        );
+        assert_eq!(
+            serde_json::to_value(TrustProfile::MyTeam).unwrap(),
+            "my_team"
+        );
         assert_eq!(
             serde_json::to_value(TrustProfile::MyOrganization).unwrap(),
             "my_organization"
@@ -117,10 +123,22 @@ mod tests {
 
     #[test]
     fn parse_from_string() {
-        assert_eq!(TrustProfile::from_str_loose("just-me"), Some(TrustProfile::JustMe));
-        assert_eq!(TrustProfile::from_str_loose("team"), Some(TrustProfile::MyTeam));
-        assert_eq!(TrustProfile::from_str_loose("org"), Some(TrustProfile::MyOrganization));
-        assert_eq!(TrustProfile::from_str_loose("1"), Some(TrustProfile::JustMe));
+        assert_eq!(
+            TrustProfile::from_str_loose("just-me"),
+            Some(TrustProfile::JustMe)
+        );
+        assert_eq!(
+            TrustProfile::from_str_loose("team"),
+            Some(TrustProfile::MyTeam)
+        );
+        assert_eq!(
+            TrustProfile::from_str_loose("org"),
+            Some(TrustProfile::MyOrganization)
+        );
+        assert_eq!(
+            TrustProfile::from_str_loose("1"),
+            Some(TrustProfile::JustMe)
+        );
         assert_eq!(TrustProfile::from_str_loose("invalid"), None);
     }
 }

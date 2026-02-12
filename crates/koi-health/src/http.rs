@@ -1,4 +1,4 @@
-﻿use std::sync::Arc;
+use std::sync::Arc;
 
 use axum::extract::{Extension, Path};
 use axum::response::{IntoResponse, Json};
@@ -8,9 +8,9 @@ use serde::Deserialize;
 
 use koi_common::error::ErrorCode;
 
-use crate::state::{DEFAULT_INTERVAL_SECS, DEFAULT_TIMEOUT_SECS};
-use crate::{HealthCore, HealthError, HealthSnapshot, HealthCheckConfig};
 use crate::service::ServiceCheckKind;
+use crate::state::{DEFAULT_INTERVAL_SECS, DEFAULT_TIMEOUT_SECS};
+use crate::{HealthCheckConfig, HealthCore, HealthError, HealthSnapshot};
 
 #[derive(Debug, Deserialize)]
 struct AddCheckRequest {

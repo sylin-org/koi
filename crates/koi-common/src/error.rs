@@ -46,21 +46,31 @@ impl ErrorCode {
     /// Transport-agnostic (returns u16, not an axum type).
     pub fn http_status(&self) -> u16 {
         match self {
-            Self::InvalidType | Self::InvalidName | Self::InvalidPayload
-            | Self::AmbiguousId | Self::ParseError => 400,
+            Self::InvalidType
+            | Self::InvalidName
+            | Self::InvalidPayload
+            | Self::AmbiguousId
+            | Self::ParseError => 400,
             Self::SessionMismatch => 403,
             Self::NotFound => 404,
             Self::Conflict | Self::AlreadyDraining | Self::NotDraining => 409,
             Self::ResolveTimeout => 504,
-            Self::ShuttingDown | Self::CaNotInitialized | Self::CaLocked
+            Self::ShuttingDown
+            | Self::CaNotInitialized
+            | Self::CaLocked
             | Self::CapabilityDisabled => 503,
             Self::InvalidTotp => 401,
             Self::RateLimited => 429,
-            Self::EnrollmentClosed | Self::NotStandby | Self::ScopeViolation
+            Self::EnrollmentClosed
+            | Self::NotStandby
+            | Self::ScopeViolation
             | Self::ApprovalDenied => 403,
             Self::Revoked => 403,
-            Self::DaemonError | Self::IoError | Self::Internal
-            | Self::PromotionFailed | Self::RenewalFailed => 500,
+            Self::DaemonError
+            | Self::IoError
+            | Self::Internal
+            | Self::PromotionFailed
+            | Self::RenewalFailed => 500,
             Self::InvalidManifest => 400,
             Self::ApprovalTimeout => 504,
             Self::ApprovalUnavailable => 503,
@@ -183,10 +193,16 @@ mod tests {
         ];
         for (code, expected_str) in &variants {
             let serialized = serde_json::to_value(code).unwrap();
-            assert_eq!(serialized, *expected_str, "{code:?} should serialize to \"{expected_str}\"");
+            assert_eq!(
+                serialized, *expected_str,
+                "{code:?} should serialize to \"{expected_str}\""
+            );
 
             let deserialized: ErrorCode = serde_json::from_value(serialized).unwrap();
-            assert_eq!(&deserialized, code, "\"{expected_str}\" should deserialize back to {code:?}");
+            assert_eq!(
+                &deserialized, code,
+                "\"{expected_str}\" should deserialize back to {code:?}"
+            );
         }
     }
 }

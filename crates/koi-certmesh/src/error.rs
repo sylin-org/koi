@@ -200,8 +200,16 @@ mod tests {
                 ErrorCode::ScopeViolation,
                 403,
             ),
-            (CertmeshError::ApprovalDenied, ErrorCode::ApprovalDenied, 403),
-            (CertmeshError::ApprovalTimeout, ErrorCode::ApprovalTimeout, 504),
+            (
+                CertmeshError::ApprovalDenied,
+                ErrorCode::ApprovalDenied,
+                403,
+            ),
+            (
+                CertmeshError::ApprovalTimeout,
+                ErrorCode::ApprovalTimeout,
+                504,
+            ),
             (
                 CertmeshError::ApprovalUnavailable,
                 ErrorCode::ApprovalUnavailable,
@@ -224,8 +232,7 @@ mod tests {
 
     #[test]
     fn crypto_error_converts_to_certmesh_error() {
-        let crypto_err =
-            koi_crypto::keys::CryptoError::Encryption("test failure".into());
+        let crypto_err = koi_crypto::keys::CryptoError::Encryption("test failure".into());
         let certmesh_err: CertmeshError = crypto_err.into();
         assert!(matches!(certmesh_err, CertmeshError::Crypto(_)));
         assert!(certmesh_err.to_string().contains("test failure"));

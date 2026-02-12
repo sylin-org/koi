@@ -1,4 +1,4 @@
-﻿mod config;
+mod config;
 mod events;
 mod handle;
 
@@ -10,8 +10,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use koi_client::KoiClient;
-use koi_mdns::MdnsEvent;
 use koi_config::state::{load_dns_state, DnsState};
+use koi_mdns::MdnsEvent;
 
 pub use config::{DnsConfigBuilder, KoiConfig, ServiceMode};
 pub use events::KoiEvent;
@@ -428,14 +428,7 @@ impl KoiEmbedded {
         }
 
         Ok(KoiHandle::new_embedded(
-            mdns,
-            dns,
-            health,
-            certmesh,
-            proxy,
-            event_tx,
-            cancel,
-            tasks,
+            mdns, dns, health, certmesh, proxy, event_tx, cancel, tasks,
         ))
     }
 }

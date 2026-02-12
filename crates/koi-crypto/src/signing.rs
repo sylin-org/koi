@@ -99,7 +99,11 @@ mod tests {
 
         let sig = sign_bytes(&key, data);
         // DER-encoded P-256 signatures are typically 70-72 bytes
-        assert!(sig.len() >= 68 && sig.len() <= 73, "unexpected sig len: {}", sig.len());
+        assert!(
+            sig.len() >= 68 && sig.len() <= 73,
+            "unexpected sig len: {}",
+            sig.len()
+        );
     }
 
     #[test]

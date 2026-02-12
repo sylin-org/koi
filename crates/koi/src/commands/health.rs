@@ -1,10 +1,14 @@
-﻿//! Health command handlers.
+//! Health command handlers.
 
 use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossterm::{cursor::MoveTo, execute, terminal::{Clear, ClearType}};
+use crossterm::{
+    cursor::MoveTo,
+    execute,
+    terminal::{Clear, ClearType},
+};
 
 use crate::cli::Config;
 use crate::client::KoiClient;
@@ -12,7 +16,9 @@ use crate::commands::{print_json, with_mode, Mode};
 
 use koi_health::{HealthCheck, HealthSnapshot, HealthStatus, ServiceCheckKind};
 
-async fn build_core(config: &Config) -> anyhow::Result<(Arc<koi_health::HealthCore>, Option<Arc<koi_mdns::MdnsCore>>)> {
+async fn build_core(
+    config: &Config,
+) -> anyhow::Result<(Arc<koi_health::HealthCore>, Option<Arc<koi_mdns::MdnsCore>>)> {
     let mdns = if !config.no_mdns {
         Some(Arc::new(koi_mdns::MdnsCore::new()?))
     } else {

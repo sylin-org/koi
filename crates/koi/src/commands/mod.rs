@@ -159,9 +159,7 @@ pub(crate) fn build_register_payload(
 }
 
 /// Print the human-readable registration success message.
-pub(crate) fn print_register_success(
-    result: &koi_mdns::protocol::RegistrationResult,
-) {
+pub(crate) fn print_register_success(result: &koi_mdns::protocol::RegistrationResult) {
     println!(
         "Registered \"{}\" ({}) on port {} [id: {}]",
         result.name, result.service_type, result.port, result.id
@@ -292,13 +290,7 @@ mod tests {
 
     #[test]
     fn build_register_payload_basic() {
-        let payload = build_register_payload(
-            "My App",
-            "_http._tcp",
-            8080,
-            None,
-            &[],
-        );
+        let payload = build_register_payload("My App", "_http._tcp", 8080, None, &[]);
         assert_eq!(payload.name, "My App");
         assert_eq!(payload.service_type, "_http._tcp");
         assert_eq!(payload.port, 8080);
@@ -310,13 +302,8 @@ mod tests {
     #[test]
     fn build_register_payload_with_ip_and_txt() {
         let txt = vec!["version=2.1".to_string(), "env=staging".to_string()];
-        let payload = build_register_payload(
-            "My App",
-            "_http._tcp",
-            9090,
-            Some("192.168.1.42"),
-            &txt,
-        );
+        let payload =
+            build_register_payload("My App", "_http._tcp", 9090, Some("192.168.1.42"), &txt);
         assert_eq!(payload.ip.as_deref(), Some("192.168.1.42"));
         assert_eq!(payload.txt.get("version").unwrap(), "2.1");
         assert_eq!(payload.txt.get("env").unwrap(), "staging");

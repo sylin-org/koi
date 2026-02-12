@@ -61,10 +61,7 @@ pub fn create(
     });
     let resp = client.post_json("/v1/certmesh/create", &body)?;
 
-    let totp_uri = resp
-        .get("totp_uri")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let totp_uri = resp.get("totp_uri").and_then(|v| v.as_str()).unwrap_or("");
     let ca_fingerprint = resp
         .get("ca_fingerprint")
         .and_then(|v| v.as_str())
@@ -121,10 +118,7 @@ fn validate_operator(trust_profile: &TrustProfile, operator: Option<&str>) -> an
     Ok(())
 }
 
-fn collect_entropy_seed(
-    entropy_mode: &str,
-    passphrase: Option<&str>,
-) -> anyhow::Result<[u8; 32]> {
+fn collect_entropy_seed(entropy_mode: &str, passphrase: Option<&str>) -> anyhow::Result<[u8; 32]> {
     Ok(match entropy_mode {
         "manual" => {
             let phrase = passphrase
@@ -136,14 +130,12 @@ fn collect_entropy_seed(
 }
 
 fn resolve_passphrase(passphrase: Option<&str>) -> anyhow::Result<String> {
-    let result = passphrase
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            eprintln!("Enter a passphrase to protect the CA key:");
-            let mut line = String::new();
-            std::io::stdin().read_line(&mut line).unwrap_or_default();
-            line.trim().to_string()
-        });
+    let result = passphrase.map(|s| s.to_string()).unwrap_or_else(|| {
+        eprintln!("Enter a passphrase to protect the CA key:");
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap_or_default();
+        line.trim().to_string()
+    });
     if result.is_empty() {
         anyhow::bail!("Passphrase cannot be empty.");
     }
@@ -232,10 +224,7 @@ pub fn log(endpoint: Option<&str>) -> anyhow::Result<()> {
     let client = require_daemon(endpoint)?;
     let resp = client.get_json("/v1/certmesh/log")?;
 
-    let entries = resp
-        .get("entries")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let entries = resp.get("entries").and_then(|v| v.as_str()).unwrap_or("");
     if entries.is_empty() {
         println!("No audit log entries.");
     } else {
@@ -306,11 +295,7 @@ pub fn unlock(endpoint: Option<&str>) -> anyhow::Result<()> {
 
 // ── Set Hook ────────────────────────────────────────────────────────
 
-pub fn set_hook(
-    reload: &str,
-    json: bool,
-    endpoint: Option<&str>,
-) -> anyhow::Result<()> {
+pub fn set_hook(reload: &str, json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
     let client = require_daemon(endpoint)?;
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
@@ -332,7 +317,11 @@ pub fn set_hook(
 
 // ── Join ────────────────────────────────────────────────────────────
 
-pub async fn join(endpoint: Option<&str>, json: bool, cli_endpoint: Option<&str>) -> anyhow::Result<()> {
+pub async fn join(
+    endpoint: Option<&str>,
+    json: bool,
+    cli_endpoint: Option<&str>,
+) -> anyhow::Result<()> {
     // The local daemon must be running to handle cert file writes
     let _local = require_daemon(cli_endpoint)?;
 
@@ -369,7 +358,11 @@ pub async fn join(endpoint: Option<&str>, json: bool, cli_endpoint: Option<&str>
 
 // ── Promote ─────────────────────────────────────────────────────────
 
-pub async fn promote(endpoint: Option<&str>, json: bool, cli_endpoint: Option<&str>) -> anyhow::Result<()> {
+pub async fn promote(
+    endpoint: Option<&str>,
+    json: bool,
+    cli_endpoint: Option<&str>,
+) -> anyhow::Result<()> {
     // The local daemon must be running
     let _local = require_daemon(cli_endpoint)?;
 
@@ -412,7 +405,10 @@ pub async fn promote(endpoint: Option<&str>, json: bool, cli_endpoint: Option<&s
 
     let encrypted_key = koi_crypto::keys::encrypt_key(&ca_key, &passphrase)?;
     koi_crypto::keys::save_encrypted_key(&koi_certmesh::ca::ca_key_path(), &encrypted_key)?;
-    std::fs::write(koi_certmesh::ca::ca_cert_path(), &promote_response.ca_cert_pem)?;
+    std::fs::write(
+        koi_certmesh::ca::ca_cert_path(),
+        &promote_response.ca_cert_pem,
+    )?;
 
     let encrypted_totp = koi_crypto::totp::encrypt_secret(&totp_secret, &passphrase)?;
     koi_crypto::keys::save_encrypted_key(&koi_certmesh::ca::totp_secret_path(), &encrypted_totp)?;
@@ -430,10 +426,7 @@ pub async fn promote(endpoint: Option<&str>, json: bool, cli_endpoint: Option<&s
         koi_certmesh::roster::save_roster(&roster, &koi_certmesh::ca::roster_path())?;
     }
 
-    let _ = koi_certmesh::audit::append_entry(
-        "promoted_to_standby",
-        &[("hostname", &hostname)],
-    );
+    let _ = koi_certmesh::audit::append_entry("promoted_to_standby", &[("hostname", &hostname)]);
 
     if json {
         println!(
@@ -505,8 +498,16 @@ pub fn set_policy(
     endpoint: Option<&str>,
 ) -> anyhow::Result<()> {
     let client = require_daemon(endpoint)?;
-    let allowed_domain = if clear { None } else { domain.map(String::from) };
-    let allowed_subnet = if clear { None } else { subnet.map(String::from) };
+    let allowed_domain = if clear {
+        None
+    } else {
+        domain.map(String::from)
+    };
+    let allowed_subnet = if clear {
+        None
+    } else {
+        subnet.map(String::from)
+    };
 
     let body = serde_json::json!({
         "allowed_domain": allowed_domain,
@@ -522,11 +523,7 @@ pub fn set_policy(
     Ok(())
 }
 
-fn print_policy_result(
-    domain: &Option<String>,
-    subnet: &Option<String>,
-    clear: bool,
-) {
+fn print_policy_result(domain: &Option<String>, subnet: &Option<String>, clear: bool) {
     if clear {
         println!("Enrollment policy: all constraints cleared");
     } else {
@@ -560,10 +557,7 @@ pub fn rotate_totp(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
     let body = serde_json::json!({ "passphrase": passphrase });
     let resp = client.post_json("/v1/certmesh/rotate-totp", &body)?;
 
-    let totp_uri = resp
-        .get("totp_uri")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let totp_uri = resp.get("totp_uri").and_then(|v| v.as_str()).unwrap_or("");
 
     if json {
         println!("{}", serde_json::json!({ "rotated": true }));
@@ -589,11 +583,7 @@ pub fn rotate_totp(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
 
 // ── Backup ─────────────────────────────────────────────────────────
 
-pub fn backup(
-    path: &std::path::Path,
-    json: bool,
-    endpoint: Option<&str>,
-) -> anyhow::Result<()> {
+pub fn backup(path: &std::path::Path, json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
     let client = require_daemon(endpoint)?;
 
     confirm_action(
@@ -615,8 +605,7 @@ pub fn backup(
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("backup response missing backup_hex"))?;
 
-    let bytes = hex_decode(backup_hex)
-        .map_err(|e| anyhow::anyhow!("invalid backup hex: {e}"))?;
+    let bytes = hex_decode(backup_hex).map_err(|e| anyhow::anyhow!("invalid backup hex: {e}"))?;
     std::fs::write(path, bytes)?;
 
     if json {
@@ -635,17 +624,10 @@ pub fn backup(
 
 // ── Restore ────────────────────────────────────────────────────────
 
-pub fn restore(
-    path: &std::path::Path,
-    json: bool,
-    endpoint: Option<&str>,
-) -> anyhow::Result<()> {
+pub fn restore(path: &std::path::Path, json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
     let client = require_daemon(endpoint)?;
 
-    confirm_action(
-        "This will overwrite the local certmesh state.",
-        "RESTORE",
-    )?;
+    confirm_action("This will overwrite the local certmesh state.", "RESTORE")?;
 
     let backup_bytes = std::fs::read(path)?;
     let backup_hex = hex_encode(&backup_bytes);

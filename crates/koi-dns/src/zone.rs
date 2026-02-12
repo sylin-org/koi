@@ -1,4 +1,4 @@
-﻿use crate::resolver::DnsError;
+use crate::resolver::DnsError;
 
 /// Local DNS zone configuration and normalization helpers.
 pub struct DnsZone {
@@ -56,13 +56,19 @@ mod tests {
     #[test]
     fn normalize_short_name() {
         let zone = DnsZone::new("lan").unwrap();
-        assert_eq!(zone.normalize_name("grafana"), Some("grafana.lan.".to_string()));
+        assert_eq!(
+            zone.normalize_name("grafana"),
+            Some("grafana.lan.".to_string())
+        );
     }
 
     #[test]
     fn normalize_fqdn() {
         let zone = DnsZone::new("lan").unwrap();
-        assert_eq!(zone.normalize_name("grafana.lan"), Some("grafana.lan.".to_string()));
+        assert_eq!(
+            zone.normalize_name("grafana.lan"),
+            Some("grafana.lan.".to_string())
+        );
     }
 
     #[test]

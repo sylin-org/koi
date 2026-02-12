@@ -11,16 +11,15 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 
-use crate::{CertmeshCore, CertmeshState};
 use crate::error::CertmeshError;
+use crate::{CertmeshCore, CertmeshState};
 use koi_common::encoding::{hex_decode, hex_encode};
 
 use crate::protocol::{
     BackupRequest, BackupResponse, ComplianceResponse, CreateCaRequest, CreateCaResponse,
-    HealthRequest, HealthResponse, JoinRequest, PolicyRequest, PolicySummary,
-    PromoteRequest, RenewRequest, RenewResponse, RestoreRequest, RestoreResponse,
-    RevokeRequest, RevokeResponse, RotateTotpRequest, RotateTotpResponse, SetHookRequest,
-    UnlockRequest, UnlockResponse,
+    HealthRequest, HealthResponse, JoinRequest, PolicyRequest, PolicySummary, PromoteRequest,
+    RenewRequest, RenewResponse, RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse,
+    RotateTotpRequest, RotateTotpResponse, SetHookRequest, UnlockRequest, UnlockResponse,
 };
 
 /// Build the certmesh router with domain-owned routes.
@@ -60,15 +59,13 @@ async fn join_handler(
     let core = CertmeshCore::from_state(Arc::clone(&state));
 
     match core.enroll(&request).await {
-        Ok(response) => {
-            match serde_json::to_value(&response) {
-                Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-                Err(e) => error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &CertmeshError::Internal(format!("Serialization error: {e}")),
-                ),
-            }
-        }
+        Ok(response) => match serde_json::to_value(&response) {
+            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+            Err(e) => error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &CertmeshError::Internal(format!("Serialization error: {e}")),
+            ),
+        },
         Err(e) => {
             let code = koi_common::error::ErrorCode::from(&e);
             let status = StatusCode::from_u16(code.http_status())
@@ -79,9 +76,7 @@ async fn join_handler(
 }
 
 /// GET /status — Certmesh status overview.
-async fn status_handler(
-    Extension(state): Extension<Arc<CertmeshState>>,
-) -> impl IntoResponse {
+async fn status_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     let ca_guard = state.ca.lock().await;
     let roster = state.roster.lock().await;
     let profile = state.profile.lock().await;
@@ -174,9 +169,13 @@ async fn create_handler(
     let totp_secret = koi_crypto::totp::generate_secret();
     let encrypted_totp = match koi_crypto::totp::encrypt_secret(&totp_secret, &request.passphrase) {
         Ok(enc) => enc,
-        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e)),
+        Err(e) => {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e))
+        }
     };
-    if let Err(e) = koi_crypto::keys::save_encrypted_key(&crate::ca::totp_secret_path(), &encrypted_totp) {
+    if let Err(e) =
+        koi_crypto::keys::save_encrypted_key(&crate::ca::totp_secret_path(), &encrypted_totp)
+    {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e));
     }
 
@@ -279,7 +278,10 @@ async fn rotate_totp_handler(
         return if crate::ca::is_ca_initialized() {
             error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
         } else {
-            error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaNotInitialized)
+            error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &CertmeshError::CaNotInitialized,
+            )
         };
     }
     drop(ca_guard);
@@ -287,9 +289,12 @@ async fn rotate_totp_handler(
     let new_secret = koi_crypto::totp::generate_secret();
     let encrypted = match koi_crypto::totp::encrypt_secret(&new_secret, &request.passphrase) {
         Ok(enc) => enc,
-        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e)),
+        Err(e) => {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e))
+        }
     };
-    if let Err(e) = koi_crypto::keys::save_encrypted_key(&crate::ca::totp_secret_path(), &encrypted) {
+    if let Err(e) = koi_crypto::keys::save_encrypted_key(&crate::ca::totp_secret_path(), &encrypted)
+    {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e));
     }
 
@@ -310,9 +315,7 @@ async fn rotate_totp_handler(
 }
 
 /// GET /log — Return audit log entries.
-async fn log_handler(
-    Extension(_state): Extension<Arc<CertmeshState>>,
-) -> impl IntoResponse {
+async fn log_handler(Extension(_state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     match crate::audit::read_log() {
         Ok(entries) => {
             let response = crate::protocol::AuditLogResponse { entries };
@@ -324,17 +327,12 @@ async fn log_handler(
                 ),
             }
         }
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &CertmeshError::Io(e),
-        ),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::Io(e)),
     }
 }
 
 /// POST /destroy — Remove all certmesh state (CA, certs, roster, audit log).
-async fn destroy_handler(
-    Extension(state): Extension<Arc<CertmeshState>>,
-) -> impl IntoResponse {
+async fn destroy_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     if let Err(e) = state.destroy().await {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e);
     }
@@ -391,17 +389,16 @@ async fn restore_handler(
 ) -> impl IntoResponse {
     let backup_bytes = match hex_decode(&request.backup_hex) {
         Ok(bytes) => bytes,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                &CertmeshError::BackupInvalid(e),
-            )
-        }
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &CertmeshError::BackupInvalid(e)),
     };
 
     let core = crate::CertmeshCore::from_state(Arc::clone(&state));
     match core
-        .restore(&backup_bytes, &request.backup_passphrase, &request.new_passphrase)
+        .restore(
+            &backup_bytes,
+            &request.backup_passphrase,
+            &request.new_passphrase,
+        )
         .await
     {
         Ok(()) => {
@@ -481,7 +478,12 @@ async fn open_enrollment_handler(
 
     let _ = crate::audit::append_entry(
         "enrollment_opened",
-        &[("deadline", &deadline.map(|d| d.to_rfc3339()).unwrap_or_else(|| "none".to_string()))],
+        &[(
+            "deadline",
+            &deadline
+                .map(|d| d.to_rfc3339())
+                .unwrap_or_else(|| "none".to_string()),
+        )],
     );
 
     let body = serde_json::json!({
@@ -529,13 +531,17 @@ async fn set_policy_handler(
             if prefix_str.parse::<u32>().is_err() {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    &CertmeshError::ScopeViolation(format!("invalid prefix length in CIDR: {cidr}")),
+                    &CertmeshError::ScopeViolation(format!(
+                        "invalid prefix length in CIDR: {cidr}"
+                    )),
                 );
             }
         } else {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                &CertmeshError::ScopeViolation(format!("invalid CIDR format (expected x.x.x.x/N): {cidr}")),
+                &CertmeshError::ScopeViolation(format!(
+                    "invalid CIDR format (expected x.x.x.x/N): {cidr}"
+                )),
             );
         }
     }
@@ -555,8 +561,14 @@ async fn set_policy_handler(
     let _ = crate::audit::append_entry(
         "policy_updated",
         &[
-            ("allowed_domain", request.allowed_domain.as_deref().unwrap_or("none")),
-            ("allowed_subnet", request.allowed_subnet.as_deref().unwrap_or("none")),
+            (
+                "allowed_domain",
+                request.allowed_domain.as_deref().unwrap_or("none"),
+            ),
+            (
+                "allowed_subnet",
+                request.allowed_subnet.as_deref().unwrap_or("none"),
+            ),
         ],
     );
 
@@ -568,9 +580,7 @@ async fn set_policy_handler(
 }
 
 /// GET /compliance — Return policy summary and audit log counts.
-async fn compliance_handler(
-    Extension(state): Extension<Arc<CertmeshState>>,
-) -> impl IntoResponse {
+async fn compliance_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     let roster = state.roster.lock().await;
     let profile = roster.metadata.trust_profile;
     let policy = PolicySummary {
@@ -587,7 +597,10 @@ async fn compliance_handler(
         .map(|content| content.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0);
 
-    let response = ComplianceResponse { policy, audit_entries };
+    let response = ComplianceResponse {
+        policy,
+        audit_entries,
+    };
     match serde_json::to_value(&response) {
         Ok(val) => (StatusCode::OK, Json(val)).into_response(),
         Err(e) => error_response(
@@ -627,10 +640,7 @@ async fn promote_handler(
     let totp_secret = match totp_guard.as_ref() {
         Some(s) => s,
         None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                &CertmeshError::CaLocked,
-            );
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked);
         }
     };
 
@@ -735,9 +745,7 @@ async fn renew_handler(
 }
 
 /// GET /roster — Return a signed roster manifest for standby sync.
-async fn roster_handler(
-    Extension(state): Extension<Arc<CertmeshState>>,
-) -> impl IntoResponse {
+async fn roster_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     let ca_guard = state.ca.lock().await;
     let ca = match ca_guard.as_ref() {
         Some(ca) => ca,
@@ -793,10 +801,8 @@ async fn health_handler(
     };
 
     let current_fp = crate::ca::ca_fingerprint(ca);
-    let valid = crate::health::validate_pinned_fingerprint(
-        &current_fp,
-        &request.pinned_ca_fingerprint,
-    );
+    let valid =
+        crate::health::validate_pinned_fingerprint(&current_fp, &request.pinned_ca_fingerprint);
 
     // Update last_seen timestamp
     let mut roster = state.roster.lock().await;
@@ -892,7 +898,9 @@ mod tests {
         let app = routes(test_extension());
         let req = Request::get("/status").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         // CA not initialized, so ca_locked should be reported
         assert!(json.get("ca_initialized").is_some() || json.get("ca_locked").is_some());
@@ -934,7 +942,9 @@ mod tests {
         let app = routes(test_extension());
         let req = Request::post("/health")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"hostname":"stone-01","pinned_ca_fingerprint":"abc"}"#))
+            .body(Body::from(
+                r#"{"hostname":"stone-01","pinned_ca_fingerprint":"abc"}"#,
+            ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -959,7 +969,9 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE,
             &CertmeshError::CaNotInitialized,
         );
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("error").is_some());
         assert!(json.get("message").is_some());
@@ -995,7 +1007,9 @@ mod tests {
             .body(Body::from(r#"{"totp_code":"123456"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_ca_unavailable_error(&json);
     }
@@ -1008,7 +1022,9 @@ mod tests {
             .body(Body::from(r#"{"totp_code":"654321"}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_ca_unavailable_error(&json);
     }
@@ -1018,7 +1034,9 @@ mod tests {
         let app = routes(test_extension());
         let req = Request::get("/roster").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_ca_unavailable_error(&json);
     }
@@ -1033,7 +1051,9 @@ mod tests {
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_ca_unavailable_error(&json);
     }
@@ -1043,12 +1063,20 @@ mod tests {
         let app = routes(test_extension());
         let req = Request::get("/status").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json.get("ca_initialized").is_some(), "missing ca_initialized");
+        assert!(
+            json.get("ca_initialized").is_some(),
+            "missing ca_initialized"
+        );
         assert!(json.get("ca_locked").is_some(), "missing ca_locked");
         assert!(json.get("profile").is_some(), "missing profile");
-        assert!(json.get("enrollment_state").is_some(), "missing enrollment_state");
+        assert!(
+            json.get("enrollment_state").is_some(),
+            "missing enrollment_state"
+        );
         assert!(json.get("member_count").is_some(), "missing member_count");
         assert!(json.get("members").is_some(), "missing members");
     }
@@ -1063,11 +1091,16 @@ mod tests {
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("error").is_some(), "missing error field");
         let msg = json.get("message").unwrap().as_str().unwrap();
-        assert!(msg.contains("nobody"), "message should contain hostname: {msg}");
+        assert!(
+            msg.contains("nobody"),
+            "message should contain hostname: {msg}"
+        );
     }
 
     // ── Phase 4 — Enrollment policy endpoint tests ──────────────────
@@ -1081,9 +1114,14 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json.get("enrollment_state").unwrap().as_str().unwrap(), "open");
+        assert_eq!(
+            json.get("enrollment_state").unwrap().as_str().unwrap(),
+            "open"
+        );
     }
 
     #[tokio::test]
@@ -1095,7 +1133,9 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("deadline").unwrap().as_str().is_some());
     }
@@ -1118,9 +1158,14 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json.get("enrollment_state").unwrap().as_str().unwrap(), "closed");
+        assert_eq!(
+            json.get("enrollment_state").unwrap().as_str().unwrap(),
+            "closed"
+        );
     }
 
     #[tokio::test]
@@ -1128,14 +1173,24 @@ mod tests {
         let app = routes(test_extension());
         let req = Request::put("/policy")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}"#))
+            .body(Body::from(
+                r#"{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}"#,
+            ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json.get("allowed_domain").unwrap().as_str().unwrap(), "lab.local");
-        assert_eq!(json.get("allowed_subnet").unwrap().as_str().unwrap(), "192.168.1.0/24");
+        assert_eq!(
+            json.get("allowed_domain").unwrap().as_str().unwrap(),
+            "lab.local"
+        );
+        assert_eq!(
+            json.get("allowed_subnet").unwrap().as_str().unwrap(),
+            "192.168.1.0/24"
+        );
     }
 
     #[tokio::test]
@@ -1169,7 +1224,9 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("allowed_domain").unwrap().is_null());
         assert!(json.get("allowed_subnet").unwrap().is_null());
@@ -1182,7 +1239,9 @@ mod tests {
         let app = routes(test_extension());
         let req = Request::post("/create")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"passphrase":"test","entropy_hex":"bad","profile":"just_me"}"#))
+            .body(Body::from(
+                r#"{"passphrase":"test","entropy_hex":"bad","profile":"just_me"}"#,
+            ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -1237,20 +1296,25 @@ mod tests {
         let app = routes(test_extension());
         let req = Request::get("/log").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json.get("entries").is_some(), "response should have 'entries' field");
+        assert!(
+            json.get("entries").is_some(),
+            "response should have 'entries' field"
+        );
     }
 
     #[tokio::test]
     async fn destroy_endpoint_returns_200() {
         let app = routes(test_extension());
-        let req = Request::post("/destroy")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::post("/destroy").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("destroyed").unwrap().as_bool().unwrap());
     }

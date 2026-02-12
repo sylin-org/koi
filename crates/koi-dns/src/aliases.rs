@@ -1,4 +1,4 @@
-﻿use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 
 use koi_common::types::ServiceRecord;
@@ -23,7 +23,10 @@ pub fn build_aliases(zone: &DnsZone, records: &[ServiceRecord]) -> AliasResult {
         if record.service_type.is_empty() {
             continue;
         }
-        by_type.entry(record.service_type.clone()).or_default().push(record);
+        by_type
+            .entry(record.service_type.clone())
+            .or_default()
+            .push(record);
     }
 
     let mut aliases: HashMap<String, Vec<IpAddr>> = HashMap::new();

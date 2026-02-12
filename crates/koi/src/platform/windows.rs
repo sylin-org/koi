@@ -32,7 +32,7 @@ const SERVICE_STOP_POLL: Duration = Duration::from_millis(500);
 const SERVICE_LOG_FILENAME: &str = "koi.log";
 
 // Reuse shutdown constants from crate root (defined once in main.rs).
-use crate::{SHUTDOWN_TIMEOUT, SHUTDOWN_DRAIN};
+use crate::{SHUTDOWN_DRAIN, SHUTDOWN_TIMEOUT};
 
 // ── Service paths ───────────────────────────────────────────────────
 // All paths derive from koi_common::paths which uses %ProgramData%\koi\.
@@ -252,8 +252,7 @@ fn build_service_info(exe_path: &std::path::Path) -> ServiceInfo {
 
 /// Check if the Koi service is installed (read-only, no elevation needed).
 fn is_service_installed() -> bool {
-    let Ok(manager) =
-        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+    let Ok(manager) = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
     else {
         return false;
     };
@@ -325,7 +324,10 @@ pub fn uninstall() -> anyhow::Result<()> {
     let legacy_removed = remove_firewall_rule(FIREWALL_RULE_MDNS_LEGACY)
         | remove_firewall_rule(FIREWALL_RULE_HTTP_LEGACY);
     if !removed.is_empty() {
-        println!("  Firewall rules removed ({})", firewall_ports_summary(&removed));
+        println!(
+            "  Firewall rules removed ({})",
+            firewall_ports_summary(&removed)
+        );
     } else if legacy_removed {
         println!("  Firewall rules removed");
     }
@@ -665,7 +667,9 @@ fn remove_firewall_rule(name: &str) -> bool {
     matches!(result, Ok(output) if output.status.success())
 }
 
-fn firewall_ports_for_config(config: &crate::cli::Config) -> Vec<koi_common::firewall::FirewallPort> {
+fn firewall_ports_for_config(
+    config: &crate::cli::Config,
+) -> Vec<koi_common::firewall::FirewallPort> {
     use koi_common::firewall::{FirewallPort, FirewallProtocol};
 
     let mut ports = Vec::new();
@@ -673,7 +677,11 @@ fn firewall_ports_for_config(config: &crate::cli::Config) -> Vec<koi_common::fir
         ports.extend(koi_mdns::firewall_ports());
     }
     if !config.no_http {
-        ports.push(FirewallPort::new("HTTP", FirewallProtocol::Tcp, config.http_port));
+        ports.push(FirewallPort::new(
+            "HTTP",
+            FirewallProtocol::Tcp,
+            config.http_port,
+        ));
     }
     if !config.no_dns {
         ports.extend(koi_dns::firewall_ports(&config.dns_config()));

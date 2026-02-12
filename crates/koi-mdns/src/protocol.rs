@@ -202,19 +202,17 @@ pub fn browse_event_to_pipeline(event: MdnsEvent) -> MdnsPipelineResponse {
         MdnsEvent::Resolved(record) | MdnsEvent::Found(record) => {
             PipelineResponse::clean(Response::Found(record))
         }
-        MdnsEvent::Removed { name, service_type } => {
-            PipelineResponse::clean(Response::Event {
-                event: EventKind::Removed,
-                service: ServiceRecord {
-                    name,
-                    service_type,
-                    host: None,
-                    ip: None,
-                    port: None,
-                    txt: Default::default(),
-                },
-            })
-        }
+        MdnsEvent::Removed { name, service_type } => PipelineResponse::clean(Response::Event {
+            event: EventKind::Removed,
+            service: ServiceRecord {
+                name,
+                service_type,
+                host: None,
+                ip: None,
+                port: None,
+                txt: Default::default(),
+            },
+        }),
     }
 }
 
@@ -497,10 +495,7 @@ mod tests {
         let resp = browse_event_to_pipeline(event);
         let json = serde_json::to_value(&resp).unwrap();
         assert!(json.get("found").is_some(), "should have 'found' key");
-        assert_eq!(
-            json.get("found").unwrap().get("name").unwrap(),
-            "Server A"
-        );
+        assert_eq!(json.get("found").unwrap().get("name").unwrap(), "Server A");
     }
 
     #[test]

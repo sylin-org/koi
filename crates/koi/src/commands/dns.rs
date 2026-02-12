@@ -1,4 +1,4 @@
-﻿//! DNS command handlers.
+//! DNS command handlers.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -20,7 +20,9 @@ fn dns_config(config: &Config) -> koi_dns::DnsConfig {
     }
 }
 
-async fn build_core(config: &Config) -> anyhow::Result<(koi_dns::DnsCore, Option<Arc<koi_mdns::MdnsCore>>)> {
+async fn build_core(
+    config: &Config,
+) -> anyhow::Result<(koi_dns::DnsCore, Option<Arc<koi_mdns::MdnsCore>>)> {
     let mdns = if !config.no_mdns {
         Some(Arc::new(koi_mdns::MdnsCore::new()?))
     } else {
@@ -145,16 +147,28 @@ pub async fn status(config: &Config, mode: Mode, json: bool) -> anyhow::Result<(
             if json {
                 print_json(&status);
             } else {
-                let running = status.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
+                let running = status
+                    .get("running")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let zone = status.get("zone").and_then(|v| v.as_str()).unwrap_or("?");
                 let port = status.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
                 println!("DNS: {}", if running { "running" } else { "stopped" });
                 println!("  Zone:   {zone}");
                 println!("  Port:   {port}");
                 if let Some(records) = status.get("records") {
-                    let static_entries = records.get("static_entries").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let certmesh_entries = records.get("certmesh_entries").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let mdns_entries = records.get("mdns_entries").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let static_entries = records
+                        .get("static_entries")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let certmesh_entries = records
+                        .get("certmesh_entries")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let mdns_entries = records
+                        .get("mdns_entries")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     println!("  Static: {static_entries}");
                     println!("  Certmesh: {certmesh_entries}");
                     println!("  mDNS:   {mdns_entries}");
@@ -191,7 +205,11 @@ pub async fn lookup(
             if json {
                 print_json(&resp);
             } else {
-                let ips = resp.get("ips").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                let ips = resp
+                    .get("ips")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 let ips = ips.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>();
                 if ips.is_empty() {
                     println!("No records for {name}");
@@ -215,7 +233,11 @@ fn output_lookup(result: Option<koi_dns::DnsLookupResult>, json: bool) -> anyhow
                     "source": result.source,
                 }));
             } else {
-                let ips = result.ips.iter().map(|ip| ip.to_string()).collect::<Vec<_>>();
+                let ips = result
+                    .ips
+                    .iter()
+                    .map(|ip| ip.to_string())
+                    .collect::<Vec<_>>();
                 println!("{} -> {}", result.name, ips.join(", "));
             }
             Ok(())
@@ -226,7 +248,14 @@ fn output_lookup(result: Option<koi_dns::DnsLookupResult>, json: bool) -> anyhow
 
 // ── Add / Remove / List ───────────────────────────────────────────
 
-pub fn add(name: &str, ip: &str, ttl: Option<u32>, mode: Mode, json: bool, zone: &str) -> anyhow::Result<()> {
+pub fn add(
+    name: &str,
+    ip: &str,
+    ttl: Option<u32>,
+    mode: Mode,
+    json: bool,
+    zone: &str,
+) -> anyhow::Result<()> {
     with_mode_sync(
         mode,
         || {

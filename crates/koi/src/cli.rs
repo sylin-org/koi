@@ -622,8 +622,14 @@ mod tests {
         let result = config.require_capability("mdns");
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("mdns"), "error message should mention 'mdns': {msg}");
-        assert!(msg.contains("disabled"), "error message should mention 'disabled': {msg}");
+        assert!(
+            msg.contains("mdns"),
+            "error message should mention 'mdns': {msg}"
+        );
+        assert!(
+            msg.contains("disabled"),
+            "error message should mention 'disabled': {msg}"
+        );
     }
 
     #[test]
@@ -712,8 +718,7 @@ mod tests {
 
     #[test]
     fn parse_certmesh_promote_with_endpoint() {
-        let cli =
-            Cli::try_parse_from(["koi", "certmesh", "promote", "http://ca:5641"]).unwrap();
+        let cli = Cli::try_parse_from(["koi", "certmesh", "promote", "http://ca:5641"]).unwrap();
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
                 command: CertmeshSubcommand::Promote { endpoint },
@@ -795,10 +800,7 @@ mod tests {
             "status",
         ])
         .unwrap();
-        assert_eq!(
-            cli.endpoint.as_deref(),
-            Some("http://localhost:5641")
-        );
+        assert_eq!(cli.endpoint.as_deref(), Some("http://localhost:5641"));
     }
 
     // ── mDNS CLI parsing tests ──────────────────────────────────────
@@ -832,12 +834,28 @@ mod tests {
     #[test]
     fn parse_mdns_announce_all_args() {
         let cli = Cli::try_parse_from([
-            "koi", "mdns", "announce", "My App", "_http._tcp", "8080",
-            "--ip", "10.0.0.1", "version=1.0", "env=prod",
-        ]).unwrap();
+            "koi",
+            "mdns",
+            "announce",
+            "My App",
+            "_http._tcp",
+            "8080",
+            "--ip",
+            "10.0.0.1",
+            "version=1.0",
+            "env=prod",
+        ])
+        .unwrap();
         match cli.command {
             Some(Command::Mdns(MdnsCommand {
-                command: MdnsSubcommand::Announce { name, service_type, port, ip, txt },
+                command:
+                    MdnsSubcommand::Announce {
+                        name,
+                        service_type,
+                        port,
+                        ip,
+                        txt,
+                    },
             })) => {
                 assert_eq!(name, "My App");
                 assert_eq!(service_type, "_http._tcp");
@@ -851,12 +869,18 @@ mod tests {
 
     #[test]
     fn parse_mdns_announce_minimal() {
-        let cli = Cli::try_parse_from([
-            "koi", "mdns", "announce", "Svc", "_ssh._tcp", "22",
-        ]).unwrap();
+        let cli =
+            Cli::try_parse_from(["koi", "mdns", "announce", "Svc", "_ssh._tcp", "22"]).unwrap();
         match cli.command {
             Some(Command::Mdns(MdnsCommand {
-                command: MdnsSubcommand::Announce { name, service_type, port, ip, txt },
+                command:
+                    MdnsSubcommand::Announce {
+                        name,
+                        service_type,
+                        port,
+                        ip,
+                        txt,
+                    },
             })) => {
                 assert_eq!(name, "Svc");
                 assert_eq!(service_type, "_ssh._tcp");
@@ -883,9 +907,8 @@ mod tests {
 
     #[test]
     fn parse_mdns_resolve() {
-        let cli = Cli::try_parse_from([
-            "koi", "mdns", "resolve", "My Server._http._tcp.local.",
-        ]).unwrap();
+        let cli =
+            Cli::try_parse_from(["koi", "mdns", "resolve", "My Server._http._tcp.local."]).unwrap();
         match cli.command {
             Some(Command::Mdns(MdnsCommand {
                 command: MdnsSubcommand::Resolve { instance },
@@ -916,9 +939,10 @@ mod tests {
         let cli = Cli::try_parse_from(["koi", "mdns", "admin", "status"]).unwrap();
         match cli.command {
             Some(Command::Mdns(MdnsCommand {
-                command: MdnsSubcommand::Admin(MdnsAdminCommand {
-                    command: AdminSubcommand::Status,
-                }),
+                command:
+                    MdnsSubcommand::Admin(MdnsAdminCommand {
+                        command: AdminSubcommand::Status,
+                    }),
             })) => {}
             other => panic!("Expected Admin Status, got: {other:?}"),
         }
@@ -929,9 +953,10 @@ mod tests {
         let cli = Cli::try_parse_from(["koi", "mdns", "admin", "ls"]).unwrap();
         match cli.command {
             Some(Command::Mdns(MdnsCommand {
-                command: MdnsSubcommand::Admin(MdnsAdminCommand {
-                    command: AdminSubcommand::List,
-                }),
+                command:
+                    MdnsSubcommand::Admin(MdnsAdminCommand {
+                        command: AdminSubcommand::List,
+                    }),
             })) => {}
             other => panic!("Expected Admin List, got: {other:?}"),
         }
@@ -942,9 +967,10 @@ mod tests {
         let cli = Cli::try_parse_from(["koi", "mdns", "admin", "inspect", "a1b2c3"]).unwrap();
         match cli.command {
             Some(Command::Mdns(MdnsCommand {
-                command: MdnsSubcommand::Admin(MdnsAdminCommand {
-                    command: AdminSubcommand::Inspect { id },
-                }),
+                command:
+                    MdnsSubcommand::Admin(MdnsAdminCommand {
+                        command: AdminSubcommand::Inspect { id },
+                    }),
             })) => {
                 assert_eq!(id, "a1b2c3");
             }
@@ -957,9 +983,10 @@ mod tests {
         let cli = Cli::try_parse_from(["koi", "mdns", "admin", "unregister", "xyz"]).unwrap();
         match cli.command {
             Some(Command::Mdns(MdnsCommand {
-                command: MdnsSubcommand::Admin(MdnsAdminCommand {
-                    command: AdminSubcommand::Unregister { id },
-                }),
+                command:
+                    MdnsSubcommand::Admin(MdnsAdminCommand {
+                        command: AdminSubcommand::Unregister { id },
+                    }),
             })) => {
                 assert_eq!(id, "xyz");
             }
@@ -972,9 +999,10 @@ mod tests {
         let cli = Cli::try_parse_from(["koi", "mdns", "admin", "drain", "abc"]).unwrap();
         match cli.command {
             Some(Command::Mdns(MdnsCommand {
-                command: MdnsSubcommand::Admin(MdnsAdminCommand {
-                    command: AdminSubcommand::Drain { id },
-                }),
+                command:
+                    MdnsSubcommand::Admin(MdnsAdminCommand {
+                        command: AdminSubcommand::Drain { id },
+                    }),
             })) => {
                 assert_eq!(id, "abc");
             }
@@ -987,9 +1015,10 @@ mod tests {
         let cli = Cli::try_parse_from(["koi", "mdns", "admin", "revive", "def"]).unwrap();
         match cli.command {
             Some(Command::Mdns(MdnsCommand {
-                command: MdnsSubcommand::Admin(MdnsAdminCommand {
-                    command: AdminSubcommand::Revive { id },
-                }),
+                command:
+                    MdnsSubcommand::Admin(MdnsAdminCommand {
+                        command: AdminSubcommand::Revive { id },
+                    }),
             })) => {
                 assert_eq!(id, "def");
             }
@@ -1001,15 +1030,14 @@ mod tests {
 
     #[test]
     fn parse_mdns_with_timeout() {
-        let cli = Cli::try_parse_from([
-            "koi", "--timeout", "30", "mdns", "discover",
-        ]).unwrap();
+        let cli = Cli::try_parse_from(["koi", "--timeout", "30", "mdns", "discover"]).unwrap();
         assert_eq!(cli.timeout, Some(30));
     }
 
     #[test]
     fn parse_mdns_with_json_flag() {
-        let cli = Cli::try_parse_from(["koi", "--json", "mdns", "subscribe", "_http._tcp"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["koi", "--json", "mdns", "subscribe", "_http._tcp"]).unwrap();
         assert!(cli.json);
     }
 
@@ -1108,10 +1136,8 @@ mod tests {
 
     #[test]
     fn parse_certmesh_open_enrollment_with_deadline() {
-        let cli = Cli::try_parse_from([
-            "koi", "certmesh", "open-enrollment",
-            "--until", "2h",
-        ]).unwrap();
+        let cli =
+            Cli::try_parse_from(["koi", "certmesh", "open-enrollment", "--until", "2h"]).unwrap();
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
                 command: CertmeshSubcommand::OpenEnrollment { until },
@@ -1135,13 +1161,16 @@ mod tests {
 
     #[test]
     fn parse_certmesh_set_policy_domain() {
-        let cli = Cli::try_parse_from([
-            "koi", "certmesh", "set-policy",
-            "--domain", "lab.local",
-        ]).unwrap();
+        let cli = Cli::try_parse_from(["koi", "certmesh", "set-policy", "--domain", "lab.local"])
+            .unwrap();
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
-                command: CertmeshSubcommand::SetPolicy { domain, subnet, clear },
+                command:
+                    CertmeshSubcommand::SetPolicy {
+                        domain,
+                        subnet,
+                        clear,
+                    },
             })) => {
                 assert_eq!(domain.as_deref(), Some("lab.local"));
                 assert!(subnet.is_none());
@@ -1154,12 +1183,21 @@ mod tests {
     #[test]
     fn parse_certmesh_set_policy_subnet() {
         let cli = Cli::try_parse_from([
-            "koi", "certmesh", "set-policy",
-            "--subnet", "192.168.1.0/24",
-        ]).unwrap();
+            "koi",
+            "certmesh",
+            "set-policy",
+            "--subnet",
+            "192.168.1.0/24",
+        ])
+        .unwrap();
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
-                command: CertmeshSubcommand::SetPolicy { domain, subnet, clear },
+                command:
+                    CertmeshSubcommand::SetPolicy {
+                        domain,
+                        subnet,
+                        clear,
+                    },
             })) => {
                 assert!(domain.is_none());
                 assert_eq!(subnet.as_deref(), Some("192.168.1.0/24"));
@@ -1171,13 +1209,15 @@ mod tests {
 
     #[test]
     fn parse_certmesh_set_policy_clear() {
-        let cli = Cli::try_parse_from([
-            "koi", "certmesh", "set-policy",
-            "--clear",
-        ]).unwrap();
+        let cli = Cli::try_parse_from(["koi", "certmesh", "set-policy", "--clear"]).unwrap();
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
-                command: CertmeshSubcommand::SetPolicy { domain, subnet, clear },
+                command:
+                    CertmeshSubcommand::SetPolicy {
+                        domain,
+                        subnet,
+                        clear,
+                    },
             })) => {
                 assert!(domain.is_none());
                 assert!(subnet.is_none());
@@ -1190,13 +1230,23 @@ mod tests {
     #[test]
     fn parse_certmesh_set_policy_both() {
         let cli = Cli::try_parse_from([
-            "koi", "certmesh", "set-policy",
-            "--domain", "lab.local",
-            "--subnet", "10.0.0.0/8",
-        ]).unwrap();
+            "koi",
+            "certmesh",
+            "set-policy",
+            "--domain",
+            "lab.local",
+            "--subnet",
+            "10.0.0.0/8",
+        ])
+        .unwrap();
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
-                command: CertmeshSubcommand::SetPolicy { domain, subnet, clear },
+                command:
+                    CertmeshSubcommand::SetPolicy {
+                        domain,
+                        subnet,
+                        clear,
+                    },
             })) => {
                 assert_eq!(domain.as_deref(), Some("lab.local"));
                 assert_eq!(subnet.as_deref(), Some("10.0.0.0/8"));
