@@ -214,28 +214,71 @@ jobs:
           # crates.io rate limits (from rate_limiter.rs):
           #   PublishNew:    burst 5, refill 1 token per 10 min
           #   PublishUpdate: burst 30, refill 1 token per 1 min
-          #
-          # This script checks each crate against the crates.io API to
-          # determine if it's new or an update, and only pauses when the
-          # new-crate token bucket would be exhausted.
 
-          NEW_COUNT=0
-          NEW_BURST=5
+          CRATES=(
+            koi-common      # Layer 0: no internal deps
+            koi-config      # Layer 1: depends on koi-common
+            koi-crypto      # Layer 1
+            koi-truststore  # Layer 1
+            koi-mdns        # Layer 1
+            koi-certmesh    # Layer 2: depends on layer 0-1
+            koi-dns         # Layer 3: depends on layer 0-2
+            koi-proxy       # Layer 3
+            koi-health      # Layer 4: depends on layer 0-3
+            koi-client      # Layer 5: depends on health + mdns
+            koi-embedded    # Layer 6: depends on everything
+            koi-net         # Layer 6
+          )
 
-          publish_crate() {
-            local crate="$1"
-
-            # Check if the crate already exists on crates.io
-            local status
+          # ── Phase 1: Inventory ─────────────────────────────────
+          echo "═══ Inventory ═══"
+          NEW_CRATES=()
+          UPDATE_CRATES=()
+          for crate in "${CRATES[@]}"; do
             status=$(curl -s -o /dev/null -w "%{http_code}" \
               -H "User-Agent: koi-ci (https://github.com/sylin-org/koi)" \
               "https://crates.io/api/v1/crates/${crate}")
-
             if [ "$status" = "200" ]; then
-              echo "📦 ${crate}: exists (update — burst 30)"
+              UPDATE_CRATES+=("$crate")
+            else
+              NEW_CRATES+=("$crate")
+            fi
+          done
+
+          echo "Updates (burst 30): ${UPDATE_CRATES[*]:-none}"
+          echo "New     (burst 5):  ${NEW_CRATES[*]:-none}"
+          echo ""
+
+          NEW_TOTAL=${#NEW_CRATES[@]}
+          if [ "$NEW_TOTAL" -gt 0 ]; then
+            BATCHES=$(( (NEW_TOTAL + 4) / 5 ))
+            WAIT_MIN=$(( (BATCHES - 1) * 10 ))
+            echo "⚠️  ${NEW_TOTAL} new crate(s) → ${BATCHES} batch(es), ~${WAIT_MIN} min of rate-limit waits"
+          else
+            echo "✅ All crates are updates — no rate-limit waits needed"
+          fi
+          echo ""
+
+          # ── Phase 2: Publish ───────────────────────────────────
+          echo "═══ Publishing ═══"
+          NEW_COUNT=0
+          NEW_BURST=5
+
+          for crate in "${CRATES[@]}"; do
+            # Check if this crate is new (not in UPDATE_CRATES)
+            IS_UPDATE=false
+            for u in "${UPDATE_CRATES[@]}"; do
+              if [ "$u" = "$crate" ]; then
+                IS_UPDATE=true
+                break
+              fi
+            done
+
+            if [ "$IS_UPDATE" = true ]; then
+              echo "📦 ${crate}: update"
             else
               NEW_COUNT=$((NEW_COUNT + 1))
-              echo "🆕 ${crate}: new crate (${NEW_COUNT}/${NEW_BURST} tokens used)"
+              echo "🆕 ${crate}: new (${NEW_COUNT}/${NEW_BURST} tokens)"
               if [ "$NEW_COUNT" -ge "$NEW_BURST" ]; then
                 echo "⏳ New-crate bucket exhausted. Waiting 10 min for refill..."
                 sleep 600
@@ -246,20 +289,9 @@ jobs:
             cargo publish -p "${crate}" --locked
             echo "✅ ${crate} published"
 
-            # Brief pause for index propagation between dependency layers
+            # Brief pause for index propagation
             sleep 20
-          }
+          done
 
-          # Publish in dependency order
-          publish_crate koi-common      # Layer 0: no internal deps
-          publish_crate koi-config      # Layer 1: depends on koi-common
-          publish_crate koi-crypto      # Layer 1
-          publish_crate koi-truststore  # Layer 1
-          publish_crate koi-mdns        # Layer 1
-          publish_crate koi-certmesh    # Layer 2: depends on layer 0-1
-          publish_crate koi-dns         # Layer 3: depends on layer 0-2
-          publish_crate koi-proxy       # Layer 3
-          publish_crate koi-health      # Layer 4: depends on layer 0-3
-          publish_crate koi-client      # Layer 5: depends on health + mdns
-          publish_crate koi-embedded    # Layer 6: depends on everything
-          publish_crate koi-net         # Layer 6
+          echo ""
+          echo "═══ All ${#CRATES[@]} crates published ═══"
