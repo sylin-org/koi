@@ -1,6 +1,6 @@
 ﻿use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Json};
 use axum::routing::{delete, get, post};
 use axum::Router;
@@ -12,11 +12,6 @@ use koi_config::state::{load_dns_state, save_dns_state, DnsEntry, DnsState};
 
 use crate::runtime::DnsRuntime;
 use crate::zone::DnsZone;
-
-#[derive(Clone)]
-struct DnsHttpState {
-    runtime: Arc<DnsRuntime>,
-}
 
 #[derive(Debug, Deserialize)]
 struct LookupParams {
@@ -74,12 +69,12 @@ pub fn routes(runtime: Arc<DnsRuntime>) -> Router {
         .route("/entries/{name}", delete(remove_entry_handler))
         .route("/admin/start", post(start_handler))
         .route("/admin/stop", post(stop_handler))
-        .with_state(DnsHttpState { runtime })
+        .layer(Extension(runtime))
 }
 
-async fn status_handler(State(state): State<DnsHttpState>) -> impl IntoResponse {
-    let runtime_status = state.runtime.status().await;
-    let core = state.runtime.core();
+async fn status_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
+    let runtime_status = runtime.status().await;
+    let core = runtime.core();
     let snapshot = core.snapshot();
     Json(StatusResponse {
         running: runtime_status.running,
@@ -94,7 +89,7 @@ async fn status_handler(State(state): State<DnsHttpState>) -> impl IntoResponse 
 }
 
 async fn lookup_handler(
-    State(state): State<DnsHttpState>,
+    Extension(runtime): Extension<Arc<DnsRuntime>>,
     Query(params): Query<LookupParams>,
 ) -> impl IntoResponse {
     let record_type = match parse_record_type(params.record_type.as_deref()) {
@@ -102,7 +97,7 @@ async fn lookup_handler(
         Err(resp) => return resp.into_response(),
     };
 
-    let core = state.runtime.core();
+    let core = runtime.core();
     let Some(result) = core.lookup(&params.name, record_type).await else {
         return error_response(
             axum::http::StatusCode::NOT_FOUND,
@@ -121,13 +116,13 @@ async fn lookup_handler(
     .into_response()
 }
 
-async fn list_handler(State(state): State<DnsHttpState>) -> impl IntoResponse {
-    let core = state.runtime.core();
+async fn list_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
+    let core = runtime.core();
     let names = core.list_names();
     Json(NamesResponse { names })
 }
 
-async fn entries_handler(_state: State<DnsHttpState>) -> impl IntoResponse {
+async fn entries_handler(_runtime: Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     match load_dns_state() {
         Ok(state) => Json(EntriesResponse {
             entries: state.entries,
@@ -143,10 +138,10 @@ async fn entries_handler(_state: State<DnsHttpState>) -> impl IntoResponse {
 }
 
 async fn add_entry_handler(
-    State(state): State<DnsHttpState>,
+    Extension(runtime): Extension<Arc<DnsRuntime>>,
     Json(payload): Json<EntryRequest>,
 ) -> impl IntoResponse {
-    let zone = match DnsZone::new(&state.runtime.core().config().zone) {
+    let zone = match DnsZone::new(&runtime.core().config().zone) {
         Ok(zone) => zone,
         Err(e) => {
             return error_response(
@@ -202,10 +197,10 @@ async fn add_entry_handler(
 }
 
 async fn remove_entry_handler(
-    State(state): State<DnsHttpState>,
+    Extension(runtime): Extension<Arc<DnsRuntime>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let zone = match DnsZone::new(&state.runtime.core().config().zone) {
+    let zone = match DnsZone::new(&runtime.core().config().zone) {
         Ok(zone) => zone,
         Err(e) => {
             return error_response(
@@ -267,8 +262,8 @@ async fn remove_entry_handler(
     .into_response()
 }
 
-async fn start_handler(State(state): State<DnsHttpState>) -> impl IntoResponse {
-    match state.runtime.start().await {
+async fn start_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
+    match runtime.start().await {
         Ok(started) => Json(serde_json::json!({ "started": started })).into_response(),
         Err(e) => error_response(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -279,8 +274,8 @@ async fn start_handler(State(state): State<DnsHttpState>) -> impl IntoResponse {
     }
 }
 
-async fn stop_handler(State(state): State<DnsHttpState>) -> impl IntoResponse {
-    let stopped = state.runtime.stop().await;
+async fn stop_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
+    let stopped = runtime.stop().await;
     Json(serde_json::json!({ "stopped": stopped }))
 }
 

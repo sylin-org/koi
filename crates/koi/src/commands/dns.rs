@@ -8,9 +8,8 @@ use koi_config::state::{load_dns_state, save_dns_state, DnsEntry, DnsState};
 use tokio_util::sync::CancellationToken;
 
 use crate::cli::Config;
-use crate::client::KoiClient;
 
-use super::{print_json, Mode};
+use super::{print_json, with_mode, with_mode_sync, Mode};
 
 fn dns_config(config: &Config) -> koi_dns::DnsConfig {
     let mut cfg = koi_dns::DnsConfig::default();
@@ -43,8 +42,9 @@ fn parse_record_type(input: &str) -> anyhow::Result<RecordType> {
 // ── Serve ──────────────────────────────────────────────────────────
 
 pub async fn serve(config: &Config, mode: Mode) -> anyhow::Result<()> {
-    match mode {
-        Mode::Standalone => {
+    with_mode(
+        mode,
+        || async {
             let (core, mdns) = build_core(config).await?;
             let cancel = CancellationToken::new();
 
@@ -75,9 +75,8 @@ pub async fn serve(config: &Config, mode: Mode) -> anyhow::Result<()> {
             }
 
             Ok(())
-        }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+        },
+        |client| async move {
             let resp = client.dns_start()?;
             if let Some(started) = resp.get("started") {
                 println!("DNS started: {started}");
@@ -85,15 +84,16 @@ pub async fn serve(config: &Config, mode: Mode) -> anyhow::Result<()> {
                 println!("DNS start requested");
             }
             Ok(())
-        }
-    }
+        },
+    )
+    .await
 }
 
 pub async fn stop(mode: Mode) -> anyhow::Result<()> {
-    match mode {
-        Mode::Standalone => anyhow::bail!("dns stop is only supported in daemon mode"),
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+    with_mode(
+        mode,
+        || async { anyhow::bail!("dns stop is only supported in daemon mode") },
+        |client| async move {
             let resp = client.dns_stop()?;
             if let Some(stopped) = resp.get("stopped") {
                 println!("DNS stopped: {stopped}");
@@ -101,15 +101,17 @@ pub async fn stop(mode: Mode) -> anyhow::Result<()> {
                 println!("DNS stop requested");
             }
             Ok(())
-        }
-    }
+        },
+    )
+    .await
 }
 
 // ── Status ─────────────────────────────────────────────────────────
 
 pub async fn status(config: &Config, mode: Mode, json: bool) -> anyhow::Result<()> {
-    match mode {
-        Mode::Standalone => {
+    with_mode(
+        mode,
+        || async {
             let (core, mdns) = build_core(config).await?;
             let snapshot = core.snapshot();
             let status = serde_json::json!({
@@ -135,9 +137,9 @@ pub async fn status(config: &Config, mode: Mode, json: bool) -> anyhow::Result<(
             if let Some(mdns) = mdns {
                 let _ = mdns.shutdown().await;
             }
-        }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+            Ok(())
+        },
+        |client| async move {
             let status = client.dns_status()?;
             if json {
                 print_json(&status);
@@ -157,9 +159,10 @@ pub async fn status(config: &Config, mode: Mode, json: bool) -> anyhow::Result<(
                     println!("  mDNS:   {mdns_entries}");
                 }
             }
-        }
-    }
-    Ok(())
+            Ok(())
+        },
+    )
+    .await
 }
 
 // ── Lookup ─────────────────────────────────────────────────────────
@@ -172,17 +175,17 @@ pub async fn lookup(
     config: &Config,
 ) -> anyhow::Result<()> {
     let record_type = parse_record_type(record_type)?;
-    match mode {
-        Mode::Standalone => {
+    with_mode(
+        mode,
+        || async {
             let (core, mdns) = build_core(config).await?;
             let result = core.lookup(name, record_type).await;
             if let Some(mdns) = mdns {
                 let _ = mdns.shutdown().await;
             }
             output_lookup(result, json)
-        }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+        },
+        |client| async move {
             let resp = client.dns_lookup(name, record_type)?;
             if json {
                 print_json(&resp);
@@ -196,8 +199,9 @@ pub async fn lookup(
                 }
             }
             Ok(())
-        }
-    }
+        },
+    )
+    .await
 }
 
 fn output_lookup(result: Option<koi_dns::DnsLookupResult>, json: bool) -> anyhow::Result<()> {
@@ -222,8 +226,9 @@ fn output_lookup(result: Option<koi_dns::DnsLookupResult>, json: bool) -> anyhow
 // ── Add / Remove / List ───────────────────────────────────────────
 
 pub fn add(name: &str, ip: &str, ttl: Option<u32>, mode: Mode, json: bool, zone: &str) -> anyhow::Result<()> {
-    match mode {
-        Mode::Standalone => {
+    with_mode_sync(
+        mode,
+        || {
             let entry = build_entry(name, ip, ttl, zone)?;
             let mut state = load_dns_state().unwrap_or_default();
             upsert_entry(&mut state, entry);
@@ -234,9 +239,8 @@ pub fn add(name: &str, ip: &str, ttl: Option<u32>, mode: Mode, json: bool, zone:
                 println!("Added {name} -> {ip}");
             }
             Ok(())
-        }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+        },
+        |client| {
             let resp = client.dns_add(name, ip, ttl)?;
             if json {
                 print_json(&resp);
@@ -244,13 +248,14 @@ pub fn add(name: &str, ip: &str, ttl: Option<u32>, mode: Mode, json: bool, zone:
                 println!("Added {name} -> {ip}");
             }
             Ok(())
-        }
-    }
+        },
+    )
 }
 
 pub fn remove(name: &str, mode: Mode, json: bool, zone: &str) -> anyhow::Result<()> {
-    match mode {
-        Mode::Standalone => {
+    with_mode_sync(
+        mode,
+        || {
             let name = normalize_name(name, zone)?;
             let mut state = load_dns_state().unwrap_or_default();
             let before = state.entries.len();
@@ -265,9 +270,8 @@ pub fn remove(name: &str, mode: Mode, json: bool, zone: &str) -> anyhow::Result<
                 println!("Removed {name}");
             }
             Ok(())
-        }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+        },
+        |client| {
             let resp = client.dns_remove(name)?;
             if json {
                 print_json(&resp);
@@ -275,13 +279,14 @@ pub fn remove(name: &str, mode: Mode, json: bool, zone: &str) -> anyhow::Result<
                 println!("Removed {name}");
             }
             Ok(())
-        }
-    }
+        },
+    )
 }
 
 pub async fn list(mode: Mode, json: bool, config: &Config) -> anyhow::Result<()> {
-    match mode {
-        Mode::Standalone => {
+    with_mode(
+        mode,
+        || async {
             let (core, mdns) = build_core(config).await?;
             let names = core.list_names();
             if json {
@@ -296,9 +301,9 @@ pub async fn list(mode: Mode, json: bool, config: &Config) -> anyhow::Result<()>
             if let Some(mdns) = mdns {
                 let _ = mdns.shutdown().await;
             }
-        }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+            Ok(())
+        },
+        |client| async move {
             let resp = client.dns_list()?;
             if json {
                 print_json(&resp);
@@ -313,9 +318,10 @@ pub async fn list(mode: Mode, json: bool, config: &Config) -> anyhow::Result<()>
                     }
                 }
             }
-        }
-    }
-    Ok(())
+            Ok(())
+        },
+    )
+    .await
 }
 
 fn normalize_name(name: &str, zone: &str) -> anyhow::Result<String> {

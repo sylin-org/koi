@@ -1,6 +1,6 @@
 ﻿use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path};
 use axum::response::{IntoResponse, Json};
 use axum::routing::{delete, get};
 use axum::Router;
@@ -11,11 +11,6 @@ use koi_common::error::ErrorCode;
 use crate::state::{DEFAULT_INTERVAL_SECS, DEFAULT_TIMEOUT_SECS};
 use crate::{HealthCore, HealthError, HealthSnapshot, HealthCheckConfig};
 use crate::service::ServiceCheckKind;
-
-#[derive(Clone)]
-struct HealthHttpState {
-    core: Arc<HealthCore>,
-}
 
 #[derive(Debug, Deserialize)]
 struct AddCheckRequest {
@@ -32,28 +27,27 @@ pub fn routes(core: Arc<HealthCore>) -> Router {
         .route("/status", get(status_handler))
         .route("/checks", get(list_checks_handler).post(add_check_handler))
         .route("/checks/{name}", delete(remove_check_handler))
-        .with_state(HealthHttpState { core })
+        .layer(Extension(core))
 }
 
-async fn status_handler(State(state): State<HealthHttpState>) -> impl IntoResponse {
-    let snapshot: HealthSnapshot = state.core.snapshot().await;
+async fn status_handler(Extension(core): Extension<Arc<HealthCore>>) -> impl IntoResponse {
+    let snapshot: HealthSnapshot = core.snapshot().await;
     Json(snapshot)
 }
 
-async fn list_checks_handler(State(state): State<HealthHttpState>) -> impl IntoResponse {
-    let checks = state.core.list_checks().await;
+async fn list_checks_handler(Extension(core): Extension<Arc<HealthCore>>) -> impl IntoResponse {
+    let checks = core.list_checks().await;
     Json(serde_json::json!({ "checks": checks }))
 }
 
 async fn add_check_handler(
-    State(state): State<HealthHttpState>,
+    Extension(core): Extension<Arc<HealthCore>>,
     Json(payload): Json<AddCheckRequest>,
 ) -> impl IntoResponse {
     let kind = match parse_kind(&payload.kind) {
         Some(kind) => kind,
         None => {
-            return error_response(
-                axum::http::StatusCode::BAD_REQUEST,
+            return koi_common::http::error_response(
                 ErrorCode::InvalidPayload,
                 "invalid_check_kind",
             )
@@ -69,17 +63,17 @@ async fn add_check_handler(
         timeout_secs: payload.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
     };
 
-    match state.core.add_check(check).await {
+    match core.add_check(check).await {
         Ok(()) => Json(serde_json::json!({ "status": "ok" })).into_response(),
         Err(err) => map_error(err),
     }
 }
 
 async fn remove_check_handler(
-    State(state): State<HealthHttpState>,
+    Extension(core): Extension<Arc<HealthCore>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    match state.core.remove_check(&name).await {
+    match core.remove_check(&name).await {
         Ok(()) => Json(serde_json::json!({ "status": "ok" })).into_response(),
         Err(err) => map_error(err),
     }
@@ -95,35 +89,10 @@ fn parse_kind(kind: &str) -> Option<ServiceCheckKind> {
 
 fn map_error(err: HealthError) -> axum::response::Response {
     match err {
-        HealthError::InvalidCheck(msg) => error_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            ErrorCode::InvalidPayload,
-            &msg,
-        )
-        .into_response(),
-        HealthError::NotFound(msg) => error_response(
-            axum::http::StatusCode::NOT_FOUND,
-            ErrorCode::NotFound,
-            &msg,
-        )
-        .into_response(),
-        HealthError::Io(msg) => error_response(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ErrorCode::IoError,
-            &msg,
-        )
-        .into_response(),
+        HealthError::InvalidCheck(msg) => {
+            koi_common::http::error_response(ErrorCode::InvalidPayload, msg)
+        }
+        HealthError::NotFound(msg) => koi_common::http::error_response(ErrorCode::NotFound, msg),
+        HealthError::Io(msg) => koi_common::http::error_response(ErrorCode::IoError, msg),
     }
-}
-
-fn error_response(
-    status: axum::http::StatusCode,
-    code: ErrorCode,
-    message: &str,
-) -> impl IntoResponse {
-    let body = serde_json::json!({
-        "error": code,
-        "message": message,
-    });
-    (status, Json(body))
 }

@@ -2,8 +2,7 @@
 
 use koi_proxy::config::ProxyEntry;
 
-use crate::client::KoiClient;
-use crate::commands::{print_json, Mode};
+use crate::commands::{print_json, with_mode, Mode};
 
 fn build_entry(name: &str, listen: u16, backend: &str, allow_remote: bool) -> anyhow::Result<ProxyEntry> {
     let url = url::Url::parse(backend)?;
@@ -28,8 +27,9 @@ pub async fn add(
     mode: Mode,
     json: bool,
 ) -> anyhow::Result<()> {
-    match mode {
-        Mode::Standalone => {
+    with_mode(
+        mode,
+        || async {
             let entry = build_entry(name, listen, backend, allow_remote)?;
             let entries = koi_proxy::config::upsert_entry(entry)?;
             if json {
@@ -37,46 +37,50 @@ pub async fn add(
             } else {
                 println!("Proxy {name} -> {backend} (listen {listen})");
             }
-        }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+            Ok(())
+        },
+        |client| async move {
             let resp = client.proxy_add(name, listen, backend, allow_remote)?;
             if json {
                 print_json(&resp);
             } else {
                 println!("Proxy {name} -> {backend} (listen {listen})");
             }
-        }
-    }
-    Ok(())
+            Ok(())
+        },
+    )
+    .await
 }
 
 pub async fn remove(name: &str, mode: Mode, json: bool) -> anyhow::Result<()> {
-    match mode {
-        Mode::Standalone => {
+    with_mode(
+        mode,
+        || async {
             let entries = koi_proxy::config::remove_entry(name)?;
             if json {
                 print_json(&serde_json::json!({ "entries": entries }));
             } else {
                 println!("Removed proxy {name}");
             }
-        }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+            Ok(())
+        },
+        |client| async move {
             let resp = client.proxy_remove(name)?;
             if json {
                 print_json(&resp);
             } else {
                 println!("Removed proxy {name}");
             }
-        }
-    }
-    Ok(())
+            Ok(())
+        },
+    )
+    .await
 }
 
 pub async fn list(mode: Mode, json: bool) -> anyhow::Result<()> {
-    match mode {
-        Mode::Standalone => {
+    with_mode(
+        mode,
+        || async {
             let entries = koi_proxy::config::load_entries()?;
             if json {
                 print_json(&serde_json::json!({ "entries": entries }));
@@ -87,9 +91,9 @@ pub async fn list(mode: Mode, json: bool) -> anyhow::Result<()> {
                     println!("{} -> {} (listen {})", entry.name, entry.backend, entry.listen_port);
                 }
             }
-        }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+            Ok(())
+        },
+        |client| async move {
             let resp = client.proxy_list()?;
             if json {
                 print_json(&resp);
@@ -105,14 +109,16 @@ pub async fn list(mode: Mode, json: bool) -> anyhow::Result<()> {
                     }
                 }
             }
-        }
-    }
-    Ok(())
+            Ok(())
+        },
+    )
+    .await
 }
 
 pub async fn status(mode: Mode, json: bool) -> anyhow::Result<()> {
-    match mode {
-        Mode::Standalone => {
+    with_mode(
+        mode,
+        || async {
             let entries = koi_proxy::config::load_entries()?;
             if json {
                 print_json(&serde_json::json!({ "entries": entries }));
@@ -124,9 +130,9 @@ pub async fn status(mode: Mode, json: bool) -> anyhow::Result<()> {
                     println!("  {} -> {} (listen {})", entry.name, entry.backend, entry.listen_port);
                 }
             }
-        }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+            Ok(())
+        },
+        |client| async move {
             let resp = client.proxy_status()?;
             if json {
                 print_json(&resp);
@@ -143,7 +149,8 @@ pub async fn status(mode: Mode, json: bool) -> anyhow::Result<()> {
                     }
                 }
             }
-        }
-    }
-    Ok(())
+            Ok(())
+        },
+    )
+    .await
 }

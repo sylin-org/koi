@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Json};
 use axum::routing::{delete, get, post, put};
@@ -79,11 +79,11 @@ pub fn routes(core: Arc<MdnsCore>) -> Router {
             "/admin/registrations/{id}/revive",
             post(admin_revive_handler),
         )
-        .with_state(core)
+        .layer(Extension(core))
 }
 
 async fn browse_handler(
-    State(core): State<Arc<MdnsCore>>,
+    Extension(core): Extension<Arc<MdnsCore>>,
     Query(params): Query<BrowseParams>,
 ) -> impl IntoResponse {
     let handle = match core.browse(&params.service_type).await {
@@ -118,7 +118,7 @@ async fn browse_handler(
 }
 
 async fn register_handler(
-    State(core): State<Arc<MdnsCore>>,
+    Extension(core): Extension<Arc<MdnsCore>>,
     Json(payload): Json<RegisterPayload>,
 ) -> impl IntoResponse {
     let policy = policy_from_lease_secs(payload.lease_secs);
@@ -132,7 +132,7 @@ async fn register_handler(
 }
 
 async fn unregister_handler(
-    State(core): State<Arc<MdnsCore>>,
+    Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match core.unregister(&id) {
@@ -145,7 +145,7 @@ async fn unregister_handler(
 }
 
 async fn resolve_handler(
-    State(core): State<Arc<MdnsCore>>,
+    Extension(core): Extension<Arc<MdnsCore>>,
     Query(params): Query<ResolveParams>,
 ) -> impl IntoResponse {
     match core.resolve(&params.name).await {
@@ -158,7 +158,7 @@ async fn resolve_handler(
 }
 
 async fn events_handler(
-    State(core): State<Arc<MdnsCore>>,
+    Extension(core): Extension<Arc<MdnsCore>>,
     Query(params): Query<EventsParams>,
 ) -> impl IntoResponse {
     let handle = match core.browse(&params.service_type).await {
@@ -193,7 +193,7 @@ async fn events_handler(
 }
 
 async fn heartbeat_handler(
-    State(core): State<Arc<MdnsCore>>,
+    Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match core.heartbeat(&id) {
@@ -207,11 +207,11 @@ async fn heartbeat_handler(
 
 // ── Admin ─────────────────────────────────────────────────────────────
 
-async fn admin_status_handler(State(core): State<Arc<MdnsCore>>) -> impl IntoResponse {
+async fn admin_status_handler(Extension(core): Extension<Arc<MdnsCore>>) -> impl IntoResponse {
     Json(core.admin_status())
 }
 
-async fn admin_registrations_handler(State(core): State<Arc<MdnsCore>>) -> impl IntoResponse {
+async fn admin_registrations_handler(Extension(core): Extension<Arc<MdnsCore>>) -> impl IntoResponse {
     let entries: Vec<_> = core
         .admin_registrations()
         .into_iter()
@@ -221,7 +221,7 @@ async fn admin_registrations_handler(State(core): State<Arc<MdnsCore>>) -> impl 
 }
 
 async fn admin_inspect_handler(
-    State(core): State<Arc<MdnsCore>>,
+    Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match core.admin_inspect(&id) {
@@ -231,7 +231,7 @@ async fn admin_inspect_handler(
 }
 
 async fn admin_unregister_handler(
-    State(core): State<Arc<MdnsCore>>,
+    Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match core.admin_force_unregister(&id) {
@@ -244,7 +244,7 @@ async fn admin_unregister_handler(
 }
 
 async fn admin_drain_handler(
-    State(core): State<Arc<MdnsCore>>,
+    Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match core.admin_drain(&id) {
@@ -254,7 +254,7 @@ async fn admin_drain_handler(
 }
 
 async fn admin_revive_handler(
-    State(core): State<Arc<MdnsCore>>,
+    Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match core.admin_revive(&id) {

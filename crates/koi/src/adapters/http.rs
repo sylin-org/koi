@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::State as AxumState;
+use axum::extract::Extension;
 use axum::response::Json;
 use axum::routing::{get, post};
 use axum::Router;
@@ -49,8 +49,7 @@ pub async fn start(
     let mut app = Router::new()
         .route("/healthz", get(health))
         .route("/v1/status", get(unified_status_handler))
-        .route("/v1/admin/shutdown", post(shutdown_handler))
-        .with_state(app_state);
+        .route("/v1/admin/shutdown", post(shutdown_handler));
 
     // Mount domain routes or fallback routers
     if let Some(ref mdns_core) = cores.mdns {
@@ -83,6 +82,7 @@ pub async fn start(
         app = app.nest("/v1/proxy", disabled_fallback_router("proxy"));
     }
 
+    app = app.layer(Extension(app_state));
     app = app.layer(CorsLayer::permissive());
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
@@ -104,9 +104,7 @@ async fn health() -> &'static str {
     "OK"
 }
 
-async fn unified_status_handler(
-    AxumState(state): AxumState<AppState>,
-) -> Json<serde_json::Value> {
+async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<serde_json::Value> {
     use koi_common::capability::CapabilityStatus;
 
     let mut capabilities = Vec::new();
@@ -202,9 +200,7 @@ async fn unified_status_handler(
     }))
 }
 
-async fn shutdown_handler(
-    AxumState(state): AxumState<AppState>,
-) -> Json<serde_json::Value> {
+async fn shutdown_handler(Extension(state): Extension<AppState>) -> Json<serde_json::Value> {
     tracing::info!("Shutdown requested via admin endpoint");
     state.cancel.cancel();
     Json(serde_json::json!({ "status": "shutting_down" }))

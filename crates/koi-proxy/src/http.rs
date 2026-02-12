@@ -1,6 +1,6 @@
 ﻿use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path};
 use axum::response::{IntoResponse, Json};
 use axum::routing::{delete, get};
 use axum::Router;
@@ -10,11 +10,6 @@ use koi_common::error::ErrorCode;
 
 use crate::config::ProxyEntry;
 use crate::{ensure_backend_allowed, ProxyError, ProxyRuntime};
-
-#[derive(Clone)]
-struct ProxyHttpState {
-    runtime: Arc<ProxyRuntime>,
-}
 
 #[derive(Debug, Deserialize)]
 struct AddProxyRequest {
@@ -31,21 +26,21 @@ pub fn routes(runtime: Arc<ProxyRuntime>) -> Router {
         .route("/status", get(status_handler))
         .route("/entries", get(entries_handler).post(add_entry_handler))
         .route("/entries/{name}", delete(remove_entry_handler))
-        .with_state(ProxyHttpState { runtime })
+        .layer(Extension(runtime))
 }
 
-async fn status_handler(State(state): State<ProxyHttpState>) -> impl IntoResponse {
-    let status = state.runtime.status().await;
+async fn status_handler(Extension(runtime): Extension<Arc<ProxyRuntime>>) -> impl IntoResponse {
+    let status = runtime.status().await;
     Json(serde_json::json!({ "proxies": status }))
 }
 
-async fn entries_handler(State(state): State<ProxyHttpState>) -> impl IntoResponse {
-    let entries = state.runtime.core().entries().await;
+async fn entries_handler(Extension(runtime): Extension<Arc<ProxyRuntime>>) -> impl IntoResponse {
+    let entries = runtime.core().entries().await;
     Json(serde_json::json!({ "entries": entries }))
 }
 
 async fn add_entry_handler(
-    State(state): State<ProxyHttpState>,
+    Extension(runtime): Extension<Arc<ProxyRuntime>>,
     Json(payload): Json<AddProxyRequest>,
 ) -> impl IntoResponse {
     let entry = ProxyEntry {
@@ -58,10 +53,9 @@ async fn add_entry_handler(
     let backend = match url::Url::parse(&entry.backend) {
         Ok(url) => url,
         Err(e) => {
-            return error_response(
-                axum::http::StatusCode::BAD_REQUEST,
+            return koi_common::http::error_response(
                 ErrorCode::InvalidPayload,
-                &format!("invalid_backend: {e}"),
+                format!("invalid_backend: {e}"),
             )
             .into_response();
         }
@@ -75,9 +69,9 @@ async fn add_entry_handler(
         tracing::warn!("Backend traffic to {} is unencrypted", host);
     }
 
-    match state.runtime.core().upsert(entry).await {
+    match runtime.core().upsert(entry).await {
         Ok(_) => {
-            if let Err(e) = state.runtime.reload().await {
+            if let Err(e) = runtime.reload().await {
                 tracing::warn!(error = %e, "Failed to reload proxy runtime after add");
             }
             Json(serde_json::json!({ "status": "ok" })).into_response()
@@ -87,12 +81,12 @@ async fn add_entry_handler(
 }
 
 async fn remove_entry_handler(
-    State(state): State<ProxyHttpState>,
+    Extension(runtime): Extension<Arc<ProxyRuntime>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    match state.runtime.core().remove(&name).await {
+    match runtime.core().remove(&name).await {
         Ok(_) => {
-            if let Err(e) = state.runtime.reload().await {
+            if let Err(e) = runtime.reload().await {
                 tracing::warn!(error = %e, "Failed to reload proxy runtime after remove");
             }
             Json(serde_json::json!({ "status": "ok" })).into_response()
@@ -103,32 +97,12 @@ async fn remove_entry_handler(
 
 fn map_error(err: ProxyError) -> impl IntoResponse {
     match err {
-        ProxyError::InvalidConfig(msg) | ProxyError::Config(msg) => error_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            ErrorCode::InvalidPayload,
-            &msg,
-        ),
-        ProxyError::NotFound(msg) => error_response(
-            axum::http::StatusCode::NOT_FOUND,
-            ErrorCode::NotFound,
-            &msg,
-        ),
-        ProxyError::Io(msg) | ProxyError::Forward(msg) => error_response(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ErrorCode::IoError,
-            &msg,
-        ),
+        ProxyError::InvalidConfig(msg) | ProxyError::Config(msg) => {
+            koi_common::http::error_response(ErrorCode::InvalidPayload, msg)
+        }
+        ProxyError::NotFound(msg) => koi_common::http::error_response(ErrorCode::NotFound, msg),
+        ProxyError::Io(msg) | ProxyError::Forward(msg) => {
+            koi_common::http::error_response(ErrorCode::IoError, msg)
+        }
     }
-}
-
-fn error_response(
-    status: axum::http::StatusCode,
-    code: ErrorCode,
-    message: &str,
-) -> impl IntoResponse {
-    let body = serde_json::json!({
-        "error": code,
-        "message": message,
-    });
-    (status, Json(body))
 }

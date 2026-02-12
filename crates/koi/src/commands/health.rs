@@ -8,7 +8,7 @@ use crossterm::{cursor::MoveTo, execute, terminal::{Clear, ClearType}};
 
 use crate::cli::Config;
 use crate::client::KoiClient;
-use crate::commands::{print_json, Mode};
+use crate::commands::{print_json, with_mode, Mode};
 
 use koi_health::{HealthCheck, HealthSnapshot, HealthStatus, ServiceCheckKind};
 
@@ -31,8 +31,9 @@ async fn build_core(config: &Config) -> anyhow::Result<(Arc<koi_health::HealthCo
 }
 
 pub async fn status(config: &Config, mode: Mode, json: bool) -> anyhow::Result<()> {
-    match mode {
-        Mode::Standalone => {
+    with_mode(
+        mode,
+        || async {
             let (core, mdns) = build_core(config).await?;
             core.run_checks_once().await;
             let snapshot = core.snapshot().await;
@@ -44,9 +45,9 @@ pub async fn status(config: &Config, mode: Mode, json: bool) -> anyhow::Result<(
             if let Some(mdns) = mdns {
                 let _ = mdns.shutdown().await;
             }
-        }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+            Ok(())
+        },
+        |client| async move {
             let snapshot = client.health_status()?;
             if json {
                 print_json(&snapshot);
@@ -54,10 +55,10 @@ pub async fn status(config: &Config, mode: Mode, json: bool) -> anyhow::Result<(
                 let snapshot: HealthSnapshot = serde_json::from_value(snapshot)?;
                 println!("{}", render_snapshot(&snapshot));
             }
-        }
-    }
-
-    Ok(())
+            Ok(())
+        },
+    )
+    .await
 }
 
 pub async fn watch(config: &Config, mode: Mode, interval: u64) -> anyhow::Result<()> {
@@ -122,14 +123,17 @@ pub async fn add(
         (None, Some(target)) => (ServiceCheckKind::Tcp, target.to_string()),
         _ => anyhow::bail!("Specify exactly one of --http or --tcp"),
     };
+    let target_local = target.clone();
+    let target_client = target.clone();
 
-    match mode {
-        Mode::Standalone => {
+    with_mode(
+        mode,
+        || async {
             let (core, mdns) = build_core(config).await?;
             let check = HealthCheck {
                 name: name.to_string(),
                 kind,
-                target,
+                target: target_local,
                 interval_secs: interval,
                 timeout_secs: timeout,
             };
@@ -142,24 +146,25 @@ pub async fn add(
             if let Some(mdns) = mdns {
                 let _ = mdns.shutdown().await;
             }
-        }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
-            let resp = client.health_add_check(name, kind, &target, interval, timeout)?;
+            Ok(())
+        },
+        |client| async move {
+            let resp = client.health_add_check(name, kind, &target_client, interval, timeout)?;
             if json {
                 print_json(&resp);
             } else {
                 println!("Added health check {name}");
             }
-        }
-    }
-
-    Ok(())
+            Ok(())
+        },
+    )
+    .await
 }
 
 pub async fn remove(name: &str, mode: Mode, json: bool, config: &Config) -> anyhow::Result<()> {
-    match mode {
-        Mode::Standalone => {
+    with_mode(
+        mode,
+        || async {
             let (core, mdns) = build_core(config).await?;
             core.remove_check(name).await?;
             if json {
@@ -170,19 +175,19 @@ pub async fn remove(name: &str, mode: Mode, json: bool, config: &Config) -> anyh
             if let Some(mdns) = mdns {
                 let _ = mdns.shutdown().await;
             }
-        }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+            Ok(())
+        },
+        |client| async move {
             let resp = client.health_remove_check(name)?;
             if json {
                 print_json(&resp);
             } else {
                 println!("Removed health check {name}");
             }
-        }
-    }
-
-    Ok(())
+            Ok(())
+        },
+    )
+    .await
 }
 
 pub fn log() -> anyhow::Result<()> {
