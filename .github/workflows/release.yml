@@ -289,6 +289,27 @@ jobs:
             cargo publish -p "${crate}" --locked 2>&1 | tee /tmp/publish_output.txt || {
               if grep -q "already exists" /tmp/publish_output.txt; then
                 echo "⏭️  ${crate}: version already published, skipping"
+              elif grep -q "429" /tmp/publish_output.txt; then
+                # Extract "try again after <timestamp>" and wait until then
+                RETRY_AFTER=$(grep -oP 'try again after \K[^o]+' /tmp/publish_output.txt | head -1 | xargs)
+                if [ -n "$RETRY_AFTER" ]; then
+                  RETRY_EPOCH=$(date -d "$RETRY_AFTER" +%s 2>/dev/null || echo "")
+                  NOW_EPOCH=$(date +%s)
+                  if [ -n "$RETRY_EPOCH" ] && [ "$RETRY_EPOCH" -gt "$NOW_EPOCH" ]; then
+                    WAIT_SECS=$(( RETRY_EPOCH - NOW_EPOCH + 5 ))
+                    echo "⏳ Rate limited. Waiting ${WAIT_SECS}s until ${RETRY_AFTER}..."
+                    sleep "$WAIT_SECS"
+                  else
+                    echo "⏳ Rate limited. Waiting 10 min (could not parse timestamp)..."
+                    sleep 600
+                  fi
+                else
+                  echo "⏳ Rate limited. Waiting 10 min (no timestamp found)..."
+                  sleep 600
+                fi
+                # Retry the publish after waiting
+                echo "🔄 Retrying ${crate}..."
+                cargo publish -p "${crate}" --locked
               else
                 echo "❌ ${crate}: publish failed"
                 cat /tmp/publish_output.txt
