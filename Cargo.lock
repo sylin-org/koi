@@ -1408,8 +1408,177 @@ dependencies = [
 ]
 
 [[package]]
-name = "koi"
-version = "0.2.202602121540"
+name = "koi-certmesh"
+version = "0.2.202602121544"
+dependencies = [
+ "axum",
+ "chrono",
+ "crossterm",
+ "hostname",
+ "indicatif",
+ "koi-common",
+ "koi-crypto",
+ "koi-truststore",
+ "pem",
+ "rand 0.8.5",
+ "rcgen",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "time",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
+name = "koi-client"
+version = "0.2.202602121544"
+dependencies = [
+ "hickory-proto",
+ "koi-common",
+ "koi-health",
+ "koi-mdns",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "ureq",
+]
+
+[[package]]
+name = "koi-common"
+version = "0.2.202602121544"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "koi-config"
+version = "0.2.202602121544"
+dependencies = [
+ "koi-common",
+ "serde",
+ "serde_json",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "koi-crypto"
+version = "0.2.202602121544"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "koi-common",
+ "p256",
+ "pem",
+ "qrcode",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror",
+ "totp-rs",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
+name = "koi-dns"
+version = "0.2.202602121544"
+dependencies = [
+ "axum",
+ "hickory-proto",
+ "hickory-resolver",
+ "hickory-server",
+ "koi-certmesh",
+ "koi-common",
+ "koi-config",
+ "koi-mdns",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "koi-embedded"
+version = "0.2.202602121544"
+dependencies = [
+ "axum",
+ "futures-util",
+ "hickory-proto",
+ "koi-certmesh",
+ "koi-client",
+ "koi-common",
+ "koi-config",
+ "koi-dns",
+ "koi-health",
+ "koi-mdns",
+ "koi-proxy",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "koi-health"
+version = "0.2.202602121544"
+dependencies = [
+ "axum",
+ "chrono",
+ "hickory-proto",
+ "koi-certmesh",
+ "koi-common",
+ "koi-dns",
+ "koi-mdns",
+ "koi-proxy",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "koi-mdns"
+version = "0.2.202602121544"
+dependencies = [
+ "async-stream",
+ "axum",
+ "hostname",
+ "koi-common",
+ "mdns-sd",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tower-http",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "koi-net"
+version = "0.2.202602121544"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1446,177 +1615,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "koi-certmesh"
-version = "0.2.202602121540"
-dependencies = [
- "axum",
- "chrono",
- "crossterm",
- "hostname",
- "indicatif",
- "koi-common",
- "koi-crypto",
- "koi-truststore",
- "pem",
- "rand 0.8.5",
- "rcgen",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "time",
- "tokio",
- "tower",
- "tracing",
-]
-
-[[package]]
-name = "koi-client"
-version = "0.2.202602121540"
-dependencies = [
- "hickory-proto",
- "koi-common",
- "koi-health",
- "koi-mdns",
- "serde",
- "serde_json",
- "thiserror",
- "ureq",
-]
-
-[[package]]
-name = "koi-common"
-version = "0.2.202602121540"
-dependencies = [
- "axum",
- "serde",
- "serde_json",
- "thiserror",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "koi-config"
-version = "0.2.202602121540"
-dependencies = [
- "koi-common",
- "serde",
- "serde_json",
- "toml",
- "tracing",
-]
-
-[[package]]
-name = "koi-crypto"
-version = "0.2.202602121540"
-dependencies = [
- "aes-gcm",
- "argon2",
- "koi-common",
- "p256",
- "pem",
- "qrcode",
- "rand 0.8.5",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "thiserror",
- "totp-rs",
- "tracing",
- "zeroize",
-]
-
-[[package]]
-name = "koi-dns"
-version = "0.2.202602121540"
-dependencies = [
- "axum",
- "hickory-proto",
- "hickory-resolver",
- "hickory-server",
- "koi-certmesh",
- "koi-common",
- "koi-config",
- "koi-mdns",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "koi-embedded"
-version = "0.2.202602121540"
-dependencies = [
- "axum",
- "futures-util",
- "hickory-proto",
- "koi-certmesh",
- "koi-client",
- "koi-common",
- "koi-config",
- "koi-dns",
- "koi-health",
- "koi-mdns",
- "koi-proxy",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "koi-health"
-version = "0.2.202602121540"
-dependencies = [
- "axum",
- "chrono",
- "hickory-proto",
- "koi-certmesh",
- "koi-common",
- "koi-dns",
- "koi-mdns",
- "koi-proxy",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "koi-mdns"
-version = "0.2.202602121540"
-dependencies = [
- "async-stream",
- "axum",
- "hostname",
- "koi-common",
- "mdns-sd",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tower-http",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "koi-proxy"
-version = "0.2.202602121540"
+version = "0.2.202602121544"
 dependencies = [
  "axum",
  "axum-server",
@@ -1643,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "koi-truststore"
-version = "0.2.202602121540"
+version = "0.2.202602121544"
 dependencies = [
  "koi-common",
  "thiserror",

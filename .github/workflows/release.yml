@@ -235,4 +235,4 @@ jobs:
           sleep 15
           # Layer 6: depends on everything
           cargo publish -p koi-embedded --locked
-          cargo publish -p koi --locked
+          cargo publish -p koi-net --locked

@@ -1,6 +1,6 @@
 [package]
-name = "koi"
-description = "Koi — local network toolkit"
+name = "koi-net"
+description = "Local network toolkit: service discovery, DNS, health monitoring, TLS proxy, and certificate mesh"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
