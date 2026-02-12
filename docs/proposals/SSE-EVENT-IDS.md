@@ -1,7 +1,7 @@
 # SSE Event IDs
 
-**Status:** Idea
-**Scope:** Koi HTTP adapter — SSE stream on `/v1/events`
+**Status:** Implemented
+**Scope:** Koi HTTP adapter — SSE stream on `/v1/mdns/events`
 
 ---
 

@@ -245,6 +245,24 @@ pub enum CertmeshSubcommand {
     },
     /// Rotate the TOTP enrollment secret
     RotateTotp,
+    /// Create an encrypted backup bundle
+    Backup {
+        /// Path to write the backup bundle
+        path: PathBuf,
+    },
+    /// Restore certmesh state from a backup bundle
+    Restore {
+        /// Path to the backup bundle
+        path: PathBuf,
+    },
+    /// Revoke a member from the mesh
+    Revoke {
+        /// Hostname to revoke
+        hostname: String,
+        /// Optional reason for revocation
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// Destroy the certificate mesh (removes all CA data, certs, and audit log)
     Destroy,
 }

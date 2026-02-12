@@ -148,6 +148,53 @@ pub struct DestroyResponse {
     pub destroyed: bool,
 }
 
+// ── Phase 5 — Backup/Restore/Revocation ───────────────────────────
+
+/// POST /backup request — create an encrypted backup bundle.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BackupRequest {
+    pub ca_passphrase: String,
+    pub backup_passphrase: String,
+}
+
+/// POST /backup response — backup encoded as hex.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BackupResponse {
+    pub backup_hex: String,
+    pub format: String,
+    pub version: u16,
+}
+
+/// POST /restore request — restore from an encrypted backup bundle.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RestoreRequest {
+    pub backup_hex: String,
+    pub backup_passphrase: String,
+    pub new_passphrase: String,
+}
+
+/// POST /restore response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RestoreResponse {
+    pub restored: bool,
+}
+
+/// POST /revoke request — revoke a member.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RevokeRequest {
+    pub hostname: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+}
+
+/// POST /revoke response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RevokeResponse {
+    pub revoked: bool,
+}
+
 // ── Phase 4 — Enrollment Policy ─────────────────────────────────────
 
 /// Request to set enrollment scope constraints.

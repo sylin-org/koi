@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use koi_certmesh::entropy;
 use koi_certmesh::profiles::TrustProfile;
+use koi_common::encoding::{hex_decode, hex_encode};
 use koi_mdns::events::MdnsEvent;
 
 use crate::client::KoiClient;
@@ -146,11 +147,6 @@ fn resolve_passphrase(passphrase: Option<&str>) -> anyhow::Result<String> {
         anyhow::bail!("Passphrase cannot be empty.");
     }
     Ok(result)
-}
-
-/// Encode bytes as lowercase hex string.
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Extract the TOTP secret from an otpauth:// URI and reconstruct a TotpSecret.
@@ -550,6 +546,128 @@ pub fn rotate_totp(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ── Backup ─────────────────────────────────────────────────────────
+
+pub fn backup(
+    path: &std::path::Path,
+    json: bool,
+    endpoint: Option<&str>,
+) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint)?;
+
+    confirm_action(
+        "This will export the CA private key and enrollment secret.",
+        "BACKUP",
+    )?;
+
+    let ca_passphrase = read_non_empty_line("Enter the CA passphrase:")?;
+    let backup_passphrase = read_non_empty_line("Enter a backup passphrase:")?;
+    confirm_passphrase("Confirm the backup passphrase:", &backup_passphrase)?;
+
+    let body = serde_json::json!({
+        "ca_passphrase": ca_passphrase,
+        "backup_passphrase": backup_passphrase,
+    });
+    let resp = client.post_json("/v1/certmesh/backup", &body)?;
+    let backup_hex = resp
+        .get("backup_hex")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("backup response missing backup_hex"))?;
+
+    let bytes = hex_decode(backup_hex)
+        .map_err(|e| anyhow::anyhow!("invalid backup hex: {e}"))?;
+    std::fs::write(path, bytes)?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "backup_saved": true,
+                "path": path.display().to_string(),
+            })
+        );
+    } else {
+        println!("Backup saved to {}", path.display());
+    }
+    Ok(())
+}
+
+// ── Restore ────────────────────────────────────────────────────────
+
+pub fn restore(
+    path: &std::path::Path,
+    json: bool,
+    endpoint: Option<&str>,
+) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint)?;
+
+    confirm_action(
+        "This will overwrite the local certmesh state.",
+        "RESTORE",
+    )?;
+
+    let backup_bytes = std::fs::read(path)?;
+    let backup_hex = hex_encode(&backup_bytes);
+
+    let backup_passphrase = read_non_empty_line("Enter the backup passphrase:")?;
+    let new_passphrase = read_non_empty_line("Enter a new CA passphrase:")?;
+    confirm_passphrase("Confirm the new CA passphrase:", &new_passphrase)?;
+
+    let body = serde_json::json!({
+        "backup_hex": backup_hex,
+        "backup_passphrase": backup_passphrase,
+        "new_passphrase": new_passphrase,
+    });
+    let resp = client.post_json("/v1/certmesh/restore", &body)?;
+
+    let restored = resp
+        .get("restored")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if json {
+        println!("{}", serde_json::json!({ "restored": restored }));
+    } else if restored {
+        println!("Backup restored successfully.");
+    } else {
+        println!("Backup restore failed.");
+    }
+    Ok(())
+}
+
+// ── Revoke ─────────────────────────────────────────────────────────
+
+pub fn revoke(
+    hostname: &str,
+    reason: Option<&str>,
+    json: bool,
+    endpoint: Option<&str>,
+) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint)?;
+
+    let body = serde_json::json!({
+        "hostname": hostname,
+        "reason": reason,
+    });
+    let resp = client.post_json("/v1/certmesh/revoke", &body)?;
+    let revoked = resp
+        .get("revoked")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "hostname": hostname, "revoked": revoked })
+        );
+    } else if revoked {
+        println!("Member revoked: {hostname}");
+    } else {
+        println!("Member could not be revoked: {hostname}");
+    }
+    Ok(())
+}
+
 // ── Destroy ─────────────────────────────────────────────────────────
 
 pub fn destroy(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
@@ -567,6 +685,38 @@ pub fn destroy(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
         println!("Certificate mesh destroyed. All CA data, certificates, and audit logs have been removed.");
     } else {
         println!("Certificate mesh could not be destroyed.");
+    }
+    Ok(())
+}
+
+// ── CLI helpers ────────────────────────────────────────────────────
+
+fn read_non_empty_line(prompt: &str) -> anyhow::Result<String> {
+    eprintln!("{prompt}");
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let trimmed = line.trim().to_string();
+    if trimmed.is_empty() {
+        anyhow::bail!("Input cannot be empty.");
+    }
+    Ok(trimmed)
+}
+
+fn confirm_passphrase(prompt: &str, expected: &str) -> anyhow::Result<()> {
+    let confirm = read_non_empty_line(prompt)?;
+    if confirm != expected {
+        anyhow::bail!("Passphrases do not match.");
+    }
+    Ok(())
+}
+
+fn confirm_action(message: &str, token: &str) -> anyhow::Result<()> {
+    eprintln!("{message}");
+    eprintln!("Type {token} to continue:");
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    if line.trim() != token {
+        anyhow::bail!("Confirmation failed.");
     }
     Ok(())
 }

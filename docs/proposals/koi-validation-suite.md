@@ -57,10 +57,10 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 
 | ID | Test | Expected | Auto? |
 |----|------|----------|-------|
-| P0-20 | GET `/v1/mdns/discover` | Returns service list (same as old `/discover`) | ✓ |
-| P0-21 | GET `/v1/mdns/status` | Returns status (same as old `/status`) | ✓ |
-| P0-22 | GET old endpoint `/discover` | Returns 301 redirect to `/v1/mdns/discover` | ✓ |
-| P0-23 | GET old endpoint `/status` | Returns 301 redirect to `/v1/mdns/status` | ✓ |
+| P0-20 | GET `/v1/mdns/browse?type=_http._tcp` | Returns SSE stream of discovered services | ✓ |
+| P0-21 | GET `/v1/mdns/admin/status` | Returns daemon mDNS status | ✓ |
+| P0-22 | GET old endpoint `/discover` | Returns 404 (legacy endpoint removed) | ✓ |
+| P0-23 | GET old endpoint `/status` | Returns 404 (legacy endpoint removed) | ✓ |
 | P0-24 | GET `/v1/status` | Returns unified status JSON | ✓ |
 
 ### P0 — Workspace Structure
@@ -83,8 +83,8 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 | P1-03 | Advertise `_dns._udp` via mDNS | Service appears in `koi mdns discover` on another machine | Manual |
 | P1-04 | Start mDNS, wait for a service to appear, then disappear | Event system fires `ServiceAppeared` and `ServiceDisappeared` events | ✓ |
 | P1-05 | Check last-seen timestamp on a discovered service | Timestamp is present, updates on subsequent sightings | ✓ |
-| P1-06 | Verify `~/.koi/` directory structure is created on first run | `config.toml`, `certs/`, `state/`, `logs/` subdirectories exist | ✓ |
-| P1-07 | Verify `~/.koi/config.toml` is valid TOML | Parseable with default values | ✓ |
+| P1-06 | Verify data dir structure is created on first run | `config.toml`, `certs/`, `state/`, `logs/` subdirectories exist under `/var/lib/koi/` or `%ProgramData%\koi\` | ✓ |
+| P1-07 | Verify data dir `config.toml` is valid TOML | Parseable with default values | ✓ |
 
 ---
 
@@ -94,9 +94,9 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 
 | ID | Test | Expected | Auto? |
 |----|------|----------|-------|
-| P2-01 | Run `koi certmesh create` with profile "Just Me" | CA created, QR code displayed, self-signed cert written to `~/.koi/certs/stone-01/` | Manual |
-| P2-02 | Verify CA key is encrypted at rest | `~/.koi/certmesh/ca/` contains encrypted key file, not plaintext PEM | ✓ |
-| P2-03 | Verify cert files at standard path | `cert.pem`, `key.pem`, `ca.pem`, `fullchain.pem` all exist under `~/.koi/certs/<hostname>/` | ✓ |
+| P2-01 | Run `koi certmesh create` with profile "Just Me" | CA created, QR code displayed, self-signed cert written to `/var/lib/koi/certs/stone-01/` or `%ProgramData%\koi\certs\stone-01\` | Manual |
+| P2-02 | Verify CA key is encrypted at rest | `/var/lib/koi/certmesh/ca/` or `%ProgramData%\koi\certmesh\ca\` contains encrypted key file, not plaintext PEM | ✓ |
+| P2-03 | Verify cert files at standard path | `cert.pem`, `key.pem`, `ca.pem`, `fullchain.pem` all exist under `/var/lib/koi/certs/<hostname>/` or `%ProgramData%\koi\certs\<hostname>\` | ✓ |
 | P2-04 | Verify `fullchain.pem` = `cert.pem` + `ca.pem` | Concatenation matches | ✓ |
 | P2-05 | Verify cert file permissions (Unix) | `key.pem` is 0600, others are 0644 | ✓ |
 | P2-06 | Verify self-signed cert SANs | Certificate includes: hostname, FQDN, mDNS name, all LAN IPs | ✓ |
@@ -118,7 +118,7 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 | ID | Test | Expected | Auto? |
 |----|------|----------|-------|
 | P2-30 | Run `koi certmesh join` on Machine B | Discovers CA via mDNS, prompts for TOTP | Manual |
-| P2-31 | Enter valid TOTP code | Enrollment succeeds, cert files written to `~/.koi/certs/stone-05/` | ✓ |
+| P2-31 | Enter valid TOTP code | Enrollment succeeds, cert files written to `/var/lib/koi/certs/stone-05/` or `%ProgramData%\koi\certs\stone-05\` | ✓ |
 | P2-32 | Enter invalid TOTP code | Enrollment fails with clear error message | ✓ |
 | P2-33 | Enter 3 invalid codes | 5-minute lockout triggered, subsequent valid codes rejected | ✓ |
 | P2-34 | Wait for lockout to expire, enter valid code | Enrollment succeeds | ✓ |
@@ -487,7 +487,7 @@ These are the "it all works" tests. Run as final acceptance after Phase 8.
 
 | Step | Action | Expected |
 |------|--------|----------|
-| 1 | Note cert serial: `openssl x509 -in ~/.koi/certs/stone-05/cert.pem -serial` | Record serial A |
+| 1 | Note cert serial: `openssl x509 -in /var/lib/koi/certs/stone-05/cert.pem -serial` | Record serial A |
 | 2 | Wait for renewal (at 80% of lifetime) | Cert files overwritten |
 | 3 | Check serial again | Different serial B |
 | 4 | Verify `fullchain.pem` updated | New cert in fullchain |
@@ -557,7 +557,7 @@ For quick reference — the must-pass gates at each phase:
 | Phase | Gate Test | Pass? |
 |-------|-----------|-------|
 | 0 | Old commands work with deprecation notice, new `koi mdns` commands work, `--json` on all, workspace compiles | ☐ |
-| 1 | `koi status` shows mDNS, event system fires on service appear/disappear, `~/.koi/` structure exists | ☐ |
+| 1 | `koi status` shows mDNS, event system fires on service appear/disappear, data dir structure exists | ☐ |
 | 2 | Two machines enrolled via TOTP, cert files at standard path, mutual TLS works, browser shows green lock | ☐ |
 | 3 | Failover within 60s, old primary defers on return, cert renewal overwrites files, reload hook fires | ☐ |
 | 4 | Org profile requires approval + operator + scope, enrollment windows auto-close, compliance summary adapts | ☐ |

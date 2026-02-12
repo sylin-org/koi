@@ -146,6 +146,11 @@ pub fn process_enrollment(
     // 3. Validate scope constraints
     validate_scope(hostname, &roster.metadata)?;
 
+    // 3b. Reject revoked members
+    if roster.is_revoked(hostname) {
+        return Err(CertmeshError::Revoked(hostname.to_string()));
+    }
+
     // 4. Check not already enrolled
     if roster.is_enrolled(hostname) {
         return Err(CertmeshError::AlreadyEnrolled(hostname.to_string()));

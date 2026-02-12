@@ -90,6 +90,14 @@ GET /v1/status
 
 Returns version, uptime, platform, and the status of each capability.
 
+### Admin shutdown
+
+```
+POST /v1/admin/shutdown
+```
+
+Requests a graceful daemon shutdown.
+
 ---
 
 ## Client mode
@@ -222,6 +230,12 @@ koi certmesh join [ENDPOINT]                     # join existing mesh (discovers
 koi certmesh unlock                              # decrypt CA key
 koi certmesh log                                 # show audit log
 koi certmesh set-hook --reload "COMMAND"         # set renewal hook
+koi certmesh promote [ENDPOINT]                  # promote standby CA
+koi certmesh open-enrollment [--until DURATION]  # open enrollment window
+koi certmesh close-enrollment                    # close enrollment window
+koi certmesh set-policy [--domain ...] [--subnet ...] [--clear]
+koi certmesh rotate-totp                         # rotate TOTP secret
+koi certmesh destroy                             # destroy all certmesh state
 
 # Global
 koi status                                       # unified capability status

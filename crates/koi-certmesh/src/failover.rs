@@ -164,8 +164,22 @@ mod tests {
     use crate::roster::{MemberRole, MemberStatus, Roster, RosterMember};
     use chrono::Utc;
     use std::collections::HashMap;
+    use std::sync::Once;
+
+    fn ensure_test_data_dir() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            let base = std::env::temp_dir().join(format!(
+                "koi-certmesh-tests-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::create_dir_all(&base);
+            std::env::set_var("KOI_DATA_DIR", base);
+        });
+    }
 
     fn make_test_ca() -> CaState {
+        ensure_test_data_dir();
         ca::create_ca("test-pass", &vec![42u8; 32]).unwrap()
     }
 

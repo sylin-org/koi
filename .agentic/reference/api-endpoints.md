@@ -59,6 +59,7 @@ Route handlers are defined in `crates/koi-certmesh/src/http.rs`.
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | GET | `/v1/status` | Unified capability status (version, uptime, capabilities) |
+| POST | `/v1/admin/shutdown` | Initiate graceful shutdown |
 | GET | `/healthz` | Health check (200 "OK") |
 
 ---
@@ -92,9 +93,9 @@ Used over Named Pipe (Windows), Unix Domain Socket, and piped stdin/stdout.
 ### Response Format (one JSON object per line)
 ```json
 {"found": {"name": "My App", "type": "_http._tcp", "port": 8080}}
-{"registered": {"id": "abc12345", "lease": {"mode": "session"}}}
-{"renewed": {"id": "abc12345", "expires_in_secs": 90}}
-{"removed": "abc12345"}
+{"registered": {"id": "abc12345", "name": "My App", "type": "_http._tcp", "port": 8080, "mode": "session"}}
+{"renewed": {"id": "abc12345", "lease_secs": 90}}
+{"unregistered": "abc12345"}
 {"error": "not_found", "message": "Registration not found"}
 ```
 
@@ -184,6 +185,7 @@ Streaming responses include a `status` field:
 Browse and events endpoints return Server-Sent Events:
 
 ```
+id: 019503a1-7c00-7def-8000-1a2b3c4d5e6f
 data: {"found": {"name": "My App", ...}}
 
 data: {"event": "resolved", "service": {...}}

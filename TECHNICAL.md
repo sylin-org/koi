@@ -75,51 +75,73 @@ impl MdnsCore {
     pub fn browse(&self, service_type: &str) -> Result<BrowseHandle>
 
     /// Register a service on the local network via mDNS.
-    /// Returns an opaque ID for lifecycle management.
-    pub fn register(&self, service: ServiceDefinition) -> Result<ServiceId>
+    /// Returns registration details and lease metadata.
+    pub fn register(&self, payload: RegisterPayload) -> Result<RegistrationResult>
 
     /// Unregister a previously registered service.
     /// Sends mDNS goodbye packets.
-    pub fn unregister(&self, id: ServiceId) -> Result<()>
+    pub fn unregister(&self, id: &str) -> Result<()>
 
     /// Resolve a specific service instance by its full name.
-    pub fn resolve(&self, instance: &str) -> Result<ResolvedService>
+    pub fn resolve(&self, instance: &str) -> Result<ServiceRecord>
 
     /// Subscribe to all service events across all active browses.
     /// Returns a broadcast receiver for fan-out.
-    pub fn subscribe(&self) -> broadcast::Receiver<ServiceEvent>
+    pub fn subscribe(&self) -> broadcast::Receiver<MdnsEvent>
 }
 ```
 
 ### Domain types
 
 ```rust
-/// Request to register a new service.
-pub struct ServiceDefinition {
-    pub name: String,           // "My Web Server"
-    pub service_type: String,   // "_http._tcp"
-    pub port: u16,              // 8080
-    pub txt: HashMap<String, String>,  // {"version": "1.0"}
+/// Canonical service representation used across browse/resolve/events.
+pub struct ServiceRecord {
+  pub name: String,
+  pub service_type: String,   // "_http._tcp"
+  pub host: Option<String>,   // "server-01.local"
+  pub ip: Option<String>,     // "192.168.1.42"
+  pub port: Option<u16>,
+  pub txt: HashMap<String, String>,
 }
 
-/// Opaque identifier returned after registration.
-pub struct ServiceId(String);
+/// Request to register a new service.
+pub struct RegisterPayload {
+  pub name: String,           // "My Web Server"
+  pub service_type: String,   // "_http._tcp"
+  pub port: u16,              // 8080
+  pub ip: Option<String>,
+  pub lease_secs: Option<u64>,
+  pub txt: HashMap<String, String>,
+}
 
-/// A fully or partially resolved service instance.
-pub struct ResolvedService {
-    pub name: String,
-    pub service_type: String,
-    pub host: String,           // "server-01.local"
-    pub ip: Option<String>,     // "192.168.1.42" (None if unresolved)
-    pub port: u16,
-    pub txt: HashMap<String, String>,
+/// Result of a successful registration.
+pub struct RegistrationResult {
+  pub id: String,
+  pub name: String,
+  pub service_type: String,
+  pub port: u16,
+  pub mode: LeaseMode,
+  pub lease_secs: Option<u64>,
+}
+
+/// Result of a successful lease renewal (heartbeat).
+pub struct RenewalResult {
+  pub id: String,
+  pub lease_secs: u64,
+}
+
+/// How a registration stays alive (wire representation).
+pub enum LeaseMode {
+  Session,
+  Heartbeat,
+  Permanent,
 }
 
 /// Events emitted by browse and subscribe operations.
-pub enum ServiceEvent {
-    Found(ResolvedService),
-    Resolved(ResolvedService),
-    Removed { name: String, service_type: String },
+pub enum EventKind {
+  Found,
+  Resolved,
+  Removed,
 }
 ```
 
@@ -317,6 +339,7 @@ The HTTP adapter translates REST semantics to core API calls using Axum.
 | `GET` | `/v1/mdns/resolve?name={instance}` | `resolve()` | JSON `resolved` response |
 | `GET` | `/v1/mdns/events?type=_http._tcp` | `subscribe()` | SSE stream of lifecycle events |
 | `GET` | `/v1/status` | — | Unified capability status |
+| `POST` | `/v1/admin/shutdown` | — | Initiate graceful shutdown |
 | `GET` | `/healthz` | — | `"OK"` |
 
 ### SSE streaming
@@ -333,6 +356,8 @@ data: {"found": {"name": "Server B", "type": "_http._tcp", ...}, "status": "ongo
 
 data: {"found": {"name": "Server B", "type": "_http._tcp", ...}, "status": "finished"}
 ```
+
+Each SSE event includes an `id` field (UUID v7) to support client resume tracking.
 
 ### Default port
 
@@ -411,12 +436,12 @@ The canonical representation of a discovered or registered service:
 |---|---|---|---|
 | `name` | string | yes | Human-readable instance name |
 | `type` | string | yes | DNS-SD service type (`_name._tcp` or `_name._udp`) |
-| `host` | string | yes* | Hostname (e.g. `server.local`). Present after discovery. |
+| `host` | string | no | Hostname (e.g. `server.local`). Present after discovery. |
 | `ip` | string | no | IPv4 or IPv6 address. May be absent if unresolved. |
-| `port` | integer | yes | Service port number |
+| `port` | integer | no | Service port number. May be absent in browse events. |
 | `txt` | object | yes | TXT record key-value pairs. Empty object `{}` if none. |
 
-*`host` is always present in browse/resolve responses but is not required in register requests (Koi uses the machine's hostname).
+*`host` is typically present in browse/resolve responses but is not required in register requests (Koi uses the machine's hostname).
 
 ---
 
@@ -479,13 +504,13 @@ The socket mount option is significant — it gives containers mDNS access with 
 **Browse** — Discover services on the physical LAN that the container cannot reach via multicast:
 ```bash
 # Inside a container: find all printers on the office network
-curl http://172.17.0.1:5641/v1/browse?type=_ipp._tcp
+curl http://172.17.0.1:5641/v1/mdns/browse?type=_ipp._tcp
 ```
 
 **Register** — Advertise a containerized service on the LAN so non-container devices can find it:
 ```bash
 # Inside a container: announce a web service to the LAN
-curl -X POST http://172.17.0.1:5641/v1/services \
+curl -X POST http://172.17.0.1:5641/v1/mdns/services \
   -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
 ```
 
@@ -494,7 +519,7 @@ This makes the containerized service visible to mDNS browsers on the physical ne
 **Subscribe** — Stream real-time service events for dynamic service mesh behavior:
 ```bash
 # Inside a container: watch for new services appearing on the LAN
-curl http://172.17.0.1:5641/v1/events?type=_http._tcp
+curl http://172.17.0.1:5641/v1/mdns/events?type=_http._tcp
 ```
 
 ### Docker Compose examples

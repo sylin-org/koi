@@ -4,6 +4,8 @@ Koi's certmesh capability provides a private Certificate Authority (CA) with TOT
 
 All CLI commands use the `koi certmesh` moniker. All HTTP endpoints live under `/v1/certmesh/`.
 
+Certmesh commands require a running daemon. Use `koi install` or run `koi --daemon` first.
+
 ---
 
 ## Creating a certificate mesh
@@ -19,7 +21,7 @@ Certificate mesh created!
   Profile:      Just Me
   CA fingerprint: a1b2c3d4e5f6...
   Primary host: stone-01
-  Certificates: C:\Users\me\AppData\Local\koi\certmesh\certs\stone-01
+  Certificates: %ProgramData%\koi\certmesh\certs\stone-01
 
 Scan this QR code with your authenticator app:
 █████████████████████████████
@@ -80,7 +82,7 @@ Certificate Mesh Status
   stone-01 (primary, active)
     Fingerprint: a1b2c3d4...
     Expires:     2026-03-13
-    Cert path:   C:\Users\me\AppData\Local\koi\certmesh\certs\stone-01
+    Cert path:   %ProgramData%\koi\certmesh\certs\stone-01
 ```
 
 JSON output:
@@ -123,7 +125,7 @@ Found CA: stone-01 Certmesh CA at http://192.168.1.10:5641
 Enter the TOTP code from your authenticator app:
 123456
 Enrolled as: stone-02
-Certificates written to: /home/user/.koi/certmesh/certs/stone-02
+Certificates written to: /var/lib/koi/certmesh/certs/stone-02
 ```
 
 If multiple CAs are found, or if the machines aren't on the same broadcast domain, specify the endpoint directly:
@@ -194,6 +196,24 @@ koi certmesh set-hook --reload "systemctl restart nginx" --json
 
 All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 
+### Endpoint summary
+
+- `POST /v1/certmesh/create`
+- `POST /v1/certmesh/join`
+- `GET /v1/certmesh/status`
+- `POST /v1/certmesh/unlock`
+- `PUT /v1/certmesh/hook`
+- `POST /v1/certmesh/promote`
+- `POST /v1/certmesh/renew`
+- `GET /v1/certmesh/roster`
+- `POST /v1/certmesh/health`
+- `POST /v1/certmesh/rotate-totp`
+- `GET /v1/certmesh/log`
+- `POST /v1/certmesh/enrollment/open`
+- `POST /v1/certmesh/enrollment/close`
+- `PUT /v1/certmesh/policy`
+- `POST /v1/certmesh/destroy`
+
 ### Join the mesh
 
 ```
@@ -212,7 +232,7 @@ Response:
   "service_cert": "-----BEGIN CERTIFICATE-----\n...",
   "service_key": "-----BEGIN PRIVATE KEY-----\n...",
   "ca_fingerprint": "a1b2c3d4...",
-  "cert_path": "/home/user/.koi/certmesh/certs/stone-02"
+  "cert_path": "/var/lib/koi/certmesh/certs/stone-02"
 }
 ```
 
@@ -266,9 +286,9 @@ Certificates are written to the Koi data directory:
 
 | Platform | Base path |
 |---|---|
-| Windows | `%LOCALAPPDATA%\koi\certmesh\` |
-| macOS | `~/Library/Application Support/koi/certmesh/` |
-| Linux | `~/.koi/certmesh/` |
+| Windows | `%ProgramData%\koi\certmesh\` |
+| macOS | `/Library/Application Support/koi/certmesh/` |
+| Linux | `/var/lib/koi/certmesh/` |
 
 Per-member certificate files:
 

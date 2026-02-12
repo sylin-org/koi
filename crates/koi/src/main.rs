@@ -189,6 +189,15 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     CertmeshSubcommand::RotateTotp => {
                         commands::certmesh::rotate_totp(cli.json, ep)
                     }
+                    CertmeshSubcommand::Backup { path } => {
+                        commands::certmesh::backup(path, cli.json, ep)
+                    }
+                    CertmeshSubcommand::Restore { path } => {
+                        commands::certmesh::restore(path, cli.json, ep)
+                    }
+                    CertmeshSubcommand::Revoke { hostname, reason } => {
+                        commands::certmesh::revoke(hostname, reason.as_deref(), cli.json, ep)
+                    }
                     CertmeshSubcommand::Destroy => {
                         commands::certmesh::destroy(cli.json, ep)
                     }
@@ -325,7 +334,7 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     tracing::info!("Ready.");
 
     // Wait for shutdown signal
-    shutdown_signal().await;
+    shutdown_signal(cancel.clone()).await;
     tracing::info!("Shutting down...");
 
     // Ordered shutdown with hard timeout
@@ -588,9 +597,16 @@ fn is_piped_stdin() -> bool {
 }
 
 /// Wait for Ctrl+C or platform-specific shutdown signal.
-async fn shutdown_signal() {
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        tracing::error!(error = %e, "Failed to listen for Ctrl+C");
+async fn shutdown_signal(cancel: CancellationToken) {
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "Failed to listen for Ctrl+C");
+            }
+        }
+        _ = cancel.cancelled() => {
+            // Admin shutdown endpoint requests a cancel.
+        }
     }
 }
 

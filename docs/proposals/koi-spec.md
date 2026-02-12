@@ -501,7 +501,7 @@ Certmesh mints certificates. But minting isn't enough — services need to *find
 Koi writes certificate files to a well-known, predictable location:
 
 ```
-~/.koi/certs/
+/var/lib/koi/certs/
   <hostname>/
     cert.pem        # Service certificate (public)
     key.pem         # Service private key
@@ -511,7 +511,7 @@ Koi writes certificate files to a well-known, predictable location:
 
 This follows the same convention used by Let's Encrypt, Caddy, and every major ACME client. Services are configured once to point at these paths. When certmesh renews, it overwrites the files in place.
 
-On Linux, the default path is `~/.koi/certs/`. On macOS, `~/Library/Application Support/koi/certs/`. On Windows, `%LOCALAPPDATA%\koi\certs\`. The path is printed during enrollment and available via `koi certmesh status`.
+On Linux, the default path is `/var/lib/koi/certs/`. On macOS, `/Library/Application Support/koi/certs/`. On Windows, `%ProgramData%\koi\certs\`. The path is printed during enrollment and available via `koi certmesh status`.
 
 #### Three Consumption Scenarios
 
@@ -523,8 +523,8 @@ Most production services support TLS configuration: Grafana, Nginx, PostgreSQL, 
 # grafana.ini
 [server]
 protocol = https
-cert_file = /home/koi/.koi/certs/stone-05/cert.pem
-cert_key  = /home/koi/.koi/certs/stone-05/key.pem
+cert_file = /var/lib/koi/certs/stone-05/cert.pem
+cert_key  = /var/lib/koi/certs/stone-05/key.pem
 ```
 
 This is a one-time configuration. Some services hot-reload certs when files change (Nginx with `nginx -s reload`, Caddy automatically). For services that don't, Koi supports reload hooks.
@@ -539,7 +539,7 @@ services:
   grafana:
     image: grafana/grafana
     volumes:
-      - ${HOME}/.koi/certs/stone-05:/etc/koi-certs:ro
+      - /var/lib/koi/certs/stone-05:/etc/koi-certs:ro
     environment:
       GF_SERVER_PROTOCOL: https
       GF_SERVER_CERT_FILE: /etc/koi-certs/cert.pem
@@ -868,13 +868,13 @@ Flags:
 --listen <port>          # Port to listen on for HTTPS (required)
 --backend <url>          # Backend URL to forward to (required, default: localhost only)
 --backend-remote         # Allow non-localhost backend (logs warning about unencrypted hop)
---cert-path <path>       # Override cert path (default: ~/.koi/certs/<hostname>/)
+--cert-path <path>       # Override cert path (default: /var/lib/koi/certs/<hostname>/)
 ```
 
 ### 7.4 How It Works
 
 1. `koi proxy add grafana --listen 443 --backend http://localhost:3000`
-2. Proxy starts an HTTPS listener on port 443 using the cert and key from `~/.koi/certs/<hostname>/`.
+2. Proxy starts an HTTPS listener on port 443 using the cert and key from `/var/lib/koi/certs/<hostname>/`.
 3. Client connects to `https://grafana.lan:443`.
 4. DNS resolves `grafana.lan` to the machine's IP (see §5).
 5. Proxy terminates TLS using the certmesh cert (which includes `grafana.lan` in its SANs thanks to the SAN feedback loop).
@@ -946,7 +946,7 @@ From this point forward, without any additional configuration:
 - Every machine has a valid TLS certificate with all its names and IPs.
 - Every service discovered via mDNS gets a `<service>.lan` DNS name.
 - Every machine's health is tracked automatically.
-- Services that speak TLS natively can use the cert files at `~/.koi/certs/`.
+- Services that speak TLS natively can use the cert files at `/var/lib/koi/certs/`.
 - Services that don't can be proxied with `koi proxy add`.
 
 The user types `https://grafana.lan` in their browser. It works. No browser warnings. No cert errors. No memorizing IP addresses.
@@ -1017,7 +1017,7 @@ roster:
       cert_fingerprint: <sha256>
       cert_expires: 2026-03-12T14:30:15Z
       cert_sans: [stone-01, stone-01.lincoln-elementary.local, stone-01.local, 192.168.1.10]
-      cert_path: /home/koi/.koi/certs/stone-01/
+      cert_path: /var/lib/koi/certs/stone-01/
       pinned_ca_fingerprint: <sha256>
       last_seen: 2026-02-10T16:00:00Z
       status: active                     # active | revoked
@@ -1027,7 +1027,7 @@ roster:
       role: member
       enrolled_at: 2026-02-10T14:35:12Z
       enrolled_by: "Maria Santos"
-      cert_path: /home/koi/.koi/certs/stone-05/
+      cert_path: /var/lib/koi/certs/stone-05/
       reload_hook: "systemctl reload grafana-server"
       # ...
 
@@ -1071,7 +1071,7 @@ Per ISO 27001 A.5.1, certmesh includes a single-page security model document. Th
 
 **How enrollment works:** You scan a QR code into your authenticator app during setup. To add a new machine, type the six-digit code from your app. If approval mode is enabled, the administrator must also confirm at the CA machine.
 
-**Where keys are stored:** The CA's signing key is encrypted on disk and requires a passphrase to unlock after reboot. On hardware with a TPM, the key is additionally sealed in hardware. The signing key exists only on the primary CA and its standby — never on regular member machines. Each machine's own service cert and key are stored at a well-known path (`~/.koi/certs/`) and are readable only by the owning user.
+**Where keys are stored:** The CA's signing key is encrypted on disk and requires a passphrase to unlock after reboot. On hardware with a TPM, the key is additionally sealed in hardware. The signing key exists only on the primary CA and its standby — never on regular member machines. Each machine's own service cert and key are stored at a well-known path (`/var/lib/koi/certs/`) and are readable only by the owning user.
 
 **How services use certificates:** Services that support TLS are configured once to point at the cert files. Services that don't support TLS can use `koi proxy` to terminate TLS on their behalf. Certificates renew automatically every 30 days — services either hot-reload the new files or are restarted by a reload hook.
 
@@ -1151,7 +1151,7 @@ URL rewriting, load balancing, WebSocket protocol upgrade, virtual host routing,
 |------|-----------|
 | CA (Certificate Authority) | The machine running the certmesh primary that signs certificates for the mesh. |
 | Capability | A named functional module within Koi (mdns, certmesh, dns, health, proxy). |
-| Cert path | The filesystem location where Koi writes cert and key files (`~/.koi/certs/<hostname>/`). |
+| Cert path | The filesystem location where Koi writes cert and key files (`/var/lib/koi/certs/<hostname>/`). |
 | Enrollment | The process of joining a new machine to the certmesh via TOTP verification. |
 | Failover dance | The deterministic process by which a standby becomes primary when the primary is unavailable. |
 | Fullchain | The service certificate concatenated with the CA certificate (`fullchain.pem`). |
@@ -1197,14 +1197,14 @@ $ koi certmesh create
   ✓ Root CA created
   ✓ Scan this QR code with your authenticator:
     [QR CODE]
-  ✓ Self-signed cert written to ~/.koi/certs/stone-01/
+  ✓ Self-signed cert written to /var/lib/koi/certs/stone-01/
   ✓ mDNS beacon active: _certmesh._tcp
 
 # Machine 2: Join
 $ koi certmesh join
   Found certmesh CA: stone-01 (192.168.1.10)
   TOTP code: 847293
-  ✓ Enrolled. Cert written to ~/.koi/certs/stone-05/
+  ✓ Enrolled. Cert written to /var/lib/koi/certs/stone-05/
 
 # Start DNS
 $ koi dns serve
@@ -1223,7 +1223,7 @@ $ koi dns list
 # Grafana doesn't speak TLS — proxy it
 $ koi proxy add grafana --listen 443 --backend http://localhost:3000
   ✓ Proxying https://*:443 → http://localhost:3000
-  ✓ Using cert: ~/.koi/certs/stone-05/cert.pem
+  ✓ Using cert: /var/lib/koi/certs/stone-05/cert.pem
 
 # Done. Open browser:
 #   https://grafana.lan → works, green lock, no warnings.

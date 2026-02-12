@@ -6,6 +6,7 @@
 //! mutual TLS trust without external infrastructure.
 
 pub mod audit;
+pub mod backup;
 pub mod ca;
 pub mod certfiles;
 pub mod enrollment;
@@ -91,6 +92,11 @@ pub struct CertmeshCore {
 }
 
 impl CertmeshCore {
+    /// Construct a facade from an existing shared state.
+    pub(crate) fn from_state(state: Arc<CertmeshState>) -> Self {
+        Self { state }
+    }
+
     /// Create a new CertmeshCore with an unlocked (decrypted) CA.
     pub fn new(
         ca: ca::CaState,
@@ -469,6 +475,114 @@ impl CertmeshCore {
         Ok(totp_uri)
     }
 
+    // ── Phase 5 — Backup/Restore/Revocation ───────────────────────
+
+    /// Create an encrypted backup bundle for the certmesh state.
+    pub async fn backup(
+        &self,
+        ca_passphrase: &str,
+        backup_passphrase: &str,
+    ) -> Result<Vec<u8>, CertmeshError> {
+        if !ca::is_ca_initialized() {
+            return Err(CertmeshError::CaNotInitialized);
+        }
+
+        let ca_state = ca::load_ca(ca_passphrase)?;
+
+        let totp_path = ca::totp_secret_path();
+        let encrypted_totp = koi_crypto::keys::load_encrypted_key(&totp_path)?;
+        let totp_secret = koi_crypto::totp::decrypt_secret(&encrypted_totp, ca_passphrase)?;
+
+        let roster = self.state.roster.lock().await;
+        let roster_json = serde_json::to_string(&*roster)
+            .map_err(|e| CertmeshError::Internal(format!("roster serialization failed: {e}")))?;
+
+        let audit_log = audit::read_log().map_err(CertmeshError::Io)?;
+
+        let ca_key_pem = ca_state.key.private_key_pem().to_string();
+        let payload = backup::BackupPayload::new(
+            ca_key_pem,
+            ca_state.cert_pem.clone(),
+            totp_secret.as_bytes().to_vec(),
+            roster_json,
+            audit_log,
+        );
+
+        let bundle = backup::encode_backup(&payload, backup_passphrase)?;
+        let _ = audit::append_entry("backup_created", &[]);
+        Ok(bundle)
+    }
+
+    /// Restore certmesh state from an encrypted backup bundle.
+    pub async fn restore(
+        &self,
+        backup_bytes: &[u8],
+        backup_passphrase: &str,
+        new_passphrase: &str,
+    ) -> Result<(), CertmeshError> {
+        let payload = backup::decode_backup(backup_bytes, backup_passphrase)?;
+
+        let ca_key = koi_crypto::keys::ca_keypair_from_pem(&payload.ca_key_pem)?;
+        let encrypted_key = koi_crypto::keys::encrypt_key(&ca_key, new_passphrase)?;
+        std::fs::create_dir_all(ca::ca_dir())?;
+        koi_crypto::keys::save_encrypted_key(&ca::ca_key_path(), &encrypted_key)?;
+        std::fs::write(ca::ca_cert_path(), &payload.ca_cert_pem)?;
+
+        let totp_secret = koi_crypto::totp::TotpSecret::from_bytes(payload.totp_secret);
+        let encrypted_totp = koi_crypto::totp::encrypt_secret(&totp_secret, new_passphrase)?;
+        koi_crypto::keys::save_encrypted_key(&ca::totp_secret_path(), &encrypted_totp)?;
+
+        if let Some(parent) = ca::roster_path().parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(ca::roster_path(), &payload.roster_json)?;
+        if let Some(parent) = audit::audit_log_path().parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(audit::audit_log_path(), &payload.audit_log)?;
+
+        let restored_roster: Roster = serde_json::from_str(&payload.roster_json)
+            .map_err(|e| CertmeshError::Internal(format!("roster deserialization failed: {e}")))?;
+
+        let ca_state = ca::load_ca(new_passphrase)?;
+        *self.state.ca.lock().await = Some(ca_state);
+        *self.state.totp_secret.lock().await = Some(totp_secret);
+        *self.state.profile.lock().await = restored_roster.metadata.trust_profile;
+        *self.state.roster.lock().await = restored_roster;
+
+        let _ = audit::append_entry("backup_restored", &[]);
+        Ok(())
+    }
+
+    /// Revoke a member and persist the revocation list.
+    pub async fn revoke_member(
+        &self,
+        hostname: &str,
+        operator: Option<String>,
+        reason: Option<String>,
+    ) -> Result<(), CertmeshError> {
+        let mut roster = self.state.roster.lock().await;
+        roster
+            .revoke_member(hostname, operator.clone(), reason.clone())
+            .map_err(CertmeshError::NotFound)?;
+
+        let roster_path = ca::roster_path();
+        roster::save_roster(&roster, &roster_path)?;
+
+        let _ = audit::append_entry(
+            "member_revoked",
+            &[
+                ("hostname", hostname),
+                (
+                    "operator",
+                    operator.as_deref().unwrap_or("unknown"),
+                ),
+                ("reason", reason.as_deref().unwrap_or("none")),
+            ],
+        );
+        Ok(())
+    }
+
     // ── Phase 3 — Lifecycle ────────────────────────────────────────
 
     /// Renew all members whose certs are within the renewal threshold.
@@ -532,6 +646,9 @@ impl CertmeshCore {
 
         // Update roster
         let mut roster = self.state.roster.lock().await;
+        if roster.is_revoked(&request.hostname) {
+            return Err(CertmeshError::Revoked(request.hostname.clone()));
+        }
         if let Some(member) = roster.find_member_mut(&request.hostname) {
             member.cert_fingerprint = issued.fingerprint.clone();
             member.cert_expires = issued.expires;
@@ -570,6 +687,9 @@ impl CertmeshCore {
         );
 
         let mut roster = self.state.roster.lock().await;
+        if roster.is_revoked(&request.hostname) {
+            return Err(CertmeshError::Revoked(request.hostname.clone()));
+        }
         roster.touch_member(&request.hostname);
 
         let roster_path = ca::roster_path();

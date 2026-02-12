@@ -34,6 +34,8 @@ pub enum ErrorCode {
     InvalidManifest,
     // Certmesh (Phase 4)
     ScopeViolation,
+    // Certmesh (Phase 5)
+    Revoked,
 }
 
 impl ErrorCode {
@@ -52,6 +54,7 @@ impl ErrorCode {
             Self::InvalidTotp => 401,
             Self::RateLimited => 429,
             Self::EnrollmentClosed | Self::NotStandby | Self::ScopeViolation => 403,
+            Self::Revoked => 403,
             Self::DaemonError | Self::IoError | Self::Internal
             | Self::PromotionFailed | Self::RenewalFailed => 500,
             Self::InvalidManifest => 400,
@@ -110,6 +113,7 @@ mod tests {
             (ErrorCode::NotStandby, 403),
             // 403 Forbidden (Phase 4)
             (ErrorCode::ScopeViolation, 403),
+            (ErrorCode::Revoked, 403),
             // 500 Internal Server Error
             (ErrorCode::DaemonError, 500),
             (ErrorCode::IoError, 500),
@@ -163,6 +167,7 @@ mod tests {
             (ErrorCode::RenewalFailed, "renewal_failed"),
             (ErrorCode::InvalidManifest, "invalid_manifest"),
             (ErrorCode::ScopeViolation, "scope_violation"),
+            (ErrorCode::Revoked, "revoked"),
         ];
         for (code, expected_str) in &variants {
             let serialized = serde_json::to_value(code).unwrap();

@@ -13,10 +13,14 @@ use axum::{Json, Router};
 
 use crate::CertmeshState;
 use crate::error::CertmeshError;
+use koi_common::encoding::{hex_decode, hex_encode};
+
 use crate::protocol::{
-    CreateCaRequest, CreateCaResponse, HealthRequest, HealthResponse, JoinRequest,
-    PolicyRequest, PromoteRequest, RenewRequest, RenewResponse, RotateTotpRequest,
-    RotateTotpResponse, SetHookRequest, UnlockRequest, UnlockResponse,
+    BackupRequest, BackupResponse, CreateCaRequest, CreateCaResponse, HealthRequest,
+    HealthResponse, JoinRequest, PolicyRequest, PromoteRequest, RenewRequest,
+    RenewResponse, RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse,
+    RotateTotpRequest, RotateTotpResponse, SetHookRequest, UnlockRequest,
+    UnlockResponse,
 };
 
 /// Build the certmesh router with domain-owned routes.
@@ -37,6 +41,9 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route("/rotate-totp", post(rotate_totp_handler))
         .route("/log", get(log_handler))
         .route("/destroy", post(destroy_handler))
+        .route("/backup", post(backup_handler))
+        .route("/restore", post(restore_handler))
+        .route("/revoke", post(revoke_handler))
         // Phase 4 — Enrollment Policy
         .route("/enrollment/open", post(open_enrollment_handler))
         .route("/enrollment/close", post(close_enrollment_handler))
@@ -384,6 +391,113 @@ async fn destroy_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             &CertmeshError::Internal(format!("Serialization error: {e}")),
         ),
+    }
+}
+
+// ── Phase 5 handlers ───────────────────────────────────────────────
+
+/// POST /backup — Create an encrypted certmesh backup bundle.
+async fn backup_handler(
+    State(state): State<Arc<CertmeshState>>,
+    Json(request): Json<BackupRequest>,
+) -> impl IntoResponse {
+    let core = crate::CertmeshCore::from_state(Arc::clone(&state));
+    match core
+        .backup(&request.ca_passphrase, &request.backup_passphrase)
+        .await
+    {
+        Ok(bundle) => {
+            let response = BackupResponse {
+                backup_hex: hex_encode(&bundle),
+                format: "koi-backup-v1".to_string(),
+                version: crate::backup::BACKUP_VERSION,
+            };
+            match serde_json::to_value(&response) {
+                Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+                Err(e) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &CertmeshError::Internal(format!("Serialization error: {e}")),
+                ),
+            }
+        }
+        Err(e) => {
+            let code = koi_common::error::ErrorCode::from(&e);
+            let status = StatusCode::from_u16(code.http_status())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            error_response(status, &e)
+        }
+    }
+}
+
+/// POST /restore — Restore certmesh state from a backup bundle.
+async fn restore_handler(
+    State(state): State<Arc<CertmeshState>>,
+    Json(request): Json<RestoreRequest>,
+) -> impl IntoResponse {
+    let backup_bytes = match hex_decode(&request.backup_hex) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &CertmeshError::BackupInvalid(e),
+            )
+        }
+    };
+
+    let core = crate::CertmeshCore::from_state(Arc::clone(&state));
+    match core
+        .restore(&backup_bytes, &request.backup_passphrase, &request.new_passphrase)
+        .await
+    {
+        Ok(()) => {
+            let response = RestoreResponse { restored: true };
+            match serde_json::to_value(&response) {
+                Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+                Err(e) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &CertmeshError::Internal(format!("Serialization error: {e}")),
+                ),
+            }
+        }
+        Err(e) => {
+            let code = koi_common::error::ErrorCode::from(&e);
+            let status = StatusCode::from_u16(code.http_status())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            error_response(status, &e)
+        }
+    }
+}
+
+/// POST /revoke — Revoke a member.
+async fn revoke_handler(
+    State(state): State<Arc<CertmeshState>>,
+    Json(request): Json<RevokeRequest>,
+) -> impl IntoResponse {
+    let core = crate::CertmeshCore::from_state(Arc::clone(&state));
+    match core
+        .revoke_member(
+            &request.hostname,
+            request.operator.clone(),
+            request.reason.clone(),
+        )
+        .await
+    {
+        Ok(()) => {
+            let response = RevokeResponse { revoked: true };
+            match serde_json::to_value(&response) {
+                Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+                Err(e) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &CertmeshError::Internal(format!("Serialization error: {e}")),
+                ),
+            }
+        }
+        Err(e) => {
+            let code = koi_common::error::ErrorCode::from(&e);
+            let status = StatusCode::from_u16(code.http_status())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            error_response(status, &e)
+        }
     }
 }
 
@@ -748,13 +862,27 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use std::sync::Once;
     use tower::ServiceExt;
+
+    fn ensure_test_data_dir() {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            let base = std::env::temp_dir().join(format!(
+                "koi-certmesh-http-tests-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::create_dir_all(&base);
+            std::env::set_var("KOI_DATA_DIR", base);
+        });
+    }
 
     fn test_state() -> Arc<CertmeshState> {
         use crate::profiles::TrustProfile;
         use crate::roster::{EnrollmentState, Roster, RosterMetadata};
         use koi_crypto::totp::RateLimiter;
 
+        ensure_test_data_dir();
         Arc::new(CertmeshState {
             ca: tokio::sync::Mutex::new(None),
             roster: tokio::sync::Mutex::new(Roster {

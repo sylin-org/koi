@@ -184,6 +184,38 @@ impl Roster {
             .any(|m| m.hostname == hostname && m.status == MemberStatus::Active)
     }
 
+    /// Check if a hostname has been revoked.
+    pub fn is_revoked(&self, hostname: &str) -> bool {
+        self.revocation_list
+            .iter()
+            .any(|r| r.hostname == hostname)
+    }
+
+    /// Revoke a member and record the revocation entry.
+    pub fn revoke_member(
+        &mut self,
+        hostname: &str,
+        operator: Option<String>,
+        reason: Option<String>,
+    ) -> Result<(), String> {
+        let member = self
+            .find_member_mut(hostname)
+            .ok_or_else(|| format!("member not found: {hostname}"))?;
+
+        if member.status == MemberStatus::Revoked {
+            return Ok(());
+        }
+
+        member.status = MemberStatus::Revoked;
+        self.revocation_list.push(RevokedMember {
+            hostname: hostname.to_string(),
+            revoked_at: Utc::now(),
+            revoked_by: operator,
+            reason,
+        });
+        Ok(())
+    }
+
     /// Number of active members.
     pub fn active_count(&self) -> usize {
         self.members

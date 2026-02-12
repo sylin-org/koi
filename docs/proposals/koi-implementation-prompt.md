@@ -220,9 +220,9 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - Wire up `--json` flag on all commands (outputs JSON instead of human-readable)
 
 4. **REST API migration.** Namespace existing endpoints:
-   - `/discover` → `/v1/mdns/discover`
-   - `/status` → `/v1/mdns/status`
-   - Old endpoints return 301 redirects with `Location` header for one release cycle.
+   - `/discover` → `/v1/mdns/browse`
+   - `/status` → `/v1/mdns/admin/status`
+   - Old endpoints return 404 (legacy endpoints removed).
    - Add `/v1/status` (unified status endpoint)
 
 5. **Verify.** Run the complete existing test suite. Every test must pass with no modifications to test logic (path updates in test setup are fine).
@@ -254,17 +254,17 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - Last-seen timestamp tracking per discovered service (for health)
    - Event system: notify when a service appears, disappears, or changes
 
-4. **Config infrastructure.** Establish the `~/.koi/` directory structure:
+4. **Config infrastructure.** Establish the machine-scoped data directory structure:
    ```
-   ~/.koi/
+/var/lib/koi/
      config.toml        # Global config
      certs/             # Certificate files (created by certmesh)
      state/             # Runtime state
      logs/              # Audit and health logs
    ```
-   Platform-specific paths via `dirs` crate. Config is TOML.
+   Platform-specific paths via `dirs` crate (e.g., `%ProgramData%\koi\` on Windows). Config is TOML.
 
-**Deliverable:** Enhanced mDNS with event system, `~/.koi/` directory structure, `koi status` showing mDNS health, `--json` on all commands.
+**Deliverable:** Enhanced mDNS with event system, machine-scoped data directory structure, `koi status` showing mDNS health, `--json` on all commands.
 
 ---
 
@@ -284,7 +284,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - ECDSA P-256 keypair generation via `p256` crate
    - Root CA certificate via `rcgen`
    - Encrypt private key at rest with Argon2id + AES-256-GCM
-   - Write CA files to `~/.koi/certmesh/ca/`
+   - Write CA files to `/var/lib/koi/certmesh/ca/` (or `%ProgramData%\koi\certmesh\ca\` on Windows)
 
 3. **TOTP enrollment.** (koi-certmesh/enrollment.rs, koi-crypto/totp.rs)
    - Generate TOTP secret, encrypt alongside CA key
@@ -300,7 +300,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 5. **Certificate issuance.** (koi-certmesh/ca.rs, koi-certmesh/certfiles.rs)
    - SAN auto-population from mDNS knowledge: hostname, FQDN, mDNS name, all LAN IPs
    - Sign service cert with root CA
-   - Write cert files to standard path (`~/.koi/certs/<hostname>/`):
+   - Write cert files to standard path (`/var/lib/koi/certs/<hostname>/` on Linux, `%ProgramData%\koi\certs\<hostname>\` on Windows):
      - `cert.pem` — service certificate
      - `key.pem` — service private key
      - `ca.pem` — root CA public certificate
@@ -328,7 +328,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 **Deliverable:** `koi certmesh create`, `koi certmesh join`, working TLS between two machines, cert files at standard path, trust store installation, audit log.
 
-**Test:** Machine A creates mesh, Machine B joins via TOTP. Both machines can `curl https://stone-01.lan` without cert errors. Cert files exist at `~/.koi/certs/`.
+**Test:** Machine A creates mesh, Machine B joins via TOTP. Both machines can `curl https://stone-01.lan` without cert errors. Cert files exist at `/var/lib/koi/certs/` (or `%ProgramData%\koi\certs\`).
 
 ---
 
@@ -505,7 +505,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 1. **HTTPS listener.** (koi-proxy/listener.rs)
    - `axum` + `rustls` using cert files from standard cert path
-   - Cert hot-reload: watch `~/.koi/certs/<hostname>/` with `notify` crate, reload `rustls` config when files change
+   - Cert hot-reload: watch `/var/lib/koi/certs/<hostname>/` with `notify` crate, reload `rustls` config when files change
    - Listen on configured port
 
 2. **HTTP forwarding.** (koi-proxy/forwarder.rs)
@@ -520,7 +520,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 4. **Proxy config.** (koi-proxy/config.rs)
    - `koi proxy add/remove/list/status`
-   - Persist proxy entries in `~/.koi/config.toml` and roster
+   - Persist proxy entries in `/var/lib/koi/config.toml` and roster
    - Multiple proxies per machine, each with different listen port
 
 5. **Integration with health.** Proxy's backend connectivity check is a natural health signal. Wire proxy status into health's data sources.

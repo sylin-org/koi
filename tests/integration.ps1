@@ -27,6 +27,7 @@ param(
     [switch]$Tier3,
     [switch]$Service,
     [string]$ServiceEndpoint = 'http://127.0.0.1:5641',
+    [switch]$AllowServiceMutations,
     [switch]$NoBuild,
     [switch]$Verbose
 )
@@ -307,6 +308,7 @@ function Invoke-Sse {
         $reader = New-Object System.IO.StreamReader($stream)
 
         $events = @()
+        $currentId = $null
         $deadline = [DateTime]::Now.AddMilliseconds($TimeoutMs)
 
         while ($events.Count -lt $MaxEvents -and [DateTime]::Now -lt $deadline) {
@@ -323,10 +325,18 @@ function Invoke-Sse {
                 break
             }
             if ($null -eq $line) { break }
+            if ($line.StartsWith('id: ')) {
+                $currentId = $line.Substring(4).Trim()
+                continue
+            }
             if ($line.StartsWith('data: ')) {
                 $json = $line.Substring(6)
                 try {
-                    $events += ($json | ConvertFrom-Json)
+                    $evt = ($json | ConvertFrom-Json)
+                    if ($currentId) {
+                        $evt | Add-Member -NotePropertyName 'sse_id' -NotePropertyValue $currentId -Force
+                    }
+                    $events += $evt
                 } catch {
                     # Skip malformed data lines
                 }
@@ -475,6 +485,12 @@ if ($Service) {
     } catch {
         Fail 'certmesh status' $_.Exception.Message
     }
+
+    if (-not $AllowServiceMutations) {
+        Skip 'certmesh mutation tests (S.6-S.13)' 'Service mode without -AllowServiceMutations'
+    } elseif ($caWasInitialized) {
+        Skip 'certmesh mutation tests (S.6-S.13)' 'Service mode avoids mutating an existing CA'
+    } else {
 
     # S.6 - Certmesh create (if CA not yet initialized, we create one to test with)
     if (-not $caWasInitialized) {
@@ -733,6 +749,8 @@ if ($Service) {
             Fail 'rotate TOTP after destroy' $_.Exception.Message
         }
     }
+
+    } # end mutation block
 
     } # end certmesh-enabled block
 
@@ -1362,6 +1380,55 @@ try {
     Fail 'rotate TOTP' $_.Exception.Message
 }
 
+# 2.P7 - Backup bundle (Phase 5)
+$backupHex = $null
+try {
+    $backupBody = @{ ca_passphrase = 'test-koi-integration'; backup_passphrase = 'test-koi-backup' } | ConvertTo-Json
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/backup" -Body $backupBody
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.backup_hex -and $json.format -eq 'koi-backup-v1' -and $json.version -ge 1) {
+        $backupHex = $json.backup_hex
+        Pass 'certmesh backup returns bundle'
+    } else {
+        Fail 'certmesh backup returns bundle' "format=$($json.format) version=$($json.version)"
+    }
+} catch {
+    Fail 'certmesh backup returns bundle' $_.Exception.Message
+}
+
+# 2.P8 - Revoke unknown member returns 404
+try {
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/revoke" -Body '{"hostname":"ghost-host"}'
+    if ($errResp.StatusCode -eq 404) {
+        $errJson = $errResp.Content | ConvertFrom-Json
+        if ($errJson.error -eq 'not_found') {
+            Pass 'certmesh revoke unknown member returns 404 not_found'
+        } else {
+            Fail 'certmesh revoke unknown member' "Expected not_found, got $($errJson.error)"
+        }
+    } else {
+        Fail 'certmesh revoke unknown member' "Expected 404, got $($errResp.StatusCode)"
+    }
+} catch {
+    Fail 'certmesh revoke unknown member' $_.Exception.Message
+}
+
+# 2.P9 - Restore bundle (Phase 5)
+if ($backupHex) {
+    try {
+        $restoreBody = @{ backup_hex = $backupHex; backup_passphrase = 'test-koi-backup'; new_passphrase = 'test-koi-restored' } | ConvertTo-Json
+        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/restore" -Body $restoreBody
+        $json = $resp.Content | ConvertFrom-Json
+        if ($json.restored -eq $true) {
+            Pass 'certmesh restore returns restored=true'
+        } else {
+            Fail 'certmesh restore returns restored=true' "restored=$($json.restored)"
+        }
+    } catch {
+        Fail 'certmesh restore returns restored=true' $_.Exception.Message
+    }
+}
+
 # 2.3 - Register via HTTP
 $regId = $null
 try {
@@ -1606,14 +1673,17 @@ try {
     $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
     if ($events.Count -gt 0) {
         $hasFound = $false
+        $hasId = $false
         foreach ($ev in $events) {
             if ($ev.found -and $ev.found.name -and $ev.found.type) {
                 $hasFound = $true
-                break
+                if ($ev.sse_id) { $hasId = $true }
             }
         }
-        if ($hasFound) {
-            Pass "browse SSE returns events ($($events.Count) received)"
+        if ($hasFound -and $hasId) {
+            Pass "browse SSE returns events with ids ($($events.Count) received)"
+        } elseif ($hasFound) {
+            Fail 'browse SSE returns events' 'Missing sse_id on browse events'
         } else {
             Fail 'browse SSE returns events' "Got $($events.Count) events but none had found.name+type"
         }
@@ -1629,14 +1699,17 @@ try {
     $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/events?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
     if ($events.Count -gt 0) {
         $hasEvent = $false
+        $hasId = $false
         foreach ($ev in $events) {
             if ($ev.event -and ($ev.event -eq 'found' -or $ev.event -eq 'resolved') -and $ev.service) {
                 $hasEvent = $true
-                break
+                if ($ev.sse_id) { $hasId = $true }
             }
         }
-        if ($hasEvent) {
-            Pass "events SSE returns lifecycle events ($($events.Count) received)"
+        if ($hasEvent -and $hasId) {
+            Pass "events SSE returns lifecycle events with ids ($($events.Count) received)"
+        } elseif ($hasEvent) {
+            Fail 'events SSE returns lifecycle events' 'Missing sse_id on events'
         } else {
             Fail 'events SSE returns lifecycle events' "Got $($events.Count) events but none had event+service fields"
         }

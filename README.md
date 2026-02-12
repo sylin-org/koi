@@ -70,7 +70,7 @@ When Koi runs on the host, every container gains full mDNS capabilities through 
 
 ```bash
 # From inside any Docker container:
-curl http://host.docker.internal:5641/v1/browse?type=_http._tcp
+curl http://host.docker.internal:5641/v1/mdns/browse?type=_http._tcp
 ```
 
 The container makes a plain HTTP request; Koi speaks multicast on the physical network. Browse, register, resolve — all of it works from inside the most minimal scratch container. See [CONTAINERS.md](CONTAINERS.md) for Docker Compose examples, startup patterns, and Kubernetes DaemonSet configuration.
@@ -106,6 +106,7 @@ Koi's HTTP API uses SSE (Server-Sent Events) for streaming and JSON for everythi
 | `GET`    | `/v1/mdns/resolve?name={instance}` | Resolve a specific service instance |
 | `GET`    | `/v1/mdns/events?type=_http._tcp`  | SSE stream of lifecycle events      |
 | `GET`    | `/v1/status`                       | Unified capability status           |
+| `POST`   | `/v1/admin/shutdown`               | Initiate graceful shutdown          |
 | `GET`    | `/healthz`                         | Health check                        |
 
 SSE streams close after 5 seconds of quiet by default. Set `idle_for=0` for infinite streaming, or `idle_for=15` to wait longer on slow networks.

@@ -1,4 +1,5 @@
 pub mod capability;
+pub mod encoding;
 pub mod error;
 pub mod id;
 pub mod paths;

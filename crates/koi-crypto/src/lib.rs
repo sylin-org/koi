@@ -7,4 +7,5 @@
 pub mod keys;
 pub mod pinning;
 pub mod signing;
+pub mod tpm;
 pub mod totp;
