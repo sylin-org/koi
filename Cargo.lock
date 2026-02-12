@@ -1409,7 +1409,7 @@ dependencies = [
 
 [[package]]
 name = "koi"
-version = "0.2.202602121523"
+version = "0.2.202602121536"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1447,7 +1447,7 @@ dependencies = [
 
 [[package]]
 name = "koi-certmesh"
-version = "0.2.202602121523"
+version = "0.2.202602121536"
 dependencies = [
  "axum",
  "chrono",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "koi-client"
-version = "0.2.202602121523"
+version = "0.2.202602121536"
 dependencies = [
  "hickory-proto",
  "koi-common",
@@ -1486,7 +1486,7 @@ dependencies = [
 
 [[package]]
 name = "koi-common"
-version = "0.2.202602121523"
+version = "0.2.202602121536"
 dependencies = [
  "axum",
  "serde",
@@ -1498,7 +1498,7 @@ dependencies = [
 
 [[package]]
 name = "koi-config"
-version = "0.2.202602121523"
+version = "0.2.202602121536"
 dependencies = [
  "koi-common",
  "serde",
@@ -1509,7 +1509,7 @@ dependencies = [
 
 [[package]]
 name = "koi-crypto"
-version = "0.2.202602121523"
+version = "0.2.202602121536"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "koi-dns"
-version = "0.2.202602121523"
+version = "0.2.202602121536"
 dependencies = [
  "axum",
  "hickory-proto",
@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "koi-embedded"
-version = "0.2.202602121523"
+version = "0.2.202602121536"
 dependencies = [
  "axum",
  "futures-util",
@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "koi-health"
-version = "0.2.202602121523"
+version = "0.2.202602121536"
 dependencies = [
  "axum",
  "chrono",
@@ -1596,7 +1596,7 @@ dependencies = [
 
 [[package]]
 name = "koi-proxy"
-version = "0.2.202602121523"
+version = "0.2.202602121536"
 dependencies = [
  "axum",
  "axum-server",
@@ -1623,7 +1623,7 @@ dependencies = [
 
 [[package]]
 name = "koi-service"
-version = "0.2.202602121523"
+version = "0.2.202602121536"
 dependencies = [
  "async-stream",
  "axum",
@@ -1643,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "koi-truststore"
-version = "0.2.202602121523"
+version = "0.2.202602121536"
 dependencies = [
  "koi-common",
  "thiserror",

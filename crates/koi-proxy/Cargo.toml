@@ -1,6 +1,6 @@
 [package]
 name = "koi-proxy"
-description = "TLS-terminating reverse proxy domain for Koi (Phase 8)"
+description = "TLS-terminating reverse proxy with automatic certificate management"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

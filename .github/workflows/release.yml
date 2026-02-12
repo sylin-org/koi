@@ -222,7 +222,6 @@ jobs:
           sleep 15
           # Layer 2: depends on layer 0-1
           cargo publish -p koi-certmesh --locked
-          cargo publish -p koi-client --locked
           sleep 15
           # Layer 3: depends on layer 0-2
           cargo publish -p koi-dns --locked
@@ -231,6 +230,9 @@ jobs:
           # Layer 4: depends on layer 0-3
           cargo publish -p koi-health --locked
           sleep 15
-          # Layer 5: depends on everything
+          # Layer 5: depends on health + mdns
+          cargo publish -p koi-client --locked
+          sleep 15
+          # Layer 6: depends on everything
           cargo publish -p koi-embedded --locked
           cargo publish -p koi --locked

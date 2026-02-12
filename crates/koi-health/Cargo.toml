@@ -1,6 +1,6 @@
 [package]
 name = "koi-health"
-description = "Network health monitoring domain for Koi (Phase 7)"
+description = "Machine and service health monitoring for the local network"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
