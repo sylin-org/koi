@@ -16,25 +16,25 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.202602121509"
+version = "0.2.202602121523"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/sylin-org/koi"
 homepage = "https://sylin.org/koi"
 
 [workspace.dependencies]
-# Internal crates
-koi-common = { path = "crates/koi-common" }
-koi-client = { path = "crates/koi-client" }
-koi-embedded = { path = "crates/koi-embedded" }
-koi-mdns = { path = "crates/koi-mdns", package = "koi-service" }
-koi-config = { path = "crates/koi-config" }
-koi-certmesh = { path = "crates/koi-certmesh" }
-koi-crypto = { path = "crates/koi-crypto" }
-koi-truststore = { path = "crates/koi-truststore" }
-koi-dns = { path = "crates/koi-dns" }
-koi-health = { path = "crates/koi-health" }
-koi-proxy = { path = "crates/koi-proxy" }
+# Internal crates — version is required for crates.io publish; path is used locally
+koi-common = { path = "crates/koi-common", version = "0.2" }
+koi-client = { path = "crates/koi-client", version = "0.2" }
+koi-embedded = { path = "crates/koi-embedded", version = "0.2" }
+koi-mdns = { path = "crates/koi-mdns", package = "koi-service", version = "0.2" }
+koi-config = { path = "crates/koi-config", version = "0.2" }
+koi-certmesh = { path = "crates/koi-certmesh", version = "0.2" }
+koi-crypto = { path = "crates/koi-crypto", version = "0.2" }
+koi-truststore = { path = "crates/koi-truststore", version = "0.2" }
+koi-dns = { path = "crates/koi-dns", version = "0.2" }
+koi-health = { path = "crates/koi-health", version = "0.2" }
+koi-proxy = { path = "crates/koi-proxy", version = "0.2" }
 
 # Shared external dependencies — single version pin
 serde = { version = "1", features = ["derive"] }
