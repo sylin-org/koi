@@ -10,7 +10,7 @@
 
 Koi wraps the `mdns-sd` Rust crate behind a JSON API exposed over HTTP, Unix domain sockets / Named Pipes, and stdin/stdout. It runs as a host service (Windows Service or systemd unit) and gives containers, scripts, and polyglot applications full mDNS browse/register/resolve/subscribe capabilities without touching multicast sockets themselves.
 
-The workspace name is `koi`. The binary name is `koi`. Domain crates: `koi-mdns`, `koi-certmesh`, `koi-common`, `koi-config`, `koi-crypto`, `koi-truststore`.
+The workspace name is `koi`. The published package name is `koi-net` (binary installs as `koi`). Domain crates: `koi-common`, `koi-config`, `koi-crypto`, `koi-truststore`, `koi-mdns`, `koi-certmesh`, `koi-dns`, `koi-health`, `koi-proxy`, `koi-client`, `koi-embedded`.
 
 ---
 
@@ -57,11 +57,16 @@ crates/
 │           ├── unix.rs          # systemd, service paths
 │           └── macos.rs         # launchd, service paths
 ├── koi-common/            # Shared kernel (types, errors, pipeline)
-├── koi-mdns/              # mDNS domain (core, daemon, registry, protocol, http)
-├── koi-certmesh/          # Certificate mesh (CA, enrollment, roster)
+├── koi-config/            # Config & breadcrumb discovery
 ├── koi-crypto/            # Cryptographic primitives (keys, TOTP)
 ├── koi-truststore/        # Platform trust store installation
-└── koi-config/            # Config & breadcrumb discovery
+├── koi-mdns/              # mDNS domain (core, daemon, registry, protocol, http)
+├── koi-certmesh/          # Certificate mesh (CA, enrollment, roster)
+├── koi-dns/               # Local DNS resolver
+├── koi-health/            # Machine & service health monitoring
+├── koi-proxy/             # TLS-terminating reverse proxy
+├── koi-client/            # HTTP client for the Koi daemon
+└── koi-embedded/          # Embed Koi in Rust applications
 ```
 
 Protocol types live in each domain crate (`koi-mdns/src/protocol.rs`, `koi-certmesh/src/protocol.rs`). Shared types live in `koi-common`. The binary crate contains no domain logic — only CLI parsing, adapter wiring, and formatting.

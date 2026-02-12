@@ -7,7 +7,7 @@ ${DESCRIPTION}
 **Or install from source:**
 
 ```bash
-cargo install koi-mdns
+cargo install koi-net
 ```
 
 **Or install as a system service** (recommended for always-on discovery):

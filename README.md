@@ -182,6 +182,12 @@ cd koi
 cargo build --release
 ```
 
+Or install from [crates.io](https://crates.io/crates/koi-net):
+
+```bash
+cargo install koi-net
+```
+
 Or build and install locally:
 
 ```bash
@@ -199,6 +205,8 @@ cargo install --path crates/koi
 ## Name
 
 Koi (鯉) are the fish that live in garden ponds. They're visible — they surface, they announce themselves by simply existing. You look into the pond and see what's there. That's service discovery: the network is the pond, the services are the koi. You peer in and see what's swimming.
+
+The binary is `koi`. The crates.io package is published as `koi-net` because `koi` was already taken.
 
 ## Acknowledgments
 
