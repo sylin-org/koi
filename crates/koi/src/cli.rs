@@ -59,6 +59,22 @@ pub struct Cli {
     #[arg(long, env = "KOI_NO_CERTMESH")]
     pub no_certmesh: bool,
 
+    /// Disable the DNS capability
+    #[arg(long, env = "KOI_NO_DNS")]
+    pub no_dns: bool,
+
+    /// DNS port for the local resolver
+    #[arg(long, env = "KOI_DNS_PORT", default_value = "53")]
+    pub dns_port: u16,
+
+    /// DNS zone suffix for local records
+    #[arg(long, env = "KOI_DNS_ZONE", default_value = "lan")]
+    pub dns_zone: String,
+
+    /// Allow DNS queries from non-private addresses
+    #[arg(long, env = "KOI_DNS_PUBLIC")]
+    pub dns_public: bool,
+
     /// Output JSON instead of human-readable text
     #[arg(long, global = true)]
     pub json: bool,
@@ -93,6 +109,8 @@ pub enum Command {
     Mdns(MdnsCommand),
     /// Certificate mesh (private CA, enrollment, trust)
     Certmesh(CertmeshCommand),
+    /// Local DNS resolver
+    Dns(DnsCommand),
 }
 
 #[derive(Args, Debug)]
@@ -181,6 +199,47 @@ pub enum AdminSubcommand {
 pub struct CertmeshCommand {
     #[command(subcommand)]
     pub command: CertmeshSubcommand,
+}
+
+#[derive(Args, Debug)]
+pub struct DnsCommand {
+    #[command(subcommand)]
+    pub command: DnsSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DnsSubcommand {
+    /// Start the DNS resolver
+    Serve,
+    /// Stop the DNS resolver
+    Stop,
+    /// Show DNS resolver status
+    Status,
+    /// Lookup a name through the resolver
+    Lookup {
+        /// Name to query
+        name: String,
+        /// Record type (A, AAAA, ANY)
+        #[arg(long, default_value = "A")]
+        record_type: String,
+    },
+    /// Add a static DNS entry
+    Add {
+        /// Name to resolve
+        name: String,
+        /// IP address to return
+        ip: String,
+        /// Optional TTL override
+        #[arg(long)]
+        ttl: Option<u32>,
+    },
+    /// Remove a static DNS entry
+    Remove {
+        /// Name to remove
+        name: String,
+    },
+    /// List all resolvable names
+    List,
 }
 
 #[derive(Subcommand, Debug)]
@@ -275,6 +334,10 @@ pub struct Config {
     pub no_ipc: bool,
     pub no_mdns: bool,
     pub no_certmesh: bool,
+    pub no_dns: bool,
+    pub dns_port: u16,
+    pub dns_zone: String,
+    pub dns_public: bool,
 }
 
 impl Config {
@@ -287,6 +350,10 @@ impl Config {
             no_ipc: cli.no_ipc,
             no_mdns: cli.no_mdns,
             no_certmesh: cli.no_certmesh,
+            no_dns: cli.no_dns,
+            dns_port: cli.dns_port,
+            dns_zone: cli.dns_zone.clone(),
+            dns_public: cli.dns_public,
         }
     }
 
@@ -295,6 +362,7 @@ impl Config {
         let disabled = match name {
             "mdns" => self.no_mdns,
             "certmesh" => self.no_certmesh,
+            "dns" => self.no_dns,
             _ => false,
         };
         if disabled {
@@ -305,6 +373,14 @@ impl Config {
             );
         }
         Ok(())
+    }
+
+    pub fn dns_config(&self) -> koi_dns::DnsConfig {
+        let mut cfg = koi_dns::DnsConfig::default();
+        cfg.port = self.dns_port;
+        cfg.zone = self.dns_zone.clone();
+        cfg.allow_public_clients = self.dns_public;
+        cfg
     }
 
     /// Build config from environment variables only.
@@ -341,6 +417,23 @@ impl Config {
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let no_dns = std::env::var("KOI_NO_DNS")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let dns_port = std::env::var("KOI_DNS_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(53);
+
+        let dns_zone = std::env::var("KOI_DNS_ZONE").unwrap_or_else(|_| "lan".to_string());
+
+        let dns_public = std::env::var("KOI_DNS_PUBLIC")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
         Self {
             http_port,
             pipe_path,
@@ -348,6 +441,10 @@ impl Config {
             no_ipc,
             no_mdns,
             no_certmesh,
+            no_dns,
+            dns_port,
+            dns_zone,
+            dns_public,
         }
     }
 }
@@ -361,6 +458,10 @@ impl Default for Config {
             no_ipc: false,
             no_mdns: false,
             no_certmesh: false,
+            no_dns: false,
+            dns_port: 53,
+            dns_zone: "lan".to_string(),
+            dns_public: false,
         }
     }
 }
@@ -397,6 +498,7 @@ mod tests {
         let config = Config::default();
         assert!(config.require_capability("mdns").is_ok());
         assert!(config.require_capability("certmesh").is_ok());
+        assert!(config.require_capability("dns").is_ok());
     }
 
     #[test]
@@ -423,6 +525,16 @@ mod tests {
     }
 
     #[test]
+    fn require_capability_fails_when_dns_disabled() {
+        let config = Config {
+            no_dns: true,
+            ..Config::default()
+        };
+        let result = config.require_capability("dns");
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn require_capability_unknown_name_passes() {
         let config = Config::default();
         assert!(config.require_capability("unknown").is_ok());
@@ -438,6 +550,10 @@ mod tests {
         assert!(!config.no_ipc);
         assert!(!config.no_mdns);
         assert!(!config.no_certmesh);
+        assert!(!config.no_dns);
+        assert_eq!(config.dns_port, 53);
+        assert_eq!(config.dns_zone, "lan");
+        assert!(!config.dns_public);
     }
 
     #[test]

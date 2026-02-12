@@ -750,6 +750,35 @@ impl CertmeshCore {
         roster.find_member(&hostname).map(|m| m.role.clone())
     }
 
+    /// Add alias SANs to a member's roster entry (used by DNS alias feedback).
+    ///
+    /// Returns true if any SANs were added.
+    pub async fn add_alias_sans(
+        &self,
+        hostname: &str,
+        sans: &[String],
+    ) -> Result<bool, CertmeshError> {
+        let mut roster = self.state.roster.lock().await;
+        let member = roster
+            .find_member_mut(hostname)
+            .ok_or_else(|| CertmeshError::NotFound(hostname.to_string()))?;
+
+        let mut changed = false;
+        for san in sans {
+            if !member.cert_sans.iter().any(|s| s == san) {
+                member.cert_sans.push(san.clone());
+                changed = true;
+            }
+        }
+
+        if changed {
+            let roster_path = ca::roster_path();
+            roster::save_roster(&roster, &roster_path)?;
+        }
+
+        Ok(changed)
+    }
+
     /// Get the local hostname.
     pub fn local_hostname() -> Option<String> {
         hostname::get()

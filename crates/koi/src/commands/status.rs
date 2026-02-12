@@ -107,6 +107,20 @@ fn offline_capabilities(config: &Config) -> Vec<CapabilityStatus> {
         });
     }
 
+    if config.no_dns {
+        caps.push(CapabilityStatus {
+            name: "dns".to_string(),
+            summary: "disabled".to_string(),
+            healthy: false,
+        });
+    } else {
+        caps.push(CapabilityStatus {
+            name: "dns".to_string(),
+            summary: "not running".to_string(),
+            healthy: false,
+        });
+    }
+
     caps
 }
 
@@ -127,6 +141,8 @@ mod tests {
         );
         assert_eq!(caps[1].name, "certmesh");
         assert!(!caps[1].healthy);
+        assert_eq!(caps[2].name, "dns");
+        assert!(!caps[2].healthy);
     }
 
     #[test]
@@ -152,6 +168,17 @@ mod tests {
     }
 
     #[test]
+    fn offline_dns_disabled() {
+        let config = Config {
+            no_dns: true,
+            ..Config::default()
+        };
+        let caps = offline_capabilities(&config);
+        assert_eq!(caps[2].name, "dns");
+        assert_eq!(caps[2].summary, "disabled");
+    }
+
+    #[test]
     fn offline_both_disabled() {
         let config = Config {
             no_mdns: true,
@@ -164,9 +191,9 @@ mod tests {
     }
 
     #[test]
-    fn offline_returns_two_capabilities() {
+    fn offline_returns_three_capabilities() {
         let config = Config::default();
         let caps = offline_capabilities(&config);
-        assert_eq!(caps.len(), 2);
+        assert_eq!(caps.len(), 3);
     }
 }

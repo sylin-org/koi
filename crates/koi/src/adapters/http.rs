@@ -21,6 +21,7 @@ use crate::DaemonCores;
 struct AppState {
     mdns: Option<Arc<koi_mdns::MdnsCore>>,
     certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
+    dns: Option<Arc<koi_dns::DnsRuntime>>,
     started_at: std::time::Instant,
     cancel: CancellationToken,
 }
@@ -36,6 +37,7 @@ pub async fn start(
     let app_state = AppState {
         mdns: cores.mdns.clone(),
         certmesh: cores.certmesh.clone(),
+        dns: cores.dns.clone(),
         started_at,
         cancel: cancel.clone(),
     };
@@ -57,6 +59,12 @@ pub async fn start(
         app = app.nest("/v1/certmesh", certmesh_core.routes());
     } else {
         app = app.nest("/v1/certmesh", disabled_fallback_router("certmesh"));
+    }
+
+    if let Some(ref dns_runtime) = cores.dns {
+        app = app.nest("/v1/dns", koi_dns::http::routes(dns_runtime.clone()));
+    } else {
+        app = app.nest("/v1/dns", disabled_fallback_router("dns"));
     }
 
     app = app.layer(CorsLayer::permissive());
@@ -102,6 +110,25 @@ async fn unified_status_handler(
     } else {
         capabilities.push(CapabilityStatus {
             name: "certmesh".to_string(),
+            summary: "disabled".to_string(),
+            healthy: false,
+        });
+    }
+
+    if let Some(ref runtime) = state.dns {
+        let running = runtime.status().await.running;
+        if running {
+            capabilities.push(runtime.core().status());
+        } else {
+            capabilities.push(CapabilityStatus {
+                name: "dns".to_string(),
+                summary: "stopped".to_string(),
+                healthy: false,
+            });
+        }
+    } else {
+        capabilities.push(CapabilityStatus {
+            name: "dns".to_string(),
             summary: "disabled".to_string(),
             healthy: false,
         });

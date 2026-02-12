@@ -12,7 +12,7 @@ use std::time::Duration;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
-use cli::{CertmeshSubcommand, Cli, Command, Config, MdnsSubcommand};
+use cli::{CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, MdnsSubcommand};
 
 /// Maximum time to wait for orderly shutdown before forcing exit.
 pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
@@ -203,6 +203,25 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     }
                 }
             }
+            Command::Dns(dns_cmd) => {
+                config.require_capability("dns")?;
+                let mode = commands::detect_mode(&cli);
+                match &dns_cmd.command {
+                    DnsSubcommand::Serve => commands::dns::serve(&config, mode).await,
+                    DnsSubcommand::Stop => commands::dns::stop(mode).await,
+                    DnsSubcommand::Status => commands::dns::status(&config, mode, cli.json).await,
+                    DnsSubcommand::Lookup { name, record_type } => {
+                        commands::dns::lookup(name, record_type, mode, cli.json, &config).await
+                    }
+                    DnsSubcommand::Add { name, ip, ttl } => {
+                        commands::dns::add(name, ip, *ttl, mode, cli.json, &config.dns_zone)
+                    }
+                    DnsSubcommand::Remove { name } => {
+                        commands::dns::remove(name, mode, cli.json, &config.dns_zone)
+                    }
+                    DnsSubcommand::List => commands::dns::list(mode, cli.json, &config).await,
+                }
+            }
             // Install, Uninstall, Version handled before runtime
             Command::Install | Command::Uninstall | Command::Version => Ok(()),
         };
@@ -289,9 +308,35 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         }
     }
 
+    let dns_runtime = if !config.no_dns {
+        let core = koi_dns::DnsCore::new(
+            config.dns_config(),
+            mdns_core.clone(),
+            certmesh_core.clone(),
+        )
+        .await;
+        match core {
+            Ok(core) => {
+                let runtime = Arc::new(koi_dns::DnsRuntime::new(core));
+                if let Err(e) = runtime.start().await {
+                    tracing::error!(error = %e, "Failed to start DNS server");
+                }
+                Some(runtime)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to initialize DNS core");
+                None
+            }
+        }
+    } else {
+        tracing::info!("DNS capability: disabled");
+        None
+    };
+
     let cores = DaemonCores {
         mdns: mdns_core.clone(),
         certmesh: certmesh_core,
+        dns: dns_runtime.clone(),
     };
 
     // ── HTTP adapter ──
@@ -349,6 +394,9 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
                 tracing::warn!(error = %e, "Error during mDNS shutdown");
             }
         }
+        if let Some(dns) = dns_runtime {
+            dns.stop().await;
+        }
     };
     if tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown)
         .await
@@ -373,6 +421,7 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
 pub(crate) struct DaemonCores {
     pub(crate) mdns: Option<Arc<koi_mdns::MdnsCore>>,
     pub(crate) certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
+    pub(crate) dns: Option<Arc<koi_dns::DnsRuntime>>,
 }
 
 /// Initialize the certmesh core for daemon mode.
@@ -631,6 +680,17 @@ pub(crate) fn startup_diagnostics(config: &Config) {
         tracing::info!("Certmesh capability: disabled");
     }
 
+    if config.no_dns {
+        tracing::info!("DNS capability: disabled");
+    } else {
+        tracing::info!(
+            "DNS: {}:{} (zone {})",
+            "0.0.0.0",
+            config.dns_port,
+            config.dns_zone
+        );
+    }
+
     if !config.no_http {
         tracing::info!("TCP {}: listening (HTTP adapter)", config.http_port);
     } else {
@@ -644,7 +704,7 @@ pub(crate) fn startup_diagnostics(config: &Config) {
     }
 
     #[cfg(windows)]
-    platform::windows::check_firewall(config.http_port);
+    platform::windows::check_firewall(config);
 }
 
 // ── Logging setup ───────────────────────────────────────────────────

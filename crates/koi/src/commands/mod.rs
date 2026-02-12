@@ -2,10 +2,12 @@
 //!
 //! - `mdns` — mDNS commands (discover, announce, unregister, resolve, subscribe).
 //! - `certmesh` — Certificate mesh commands (create, join, status, log, unlock, set-hook).
+//! - `dns` — DNS commands (serve, lookup, add/remove/list).
 //!
 //! Shared infrastructure (mode detection, payload builders, formatting) lives here.
 
 pub mod certmesh;
+pub mod dns;
 pub mod mdns;
 pub mod status;
 

@@ -11,6 +11,7 @@ use koi_common::types::ServiceRecord;
 use koi_mdns::protocol::{
     AdminRegistration, DaemonStatus, RegisterPayload, RegistrationResult, RenewalResult,
 };
+use hickory_proto::rr::RecordType;
 
 /// TCP connection timeout for general API requests.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -150,6 +151,53 @@ impl KoiClient {
         let resp = self.agent.get(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    // ── DNS operations (Phase 6) ───────────────────────────────────
+
+    pub fn dns_status(&self) -> Result<serde_json::Value> {
+        self.get_json("/v1/dns/status")
+    }
+
+    pub fn dns_lookup(&self, name: &str, record_type: RecordType) -> Result<serde_json::Value> {
+        let url = format!("{}/v1/dns/lookup", self.endpoint);
+        let resp = self
+            .agent
+            .get(&url)
+            .query("name", name)
+            .query("type", record_type_str(record_type))
+            .call()
+            .map_err(map_error)?;
+        resp.into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub fn dns_list(&self) -> Result<serde_json::Value> {
+        self.get_json("/v1/dns/list")
+    }
+
+    pub fn dns_add(&self, name: &str, ip: &str, ttl: Option<u32>) -> Result<serde_json::Value> {
+        let body = serde_json::json!({
+            "name": name,
+            "ip": ip,
+            "ttl": ttl,
+        });
+        self.post_json("/v1/dns/entries", &body)
+    }
+
+    pub fn dns_remove(&self, name: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/v1/dns/entries/{}", self.endpoint, name);
+        let resp = self.agent.delete(&url).call().map_err(map_error)?;
+        resp.into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub fn dns_start(&self) -> Result<serde_json::Value> {
+        self.post_json("/v1/dns/admin/start", &serde_json::json!({}))
+    }
+
+    pub fn dns_stop(&self) -> Result<serde_json::Value> {
+        self.post_json("/v1/dns/admin/stop", &serde_json::json!({}))
     }
 
     // ── Generic operations ─────────────────────────────────────────
@@ -362,6 +410,15 @@ fn map_error(e: ureq::Error) -> ClientError {
             }
         }
         ureq::Error::Transport(t) => ClientError::Unreachable(t.to_string()),
+    }
+}
+
+fn record_type_str(record_type: RecordType) -> &'static str {
+    match record_type {
+        RecordType::A => "A",
+        RecordType::AAAA => "AAAA",
+        RecordType::ANY => "ANY",
+        _ => "A",
     }
 }
 

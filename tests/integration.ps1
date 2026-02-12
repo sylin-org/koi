@@ -41,6 +41,7 @@ Add-Type -AssemblyName System.Net.Http
 # -- Test configuration -------------------------------------------------------
 
 $TestPort      = 15641
+$TestDnsPort   = 15353
 $TestPipe      = '\\.\pipe\koi-test'
 $TestPipeName  = 'koi-test'
 $TestDir       = Join-Path $env:TEMP "koi-test-$(Get-Random)"
@@ -926,6 +927,21 @@ try {
     Fail 'koi status --json (offline)' $_.Exception.Message
 }
 
+# 1.10b - Status offline includes DNS capability
+try {
+    $r = Invoke-Koi -KoiArgs 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $dnsCap = $caps | Where-Object { $_.name -eq 'dns' }
+    if ($dnsCap -and $dnsCap.healthy -eq $false) {
+        Pass 'koi status --json includes dns capability (offline)'
+    } else {
+        Fail 'koi status --json includes dns capability (offline)' "dns.healthy=$(if ($dnsCap) { $dnsCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'koi status --json includes dns capability (offline)' $_.Exception.Message
+}
+
 # 1.11 - Help includes status subcommand
 try {
     $r = Invoke-Koi -KoiArgs '--help'
@@ -957,6 +973,31 @@ try {
     }
 } catch {
     Fail 'koi --log-file creates log file' $_.Exception.Message
+}
+
+# 1.14 - DNS add/list/lookup/remove (standalone)
+try {
+    $name = 'koi-test'
+    $ip = '10.0.0.55'
+    $r = Invoke-Koi -KoiArgs '--standalone', 'dns', 'add', $name, $ip
+    $r = Invoke-Koi -KoiArgs '--standalone', 'dns', 'list'
+    if ($r.Stdout -match 'koi-test\.lan\.') {
+        Pass 'koi dns list shows added entry'
+    } else {
+        Fail 'koi dns list shows added entry' "Output: $($r.Stdout.Trim())"
+    }
+
+    $r = Invoke-Koi -KoiArgs '--standalone', 'dns', 'lookup', $name
+    if ($r.Stdout -match $ip) {
+        Pass 'koi dns lookup resolves added entry'
+    } else {
+        Fail 'koi dns lookup resolves added entry' "Output: $($r.Stdout.Trim())"
+    }
+
+    $r = Invoke-Koi -KoiArgs '--standalone', 'dns', 'remove', $name
+    Pass 'koi dns remove deletes entry'
+} catch {
+    Fail 'koi dns add/list/lookup/remove' $_.Exception.Message
 }
 
 # ======================================================================
@@ -1019,6 +1060,33 @@ try {
     Fail 'certmesh command blocked with --no-certmesh' $_.Exception.Message
 }
 
+# 1.T5 - --no-dns status shows dns disabled
+try {
+    $r = Invoke-Koi -KoiArgs '--no-dns', 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $dnsCap = $caps | Where-Object { $_.name -eq 'dns' }
+    if ($dnsCap -and $dnsCap.summary -eq 'disabled' -and $dnsCap.healthy -eq $false) {
+        Pass 'status --no-dns shows dns disabled'
+    } else {
+        Fail 'status --no-dns shows dns disabled' "dns: summary=$(if ($dnsCap) { $dnsCap.summary } else { 'missing' }), healthy=$(if ($dnsCap) { $dnsCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'status --no-dns shows dns disabled' $_.Exception.Message
+}
+
+# 1.T6 - --no-dns blocks dns commands
+try {
+    $r = Invoke-Koi -KoiArgs '--no-dns', 'dns', 'list' -AllowFailure
+    if ($r.ExitCode -ne 0) {
+        Pass 'dns command blocked with --no-dns'
+    } else {
+        Fail 'dns command blocked with --no-dns' "Expected nonzero exit, got 0"
+    }
+} catch {
+    Fail 'dns command blocked with --no-dns' $_.Exception.Message
+}
+
 # ======================================================================
 #  TIER 2 - Daemon (foreground)
 # ======================================================================
@@ -1030,7 +1098,7 @@ Log "Starting daemon on port $TestPort..."
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $KoiBin
-$psi.Arguments = "--daemon --port $TestPort --pipe $TestPipe --log-file `"$TestLog`" -v"
+$psi.Arguments = "--daemon --port $TestPort --pipe $TestPipe --dns-port $TestDnsPort --log-file `"$TestLog`" -v"
 $psi.UseShellExecute = $false
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
@@ -1157,6 +1225,91 @@ try {
     }
 } catch {
     Fail 'koi status --standalone bypasses daemon' $_.Exception.Message
+}
+
+# 2.2f - DNS status endpoint
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/dns/status"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.port -eq $TestDnsPort -and $json.zone) {
+        Pass "dns status endpoint (zone=$($json.zone), port=$($json.port))"
+    } else {
+        Fail 'dns status endpoint' "zone=$($json.zone) port=$($json.port)"
+    }
+} catch {
+    Fail 'dns status endpoint' $_.Exception.Message
+}
+
+# 2.2g - DNS add/list/lookup/remove via HTTP
+try {
+    $dnsName = 'daemon-test'
+    $dnsIp = '10.0.0.77'
+    $body = @{ name = $dnsName; ip = $dnsIp } | ConvertTo-Json
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/dns/entries" -Body $body
+    $respJson = $resp.Content | ConvertFrom-Json
+    $entries = @($respJson.entries)
+    if ($entries.Count -ge 1) {
+        Pass 'dns add entry via HTTP'
+    } else {
+        Fail 'dns add entry via HTTP' 'No entries returned'
+    }
+
+    $resp = Invoke-Http -Uri "$Endpoint/v1/dns/list"
+    $listJson = $resp.Content | ConvertFrom-Json
+    $names = @($listJson.names)
+    if ($names -contains "$dnsName.lan.") {
+        Pass 'dns list includes added entry'
+    } else {
+        Fail 'dns list includes added entry' "names=$($names -join ',')"
+    }
+
+    $resp = Invoke-Http -Uri "$Endpoint/v1/dns/lookup?name=$dnsName"
+    $lookupJson = $resp.Content | ConvertFrom-Json
+    $ips = @($lookupJson.ips)
+    if ($ips -contains $dnsIp) {
+        Pass 'dns lookup resolves added entry'
+    } else {
+        Fail 'dns lookup resolves added entry' "ips=$($ips -join ',')"
+    }
+
+    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/dns/entries/$dnsName"
+    $respJson = $resp.Content | ConvertFrom-Json
+    Pass 'dns remove entry via HTTP'
+} catch {
+    Fail 'dns add/list/lookup/remove via HTTP' $_.Exception.Message
+}
+
+# 2.2h - DNS admin stop/start endpoints
+try {
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/dns/admin/stop"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json.stopped) {
+        Pass 'dns stop endpoint responds'
+    } else {
+        Fail 'dns stop endpoint responds' 'Missing stopped field'
+    }
+
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/dns/admin/start"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json.started) {
+        Pass 'dns start endpoint responds'
+    } else {
+        Fail 'dns start endpoint responds' 'Missing started field'
+    }
+} catch {
+    Fail 'dns admin stop/start endpoints' $_.Exception.Message
+}
+
+# 2.2i - DNS status via CLI client mode
+try {
+    $r = Invoke-Koi -KoiArgs 'dns', 'status', '--endpoint', $Endpoint
+    if ($r.ExitCode -eq 0) {
+        Pass 'koi dns status via CLI client mode'
+    } else {
+        Fail 'koi dns status via CLI client mode' "exit code $($r.ExitCode)"
+    }
+} catch {
+    Fail 'koi dns status via CLI client mode' $_.Exception.Message
 }
 
 # -- Certmesh daemon tests (HTTP) -------------------------------------------
@@ -2478,13 +2631,14 @@ Write-Host "`n=== Tier 2.T: Disabled Capability Daemon ===" -ForegroundColor Cya
 function Start-TestDaemon {
     param(
         [int]$Port,
+        [int]$DnsPort,
         [string]$ExtraArgs = '',
         [string]$Label = 'test daemon'
     )
 
     $psi2 = New-Object System.Diagnostics.ProcessStartInfo
     $psi2.FileName = $KoiBin
-    $psi2.Arguments = "--daemon --port $Port --no-ipc $ExtraArgs --log-file `"$(Join-Path $TestDir "daemon-$Port.log")`" -v"
+    $psi2.Arguments = "--daemon --port $Port --dns-port $DnsPort --no-ipc $ExtraArgs --log-file `"$(Join-Path $TestDir "daemon-$Port.log")`" -v"
     $psi2.UseShellExecute = $false
     $psi2.RedirectStandardOutput = $true
     $psi2.RedirectStandardError = $true
@@ -2531,7 +2685,8 @@ function Stop-TestDaemon {
 # -- Daemon with --no-certmesh -------------------------------------------------
 
 $TestPort2 = $TestPort + 1
-$daemon2 = Start-TestDaemon -Port $TestPort2 -ExtraArgs '--no-certmesh' -Label 'no-certmesh daemon'
+$TestDnsPort2 = $TestDnsPort + 1
+$daemon2 = Start-TestDaemon -Port $TestPort2 -DnsPort $TestDnsPort2 -ExtraArgs '--no-certmesh' -Label 'no-certmesh daemon'
 
 if ($daemon2) {
     # 2.T1 - Certmesh HTTP returns 503 when disabled
@@ -2584,7 +2739,8 @@ if ($daemon2) {
 # -- Daemon with --no-mdns ----------------------------------------------------
 
 $TestPort3 = $TestPort + 2
-$daemon3 = Start-TestDaemon -Port $TestPort3 -ExtraArgs '--no-mdns' -Label 'no-mdns daemon'
+$TestDnsPort3 = $TestDnsPort + 2
+$daemon3 = Start-TestDaemon -Port $TestPort3 -DnsPort $TestDnsPort3 -ExtraArgs '--no-mdns' -Label 'no-mdns daemon'
 
 if ($daemon3) {
     # 2.T3 - mDNS HTTP returns 503 when disabled
@@ -2632,6 +2788,48 @@ if ($daemon3) {
     }
 
     Stop-TestDaemon $daemon3
+}
+
+# -- Daemon with --no-dns -----------------------------------------------------
+
+$TestPort4 = $TestPort + 3
+$TestDnsPort4 = $TestDnsPort + 3
+$daemon4 = Start-TestDaemon -Port $TestPort4 -DnsPort $TestDnsPort4 -ExtraArgs '--no-dns' -Label 'no-dns daemon'
+
+if ($daemon4) {
+    # 2.T5 - DNS HTTP returns 503 when disabled
+    try {
+        $errResp = Invoke-HttpExpectError -Uri "$($daemon4.Endpoint)/v1/dns/status"
+        if ($errResp.StatusCode -eq 503) {
+            $errJson = $errResp.Content | ConvertFrom-Json
+            if ($errJson.error -eq 'capability_disabled') {
+                Pass 'disabled DNS returns 503 capability_disabled'
+            } else {
+                Fail 'disabled DNS returns 503' "Expected capability_disabled, got: $($errJson.error)"
+            }
+        } else {
+            Fail 'disabled DNS returns 503' "Expected 503, got $($errResp.StatusCode)"
+        }
+    } catch {
+        Fail 'disabled DNS returns 503' $_.Exception.Message
+    }
+
+    # 2.T6 - Unified status shows DNS as disabled
+    try {
+        $resp = Invoke-Http -Uri "$($daemon4.Endpoint)/v1/status"
+        $json = $resp.Content | ConvertFrom-Json
+        $caps = @($json.capabilities)
+        $dnsCap = $caps | Where-Object { $_.name -eq 'dns' }
+        if ($dnsCap -and $dnsCap.summary -eq 'disabled' -and $dnsCap.healthy -eq $false) {
+            Pass 'unified status shows DNS disabled on --no-dns daemon'
+        } else {
+            Fail 'unified status DNS disabled' "dns: summary=$(if ($dnsCap) { $dnsCap.summary } else { 'missing' })"
+        }
+    } catch {
+        Fail 'unified status DNS disabled' $_.Exception.Message
+    }
+
+    Stop-TestDaemon $daemon4
 }
 
 # ======================================================================

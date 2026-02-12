@@ -27,6 +27,7 @@ use self::daemon::MdnsDaemon;
 use self::registry::{InsertOutcome, Registry};
 
 use koi_common::capability::{Capability, CapabilityStatus};
+use koi_common::firewall::{FirewallPort, FirewallProtocol};
 use koi_common::id::generate_short_id;
 use koi_common::types::{ServiceRecord, ServiceType, SessionId, META_QUERY};
 use tokio::sync::broadcast;
@@ -41,6 +42,14 @@ const BROADCAST_CHANNEL_CAPACITY: usize = 256;
 
 /// How often the reaper sweeps for expired registrations.
 const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// mDNS UDP port.
+pub const MDNS_PORT: u16 = 5353;
+
+/// Firewall ports required by the mDNS capability.
+pub fn firewall_ports() -> Vec<FirewallPort> {
+    vec![FirewallPort::new("mDNS", FirewallProtocol::Udp, MDNS_PORT)]
+}
 
 /// The core mDNS facade. All adapters interact through this.
 pub struct MdnsCore {
