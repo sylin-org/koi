@@ -167,15 +167,22 @@ impl DnsCore {
         let snapshot = self.snapshot();
         self.maybe_send_feedback(&snapshot.alias_feedback);
 
-        let entries = if let Some(ips) = snapshot.static_entries.get(&normalized) {
-            Some((ips.clone(), "static"))
-        } else if let Some(ips) = snapshot.certmesh_entries.get(&normalized) {
-            Some((ips.clone(), "certmesh"))
-        } else if let Some(ips) = snapshot.mdns_entries.get(&normalized) {
-            Some((ips.clone(), "mdns"))
-        } else {
-            None
-        }?;
+        let entries = snapshot
+            .static_entries
+            .get(&normalized)
+            .map(|ips| (ips.clone(), "static"))
+            .or_else(|| {
+                snapshot
+                    .certmesh_entries
+                    .get(&normalized)
+                    .map(|ips| (ips.clone(), "certmesh"))
+            })
+            .or_else(|| {
+                snapshot
+                    .mdns_entries
+                    .get(&normalized)
+                    .map(|ips| (ips.clone(), "mdns"))
+            })?;
 
         let filtered = filter_ips(entries.0, record_type);
         if filtered.is_empty() {

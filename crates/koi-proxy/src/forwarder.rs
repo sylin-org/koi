@@ -42,7 +42,7 @@ pub async fn forward_request(
     }
 
     let stream = TryStreamExt::map_err(body.into_data_stream(), |e| {
-        std::io::Error::new(std::io::ErrorKind::Other, format!("Body stream error: {e}"))
+        std::io::Error::other(format!("Body stream error: {e}"))
     });
     let body = reqwest::Body::wrap_stream(stream);
 
@@ -60,7 +60,7 @@ pub async fn forward_request(
     }
 
     let stream = TryStreamExt::map_err(response.bytes_stream(), |e| {
-        std::io::Error::new(std::io::ErrorKind::Other, format!("Body stream error: {e}"))
+        std::io::Error::other(format!("Body stream error: {e}"))
     });
     Ok(out.body(Body::from_stream(stream)).unwrap())
 }

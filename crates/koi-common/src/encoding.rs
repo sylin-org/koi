@@ -8,7 +8,7 @@
 
 pub fn hex_decode(input: &str) -> Result<Vec<u8>, String> {
     let input = input.trim();
-    if input.len() % 2 != 0 {
+    if !input.len().is_multiple_of(2) {
         return Err("hex string must have even length".to_string());
     }
 

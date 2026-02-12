@@ -107,10 +107,10 @@ mod tests {
 
     #[test]
     fn profile_serializes_to_snake_case() {
-        assert_eq!(serde_json::to_value(&TrustProfile::JustMe).unwrap(), "just_me");
-        assert_eq!(serde_json::to_value(&TrustProfile::MyTeam).unwrap(), "my_team");
+        assert_eq!(serde_json::to_value(TrustProfile::JustMe).unwrap(), "just_me");
+        assert_eq!(serde_json::to_value(TrustProfile::MyTeam).unwrap(), "my_team");
         assert_eq!(
-            serde_json::to_value(&TrustProfile::MyOrganization).unwrap(),
+            serde_json::to_value(TrustProfile::MyOrganization).unwrap(),
             "my_organization"
         );
     }

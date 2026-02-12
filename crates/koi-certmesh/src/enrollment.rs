@@ -198,7 +198,7 @@ pub fn process_enrollment(
     // 9. Audit log
     let operator_str = approved_by
         .as_deref()
-        .or_else(|| roster.metadata.operator.as_deref())
+        .or(roster.metadata.operator.as_deref())
         .unwrap_or("self");
     let _ = audit::append_entry(
         "member_joined",

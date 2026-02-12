@@ -12,11 +12,12 @@ use crate::cli::Config;
 use super::{print_json, with_mode, with_mode_sync, Mode};
 
 fn dns_config(config: &Config) -> koi_dns::DnsConfig {
-    let mut cfg = koi_dns::DnsConfig::default();
-    cfg.port = config.dns_port;
-    cfg.zone = config.dns_zone.clone();
-    cfg.allow_public_clients = config.dns_public;
-    cfg
+    koi_dns::DnsConfig {
+        port: config.dns_port,
+        zone: config.dns_zone.clone(),
+        allow_public_clients: config.dns_public,
+        ..Default::default()
+    }
 }
 
 async fn build_core(config: &Config) -> anyhow::Result<(koi_dns::DnsCore, Option<Arc<koi_mdns::MdnsCore>>)> {

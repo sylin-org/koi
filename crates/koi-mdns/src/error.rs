@@ -83,7 +83,7 @@ mod tests {
                 500,
             ),
             (
-                MdnsError::Io(std::io::Error::new(std::io::ErrorKind::Other, "test")),
+                MdnsError::Io(std::io::Error::other("test")),
                 ErrorCode::IoError,
                 500,
             ),

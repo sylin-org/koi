@@ -108,6 +108,7 @@ pub async fn watch(config: &Config, mode: Mode, interval: u64) -> anyhow::Result
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn add(
     name: &str,
     http: Option<&str>,

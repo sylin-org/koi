@@ -156,7 +156,7 @@ mod tests {
                 500,
             ),
             (
-                CertmeshError::Io(std::io::Error::new(std::io::ErrorKind::Other, "test")),
+                CertmeshError::Io(std::io::Error::other("test")),
                 ErrorCode::IoError,
                 500,
             ),

@@ -1252,7 +1252,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json.get("destroyed").unwrap().as_bool().unwrap(), true);
+        assert!(json.get("destroyed").unwrap().as_bool().unwrap());
     }
 
     #[tokio::test]

@@ -471,11 +471,12 @@ impl Config {
     }
 
     pub fn dns_config(&self) -> koi_dns::DnsConfig {
-        let mut cfg = koi_dns::DnsConfig::default();
-        cfg.port = self.dns_port;
-        cfg.zone = self.dns_zone.clone();
-        cfg.allow_public_clients = self.dns_public;
-        cfg
+        koi_dns::DnsConfig {
+            port: self.dns_port,
+            zone: self.dns_zone.clone(),
+            allow_public_clients: self.dns_public,
+            ..Default::default()
+        }
     }
 
     /// Build config from environment variables only.

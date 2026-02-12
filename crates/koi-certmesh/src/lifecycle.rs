@@ -172,7 +172,7 @@ mod tests {
     use chrono::{Duration, Utc};
 
     fn make_test_ca() -> CaState {
-        ca::create_ca("test-pass", &vec![42u8; 32]).unwrap()
+        ca::create_ca("test-pass", &[42u8; 32]).unwrap()
     }
 
     fn make_member(hostname: &str, expires_in_days: i64) -> RosterMember {
@@ -249,12 +249,12 @@ mod tests {
         assert_eq!(issued.fingerprint.len(), 64);
         // Cert expires ~30 days from now (CERT_LIFETIME_DAYS)
         let days_until_expiry = (issued.expires - Utc::now()).num_days();
-        assert!(days_until_expiry >= 29 && days_until_expiry <= 30);
+        assert!((29..=30).contains(&days_until_expiry));
     }
 
     #[test]
     fn execute_reload_hook_success() {
-        let cmd = if cfg!(windows) { "echo ok" } else { "echo ok" };
+        let cmd = "echo ok";
         let result = execute_reload_hook(cmd);
         assert!(result.success);
         assert_eq!(result.command, cmd);
@@ -313,7 +313,7 @@ mod tests {
         let ca = make_test_ca();
         let mut roster = Roster::new(TrustProfile::JustMe, None);
         let mut member = make_member("stone-05", 5);
-        let cmd = if cfg!(windows) { "echo renewed" } else { "echo renewed" };
+        let cmd = "echo renewed";
         member.reload_hook = Some(cmd.to_string());
         roster.members.push(member);
 
@@ -374,11 +374,7 @@ mod tests {
 
     #[test]
     fn execute_reload_hook_captures_stderr() {
-        let cmd = if cfg!(windows) {
-            "echo stderr_msg >&2"
-        } else {
-            "echo stderr_msg >&2"
-        };
+        let cmd = "echo stderr_msg >&2";
         let result = execute_reload_hook(cmd);
         assert!(result.success);
         // stderr is captured in the output
