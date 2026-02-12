@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.202602121536"
+version = "0.2.202602121540"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/sylin-org/koi"
@@ -27,7 +27,7 @@ homepage = "https://sylin.org/koi"
 koi-common = { path = "crates/koi-common", version = "0.2" }
 koi-client = { path = "crates/koi-client", version = "0.2" }
 koi-embedded = { path = "crates/koi-embedded", version = "0.2" }
-koi-mdns = { path = "crates/koi-mdns", package = "koi-service", version = "0.2" }
+koi-mdns = { path = "crates/koi-mdns", version = "0.2" }
 koi-config = { path = "crates/koi-config", version = "0.2" }
 koi-certmesh = { path = "crates/koi-certmesh", version = "0.2" }
 koi-crypto = { path = "crates/koi-crypto", version = "0.2" }

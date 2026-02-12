@@ -218,7 +218,7 @@ jobs:
           cargo publish -p koi-config --locked
           cargo publish -p koi-crypto --locked
           cargo publish -p koi-truststore --locked
-          cargo publish -p koi-service --locked
+          cargo publish -p koi-mdns --locked
           sleep 15
           # Layer 2: depends on layer 0-1
           cargo publish -p koi-certmesh --locked
