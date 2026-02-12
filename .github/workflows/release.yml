@@ -211,57 +211,55 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          # crates.io rate limits:
+          # crates.io rate limits (from rate_limiter.rs):
           #   PublishNew:    burst 5, refill 1 token per 10 min
           #   PublishUpdate: burst 30, refill 1 token per 1 min
           #
-          # On first publish all 12 crates are "new" — we can only do 5 before
-          # waiting 10 min for a token. On subsequent releases they are "updates"
-          # (burst 30) so delays are just for index propagation.
-          #
-          # Strategy: publish in dependency order, inserting a 10-min pause
-          # after every 5th crate to stay within the new-crate bucket.
+          # This script checks each crate against the crates.io API to
+          # determine if it's new or an update, and only pauses when the
+          # new-crate token bucket would be exhausted.
 
-          # ── Batch 1 (crates 1-5) ──────────────────────────────
-          # Layer 0: no internal deps
-          cargo publish -p koi-common --locked
-          sleep 30
+          NEW_COUNT=0
+          NEW_BURST=5
 
-          # Layer 1: depends on koi-common only
-          cargo publish -p koi-config --locked
-          sleep 20
-          cargo publish -p koi-crypto --locked
-          sleep 20
-          cargo publish -p koi-truststore --locked
-          sleep 20
-          cargo publish -p koi-mdns --locked
+          publish_crate() {
+            local crate="$1"
 
-          echo "Batch 1 done (5 crates). Waiting 10 min for rate limit refill..."
-          sleep 600
+            # Check if the crate already exists on crates.io
+            local status
+            status=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "User-Agent: koi-ci (https://github.com/sylin-org/koi)" \
+              "https://crates.io/api/v1/crates/${crate}")
 
-          # ── Batch 2 (crates 6-10) ─────────────────────────────
-          # Layer 2: depends on layer 0-1
-          cargo publish -p koi-certmesh --locked
-          sleep 30
+            if [ "$status" = "200" ]; then
+              echo "📦 ${crate}: exists (update — burst 30)"
+            else
+              NEW_COUNT=$((NEW_COUNT + 1))
+              echo "🆕 ${crate}: new crate (${NEW_COUNT}/${NEW_BURST} tokens used)"
+              if [ "$NEW_COUNT" -ge "$NEW_BURST" ]; then
+                echo "⏳ New-crate bucket exhausted. Waiting 10 min for refill..."
+                sleep 600
+                NEW_COUNT=0
+              fi
+            fi
 
-          # Layer 3: depends on layer 0-2
-          cargo publish -p koi-dns --locked
-          sleep 20
-          cargo publish -p koi-proxy --locked
-          sleep 30
+            cargo publish -p "${crate}" --locked
+            echo "✅ ${crate} published"
 
-          # Layer 4: depends on layer 0-3
-          cargo publish -p koi-health --locked
-          sleep 30
+            # Brief pause for index propagation between dependency layers
+            sleep 20
+          }
 
-          # Layer 5: depends on health + mdns
-          cargo publish -p koi-client --locked
-
-          echo "Batch 2 done (5 crates). Waiting 10 min for rate limit refill..."
-          sleep 600
-
-          # ── Batch 3 (crates 11-12) ────────────────────────────
-          # Layer 6: depends on everything
-          cargo publish -p koi-embedded --locked
-          sleep 20
-          cargo publish -p koi-net --locked
+          # Publish in dependency order
+          publish_crate koi-common      # Layer 0: no internal deps
+          publish_crate koi-config      # Layer 1: depends on koi-common
+          publish_crate koi-crypto      # Layer 1
+          publish_crate koi-truststore  # Layer 1
+          publish_crate koi-mdns        # Layer 1
+          publish_crate koi-certmesh    # Layer 2: depends on layer 0-1
+          publish_crate koi-dns         # Layer 3: depends on layer 0-2
+          publish_crate koi-proxy       # Layer 3
+          publish_crate koi-health      # Layer 4: depends on layer 0-3
+          publish_crate koi-client      # Layer 5: depends on health + mdns
+          publish_crate koi-embedded    # Layer 6: depends on everything
+          publish_crate koi-net         # Layer 6
