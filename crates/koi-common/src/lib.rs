@@ -5,6 +5,7 @@ pub mod error;
 pub mod firewall;
 pub mod http;
 pub mod id;
+pub mod net;
 pub mod paths;
 pub mod persist;
 pub mod pipeline;

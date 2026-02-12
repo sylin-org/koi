@@ -7,6 +7,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::time::Duration;
 
 use hickory_proto::rr::RecordType;
+use koi_common::net::resolve_localhost;
 use koi_common::types::ServiceRecord;
 use koi_health::ServiceCheckKind;
 use koi_mdns::protocol::{
@@ -50,12 +51,14 @@ pub struct KoiClient {
 
 impl KoiClient {
     pub fn new(endpoint: &str) -> Self {
+        let clean = endpoint.trim_end_matches('/');
+        let resolved = resolve_localhost(clean);
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(CONNECT_TIMEOUT)
             .timeout_read(READ_TIMEOUT)
             .build();
         Self {
-            endpoint: endpoint.trim_end_matches('/').to_string(),
+            endpoint: resolved,
             agent,
         }
     }
@@ -522,20 +525,28 @@ mod tests {
 
     #[test]
     fn client_new_strips_trailing_slash() {
+        // After Happy Eyeballs, localhost is rewritten to a literal IP.
         let client = KoiClient::new("http://localhost:5641/");
-        assert_eq!(client.endpoint, "http://localhost:5641");
+        assert!(
+            client.endpoint == "http://127.0.0.1:5641"
+                || client.endpoint == "http://[::1]:5641"
+                || client.endpoint == "http://localhost:5641",
+            "unexpected endpoint: {}",
+            client.endpoint
+        );
+        assert!(!client.endpoint.ends_with("/"));
     }
 
     #[test]
-    fn client_new_preserves_clean_endpoint() {
-        let client = KoiClient::new("http://localhost:5641");
-        assert_eq!(client.endpoint, "http://localhost:5641");
+    fn client_new_preserves_non_localhost() {
+        let client = KoiClient::new("http://10.0.0.1:5641");
+        assert_eq!(client.endpoint, "http://10.0.0.1:5641");
     }
 
     #[test]
     fn client_new_strips_multiple_trailing_slashes() {
         let client = KoiClient::new("http://localhost:5641///");
-        assert_eq!(client.endpoint, "http://localhost:5641");
+        assert!(!client.endpoint.ends_with("/"));
     }
 
     // ── SSE parsing tests ───────────────────────────────────────────

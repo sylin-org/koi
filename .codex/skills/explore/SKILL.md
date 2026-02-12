@@ -11,7 +11,7 @@ Do not write production code until all steps are done.
 ## Step 1: Understand the task
 
 Restate the task in your own words. Identify:
-- What concern this touches: adapters, core, protocol, commands, platform, config
+- What crate this touches: `koi-common`, `koi-client`, `koi-mdns`, `koi-config`, `koi-dns`, `koi-health`, `koi-proxy`, `koi-certmesh`, `koi-crypto`, `koi-truststore`, `koi-embedded`, `koi` binary
 - Which layer is involved: transport, business logic, wire format, CLI
 - Expected output: new feature, refactor, bug fix, extension
 
@@ -22,13 +22,13 @@ Use searches like:
 
 ```bash
 # Find types related to the task
-rg "struct|enum|trait" src/ -l | head -20
+rg "struct|enum|trait" crates/ -l | head -20
 
 # Find functions related to the task
-rg "fn keyword_from_task" src/
+rg "fn keyword_from_task" crates/
 
 # Find the closest existing implementation to what we're building
-rg "similar_feature_keyword" src/ -l
+rg "similar_feature_keyword" crates/ -l
 ```
 
 For each file read, state in one sentence what it does and whether it is relevant.
@@ -38,23 +38,22 @@ For each file read, state in one sentence what it does and whether it is relevan
 Run these searches explicitly and report results:
 
 ```bash
-# Constants that might already exist
-rg "const " src/core/mod.rs
-rg "const " src/adapters/
-rg "const " src/main.rs
-rg "const " src/config.rs
+# Constants in the binary crate
+rg "const " crates/koi/src/
 
-# Protocol types that might already exist
-rg "struct|enum" src/protocol/mod.rs
-rg "struct|enum" src/protocol/request.rs
-rg "struct|enum" src/protocol/response.rs
+# Shared types and utilities
+rg "struct|enum" crates/koi-common/src/
+rg "struct|enum" crates/koi-mdns/src/protocol/
 
-# Core types that might already exist
-rg "struct|enum" src/core/mod.rs
-rg "struct|enum" src/core/registry.rs
+# Client types
+rg "struct|enum" crates/koi-client/src/
+
+# Domain crate types
+rg "struct|enum" crates/koi-dns/src/
+rg "struct|enum" crates/koi-health/src/
+rg "struct|enum" crates/koi-proxy/src/
+rg "struct|enum" crates/koi-certmesh/src/
 ```
-
-Also check `.agentic/reference/utilities.md` for the full constants and types catalog.
 
 For each required piece of functionality, state clearly:
 - `Already exists`
@@ -64,12 +63,13 @@ For each required piece of functionality, state clearly:
 
 Find the most similar existing feature in the codebase.
 Examples:
-- New HTTP endpoint: read `src/adapters/http.rs`
-- New CLI command: read `src/commands/standalone.rs` or `src/commands/client.rs`
-- New protocol type: read `src/protocol/mod.rs`
-- New core operation: read `src/core/mod.rs`
-- New admin command: read `src/admin.rs`
-- Platform integration: read `src/platform/`
+- New HTTP endpoint: read `crates/koi/src/adapters/http.rs` or `crates/koi/src/adapters/dispatch.rs`
+- New CLI command: read a module in `crates/koi/src/commands/`
+- New shared types: read `crates/koi-common/src/types.rs` or `crates/koi-common/src/api.rs`
+- New domain logic: read the relevant domain crate (e.g., `crates/koi-mdns/`, `crates/koi-dns/`)
+- Platform integration: read `crates/koi/src/platform/`
+- Formatting: read `crates/koi/src/format.rs`
+- Client operations: read `crates/koi-client/src/lib.rs`
 
 State:
 - `Following the pattern from [specific file]`
@@ -82,23 +82,30 @@ For every new file, type, function, or constant, state location and justificatio
 |----------|----------|---------------|
 | (type/fn/const) | (exact path) | (why here and not elsewhere) |
 
-Apply layer placement rules:
-- Wire format types: `src/protocol/`
-- Business logic: `src/core/`
-- Transport handling: `src/adapters/`
-- CLI command: `src/commands/`
-- OS integration: `src/platform/`
-- Formatting: `src/format.rs`
+Apply crate placement rules:
+- Shared types, traits, utilities: `crates/koi-common/`
+- mDNS protocol types: `crates/koi-mdns/`
+- HTTP client methods: `crates/koi-client/`
+- CLI commands / subcommands: `crates/koi/src/commands/`
+- HTTP server / adapters: `crates/koi/src/adapters/`
+- OS integration: `crates/koi/src/platform/`
+- Output formatting: `crates/koi/src/format.rs`
+- DNS domain logic: `crates/koi-dns/`
+- Health checks: `crates/koi-health/`
+- Reverse proxy: `crates/koi-proxy/`
+- Certificate mesh: `crates/koi-certmesh/`
+- Crypto primitives: `crates/koi-crypto/`
+- Configuration / breadcrumb: `crates/koi-config/`
 
 ## Step 6: Check for potential violations
 
 Before proceeding, confirm:
 
-- [ ] No `mdns-sd` imports outside `core/daemon.rs`
-- [ ] No new constant duplicates one in `.agentic/reference/utilities.md`
-- [ ] No new type duplicates one in `protocol/` or `core/`
+- [ ] No `mdns-sd` imports outside `crates/koi-mdns/`
+- [ ] No new type duplicates one in `koi-common` or domain crates
 - [ ] Constants are co-located with usage (not in a centralized module)
 - [ ] New protocol types have serde round-trip tests planned
+- [ ] Cross-crate dependencies flow downward (binary -> domain crates -> koi-common)
 
 ## Step 7: Present the plan
 
