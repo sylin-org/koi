@@ -69,7 +69,15 @@ if (-not $SkipTests) {
     Write-Host "  Running tests..." -ForegroundColor Cyan
     Write-Host ""
 
-    if ($DebugBuild) { cargo test } else { cargo test --release }
+    if ($DebugBuild) {
+        cargo test -p koi-certmesh -- --test-threads=1
+        if ($LASTEXITCODE -ne 0) { throw "Certmesh tests failed." }
+        cargo test --workspace --exclude koi-certmesh
+    } else {
+        cargo test --release -p koi-certmesh -- --test-threads=1
+        if ($LASTEXITCODE -ne 0) { throw "Certmesh tests failed." }
+        cargo test --release --workspace --exclude koi-certmesh
+    }
     if ($LASTEXITCODE -ne 0) {
         Write-Host ""
         Write-Host "  TESTS FAILED" -ForegroundColor Red
