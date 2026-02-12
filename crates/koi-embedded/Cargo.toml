@@ -1,6 +1,6 @@
 ﻿[package]
 name = "koi-embedded"
-description = "Embedded facade for the Koi local network toolkit"
+description = "Embed local network discovery, DNS, health, and TLS directly in your Rust application"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
