@@ -213,26 +213,31 @@ jobs:
         run: |
           # Layer 0: no internal deps
           cargo publish -p koi-common --locked
-          sleep 15
+          sleep 30
           # Layer 1: depends on koi-common only
           cargo publish -p koi-config --locked
+          sleep 10
           cargo publish -p koi-crypto --locked
+          sleep 10
           cargo publish -p koi-truststore --locked
+          sleep 10
           cargo publish -p koi-mdns --locked
-          sleep 15
+          sleep 30
           # Layer 2: depends on layer 0-1
           cargo publish -p koi-certmesh --locked
-          sleep 15
+          sleep 30
           # Layer 3: depends on layer 0-2
           cargo publish -p koi-dns --locked
+          sleep 10
           cargo publish -p koi-proxy --locked
-          sleep 15
+          sleep 30
           # Layer 4: depends on layer 0-3
           cargo publish -p koi-health --locked
-          sleep 15
+          sleep 30
           # Layer 5: depends on health + mdns
           cargo publish -p koi-client --locked
-          sleep 15
+          sleep 30
           # Layer 6: depends on everything
           cargo publish -p koi-embedded --locked
+          sleep 10
           cargo publish -p koi-net --locked
