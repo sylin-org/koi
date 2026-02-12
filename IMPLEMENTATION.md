@@ -46,8 +46,12 @@ crates/
 │       │   ├── mod.rs           # Shared helpers (detect_mode, run_streaming, etc.)
 │       │   ├── mdns.rs          # mDNS commands + admin routing
 │       │   ├── certmesh.rs      # Certmesh commands
+│       │   ├── dns.rs           # DNS commands
+│       │   ├── health.rs        # Health commands
+│       │   ├── proxy.rs         # Proxy commands
 │       │   └── status.rs        # Unified status command
 │       ├── adapters/
+│       │   ├── mod.rs           # Adapter module root
 │       │   ├── http.rs          # HTTP server (Axum router, routes)
 │       │   ├── pipe.rs          # Named pipe / UDS adapter
 │       │   ├── cli.rs           # stdin/stdout NDJSON adapter
