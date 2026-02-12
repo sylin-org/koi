@@ -36,6 +36,7 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route("/unlock", post(unlock_handler))
         .route("/rotate-totp", post(rotate_totp_handler))
         .route("/log", get(log_handler))
+        .route("/destroy", post(destroy_handler))
         // Phase 4 — Enrollment Policy
         .route("/enrollment/open", post(open_enrollment_handler))
         .route("/enrollment/close", post(close_enrollment_handler))
@@ -364,6 +365,24 @@ async fn log_handler(
         Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &CertmeshError::Io(e),
+        ),
+    }
+}
+
+/// POST /destroy — Remove all certmesh state (CA, certs, roster, audit log).
+async fn destroy_handler(
+    State(state): State<Arc<CertmeshState>>,
+) -> impl IntoResponse {
+    if let Err(e) = state.destroy().await {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e);
+    }
+
+    let response = crate::protocol::DestroyResponse { destroyed: true };
+    match serde_json::to_value(&response) {
+        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CertmeshError::Internal(format!("Serialization error: {e}")),
         ),
     }
 }
@@ -1057,5 +1076,100 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("allowed_domain").unwrap().is_null());
         assert!(json.get("allowed_subnet").unwrap().is_null());
+    }
+
+    // ── Service delegation endpoint tests ────────────────────────────
+
+    #[tokio::test]
+    async fn create_with_bad_entropy_returns_400() {
+        let app = routes(test_state());
+        let req = Request::post("/create")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"passphrase":"test","entropy_hex":"bad","profile":"just_me"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_with_short_entropy_returns_400() {
+        let app = routes(test_state());
+        // 16 bytes (32 hex chars) instead of required 32 bytes (64 hex chars)
+        let req = Request::post("/create")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"passphrase":"test","entropy_hex":"00112233445566778899aabbccddeeff","profile":"just_me"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn unlock_with_wrong_passphrase_returns_error() {
+        let app = routes(test_state());
+        let req = Request::post("/unlock")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"passphrase":"wrong-passphrase"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // Should fail because no CA exists on disk
+        assert!(resp.status().is_client_error() || resp.status().is_server_error());
+    }
+
+    #[tokio::test]
+    async fn rotate_totp_without_ca_returns_503() {
+        let app = routes(test_state());
+        let req = Request::post("/rotate-totp")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"passphrase":"test"}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn log_endpoint_returns_200() {
+        let app = routes(test_state());
+        let req = Request::get("/log").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // Should return 200 even with no log entries (returns empty string)
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn log_endpoint_body_has_entries_field() {
+        let app = routes(test_state());
+        let req = Request::get("/log").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("entries").is_some(), "response should have 'entries' field");
+    }
+
+    #[tokio::test]
+    async fn destroy_endpoint_returns_200() {
+        let app = routes(test_state());
+        let req = Request::post("/destroy")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.get("destroyed").unwrap().as_bool().unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn decode_hex_valid() {
+        assert_eq!(decode_hex("0011ff"), Some(vec![0x00, 0x11, 0xff]));
+    }
+
+    #[tokio::test]
+    async fn decode_hex_invalid() {
+        assert_eq!(decode_hex("zz"), None);
+    }
+
+    #[tokio::test]
+    async fn decode_hex_odd_length() {
+        assert_eq!(decode_hex("abc"), None);
     }
 }

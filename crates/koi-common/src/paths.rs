@@ -8,7 +8,13 @@ use std::path::PathBuf;
 /// - Linux: `/var/lib/koi/`
 /// - macOS: `/Library/Application Support/koi/`
 /// - Windows: `%ProgramData%\koi\`
+///
+/// Override with `KOI_DATA_DIR` env var (for testing).
 pub fn koi_data_dir() -> PathBuf {
+    if let Ok(override_dir) = std::env::var("KOI_DATA_DIR") {
+        return PathBuf::from(override_dir);
+    }
+
     #[cfg(target_os = "macos")]
     {
         PathBuf::from("/Library/Application Support/koi")
@@ -126,5 +132,20 @@ mod tests {
             dir_str.starts_with("/var/lib/koi"),
             "Linux data dir should be /var/lib/koi: {dir:?}"
         );
+    }
+
+    #[test]
+    fn koi_data_dir_env_override() {
+        // Save and set override
+        let prev = std::env::var("KOI_DATA_DIR").ok();
+        std::env::set_var("KOI_DATA_DIR", "/tmp/koi-test-override");
+        let dir = koi_data_dir();
+        assert_eq!(dir, PathBuf::from("/tmp/koi-test-override"));
+
+        // Restore
+        match prev {
+            Some(v) => std::env::set_var("KOI_DATA_DIR", v),
+            None => std::env::remove_var("KOI_DATA_DIR"),
+        }
     }
 }

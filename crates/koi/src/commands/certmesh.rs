@@ -550,6 +550,27 @@ pub fn rotate_totp(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ── Destroy ─────────────────────────────────────────────────────────
+
+pub fn destroy(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint)?;
+    let resp = client.post_json("/v1/certmesh/destroy", &serde_json::json!({}))?;
+
+    let destroyed = resp
+        .get("destroyed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if json {
+        println!("{}", serde_json::json!({ "destroyed": destroyed }));
+    } else if destroyed {
+        println!("Certificate mesh destroyed. All CA data, certificates, and audit logs have been removed.");
+    } else {
+        println!("Certificate mesh could not be destroyed.");
+    }
+    Ok(())
+}
+
 // ── Deadline Parsing ────────────────────────────────────────────────
 
 /// Parse a deadline string — supports RFC 3339 timestamps or durations.

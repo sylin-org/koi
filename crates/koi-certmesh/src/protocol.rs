@@ -142,6 +142,12 @@ pub struct AuditLogResponse {
     pub entries: String,
 }
 
+/// POST /destroy response — CA and all certmesh state removed.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DestroyResponse {
+    pub destroyed: bool,
+}
+
 // ── Phase 4 — Enrollment Policy ─────────────────────────────────────
 
 /// Request to set enrollment scope constraints.
@@ -648,6 +654,14 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: AuditLogResponse = serde_json::from_str(&json).unwrap();
         assert!(parsed.entries.contains("pond_initialized"));
+    }
+
+    #[test]
+    fn destroy_response_serde_round_trip() {
+        let resp = DestroyResponse { destroyed: true };
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: DestroyResponse = serde_json::from_str(&json).unwrap();
+        assert!(parsed.destroyed);
     }
 
     #[test]

@@ -245,6 +245,8 @@ pub enum CertmeshSubcommand {
     },
     /// Rotate the TOTP enrollment secret
     RotateTotp,
+    /// Destroy the certificate mesh (removes all CA data, certs, and audit log)
+    Destroy,
 }
 
 /// Resolved configuration used at runtime.
@@ -944,6 +946,17 @@ mod tests {
                 command: CertmeshSubcommand::RotateTotp,
             })) => {}
             other => panic!("Expected RotateTotp, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_destroy() {
+        let cli = Cli::try_parse_from(["koi", "certmesh", "destroy"]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: CertmeshSubcommand::Destroy,
+            })) => {}
+            other => panic!("Expected Destroy, got: {other:?}"),
         }
     }
 }

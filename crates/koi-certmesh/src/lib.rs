@@ -45,6 +45,41 @@ pub(crate) struct CertmeshState {
     pub(crate) profile: tokio::sync::Mutex<TrustProfile>,
 }
 
+impl CertmeshState {
+    /// Destroy all certmesh state — shared by CertmeshCore::destroy() and the HTTP handler.
+    pub(crate) async fn destroy(&self) -> Result<(), CertmeshError> {
+        // Clear in-memory state first
+        *self.ca.lock().await = None;
+        *self.totp_secret.lock().await = None;
+        *self.roster.lock().await = Roster::empty();
+        *self.profile.lock().await = TrustProfile::default();
+
+        // Remove certmesh directory (contains ca/, roster.json)
+        let certmesh_dir = ca::certmesh_dir();
+        if certmesh_dir.exists() {
+            std::fs::remove_dir_all(&certmesh_dir)?;
+            tracing::info!(path = %certmesh_dir.display(), "Certmesh data directory removed");
+        }
+
+        // Remove issued certificate files
+        let certs_dir = koi_common::paths::koi_certs_dir();
+        if certs_dir.exists() {
+            std::fs::remove_dir_all(&certs_dir)?;
+            tracing::info!(path = %certs_dir.display(), "Certificate files removed");
+        }
+
+        // Remove audit log
+        let audit_path = audit::audit_log_path();
+        if audit_path.exists() {
+            std::fs::remove_file(&audit_path)?;
+            tracing::info!(path = %audit_path.display(), "Audit log removed");
+        }
+
+        tracing::info!("Certmesh state destroyed");
+        Ok(())
+    }
+}
+
 // ── CertmeshCore — domain facade ────────────────────────────────────
 
 /// CertmeshCore — the main domain facade.
@@ -185,6 +220,15 @@ impl CertmeshCore {
     /// Read the audit log entries.
     pub fn read_audit_log(&self) -> Result<String, CertmeshError> {
         audit::read_log().map_err(CertmeshError::Io)
+    }
+
+    /// Destroy all certmesh state — CA key, certs, roster, and audit log.
+    ///
+    /// Removes all certmesh data from disk and resets in-memory state to
+    /// uninitialized. This is irreversible. Used for testing cleanup and
+    /// full mesh teardown.
+    pub async fn destroy(&self) -> Result<(), CertmeshError> {
+        self.state.destroy().await
     }
 
     /// Process an enrollment request. Returns the join response on success.
@@ -1361,5 +1405,158 @@ mod tests {
         let core = CertmeshCore::uninitialized();
         let result = core.rotate_totp("passphrase").await;
         assert!(result.is_err());
+    }
+
+    // ── node_role ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn node_role_returns_none_for_empty_roster() {
+        let ca = make_test_ca();
+        let roster = Roster::new(TrustProfile::JustMe, None);
+        let core = make_unlocked_core(ca, roster);
+        // Empty roster has no members, so node_role returns None
+        // (regardless of local hostname)
+        let role = core.node_role().await;
+        // May or may not match the local hostname — depends on environment
+        // but for an empty roster it should always be None
+        assert!(role.is_none());
+    }
+
+    #[tokio::test]
+    async fn node_role_returns_role_for_matching_hostname() {
+        let ca = make_test_ca();
+        let hostname = CertmeshCore::local_hostname().unwrap();
+        let roster = make_test_roster_with_member(&hostname, MemberRole::Primary);
+        let core = make_unlocked_core(ca, roster);
+        let role = core.node_role().await;
+        assert_eq!(role, Some(MemberRole::Primary));
+    }
+
+    // ── pinned_ca_fingerprint ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn pinned_ca_fingerprint_returns_none_for_empty_roster() {
+        let ca = make_test_ca();
+        let roster = Roster::new(TrustProfile::JustMe, None);
+        let core = make_unlocked_core(ca, roster);
+        let fp = core.pinned_ca_fingerprint().await;
+        assert!(fp.is_none());
+    }
+
+    #[tokio::test]
+    async fn pinned_ca_fingerprint_returns_value_for_matching_member() {
+        let ca = make_test_ca();
+        let hostname = CertmeshCore::local_hostname().unwrap();
+        let mut roster = make_test_roster_with_member(&hostname, MemberRole::Primary);
+        roster.members[0].pinned_ca_fingerprint = Some("test-pinned-fp".to_string());
+        let core = make_unlocked_core(ca, roster);
+        let fp = core.pinned_ca_fingerprint().await;
+        assert_eq!(fp.as_deref(), Some("test-pinned-fp"));
+    }
+
+    // ── ca_announcement ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn ca_announcement_returns_none_when_ca_locked() {
+        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let core = make_locked_core(roster);
+        let ann = core.ca_announcement(5641).await;
+        assert!(ann.is_none());
+    }
+
+    #[tokio::test]
+    async fn ca_announcement_returns_none_when_no_primary() {
+        let ca = make_test_ca();
+        let roster = make_test_roster_with_member("stone-01", MemberRole::Member);
+        let core = make_unlocked_core(ca, roster);
+        let ann = core.ca_announcement(5641).await;
+        assert!(ann.is_none());
+    }
+
+    #[tokio::test]
+    async fn ca_announcement_returns_descriptor_for_primary() {
+        let ca = make_test_ca();
+        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let core = make_unlocked_core(ca, roster);
+        let ann = core.ca_announcement(5641).await.unwrap();
+        assert!(ann.name.contains("koi-ca-"));
+        assert_eq!(ann.port, 5641);
+        assert_eq!(ann.txt.get("role").unwrap(), "primary");
+        assert!(ann.txt.contains_key("fingerprint"));
+        assert!(ann.txt.contains_key("profile"));
+    }
+
+    // ── Capability::status() ───────────────────────────────────────────
+
+    #[test]
+    fn capability_status_uninitialised() {
+        let core = CertmeshCore::uninitialized();
+        let status = core.status();
+        assert_eq!(status.name, "certmesh");
+        assert!(!status.healthy);
+        // Summary should mention not initialized or locked
+        assert!(
+            status.summary.contains("not initialized") || status.summary.contains("locked"),
+            "unexpected summary: {}",
+            status.summary
+        );
+    }
+
+    #[test]
+    fn capability_status_locked() {
+        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let core = make_locked_core(roster);
+        let status = core.status();
+        assert_eq!(status.name, "certmesh");
+        assert!(!status.healthy);
+    }
+
+    #[test]
+    fn capability_status_unlocked() {
+        let ca = make_test_ca();
+        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let core = make_unlocked_core(ca, roster);
+        let status = core.status();
+        assert_eq!(status.name, "certmesh");
+        assert!(status.healthy);
+        assert!(status.summary.contains("1 member"), "summary: {}", status.summary);
+    }
+
+    // ── certmesh_status facade ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn certmesh_status_returns_profile() {
+        let ca = make_test_ca();
+        let roster = Roster::new(TrustProfile::MyOrganization, Some("ops".to_string()));
+        let totp = koi_crypto::totp::generate_secret();
+        let core = CertmeshCore::new(ca, roster, totp, TrustProfile::MyOrganization);
+        let status = core.certmesh_status().await;
+        assert_eq!(status.profile, TrustProfile::MyOrganization);
+    }
+
+    // ── set_reload_hook facade ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn set_reload_hook_unknown_member_returns_error() {
+        let ca = make_test_ca();
+        let roster = Roster::new(TrustProfile::JustMe, None);
+        let core = make_unlocked_core(ca, roster);
+        let result = core.set_reload_hook("nonexistent", "echo hi").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn set_reload_hook_sets_hook_for_known_member() {
+        let ca = make_test_ca();
+        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let core = make_unlocked_core(ca, roster);
+        core.set_reload_hook("stone-01", "systemctl restart nginx")
+            .await
+            .unwrap();
+        let roster = core.state.roster.lock().await;
+        assert_eq!(
+            roster.members[0].reload_hook.as_deref(),
+            Some("systemctl restart nginx")
+        );
     }
 }

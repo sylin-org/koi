@@ -189,6 +189,9 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     CertmeshSubcommand::RotateTotp => {
                         commands::certmesh::rotate_totp(cli.json, ep)
                     }
+                    CertmeshSubcommand::Destroy => {
+                        commands::certmesh::destroy(cli.json, ep)
+                    }
                 }
             }
             // Install, Uninstall, Version handled before runtime
