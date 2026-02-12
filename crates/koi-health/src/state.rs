@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use koi_common::paths;
+use koi_common::persist;
 
 /// Default interval for health checks (seconds).
 pub const DEFAULT_INTERVAL_SECS: u64 = 30;
@@ -43,36 +44,50 @@ pub fn health_state_path() -> PathBuf {
 /// Load health checks from disk. Returns default state if missing.
 pub fn load_health_state() -> Result<HealthChecksState, std::io::Error> {
     let path = health_state_path();
-    if !path.exists() {
-        return Ok(HealthChecksState::default());
-    }
-    let json = std::fs::read_to_string(&path)?;
-    serde_json::from_str(&json)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    persist::read_json_or_default(&path)
 }
 
 /// Save health checks to disk, creating the state directory if needed.
 pub fn save_health_state(state: &HealthChecksState) -> Result<(), std::io::Error> {
     let path = health_state_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(state)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    persist::write_json_pretty(&path, state)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn with_temp_data_dir<F, T>(f: F) -> T
+    where
+        F: FnOnce() -> T,
+    {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("koi-health-state-test-{nanos}"));
+        let prev = std::env::var("KOI_DATA_DIR").ok();
+        std::env::set_var("KOI_DATA_DIR", &dir);
+        let result = f();
+        match prev {
+            Some(v) => std::env::set_var("KOI_DATA_DIR", v),
+            None => std::env::remove_var("KOI_DATA_DIR"),
+        }
+        result
+    }
 
     #[test]
     fn defaults_are_stable() {
         assert_eq!(DEFAULT_INTERVAL_SECS, 30);
         assert_eq!(DEFAULT_TIMEOUT_SECS, 5);
+    }
+
+    #[test]
+    fn load_health_state_missing_returns_default() {
+        with_temp_data_dir(|| {
+            let state = load_health_state().unwrap();
+            assert!(state.checks.is_empty());
+        });
     }
 }

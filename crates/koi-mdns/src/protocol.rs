@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 
+use koi_common::api::{error_body, ErrorBody};
 use koi_common::error::ErrorCode;
 use koi_common::types::{EventKind, ServiceRecord};
 
@@ -141,10 +142,7 @@ pub enum Response {
         service: ServiceRecord,
     },
     Renewed(RenewalResult),
-    Error {
-        error: ErrorCode,
-        message: String,
-    },
+    Error(ErrorBody),
 }
 
 impl Serialize for Response {
@@ -181,10 +179,10 @@ impl Serialize for Response {
                 map.serialize_entry("renewed", result)?;
                 map.end()
             }
-            Response::Error { error, message } => {
+            Response::Error(body) => {
                 let mut map = serializer.serialize_map(Some(2))?;
-                map.serialize_entry("error", error)?;
-                map.serialize_entry("message", message)?;
+                map.serialize_entry("error", &body.error)?;
+                map.serialize_entry("message", &body.message)?;
                 map.end()
             }
         }
@@ -245,10 +243,10 @@ pub fn subscribe_event_to_pipeline(event: MdnsEvent) -> MdnsPipelineResponse {
 
 /// Convert an MdnsError into a pipeline error response.
 pub fn error_to_pipeline(e: &MdnsError) -> MdnsPipelineResponse {
-    PipelineResponse::clean(Response::Error {
-        error: ErrorCode::from(e),
-        message: e.to_string(),
-    })
+    PipelineResponse::clean(Response::Error(error_body(
+        ErrorCode::from(e),
+        e.to_string(),
+    )))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -445,10 +443,10 @@ mod tests {
 
     #[test]
     fn error_response_serializes_correctly() {
-        let resp = MdnsPipelineResponse::clean(Response::Error {
-            error: ErrorCode::NotFound,
-            message: "No registration with id 'xyz'".into(),
-        });
+        let resp = MdnsPipelineResponse::clean(Response::Error(error_body(
+            ErrorCode::NotFound,
+            "No registration with id 'xyz'",
+        )));
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json.get("error").unwrap(), "not_found");
         assert_eq!(

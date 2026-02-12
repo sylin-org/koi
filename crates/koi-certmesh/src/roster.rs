@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::profiles::TrustProfile;
+use koi_common::persist;
 
 /// The complete roster — serialized to `~/.koi/certmesh/roster.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,21 +273,14 @@ pub fn roster_path(certmesh_dir: &Path) -> PathBuf {
 
 /// Save the roster to disk as pretty-printed JSON.
 pub fn save_roster(roster: &Roster, path: &Path) -> Result<(), std::io::Error> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(roster)
-        .map_err(std::io::Error::other)?;
-    std::fs::write(path, json)?;
+    persist::write_json_pretty(path, roster)?;
     tracing::debug!(path = %path.display(), "Roster saved");
     Ok(())
 }
 
 /// Load the roster from disk.
 pub fn load_roster(path: &Path) -> Result<Roster, std::io::Error> {
-    let json = std::fs::read_to_string(path)?;
-    serde_json::from_str(&json)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    persist::read_json(path)
 }
 
 #[cfg(test)]

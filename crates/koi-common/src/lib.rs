@@ -1,8 +1,12 @@
+pub mod api;
 pub mod capability;
 pub mod encoding;
 pub mod error;
 pub mod firewall;
+pub mod http;
 pub mod id;
 pub mod paths;
 pub mod pipeline;
+pub mod persist;
+pub mod test;
 pub mod types;

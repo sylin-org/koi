@@ -34,6 +34,9 @@ pub enum ErrorCode {
     InvalidManifest,
     // Certmesh (Phase 4)
     ScopeViolation,
+    ApprovalDenied,
+    ApprovalTimeout,
+    ApprovalUnavailable,
     // Certmesh (Phase 5)
     Revoked,
 }
@@ -53,11 +56,14 @@ impl ErrorCode {
             | Self::CapabilityDisabled => 503,
             Self::InvalidTotp => 401,
             Self::RateLimited => 429,
-            Self::EnrollmentClosed | Self::NotStandby | Self::ScopeViolation => 403,
+            Self::EnrollmentClosed | Self::NotStandby | Self::ScopeViolation
+            | Self::ApprovalDenied => 403,
             Self::Revoked => 403,
             Self::DaemonError | Self::IoError | Self::Internal
             | Self::PromotionFailed | Self::RenewalFailed => 500,
             Self::InvalidManifest => 400,
+            Self::ApprovalTimeout => 504,
+            Self::ApprovalUnavailable => 503,
         }
     }
 }
@@ -114,6 +120,7 @@ mod tests {
             // 403 Forbidden (Phase 4)
             (ErrorCode::ScopeViolation, 403),
             (ErrorCode::Revoked, 403),
+            (ErrorCode::ApprovalDenied, 403),
             // 500 Internal Server Error
             (ErrorCode::DaemonError, 500),
             (ErrorCode::IoError, 500),
@@ -125,8 +132,10 @@ mod tests {
             (ErrorCode::CaNotInitialized, 503),
             (ErrorCode::CaLocked, 503),
             (ErrorCode::CapabilityDisabled, 503),
+            (ErrorCode::ApprovalUnavailable, 503),
             // 504 Gateway Timeout
             (ErrorCode::ResolveTimeout, 504),
+            (ErrorCode::ApprovalTimeout, 504),
         ];
         for (code, expected_status) in &cases {
             assert_eq!(
@@ -168,6 +177,9 @@ mod tests {
             (ErrorCode::InvalidManifest, "invalid_manifest"),
             (ErrorCode::ScopeViolation, "scope_violation"),
             (ErrorCode::Revoked, "revoked"),
+            (ErrorCode::ApprovalDenied, "approval_denied"),
+            (ErrorCode::ApprovalTimeout, "approval_timeout"),
+            (ErrorCode::ApprovalUnavailable, "approval_unavailable"),
         ];
         for (code, expected_str) in &variants {
             let serialized = serde_json::to_value(code).unwrap();

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
 
+use koi_common::api::error_body;
 use koi_common::error::ErrorCode;
 use koi_common::pipeline::PipelineResponse;
 use koi_common::types::SessionId;
@@ -30,10 +31,10 @@ pub async fn handle_line<W: AsyncWriteExt + Unpin>(
     let request = match serde_json::from_str::<Request>(line) {
         Ok(r) => r,
         Err(e) => {
-            let resp = PipelineResponse::clean(Response::Error {
-                error: ErrorCode::ParseError,
-                message: format!("Invalid JSON: {e}"),
-            });
+            let resp = PipelineResponse::clean(Response::Error(error_body(
+                ErrorCode::ParseError,
+                format!("Invalid JSON: {e}"),
+            )));
             write_response(writer, &resp).await?;
             return Ok(());
         }
@@ -190,10 +191,10 @@ mod tests {
 
     #[tokio::test]
     async fn write_response_error_format() {
-        let resp = PipelineResponse::clean(Response::Error {
-            error: ErrorCode::NotFound,
-            message: "Registration not found".into(),
-        });
+        let resp = PipelineResponse::clean(Response::Error(error_body(
+            ErrorCode::NotFound,
+            "Registration not found",
+        )));
         let mut buf = Vec::new();
         write_response(&mut buf, &resp).await.unwrap();
 
