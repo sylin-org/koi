@@ -286,8 +286,16 @@ jobs:
               fi
             fi
 
-            cargo publish -p "${crate}" --locked
-            echo "✅ ${crate} published"
+            cargo publish -p "${crate}" --locked 2>&1 | tee /tmp/publish_output.txt || {
+              if grep -q "already exists" /tmp/publish_output.txt; then
+                echo "⏭️  ${crate}: version already published, skipping"
+              else
+                echo "❌ ${crate}: publish failed"
+                cat /tmp/publish_output.txt
+                exit 1
+              fi
+            }
+            echo "✅ ${crate} done"
 
             # Brief pause for index propagation
             sleep 20
