@@ -39,7 +39,10 @@ koi install
 
 ```bash
 # Linux
-sudo systemctl enable --now koi
+sudo koi install
+
+# macOS
+sudo koi install
 ```
 
 That's it. Koi is now running on port 5641, ready for HTTP, IPC, and CLI clients.
@@ -81,6 +84,7 @@ The container makes a plain HTTP request; Koi speaks multicast on the physical n
 | **DNS** | Local resolver for friendly names | `koi dns ...` |
 | **Certmesh** | Private CA + enrollment for LAN TLS | `koi certmesh ...` |
 | **Health** | Machine/service health view | `koi health ...` |
+| **Proxy** | TLS-terminating local reverse proxy | `koi proxy ...` |
 
 ## Features
 
@@ -88,6 +92,7 @@ The container makes a plain HTTP request; Koi speaks multicast on the physical n
 - **Local DNS** — static entries, mDNS aliases, certmesh SANs
 - **LAN TLS** — private CA, TOTP enrollment, automatic renewals
 - **Health view** — machine synthesis + opt-in HTTP/TCP checks
+- **Local TLS proxy** — terminate TLS with certmesh-managed certs
 - **Single binary** — HTTP, IPC, and CLI in one daemon
 
 ## Platform support
@@ -147,14 +152,18 @@ echo '{"browse": "_http._tcp"}' | koi
 | HTTP port          | `--port`       | `KOI_PORT`       | `5641`                               |
 | Pipe/socket path   | `--pipe`       | `KOI_PIPE`       | `\\.\pipe\koi` / `/var/run/koi.sock` |
 | Log level          | `--log-level`  | `KOI_LOG`        | `info`                               |
+| Verbosity          | `-v`, `-vv`    | —                | off                                  |
+| Log file           | `--log-file`   | `KOI_LOG_FILE`   | —                                    |
 | Disable HTTP       | `--no-http`    | `KOI_NO_HTTP`    | —                                    |
 | Disable IPC        | `--no-ipc`     | `KOI_NO_IPC`     | —                                    |
 | Disable mDNS       | `--no-mdns`    | `KOI_NO_MDNS`    | —                                    |
 | Disable Certmesh   | `--no-certmesh`| `KOI_NO_CERTMESH`| —                                    |
 | Disable DNS        | `--no-dns`     | `KOI_NO_DNS`     | —                                    |
 | Disable Health     | `--no-health`  | `KOI_NO_HEALTH`  | —                                    |
+| Disable Proxy      | `--no-proxy`   | `KOI_NO_PROXY`   | —                                    |
 | DNS port           | `--dns-port`   | `KOI_DNS_PORT`   | `53`                                 |
 | DNS zone           | `--dns-zone`   | `KOI_DNS_ZONE`   | `lan`                                |
+| DNS public         | `--dns-public` | `KOI_DNS_PUBLIC` | off                                  |
 | JSON output        | `--json`       | —                | off                                  |
 
 ## Installation

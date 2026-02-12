@@ -587,18 +587,29 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-### Configuration
+## Configuration
 
-Koi is configured via CLI flags, environment variables, or a config file. CLI flags take precedence.
+Koi is configured via CLI flags and environment variables. CLI flags take precedence.
 
 | Setting | Flag | Env var | Default |
 |---|---|---|---|
 | HTTP port | `--port` | `KOI_PORT` | `5641` |
 | Pipe/socket path | `--pipe` | `KOI_PIPE` | Platform default |
 | Log level | `--log-level` | `KOI_LOG` | `info` |
-| Config file | `--config` | — | `/etc/koi/koi.toml` (Linux), `%ProgramData%\koi\koi.toml` (Windows) |
+| Verbosity | `-v`, `-vv` | — | off |
+| Log file | `--log-file` | `KOI_LOG_FILE` | — |
 | Disable HTTP | `--no-http` | `KOI_NO_HTTP` | `false` |
 | Disable IPC | `--no-ipc` | `KOI_NO_IPC` | `false` |
+| Disable mDNS | `--no-mdns` | `KOI_NO_MDNS` | `false` |
+| Disable Certmesh | `--no-certmesh` | `KOI_NO_CERTMESH` | `false` |
+| Disable DNS | `--no-dns` | `KOI_NO_DNS` | `false` |
+| Disable Health | `--no-health` | `KOI_NO_HEALTH` | `false` |
+| Disable Proxy | `--no-proxy` | `KOI_NO_PROXY` | `false` |
+| DNS port | `--dns-port` | `KOI_DNS_PORT` | `53` |
+| DNS zone | `--dns-zone` | `KOI_DNS_ZONE` | `lan` |
+| DNS public | `--dns-public` | `KOI_DNS_PUBLIC` | `false` |
+
+`config.toml` is created in the Koi data directory for proxy entries, but there is no global `--config` flag yet.
 
 ---
 

@@ -21,7 +21,7 @@ Certificate mesh created!
   Profile:      Just Me
   CA fingerprint: a1b2c3d4e5f6...
   Primary host: stone-01
-  Certificates: %ProgramData%\koi\certmesh\certs\stone-01
+  Certificates: %ProgramData%\koi\certs\stone-01
 
 Scan this QR code with your authenticator app:
 █████████████████████████████
@@ -82,7 +82,7 @@ Certificate Mesh Status
   stone-01 (primary, active)
     Fingerprint: a1b2c3d4...
     Expires:     2026-03-13
-    Cert path:   %ProgramData%\koi\certmesh\certs\stone-01
+    Cert path:   %ProgramData%\koi\certs\stone-01
 ```
 
 JSON output:
@@ -125,7 +125,7 @@ Found CA: stone-01 Certmesh CA at http://192.168.1.10:5641
 Enter the TOTP code from your authenticator app:
 123456
 Enrolled as: stone-02
-Certificates written to: /var/lib/koi/certmesh/certs/stone-02
+Certificates written to: /var/lib/koi/certs/stone-02
 ```
 
 If multiple CAs are found, or if the machines aren't on the same broadcast domain, specify the endpoint directly:
@@ -172,13 +172,13 @@ koi certmesh log
 
 ## Setting a reload hook
 
-When certificate renewal is implemented (Phase 3.1), the CA will push renewed certificates to members. Each member can configure a shell command to run after receiving a new certificate — for example, to restart a web server:
+Koi periodically renews certificates and pushes updated material to members. Each member can configure a shell command to run after receiving a new certificate — for example, to restart a web server:
 
 ```
 koi certmesh set-hook --reload "systemctl restart nginx"
 ```
 
-The hook is stored in the roster and will be executed after each successful certificate renewal. If a daemon is running, the command goes through the HTTP API; otherwise it edits the roster directly.
+The hook is stored in the roster and will be executed after each successful certificate renewal. This command requires a running daemon.
 
 JSON output:
 
@@ -232,7 +232,7 @@ Response:
   "service_cert": "-----BEGIN CERTIFICATE-----\n...",
   "service_key": "-----BEGIN PRIVATE KEY-----\n...",
   "ca_fingerprint": "a1b2c3d4...",
-  "cert_path": "/var/lib/koi/certmesh/certs/stone-02"
+  "cert_path": "/var/lib/koi/certs/stone-02"
 }
 ```
 
@@ -286,9 +286,9 @@ Certificates are written to the Koi data directory:
 
 | Platform | Base path |
 |---|---|
-| Windows | `%ProgramData%\koi\certmesh\` |
-| macOS | `/Library/Application Support/koi/certmesh/` |
-| Linux | `/var/lib/koi/certmesh/` |
+| Windows | `%ProgramData%\koi\` |
+| macOS | `/Library/Application Support/koi/` |
+| Linux | `/var/lib/koi/` |
 
 Per-member certificate files:
 
@@ -303,11 +303,11 @@ certs/<hostname>/
 CA state:
 
 ```
-ca/
+certmesh/ca/
   ca-key.enc      # encrypted CA private key
   ca-cert.pem     # CA certificate (public)
   totp-secret.enc # encrypted TOTP secret
-roster.json       # mesh membership roster
+certmesh/roster.json  # mesh membership roster
 ```
 
 ---

@@ -47,6 +47,8 @@ Koi is organized into **capabilities** — independent domains that can be enabl
 | **mdns** | mDNS/DNS-SD service discovery | `koi mdns ...` |
 | **certmesh** | Private CA, certificate enrollment | `koi certmesh ...` |
 | **dns** | Local DNS resolver for `.lan` names | `koi dns ...` |
+| **health** | Machine/service health view | `koi health ...` |
+| **proxy** | TLS-terminating local reverse proxy | `koi proxy ...` |
 
 Check the status of all capabilities:
 
@@ -162,6 +164,8 @@ All daemon settings can be set via CLI flags or environment variables:
 | `--no-mdns` | `KOI_NO_MDNS` | `false` | Disable the mDNS capability |
 | `--no-certmesh` | `KOI_NO_CERTMESH` | `false` | Disable the certmesh capability |
 | `--no-dns` | `KOI_NO_DNS` | `false` | Disable the DNS capability |
+| `--no-health` | `KOI_NO_HEALTH` | `false` | Disable the health capability |
+| `--no-proxy` | `KOI_NO_PROXY` | `false` | Disable the proxy capability |
 | `--dns-port` | `KOI_DNS_PORT` | `53` | DNS server port |
 | `--dns-zone` | `KOI_DNS_ZONE` | `lan` | Local DNS zone suffix |
 | `--dns-public` | `KOI_DNS_PUBLIC` | `false` | Allow queries from non-private clients |
@@ -295,6 +299,20 @@ koi dns lookup NAME [--record-type A|AAAA|ANY]   # query a name
 koi dns add NAME IP [--ttl SECS]                 # static entry
 koi dns remove NAME                              # remove static entry
 koi dns list                                     # list all resolvable names
+
+# Health
+koi health status                                # health snapshot
+koi health watch                                 # live watch view
+koi health add NAME --http URL                   # add HTTP check
+koi health add NAME --tcp HOST:PORT              # add TCP check
+koi health remove NAME                           # remove check
+koi health log                                   # show health transitions
+
+# Proxy
+koi proxy add NAME --listen 443 --backend http://127.0.0.1:8080
+koi proxy remove NAME
+koi proxy status
+koi proxy list
 
 # Global
 koi status                                       # unified capability status

@@ -345,7 +345,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - 60-second grace period before promotion
    - Deterministic tiebreaker (lowest hostname alphabetically)
    - Old primary returns → defers to new primary
-   - **Plan to implement.**
+   - **Implemented.**
 
 3. **Cert renewal.** (koi-certmesh/lifecycle.rs)
    - At day 20 of 30-day lifetime, CA mints fresh certs
@@ -523,32 +523,34 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - `koi proxy add/remove/list/status`
    - Persist proxy entries in `/var/lib/koi/config.toml` and roster
    - Multiple proxies per machine, each with different listen port
-   - **Plan to implement.**
+   - **Implemented.**
 
 5. **Integration with health.** Proxy's backend connectivity check is a natural health signal. Wire proxy status into health's data sources.
-   - **Plan to implement.**
+   - **Implemented.**
 
 ---
 
 ## Gap Closure Plan (Current Workspace)
 
-### Phase 3 — Failover Detection (Plan to implement)
+### Phase 3 — Failover Detection (Implemented)
 
 **Goal:** Trigger standby promotion based on `_certmesh._tcp` mDNS presence with the 60s grace + deterministic tiebreaker.
 
-**Tasks**
-1. Add a certmesh failover monitor loop in the daemon (near `spawn_certmesh_background_tasks`).
-2. Subscribe to `_certmesh._tcp` via the local mDNS core, tracking primary presence + TXT fingerprint match.
-3. Use `should_promote()` and `tiebreaker_wins()` to gate promotion.
-4. On promotion, call `certmesh.promote()` and update local roster role.
-5. Emit audit entries and structured logs for state changes.
+**Tasks completed**
+1. Failover monitor loop added in the daemon near `spawn_certmesh_background_tasks`.
+2. `_certmesh._tcp` subscriptions track primary presence and TXT fingerprint match.
+3. Promotion gated by `should_promote()` and `tiebreaker_wins()`.
+4. Promotion/demotion updates local roster role.
+5. Audit entries and structured logs emitted for state changes.
 
 **Acceptance**
 - Primary offline → standby promotes within 60s; primary return demotes to standby without conflict.
 
-### Phase 4 — Approval Workflow + Compliance (Plan to implement)
+### Phase 4 — Approval Workflow + Compliance (Planned)
 
 **Goal:** Implement operator approval prompt and compliance summary output.
+
+**Status:** Enrollment windows exist, but approval prompts and compliance reporting are still missing.
 
 **Tasks**
 1. Add an approval channel between HTTP handler and a new CLI-side approval prompt task.
@@ -559,9 +561,11 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 **Acceptance**
 - Organization profile requires approval + operator attribution; compliance output matches profile.
 
-### Phase 5 — TPM Integration (Plan to implement)
+### Phase 5 — TPM Integration (Planned)
 
 **Goal:** Real TPM 2.0 sealing when feature `tpm` is enabled.
+
+**Status:** TPM module exists as a stub; real sealing is not implemented yet.
 
 **Tasks**
 1. Implement TPM detection + sealing using `tss-esapi`.
@@ -571,15 +575,15 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 **Acceptance**
 - On supported hardware, CA key ciphertext is sealed; on unsupported, logs show graceful fallback.
 
-### Phase 8 — Proxy Persistence + Remote Backend Warning (Plan to implement)
+### Phase 8 — Proxy Persistence + Remote Backend Warning (Implemented)
 
 **Goal:** Persist proxy entries in both config + roster, and warn on remote backends.
 
-**Tasks**
-1. Extend the roster model to include per-host proxy entries.
-2. Write through both config.toml and roster on add/remove.
-3. Emit a warning log when `--backend-remote` is set (include host in message).
-4. Ensure health uses the same proxy list source to avoid drift.
+**Tasks completed**
+1. Roster model includes per-host proxy entries.
+2. Add/remove writes through both config.toml and roster.
+3. Warning log emitted when `--backend-remote` is set (includes host).
+4. Health uses the proxy list to generate backend checks.
 
 **Acceptance**
 - Proxy entries survive restart and are visible via roster; remote backend use logs a warning.
