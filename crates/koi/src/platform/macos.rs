@@ -236,3 +236,21 @@ fn generate_plist(bin_path: &std::path::Path) -> String {
         bin = bin_path.display()
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plist_paths_are_expected() {
+        assert!(plist_path().ends_with("org.sylin.koi.plist"));
+        assert!(install_bin_path().ends_with("/usr/local/bin/koi"));
+    }
+
+    #[test]
+    fn plist_contains_label_and_binary() {
+        let plist = generate_plist(&std::path::PathBuf::from("/usr/local/bin/koi"));
+        assert!(plist.contains("org.sylin.koi"));
+        assert!(plist.contains("/usr/local/bin/koi"));
+    }
+}

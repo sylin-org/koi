@@ -238,3 +238,23 @@ WantedBy=multi-user.target
         bin_path.display()
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unit_paths_are_expected() {
+        assert!(unit_file_path().ends_with("koi.service"));
+        assert!(install_bin_path().ends_with("/usr/local/bin/koi"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unit_file_contains_execstart_and_notify() {
+        let unit = generate_unit_file(&std::path::PathBuf::from("/usr/local/bin/koi"));
+        assert!(unit.contains("ExecStart=/usr/local/bin/koi --daemon"));
+        assert!(unit.contains("Type=notify"));
+    }
+}

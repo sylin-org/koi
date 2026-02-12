@@ -1284,8 +1284,97 @@ fi
 if [ "$TIER3" = true ]; then
     echo ""
     echo "=== Tier 3: Service lifecycle (elevated) ==="
-    echo "Tier 3 is Windows-only (SCM). On Linux, use systemd manually."
-    echo "Skipping."
+    os_name=$(uname)
+    sudo_cmd=""
+
+    if command -v sudo &>/dev/null; then
+        if sudo -n true &>/dev/null; then
+            sudo_cmd="sudo -n"
+        else
+            sudo_cmd="sudo"
+        fi
+    else
+        skip "tier3 service lifecycle" "sudo not available"
+        sudo_cmd=""
+    fi
+
+    if [ -z "$sudo_cmd" ]; then
+        :
+    elif [ "$os_name" = "Linux" ]; then
+        if ! command -v systemctl &>/dev/null; then
+            skip "tier3 service lifecycle" "systemctl not available"
+        elif ! systemctl is-system-running &>/dev/null; then
+            skip "tier3 service lifecycle" "systemd not running"
+        else
+            if $sudo_cmd "$KOI_BIN" install >/dev/null 2>&1; then
+                pass "service install (systemd)"
+            else
+                fail "service install (systemd)" "install command failed"
+            fi
+
+            sleep 3
+            if curl -s -f "http://127.0.0.1:5641/healthz" >/dev/null 2>&1; then
+                pass "service start + health check (systemd)"
+            else
+                fail "service start + health check (systemd)" "health check failed"
+            fi
+
+            if $sudo_cmd systemctl stop koi >/dev/null 2>&1; then
+                pass "service stop (systemd)"
+            else
+                fail "service stop (systemd)" "systemctl stop failed"
+            fi
+
+            if $sudo_cmd "$KOI_BIN" uninstall >/dev/null 2>&1; then
+                pass "service uninstall (systemd)"
+            else
+                fail "service uninstall (systemd)" "uninstall command failed"
+            fi
+        fi
+    elif [ "$os_name" = "Darwin" ]; then
+        if ! command -v launchctl &>/dev/null; then
+            skip "tier3 service lifecycle" "launchctl not available"
+        else
+            if $sudo_cmd "$KOI_BIN" install >/dev/null 2>&1; then
+                pass "service install (launchd)"
+            else
+                fail "service install (launchd)" "install command failed"
+            fi
+
+            sleep 3
+            if $sudo_cmd launchctl list | grep -q "org.sylin.koi"; then
+                pass "service loaded (launchd)"
+            else
+                fail "service loaded (launchd)" "launchctl list missing label"
+            fi
+
+            if curl -s -f "http://127.0.0.1:5641/healthz" >/dev/null 2>&1; then
+                pass "service health check (launchd)"
+            else
+                fail "service health check (launchd)" "health check failed"
+            fi
+
+            if $sudo_cmd launchctl bootout system/org.sylin.koi >/dev/null 2>&1; then
+                pass "service stop (launchd)"
+            else
+                fail "service stop (launchd)" "launchctl bootout failed"
+            fi
+
+            if $sudo_cmd launchctl bootstrap system /Library/LaunchDaemons/org.sylin.koi.plist >/dev/null 2>&1; then
+                pass "service restart (launchd)"
+            else
+                fail "service restart (launchd)" "launchctl bootstrap failed"
+            fi
+
+            if $sudo_cmd "$KOI_BIN" uninstall >/dev/null 2>&1; then
+                pass "service uninstall (launchd)"
+            else
+                fail "service uninstall (launchd)" "uninstall command failed"
+            fi
+        fi
+    else
+        skip "tier3 service lifecycle" "unsupported OS: $os_name"
+    fi
 fi
 
 fi # end if [ "$SERVICE" = false ]

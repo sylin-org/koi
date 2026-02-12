@@ -815,3 +815,41 @@ fn wait_for_delete(manager: &ServiceManager) -> anyhow::Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn with_temp_data_dir<F, T>(f: F) -> T
+    where
+        F: FnOnce() -> T,
+    {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("koi-win-path-test-{nanos}"));
+        let prev = std::env::var("KOI_DATA_DIR").ok();
+        std::env::set_var("KOI_DATA_DIR", &dir);
+        let result = f();
+        match prev {
+            Some(v) => std::env::set_var("KOI_DATA_DIR", v),
+            None => std::env::remove_var("KOI_DATA_DIR"),
+        }
+        result
+    }
+
+    #[test]
+    fn service_paths_respect_data_dir_override() {
+        with_temp_data_dir(|| {
+            let data_dir = service_data_dir();
+            let log_dir = service_log_dir();
+            let log_path = service_log_path();
+
+            assert!(log_dir.starts_with(&data_dir));
+            assert!(log_path.starts_with(&log_dir));
+            assert!(log_path.ends_with("koi.log"));
+        });
+    }
+}
