@@ -191,6 +191,7 @@ cargo install --path crates/koi
 ## Documentation
 
 - [**User Guide**](GUIDE.md) — step-by-step walkthrough from first command to advanced usage
+- [**Embedded Integration Guide**](docs/embedded-integration-guide.md) — embed Koi in Rust apps and validate full adapter surfaces
 - [**DNS Guide**](docs/guide-dns.md) — local resolver usage and HTTP endpoints
 - [**Container Guide**](CONTAINERS.md) — Docker, Compose, and Kubernetes integration
 - [**Technical Details**](TECHNICAL.md) — protocol spec, wire format, standards compliance

@@ -1,0 +1,30 @@
+﻿[package]
+name = "koi-embedded"
+description = "Embedded facade for the Koi local network toolkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+koi-common.workspace = true
+koi-mdns.workspace = true
+koi-dns.workspace = true
+koi-health.workspace = true
+koi-certmesh.workspace = true
+koi-proxy.workspace = true
+koi-config.workspace = true
+koi-client.workspace = true
+hickory-proto.workspace = true
+
+tokio.workspace = true
+tokio-stream = { workspace = true, features = ["sync"] }
+tokio-util.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+axum.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+serde_json.workspace = true
+futures-util.workspace = true
+

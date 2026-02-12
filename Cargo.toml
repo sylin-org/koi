@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/koi",
+    "crates/koi-client",
+    "crates/koi-embedded",
     "crates/koi-common",
     "crates/koi-mdns",
     "crates/koi-config",
@@ -14,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.202602121155"
+version = "0.2.202602121438"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/sylin-org/koi"
@@ -23,6 +25,8 @@ homepage = "https://sylin.org/koi"
 [workspace.dependencies]
 # Internal crates
 koi-common = { path = "crates/koi-common" }
+koi-client = { path = "crates/koi-client" }
+koi-embedded = { path = "crates/koi-embedded" }
 koi-mdns = { path = "crates/koi-mdns" }
 koi-config = { path = "crates/koi-config" }
 koi-certmesh = { path = "crates/koi-certmesh" }

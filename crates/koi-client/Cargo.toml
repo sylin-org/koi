@@ -1,0 +1,17 @@
+﻿[package]
+name = "koi-client"
+description = "HTTP client for the Koi daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+koi-common.workspace = true
+koi-mdns.workspace = true
+koi-health.workspace = true
+hickory-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ureq = { version = "2", features = ["json"] }

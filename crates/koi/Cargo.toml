@@ -20,6 +20,7 @@ koi-config.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true
 koi-proxy.workspace = true
+koi-client.workspace = true
 chrono.workspace = true
 clap.workspace = true
 tokio.workspace = true
@@ -35,7 +36,6 @@ thiserror.workspace = true
 async-stream.workspace = true
 axum.workspace = true
 tower-http.workspace = true
-ureq = { version = "2", features = ["json"] }
 uuid.workspace = true
 hostname = "0.4"
 hickory-proto.workspace = true

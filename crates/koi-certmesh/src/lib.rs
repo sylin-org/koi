@@ -173,6 +173,13 @@ impl CertmeshCore {
         http::routes(Arc::clone(&self.state))
     }
 
+    /// Build the HTTP router for external embedding.
+    ///
+    /// This mirrors `routes()` but avoids exposing CertmeshState.
+    pub fn http_routes(&self) -> Router {
+        http::routes(Arc::clone(&self.state))
+    }
+
     /// Set the approval channel used for enrollment approvals.
     pub async fn set_approval_channel(&self, tx: mpsc::Sender<ApprovalRequest>) {
         *self.state.approval_tx.lock().await = Some(tx);
@@ -963,10 +970,8 @@ async fn request_approval(
 
     match decision {
         ApprovalDecision::Approved { operator } => {
-            if profile.requires_operator() {
-                if operator.as_deref().unwrap_or("").is_empty() {
-                    return Err(CertmeshError::ApprovalDenied);
-                }
+            if profile.requires_operator() && operator.as_deref().unwrap_or("").is_empty() {
+                return Err(CertmeshError::ApprovalDenied);
             }
             Ok(operator)
         }
@@ -1066,7 +1071,7 @@ mod tests {
 
     fn make_test_ca() -> ca::CaState {
         let _ = koi_common::test::ensure_data_dir("koi-certmesh-core-tests");
-        ca::create_ca("test-pass", &vec![42u8; 32]).unwrap()
+        ca::create_ca("test-pass", &[42u8; 32]).unwrap()
     }
 
     fn make_test_roster_with_member(hostname: &str, role: MemberRole) -> Roster {
@@ -1460,7 +1465,7 @@ mod tests {
     async fn receive_renewal_executes_hook_if_set() {
         let ca = make_test_ca();
         let mut roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let cmd = if cfg!(windows) { "echo renewed" } else { "echo renewed" };
+        let cmd = "echo renewed";
         roster.members[0].reload_hook = Some(cmd.to_string());
         let core = make_unlocked_core(ca, roster);
 
