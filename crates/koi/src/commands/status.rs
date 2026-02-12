@@ -121,6 +121,34 @@ fn offline_capabilities(config: &Config) -> Vec<CapabilityStatus> {
         });
     }
 
+    if config.no_health {
+        caps.push(CapabilityStatus {
+            name: "health".to_string(),
+            summary: "disabled".to_string(),
+            healthy: false,
+        });
+    } else {
+        caps.push(CapabilityStatus {
+            name: "health".to_string(),
+            summary: "not running".to_string(),
+            healthy: false,
+        });
+    }
+
+    if config.no_proxy {
+        caps.push(CapabilityStatus {
+            name: "proxy".to_string(),
+            summary: "disabled".to_string(),
+            healthy: false,
+        });
+    } else {
+        caps.push(CapabilityStatus {
+            name: "proxy".to_string(),
+            summary: "not running".to_string(),
+            healthy: false,
+        });
+    }
+
     caps
 }
 
@@ -143,6 +171,10 @@ mod tests {
         assert!(!caps[1].healthy);
         assert_eq!(caps[2].name, "dns");
         assert!(!caps[2].healthy);
+        assert_eq!(caps[3].name, "health");
+        assert!(!caps[3].healthy);
+        assert_eq!(caps[4].name, "proxy");
+        assert!(!caps[4].healthy);
     }
 
     #[test]
@@ -179,6 +211,28 @@ mod tests {
     }
 
     #[test]
+    fn offline_health_disabled() {
+        let config = Config {
+            no_health: true,
+            ..Config::default()
+        };
+        let caps = offline_capabilities(&config);
+        assert_eq!(caps[3].name, "health");
+        assert_eq!(caps[3].summary, "disabled");
+    }
+
+    #[test]
+    fn offline_proxy_disabled() {
+        let config = Config {
+            no_proxy: true,
+            ..Config::default()
+        };
+        let caps = offline_capabilities(&config);
+        assert_eq!(caps[4].name, "proxy");
+        assert_eq!(caps[4].summary, "disabled");
+    }
+
+    #[test]
     fn offline_both_disabled() {
         let config = Config {
             no_mdns: true,
@@ -191,9 +245,9 @@ mod tests {
     }
 
     #[test]
-    fn offline_returns_three_capabilities() {
+    fn offline_returns_five_capabilities() {
         let config = Config::default();
         let caps = offline_capabilities(&config);
-        assert_eq!(caps.len(), 3);
+        assert_eq!(caps.len(), 5);
     }
 }

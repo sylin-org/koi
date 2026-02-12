@@ -3,12 +3,16 @@
 //! - `mdns` — mDNS commands (discover, announce, unregister, resolve, subscribe).
 //! - `certmesh` — Certificate mesh commands (create, join, status, log, unlock, set-hook).
 //! - `dns` — DNS commands (serve, lookup, add/remove/list).
+//! - `health` — Health commands (status, watch, add/remove, log).
+//! - `proxy` — Proxy commands (add/remove/list/status).
 //!
 //! Shared infrastructure (mode detection, payload builders, formatting) lives here.
 
 pub mod certmesh;
 pub mod dns;
+pub mod health;
 pub mod mdns;
+pub mod proxy;
 pub mod status;
 
 use std::collections::HashMap;

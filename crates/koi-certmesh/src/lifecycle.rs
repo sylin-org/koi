@@ -189,6 +189,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         }
     }
 

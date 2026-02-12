@@ -18,6 +18,8 @@ koi-crypto.workspace = true
 koi-truststore.workspace = true
 koi-config.workspace = true
 koi-dns.workspace = true
+koi-health.workspace = true
+koi-proxy.workspace = true
 chrono.workspace = true
 clap.workspace = true
 tokio.workspace = true
@@ -37,6 +39,8 @@ ureq = { version = "2", features = ["json"] }
 uuid.workspace = true
 hostname = "0.4"
 hickory-proto.workspace = true
+crossterm.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

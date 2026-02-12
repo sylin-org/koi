@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.202602120026"
+version = "0.2.202602120902"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/sylin-org/koi"
@@ -29,6 +29,8 @@ koi-certmesh = { path = "crates/koi-certmesh" }
 koi-crypto = { path = "crates/koi-crypto" }
 koi-truststore = { path = "crates/koi-truststore" }
 koi-dns = { path = "crates/koi-dns" }
+koi-health = { path = "crates/koi-health" }
+koi-proxy = { path = "crates/koi-proxy" }
 
 # Shared external dependencies — single version pin
 serde = { version = "1", features = ["derive"] }
@@ -48,9 +50,18 @@ anyhow = "1"
 async-stream = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 hostname = "0.4"
+futures-util = "0.3"
 hickory-server = "0.25"
 hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
 hickory-proto = "0.25"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+hyper = { version = "1", features = ["full"] }
+http-body-util = "0.1"
+notify = "6"
+rustls = "0.23"
+rustls-pemfile = "2"
+url = "2"
 
 # Crypto dependencies (Phase 2)
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }

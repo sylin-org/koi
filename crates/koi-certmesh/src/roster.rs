@@ -63,6 +63,16 @@ pub enum MemberStatus {
     Revoked,
 }
 
+/// Proxy configuration persisted per member (Phase 8).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyConfigEntry {
+    pub name: String,
+    pub listen_port: u16,
+    pub backend: String,
+    #[serde(default)]
+    pub allow_remote: bool,
+}
+
 /// A member enrolled in the mesh.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RosterMember {
@@ -85,6 +95,9 @@ pub struct RosterMember {
     /// Pinned CA certificate fingerprint for cert pinning (Phase 3).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub pinned_ca_fingerprint: Option<String>,
+    /// Proxy entries configured on this host (Phase 8).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proxy_entries: Vec<ProxyConfigEntry>,
 }
 
 /// A revoked member record.
@@ -316,6 +329,7 @@ mod tests {
             reload_hook: None,
             last_seen: Some(Utc::now()),
             pinned_ca_fingerprint: Some("cafp123".to_string()),
+            proxy_entries: Vec::new(),
         });
 
         let json = serde_json::to_string(&r).unwrap();
@@ -361,6 +375,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         });
 
         assert_eq!(r.active_count(), 1);
@@ -428,6 +443,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         };
 
         r.members.push(make_member("stone-01", MemberRole::Primary));
@@ -458,6 +474,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         });
 
         // last_seen is None initially
@@ -589,6 +606,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         };
         let json = serde_json::to_string(&member).unwrap();
         // None fields should not appear in JSON

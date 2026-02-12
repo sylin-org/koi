@@ -466,10 +466,47 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             None
         };
 
+        let health_runtime = if !config.no_health {
+            let core = std::sync::Arc::new(
+                koi_health::HealthCore::new(mdns_core.clone(), dns_runtime.clone()).await,
+            );
+            let runtime = std::sync::Arc::new(koi_health::HealthRuntime::new(core));
+            if let Err(e) = runtime.start().await {
+                tracing::error!(error = %e, "Failed to start health checks");
+            }
+            Some(runtime)
+        } else {
+            tracing::info!("Health capability disabled");
+            None
+        };
+
+        let proxy_runtime = if !config.no_proxy {
+            match koi_proxy::ProxyCore::new() {
+                Ok(core) => {
+                    let runtime = std::sync::Arc::new(koi_proxy::ProxyRuntime::new(
+                        std::sync::Arc::new(core),
+                    ));
+                    if let Err(e) = runtime.start_all().await {
+                        tracing::error!(error = %e, "Failed to start proxy listeners");
+                    }
+                    Some(runtime)
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to initialize proxy core");
+                    None
+                }
+            }
+        } else {
+            tracing::info!("Proxy capability disabled");
+            None
+        };
+
         let cores = crate::DaemonCores {
             mdns: mdns_core,
             certmesh: certmesh_core,
             dns: dns_runtime.clone(),
+            health: health_runtime.clone(),
+            proxy: proxy_runtime.clone(),
         };
 
         // Ensure data directory exists
@@ -557,6 +594,12 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             }
             if let Some(dns) = dns_runtime {
                 dns.stop().await;
+            }
+            if let Some(health) = health_runtime {
+                let _ = health.stop().await;
+            }
+            if let Some(proxy) = proxy_runtime {
+                let _ = proxy.stop_all().await;
             }
         };
 

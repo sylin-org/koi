@@ -750,6 +750,72 @@ impl CertmeshCore {
         roster.find_member(&hostname).map(|m| m.role.clone())
     }
 
+    /// List hostnames of active standby members.
+    pub async fn standby_hostnames(&self) -> Vec<String> {
+        let roster = self.state.roster.lock().await;
+        roster
+            .standbys()
+            .iter()
+            .map(|m| m.hostname.clone())
+            .collect()
+    }
+
+    /// Promote the local member to primary and demote any existing primary.
+    /// Returns true if the roster was updated.
+    pub async fn promote_self_to_primary(&self) -> Result<bool, CertmeshError> {
+        let hostname = hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .map_err(|_| CertmeshError::Internal("hostname unavailable".to_string()))?;
+
+        let mut roster = self.state.roster.lock().await;
+        let already_primary = roster
+            .find_member(&hostname)
+            .map(|m| m.role == roster::MemberRole::Primary)
+            .ok_or_else(|| CertmeshError::NotFound(hostname.clone()))?;
+
+        if already_primary {
+            return Ok(false);
+        }
+
+        for m in roster.members.iter_mut() {
+            if m.role == roster::MemberRole::Primary {
+                m.role = roster::MemberRole::Standby;
+            }
+        }
+
+        if let Some(member) = roster.find_member_mut(&hostname) {
+            member.role = roster::MemberRole::Primary;
+        } else {
+            return Err(CertmeshError::NotFound(hostname.clone()));
+        }
+
+        let roster_path = ca::roster_path();
+        roster::save_roster(&roster, &roster_path)?;
+        Ok(true)
+    }
+
+    /// Demote the local member to standby. Returns true if the roster changed.
+    pub async fn demote_self_to_standby(&self) -> Result<bool, CertmeshError> {
+        let hostname = hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .map_err(|_| CertmeshError::Internal("hostname unavailable".to_string()))?;
+
+        let mut roster = self.state.roster.lock().await;
+        let member = roster
+            .find_member_mut(&hostname)
+            .ok_or_else(|| CertmeshError::NotFound(hostname.clone()))?;
+
+        if member.role == roster::MemberRole::Standby {
+            return Ok(false);
+        }
+
+        member.role = roster::MemberRole::Standby;
+
+        let roster_path = ca::roster_path();
+        roster::save_roster(&roster, &roster_path)?;
+        Ok(true)
+    }
+
     /// Add alias SANs to a member's roster entry (used by DNS alias feedback).
     ///
     /// Returns true if any SANs were added.
@@ -932,6 +998,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: Some("pinned-fp".to_string()),
+            proxy_entries: Vec::new(),
         });
         r
     }
@@ -986,6 +1053,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         });
         let core = make_unlocked_core(ca, roster);
 
@@ -1013,6 +1081,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         });
         // Another valid member
         roster.members.push(RosterMember {
@@ -1028,6 +1097,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         });
         let core = make_unlocked_core(ca, roster);
 
@@ -1159,6 +1229,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         });
         let manifest = failover::build_signed_manifest(&ca2, &roster2).unwrap();
 
@@ -1369,6 +1440,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         });
         let status = build_status(&None, &roster, &TrustProfile::JustMe);
         assert_eq!(status.members[0].role, "standby");

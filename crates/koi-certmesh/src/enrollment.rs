@@ -193,6 +193,7 @@ pub fn process_enrollment(
         reload_hook: None,
         last_seen: Some(Utc::now()),
         pinned_ca_fingerprint: Some(ca_fp),
+        proxy_entries: Vec::new(),
     };
     roster.members.push(member);
 

@@ -6,13 +6,15 @@ mod commands;
 mod format;
 mod platform;
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
-use cli::{CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, MdnsSubcommand};
+use cli::{CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, HealthSubcommand, MdnsSubcommand, ProxySubcommand};
+use koi_common::types::ServiceRecord;
 
 /// Maximum time to wait for orderly shutdown before forcing exit.
 pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
@@ -222,6 +224,68 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     DnsSubcommand::List => commands::dns::list(mode, cli.json, &config).await,
                 }
             }
+            Command::Health(health_cmd) => {
+                config.require_capability("health")?;
+                let mode = commands::detect_mode(&cli);
+                match &health_cmd.command {
+                    HealthSubcommand::Status => {
+                        commands::health::status(&config, mode, cli.json).await
+                    }
+                    HealthSubcommand::Watch { interval } => {
+                        commands::health::watch(&config, mode, *interval).await
+                    }
+                    HealthSubcommand::Add {
+                        name,
+                        http,
+                        tcp,
+                        interval,
+                        timeout,
+                    } => {
+                        commands::health::add(
+                            name,
+                            http.as_deref(),
+                            tcp.as_deref(),
+                            *interval,
+                            *timeout,
+                            mode,
+                            cli.json,
+                            &config,
+                        )
+                        .await
+                    }
+                    HealthSubcommand::Remove { name } => {
+                        commands::health::remove(name, mode, cli.json, &config).await
+                    }
+                    HealthSubcommand::Log => commands::health::log(),
+                }
+            }
+            Command::Proxy(proxy_cmd) => {
+                config.require_capability("proxy")?;
+                let mode = commands::detect_mode(&cli);
+                match &proxy_cmd.command {
+                    ProxySubcommand::Add {
+                        name,
+                        listen,
+                        backend,
+                        backend_remote,
+                    } => {
+                        commands::proxy::add(
+                            name,
+                            *listen,
+                            backend,
+                            *backend_remote,
+                            mode,
+                            cli.json,
+                        )
+                        .await
+                    }
+                    ProxySubcommand::Remove { name } => {
+                        commands::proxy::remove(name, mode, cli.json).await
+                    }
+                    ProxySubcommand::Status => commands::proxy::status(mode, cli.json).await,
+                    ProxySubcommand::List => commands::proxy::list(mode, cli.json).await,
+                }
+            }
             // Install, Uninstall, Version handled before runtime
             Command::Install | Command::Uninstall | Command::Version => Ok(()),
         };
@@ -282,32 +346,6 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         None
     };
 
-    // ── Cross-domain wiring: certmesh → mDNS announcement ──
-    if let (Some(ref mdns), Some(ref certmesh)) = (&mdns_core, &certmesh_core) {
-        if let Some(ann) = certmesh.ca_announcement(config.http_port).await {
-            let payload = koi_mdns::protocol::RegisterPayload {
-                name: ann.name.clone(),
-                service_type: koi_certmesh::CERTMESH_SERVICE_TYPE.to_string(),
-                port: ann.port,
-                ip: None,
-                lease_secs: None,
-                txt: ann.txt,
-            };
-            match mdns.register(payload) {
-                Ok(result) => {
-                    tracing::info!(
-                        name = %ann.name,
-                        id = %result.id,
-                        "CA announced via mDNS",
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to announce CA via mDNS");
-                }
-            }
-        }
-    }
-
     let dns_runtime = if !config.no_dns {
         let core = koi_dns::DnsCore::new(
             config.dns_config(),
@@ -333,10 +371,43 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         None
     };
 
+    let health_runtime = if !config.no_health {
+        let core = Arc::new(koi_health::HealthCore::new(mdns_core.clone(), dns_runtime.clone()).await);
+        let runtime = Arc::new(koi_health::HealthRuntime::new(core));
+        if let Err(e) = runtime.start().await {
+            tracing::error!(error = %e, "Failed to start health checks");
+        }
+        Some(runtime)
+    } else {
+        tracing::info!("Health capability: disabled");
+        None
+    };
+
+    let proxy_runtime = if !config.no_proxy {
+        match koi_proxy::ProxyCore::new() {
+            Ok(core) => {
+                let runtime = Arc::new(koi_proxy::ProxyRuntime::new(Arc::new(core)));
+                if let Err(e) = runtime.start_all().await {
+                    tracing::error!(error = %e, "Failed to start proxy listeners");
+                }
+                Some(runtime)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to initialize proxy core");
+                None
+            }
+        }
+    } else {
+        tracing::info!("Proxy capability: disabled");
+        None
+    };
+
     let cores = DaemonCores {
         mdns: mdns_core.clone(),
         certmesh: certmesh_core,
         dns: dns_runtime.clone(),
+        health: health_runtime.clone(),
+        proxy: proxy_runtime.clone(),
     };
 
     // ── HTTP adapter ──
@@ -369,7 +440,13 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
 
     // ── Phase 3: Background tasks based on certmesh role ──
     if let Some(ref certmesh) = cores.certmesh {
-        spawn_certmesh_background_tasks(certmesh, &cancel, &mut tasks);
+        spawn_certmesh_background_tasks(
+            certmesh,
+            mdns_core.clone(),
+            config.http_port,
+            &cancel,
+            &mut tasks,
+        );
     }
 
     if let Err(e) = platform::register_service() {
@@ -397,6 +474,12 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         if let Some(dns) = dns_runtime {
             dns.stop().await;
         }
+        if let Some(health) = health_runtime {
+            let _ = health.stop().await;
+        }
+        if let Some(proxy) = proxy_runtime {
+            proxy.stop_all().await;
+        }
     };
     if tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown)
         .await
@@ -422,6 +505,8 @@ pub(crate) struct DaemonCores {
     pub(crate) mdns: Option<Arc<koi_mdns::MdnsCore>>,
     pub(crate) certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
     pub(crate) dns: Option<Arc<koi_dns::DnsRuntime>>,
+    pub(crate) health: Option<Arc<koi_health::HealthRuntime>>,
+    pub(crate) proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
 }
 
 /// Initialize the certmesh core for daemon mode.
@@ -459,6 +544,8 @@ pub(crate) fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
 /// All loops respect `CancellationToken` for orderly shutdown.
 fn spawn_certmesh_background_tasks(
     certmesh: &Arc<koi_certmesh::CertmeshCore>,
+    mdns: Option<Arc<koi_mdns::MdnsCore>>,
+    http_port: u16,
     cancel: &CancellationToken,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
@@ -634,6 +721,201 @@ fn spawn_certmesh_background_tasks(
         }
     }));
 
+    // ── Failover detection loop ───────────────────────────────────
+    // Watches for a primary on mDNS, promotes the lowest standby after grace,
+    // and manages CA announcements based on current role/lock state.
+    let cm = Arc::clone(certmesh);
+    let mdns = mdns.clone();
+    let token = cancel.clone();
+    tasks.push(tokio::spawn(async move {
+        let mdns = match mdns {
+            Some(core) => core,
+            None => {
+                tracing::debug!("Failover monitor: mDNS disabled");
+                return;
+            }
+        };
+
+        let browse = match mdns.browse(koi_certmesh::CERTMESH_SERVICE_TYPE).await {
+            Ok(handle) => handle,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failover monitor: browse failed");
+                return;
+            }
+        };
+
+        let mut services: HashMap<String, ServiceRecord> = HashMap::new();
+        let mut primary_absent_since: Option<Instant> = None;
+        let mut announce_id: Option<String> = None;
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                event = browse.recv() => {
+                    let Some(event) = event else {
+                        break;
+                    };
+                    match event {
+                        koi_mdns::MdnsEvent::Resolved(record) => {
+                            services.insert(record.name.clone(), record);
+                        }
+                        koi_mdns::MdnsEvent::Removed { name, .. } => {
+                            services.remove(&name);
+                        }
+                        koi_mdns::MdnsEvent::Found(_) => {}
+                    }
+                }
+                _ = interval.tick() => {
+                    let pinned_fp = cm
+                        .pinned_ca_fingerprint()
+                        .await
+                        .or_else(|| koi_certmesh::ca::ca_fingerprint_from_disk().ok());
+
+                    let Some(pinned_fp) = pinned_fp else {
+                        continue;
+                    };
+
+                    let hostname = match koi_certmesh::CertmeshCore::local_hostname() {
+                        Some(h) => h,
+                        None => continue,
+                    };
+
+                    let expected_instance = format!("koi-ca-{hostname}");
+                    let mut active_primary: Option<ServiceRecord> = None;
+
+                    for record in services.values() {
+                        let is_primary = record
+                            .txt
+                            .get("role")
+                            .map(|r| r == "primary")
+                            .unwrap_or(false);
+                        let fp_matches = record
+                            .txt
+                            .get("fingerprint")
+                            .map(|fp| koi_crypto::pinning::fingerprints_match(fp, &pinned_fp))
+                            .unwrap_or(false);
+
+                        if is_primary && fp_matches {
+                            active_primary = Some(record.clone());
+                            break;
+                        }
+                    }
+
+                    let active_primary_is_self = active_primary
+                        .as_ref()
+                        .map(|record| record.name == expected_instance)
+                        .unwrap_or(false);
+
+                    let role = cm.node_role().await;
+
+                    match (role, active_primary.is_some()) {
+                        (Some(koi_certmesh::roster::MemberRole::Standby), true) => {
+                            primary_absent_since = None;
+                        }
+                        (Some(koi_certmesh::roster::MemberRole::Standby), false) => {
+                            if primary_absent_since.is_none() {
+                                primary_absent_since = Some(Instant::now());
+                            }
+
+                            let grace = Duration::from_secs(
+                                koi_certmesh::failover::FAILOVER_GRACE_SECS,
+                            );
+                            if koi_certmesh::failover::should_promote(primary_absent_since, grace) {
+                                let wins = cm
+                                    .standby_hostnames()
+                                    .await
+                                    .into_iter()
+                                    .filter(|h| h != &hostname)
+                                    .all(|other| {
+                                        koi_certmesh::failover::tiebreaker_wins(
+                                            &hostname,
+                                            &other,
+                                        )
+                                    });
+
+                                if wins {
+                                    match cm.promote_self_to_primary().await {
+                                        Ok(true) => {
+                                            primary_absent_since = None;
+                                            let _ = koi_certmesh::audit::append_entry(
+                                                "failover_promoted",
+                                                &[("hostname", &hostname)],
+                                            );
+                                            tracing::warn!(hostname, "Failover: promoted to primary");
+                                        }
+                                        Ok(false) => {}
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, "Failover: promotion failed");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        (Some(koi_certmesh::roster::MemberRole::Primary), true) => {
+                            if !active_primary_is_self {
+                                match cm.demote_self_to_standby().await {
+                                    Ok(true) => {
+                                        primary_absent_since = None;
+                                        let _ = koi_certmesh::audit::append_entry(
+                                            "failover_demoted",
+                                            &[("hostname", &hostname)],
+                                        );
+                                        tracing::warn!(
+                                            hostname,
+                                            "Failover: detected another primary, demoting to standby"
+                                        );
+                                    }
+                                    Ok(false) => {}
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "Failover: demotion failed");
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            primary_absent_since = None;
+                        }
+                    }
+
+                    if let Some(ann) = cm.ca_announcement(http_port).await {
+                        if announce_id.is_none() {
+                            let payload = koi_mdns::protocol::RegisterPayload {
+                                name: ann.name.clone(),
+                                service_type: koi_certmesh::CERTMESH_SERVICE_TYPE.to_string(),
+                                port: ann.port,
+                                ip: None,
+                                lease_secs: None,
+                                txt: ann.txt,
+                            };
+                            match mdns.register(payload) {
+                                Ok(result) => {
+                                    tracing::info!(
+                                        name = %ann.name,
+                                        id = %result.id,
+                                        "CA announced via mDNS",
+                                    );
+                                    announce_id = Some(result.id);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Failed to announce CA via mDNS");
+                                }
+                            }
+                        }
+                    } else if let Some(id) = announce_id.take() {
+                        if let Err(e) = mdns.unregister(&id) {
+                            tracing::warn!(error = %e, "Failed to withdraw CA mDNS announcement");
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(id) = announce_id {
+            let _ = mdns.unregister(&id);
+        }
+    }));
+
     tracing::debug!("Certmesh background tasks spawned");
 }
 
@@ -689,6 +971,16 @@ pub(crate) fn startup_diagnostics(config: &Config) {
             config.dns_port,
             config.dns_zone
         );
+    }
+
+    if config.no_health {
+        tracing::info!("Health capability: disabled");
+    } else {
+        tracing::info!("Health: service checks enabled");
+    }
+
+    if config.no_proxy {
+        tracing::info!("Proxy capability: disabled");
     }
 
     if !config.no_http {

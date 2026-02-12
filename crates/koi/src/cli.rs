@@ -63,6 +63,14 @@ pub struct Cli {
     #[arg(long, env = "KOI_NO_DNS")]
     pub no_dns: bool,
 
+    /// Disable the health capability
+    #[arg(long, env = "KOI_NO_HEALTH")]
+    pub no_health: bool,
+
+    /// Disable the proxy capability
+    #[arg(long, env = "KOI_NO_PROXY")]
+    pub no_proxy: bool,
+
     /// DNS port for the local resolver
     #[arg(long, env = "KOI_DNS_PORT", default_value = "53")]
     pub dns_port: u16,
@@ -111,6 +119,10 @@ pub enum Command {
     Certmesh(CertmeshCommand),
     /// Local DNS resolver
     Dns(DnsCommand),
+    /// Network health monitoring
+    Health(HealthCommand),
+    /// TLS-terminating reverse proxy
+    Proxy(ProxyCommand),
 }
 
 #[derive(Args, Debug)]
@@ -207,6 +219,18 @@ pub struct DnsCommand {
     pub command: DnsSubcommand,
 }
 
+#[derive(Args, Debug)]
+pub struct HealthCommand {
+    #[command(subcommand)]
+    pub command: HealthSubcommand,
+}
+
+#[derive(Args, Debug)]
+pub struct ProxyCommand {
+    #[command(subcommand)]
+    pub command: ProxySubcommand,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum DnsSubcommand {
     /// Start the DNS resolver
@@ -239,6 +263,69 @@ pub enum DnsSubcommand {
         name: String,
     },
     /// List all resolvable names
+    List,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HealthSubcommand {
+    /// Show current health status
+    Status,
+    /// Live terminal watch view
+    Watch {
+        /// Refresh interval in seconds
+        #[arg(long, default_value = "2")]
+        interval: u64,
+    },
+    /// Add a service health check
+    Add {
+        /// Check name
+        name: String,
+        /// HTTP URL to check
+        #[arg(long)]
+        http: Option<String>,
+        /// TCP host:port to check
+        #[arg(long)]
+        tcp: Option<String>,
+        /// Check interval in seconds
+        #[arg(long, default_value = "30")]
+        interval: u64,
+        /// Timeout in seconds
+        #[arg(long, default_value = "5")]
+        timeout: u64,
+    },
+    /// Remove a service health check
+    Remove {
+        /// Check name
+        name: String,
+    },
+    /// Show health transition log
+    Log,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProxySubcommand {
+    /// Add or update a proxy entry
+    Add {
+        /// Proxy name (also used for cert path lookup)
+        name: String,
+        /// TLS listen port
+        #[arg(long)]
+        listen: u16,
+        /// Backend URL (http://...)
+        #[arg(long)]
+        backend: String,
+        /// Allow non-local backend destinations
+        #[arg(long)]
+        backend_remote: bool,
+    },
+    /// Remove a proxy entry
+    Remove {
+        /// Proxy name
+        name: String,
+    },
+    /// Show proxy status
+    Status,
+    /// List configured proxies
     List,
 }
 
@@ -335,6 +422,8 @@ pub struct Config {
     pub no_mdns: bool,
     pub no_certmesh: bool,
     pub no_dns: bool,
+    pub no_health: bool,
+    pub no_proxy: bool,
     pub dns_port: u16,
     pub dns_zone: String,
     pub dns_public: bool,
@@ -351,6 +440,8 @@ impl Config {
             no_mdns: cli.no_mdns,
             no_certmesh: cli.no_certmesh,
             no_dns: cli.no_dns,
+            no_health: cli.no_health,
+            no_proxy: cli.no_proxy,
             dns_port: cli.dns_port,
             dns_zone: cli.dns_zone.clone(),
             dns_public: cli.dns_public,
@@ -363,6 +454,8 @@ impl Config {
             "mdns" => self.no_mdns,
             "certmesh" => self.no_certmesh,
             "dns" => self.no_dns,
+            "health" => self.no_health,
+            "proxy" => self.no_proxy,
             _ => false,
         };
         if disabled {
@@ -422,6 +515,16 @@ impl Config {
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let no_health = std::env::var("KOI_NO_HEALTH")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let no_proxy = std::env::var("KOI_NO_PROXY")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
         let dns_port = std::env::var("KOI_DNS_PORT")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -442,6 +545,8 @@ impl Config {
             no_mdns,
             no_certmesh,
             no_dns,
+            no_health,
+            no_proxy,
             dns_port,
             dns_zone,
             dns_public,
@@ -459,6 +564,8 @@ impl Default for Config {
             no_mdns: false,
             no_certmesh: false,
             no_dns: false,
+            no_health: false,
+            no_proxy: false,
             dns_port: 53,
             dns_zone: "lan".to_string(),
             dns_public: false,
@@ -499,6 +606,8 @@ mod tests {
         assert!(config.require_capability("mdns").is_ok());
         assert!(config.require_capability("certmesh").is_ok());
         assert!(config.require_capability("dns").is_ok());
+        assert!(config.require_capability("health").is_ok());
+        assert!(config.require_capability("proxy").is_ok());
     }
 
     #[test]
@@ -535,6 +644,26 @@ mod tests {
     }
 
     #[test]
+    fn require_capability_fails_when_health_disabled() {
+        let config = Config {
+            no_health: true,
+            ..Config::default()
+        };
+        let result = config.require_capability("health");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn require_capability_fails_when_proxy_disabled() {
+        let config = Config {
+            no_proxy: true,
+            ..Config::default()
+        };
+        let result = config.require_capability("proxy");
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn require_capability_unknown_name_passes() {
         let config = Config::default();
         assert!(config.require_capability("unknown").is_ok());
@@ -551,6 +680,8 @@ mod tests {
         assert!(!config.no_mdns);
         assert!(!config.no_certmesh);
         assert!(!config.no_dns);
+        assert!(!config.no_health);
+        assert!(!config.no_proxy);
         assert_eq!(config.dns_port, 53);
         assert_eq!(config.dns_zone, "lan");
         assert!(!config.dns_public);

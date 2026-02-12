@@ -942,6 +942,21 @@ try {
     Fail 'koi status --json includes dns capability (offline)' $_.Exception.Message
 }
 
+# 1.10c - Status offline includes proxy capability
+try {
+    $r = Invoke-Koi -KoiArgs 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $proxyCap = $caps | Where-Object { $_.name -eq 'proxy' }
+    if ($proxyCap -and $proxyCap.healthy -eq $false) {
+        Pass 'koi status --json includes proxy capability (offline)'
+    } else {
+        Fail 'koi status --json includes proxy capability (offline)' "proxy.healthy=$(if ($proxyCap) { $proxyCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'koi status --json includes proxy capability (offline)' $_.Exception.Message
+}
+
 # 1.11 - Help includes status subcommand
 try {
     $r = Invoke-Koi -KoiArgs '--help'
@@ -998,6 +1013,26 @@ try {
     Pass 'koi dns remove deletes entry'
 } catch {
     Fail 'koi dns add/list/lookup/remove' $_.Exception.Message
+}
+
+# 1.15 - Health add/status/remove (standalone)
+try {
+    $checkName = 'koi-health-test'
+    $r = Invoke-Koi -KoiArgs '--standalone', 'health', 'add', $checkName, '--tcp', '127.0.0.1:1', '--interval', '1', '--timeout', '1'
+    $r = Invoke-Koi -KoiArgs '--standalone', 'health', 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $services = @($json.services)
+    $svc = $services | Where-Object { $_.name -eq $checkName }
+    if ($svc) {
+        Pass 'koi health status includes added check'
+    } else {
+        Fail 'koi health status includes added check' 'Service check not found'
+    }
+
+    $r = Invoke-Koi -KoiArgs '--standalone', 'health', 'remove', $checkName
+    Pass 'koi health remove deletes check'
+} catch {
+    Fail 'koi health add/status/remove' $_.Exception.Message
 }
 
 # ======================================================================
@@ -1310,6 +1345,52 @@ try {
     }
 } catch {
     Fail 'koi dns status via CLI client mode' $_.Exception.Message
+}
+
+# 2.2j - Health status endpoint
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/health/status"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json.machines -and $null -ne $json.services) {
+        Pass 'health status endpoint returns machines and services'
+    } else {
+        Fail 'health status endpoint returns machines and services' 'Missing machines/services'
+    }
+} catch {
+    Fail 'health status endpoint' $_.Exception.Message
+}
+
+# 2.2k - Health add/remove via HTTP
+try {
+    $checkName = 'daemon-health-test'
+    $body = @{ name = $checkName; kind = 'tcp'; target = '127.0.0.1:1'; interval_secs = 1; timeout_secs = 1 } | ConvertTo-Json
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/health/checks" -Body $body
+    $respJson = $resp.Content | ConvertFrom-Json
+    if ($respJson.status -eq 'ok') {
+        Pass 'health add check via HTTP'
+    } else {
+        Fail 'health add check via HTTP' "status=$($respJson.status)"
+    }
+
+    $resp = Invoke-Http -Uri "$Endpoint/v1/health/status"
+    $json = $resp.Content | ConvertFrom-Json
+    $services = @($json.services)
+    $svc = $services | Where-Object { $_.name -eq $checkName }
+    if ($svc) {
+        Pass 'health status includes added check via HTTP'
+    } else {
+        Fail 'health status includes added check via HTTP' 'Service check not found'
+    }
+
+    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/health/checks/$checkName"
+    $respJson = $resp.Content | ConvertFrom-Json
+    if ($respJson.status -eq 'ok') {
+        Pass 'health remove check via HTTP'
+    } else {
+        Fail 'health remove check via HTTP' "status=$($respJson.status)"
+    }
+} catch {
+    Fail 'health add/remove via HTTP' $_.Exception.Message
 }
 
 # -- Certmesh daemon tests (HTTP) -------------------------------------------

@@ -12,6 +12,7 @@ use koi_mdns::protocol::{
     AdminRegistration, DaemonStatus, RegisterPayload, RegistrationResult, RenewalResult,
 };
 use hickory_proto::rr::RecordType;
+use koi_health::ServiceCheckKind;
 
 /// TCP connection timeout for general API requests.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -198,6 +199,70 @@ impl KoiClient {
 
     pub fn dns_stop(&self) -> Result<serde_json::Value> {
         self.post_json("/v1/dns/admin/stop", &serde_json::json!({}))
+    }
+
+    // ── Health operations (Phase 7) ───────────────────────────────
+
+    pub fn health_status(&self) -> Result<serde_json::Value> {
+        self.get_json("/v1/health/status")
+    }
+
+    pub fn health_add_check(
+        &self,
+        name: &str,
+        kind: ServiceCheckKind,
+        target: &str,
+        interval_secs: u64,
+        timeout_secs: u64,
+    ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({
+            "name": name,
+            "kind": check_kind_str(kind),
+            "target": target,
+            "interval_secs": interval_secs,
+            "timeout_secs": timeout_secs,
+        });
+        self.post_json("/v1/health/checks", &body)
+    }
+
+    pub fn health_remove_check(&self, name: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/v1/health/checks/{}", self.endpoint, name);
+        let resp = self.agent.delete(&url).call().map_err(map_error)?;
+        resp.into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    // ── Proxy operations (Phase 8) ───────────────────────────────
+
+    pub fn proxy_status(&self) -> Result<serde_json::Value> {
+        self.get_json("/v1/proxy/status")
+    }
+
+    pub fn proxy_list(&self) -> Result<serde_json::Value> {
+        self.get_json("/v1/proxy/entries")
+    }
+
+    pub fn proxy_add(
+        &self,
+        name: &str,
+        listen_port: u16,
+        backend: &str,
+        allow_remote: bool,
+    ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({
+            "name": name,
+            "listen_port": listen_port,
+            "backend": backend,
+            "allow_remote": allow_remote,
+        });
+        self.post_json("/v1/proxy/entries", &body)
+    }
+
+    pub fn proxy_remove(&self, name: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/v1/proxy/entries/{}", self.endpoint, name);
+        let resp = self.agent.delete(&url).call().map_err(map_error)?;
+        resp.into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
     // ── Generic operations ─────────────────────────────────────────
@@ -419,6 +484,13 @@ fn record_type_str(record_type: RecordType) -> &'static str {
         RecordType::AAAA => "AAAA",
         RecordType::ANY => "ANY",
         _ => "A",
+    }
+}
+
+fn check_kind_str(kind: ServiceCheckKind) -> &'static str {
+    match kind {
+        ServiceCheckKind::Http => "http",
+        ServiceCheckKind::Tcp => "tcp",
     }
 }
 

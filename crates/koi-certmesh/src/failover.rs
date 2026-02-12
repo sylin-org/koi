@@ -198,6 +198,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         });
         r
     }
@@ -449,6 +450,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         });
         roster.members.push(RosterMember {
             hostname: "stone-03".to_string(),
@@ -463,6 +465,7 @@ mod tests {
             reload_hook: None,
             last_seen: None,
             pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
         });
 
         let manifest = build_signed_manifest(&ca, &roster).unwrap();

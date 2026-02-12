@@ -22,6 +22,8 @@ struct AppState {
     mdns: Option<Arc<koi_mdns::MdnsCore>>,
     certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
     dns: Option<Arc<koi_dns::DnsRuntime>>,
+    health: Option<Arc<koi_health::HealthRuntime>>,
+    proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
     started_at: std::time::Instant,
     cancel: CancellationToken,
 }
@@ -38,6 +40,8 @@ pub async fn start(
         mdns: cores.mdns.clone(),
         certmesh: cores.certmesh.clone(),
         dns: cores.dns.clone(),
+        health: cores.health.clone(),
+        proxy: cores.proxy.clone(),
         started_at,
         cancel: cancel.clone(),
     };
@@ -65,6 +69,18 @@ pub async fn start(
         app = app.nest("/v1/dns", koi_dns::http::routes(dns_runtime.clone()));
     } else {
         app = app.nest("/v1/dns", disabled_fallback_router("dns"));
+    }
+
+    if let Some(ref health_runtime) = cores.health {
+        app = app.nest("/v1/health", koi_health::http::routes(health_runtime.core()));
+    } else {
+        app = app.nest("/v1/health", disabled_fallback_router("health"));
+    }
+
+    if let Some(ref proxy_runtime) = cores.proxy {
+        app = app.nest("/v1/proxy", koi_proxy::http::routes(proxy_runtime.clone()));
+    } else {
+        app = app.nest("/v1/proxy", disabled_fallback_router("proxy"));
     }
 
     app = app.layer(CorsLayer::permissive());
@@ -129,6 +145,48 @@ async fn unified_status_handler(
     } else {
         capabilities.push(CapabilityStatus {
             name: "dns".to_string(),
+            summary: "disabled".to_string(),
+            healthy: false,
+        });
+    }
+
+    if let Some(ref runtime) = state.health {
+        let running = runtime.status().await.running;
+        if running {
+            capabilities.push(runtime.core().status());
+        } else {
+            capabilities.push(CapabilityStatus {
+                name: "health".to_string(),
+                summary: "stopped".to_string(),
+                healthy: false,
+            });
+        }
+    } else {
+        capabilities.push(CapabilityStatus {
+            name: "health".to_string(),
+            summary: "disabled".to_string(),
+            healthy: false,
+        });
+    }
+
+    if let Some(ref runtime) = state.proxy {
+        let status = runtime.status().await;
+        if status.is_empty() {
+            capabilities.push(CapabilityStatus {
+                name: "proxy".to_string(),
+                summary: "no listeners".to_string(),
+                healthy: true,
+            });
+        } else {
+            capabilities.push(CapabilityStatus {
+                name: "proxy".to_string(),
+                summary: format!("{} listeners", status.len()),
+                healthy: true,
+            });
+        }
+    } else {
+        capabilities.push(CapabilityStatus {
+            name: "proxy".to_string(),
             summary: "disabled".to_string(),
             healthy: false,
         });
