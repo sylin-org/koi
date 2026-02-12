@@ -355,6 +355,8 @@ pub enum CertmeshSubcommand {
     Status,
     /// Show the audit log
     Log,
+    /// Show compliance summary
+    Compliance,
     /// Unlock the CA (decrypt key from passphrase)
     Unlock,
     /// Set a post-renewal reload hook for this host

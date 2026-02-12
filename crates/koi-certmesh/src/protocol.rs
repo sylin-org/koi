@@ -217,7 +217,7 @@ pub struct OpenEnrollmentRequest {
 }
 
 /// Enrollment policy summary for compliance display.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PolicySummary {
     pub enrollment_state: EnrollmentState,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -228,6 +228,13 @@ pub struct PolicySummary {
     pub allowed_subnet: Option<String>,
     pub profile: TrustProfile,
     pub requires_approval: bool,
+}
+
+/// Compliance summary response.
+#[derive(Debug, Serialize)]
+pub struct ComplianceResponse {
+    pub policy: PolicySummary,
+    pub audit_entries: usize,
 }
 
 // ── Phase 3 — Failover + Lifecycle ──────────────────────────────────

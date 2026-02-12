@@ -59,6 +59,15 @@ pub enum CertmeshError {
     // Phase 4 — Enrollment Policy
     #[error("scope violation: {0}")]
     ScopeViolation(String),
+
+    #[error("enrollment denied by operator")]
+    ApprovalDenied,
+
+    #[error("enrollment approval timed out")]
+    ApprovalTimeout,
+
+    #[error("enrollment approval unavailable")]
+    ApprovalUnavailable,
 }
 
 impl From<koi_crypto::keys::CryptoError> for CertmeshError {
@@ -87,6 +96,9 @@ impl From<&CertmeshError> for ErrorCode {
             CertmeshError::RenewalFailed { .. } => ErrorCode::RenewalFailed,
             CertmeshError::InvalidManifest => ErrorCode::InvalidManifest,
             CertmeshError::ScopeViolation(_) => ErrorCode::ScopeViolation,
+            CertmeshError::ApprovalDenied => ErrorCode::ApprovalDenied,
+            CertmeshError::ApprovalTimeout => ErrorCode::ApprovalTimeout,
+            CertmeshError::ApprovalUnavailable => ErrorCode::ApprovalUnavailable,
         }
     }
 }
@@ -187,6 +199,13 @@ mod tests {
                 CertmeshError::ScopeViolation("hostname outside domain".into()),
                 ErrorCode::ScopeViolation,
                 403,
+            ),
+            (CertmeshError::ApprovalDenied, ErrorCode::ApprovalDenied, 403),
+            (CertmeshError::ApprovalTimeout, ErrorCode::ApprovalTimeout, 504),
+            (
+                CertmeshError::ApprovalUnavailable,
+                ErrorCode::ApprovalUnavailable,
+                503,
             ),
         ];
         for (error, expected_code, expected_status) in &cases {

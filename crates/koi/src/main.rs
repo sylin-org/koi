@@ -167,6 +167,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     }
                     CertmeshSubcommand::Status => commands::certmesh::status(cli.json, ep),
                     CertmeshSubcommand::Log => commands::certmesh::log(ep),
+                    CertmeshSubcommand::Compliance => commands::certmesh::compliance(cli.json, ep),
                     CertmeshSubcommand::Unlock => commands::certmesh::unlock(ep),
                     CertmeshSubcommand::SetHook { reload } => {
                         commands::certmesh::set_hook(reload, cli.json, ep)
@@ -440,6 +441,7 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
 
     // ── Phase 3: Background tasks based on certmesh role ──
     if let Some(ref certmesh) = cores.certmesh {
+        spawn_enrollment_approval_prompt(certmesh, &cancel, &mut tasks).await;
         spawn_certmesh_background_tasks(
             certmesh,
             mdns_core.clone(),
@@ -917,6 +919,76 @@ fn spawn_certmesh_background_tasks(
     }));
 
     tracing::debug!("Certmesh background tasks spawned");
+}
+
+async fn spawn_enrollment_approval_prompt(
+    certmesh: &Arc<koi_certmesh::CertmeshCore>,
+    cancel: &CancellationToken,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+) {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    certmesh.set_approval_channel(tx).await;
+
+    let token = cancel.clone();
+    tasks.push(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => break,
+                request = rx.recv() => {
+                    let Some(request) = request else {
+                        break;
+                    };
+                    let koi_certmesh::ApprovalRequest { hostname, profile, respond_to } = request;
+                    let decision = tokio::task::spawn_blocking(move || {
+                        prompt_enrollment_approval(&hostname, profile)
+                    })
+                    .await
+                    .unwrap_or(koi_certmesh::ApprovalDecision::Denied);
+                    let _ = respond_to.send(decision);
+                }
+            }
+        }
+    }));
+}
+
+fn prompt_enrollment_approval(
+    hostname: &str,
+    profile: koi_certmesh::profiles::TrustProfile,
+) -> koi_certmesh::ApprovalDecision {
+    eprintln!(
+        "Enrollment approval requested for '{hostname}' (profile: {profile})"
+    );
+    let approve = read_yes_no("Approve enrollment? [y/N]: ");
+    if !approve {
+        return koi_certmesh::ApprovalDecision::Denied;
+    }
+
+    let operator = if profile.requires_operator() {
+        let operator = read_line("Operator name: ");
+        if operator.is_empty() {
+            return koi_certmesh::ApprovalDecision::Denied;
+        }
+        Some(operator)
+    } else {
+        None
+    };
+
+    koi_certmesh::ApprovalDecision::Approved { operator }
+}
+
+fn read_yes_no(prompt: &str) -> bool {
+    let line = read_line(prompt);
+    matches!(line.as_str(), "y" | "yes")
+}
+
+fn read_line(prompt: &str) -> String {
+    eprintln!("{prompt}");
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_ok() {
+        line.trim().to_string()
+    } else {
+        String::new()
+    }
 }
 
 // ── Infrastructure helpers ──────────────────────────────────────────

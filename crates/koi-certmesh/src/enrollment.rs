@@ -109,7 +109,7 @@ fn ip_in_subnet(ip: std::net::IpAddr, net: std::net::IpAddr, prefix_len: u32) ->
 /// 2. Verify TOTP code
 /// 3. Validate scope constraints
 /// 4. Check not already enrolled
-/// 5. Approval placeholder
+/// 5. Approval (handled by caller)
 /// 6. Issue certificate
 /// 7. Write cert files
 /// 8. Add to roster
@@ -124,6 +124,7 @@ pub fn process_enrollment(
     hostname: &str,
     sans: &[String],
     profile: &TrustProfile,
+    approved_by: Option<String>,
 ) -> Result<(JoinResponse, IssuedCert), CertmeshError> {
     // 1. Check enrollment is open (includes deadline auto-close)
     if !roster.is_enrollment_open() {
@@ -156,12 +157,9 @@ pub fn process_enrollment(
         return Err(CertmeshError::AlreadyEnrolled(hostname.to_string()));
     }
 
-    // 5. Approval placeholder — log warning if required but not yet implemented
-    if profile.requires_approval() {
-        tracing::warn!(
-            "Approval required by '{}' profile but not yet implemented — auto-approving",
-            profile
-        );
+    // 5. Approval handled by caller when required
+    if profile.requires_approval() && approved_by.as_deref().unwrap_or("").is_empty() {
+        return Err(CertmeshError::ApprovalDenied);
     }
 
     // 6. Issue certificate
@@ -184,7 +182,7 @@ pub fn process_enrollment(
         hostname: hostname.to_string(),
         role,
         enrolled_at: Utc::now(),
-        enrolled_by: roster.metadata.operator.clone(),
+        enrolled_by: approved_by.clone().or_else(|| roster.metadata.operator.clone()),
         cert_fingerprint: issued.fingerprint.clone(),
         cert_expires: issued.expires,
         cert_sans: sans.to_vec(),
@@ -198,10 +196,9 @@ pub fn process_enrollment(
     roster.members.push(member);
 
     // 9. Audit log
-    let operator_str = roster
-        .metadata
-        .operator
+    let operator_str = approved_by
         .as_deref()
+        .or_else(|| roster.metadata.operator.as_deref())
         .unwrap_or("self");
     let _ = audit::append_entry(
         "member_joined",
@@ -258,6 +255,7 @@ mod tests {
             "stone-05",
             &["stone-05".to_string(), "stone-05.local".to_string()],
             &TrustProfile::JustMe,
+            None,
         );
 
         assert!(result.is_err());
@@ -289,6 +287,7 @@ mod tests {
             "stone-05",
             &["stone-05".to_string()],
             &TrustProfile::MyOrganization,
+            None,
         );
 
         assert!(matches!(result, Err(CertmeshError::EnrollmentClosed)));
@@ -316,6 +315,7 @@ mod tests {
                 "stone-05",
                 &["stone-05".to_string()],
                 &TrustProfile::JustMe,
+                None,
             );
         }
 
@@ -329,6 +329,7 @@ mod tests {
             "stone-05",
             &["stone-05".to_string()],
             &TrustProfile::JustMe,
+            None,
         );
 
         assert!(matches!(result, Err(CertmeshError::RateLimited { .. })));

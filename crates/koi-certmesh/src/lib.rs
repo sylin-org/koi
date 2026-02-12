@@ -23,6 +23,7 @@ pub mod roster;
 use std::sync::Arc;
 
 use axum::Router;
+use tokio::sync::{mpsc, oneshot};
 use koi_common::capability::{Capability, CapabilityStatus};
 use koi_crypto::totp::RateLimiter;
 
@@ -44,7 +45,25 @@ pub(crate) struct CertmeshState {
     pub(crate) totp_secret: tokio::sync::Mutex<Option<koi_crypto::totp::TotpSecret>>,
     pub(crate) rate_limiter: tokio::sync::Mutex<RateLimiter>,
     pub(crate) profile: tokio::sync::Mutex<TrustProfile>,
+    pub(crate) approval_tx: tokio::sync::Mutex<Option<mpsc::Sender<ApprovalRequest>>>,
 }
+
+/// Enrollment approval request sent to the operator prompt.
+#[derive(Debug)]
+pub struct ApprovalRequest {
+    pub hostname: String,
+    pub profile: TrustProfile,
+    pub respond_to: oneshot::Sender<ApprovalDecision>,
+}
+
+/// Enrollment approval decision from the operator prompt.
+#[derive(Debug)]
+pub enum ApprovalDecision {
+    Approved { operator: Option<String> },
+    Denied,
+}
+
+const APPROVAL_TIMEOUT_SECS: u64 = 300;
 
 impl CertmeshState {
     /// Destroy all certmesh state — shared by CertmeshCore::destroy() and the HTTP handler.
@@ -111,6 +130,7 @@ impl CertmeshCore {
                 totp_secret: tokio::sync::Mutex::new(Some(totp_secret)),
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
                 profile: tokio::sync::Mutex::new(profile),
+                approval_tx: tokio::sync::Mutex::new(None),
             }),
         }
     }
@@ -124,6 +144,7 @@ impl CertmeshCore {
                 totp_secret: tokio::sync::Mutex::new(None),
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
                 profile: tokio::sync::Mutex::new(profile),
+                approval_tx: tokio::sync::Mutex::new(None),
             }),
         }
     }
@@ -140,6 +161,7 @@ impl CertmeshCore {
                 totp_secret: tokio::sync::Mutex::new(None),
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
                 profile: tokio::sync::Mutex::new(TrustProfile::default()),
+                approval_tx: tokio::sync::Mutex::new(None),
             }),
         }
     }
@@ -149,6 +171,11 @@ impl CertmeshCore {
     /// The binary crate mounts this at `/v1/certmesh/`.
     pub fn routes(&self) -> Router {
         http::routes(Arc::clone(&self.state))
+    }
+
+    /// Set the approval channel used for enrollment approvals.
+    pub async fn set_approval_channel(&self, tx: mpsc::Sender<ApprovalRequest>) {
+        *self.state.approval_tx.lock().await = Some(tx);
     }
 
     /// Initialize a new CA from scratch (called via HTTP from CLI).
@@ -256,13 +283,23 @@ impl CertmeshCore {
             }
         })?;
 
-        let mut roster = self.state.roster.lock().await;
+        let roster = self.state.roster.lock().await;
         let totp_guard = self.state.totp_secret.lock().await;
         let totp_secret = totp_guard
             .as_ref()
             .ok_or(CertmeshError::CaLocked)?;
         let mut rate_limiter = self.state.rate_limiter.lock().await;
-        let profile = self.state.profile.lock().await;
+        let profile = *self.state.profile.lock().await;
+        let fallback_operator = roster.metadata.operator.clone();
+        drop(roster);
+
+        let approved_by = if profile.requires_approval() {
+            request_approval(&self.state, &hostname, profile).await?
+        } else {
+            fallback_operator
+        };
+
+        let mut roster = self.state.roster.lock().await;
 
         let (response, _issued) = enrollment::process_enrollment(
             ca,
@@ -273,6 +310,7 @@ impl CertmeshCore {
             &hostname,
             &sans,
             &profile,
+            approved_by,
         )?;
 
         // Save roster after successful enrollment
@@ -889,6 +927,53 @@ impl CertmeshCore {
     }
 }
 
+async fn request_approval(
+    state: &CertmeshState,
+    hostname: &str,
+    profile: TrustProfile,
+) -> Result<Option<String>, CertmeshError> {
+    let tx = state
+        .approval_tx
+        .lock()
+        .await
+        .clone()
+        .ok_or(CertmeshError::ApprovalUnavailable)?;
+
+    let (respond_to, response_rx) = oneshot::channel();
+    let request = ApprovalRequest {
+        hostname: hostname.to_string(),
+        profile,
+        respond_to,
+    };
+
+    if tx.send(request).await.is_err() {
+        return Err(CertmeshError::ApprovalUnavailable);
+    }
+
+    let decision = match tokio::time::timeout(
+        std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS),
+        response_rx,
+    )
+    .await
+    {
+        Ok(Ok(decision)) => decision,
+        Ok(Err(_)) => return Err(CertmeshError::ApprovalUnavailable),
+        Err(_) => return Err(CertmeshError::ApprovalTimeout),
+    };
+
+    match decision {
+        ApprovalDecision::Approved { operator } => {
+            if profile.requires_operator() {
+                if operator.as_deref().unwrap_or("").is_empty() {
+                    return Err(CertmeshError::ApprovalDenied);
+                }
+            }
+            Ok(operator)
+        }
+        ApprovalDecision::Denied => Err(CertmeshError::ApprovalDenied),
+    }
+}
+
 impl Capability for CertmeshCore {
     fn name(&self) -> &str {
         "certmesh"
@@ -980,6 +1065,7 @@ mod tests {
     use chrono::{Duration, Utc};
 
     fn make_test_ca() -> ca::CaState {
+        let _ = koi_common::test::ensure_data_dir("koi-certmesh-core-tests");
         ca::create_ca("test-pass", &vec![42u8; 32]).unwrap()
     }
 
@@ -1007,6 +1093,7 @@ mod tests {
         ca: ca::CaState,
         roster: Roster,
     ) -> CertmeshCore {
+        let _ = koi_common::test::ensure_data_dir("koi-certmesh-core-tests");
         let totp = koi_crypto::totp::generate_secret();
         CertmeshCore::new(ca, roster, totp, TrustProfile::JustMe)
     }

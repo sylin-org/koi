@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use koi_certmesh::entropy;
 use koi_certmesh::profiles::TrustProfile;
+use koi_certmesh::protocol::PolicySummary;
 use koi_common::encoding::{hex_decode, hex_encode};
 use koi_mdns::events::MdnsEvent;
 
@@ -240,6 +241,46 @@ pub fn log(endpoint: Option<&str>) -> anyhow::Result<()> {
     } else {
         print!("{entries}");
     }
+    Ok(())
+}
+
+// ── Compliance ────────────────────────────────────────────────────
+
+pub fn compliance(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint)?;
+    let resp = client.get_json("/v1/certmesh/compliance")?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+        return Ok(());
+    }
+
+    let policy = resp
+        .get("policy")
+        .and_then(|v| serde_json::from_value::<PolicySummary>(v.clone()).ok());
+    let audit_entries = resp
+        .get("audit_entries")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    println!("Compliance summary:");
+    if let Some(policy) = policy {
+        println!("  Profile:           {}", policy.profile);
+        println!("  Enrollment:        {:?}", policy.enrollment_state);
+        if let Some(deadline) = policy.enrollment_deadline {
+            println!("  Enrollment close:  {deadline}");
+        }
+        if let Some(domain) = policy.allowed_domain {
+            println!("  Allowed domain:    {domain}");
+        }
+        if let Some(subnet) = policy.allowed_subnet {
+            println!("  Allowed subnet:    {subnet}");
+        }
+        println!("  Requires approval: {}", policy.requires_approval);
+    } else {
+        println!("  Policy: unavailable");
+    }
+    println!("  Audit entries:     {audit_entries}");
     Ok(())
 }
 

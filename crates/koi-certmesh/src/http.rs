@@ -5,22 +5,22 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 
-use crate::CertmeshState;
+use crate::{CertmeshCore, CertmeshState};
 use crate::error::CertmeshError;
 use koi_common::encoding::{hex_decode, hex_encode};
 
 use crate::protocol::{
-    BackupRequest, BackupResponse, CreateCaRequest, CreateCaResponse, HealthRequest,
-    HealthResponse, JoinRequest, PolicyRequest, PromoteRequest, RenewRequest,
-    RenewResponse, RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse,
-    RotateTotpRequest, RotateTotpResponse, SetHookRequest, UnlockRequest,
-    UnlockResponse,
+    BackupRequest, BackupResponse, ComplianceResponse, CreateCaRequest, CreateCaResponse,
+    HealthRequest, HealthResponse, JoinRequest, PolicyRequest, PolicySummary,
+    PromoteRequest, RenewRequest, RenewResponse, RestoreRequest, RestoreResponse,
+    RevokeRequest, RevokeResponse, RotateTotpRequest, RotateTotpResponse, SetHookRequest,
+    UnlockRequest, UnlockResponse,
 };
 
 /// Build the certmesh router with domain-owned routes.
@@ -44,68 +44,23 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route("/backup", post(backup_handler))
         .route("/restore", post(restore_handler))
         .route("/revoke", post(revoke_handler))
+        .route("/compliance", get(compliance_handler))
         // Phase 4 — Enrollment Policy
         .route("/enrollment/open", post(open_enrollment_handler))
         .route("/enrollment/close", post(close_enrollment_handler))
         .route("/policy", put(set_policy_handler))
-        .with_state(state)
+        .layer(Extension(state))
 }
 
 /// POST /join — Enroll a new member in the mesh.
 async fn join_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<JoinRequest>,
 ) -> impl IntoResponse {
-    let hostname = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-    let sans = vec![hostname.clone(), format!("{hostname}.local")];
+    let core = CertmeshCore::from_state(Arc::clone(&state));
 
-    let ca_guard = state.ca.lock().await;
-    let ca = match ca_guard.as_ref() {
-        Some(ca) => ca,
-        None => {
-            return if crate::ca::is_ca_initialized() {
-                error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
-            } else {
-                error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    &CertmeshError::CaNotInitialized,
-                )
-            };
-        }
-    };
-
-    let mut roster = state.roster.lock().await;
-    let totp_guard = state.totp_secret.lock().await;
-    let totp_secret = match totp_guard.as_ref() {
-        Some(s) => s,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                &CertmeshError::CaLocked,
-            );
-        }
-    };
-    let mut rate_limiter = state.rate_limiter.lock().await;
-    let profile = state.profile.lock().await;
-
-    match crate::enrollment::process_enrollment(
-        ca,
-        &mut roster,
-        totp_secret,
-        &mut rate_limiter,
-        &request,
-        &hostname,
-        &sans,
-        &profile,
-    ) {
-        Ok((response, _issued)) => {
-            // Save roster after successful enrollment
-            let roster_path = crate::ca::roster_path();
-            if let Err(e) = crate::roster::save_roster(&roster, &roster_path) {
-                tracing::warn!(error = %e, "Failed to save roster after enrollment");
-            }
+    match core.enroll(&request).await {
+        Ok(response) => {
             match serde_json::to_value(&response) {
                 Ok(val) => (StatusCode::OK, Json(val)).into_response(),
                 Err(e) => error_response(
@@ -125,7 +80,7 @@ async fn join_handler(
 
 /// GET /status — Certmesh status overview.
 async fn status_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
 ) -> impl IntoResponse {
     let ca_guard = state.ca.lock().await;
     let roster = state.roster.lock().await;
@@ -136,7 +91,7 @@ async fn status_handler(
 
 /// PUT /hook — Set a post-renewal reload hook for a member.
 async fn set_hook_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<SetHookRequest>,
 ) -> impl IntoResponse {
     // Verify the member exists
@@ -177,7 +132,7 @@ async fn set_hook_handler(
 
 /// POST /create — Initialize a new CA via the running service.
 async fn create_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<CreateCaRequest>,
 ) -> impl IntoResponse {
     // Decode hex entropy
@@ -271,7 +226,7 @@ async fn create_handler(
 
 /// POST /unlock — Decrypt the CA key.
 async fn unlock_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<UnlockRequest>,
 ) -> impl IntoResponse {
     let ca_state = match crate::ca::load_ca(&request.passphrase) {
@@ -315,7 +270,7 @@ async fn unlock_handler(
 
 /// POST /rotate-totp — Rotate the TOTP enrollment secret.
 async fn rotate_totp_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<RotateTotpRequest>,
 ) -> impl IntoResponse {
     // Verify CA is unlocked
@@ -356,7 +311,7 @@ async fn rotate_totp_handler(
 
 /// GET /log — Return audit log entries.
 async fn log_handler(
-    State(_state): State<Arc<CertmeshState>>,
+    Extension(_state): Extension<Arc<CertmeshState>>,
 ) -> impl IntoResponse {
     match crate::audit::read_log() {
         Ok(entries) => {
@@ -378,7 +333,7 @@ async fn log_handler(
 
 /// POST /destroy — Remove all certmesh state (CA, certs, roster, audit log).
 async fn destroy_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
 ) -> impl IntoResponse {
     if let Err(e) = state.destroy().await {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e);
@@ -398,7 +353,7 @@ async fn destroy_handler(
 
 /// POST /backup — Create an encrypted certmesh backup bundle.
 async fn backup_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<BackupRequest>,
 ) -> impl IntoResponse {
     let core = crate::CertmeshCore::from_state(Arc::clone(&state));
@@ -431,7 +386,7 @@ async fn backup_handler(
 
 /// POST /restore — Restore certmesh state from a backup bundle.
 async fn restore_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<RestoreRequest>,
 ) -> impl IntoResponse {
     let backup_bytes = match hex_decode(&request.backup_hex) {
@@ -470,7 +425,7 @@ async fn restore_handler(
 
 /// POST /revoke — Revoke a member.
 async fn revoke_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<RevokeRequest>,
 ) -> impl IntoResponse {
     let core = crate::CertmeshCore::from_state(Arc::clone(&state));
@@ -505,7 +460,7 @@ async fn revoke_handler(
 
 /// POST /enrollment/open — Open the enrollment window.
 async fn open_enrollment_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
     body: Option<Json<serde_json::Value>>,
 ) -> impl IntoResponse {
     let deadline = body
@@ -538,7 +493,7 @@ async fn open_enrollment_handler(
 
 /// POST /enrollment/close — Close the enrollment window.
 async fn close_enrollment_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
 ) -> impl IntoResponse {
     let mut roster = state.roster.lock().await;
     roster.close_enrollment();
@@ -559,7 +514,7 @@ async fn close_enrollment_handler(
 
 /// PUT /policy — Set enrollment scope constraints.
 async fn set_policy_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<PolicyRequest>,
 ) -> impl IntoResponse {
     // Validate subnet CIDR format if provided
@@ -612,6 +567,36 @@ async fn set_policy_handler(
     (StatusCode::OK, Json(body)).into_response()
 }
 
+/// GET /compliance — Return policy summary and audit log counts.
+async fn compliance_handler(
+    Extension(state): Extension<Arc<CertmeshState>>,
+) -> impl IntoResponse {
+    let roster = state.roster.lock().await;
+    let profile = roster.metadata.trust_profile;
+    let policy = PolicySummary {
+        enrollment_state: roster.metadata.enrollment_state.clone(),
+        enrollment_deadline: roster.metadata.enrollment_deadline.map(|d| d.to_rfc3339()),
+        allowed_domain: roster.metadata.allowed_domain.clone(),
+        allowed_subnet: roster.metadata.allowed_subnet.clone(),
+        profile,
+        requires_approval: profile.requires_approval(),
+    };
+    drop(roster);
+
+    let audit_entries = crate::audit::read_log()
+        .map(|content| content.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0);
+
+    let response = ComplianceResponse { policy, audit_entries };
+    match serde_json::to_value(&response) {
+        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CertmeshError::Internal(format!("Serialization error: {e}")),
+        ),
+    }
+}
+
 // ── Phase 3 handlers ────────────────────────────────────────────────
 
 /// POST /promote — TOTP-verified CA key transfer to a standby.
@@ -620,7 +605,7 @@ async fn set_policy_handler(
 /// returns the encrypted CA key, TOTP secret, roster, and CA cert.
 /// The passphrase for decryption is handled out-of-band (CLI prompt).
 async fn promote_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<PromoteRequest>,
 ) -> impl IntoResponse {
     let ca_guard = state.ca.lock().await;
@@ -695,7 +680,7 @@ async fn promote_handler(
 /// The CA pushes renewed cert material to members. The member writes
 /// the files and optionally executes its reload hook.
 async fn renew_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<RenewRequest>,
 ) -> impl IntoResponse {
     // Build an IssuedCert from the request to reuse write_cert_files
@@ -751,7 +736,7 @@ async fn renew_handler(
 
 /// GET /roster — Return a signed roster manifest for standby sync.
 async fn roster_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
 ) -> impl IntoResponse {
     let ca_guard = state.ca.lock().await;
     let ca = match ca_guard.as_ref() {
@@ -789,7 +774,7 @@ async fn roster_handler(
 
 /// POST /health — Member heartbeat with pinned CA fingerprint validation.
 async fn health_handler(
-    State(state): State<Arc<CertmeshState>>,
+    Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<HealthRequest>,
 ) -> impl IntoResponse {
     let ca_guard = state.ca.lock().await;
@@ -850,11 +835,7 @@ fn decode_hex(hex: &str) -> Option<Vec<u8>> {
 
 fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::Response {
     let code = koi_common::error::ErrorCode::from(error);
-    let body = serde_json::json!({
-        "error": code,
-        "message": error.to_string(),
-    });
-    (status, Json(body)).into_response()
+    koi_common::http::error_response_with_status(status, code, error.to_string())
 }
 
 #[cfg(test)]
@@ -862,27 +843,14 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use std::sync::Once;
     use tower::ServiceExt;
 
-    fn ensure_test_data_dir() {
-        static ONCE: Once = Once::new();
-        ONCE.call_once(|| {
-            let base = std::env::temp_dir().join(format!(
-                "koi-certmesh-http-tests-{}",
-                std::process::id()
-            ));
-            let _ = std::fs::create_dir_all(&base);
-            std::env::set_var("KOI_DATA_DIR", base);
-        });
-    }
-
-    fn test_state() -> Arc<CertmeshState> {
+    fn test_extension() -> Arc<CertmeshState> {
         use crate::profiles::TrustProfile;
         use crate::roster::{EnrollmentState, Roster, RosterMetadata};
         use koi_crypto::totp::RateLimiter;
 
-        ensure_test_data_dir();
+        let _ = koi_common::test::ensure_data_dir("koi-certmesh-http-tests");
         Arc::new(CertmeshState {
             ca: tokio::sync::Mutex::new(None),
             roster: tokio::sync::Mutex::new(Roster {
@@ -901,6 +869,7 @@ mod tests {
             totp_secret: tokio::sync::Mutex::new(None),
             rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
             profile: tokio::sync::Mutex::new(TrustProfile::JustMe),
+            approval_tx: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -912,7 +881,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_endpoint_returns_200() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::get("/status").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -920,7 +889,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_endpoint_returns_json() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::get("/status").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
@@ -931,7 +900,7 @@ mod tests {
 
     #[tokio::test]
     async fn join_without_ca_returns_503() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/join")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"totp_code":"123456"}"#))
@@ -943,7 +912,7 @@ mod tests {
 
     #[tokio::test]
     async fn promote_without_ca_returns_503() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/promote")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"totp_code":"654321"}"#))
@@ -954,7 +923,7 @@ mod tests {
 
     #[tokio::test]
     async fn roster_without_ca_returns_503() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::get("/roster").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -962,7 +931,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_without_ca_returns_503() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/health")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"hostname":"stone-01","pinned_ca_fingerprint":"abc"}"#))
@@ -973,7 +942,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_hook_unknown_member_returns_404() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::put("/hook")
             .header("content-type", "application/json")
             .body(Body::from(
@@ -998,7 +967,7 @@ mod tests {
 
     #[tokio::test]
     async fn nonexistent_route_returns_404() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::get("/nonexistent").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -1020,7 +989,7 @@ mod tests {
 
     #[tokio::test]
     async fn join_without_ca_body_has_error_code() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/join")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"totp_code":"123456"}"#))
@@ -1033,7 +1002,7 @@ mod tests {
 
     #[tokio::test]
     async fn promote_without_ca_body_has_error_code() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/promote")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"totp_code":"654321"}"#))
@@ -1046,7 +1015,7 @@ mod tests {
 
     #[tokio::test]
     async fn roster_without_ca_body_has_error_code() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::get("/roster").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
@@ -1056,7 +1025,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_without_ca_body_has_error_code() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/health")
             .header("content-type", "application/json")
             .body(Body::from(
@@ -1071,7 +1040,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_body_has_expected_fields() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::get("/status").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
@@ -1086,7 +1055,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_hook_not_found_body_has_error() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::put("/hook")
             .header("content-type", "application/json")
             .body(Body::from(
@@ -1105,7 +1074,7 @@ mod tests {
 
     #[tokio::test]
     async fn open_enrollment_returns_200() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/enrollment/open")
             .header("content-type", "application/json")
             .body(Body::from("{}"))
@@ -1119,7 +1088,7 @@ mod tests {
 
     #[tokio::test]
     async fn open_enrollment_with_deadline() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/enrollment/open")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"deadline":"2026-12-31T23:59:59Z"}"#))
@@ -1133,7 +1102,7 @@ mod tests {
 
     #[tokio::test]
     async fn open_enrollment_accepts_empty_body() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/enrollment/open")
             .body(Body::empty())
             .unwrap();
@@ -1143,7 +1112,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_enrollment_returns_200() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/enrollment/close")
             .body(Body::empty())
             .unwrap();
@@ -1156,7 +1125,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_policy_returns_200() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::put("/policy")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}"#))
@@ -1171,7 +1140,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_policy_invalid_cidr_returns_400() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::put("/policy")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"allowed_subnet":"not-a-cidr"}"#))
@@ -1182,7 +1151,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_policy_invalid_cidr_ip_returns_400() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::put("/policy")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"allowed_subnet":"xyz.abc/24"}"#))
@@ -1193,7 +1162,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_policy_clears_with_nulls() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::put("/policy")
             .header("content-type", "application/json")
             .body(Body::from(r#"{}"#))
@@ -1210,7 +1179,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_with_bad_entropy_returns_400() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/create")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"passphrase":"test","entropy_hex":"bad","profile":"just_me"}"#))
@@ -1221,7 +1190,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_with_short_entropy_returns_400() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         // 16 bytes (32 hex chars) instead of required 32 bytes (64 hex chars)
         let req = Request::post("/create")
             .header("content-type", "application/json")
@@ -1233,7 +1202,7 @@ mod tests {
 
     #[tokio::test]
     async fn unlock_with_wrong_passphrase_returns_error() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/unlock")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"passphrase":"wrong-passphrase"}"#))
@@ -1245,7 +1214,7 @@ mod tests {
 
     #[tokio::test]
     async fn rotate_totp_without_ca_returns_503() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/rotate-totp")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"passphrase":"test"}"#))
@@ -1256,7 +1225,7 @@ mod tests {
 
     #[tokio::test]
     async fn log_endpoint_returns_200() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::get("/log").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         // Should return 200 even with no log entries (returns empty string)
@@ -1265,7 +1234,7 @@ mod tests {
 
     #[tokio::test]
     async fn log_endpoint_body_has_entries_field() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::get("/log").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
@@ -1275,7 +1244,7 @@ mod tests {
 
     #[tokio::test]
     async fn destroy_endpoint_returns_200() {
-        let app = routes(test_state());
+        let app = routes(test_extension());
         let req = Request::post("/destroy")
             .body(Body::empty())
             .unwrap();
