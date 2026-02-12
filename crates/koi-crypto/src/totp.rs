@@ -200,6 +200,19 @@ pub enum RateLimitError {
     LockedOut { remaining_secs: u64 },
 }
 
+/// Generate the current 6-digit TOTP code for a secret.
+///
+/// Useful in tests to derive a known-valid code, then mutate it to
+/// produce a deterministic invalid code.
+pub fn current_code(secret: &TotpSecret) -> Result<String, String> {
+    let totp = build_totp(secret).map_err(|e| e.to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    Ok(totp.generate(now))
+}
+
 /// Build the `otpauth://` URI for authenticator apps.
 pub fn build_totp_uri(secret: &TotpSecret, issuer: &str, account: &str) -> String {
     use totp_rs::Secret;
@@ -258,7 +271,13 @@ mod tests {
     #[test]
     fn verify_invalid_code() {
         let secret = generate_secret();
-        assert!(!verify_code(&secret, "000000"));
+        let valid = current_code(&secret).unwrap();
+        let invalid = if valid != "000000" {
+            "000000"
+        } else {
+            "111111"
+        };
+        assert!(!verify_code(&secret, invalid));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "koi-embedded"
 description = "Embed local network discovery, DNS, health, and TLS directly in your Rust application"
 version.workspace = true

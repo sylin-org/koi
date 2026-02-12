@@ -169,6 +169,7 @@ mod tests {
     use chrono::{Duration, Utc};
 
     fn make_test_ca() -> CaState {
+        let _ = koi_common::test::ensure_data_dir("koi-certmesh-lifecycle-tests");
         ca::create_ca("test-pass", &[42u8; 32]).unwrap()
     }
 

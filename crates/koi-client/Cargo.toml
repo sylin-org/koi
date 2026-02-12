@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "koi-client"
 description = "HTTP client for the Koi daemon"
 version.workspace = true

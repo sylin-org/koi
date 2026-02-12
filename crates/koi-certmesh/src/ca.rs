@@ -281,6 +281,7 @@ mod tests {
     use super::*;
 
     fn test_entropy() -> Vec<u8> {
+        let _ = koi_common::test::ensure_data_dir("koi-certmesh-ca-tests");
         vec![42u8; 32]
     }
 

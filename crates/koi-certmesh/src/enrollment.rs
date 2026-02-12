@@ -221,6 +221,7 @@ mod tests {
     use koi_crypto::totp;
 
     fn make_test_ca() -> CaState {
+        let _ = koi_common::test::ensure_data_dir("koi-certmesh-enrollment-tests");
         let entropy = vec![42u8; 32];
         ca::create_ca("test-pass", &entropy).unwrap()
     }
@@ -232,9 +233,15 @@ mod tests {
         let secret = totp::generate_secret();
         let mut rl = RateLimiter::new();
 
-        let request = JoinRequest {
-            totp_code: "000000".to_string(),
+        // Generate a valid code, then deterministically produce an invalid one
+        let valid = koi_crypto::totp::current_code(&secret).expect("current_code");
+        let invalid = if valid != "000000" {
+            "000000".to_string()
+        } else {
+            "111111".to_string()
         };
+
+        let request = JoinRequest { totp_code: invalid };
 
         let result = process_enrollment(
             &ca,
@@ -259,6 +266,8 @@ mod tests {
     fn enrollment_closed_rejects() {
         let ca = make_test_ca();
         let mut roster = Roster::new(TrustProfile::MyOrganization, Some("Admin".into()));
+        // Explicitly close enrollment so the test doesn't depend on constructor defaults
+        roster.metadata.enrollment_state = EnrollmentState::Closed;
         assert_eq!(roster.metadata.enrollment_state, EnrollmentState::Closed);
 
         let secret = totp::generate_secret();
