@@ -51,9 +51,16 @@ pub fn koi_certs_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Tests that call `koi_data_dir()` must hold this lock because
+    /// `koi_data_dir_env_override` mutates the `KOI_DATA_DIR` env var
+    /// and parallel tests would see inconsistent values.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn data_dir_ends_with_koi() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = koi_data_dir();
         assert!(
             dir.ends_with("koi"),
@@ -63,12 +70,14 @@ mod tests {
 
     #[test]
     fn data_dir_is_not_empty() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = koi_data_dir();
         assert!(dir.components().count() > 0);
     }
 
     #[test]
     fn state_dir_is_child_of_data_dir() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let data = koi_data_dir();
         let state = koi_state_dir();
         assert!(state.starts_with(&data));
@@ -77,6 +86,7 @@ mod tests {
 
     #[test]
     fn log_dir_is_child_of_data_dir() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let data = koi_data_dir();
         let logs = koi_log_dir();
         assert!(logs.starts_with(&data));
@@ -85,6 +95,7 @@ mod tests {
 
     #[test]
     fn certs_dir_is_child_of_data_dir() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let data = koi_data_dir();
         let certs = koi_certs_dir();
         assert!(certs.starts_with(&data));
@@ -93,6 +104,7 @@ mod tests {
 
     #[test]
     fn subdirs_are_distinct() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let state = koi_state_dir();
         let logs = koi_log_dir();
         let certs = koi_certs_dir();
@@ -104,6 +116,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_uses_programdata() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = koi_data_dir();
         let dir_str = dir.to_string_lossy().to_lowercase();
         assert!(
@@ -115,6 +128,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_uses_system_library() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = koi_data_dir();
         let dir_str = dir.to_string_lossy();
         assert!(
@@ -126,6 +140,7 @@ mod tests {
     #[cfg(not(any(target_os = "macos", windows)))]
     #[test]
     fn linux_uses_var_lib() {
+        let _lock = ENV_LOCK.lock().unwrap();
         let dir = koi_data_dir();
         let dir_str = dir.to_string_lossy();
         assert!(
@@ -136,6 +151,8 @@ mod tests {
 
     #[test]
     fn koi_data_dir_env_override() {
+        let _lock = ENV_LOCK.lock().unwrap();
+
         // Save and set override
         let prev = std::env::var("KOI_DATA_DIR").ok();
         std::env::set_var("KOI_DATA_DIR", "/tmp/koi-test-override");
