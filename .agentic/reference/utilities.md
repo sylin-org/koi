@@ -221,6 +221,15 @@ No other module should contain `println!`-based presentation functions.
 | `JoinRequest` | Enrollment request (member_id, totp, csr) |
 | `JoinResponse` | Enrollment response (cert chain, CA fingerprint) |
 | `CertmeshStatus` | Status overview (ca_initialized, member_count, etc.) |
+| `CreateCaRequest` | CA creation request (passphrase, entropy_hex, profile, operator) |
+| `CreateCaResponse` | CA creation response (totp_uri, ca_fingerprint) |
+| `UnlockRequest` | CA unlock request (passphrase) |
+| `UnlockResponse` | CA unlock response (success) |
+| `RotateTotpRequest` | TOTP rotation request (passphrase) |
+| `RotateTotpResponse` | TOTP rotation response (totp_uri) |
+| `AuditLogResponse` | Audit log read response (entries) |
+| `DestroyResponse` | Certmesh destroy response (destroyed) |
+| `TrustProfile` | CA policy (key size, validity, enrollment mode) |
 
 ### Internal (not re-exported)
 
@@ -229,7 +238,6 @@ No other module should contain `println!`-based presentation functions.
 | `CertmeshState` | `lib.rs` | `pub(crate)` shared state (CA, roster, TOTP, rate limiter) |
 | `CaState` | `ca.rs` | Certificate authority state (key pair, cert) |
 | `Roster` | `roster.rs` | Enrolled members registry |
-| `TrustProfile` | `protocol.rs` | CA policy (key size, validity, enrollment mode) |
 
 ---
 
@@ -251,13 +259,15 @@ No other module should contain `println!`-based presentation functions.
 
 ## Data Directory (`koi-common::paths`)
 
-All Koi data is machine-local. Nothing roams via AD roaming profiles.
+All Koi data is machine-scoped. Nothing roams via AD roaming profiles.
 
 | Platform | Data Dir | Env Var |
 |----------|----------|---------|
-| Windows | `%LOCALAPPDATA%\koi\` | `LOCALAPPDATA` |
-| macOS | `~/Library/Application Support/koi/` | `HOME` |
-| Linux | `~/.koi/` | `HOME` |
+| Windows | `%ProgramData%\koi\` | `PROGRAMDATA` |
+| macOS | `/Library/Application Support/koi/` | — |
+| Linux | `/var/lib/koi/` | — |
+
+Override with `KOI_DATA_DIR` env var (for testing).
 
 Sub-directories: `certs/`, `state/`, `logs/`, `certmesh/ca/`
 
@@ -269,8 +279,8 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 
 | Platform | Path |
 |----------|------|
-| Windows | `%LOCALAPPDATA%\koi\koi.endpoint` |
-| Unix | `$XDG_RUNTIME_DIR/koi.endpoint` |
+| Windows | `%ProgramData%\koi\koi.endpoint` |
+| Unix | `$XDG_RUNTIME_DIR/koi.endpoint` (fallback: `/var/run/koi.endpoint`) |
 
 ---
 
@@ -292,6 +302,11 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 | `rate_limited` | 429 | Too many requests |
 | `enrollment_closed` | 403 | Enrollment not open |
 | `capability_disabled` | 503 | Capability disabled at runtime |
+| `not_standby` | 403 | Node is not a standby |
+| `promotion_failed` | 500 | CA key transfer failed |
+| `renewal_failed` | 500 | Certificate renewal failed |
+| `invalid_manifest` | 400 | Bad roster manifest signature |
+| `scope_violation` | 403 | Enrollment outside policy scope |
 
 ---
 

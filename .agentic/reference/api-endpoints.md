@@ -38,9 +38,21 @@ Route handlers are defined in `crates/koi-certmesh/src/http.rs`.
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
+| POST | `/v1/certmesh/create` | Initialize CA (create key, cert, TOTP secret) |
 | POST | `/v1/certmesh/join` | Join the certificate mesh (TOTP enrollment) |
 | GET | `/v1/certmesh/status` | Mesh status overview |
+| POST | `/v1/certmesh/unlock` | Decrypt CA key with passphrase |
 | PUT | `/v1/certmesh/hook` | Set reload hook for a member |
+| POST | `/v1/certmesh/promote` | Promote standby (CA key transfer) |
+| POST | `/v1/certmesh/renew` | Trigger certificate renewal |
+| GET | `/v1/certmesh/roster` | Get signed roster manifest |
+| POST | `/v1/certmesh/health` | Member health heartbeat |
+| POST | `/v1/certmesh/rotate-totp` | Rotate TOTP enrollment secret |
+| GET | `/v1/certmesh/log` | Read audit log entries |
+| POST | `/v1/certmesh/enrollment/open` | Open enrollment window |
+| POST | `/v1/certmesh/enrollment/close` | Close enrollment window |
+| PUT | `/v1/certmesh/policy` | Set enrollment scope constraints |
+| POST | `/v1/certmesh/destroy` | Destroy all certmesh state (CA, certs, audit log) |
 
 ### System
 
@@ -148,12 +160,18 @@ Streaming responses include a `status` field:
 | `koi mdns admin unregister <id>` | Client | Force removal |
 | `koi mdns admin drain <id>` | Client | Start draining |
 | `koi mdns admin revive <id>` | Client | Cancel drain |
-| `koi certmesh create` | Local | Initialize private CA |
-| `koi certmesh join [endpoint]` | Network | Join existing mesh (mDNS CA discovery) |
-| `koi certmesh status` | Local | Show mesh status |
-| `koi certmesh unlock` | Local | Decrypt CA key |
-| `koi certmesh log` | Local | Show audit log |
-| `koi certmesh set-hook --reload CMD` | Local/Client | Set reload hook |
+| `koi certmesh create` | Client | Initialize private CA |
+| `koi certmesh join [endpoint]` | Client | Join existing mesh (mDNS CA discovery) |
+| `koi certmesh status` | Client | Show mesh status |
+| `koi certmesh unlock` | Client | Decrypt CA key |
+| `koi certmesh log` | Client | Show audit log |
+| `koi certmesh set-hook --reload CMD` | Client | Set reload hook |
+| `koi certmesh promote [endpoint]` | Client | Promote standby CA |
+| `koi certmesh open-enrollment` | Client | Open enrollment window |
+| `koi certmesh close-enrollment` | Client | Close enrollment window |
+| `koi certmesh set-policy` | Client | Set enrollment scope constraints |
+| `koi certmesh rotate-totp` | Client | Rotate TOTP enrollment secret |
+| `koi certmesh destroy` | Client | Destroy all certmesh state |
 | `koi status` | Standalone/Client | Unified capability status |
 | `koi install` | - | Install as OS service |
 | `koi uninstall` | - | Uninstall OS service |
