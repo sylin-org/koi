@@ -6,17 +6,28 @@
 .DESCRIPTION
     Builds Koi, then exercises the CLI and daemon surfaces end-to-end.
     Tier 1: Standalone CLI (no daemon needed).
-    Tier 2: Daemon (foreground) - HTTP API, SSE, IPC, client mode, admin commands, shutdown.
+    Tier 2: Daemon (foreground) - HTTP API, certmesh, SSE, IPC, client mode, admin, shutdown.
 
     Run from the repo root:
         pwsh tests/integration.ps1
 
     Tier 3 (service install/uninstall) requires elevation and is not included here.
     Run it manually with: pwsh tests/integration.ps1 -Tier3
+
+    Service mode — test against a running installed service:
+        # In an elevated terminal:
+        koi install
+        sc.exe start koi
+
+        # In a normal terminal:
+        pwsh tests/integration.ps1 -Service [-ServiceEndpoint http://127.0.0.1:5641]
 #>
 
 param(
     [switch]$Tier3,
+    [switch]$Service,
+    [string]$ServiceEndpoint = 'http://127.0.0.1:5641',
+    [switch]$AllowServiceMutations,
     [switch]$NoBuild,
     [switch]$Verbose
 )
@@ -30,6 +41,7 @@ Add-Type -AssemblyName System.Net.Http
 # -- Test configuration -------------------------------------------------------
 
 $TestPort      = 15641
+$TestDnsPort   = 15353
 $TestPipe      = '\\.\pipe\koi-test'
 $TestPipeName  = 'koi-test'
 $TestDir       = Join-Path $env:TEMP "koi-test-$(Get-Random)"
@@ -131,8 +143,12 @@ function Invoke-Koi {
     $psi.RedirectStandardError = $true
     $psi.RedirectStandardInput = ($null -ne $Stdin)
     $psi.CreateNoWindow = $true
-    # Isolate breadcrumb from real daemon
-    $psi.EnvironmentVariables['LOCALAPPDATA'] = $BreadcrumbDir
+    # In service mode, use real system paths so CLI auto-discovers the service.
+    # In normal mode, isolate breadcrumb + data dir from the real system.
+    if (-not $Service) {
+        $psi.EnvironmentVariables['ProgramData'] = $BreadcrumbDir
+        $psi.EnvironmentVariables['KOI_DATA_DIR'] = (Join-Path $TestDir 'data')
+    }
 
     $proc = [System.Diagnostics.Process]::Start($psi)
 
@@ -293,6 +309,7 @@ function Invoke-Sse {
         $reader = New-Object System.IO.StreamReader($stream)
 
         $events = @()
+        $currentId = $null
         $deadline = [DateTime]::Now.AddMilliseconds($TimeoutMs)
 
         while ($events.Count -lt $MaxEvents -and [DateTime]::Now -lt $deadline) {
@@ -309,10 +326,18 @@ function Invoke-Sse {
                 break
             }
             if ($null -eq $line) { break }
+            if ($line.StartsWith('id: ')) {
+                $currentId = $line.Substring(4).Trim()
+                continue
+            }
             if ($line.StartsWith('data: ')) {
                 $json = $line.Substring(6)
                 try {
-                    $events += ($json | ConvertFrom-Json)
+                    $evt = ($json | ConvertFrom-Json)
+                    if ($currentId) {
+                        $evt | Add-Member -NotePropertyName 'sse_id' -NotePropertyValue $currentId -Force
+                    }
+                    $events += $evt
                 } catch {
                     # Skip malformed data lines
                 }
@@ -334,6 +359,432 @@ function Invoke-Sse {
 }
 
 # ======================================================================
+#  SERVICE MODE — test against a running installed service
+# ======================================================================
+
+if ($Service) {
+    $Endpoint = $ServiceEndpoint
+    Write-Host "`n=== Service Mode: testing against $Endpoint ===" -ForegroundColor Cyan
+
+    # Verify service is reachable
+    $svcHealthy = $false
+    try {
+        $resp = Invoke-Http -Uri "$Endpoint/healthz" -TimeoutSec 5
+        if ($resp.StatusCode -eq 200) { $svcHealthy = $true }
+    } catch {}
+
+    if (-not $svcHealthy) {
+        Write-Host "Service is not reachable at $Endpoint." -ForegroundColor Red
+        Write-Host "Make sure the service is installed and running:" -ForegroundColor Yellow
+        Write-Host "  (elevated) koi install" -ForegroundColor Yellow
+        Write-Host "  (elevated) sc.exe start koi" -ForegroundColor Yellow
+        exit 1
+    }
+    Pass 'service health check'
+
+    # S.1 - Unified status endpoint
+    $unifiedJson = $null
+    try {
+        $resp = Invoke-Http -Uri "$Endpoint/v1/status"
+        $unifiedJson = $resp.Content | ConvertFrom-Json
+        $caps = @($unifiedJson.capabilities)
+        if ($unifiedJson.version -and $unifiedJson.daemon -eq $true -and $caps.Count -ge 1) {
+            Pass "unified status (v$($unifiedJson.version), uptime: $($unifiedJson.uptime_secs)s, caps: $($caps.Count))"
+        } else {
+            Fail 'unified status' "version=$($unifiedJson.version) daemon=$($unifiedJson.daemon) caps=$($caps.Count)"
+        }
+    } catch {
+        Fail 'unified status' $_.Exception.Message
+    }
+
+    # S.2 - mDNS browse endpoint
+    try {
+        $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/browse?type=_http._tcp&idle_for=1" -TimeoutSec 5
+        Pass 'mDNS browse endpoint reachable'
+    } catch {
+        Fail 'mDNS browse endpoint' $_.Exception.Message
+    }
+
+    # S.3 - Register + unregister via HTTP
+    $svcRegId = $null
+    try {
+        $body = '{"name":"ServiceTest","type":"_http._tcp","port":19998}'
+        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+        $json = $resp.Content | ConvertFrom-Json
+        if ($json.registered.id) {
+            $svcRegId = $json.registered.id
+            Pass "register via HTTP (id: $($svcRegId.Substring(0, [Math]::Min(8, $svcRegId.Length))))"
+        } else {
+            Fail 'register via HTTP' 'No id in response'
+        }
+    } catch {
+        Fail 'register via HTTP' $_.Exception.Message
+    }
+
+    if ($svcRegId) {
+        try {
+            $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$svcRegId"
+            Pass "unregister via HTTP (id: $($svcRegId.Substring(0, 8)))"
+        } catch {
+            Fail 'unregister via HTTP' $_.Exception.Message
+        }
+    }
+
+    # S.4 - Admin status + list
+    try {
+        $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/status"
+        $json = $resp.Content | ConvertFrom-Json
+        if ($json.version) {
+            Pass "admin status (v$($json.version), uptime=$($json.uptime_secs)s)"
+        } else {
+            Fail 'admin status' 'Missing version field'
+        }
+    } catch {
+        Fail 'admin status' $_.Exception.Message
+    }
+
+    try {
+        $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations"
+        Pass 'admin registrations list'
+    } catch {
+        Fail 'admin registrations list' $_.Exception.Message
+    }
+
+    # -- Certmesh availability probe -------------------------------------------
+
+    $certmeshEnabled = $false
+    $certmeshCap = $null
+    if ($unifiedJson) {
+        $certmeshCap = @($unifiedJson.capabilities) | Where-Object { $_.name -eq 'certmesh' }
+        if ($certmeshCap -and $certmeshCap.summary -ne 'disabled') {
+            $certmeshEnabled = $true
+        }
+    }
+
+    if (-not $certmeshEnabled) {
+        Write-Host "`n  Certmesh capability is disabled on this service (--no-certmesh tunable)." -ForegroundColor Yellow
+        Write-Host "  Skipping certmesh tests (S.5-S.13).`n" -ForegroundColor Yellow
+        Skip 'certmesh tests (S.5-S.13)' 'Certmesh capability disabled via tunable'
+    } else {
+
+    # -- Certmesh tests --------------------------------------------------------
+
+    # Determine if CA was already initialized before this test run
+    $caWasInitialized = $false
+    $weCreatedCa = $false
+
+    # S.5 - Certmesh status (before any changes)
+    try {
+        $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/status"
+        $json = $resp.Content | ConvertFrom-Json
+        if ($null -ne $json.ca_initialized) {
+            $caWasInitialized = $json.ca_initialized -eq $true
+            Pass "certmesh status (ca_initialized=$($json.ca_initialized))"
+        } else {
+            Fail 'certmesh status' 'Missing ca_initialized field'
+        }
+    } catch {
+        Fail 'certmesh status' $_.Exception.Message
+    }
+
+    if (-not $AllowServiceMutations) {
+        Skip 'certmesh mutation tests (S.6-S.13)' 'Service mode without -AllowServiceMutations'
+    } elseif ($caWasInitialized) {
+        Skip 'certmesh mutation tests (S.6-S.13)' 'Service mode avoids mutating an existing CA'
+    } else {
+
+    # S.6 - Certmesh create (if CA not yet initialized, we create one to test with)
+    if (-not $caWasInitialized) {
+        Log 'CA not initialized — creating test CA (will clean up afterward)'
+        try {
+            $entropyBytes = [byte[]]::new(32)
+            $rng = [System.Security.Cryptography.RNGCryptoServiceProvider]::new()
+            $rng.GetBytes($entropyBytes)
+            $rng.Dispose()
+            $entropyHex = ($entropyBytes | ForEach-Object { $_.ToString('x2') }) -join ''
+
+            $createBody = @{
+                passphrase = 'test-koi-service'
+                entropy_hex = $entropyHex
+                profile = 'just_me'
+            } | ConvertTo-Json
+
+            $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/create" -Body $createBody
+            $json = $resp.Content | ConvertFrom-Json
+            if ($json.totp_uri -and $json.ca_fingerprint) {
+                $weCreatedCa = $true
+                Pass "certmesh create (fingerprint=$($json.ca_fingerprint.Substring(0, [Math]::Min(16, $json.ca_fingerprint.Length)))...)"
+            } else {
+                Fail 'certmesh create' "totp_uri=$($json.totp_uri) ca_fingerprint=$($json.ca_fingerprint)"
+            }
+        } catch {
+            Fail 'certmesh create' $_.Exception.Message
+        }
+
+        # S.6b - Create rejects duplicate (409)
+        if ($weCreatedCa) {
+            try {
+                $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/create" -Body $createBody
+                if ($errResp.StatusCode -eq 409) {
+                    Pass 'certmesh create (duplicate) returns 409'
+                } else {
+                    Fail 'certmesh create (duplicate)' "Expected 409, got $($errResp.StatusCode)"
+                }
+            } catch {
+                Fail 'certmesh create (duplicate)' $_.Exception.Message
+            }
+        }
+    } else {
+        Log 'CA already initialized — skipping create test (pre-existing CA will not be modified)'
+    }
+
+    # S.7 - Certmesh status (after create or pre-existing)
+    try {
+        $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/status"
+        $json = $resp.Content | ConvertFrom-Json
+        if ($json.ca_initialized -eq $true -and $json.profile) {
+            Pass "certmesh status (profile=$($json.profile), members=$($json.member_count))"
+        } else {
+            Fail 'certmesh status (post-create)' "ca_initialized=$($json.ca_initialized) profile=$($json.profile)"
+        }
+    } catch {
+        Fail 'certmesh status (post-create)' $_.Exception.Message
+    }
+
+    # S.8 - Audit log (+ content validation if we created the CA)
+    try {
+        $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/log"
+        $json = $resp.Content | ConvertFrom-Json
+        Pass "certmesh audit log ($(($json.entries -split "`n").Count) entries)"
+
+        # Validate audit log contains pond_initialized after create
+        if ($weCreatedCa -and $json.entries -match 'pond_initialized') {
+            Pass 'audit log contains pond_initialized entry'
+        } elseif ($weCreatedCa) {
+            Fail 'audit log contains pond_initialized entry' 'pond_initialized not found in log entries'
+        }
+    } catch {
+        Fail 'certmesh audit log' $_.Exception.Message
+    }
+
+    # S.9 - Unlock CA (only if we created it — passphrase must match)
+    if ($weCreatedCa) {
+        try {
+            $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/unlock" -Body '{"passphrase":"test-koi-service"}'
+            $json = $resp.Content | ConvertFrom-Json
+            if ($json.success -eq $true) {
+                Pass 'certmesh unlock'
+            } else {
+                Fail 'certmesh unlock' "success=$($json.success)"
+            }
+        } catch {
+            Fail 'certmesh unlock' $_.Exception.Message
+        }
+    }
+
+    # S.10 - Open enrollment
+    try {
+        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/enrollment/open" -Body '{}'
+        $json = $resp.Content | ConvertFrom-Json
+        if ($json.enrollment_state -eq 'open') {
+            Pass 'open enrollment'
+        } else {
+            Fail 'open enrollment' "enrollment_state=$($json.enrollment_state)"
+        }
+    } catch {
+        Fail 'open enrollment' $_.Exception.Message
+    }
+
+    # S.11 - Close enrollment
+    try {
+        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/enrollment/close"
+        $json = $resp.Content | ConvertFrom-Json
+        if ($json.enrollment_state -eq 'closed') {
+            Pass 'close enrollment'
+        } else {
+            Fail 'close enrollment' "enrollment_state=$($json.enrollment_state)"
+        }
+    } catch {
+        Fail 'close enrollment' $_.Exception.Message
+    }
+
+    # S.12 - Set policy
+    try {
+        $policyBody = '{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}'
+        $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/certmesh/policy" -Body $policyBody
+        $json = $resp.Content | ConvertFrom-Json
+        if ($json.allowed_domain -eq 'lab.local') {
+            Pass 'set policy (domain=lab.local)'
+        } else {
+            Fail 'set policy' "domain=$($json.allowed_domain)"
+        }
+    } catch {
+        Fail 'set policy' $_.Exception.Message
+    }
+
+    # S.13 - Rotate TOTP (only if we created the CA — passphrase must match)
+    if ($weCreatedCa) {
+        try {
+            $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/rotate-totp" -Body '{"passphrase":"test-koi-service"}'
+            $json = $resp.Content | ConvertFrom-Json
+            if ($json.totp_uri -match 'otpauth://') {
+                Pass 'rotate TOTP returns new URI'
+            } else {
+                Fail 'rotate TOTP' "totp_uri=$($json.totp_uri)"
+            }
+        } catch {
+            Fail 'rotate TOTP' $_.Exception.Message
+        }
+    }
+
+    # -- Negative tests --------------------------------------------------------
+
+    # S.N1 - Unlock with wrong passphrase returns error
+    if ($weCreatedCa) {
+        try {
+            $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/unlock" -Body '{"passphrase":"wrong-passphrase-definitely"}'
+            if ($errResp.StatusCode -ge 400) {
+                Pass "unlock with wrong passphrase returns $($errResp.StatusCode)"
+            } else {
+                Fail 'unlock with wrong passphrase' "Expected error, got $($errResp.StatusCode)"
+            }
+        } catch {
+            Fail 'unlock with wrong passphrase' $_.Exception.Message
+        }
+    }
+
+    # S.N2 - Set policy with invalid CIDR returns 400
+    try {
+        $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/certmesh/policy" -Body '{"allowed_subnet":"not-a-cidr"}'
+        if ($errResp.StatusCode -eq 400) {
+            Pass 'set policy with invalid CIDR returns 400'
+        } else {
+            Fail 'set policy with invalid CIDR' "Expected 400, got $($errResp.StatusCode)"
+        }
+    } catch {
+        Fail 'set policy with invalid CIDR' $_.Exception.Message
+    }
+
+    # S.N3 - Create with invalid entropy returns 400
+    try {
+        $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/create" -Body '{"passphrase":"test","entropy_hex":"zzzz","profile":"just_me"}'
+        if ($errResp.StatusCode -eq 400) {
+            Pass 'create with invalid entropy returns 400'
+        } else {
+            Fail 'create with invalid entropy' "Expected 400, got $($errResp.StatusCode)"
+        }
+    } catch {
+        Fail 'create with invalid entropy' $_.Exception.Message
+    }
+
+    # S.N4 - Create with short entropy returns 400
+    try {
+        $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/create" -Body '{"passphrase":"test","entropy_hex":"00112233","profile":"just_me"}'
+        if ($errResp.StatusCode -eq 400) {
+            Pass 'create with short entropy returns 400'
+        } else {
+            Fail 'create with short entropy' "Expected 400, got $($errResp.StatusCode)"
+        }
+    } catch {
+        Fail 'create with short entropy' $_.Exception.Message
+    }
+
+    # S.N5 - Set hook for unknown member returns 404
+    try {
+        $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/certmesh/hook" -Body '{"hostname":"nonexistent-host","reload":"echo hi"}'
+        if ($errResp.StatusCode -eq 404) {
+            Pass 'set hook for unknown member returns 404'
+        } else {
+            Fail 'set hook for unknown member' "Expected 404, got $($errResp.StatusCode)"
+        }
+    } catch {
+        Fail 'set hook for unknown member' $_.Exception.Message
+    }
+
+    # -- Certmesh cleanup (destroy test CA via service endpoint) ----------------
+
+    if ($weCreatedCa) {
+        # Clear policy before destroy
+        try {
+            $null = Invoke-Http -Method PUT -Uri "$Endpoint/v1/certmesh/policy" -Body '{}'
+            Pass 'clear policy before destroy'
+        } catch {
+            Fail 'clear policy before destroy' $_.Exception.Message
+        }
+
+        Log 'Destroying test CA via POST /v1/certmesh/destroy...'
+        try {
+            $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/destroy"
+            $json = $resp.Content | ConvertFrom-Json
+            if ($json.destroyed -eq $true) {
+                Pass 'certmesh destroy (test CA removed)'
+            } else {
+                Fail 'certmesh destroy' "destroyed=$($json.destroyed)"
+            }
+        } catch {
+            Fail 'certmesh destroy' $_.Exception.Message
+        }
+
+        # Post-destroy verification — status should show ca_initialized=false
+        try {
+            $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/status"
+            $json = $resp.Content | ConvertFrom-Json
+            if ($json.ca_initialized -eq $false) {
+                Pass 'post-destroy status shows ca_initialized=false'
+            } else {
+                Fail 'post-destroy status' "ca_initialized=$($json.ca_initialized) (expected false)"
+            }
+        } catch {
+            Fail 'post-destroy status' $_.Exception.Message
+        }
+
+        # Post-destroy — rotate TOTP should return 503
+        try {
+            $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/rotate-totp" -Body '{"passphrase":"test"}'
+            if ($errResp.StatusCode -eq 503) {
+                Pass 'rotate TOTP after destroy returns 503'
+            } else {
+                Fail 'rotate TOTP after destroy' "Expected 503, got $($errResp.StatusCode)"
+            }
+        } catch {
+            Fail 'rotate TOTP after destroy' $_.Exception.Message
+        }
+    }
+
+    } # end mutation block
+
+    } # end certmesh-enabled block
+
+    # -- CLI client mode -------------------------------------------------------
+
+    # S.14 - CLI client mode (auto-discovers via breadcrumb)
+    try {
+        $r = Invoke-Koi -KoiArgs 'status'
+        if ($r.ExitCode -eq 0) {
+            Pass 'koi status via CLI (auto-discover service)'
+        } else {
+            Fail 'koi status via CLI' "exit code $($r.ExitCode)"
+        }
+    } catch {
+        Fail 'koi status via CLI' $_.Exception.Message
+    }
+
+    try {
+        $r = Invoke-Koi -KoiArgs 'certmesh', 'status' -AllowFailure
+        Pass "koi certmesh status via CLI (exit code: $($r.ExitCode))"
+    } catch {
+        Fail 'koi certmesh status via CLI' $_.Exception.Message
+    }
+
+    # S.15 - Admin shutdown via HTTP (SKIP in service mode — don't stop the installed service)
+    Skip 'admin shutdown' 'Not applicable in service mode — use sc.exe stop / koi uninstall'
+
+    # Skip to summary (all remaining tiers are inside the -not $Service gate below)
+}
+
+if (-not $Service) {
+
+# ======================================================================
 #  TIER 1 - Standalone CLI
 # ======================================================================
 
@@ -342,7 +793,7 @@ Write-Host "`n=== Tier 1: Standalone CLI ===" -ForegroundColor Cyan
 # 1.1 - Help
 try {
     $r = Invoke-Koi -KoiArgs '--help'
-    if ($r.Stdout -match 'browse' -and $r.Stdout -match 'register' -and $r.Stdout -match 'resolve') {
+    if ($r.Stdout -match 'mdns' -and $r.Stdout -match 'install' -and $r.Stdout -match 'version') {
         Pass 'koi --help shows subcommands'
     } else {
         Fail 'koi --help shows subcommands' 'Missing expected subcommands in output'
@@ -351,29 +802,29 @@ try {
     Fail 'koi --help shows subcommands' $_.Exception.Message
 }
 
-# 1.2 - Browse help
+# 1.2 - mDNS discover help
 try {
-    $r = Invoke-Koi -KoiArgs 'browse', '--help'
+    $r = Invoke-Koi -KoiArgs 'mdns', 'discover', '--help'
     if ($r.Stdout -match 'service.type' -or $r.Stdout -match 'SERVICE_TYPE' -or $r.Stdout -match '[sS]ervice type') {
-        Pass 'koi browse --help shows type argument'
+        Pass 'koi mdns discover --help shows type argument'
     } else {
-        Fail 'koi browse --help shows type argument' 'Missing type argument in output'
+        Fail 'koi mdns discover --help shows type argument' 'Missing type argument in output'
     }
 } catch {
-    Fail 'koi browse --help shows type argument' $_.Exception.Message
+    Fail 'koi mdns discover --help shows type argument' $_.Exception.Message
 }
 
-# 1.3 - Browse with timeout exits cleanly
+# 1.3 - Discover with timeout exits cleanly
 try {
-    $r = Invoke-Koi -KoiArgs 'browse', 'http', '--timeout', '2', '--standalone'
-    Pass 'koi browse --timeout exits cleanly'
+    $r = Invoke-Koi -KoiArgs 'mdns', 'discover', 'http', '--timeout', '2', '--standalone'
+    Pass 'koi mdns discover --timeout exits cleanly'
 } catch {
-    Fail 'koi browse --timeout exits cleanly' $_.Exception.Message
+    Fail 'koi mdns discover --timeout exits cleanly' $_.Exception.Message
 }
 
-# 1.4 - Browse JSON mode produces valid JSON
+# 1.4 - Discover JSON mode produces valid JSON
 try {
-    $r = Invoke-Koi -KoiArgs 'browse', 'http', '--timeout', '2', '--json', '--standalone'
+    $r = Invoke-Koi -KoiArgs 'mdns', 'discover', 'http', '--timeout', '2', '--json', '--standalone'
     # Output may be empty (no services found in 2s) - that's fine.
     # If there IS output, each non-empty line must be valid JSON.
     $lines = $r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' }
@@ -383,25 +834,25 @@ try {
         try { $null = $line | ConvertFrom-Json } catch { $valid = $false; $badLine = $line; break }
     }
     if ($valid) {
-        Pass 'koi browse --json produces valid NDJSON'
+        Pass 'koi mdns discover --json produces valid NDJSON'
     } else {
-        Fail 'koi browse --json produces valid NDJSON' "Invalid JSON line: $($badLine.Substring(0, [Math]::Min(80, $badLine.Length)))"
+        Fail 'koi mdns discover --json produces valid NDJSON' "Invalid JSON line: $($badLine.Substring(0, [Math]::Min(80, $badLine.Length)))"
     }
 } catch {
-    Fail 'koi browse --json produces valid NDJSON' $_.Exception.Message
+    Fail 'koi mdns discover --json produces valid NDJSON' $_.Exception.Message
 }
 
-# 1.5 - Register with timeout
+# 1.5 - Announce with timeout
 # Note: --timeout and --standalone go BEFORE TXT records because trailing_var_arg eats everything after positionals.
 try {
-    $r = Invoke-Koi -KoiArgs '--standalone', 'register', '--timeout', '2', 'IntegrationTest', 'http', '19999', 'test=true'
+    $r = Invoke-Koi -KoiArgs '--standalone', 'mdns', 'announce', '--timeout', '2', 'IntegrationTest', 'http', '19999', 'test=true'
     if ($r.Stdout -match 'Registered' -or $r.Stdout -match '"registered"') {
-        Pass 'koi register prints confirmation'
+        Pass 'koi mdns announce prints confirmation'
     } else {
-        Fail 'koi register prints confirmation' "Output did not contain registration confirmation: $($r.Stdout.Substring(0, [Math]::Min(100, $r.Stdout.Length)))"
+        Fail 'koi mdns announce prints confirmation' "Output did not contain registration confirmation: $($r.Stdout.Substring(0, [Math]::Min(100, $r.Stdout.Length)))"
     }
 } catch {
-    Fail 'koi register prints confirmation' $_.Exception.Message
+    Fail 'koi mdns announce prints confirmation' $_.Exception.Message
 }
 
 # 1.6 - Piped JSON mode (browse streams forever in piped mode, so allow timeout)
@@ -423,18 +874,113 @@ try {
     Fail 'piped JSON mode accepted' $_.Exception.Message
 }
 
-# 1.7 - Verbose flag accepted
+# 1.7 - Version command (human)
 try {
-    $r = Invoke-Koi -KoiArgs 'browse', 'http', '--timeout', '1', '-v', '--standalone'
+    $r = Invoke-Koi -KoiArgs 'version'
+    if ($r.Stdout -match 'koi \d+\.\d+') {
+        Pass 'koi version prints version string'
+    } else {
+        Fail 'koi version prints version string' "Unexpected output: $($r.Stdout.Trim())"
+    }
+} catch {
+    Fail 'koi version prints version string' $_.Exception.Message
+}
+
+# 1.8 - Version --json
+try {
+    $r = Invoke-Koi -KoiArgs 'version', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    if ($json.version -and $json.platform) {
+        Pass "koi version --json (v$($json.version), $($json.platform))"
+    } else {
+        Fail 'koi version --json' "Missing fields: version=$($json.version) platform=$($json.platform)"
+    }
+} catch {
+    Fail 'koi version --json' $_.Exception.Message
+}
+
+# 1.9 - Status offline (human)
+try {
+    $r = Invoke-Koi -KoiArgs 'status'
+    if ($r.Stdout -match '\[-\] mdns' -and $r.Stdout -match 'not running') {
+        Pass 'koi status (offline) shows [-] mdns not running'
+    } else {
+        Fail 'koi status (offline) shows [-] mdns not running' "Output: $($r.Stdout.Trim())"
+    }
+} catch {
+    Fail 'koi status (offline) shows [-] mdns not running' $_.Exception.Message
+}
+
+# 1.10 - Status offline --json
+try {
+    $r = Invoke-Koi -KoiArgs 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $mdnsCap = $caps | Where-Object { $_.name -eq 'mdns' }
+    if ($json.version -and $json.daemon -eq $false -and
+        $caps.Count -ge 1 -and $mdnsCap -and $mdnsCap.healthy -eq $false) {
+        Pass 'koi status --json (offline, daemon=false, mdns unhealthy)'
+    } else {
+        Fail 'koi status --json (offline)' "version=$($json.version) daemon=$($json.daemon) caps=$($caps.Count) mdns.healthy=$(if ($mdnsCap) { $mdnsCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'koi status --json (offline)' $_.Exception.Message
+}
+
+# 1.10b - Status offline includes DNS capability
+try {
+    $r = Invoke-Koi -KoiArgs 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $dnsCap = $caps | Where-Object { $_.name -eq 'dns' }
+    if ($dnsCap -and $dnsCap.healthy -eq $false) {
+        Pass 'koi status --json includes dns capability (offline)'
+    } else {
+        Fail 'koi status --json includes dns capability (offline)' "dns.healthy=$(if ($dnsCap) { $dnsCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'koi status --json includes dns capability (offline)' $_.Exception.Message
+}
+
+# 1.10c - Status offline includes proxy capability
+try {
+    $r = Invoke-Koi -KoiArgs 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $proxyCap = $caps | Where-Object { $_.name -eq 'proxy' }
+    if ($proxyCap -and $proxyCap.healthy -eq $false) {
+        Pass 'koi status --json includes proxy capability (offline)'
+    } else {
+        Fail 'koi status --json includes proxy capability (offline)' "proxy.healthy=$(if ($proxyCap) { $proxyCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'koi status --json includes proxy capability (offline)' $_.Exception.Message
+}
+
+# 1.11 - Help includes status subcommand
+try {
+    $r = Invoke-Koi -KoiArgs '--help'
+    if ($r.Stdout -match 'status') {
+        Pass 'koi --help lists status subcommand'
+    } else {
+        Fail 'koi --help lists status subcommand' 'status not found in help output'
+    }
+} catch {
+    Fail 'koi --help lists status subcommand' $_.Exception.Message
+}
+
+# 1.12 - Verbose flag accepted
+try {
+    $r = Invoke-Koi -KoiArgs 'mdns', 'discover', 'http', '--timeout', '1', '-v', '--standalone'
     Pass 'koi -v flag accepted'
 } catch {
     Fail 'koi -v flag accepted' $_.Exception.Message
 }
 
-# 1.8 - Log file flag creates file
+# 1.13 - Log file flag creates file
 try {
     $logPath = Join-Path $TestDir 'test-logfile.log'
-    $r = Invoke-Koi -KoiArgs 'browse', 'http', '--timeout', '2', '--log-file', "`"$logPath`"", '--standalone'
+    $r = Invoke-Koi -KoiArgs 'mdns', 'discover', 'http', '--timeout', '2', '--log-file', "`"$logPath`"", '--standalone'
     if (Test-Path $logPath) {
         Pass 'koi --log-file creates log file'
     } else {
@@ -442,6 +988,138 @@ try {
     }
 } catch {
     Fail 'koi --log-file creates log file' $_.Exception.Message
+}
+
+# 1.14 - DNS add/list/lookup/remove (standalone)
+try {
+    $name = 'koi-test'
+    $ip = '10.0.0.55'
+    $r = Invoke-Koi -KoiArgs '--standalone', 'dns', 'add', $name, $ip
+    $r = Invoke-Koi -KoiArgs '--standalone', 'dns', 'list'
+    if ($r.Stdout -match 'koi-test\.lan\.') {
+        Pass 'koi dns list shows added entry'
+    } else {
+        Fail 'koi dns list shows added entry' "Output: $($r.Stdout.Trim())"
+    }
+
+    $r = Invoke-Koi -KoiArgs '--standalone', 'dns', 'lookup', $name
+    if ($r.Stdout -match $ip) {
+        Pass 'koi dns lookup resolves added entry'
+    } else {
+        Fail 'koi dns lookup resolves added entry' "Output: $($r.Stdout.Trim())"
+    }
+
+    $r = Invoke-Koi -KoiArgs '--standalone', 'dns', 'remove', $name
+    Pass 'koi dns remove deletes entry'
+} catch {
+    Fail 'koi dns add/list/lookup/remove' $_.Exception.Message
+}
+
+# 1.15 - Health add/status/remove (standalone)
+try {
+    $checkName = 'koi-health-test'
+    $r = Invoke-Koi -KoiArgs '--standalone', 'health', 'add', $checkName, '--tcp', '127.0.0.1:1', '--interval', '1', '--timeout', '1'
+    $r = Invoke-Koi -KoiArgs '--standalone', 'health', 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $services = @($json.services)
+    $svc = $services | Where-Object { $_.name -eq $checkName }
+    if ($svc) {
+        Pass 'koi health status includes added check'
+    } else {
+        Fail 'koi health status includes added check' 'Service check not found'
+    }
+
+    $r = Invoke-Koi -KoiArgs '--standalone', 'health', 'remove', $checkName
+    Pass 'koi health remove deletes check'
+} catch {
+    Fail 'koi health add/status/remove' $_.Exception.Message
+}
+
+# ======================================================================
+#  TIER 1.T - Runtime Tunables
+# ======================================================================
+
+Write-Host "`n=== Tier 1.T: Runtime Tunables ===" -ForegroundColor Cyan
+
+# 1.T1 - --no-mdns status shows mdns disabled
+try {
+    $r = Invoke-Koi -KoiArgs '--no-mdns', 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $mdnsCap = $caps | Where-Object { $_.name -eq 'mdns' }
+    if ($mdnsCap -and $mdnsCap.summary -eq 'disabled' -and $mdnsCap.healthy -eq $false) {
+        Pass 'status --no-mdns shows mdns disabled'
+    } else {
+        Fail 'status --no-mdns shows mdns disabled' "mdns: summary=$(if ($mdnsCap) { $mdnsCap.summary } else { 'missing' }), healthy=$(if ($mdnsCap) { $mdnsCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'status --no-mdns shows mdns disabled' $_.Exception.Message
+}
+
+# 1.T2 - --no-certmesh status shows certmesh disabled
+try {
+    $r = Invoke-Koi -KoiArgs '--no-certmesh', 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $certmeshCap = $caps | Where-Object { $_.name -eq 'certmesh' }
+    if ($certmeshCap -and $certmeshCap.summary -eq 'disabled' -and $certmeshCap.healthy -eq $false) {
+        Pass 'status --no-certmesh shows certmesh disabled'
+    } else {
+        Fail 'status --no-certmesh shows certmesh disabled' "certmesh: summary=$(if ($certmeshCap) { $certmeshCap.summary } else { 'missing' }), healthy=$(if ($certmeshCap) { $certmeshCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'status --no-certmesh shows certmesh disabled' $_.Exception.Message
+}
+
+# 1.T3 - --no-mdns blocks mdns commands
+try {
+    $r = Invoke-Koi -KoiArgs '--no-mdns', 'mdns', 'discover', 'http', '--timeout', '1', '--standalone' -AllowFailure
+    if ($r.ExitCode -ne 0) {
+        Pass 'mdns command blocked with --no-mdns'
+    } else {
+        Fail 'mdns command blocked with --no-mdns' "Expected nonzero exit, got 0"
+    }
+} catch {
+    Fail 'mdns command blocked with --no-mdns' $_.Exception.Message
+}
+
+# 1.T4 - --no-certmesh blocks certmesh commands
+try {
+    $r = Invoke-Koi -KoiArgs '--no-certmesh', 'certmesh', 'status' -AllowFailure
+    if ($r.ExitCode -ne 0) {
+        Pass 'certmesh command blocked with --no-certmesh'
+    } else {
+        Fail 'certmesh command blocked with --no-certmesh' "Expected nonzero exit, got 0"
+    }
+} catch {
+    Fail 'certmesh command blocked with --no-certmesh' $_.Exception.Message
+}
+
+# 1.T5 - --no-dns status shows dns disabled
+try {
+    $r = Invoke-Koi -KoiArgs '--no-dns', 'status', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $dnsCap = $caps | Where-Object { $_.name -eq 'dns' }
+    if ($dnsCap -and $dnsCap.summary -eq 'disabled' -and $dnsCap.healthy -eq $false) {
+        Pass 'status --no-dns shows dns disabled'
+    } else {
+        Fail 'status --no-dns shows dns disabled' "dns: summary=$(if ($dnsCap) { $dnsCap.summary } else { 'missing' }), healthy=$(if ($dnsCap) { $dnsCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'status --no-dns shows dns disabled' $_.Exception.Message
+}
+
+# 1.T6 - --no-dns blocks dns commands
+try {
+    $r = Invoke-Koi -KoiArgs '--no-dns', 'dns', 'list' -AllowFailure
+    if ($r.ExitCode -ne 0) {
+        Pass 'dns command blocked with --no-dns'
+    } else {
+        Fail 'dns command blocked with --no-dns' "Expected nonzero exit, got 0"
+    }
+} catch {
+    Fail 'dns command blocked with --no-dns' $_.Exception.Message
 }
 
 # ======================================================================
@@ -455,12 +1133,15 @@ Log "Starting daemon on port $TestPort..."
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $KoiBin
-$psi.Arguments = "--daemon --port $TestPort --pipe $TestPipe --log-file `"$TestLog`" -v"
+$psi.Arguments = "--daemon --port $TestPort --pipe $TestPipe --dns-port $TestDnsPort --log-file `"$TestLog`" -v"
 $psi.UseShellExecute = $false
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
 $psi.CreateNoWindow = $true
-$psi.EnvironmentVariables['LOCALAPPDATA'] = $BreadcrumbDir
+    # Isolate breadcrumb + data dir from real system (both use ProgramData)
+    $psi.EnvironmentVariables['ProgramData'] = $BreadcrumbDir
+    # Data dir override for certmesh/paths isolation
+    $psi.EnvironmentVariables['KOI_DATA_DIR'] = (Join-Path $TestDir 'data')
 
 $script:daemonProc = [System.Diagnostics.Process]::Start($psi)
 # Start async reads immediately to drain stdout/stderr pipes.
@@ -499,9 +1180,8 @@ if (-not $healthy) {
 # 2.1 - Health check + body assertion
 try {
     $resp = Invoke-Http -Uri "$Endpoint/healthz"
-    $healthJson = $resp.Content | ConvertFrom-Json
-    if ($resp.StatusCode -eq 200 -and $healthJson.ok -eq $true) {
-        Pass 'daemon health check ({"ok":true})'
+    if ($resp.StatusCode -eq 200 -and $resp.Content -eq 'OK') {
+        Pass 'daemon health check (OK)'
     } else {
         Fail 'daemon health check' "Unexpected body: $($resp.Content)"
     }
@@ -523,11 +1203,471 @@ if (Test-Path $breadcrumbFile) {
     Fail 'breadcrumb file written with correct endpoint' 'Breadcrumb file not found'
 }
 
+# 2.2b - Unified status endpoint (/v1/status)
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/status"
+    $json = $resp.Content | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $mdnsCap = $caps | Where-Object { $_.name -eq 'mdns' }
+    if ($json.version -and
+        $json.platform -and
+        $json.daemon -eq $true -and
+        $null -ne $json.uptime_secs -and $json.uptime_secs -ge 0 -and
+        $caps.Count -ge 1 -and $mdnsCap -and $mdnsCap.healthy -eq $true) {
+        Pass "unified status endpoint (v$($json.version), uptime: $($json.uptime_secs)s, mdns: healthy)"
+    } else {
+        Fail 'unified status endpoint' "version=$($json.version) daemon=$($json.daemon) uptime=$($json.uptime_secs) caps=$($caps.Count) mdns.healthy=$(if ($mdnsCap) { $mdnsCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'unified status endpoint' $_.Exception.Message
+}
+
+# 2.2c - Status via CLI client mode (human)
+try {
+    $r = Invoke-Koi -KoiArgs 'status', '--endpoint', $Endpoint
+    if ($r.Stdout -match '\[\+\] mdns' -and $r.Stdout -match 'Daemon:\s+running') {
+        Pass 'koi status via CLI client mode (human)'
+    } else {
+        Fail 'koi status via CLI client mode (human)' "Output: $($r.Stdout.Substring(0, [Math]::Min(200, $r.Stdout.Length)))"
+    }
+} catch {
+    Fail 'koi status via CLI client mode (human)' $_.Exception.Message
+}
+
+# 2.2d - Status via CLI client mode (--json)
+try {
+    $r = Invoke-Koi -KoiArgs 'status', '--endpoint', $Endpoint, '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $mdnsCap = $caps | Where-Object { $_.name -eq 'mdns' }
+    if ($json.daemon -eq $true -and $json.version -and $mdnsCap -and $mdnsCap.healthy -eq $true) {
+        Pass "koi status --json via CLI client (daemon=true, mdns healthy)"
+    } else {
+        Fail 'koi status --json via CLI client' "daemon=$($json.daemon) version=$($json.version) mdns.healthy=$(if ($mdnsCap) { $mdnsCap.healthy } else { 'missing' })"
+    }
+} catch {
+    Fail 'koi status --json via CLI client' $_.Exception.Message
+}
+
+# 2.2e - Status --standalone skips daemon even when running
+try {
+    $r = Invoke-Koi -KoiArgs 'status', '--standalone', '--json'
+    $json = $r.Stdout.Trim() | ConvertFrom-Json
+    if ($json.daemon -eq $false) {
+        Pass 'koi status --standalone reports daemon=false despite daemon running'
+    } else {
+        Fail 'koi status --standalone bypasses daemon' "Expected daemon=false, got daemon=$($json.daemon)"
+    }
+} catch {
+    Fail 'koi status --standalone bypasses daemon' $_.Exception.Message
+}
+
+# 2.2f - DNS status endpoint
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/dns/status"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.port -eq $TestDnsPort -and $json.zone) {
+        Pass "dns status endpoint (zone=$($json.zone), port=$($json.port))"
+    } else {
+        Fail 'dns status endpoint' "zone=$($json.zone) port=$($json.port)"
+    }
+} catch {
+    Fail 'dns status endpoint' $_.Exception.Message
+}
+
+# 2.2g - DNS add/list/lookup/remove via HTTP
+try {
+    $dnsName = 'daemon-test'
+    $dnsIp = '10.0.0.77'
+    $body = @{ name = $dnsName; ip = $dnsIp } | ConvertTo-Json
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/dns/entries" -Body $body
+    $respJson = $resp.Content | ConvertFrom-Json
+    $entries = @($respJson.entries)
+    if ($entries.Count -ge 1) {
+        Pass 'dns add entry via HTTP'
+    } else {
+        Fail 'dns add entry via HTTP' 'No entries returned'
+    }
+
+    $resp = Invoke-Http -Uri "$Endpoint/v1/dns/list"
+    $listJson = $resp.Content | ConvertFrom-Json
+    $names = @($listJson.names)
+    if ($names -contains "$dnsName.lan.") {
+        Pass 'dns list includes added entry'
+    } else {
+        Fail 'dns list includes added entry' "names=$($names -join ',')"
+    }
+
+    $resp = Invoke-Http -Uri "$Endpoint/v1/dns/lookup?name=$dnsName"
+    $lookupJson = $resp.Content | ConvertFrom-Json
+    $ips = @($lookupJson.ips)
+    if ($ips -contains $dnsIp) {
+        Pass 'dns lookup resolves added entry'
+    } else {
+        Fail 'dns lookup resolves added entry' "ips=$($ips -join ',')"
+    }
+
+    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/dns/entries/$dnsName"
+    $respJson = $resp.Content | ConvertFrom-Json
+    Pass 'dns remove entry via HTTP'
+} catch {
+    Fail 'dns add/list/lookup/remove via HTTP' $_.Exception.Message
+}
+
+# 2.2h - DNS admin stop/start endpoints
+try {
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/dns/admin/stop"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json.stopped) {
+        Pass 'dns stop endpoint responds'
+    } else {
+        Fail 'dns stop endpoint responds' 'Missing stopped field'
+    }
+
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/dns/admin/start"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json.started) {
+        Pass 'dns start endpoint responds'
+    } else {
+        Fail 'dns start endpoint responds' 'Missing started field'
+    }
+} catch {
+    Fail 'dns admin stop/start endpoints' $_.Exception.Message
+}
+
+# 2.2i - DNS status via CLI client mode
+try {
+    $r = Invoke-Koi -KoiArgs 'dns', 'status', '--endpoint', $Endpoint
+    if ($r.ExitCode -eq 0) {
+        Pass 'koi dns status via CLI client mode'
+    } else {
+        Fail 'koi dns status via CLI client mode' "exit code $($r.ExitCode)"
+    }
+} catch {
+    Fail 'koi dns status via CLI client mode' $_.Exception.Message
+}
+
+# 2.2j - Health status endpoint
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/health/status"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json.machines -and $null -ne $json.services) {
+        Pass 'health status endpoint returns machines and services'
+    } else {
+        Fail 'health status endpoint returns machines and services' 'Missing machines/services'
+    }
+} catch {
+    Fail 'health status endpoint' $_.Exception.Message
+}
+
+# 2.2k - Health add/remove via HTTP
+try {
+    $checkName = 'daemon-health-test'
+    $body = @{ name = $checkName; kind = 'tcp'; target = '127.0.0.1:1'; interval_secs = 1; timeout_secs = 1 } | ConvertTo-Json
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/health/checks" -Body $body
+    $respJson = $resp.Content | ConvertFrom-Json
+    if ($respJson.status -eq 'ok') {
+        Pass 'health add check via HTTP'
+    } else {
+        Fail 'health add check via HTTP' "status=$($respJson.status)"
+    }
+
+    $resp = Invoke-Http -Uri "$Endpoint/v1/health/status"
+    $json = $resp.Content | ConvertFrom-Json
+    $services = @($json.services)
+    $svc = $services | Where-Object { $_.name -eq $checkName }
+    if ($svc) {
+        Pass 'health status includes added check via HTTP'
+    } else {
+        Fail 'health status includes added check via HTTP' 'Service check not found'
+    }
+
+    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/health/checks/$checkName"
+    $respJson = $resp.Content | ConvertFrom-Json
+    if ($respJson.status -eq 'ok') {
+        Pass 'health remove check via HTTP'
+    } else {
+        Fail 'health remove check via HTTP' "status=$($respJson.status)"
+    }
+} catch {
+    Fail 'health add/remove via HTTP' $_.Exception.Message
+}
+
+# -- Certmesh daemon tests (HTTP) -------------------------------------------
+
+# 2.C1 - Certmesh status via HTTP (before CA creation)
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/status"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.ca_initialized -eq $false) {
+        Pass 'certmesh status (no CA) via HTTP (ca_initialized=false)'
+    } elseif ($null -ne $json.ca_initialized) {
+        Pass "certmesh status via HTTP (ca_initialized=$($json.ca_initialized))"
+    } else {
+        Fail 'certmesh status via HTTP' "Missing ca_initialized field"
+    }
+} catch {
+    Fail 'certmesh status (no CA) via HTTP' $_.Exception.Message
+}
+
+# 2.C2 - Create CA via HTTP
+try {
+    # Generate 32 bytes of hex entropy
+    $entropyBytes = [byte[]]::new(32)
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($entropyBytes)
+    $entropyHex = ($entropyBytes | ForEach-Object { $_.ToString('x2') }) -join ''
+
+    $createBody = @{
+        passphrase = 'test-koi-integration'
+        entropy_hex = $entropyHex
+        profile = 'just_me'
+    } | ConvertTo-Json
+
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/create" -Body $createBody
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.totp_uri -and $json.ca_fingerprint) {
+        Pass "certmesh create via HTTP (fingerprint=$($json.ca_fingerprint.Substring(0, [Math]::Min(16, $json.ca_fingerprint.Length)))...)"
+    } else {
+        Fail 'certmesh create via HTTP' "totp_uri=$($json.totp_uri) ca_fingerprint=$($json.ca_fingerprint)"
+    }
+} catch {
+    Fail 'certmesh create via HTTP' $_.Exception.Message
+}
+
+# 2.C3 - Certmesh status after CA creation
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/status"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.ca_initialized -eq $true -and $json.profile) {
+        Pass "certmesh status (after create) via HTTP (profile=$($json.profile), members=$($json.member_count))"
+    } else {
+        Fail 'certmesh status (after create)' "ca_initialized=$($json.ca_initialized) profile=$($json.profile)"
+    }
+} catch {
+    Fail 'certmesh status (after create)' $_.Exception.Message
+}
+
+# 2.C4 - Certmesh create rejects duplicate (409)
+try {
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/create" -Body $createBody
+    if ($errResp.StatusCode -eq 409) {
+        Pass 'certmesh create (duplicate) returns 409'
+    } else {
+        Fail 'certmesh create (duplicate)' "Expected 409, got $($errResp.StatusCode)"
+    }
+} catch {
+    Fail 'certmesh create (duplicate)' $_.Exception.Message
+}
+
+# 2.C5 - Audit log via HTTP
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/log"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.entries -match 'pond_initialized') {
+        Pass 'certmesh audit log shows pond_initialized'
+    } else {
+        Pass 'certmesh audit log returns OK'
+    }
+} catch {
+    Fail 'certmesh audit log via HTTP' $_.Exception.Message
+}
+
+# 2.C6 - Unlock CA via HTTP
+try {
+    $unlockBody = '{"passphrase":"test-koi-integration"}'
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/unlock" -Body $unlockBody
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.success -eq $true) {
+        Pass 'certmesh unlock via HTTP'
+    } else {
+        Fail 'certmesh unlock via HTTP' "success=$($json.success)"
+    }
+} catch {
+    Fail 'certmesh unlock via HTTP' $_.Exception.Message
+}
+
+# 2.C7 - Certmesh join with invalid TOTP via HTTP (expect 4xx/5xx)
+try {
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/join" -Body '{"totp_code":"000000"}'
+    if ($errResp.StatusCode -ge 400) {
+        $errJson = $errResp.Content | ConvertFrom-Json
+        Pass "certmesh join (invalid TOTP) returns $($errResp.StatusCode) $($errJson.error)"
+    } else {
+        Fail 'certmesh join (invalid TOTP)' "Expected error status, got $($errResp.StatusCode)"
+    }
+} catch {
+    Fail 'certmesh join (invalid TOTP)' $_.Exception.Message
+}
+
+# 2.C8 - Unified status includes certmesh capability
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/status"
+    $json = $resp.Content | ConvertFrom-Json
+    $caps = @($json.capabilities)
+    $certmeshCap = $caps | Where-Object { $_.name -eq 'certmesh' }
+    if ($certmeshCap -and $certmeshCap.summary) {
+        Pass "unified status includes certmesh (summary: $($certmeshCap.summary))"
+    } else {
+        Fail 'unified status includes certmesh' "certmesh cap: $(if ($certmeshCap) { $certmeshCap | ConvertTo-Json -Compress } else { 'missing' })"
+    }
+} catch {
+    Fail 'unified status includes certmesh' $_.Exception.Message
+}
+
+# 2.C9 - Certmesh status via CLI client mode
+try {
+    $r = Invoke-Koi -KoiArgs 'certmesh', 'status', '--endpoint', $Endpoint
+    if ($r.Stdout -match 'just.me' -or $r.Stdout -match 'JustMe' -or $r.Stdout -match 'initialized') {
+        Pass 'certmesh status via CLI (client mode)'
+    } else {
+        Pass 'certmesh status via CLI exits cleanly'
+    }
+} catch {
+    Fail 'certmesh status via CLI (client mode)' $_.Exception.Message
+}
+
+# 2.C10 - Certmesh log via CLI client mode
+try {
+    $r = Invoke-Koi -KoiArgs 'certmesh', 'log', '--endpoint', $Endpoint
+    Pass 'certmesh log via CLI (client mode)'
+} catch {
+    Fail 'certmesh log via CLI (client mode)' $_.Exception.Message
+}
+
+# -- Phase 4+ — Enrollment policy endpoints ---------------------------------
+
+# 2.P1 - Open enrollment
+try {
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/enrollment/open" -Body '{}'
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.enrollment_state -eq 'open') {
+        Pass 'open enrollment returns state=open'
+    } else {
+        Fail 'open enrollment' "enrollment_state=$($json.enrollment_state)"
+    }
+} catch {
+    Fail 'open enrollment' $_.Exception.Message
+}
+
+# 2.P2 - Open enrollment with deadline
+try {
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/enrollment/open" -Body '{"deadline":"2030-12-31T23:59:59Z"}'
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.deadline) {
+        Pass "open enrollment with deadline ($($json.deadline))"
+    } else {
+        Fail 'open enrollment with deadline' 'No deadline in response'
+    }
+} catch {
+    Fail 'open enrollment with deadline' $_.Exception.Message
+}
+
+# 2.P3 - Close enrollment
+try {
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/enrollment/close"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.enrollment_state -eq 'closed') {
+        Pass 'close enrollment returns state=closed'
+    } else {
+        Fail 'close enrollment' "enrollment_state=$($json.enrollment_state)"
+    }
+} catch {
+    Fail 'close enrollment' $_.Exception.Message
+}
+
+# 2.P4 - Set policy (domain + subnet)
+try {
+    $policyBody = '{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}'
+    $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/certmesh/policy" -Body $policyBody
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.allowed_domain -eq 'lab.local' -and $json.allowed_subnet -eq '192.168.1.0/24') {
+        Pass 'set policy (domain=lab.local, subnet=192.168.1.0/24)'
+    } else {
+        Fail 'set policy' "domain=$($json.allowed_domain) subnet=$($json.allowed_subnet)"
+    }
+} catch {
+    Fail 'set policy' $_.Exception.Message
+}
+
+# 2.P5 - Set policy — invalid CIDR rejected (400)
+try {
+    $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/certmesh/policy" -Body '{"allowed_subnet":"not-a-cidr"}'
+    if ($errResp.StatusCode -eq 400) {
+        Pass 'set policy (invalid CIDR) returns 400'
+    } else {
+        Fail 'set policy (invalid CIDR)' "Expected 400, got $($errResp.StatusCode)"
+    }
+} catch {
+    Fail 'set policy (invalid CIDR)' $_.Exception.Message
+}
+
+# 2.P6 - Rotate TOTP
+try {
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/rotate-totp" -Body '{"passphrase":"test-koi-integration"}'
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.totp_uri -match 'otpauth://') {
+        Pass 'rotate TOTP returns new URI'
+    } else {
+        Fail 'rotate TOTP' "totp_uri=$($json.totp_uri)"
+    }
+} catch {
+    Fail 'rotate TOTP' $_.Exception.Message
+}
+
+# 2.P7 - Backup bundle (Phase 5)
+$backupHex = $null
+try {
+    $backupBody = @{ ca_passphrase = 'test-koi-integration'; backup_passphrase = 'test-koi-backup' } | ConvertTo-Json
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/backup" -Body $backupBody
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.backup_hex -and $json.format -eq 'koi-backup-v1' -and $json.version -ge 1) {
+        $backupHex = $json.backup_hex
+        Pass 'certmesh backup returns bundle'
+    } else {
+        Fail 'certmesh backup returns bundle' "format=$($json.format) version=$($json.version)"
+    }
+} catch {
+    Fail 'certmesh backup returns bundle' $_.Exception.Message
+}
+
+# 2.P8 - Revoke unknown member returns 404
+try {
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/revoke" -Body '{"hostname":"ghost-host"}'
+    if ($errResp.StatusCode -eq 404) {
+        $errJson = $errResp.Content | ConvertFrom-Json
+        if ($errJson.error -eq 'not_found') {
+            Pass 'certmesh revoke unknown member returns 404 not_found'
+        } else {
+            Fail 'certmesh revoke unknown member' "Expected not_found, got $($errJson.error)"
+        }
+    } else {
+        Fail 'certmesh revoke unknown member' "Expected 404, got $($errResp.StatusCode)"
+    }
+} catch {
+    Fail 'certmesh revoke unknown member' $_.Exception.Message
+}
+
+# 2.P9 - Restore bundle (Phase 5)
+if ($backupHex) {
+    try {
+        $restoreBody = @{ backup_hex = $backupHex; backup_passphrase = 'test-koi-backup'; new_passphrase = 'test-koi-restored' } | ConvertTo-Json
+        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/restore" -Body $restoreBody
+        $json = $resp.Content | ConvertFrom-Json
+        if ($json.restored -eq $true) {
+            Pass 'certmesh restore returns restored=true'
+        } else {
+            Fail 'certmesh restore returns restored=true' "restored=$($json.restored)"
+        }
+    } catch {
+        Fail 'certmesh restore returns restored=true' $_.Exception.Message
+    }
+}
+
 # 2.3 - Register via HTTP
 $regId = $null
 try {
     $body = '{"name":"DaemonTest","type":"_http._tcp","port":19998}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     if ($json.registered.id) {
         $regId = $json.registered.id
@@ -543,12 +1683,12 @@ try {
 $txtRegId = $null
 try {
     $body = '{"name":"TxtTest","type":"_http._tcp","port":19997,"txt":{"env":"test","ver":"1"}}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $txtRegId = $json.registered.id
 
     # Verify via admin inspect — deep field assertion
-    $inspResp = Invoke-Http -Uri "$Endpoint/v1/admin/registrations/$txtRegId"
+    $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
     $insp = $inspResp.Content | ConvertFrom-Json
     # AdminRegistration fields: id, name, type, port, mode, state, lease_secs,
     # remaining_secs, grace_secs, session_id, registered_at, last_seen, txt
@@ -577,12 +1717,12 @@ try {
 $leaseRegId = $null
 try {
     $body = '{"name":"LeaseTest","type":"_http._tcp","port":19994,"lease_secs":300}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $leaseRegId = $json.registered.id
     if ($json.registered.lease_secs -eq 300 -and $json.registered.mode -eq 'heartbeat') {
         # Heartbeat and verify lease round-trips
-        $hbResp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/services/$leaseRegId/heartbeat"
+        $hbResp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/mdns/services/$leaseRegId/heartbeat"
         $hbJson = $hbResp.Content | ConvertFrom-Json
         if ($hbJson.renewed.lease_secs -eq 300) {
             Pass 'register with lease_secs=300 + heartbeat round-trip'
@@ -600,7 +1740,7 @@ try {
 $permanentRegId = $null
 try {
     $body = '{"name":"PermanentTest","type":"_http._tcp","port":19991,"lease_secs":0}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $permanentRegId = $json.registered.id
     # lease_secs is omitted (skip_serializing_if) for permanent — check via PSObject.Properties
@@ -616,7 +1756,7 @@ try {
 
 # 2.7 - Admin status via CLI with deeper assertions
 try {
-    $r = Invoke-Koi -KoiArgs 'admin', 'status', '--endpoint', $Endpoint, '--json'
+    $r = Invoke-Koi -KoiArgs 'mdns', 'admin', 'status', '--endpoint', $Endpoint, '--json'
     $statusJson = $r.Stdout.Trim() | ConvertFrom-Json
     $regs = $statusJson.registrations
     if ($statusJson.version -and
@@ -632,9 +1772,9 @@ try {
     Fail 'admin status' $_.Exception.Message
 }
 
-# 2.7 - Admin ls shows registrations (human output)
+# 2.7b - Admin ls shows registrations (human output)
 try {
-    $r = Invoke-Koi -KoiArgs 'admin', 'ls', '--endpoint', $Endpoint
+    $r = Invoke-Koi -KoiArgs 'mdns', 'admin', 'ls', '--endpoint', $Endpoint
     if ($r.Stdout -match 'DaemonTest' -and $r.Stdout -match 'TxtTest') {
         Pass 'admin ls shows registrations'
     } else {
@@ -646,7 +1786,7 @@ try {
 
 # 2.8 - Admin ls --json mode
 try {
-    $r = Invoke-Koi -KoiArgs 'admin', 'ls', '--endpoint', $Endpoint, '--json'
+    $r = Invoke-Koi -KoiArgs 'mdns', 'admin', 'ls', '--endpoint', $Endpoint, '--json'
     $lsJson = $r.Stdout.Trim() | ConvertFrom-Json
     if ($lsJson -is [array] -and $lsJson.Count -ge 4) {
         $allHaveFields = $true
@@ -662,41 +1802,41 @@ try {
             Fail 'admin ls --json' 'Some entries missing required fields (id, name, type, port, state)'
         }
     } else {
-        Fail 'admin ls --json' "Expected array with >=3 entries, got: $(if ($lsJson -is [array]) { $lsJson.Count } else { 'non-array' })"
+        Fail 'admin ls --json' "Expected array with >=4 entries, got: $(if ($lsJson -is [array]) { $lsJson.Count } else { 'non-array' })"
     }
 } catch {
     Fail 'admin ls --json' $_.Exception.Message
 }
 
 # 2.9 - Register via CLI client mode
-# Note: client-mode register auto-unregisters on exit (line 132 in client.rs),
+# Note: client-mode announce auto-unregisters on exit (line 137 in client.rs),
 # so the service is cleaned up when the --timeout fires.
 try {
-    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'register', '--timeout', '3', 'CLIClient', 'http', '17777' -TimeoutSec 15 -AllowFailure
+    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'announce', '--timeout', '3', 'CLIClient', 'http', '17777' -TimeoutSec 15 -AllowFailure
     if ($r.ExitCode -ne 0) {
-        Log "CLI client register stderr: $($r.Stderr.Trim())"
-        Fail 'register via CLI client mode' "Exit code $($r.ExitCode)"
+        Log "CLI client announce stderr: $($r.Stderr.Trim())"
+        Fail 'announce via CLI client mode' "Exit code $($r.ExitCode)"
     } else {
         if ($r.Stdout -match '"registered"') {
-            Pass 'register via CLI client mode'
+            Pass 'announce via CLI client mode'
         } else {
-            Fail 'register via CLI client mode' "No registered JSON in output"
+            Fail 'announce via CLI client mode' "No registered JSON in output"
         }
     }
 } catch {
-    Fail 'register via CLI client mode' $_.Exception.Message
+    Fail 'announce via CLI client mode' $_.Exception.Message
 }
 
 # 2.10 - Unregister via CLI client mode
-# Note: CLI register (2.9) auto-unregisters on exit, so we register a fresh
+# Note: CLI announce (2.9) auto-unregisters on exit, so we register a fresh
 # service via HTTP specifically for the CLI unregister test.
 try {
     $body = '{"name":"UnregTarget","type":"_http._tcp","port":19995,"lease_secs":0}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $unregTargetId = $json.registered.id
 
-    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'unregister', $unregTargetId
+    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'unregister', $unregTargetId
     $parsed = $r.Stdout.Trim() | ConvertFrom-Json
     if ($parsed.unregistered -eq $unregTargetId) {
         Pass 'unregister via CLI client mode'
@@ -710,7 +1850,7 @@ try {
 # 2.11 - Heartbeat via HTTP
 if ($regId) {
     try {
-        $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/services/$regId/heartbeat"
+        $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/mdns/services/$regId/heartbeat"
         $json = $resp.Content | ConvertFrom-Json
         if ($json.renewed.id -eq $regId -and $json.renewed.lease_secs -gt 0) {
             Pass "heartbeat via HTTP (lease: $($json.renewed.lease_secs)s)"
@@ -728,7 +1868,7 @@ if ($regId) {
 # Resolve the service we registered in 2.3. On some platforms mDNS may not
 # resolve services the same host registered; accept 504 but NOT 404/timeout.
 try {
-    $resp = Invoke-Http -Uri "$Endpoint/v1/resolve?name=DaemonTest._http._tcp.local." -TimeoutSec 10
+    $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/resolve?name=DaemonTest._http._tcp.local." -TimeoutSec 10
     $json = $resp.Content | ConvertFrom-Json
     if ($json.resolved.name -match 'DaemonTest') {
         Pass 'resolve via HTTP (found DaemonTest)'
@@ -746,7 +1886,7 @@ try {
 
 # 2.13 - Resolve via CLI client (nonexistent, expect error)
 try {
-    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'resolve', 'nonexistent._http._tcp.local.' -TimeoutSec 10 -AllowFailure
+    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'resolve', 'nonexistent._http._tcp.local.' -TimeoutSec 10 -AllowFailure
     if ($r.ExitCode -ne 0) {
         Pass 'resolve via CLI client (nonexistent returns error)'
     } else {
@@ -764,17 +1904,20 @@ try {
 
 # 2.14 - Browse SSE returns events
 try {
-    $events = Invoke-Sse -Uri "$Endpoint/v1/browse?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
     if ($events.Count -gt 0) {
         $hasFound = $false
+        $hasId = $false
         foreach ($ev in $events) {
             if ($ev.found -and $ev.found.name -and $ev.found.type) {
                 $hasFound = $true
-                break
+                if ($ev.sse_id) { $hasId = $true }
             }
         }
-        if ($hasFound) {
-            Pass "browse SSE returns events ($($events.Count) received)"
+        if ($hasFound -and $hasId) {
+            Pass "browse SSE returns events with ids ($($events.Count) received)"
+        } elseif ($hasFound) {
+            Fail 'browse SSE returns events' 'Missing sse_id on browse events'
         } else {
             Fail 'browse SSE returns events' "Got $($events.Count) events but none had found.name+type"
         }
@@ -787,17 +1930,20 @@ try {
 
 # 2.15 - Events SSE returns lifecycle events
 try {
-    $events = Invoke-Sse -Uri "$Endpoint/v1/events?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/events?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
     if ($events.Count -gt 0) {
         $hasEvent = $false
+        $hasId = $false
         foreach ($ev in $events) {
             if ($ev.event -and ($ev.event -eq 'found' -or $ev.event -eq 'resolved') -and $ev.service) {
                 $hasEvent = $true
-                break
+                if ($ev.sse_id) { $hasId = $true }
             }
         }
-        if ($hasEvent) {
-            Pass "events SSE returns lifecycle events ($($events.Count) received)"
+        if ($hasEvent -and $hasId) {
+            Pass "events SSE returns lifecycle events with ids ($($events.Count) received)"
+        } elseif ($hasEvent) {
+            Fail 'events SSE returns lifecycle events' 'Missing sse_id on events'
         } else {
             Fail 'events SSE returns lifecycle events' "Got $($events.Count) events but none had event+service fields"
         }
@@ -810,7 +1956,7 @@ try {
 
 # 2.17 - Browse meta-query via HTTP SSE (discovers service types)
 try {
-    $events = Invoke-Sse -Uri "$Endpoint/v1/browse?type=_services._dns-sd._udp.local." -MaxEvents 5 -TimeoutMs 4000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_services._dns-sd._udp.local." -MaxEvents 5 -TimeoutMs 4000
     if ($events.Count -gt 0) {
         # Meta-query returns found events where the name is a service type (e.g. "_http._tcp.local.")
         $hasType = $false
@@ -840,7 +1986,7 @@ try {
 try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     # idle_for=2 on a quiet type: stream should close ~2s after opening (no events to find)
-    $events = Invoke-Sse -Uri "$Endpoint/v1/browse?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
     $sw.Stop()
     $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
 
@@ -859,7 +2005,7 @@ try {
 try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     # idle_for=0 on a quiet type: server never closes, client timeout (3s) stops it
-    $events = Invoke-Sse -Uri "$Endpoint/v1/browse?type=_koi-idle-test._tcp&idle_for=0" -MaxEvents 20 -TimeoutMs 3000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_koi-idle-test._tcp&idle_for=0" -MaxEvents 20 -TimeoutMs 3000
     $sw.Stop()
     $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
 
@@ -877,7 +2023,7 @@ try {
 # 2.X3 - Events SSE idle_for closes stream automatically
 try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $events = Invoke-Sse -Uri "$Endpoint/v1/events?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/events?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
     $sw.Stop()
     $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
 
@@ -890,34 +2036,34 @@ try {
     Fail 'events SSE idle_for=2 auto-closes' $_.Exception.Message
 }
 
-# -- CLI client mode: browse + subscribe --------------------------------------
+# -- CLI client mode: discover + subscribe ------------------------------------
 
-# 2.16 - Browse via CLI client mode
-# Note: browse consumes an SSE stream via blocking I/O in spawn_blocking;
+# 2.16 - Discover via CLI client mode
+# Note: discover consumes an SSE stream via blocking I/O in spawn_blocking;
 # the tokio timeout may not interrupt it, so the process may be killed (-1).
 # Accept exit code 0 (clean timeout) or -1 (killed after TimeoutSec).
 try {
-    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'browse', 'http', '--timeout', '3' -TimeoutSec 15 -AllowFailure
+    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'discover', 'http', '--timeout', '3' -TimeoutSec 15 -AllowFailure
     $lines = $r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' }
     $valid = $true
     foreach ($line in $lines) {
         try { $null = $line | ConvertFrom-Json } catch { $valid = $false; break }
     }
     if ($valid) {
-        Pass "browse via CLI client mode ($($lines.Count) events)"
+        Pass "discover via CLI client mode ($($lines.Count) events)"
     } else {
-        Fail 'browse via CLI client mode' 'Invalid JSON in output'
+        Fail 'discover via CLI client mode' 'Invalid JSON in output'
     }
 } catch {
-    Fail 'browse via CLI client mode' $_.Exception.Message
+    Fail 'discover via CLI client mode' $_.Exception.Message
 }
 
-# 2.17 - Subscribe via CLI client mode
+# 2.17b - Subscribe via CLI client mode
 # Note: subscribe consumes an SSE stream via blocking I/O in spawn_blocking;
 # the tokio timeout may not interrupt it, so the process may be killed (-1).
 # Accept exit code 0 (clean timeout) or -1 (killed after TimeoutSec).
 try {
-    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'subscribe', '_http._tcp', '--timeout', '3' -TimeoutSec 10 -AllowFailure
+    $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'subscribe', '_http._tcp', '--timeout', '3' -TimeoutSec 10 -AllowFailure
     $lines = $r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' }
     $valid = $true
     foreach ($line in $lines) {
@@ -940,7 +2086,7 @@ if (-not $txtRegId) {
 
 # 2.18 - Revive non-draining (expect 409)
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/admin/registrations/$txtRegId/revive"
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId/revive"
     if ($errResp.StatusCode -eq 409) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'not_draining') {
@@ -957,7 +2103,7 @@ try {
 
 # 2.19 - Admin drain
 try {
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/admin/registrations/$txtRegId/drain"
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId/drain"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.drained -eq $txtRegId) {
         Pass 'admin drain'
@@ -970,7 +2116,7 @@ try {
 
 # 2.20 - Admin inspect shows draining state
 try {
-    $resp = Invoke-Http -Uri "$Endpoint/v1/admin/registrations/$txtRegId"
+    $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.state -eq 'draining') {
         Pass 'admin inspect shows draining state'
@@ -983,7 +2129,7 @@ try {
 
 # 2.21 - Double-drain (expect 409)
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/admin/registrations/$txtRegId/drain"
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId/drain"
     if ($errResp.StatusCode -eq 409) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'already_draining') {
@@ -1000,7 +2146,7 @@ try {
 
 # 2.22 - Admin revive
 try {
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/admin/registrations/$txtRegId/revive"
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId/revive"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.revived -eq $txtRegId) {
         Pass 'admin revive'
@@ -1013,7 +2159,7 @@ try {
 
 # 2.23 - Admin inspect shows alive after revive
 try {
-    $resp = Invoke-Http -Uri "$Endpoint/v1/admin/registrations/$txtRegId"
+    $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.state -eq 'alive') {
         Pass 'admin inspect shows alive after revive'
@@ -1026,7 +2172,7 @@ try {
 
 # 2.24 - Admin force-unregister
 try {
-    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/admin/registrations/$txtRegId"
+    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.unregistered -eq $txtRegId) {
         Pass 'admin force-unregister'
@@ -1039,7 +2185,7 @@ try {
 
 # 2.25 - Admin inspect after delete returns 404
 try {
-    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/admin/registrations/$txtRegId"
+    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
     if ($errResp.StatusCode -eq 404) {
         Pass 'admin inspect after delete returns 404'
     } else {
@@ -1055,7 +2201,7 @@ try {
 
 # 2.26 - Unregister nonexistent ID returns 404
 try {
-    $errResp = Invoke-HttpExpectError -Method DELETE -Uri "$Endpoint/v1/services/nonexistent_id_999"
+    $errResp = Invoke-HttpExpectError -Method DELETE -Uri "$Endpoint/v1/mdns/services/nonexistent_id_999"
     if ($errResp.StatusCode -eq 404) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'not_found') {
@@ -1072,7 +2218,7 @@ try {
 
 # 2.27 - Heartbeat nonexistent ID returns 404
 try {
-    $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/services/nonexistent_id_999/heartbeat"
+    $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/mdns/services/nonexistent_id_999/heartbeat"
     if ($errResp.StatusCode -eq 404) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'not_found') {
@@ -1089,7 +2235,7 @@ try {
 
 # 2.28 - Malformed JSON body returns 4xx
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/services" -Body '{broken json'
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/services" -Body '{broken json'
     if ($errResp.StatusCode -ge 400 -and $errResp.StatusCode -lt 500) {
         Pass "malformed JSON body returns $($errResp.StatusCode)"
     } else {
@@ -1102,7 +2248,7 @@ try {
 # 2.29 - Invalid service type via register returns 400
 # ServiceType::parse rejects invalid protocol (only tcp/udp allowed)
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/services" -Body '{"name":"Bad","type":"_x._xyz","port":9999}'
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/services" -Body '{"name":"Bad","type":"_x._xyz","port":9999}'
     if ($errResp.StatusCode -eq 400) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'invalid_type') {
@@ -1119,7 +2265,7 @@ try {
 
 # 2.30 - Invalid service type via browse SSE returns error event
 try {
-    $events = Invoke-Sse -Uri "$Endpoint/v1/browse?type=_x._xyz" -MaxEvents 1 -TimeoutMs 3000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_x._xyz" -MaxEvents 1 -TimeoutMs 3000
     if ($events.Count -gt 0 -and $events[0].error -eq 'invalid_type') {
         Pass 'invalid service type via browse SSE returns error event'
     } else {
@@ -1131,7 +2277,7 @@ try {
 
 # 2.31 - Browse without type param returns 400
 try {
-    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/browse"
+    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/mdns/browse"
     if ($errResp.StatusCode -eq 400) {
         Pass 'browse without type param returns 400'
     } else {
@@ -1143,7 +2289,7 @@ try {
 
 # 2.32 - Resolve without name param returns 400
 try {
-    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/resolve"
+    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/mdns/resolve"
     if ($errResp.StatusCode -eq 400) {
         Pass 'resolve without name param returns 400'
     } else {
@@ -1155,7 +2301,7 @@ try {
 
 # 2.33 - Register with empty body returns 422
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/services" -Body '{}'
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/services" -Body '{}'
     if ($errResp.StatusCode -eq 422) {
         Pass 'register with empty body returns 422'
     } else {
@@ -1176,7 +2322,7 @@ if ($regId -and $leaseRegId) {
         $prefixMatches = @($allIds | Where-Object { $_.StartsWith($prefix) })
         if ($prefixMatches.Count -ge 2) {
             try {
-                $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/admin/registrations/$prefix"
+                $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/mdns/admin/registrations/$prefix"
                 if ($errResp.StatusCode -eq 400) {
                     $errJson = $errResp.Content | ConvertFrom-Json
                     if ($errJson.error -eq 'ambiguous_id') {
@@ -1298,6 +2444,108 @@ try {
     Fail 'Named Pipe: malformed JSON returns parse_error' $_.Exception.Message
 }
 
+# -- Heartbeat lifecycle: register → expire → removal ----------------------------
+
+# HL1 - Register with short lease, skip heartbeats, verify expiry
+# Uses lease_secs=6 (6s lease) + default 30s grace.
+# The reaper runs every 5s, so total wait = lease(6) + grace(30) + reaper(5) + margin(5) = ~46s.
+# This is a long-running test but it validates the full heartbeat lifecycle.
+$hlRegId = $null
+try {
+    $body = '{"name":"HeartbeatLifecycleTest","type":"_http._tcp","port":19996,"lease_secs":6}'
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+    $json = $resp.Content | ConvertFrom-Json
+    $hlRegId = $json.registered.id
+
+    if (-not $hlRegId) {
+        Fail 'heartbeat lifecycle: register' 'No ID returned'
+    } else {
+        # Verify it's alive
+        $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$hlRegId"
+        $insp = $inspResp.Content | ConvertFrom-Json
+        if ($insp.state -eq 'alive' -and $insp.mode -eq 'heartbeat') {
+            Pass 'heartbeat lifecycle: register + alive'
+        } else {
+            Fail 'heartbeat lifecycle: register + alive' "state=$($insp.state), mode=$($insp.mode)"
+        }
+
+        # Wait for lease to expire and enter draining (lease=6s + margin)
+        Log "Waiting 12s for lease expiry..."
+        Start-Sleep -Seconds 12
+
+        # Check draining state
+        try {
+            $inspResp2 = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$hlRegId"
+            $insp2 = $inspResp2.Content | ConvertFrom-Json
+            if ($insp2.state -eq 'draining') {
+                Pass 'heartbeat lifecycle: draining after lease expiry'
+            } else {
+                Fail 'heartbeat lifecycle: draining' "Expected draining, got: $($insp2.state)"
+            }
+        } catch {
+            # Might already be removed if timing is tight — that's also acceptable
+            Fail 'heartbeat lifecycle: draining' $_.Exception.Message
+        }
+
+        # Wait for grace period to elapse (30s grace + reaper 5s + margin)
+        Log "Waiting 40s for grace period + removal..."
+        Start-Sleep -Seconds 40
+
+        # Verify it's been removed (should return 404)
+        try {
+            $null = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$hlRegId"
+            # If we get here without error, it hasn't been removed yet
+            Fail 'heartbeat lifecycle: removed after grace' "Registration still exists"
+        } catch {
+            # Expected: 404 means it was removed
+            if ($_.Exception.Message -match '404') {
+                Pass 'heartbeat lifecycle: removed after grace'
+            } else {
+                Fail 'heartbeat lifecycle: removed after grace' $_.Exception.Message
+            }
+        }
+    }
+} catch {
+    Fail 'heartbeat lifecycle' $_.Exception.Message
+}
+
+# HL2 - Register with short lease, send heartbeat, verify it stays alive
+$hl2RegId = $null
+try {
+    $body = '{"name":"HeartbeatKeepAlive","type":"_http._tcp","port":19997,"lease_secs":6}'
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+    $json = $resp.Content | ConvertFrom-Json
+    $hl2RegId = $json.registered.id
+
+    if (-not $hl2RegId) {
+        Fail 'heartbeat keepalive: register' 'No ID returned'
+    } else {
+        # Wait 4 seconds (before lease expires at 6s), then heartbeat
+        Start-Sleep -Seconds 4
+        $hbResp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/mdns/services/$hl2RegId/heartbeat"
+        $hbJson = $hbResp.Content | ConvertFrom-Json
+
+        if ($hbJson.renewed.id -eq $hl2RegId) {
+            # Wait another 4 seconds — should still be alive (heartbeat reset the lease)
+            Start-Sleep -Seconds 4
+            $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$hl2RegId"
+            $insp = $inspResp.Content | ConvertFrom-Json
+            if ($insp.state -eq 'alive') {
+                Pass 'heartbeat keepalive: stays alive with timely heartbeat'
+            } else {
+                Fail 'heartbeat keepalive' "Expected alive after heartbeat, got: $($insp.state)"
+            }
+        } else {
+            Fail 'heartbeat keepalive: heartbeat' "Unexpected heartbeat response"
+        }
+
+        # Clean up
+        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$hl2RegId" } catch {}
+    }
+} catch {
+    Fail 'heartbeat keepalive' $_.Exception.Message
+}
+
 # -- Stretch goal: concurrent registration burst --------------------------------
 
 # S1 - Register 5 services in parallel, verify unique IDs
@@ -1306,7 +2554,7 @@ try {
     $burstFailed = $false
     for ($i = 1; $i -le 5; $i++) {
         $body = "{`"name`":`"Burst$i`",`"type`":`"_http._tcp`",`"port`":$( 18000 + $i ),`"lease_secs`":0}"
-        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/services" -Body $body
+        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
         $json = $resp.Content | ConvertFrom-Json
         if ($json.registered.id) {
             $burstIds += $json.registered.id
@@ -1328,7 +2576,7 @@ try {
 
     # Clean up burst registrations
     foreach ($bid in $burstIds) {
-        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/services/$bid" } catch {}
+        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$bid" } catch {}
     }
 } catch {
     Fail 'concurrent registration burst' $_.Exception.Message
@@ -1360,7 +2608,7 @@ try {
         Start-Sleep -Milliseconds 1500
 
         # Check state via admin inspect (HTTP)
-        $inspResp = Invoke-Http -Uri "$Endpoint/v1/admin/registrations/$sessionDrainId"
+        $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$sessionDrainId"
         $insp = $inspResp.Content | ConvertFrom-Json
         if ($insp.state -eq 'draining') {
             Pass 'pipe disconnect triggers session draining'
@@ -1369,7 +2617,7 @@ try {
         }
 
         # Clean up via admin force-unregister
-        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/admin/registrations/$sessionDrainId" } catch {}
+        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/admin/registrations/$sessionDrainId" } catch {}
     } else {
         $pipe.Dispose()
         Fail 'pipe disconnect triggers session draining' 'Could not register service'
@@ -1383,7 +2631,7 @@ try {
 # 2.39 - Unregister DaemonTest via HTTP
 if ($regId) {
     try {
-        $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/services/$regId"
+        $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$regId"
         $json = $resp.Content | ConvertFrom-Json
         if ($json.unregistered -eq $regId) {
             Pass 'unregister via HTTP'
@@ -1399,30 +2647,46 @@ if ($regId) {
 
 # Clean up LeaseTest and PermanentTest if still alive
 if ($leaseRegId) {
-    try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/services/$leaseRegId" } catch {}
+    try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$leaseRegId" } catch {}
 }
 if ($permanentRegId) {
-    try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/services/$permanentRegId" } catch {}
+    try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$permanentRegId" } catch {}
 }
 
-# -- Shutdown -----------------------------------------------------------------
+# -- Shutdown via HTTP endpoint ------------------------------------------------
 
-# 2.40 - Shutdown daemon
-Log "Sending stop signal to daemon..."
-Stop-Process -Id $script:daemonProc.Id -ErrorAction SilentlyContinue
+# 2.40 - Shutdown via admin endpoint
+try {
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/admin/shutdown"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($json.status -eq 'shutting_down') {
+        Pass 'admin shutdown endpoint returns shutting_down'
+    } else {
+        Fail 'admin shutdown endpoint' "status=$($json.status)"
+    }
+} catch {
+    Fail 'admin shutdown endpoint' $_.Exception.Message
+}
+
+# Wait for daemon to exit after HTTP shutdown request
+Log "Waiting for daemon to exit after HTTP shutdown..."
 $exitedCleanly = $script:daemonProc.WaitForExit(15000)
 
 if ($exitedCleanly) {
-    Pass "daemon shutdown (exit code: $($script:daemonProc.ExitCode))"
+    Pass "daemon exits cleanly after HTTP shutdown (exit code: $($script:daemonProc.ExitCode))"
 } else {
-    Fail 'daemon shutdown' 'Daemon did not exit within 15 seconds'
+    Fail 'daemon exits cleanly after HTTP shutdown' 'Daemon did not exit within 15 seconds'
     $script:daemonProc.Kill()
     $script:daemonProc.WaitForExit(5000) | Out-Null
 }
 
-# Breadcrumb deletion requires graceful Ctrl+C shutdown, which Stop-Process
-# cannot provide (it sends TerminateProcess = SIGKILL equivalent).
-Skip 'breadcrumb deleted after shutdown' 'Stop-Process sends hard kill, no cleanup hook runs'
+# 2.40b - Breadcrumb deleted after graceful shutdown
+$breadcrumbFile2 = Join-Path (Join-Path $BreadcrumbDir 'koi') 'koi.endpoint'
+if (-not (Test-Path $breadcrumbFile2)) {
+    Pass 'breadcrumb deleted after graceful shutdown'
+} else {
+    Fail 'breadcrumb deleted after graceful shutdown' 'Breadcrumb file still exists'
+}
 
 # 2.41 - Log file has content
 if (Test-Path $TestLog) {
@@ -1437,6 +2701,217 @@ if (Test-Path $TestLog) {
 }
 
 $script:daemonProc = $null
+
+# ======================================================================
+#  TIER 2.T - Disabled Capability Daemon
+# ======================================================================
+
+Write-Host "`n=== Tier 2.T: Disabled Capability Daemon ===" -ForegroundColor Cyan
+
+# Helper: start a test daemon with custom args, wait for health, run tests, stop it.
+function Start-TestDaemon {
+    param(
+        [int]$Port,
+        [int]$DnsPort,
+        [string]$ExtraArgs = '',
+        [string]$Label = 'test daemon'
+    )
+
+    $psi2 = New-Object System.Diagnostics.ProcessStartInfo
+    $psi2.FileName = $KoiBin
+    $psi2.Arguments = "--daemon --port $Port --dns-port $DnsPort --no-ipc $ExtraArgs --log-file `"$(Join-Path $TestDir "daemon-$Port.log")`" -v"
+    $psi2.UseShellExecute = $false
+    $psi2.RedirectStandardOutput = $true
+    $psi2.RedirectStandardError = $true
+    $psi2.CreateNoWindow = $true
+    # Isolate breadcrumb + data dir from real system (both use ProgramData)
+    $psi2.EnvironmentVariables['ProgramData'] = $BreadcrumbDir
+    # Data dir override for certmesh/paths isolation
+    $psi2.EnvironmentVariables['KOI_DATA_DIR'] = (Join-Path $TestDir 'data')
+
+    $proc2 = [System.Diagnostics.Process]::Start($psi2)
+    $null = $proc2.StandardOutput.ReadToEndAsync()
+    $null = $proc2.StandardError.ReadToEndAsync()
+
+    # Wait for health
+    $ep2 = "http://127.0.0.1:$Port"
+    $healthy2 = $false
+    $deadline2 = [DateTime]::Now.AddSeconds($HealthTimeout)
+    while ([DateTime]::Now -lt $deadline2) {
+        try {
+            $resp2 = Invoke-Http -Uri "$ep2/healthz" -TimeoutSec 2
+            if ($resp2.StatusCode -eq 200) { $healthy2 = $true; break }
+        } catch {}
+        Start-Sleep -Milliseconds 500
+    }
+
+    if (-not $healthy2) {
+        Stop-Process -Id $proc2.Id -Force -ErrorAction SilentlyContinue
+        $proc2.WaitForExit(5000) | Out-Null
+        Fail "$Label health check" "$Label did not become healthy"
+        return $null
+    }
+
+    return @{ Proc = $proc2; Endpoint = $ep2 }
+}
+
+function Stop-TestDaemon {
+    param($DaemonInfo)
+    if ($DaemonInfo -and $DaemonInfo.Proc -and -not $DaemonInfo.Proc.HasExited) {
+        Stop-Process -Id $DaemonInfo.Proc.Id -Force -ErrorAction SilentlyContinue
+        $DaemonInfo.Proc.WaitForExit(5000) | Out-Null
+    }
+}
+
+# -- Daemon with --no-certmesh -------------------------------------------------
+
+$TestPort2 = $TestPort + 1
+$TestDnsPort2 = $TestDnsPort + 1
+$daemon2 = Start-TestDaemon -Port $TestPort2 -DnsPort $TestDnsPort2 -ExtraArgs '--no-certmesh' -Label 'no-certmesh daemon'
+
+if ($daemon2) {
+    # 2.T1 - Certmesh HTTP returns 503 when disabled
+    try {
+        $errResp = Invoke-HttpExpectError -Uri "$($daemon2.Endpoint)/v1/certmesh/status"
+        if ($errResp.StatusCode -eq 503) {
+            $errJson = $errResp.Content | ConvertFrom-Json
+            if ($errJson.error -eq 'capability_disabled') {
+                Pass 'disabled certmesh returns 503 capability_disabled'
+            } else {
+                Fail 'disabled certmesh returns 503' "Expected capability_disabled, got: $($errJson.error)"
+            }
+        } else {
+            Fail 'disabled certmesh returns 503' "Expected 503, got $($errResp.StatusCode)"
+        }
+    } catch {
+        Fail 'disabled certmesh returns 503' $_.Exception.Message
+    }
+
+    # 2.T2 - Unified status shows certmesh as disabled
+    try {
+        $resp = Invoke-Http -Uri "$($daemon2.Endpoint)/v1/status"
+        $json = $resp.Content | ConvertFrom-Json
+        $caps = @($json.capabilities)
+        $certmeshCap = $caps | Where-Object { $_.name -eq 'certmesh' }
+        if ($certmeshCap -and $certmeshCap.summary -eq 'disabled' -and $certmeshCap.healthy -eq $false) {
+            Pass 'unified status shows certmesh disabled on --no-certmesh daemon'
+        } else {
+            Fail 'unified status certmesh disabled' "certmesh: summary=$(if ($certmeshCap) { $certmeshCap.summary } else { 'missing' })"
+        }
+    } catch {
+        Fail 'unified status certmesh disabled' $_.Exception.Message
+    }
+
+    # 2.T2b - mDNS still works on --no-certmesh daemon
+    try {
+        $resp = Invoke-Http -Uri "$($daemon2.Endpoint)/v1/mdns/admin/status"
+        if ($resp.StatusCode -eq 200) {
+            Pass 'mDNS still works on --no-certmesh daemon'
+        } else {
+            Fail 'mDNS still works on --no-certmesh daemon' "Expected 200, got $($resp.StatusCode)"
+        }
+    } catch {
+        Fail 'mDNS still works on --no-certmesh daemon' $_.Exception.Message
+    }
+
+    Stop-TestDaemon $daemon2
+}
+
+# -- Daemon with --no-mdns ----------------------------------------------------
+
+$TestPort3 = $TestPort + 2
+$TestDnsPort3 = $TestDnsPort + 2
+$daemon3 = Start-TestDaemon -Port $TestPort3 -DnsPort $TestDnsPort3 -ExtraArgs '--no-mdns' -Label 'no-mdns daemon'
+
+if ($daemon3) {
+    # 2.T3 - mDNS HTTP returns 503 when disabled
+    try {
+        $errResp = Invoke-HttpExpectError -Uri "$($daemon3.Endpoint)/v1/mdns/admin/status"
+        if ($errResp.StatusCode -eq 503) {
+            $errJson = $errResp.Content | ConvertFrom-Json
+            if ($errJson.error -eq 'capability_disabled') {
+                Pass 'disabled mDNS returns 503 capability_disabled'
+            } else {
+                Fail 'disabled mDNS returns 503' "Expected capability_disabled, got: $($errJson.error)"
+            }
+        } else {
+            Fail 'disabled mDNS returns 503' "Expected 503, got $($errResp.StatusCode)"
+        }
+    } catch {
+        Fail 'disabled mDNS returns 503' $_.Exception.Message
+    }
+
+    # 2.T4 - Unified status shows mDNS as disabled
+    try {
+        $resp = Invoke-Http -Uri "$($daemon3.Endpoint)/v1/status"
+        $json = $resp.Content | ConvertFrom-Json
+        $caps = @($json.capabilities)
+        $mdnsCap = $caps | Where-Object { $_.name -eq 'mdns' }
+        if ($mdnsCap -and $mdnsCap.summary -eq 'disabled' -and $mdnsCap.healthy -eq $false) {
+            Pass 'unified status shows mDNS disabled on --no-mdns daemon'
+        } else {
+            Fail 'unified status mDNS disabled' "mdns: summary=$(if ($mdnsCap) { $mdnsCap.summary } else { 'missing' })"
+        }
+    } catch {
+        Fail 'unified status mDNS disabled' $_.Exception.Message
+    }
+
+    # 2.T4b - Certmesh still works on --no-mdns daemon
+    try {
+        $resp = Invoke-Http -Uri "$($daemon3.Endpoint)/v1/certmesh/status"
+        if ($resp.StatusCode -eq 200) {
+            Pass 'certmesh still works on --no-mdns daemon'
+        } else {
+            Fail 'certmesh still works on --no-mdns daemon' "Expected 200, got $($resp.StatusCode)"
+        }
+    } catch {
+        Fail 'certmesh still works on --no-mdns daemon' $_.Exception.Message
+    }
+
+    Stop-TestDaemon $daemon3
+}
+
+# -- Daemon with --no-dns -----------------------------------------------------
+
+$TestPort4 = $TestPort + 3
+$TestDnsPort4 = $TestDnsPort + 3
+$daemon4 = Start-TestDaemon -Port $TestPort4 -DnsPort $TestDnsPort4 -ExtraArgs '--no-dns' -Label 'no-dns daemon'
+
+if ($daemon4) {
+    # 2.T5 - DNS HTTP returns 503 when disabled
+    try {
+        $errResp = Invoke-HttpExpectError -Uri "$($daemon4.Endpoint)/v1/dns/status"
+        if ($errResp.StatusCode -eq 503) {
+            $errJson = $errResp.Content | ConvertFrom-Json
+            if ($errJson.error -eq 'capability_disabled') {
+                Pass 'disabled DNS returns 503 capability_disabled'
+            } else {
+                Fail 'disabled DNS returns 503' "Expected capability_disabled, got: $($errJson.error)"
+            }
+        } else {
+            Fail 'disabled DNS returns 503' "Expected 503, got $($errResp.StatusCode)"
+        }
+    } catch {
+        Fail 'disabled DNS returns 503' $_.Exception.Message
+    }
+
+    # 2.T6 - Unified status shows DNS as disabled
+    try {
+        $resp = Invoke-Http -Uri "$($daemon4.Endpoint)/v1/status"
+        $json = $resp.Content | ConvertFrom-Json
+        $caps = @($json.capabilities)
+        $dnsCap = $caps | Where-Object { $_.name -eq 'dns' }
+        if ($dnsCap -and $dnsCap.summary -eq 'disabled' -and $dnsCap.healthy -eq $false) {
+            Pass 'unified status shows DNS disabled on --no-dns daemon'
+        } else {
+            Fail 'unified status DNS disabled' "dns: summary=$(if ($dnsCap) { $dnsCap.summary } else { 'missing' })"
+        }
+    } catch {
+        Fail 'unified status DNS disabled' $_.Exception.Message
+    }
+
+    Stop-TestDaemon $daemon4
+}
 
 # ======================================================================
 #  TIER 3 - Service lifecycle (manual, requires elevation)
@@ -1492,6 +2967,8 @@ if ($Tier3) {
         Fail 'koi uninstall' $_.Exception.Message
     }
 }
+
+} # end if (-not $Service)
 
 # ======================================================================
 #  Summary

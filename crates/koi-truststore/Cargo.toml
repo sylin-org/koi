@@ -1,0 +1,12 @@
+[package]
+name = "koi-truststore"
+description = "Platform trust store integration for Koi (Phase 2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+koi-common.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

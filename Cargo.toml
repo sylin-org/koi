@@ -1,38 +1,84 @@
-[package]
-name = "koi-mdns"
-version = "0.1.202602081427"
+[workspace]
+resolver = "2"
+members = [
+    "crates/koi",
+    "crates/koi-client",
+    "crates/koi-embedded",
+    "crates/koi-common",
+    "crates/koi-mdns",
+    "crates/koi-config",
+    "crates/koi-certmesh",
+    "crates/koi-crypto",
+    "crates/koi-truststore",
+    "crates/koi-dns",
+    "crates/koi-health",
+    "crates/koi-proxy",
+]
+
+[workspace.package]
+version = "0.2.202602121509"
 edition = "2021"
-description = "Cross-platform mDNS service discovery daemon with HTTP, IPC, and CLI interfaces"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/sylin-org/koi"
 homepage = "https://sylin.org/koi"
-readme = "README.md"
-keywords = ["mdns", "dns-sd", "service-discovery", "bonjour", "avahi"]
-categories = ["network-programming", "command-line-utilities"]
 
-[[bin]]
-name = "koi"
-path = "src/main.rs"
+[workspace.dependencies]
+# Internal crates
+koi-common = { path = "crates/koi-common" }
+koi-client = { path = "crates/koi-client" }
+koi-embedded = { path = "crates/koi-embedded" }
+koi-mdns = { path = "crates/koi-mdns", package = "koi-service" }
+koi-config = { path = "crates/koi-config" }
+koi-certmesh = { path = "crates/koi-certmesh" }
+koi-crypto = { path = "crates/koi-crypto" }
+koi-truststore = { path = "crates/koi-truststore" }
+koi-dns = { path = "crates/koi-dns" }
+koi-health = { path = "crates/koi-health" }
+koi-proxy = { path = "crates/koi-proxy" }
 
-[dependencies]
-mdns-sd = "0.17"
-axum = "0.8"
-tokio = { version = "1", features = ["full"] }
-tokio-stream = "0.1"
+# Shared external dependencies — single version pin
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 thiserror = "2"
+uuid = { version = "1", features = ["v4", "v7"] }
+axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
-uuid = { version = "1", features = ["v4"] }
+clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
-hostname = "0.4"
 async-stream = "0.3"
-ureq = { version = "2", features = ["json"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+chrono = { version = "0.4", features = ["serde"] }
+hostname = "0.4"
+futures-util = "0.3"
+hickory-server = "0.25"
+hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
+hickory-proto = "0.25"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+hyper = { version = "1", features = ["full"] }
+http-body-util = "0.1"
+notify = "6"
+rustls = "0.23"
+rustls-pemfile = "2"
+url = "2"
 
-[target.'cfg(windows)'.dependencies]
-windows-service = "0.8"
+# Crypto dependencies (Phase 2)
+p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+aes-gcm = "0.10"
+argon2 = "0.5"
+sha2 = "0.10"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+subtle = "2"
+totp-rs = { version = "5", features = ["gen_secret"] }
+qrcode = { version = "0.14", default-features = false }
+pem = "3"
+rcgen = "0.13"
+time = "0.3"
+crossterm = "0.28"
+indicatif = "0.17"

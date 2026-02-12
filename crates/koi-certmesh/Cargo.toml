@@ -1,0 +1,30 @@
+[package]
+name = "koi-certmesh"
+description = "Certificate mesh domain for Koi (Phase 2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+koi-common.workspace = true
+koi-crypto.workspace = true
+koi-truststore.workspace = true
+rcgen.workspace = true
+time.workspace = true
+pem.workspace = true
+sha2.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+axum.workspace = true
+crossterm.workspace = true
+indicatif.workspace = true
+rand.workspace = true
+hostname.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

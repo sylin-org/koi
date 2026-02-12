@@ -1,0 +1,49 @@
+[package]
+name = "koi"
+description = "Koi — local network toolkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "koi"
+path = "src/main.rs"
+
+[dependencies]
+koi-common.workspace = true
+koi-mdns.workspace = true
+koi-certmesh.workspace = true
+koi-crypto.workspace = true
+koi-truststore.workspace = true
+koi-config.workspace = true
+koi-dns.workspace = true
+koi-health.workspace = true
+koi-proxy.workspace = true
+koi-client.workspace = true
+chrono.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+async-stream.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+uuid.workspace = true
+hostname = "0.4"
+hickory-proto.workspace = true
+crossterm.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"

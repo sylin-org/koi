@@ -1,0 +1,23 @@
+[package]
+name = "koi-dns"
+description = "Local DNS resolver domain for Koi (Phase 6)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+koi-common.workspace = true
+koi-config.workspace = true
+koi-certmesh.workspace = true
+koi-mdns.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+axum.workspace = true
+hickory-server.workspace = true
+hickory-resolver.workspace = true
+hickory-proto.workspace = true

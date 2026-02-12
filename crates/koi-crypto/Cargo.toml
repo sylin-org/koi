@@ -1,0 +1,27 @@
+[package]
+name = "koi-crypto"
+description = "Cryptographic utilities for Koi (Phase 2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+koi-common.workspace = true
+p256.workspace = true
+aes-gcm.workspace = true
+argon2.workspace = true
+sha2.workspace = true
+rand.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+totp-rs.workspace = true
+qrcode.workspace = true
+pem.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[features]
+tpm = []

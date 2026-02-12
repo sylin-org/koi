@@ -1,0 +1,30 @@
+[package]
+name = "koi-proxy"
+description = "TLS-terminating reverse proxy domain for Koi (Phase 8)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+koi-common.workspace = true
+koi-config.workspace = true
+koi-certmesh.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+axum.workspace = true
+axum-server.workspace = true
+reqwest.workspace = true
+http-body-util.workspace = true
+notify.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+url.workspace = true
+hyper.workspace = true
+hostname.workspace = true
+futures-util.workspace = true
+toml = "0.8"

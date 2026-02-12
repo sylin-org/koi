@@ -1,7 +1,7 @@
 # Koi Technical Specification
 
-**Version:** 0.1.0-draft  
-**Status:** Pre-implementation
+**Version:** 0.2.0
+**Status:** Implemented
 
 ## Table of Contents
 
@@ -75,51 +75,73 @@ impl MdnsCore {
     pub fn browse(&self, service_type: &str) -> Result<BrowseHandle>
 
     /// Register a service on the local network via mDNS.
-    /// Returns an opaque ID for lifecycle management.
-    pub fn register(&self, service: ServiceDefinition) -> Result<ServiceId>
+    /// Returns registration details and lease metadata.
+    pub fn register(&self, payload: RegisterPayload) -> Result<RegistrationResult>
 
     /// Unregister a previously registered service.
     /// Sends mDNS goodbye packets.
-    pub fn unregister(&self, id: ServiceId) -> Result<()>
+    pub fn unregister(&self, id: &str) -> Result<()>
 
     /// Resolve a specific service instance by its full name.
-    pub fn resolve(&self, instance: &str) -> Result<ResolvedService>
+    pub fn resolve(&self, instance: &str) -> Result<ServiceRecord>
 
     /// Subscribe to all service events across all active browses.
     /// Returns a broadcast receiver for fan-out.
-    pub fn subscribe(&self) -> broadcast::Receiver<ServiceEvent>
+    pub fn subscribe(&self) -> broadcast::Receiver<MdnsEvent>
 }
 ```
 
 ### Domain types
 
 ```rust
-/// Request to register a new service.
-pub struct ServiceDefinition {
-    pub name: String,           // "My Web Server"
-    pub service_type: String,   // "_http._tcp"
-    pub port: u16,              // 8080
-    pub txt: HashMap<String, String>,  // {"version": "1.0"}
+/// Canonical service representation used across browse/resolve/events.
+pub struct ServiceRecord {
+  pub name: String,
+  pub service_type: String,   // "_http._tcp"
+  pub host: Option<String>,   // "server-01.local"
+  pub ip: Option<String>,     // "192.168.1.42"
+  pub port: Option<u16>,
+  pub txt: HashMap<String, String>,
 }
 
-/// Opaque identifier returned after registration.
-pub struct ServiceId(String);
+/// Request to register a new service.
+pub struct RegisterPayload {
+  pub name: String,           // "My Web Server"
+  pub service_type: String,   // "_http._tcp"
+  pub port: u16,              // 8080
+  pub ip: Option<String>,
+  pub lease_secs: Option<u64>,
+  pub txt: HashMap<String, String>,
+}
 
-/// A fully or partially resolved service instance.
-pub struct ResolvedService {
-    pub name: String,
-    pub service_type: String,
-    pub host: String,           // "server-01.local"
-    pub ip: Option<String>,     // "192.168.1.42" (None if unresolved)
-    pub port: u16,
-    pub txt: HashMap<String, String>,
+/// Result of a successful registration.
+pub struct RegistrationResult {
+  pub id: String,
+  pub name: String,
+  pub service_type: String,
+  pub port: u16,
+  pub mode: LeaseMode,
+  pub lease_secs: Option<u64>,
+}
+
+/// Result of a successful lease renewal (heartbeat).
+pub struct RenewalResult {
+  pub id: String,
+  pub lease_secs: u64,
+}
+
+/// How a registration stays alive (wire representation).
+pub enum LeaseMode {
+  Session,
+  Heartbeat,
+  Permanent,
 }
 
 /// Events emitted by browse and subscribe operations.
-pub enum ServiceEvent {
-    Found(ResolvedService),
-    Resolved(ResolvedService),
-    Removed { name: String, service_type: String },
+pub enum EventKind {
+  Found,
+  Resolved,
+  Removed,
 }
 ```
 
@@ -310,19 +332,22 @@ The HTTP adapter translates REST semantics to core API calls using Axum.
 
 | Method | Path | Core operation | Response |
 |---|---|---|---|
-| `GET` | `/v1/browse?type=_http._tcp` | `browse()` | SSE stream of `found` events |
-| `POST` | `/v1/services` | `register()` | JSON `registered` response |
-| `DELETE` | `/v1/services/{id}` | `unregister()` | JSON `unregistered` response |
-| `GET` | `/v1/resolve?name={instance}` | `resolve()` | JSON `resolved` response |
-| `GET` | `/v1/events?type=_http._tcp` | `subscribe()` | SSE stream of lifecycle events |
-| `GET` | `/healthz` | — | `{"ok": true}` |
+| `GET` | `/v1/mdns/browse?type=_http._tcp` | `browse()` | SSE stream of `found` events |
+| `POST` | `/v1/mdns/services` | `register()` | JSON `registered` response |
+| `DELETE` | `/v1/mdns/services/{id}` | `unregister()` | JSON `unregistered` response |
+| `PUT` | `/v1/mdns/services/{id}/heartbeat` | `heartbeat()` | JSON `renewed` response |
+| `GET` | `/v1/mdns/resolve?name={instance}` | `resolve()` | JSON `resolved` response |
+| `GET` | `/v1/mdns/events?type=_http._tcp` | `subscribe()` | SSE stream of lifecycle events |
+| `GET` | `/v1/status` | — | Unified capability status |
+| `POST` | `/v1/admin/shutdown` | — | Initiate graceful shutdown |
+| `GET` | `/healthz` | — | `"OK"` |
 
 ### SSE streaming
 
 Browse and subscribe endpoints use [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events). Each event is a JSON line:
 
 ```
-GET /v1/browse?type=_http._tcp
+GET /v1/mdns/browse?type=_http._tcp
 Accept: text/event-stream
 
 data: {"found": {"name": "Server A", "type": "_http._tcp", ...}}
@@ -331,6 +356,8 @@ data: {"found": {"name": "Server B", "type": "_http._tcp", ...}, "status": "ongo
 
 data: {"found": {"name": "Server B", "type": "_http._tcp", ...}, "status": "finished"}
 ```
+
+Each SSE event includes an `id` field (UUID v7) to support client resume tracking.
 
 ### Default port
 
@@ -409,12 +436,12 @@ The canonical representation of a discovered or registered service:
 |---|---|---|---|
 | `name` | string | yes | Human-readable instance name |
 | `type` | string | yes | DNS-SD service type (`_name._tcp` or `_name._udp`) |
-| `host` | string | yes* | Hostname (e.g. `server.local`). Present after discovery. |
+| `host` | string | no | Hostname (e.g. `server.local`). Present after discovery. |
 | `ip` | string | no | IPv4 or IPv6 address. May be absent if unresolved. |
-| `port` | integer | yes | Service port number |
+| `port` | integer | no | Service port number. May be absent in browse events. |
 | `txt` | object | yes | TXT record key-value pairs. Empty object `{}` if none. |
 
-*`host` is always present in browse/resolve responses but is not required in register requests (Koi uses the machine's hostname).
+*`host` is typically present in browse/resolve responses but is not required in register requests (Koi uses the machine's hostname).
 
 ---
 
@@ -477,13 +504,13 @@ The socket mount option is significant — it gives containers mDNS access with 
 **Browse** — Discover services on the physical LAN that the container cannot reach via multicast:
 ```bash
 # Inside a container: find all printers on the office network
-curl http://172.17.0.1:5641/v1/browse?type=_ipp._tcp
+curl http://172.17.0.1:5641/v1/mdns/browse?type=_ipp._tcp
 ```
 
 **Register** — Advertise a containerized service on the LAN so non-container devices can find it:
 ```bash
 # Inside a container: announce a web service to the LAN
-curl -X POST http://172.17.0.1:5641/v1/services \
+curl -X POST http://172.17.0.1:5641/v1/mdns/services \
   -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
 ```
 
@@ -492,7 +519,7 @@ This makes the containerized service visible to mDNS browsers on the physical ne
 **Subscribe** — Stream real-time service events for dynamic service mesh behavior:
 ```bash
 # Inside a container: watch for new services appearing on the LAN
-curl http://172.17.0.1:5641/v1/events?type=_http._tcp
+curl http://172.17.0.1:5641/v1/mdns/events?type=_http._tcp
 ```
 
 ### Docker Compose examples
@@ -560,46 +587,68 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-### Configuration
+## Configuration
 
-Koi is configured via CLI flags, environment variables, or a config file. CLI flags take precedence.
+Koi is configured via CLI flags and environment variables. CLI flags take precedence.
 
 | Setting | Flag | Env var | Default |
 |---|---|---|---|
 | HTTP port | `--port` | `KOI_PORT` | `5641` |
 | Pipe/socket path | `--pipe` | `KOI_PIPE` | Platform default |
 | Log level | `--log-level` | `KOI_LOG` | `info` |
-| Config file | `--config` | — | `/etc/koi/koi.toml` (Linux), `%ProgramData%\koi\koi.toml` (Windows) |
+| Verbosity | `-v`, `-vv` | — | off |
+| Log file | `--log-file` | `KOI_LOG_FILE` | — |
 | Disable HTTP | `--no-http` | `KOI_NO_HTTP` | `false` |
 | Disable IPC | `--no-ipc` | `KOI_NO_IPC` | `false` |
+| Disable mDNS | `--no-mdns` | `KOI_NO_MDNS` | `false` |
+| Disable Certmesh | `--no-certmesh` | `KOI_NO_CERTMESH` | `false` |
+| Disable DNS | `--no-dns` | `KOI_NO_DNS` | `false` |
+| Disable Health | `--no-health` | `KOI_NO_HEALTH` | `false` |
+| Disable Proxy | `--no-proxy` | `KOI_NO_PROXY` | `false` |
+| DNS port | `--dns-port` | `KOI_DNS_PORT` | `53` |
+| DNS zone | `--dns-zone` | `KOI_DNS_ZONE` | `lan` |
+| DNS public | `--dns-public` | `KOI_DNS_PUBLIC` | `false` |
+
+`config.toml` is created in the Koi data directory for proxy entries, but there is no global `--config` flag yet.
 
 ---
 
 ## Project Structure
 
+Koi v0.2 is a multi-crate Cargo workspace:
+
 ```
-src/
-├── main.rs              # Startup, config parsing, signal handling
-├── core/
-│   ├── mod.rs           # MdnsCore struct, public API, types
-│   ├── daemon.rs        # mdns-sd ServiceDaemon wrapper, single instance owner
-│   ├── registry.rs      # In-memory service registry, lifetime tracking
-│   └── events.rs        # Broadcast fan-out, subscription management
-├── adapters/
-│   ├── mod.rs
-│   ├── http.rs          # Axum routes → core calls, SSE streaming
-│   ├── pipe.rs          # Named pipe (Windows) / UDS (Unix) → core calls
-│   └── cli.rs           # stdin/stdout NDJSON → core calls
-├── platform/
-│   ├── mod.rs
-│   ├── windows.rs       # Windows Service (SCM) integration
-│   └── unix.rs          # systemd notify, daemonization
-└── config.rs            # CLI args (clap), config file, env vars
+crates/
+├── koi/                # Binary crate — CLI entry, wiring, adapters
+│   └── src/
+│       ├── main.rs           # Orchestrator: CLI parse, routing, daemon wiring, shutdown
+│       ├── cli.rs            # clap definitions (Cli, Command, Config)
+│       ├── client.rs         # KoiClient (ureq HTTP client for client/admin mode)
+│       ├── format.rs         # All human-readable CLI output
+│       ├── admin.rs          # Admin command execution
+│       ├── commands/
+│       │   ├── mod.rs        # Shared helpers (detect_mode, run_streaming, etc.)
+│       │   ├── mdns.rs       # mDNS commands (discover, announce, etc.)
+│       │   ├── certmesh.rs   # Certmesh commands (create, join, etc.)
+│       │   └── status.rs     # Unified status command
+│       ├── adapters/
+│       │   ├── http.rs       # HTTP server (Axum router, health, status)
+│       │   ├── pipe.rs       # Named pipe (Windows) / UDS (Unix) adapter
+│       │   ├── cli.rs        # stdin/stdout NDJSON adapter
+│       │   └── dispatch.rs   # Shared NDJSON dispatch logic
+│       └── platform/
+│           ├── windows.rs    # Windows Service (SCM), firewall, paths
+│           ├── unix.rs       # systemd, paths
+│           └── macos.rs      # launchd, paths
+├── koi-common/         # Shared kernel — types, errors, pipeline, id
+├── koi-mdns/           # mDNS domain — core, daemon, registry, protocol, http
+├── koi-config/         # Config & state — breadcrumb discovery
+├── koi-certmesh/       # Certificate mesh — CA, enrollment, roster
+├── koi-crypto/         # Cryptographic primitives — key gen, TOTP
+└── koi-truststore/     # Trust store — platform cert installation
 ```
 
-The `platform/` module is the only location with `#[cfg(target_os)]` conditional compilation. Everything else is pure cross-platform Rust.
-
-Feature flags can disable adapters at compile time for minimal builds, but the default includes everything.
+The `platform/` module is the only location with `#[cfg(target_os)]` conditional compilation. Everything else is pure cross-platform Rust. Domain crates depend on `koi-common` but never on each other.
 
 ---
 
@@ -679,5 +728,5 @@ The following were considered and deliberately excluded from v1:
 
 ---
 
-**Document Status:** Draft  
-**Last Updated:** 2026-02-07
+**Document Status:** Current
+**Last Updated:** 2026-02-11
