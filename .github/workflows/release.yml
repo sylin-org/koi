@@ -211,33 +211,57 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
+          # crates.io rate limits:
+          #   PublishNew:    burst 5, refill 1 token per 10 min
+          #   PublishUpdate: burst 30, refill 1 token per 1 min
+          #
+          # On first publish all 12 crates are "new" — we can only do 5 before
+          # waiting 10 min for a token. On subsequent releases they are "updates"
+          # (burst 30) so delays are just for index propagation.
+          #
+          # Strategy: publish in dependency order, inserting a 10-min pause
+          # after every 5th crate to stay within the new-crate bucket.
+
+          # ── Batch 1 (crates 1-5) ──────────────────────────────
           # Layer 0: no internal deps
           cargo publish -p koi-common --locked
           sleep 30
+
           # Layer 1: depends on koi-common only
           cargo publish -p koi-config --locked
-          sleep 10
+          sleep 20
           cargo publish -p koi-crypto --locked
-          sleep 10
+          sleep 20
           cargo publish -p koi-truststore --locked
-          sleep 10
+          sleep 20
           cargo publish -p koi-mdns --locked
-          sleep 30
+
+          echo "Batch 1 done (5 crates). Waiting 10 min for rate limit refill..."
+          sleep 600
+
+          # ── Batch 2 (crates 6-10) ─────────────────────────────
           # Layer 2: depends on layer 0-1
           cargo publish -p koi-certmesh --locked
           sleep 30
+
           # Layer 3: depends on layer 0-2
           cargo publish -p koi-dns --locked
-          sleep 10
+          sleep 20
           cargo publish -p koi-proxy --locked
           sleep 30
+
           # Layer 4: depends on layer 0-3
           cargo publish -p koi-health --locked
           sleep 30
+
           # Layer 5: depends on health + mdns
           cargo publish -p koi-client --locked
-          sleep 30
+
+          echo "Batch 2 done (5 crates). Waiting 10 min for rate limit refill..."
+          sleep 600
+
+          # ── Batch 3 (crates 11-12) ────────────────────────────
           # Layer 6: depends on everything
           cargo publish -p koi-embedded --locked
-          sleep 10
+          sleep 20
           cargo publish -p koi-net --locked
