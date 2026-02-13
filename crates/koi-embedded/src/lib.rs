@@ -127,11 +127,6 @@ impl Builder {
         self
     }
 
-    #[deprecated(note = "no longer needed — events are now push-based via broadcast channels")]
-    pub fn event_poll_interval_secs(self, _secs: u64) -> Self {
-        self
-    }
-
     pub fn build(self) -> Result<KoiEmbedded> {
         Ok(KoiEmbedded {
             config: self.config,

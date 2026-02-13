@@ -18,7 +18,6 @@ pub struct KoiConfig {
     pub dns_auto_start: bool,
     pub health_auto_start: bool,
     pub proxy_auto_start: bool,
-    pub event_poll_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +43,6 @@ impl Default for KoiConfig {
             dns_auto_start: false,
             health_auto_start: false,
             proxy_auto_start: false,
-            event_poll_interval_secs: 5,
         }
     }
 }
