@@ -1,9 +1,9 @@
 ﻿# Command Surface Spec — v2
 
-**Status:** Draft  
+**Status:** Implemented  
 **Date:** 2026-02-12  
 **Lineage:** Zen Garden `command_manifest.rs` → Koi v1 proposal → this spec  
-**Crate name (working):** `command-surface`
+**Crate name:** `command-surface`
 
 ---
 
@@ -778,20 +778,21 @@ With default features only, the crate is **zero-dependency**.
 
 ## Implementation Plan
 
-| Phase | Deliverable | Target |
-|---|---|---|
-| **1** | Core crate: traits, `CommandDef`, `CommandManifest`, `Glyph`, `Presentation`, `Color` | `command-surface/src/{lib,traits,glyph}.rs` |
-| **2** | Koi integration: define `KoiCategory`, `KoiTag`, `KoiScope`, populate manifest | `crates/koi/src/surface.rs` |
-| **3** | Rendering adapters: `TerminalProfile`, minimal output model, `AnsiWriter` (via existing crates), `PlainWriter`, `DefaultCatalogRenderer` | `command-surface/src/render/` |
-| **4** | Replace `print_top_level_help()` with manifest-driven display in Koi | `crates/koi/src/main.rs` |
-| **5** | `koi commands` meta-command + `--json` | `crates/koi/src/commands/catalog.rs` |
-| **6** | Channel bindings: `ChannelBinding`, `ChannelMap`, HTTP/pipe bindings in Koi | `command-surface/src/channel.rs`, `crates/koi/src/surface.rs` |
-| **7** | Clap cross-validation + channel parity validation | `command-surface/src/validate.rs` |
-| **8** | Port Zen Garden to `command-surface` — validate trait surface | Zen Garden repo |
-| **9** | Publish `command-surface` 0.1.0 on crates.io | After both consumers stable |
+| Phase | Deliverable | Target | Status |
+|---|---|---|---|
+| **1** | Core crate: traits, `CommandDef`, `CommandManifest`, `Glyph`, `Presentation`, `Color` | `command-surface/src/{lib,traits,glyph}.rs` | ✅ Done — also added `Confirmation`, `ApiEndpoint`, `QueryParam` |
+| **2** | Koi integration: define `KoiCategory`, `KoiTag`, `KoiScope`, populate manifest | `crates/koi/src/surface.rs` | ✅ Done — 55 commands registered across 6 categories |
+| **3** | Rendering adapters: `TerminalProfile`, minimal output model, `AnsiWriter`, `PlainWriter`, catalog renderer | `command-surface/src/render/` | ✅ Done — `profile.rs`, `default.rs`, `writers/{ansi,plain}.rs` |
+| **4** | Replace `print_top_level_help()` with manifest-driven display in Koi | `crates/koi/src/main.rs` | ✅ Done — `print_catalog()` with Clap fallback |
+| **5** | `koi commands` meta-command + `--json` | `crates/koi/src/commands/catalog.rs` | Superseded — `koi <group>` shows category catalogs, `koi <command>?` shows detail views. No separate `koi commands` subcommand needed. |
+| **6** | Channel bindings: `ChannelBinding`, `ChannelMap`, HTTP/pipe bindings | `command-surface/src/channel.rs` | Superseded — HTTP API is embedded in `CommandDef.api: &[ApiEndpoint]` rather than a separate channel registry. Simpler and avoids parity drift by construction. |
+| **7** | Clap cross-validation + channel parity validation | `command-surface/src/validate.rs` | Deferred — not yet needed; parity is manually maintained |
+| **8** | Port Zen Garden to `command-surface` — validate trait surface | Zen Garden repo | Deferred — future work |
+| **9** | Publish `command-surface` 0.1.0 on crates.io | After both consumers stable | Deferred — future work |
 
-Phases 1-4 deliver immediate value to Koi. Phase 8 validates the abstraction.
-Phase 9 ships only after two real consumers confirm the API.
+Phases 1-4 delivered immediate value. Phases 5-6 were addressed with a simpler
+design that inlines API metadata directly into `CommandDef`. Phases 7-9 remain
+future work.
 
 ---
 
