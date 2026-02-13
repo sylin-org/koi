@@ -18,27 +18,30 @@ The first step is initializing a CA on the machine that will be the primary auth
 koi certmesh create
 ```
 
-```
-Certificate mesh created.
-  Profile:      Just Me
-  CA fingerprint: a1b2c3d4e5f6...
-  Members:      1
+This launches an interactive wizard that guides you through creation.
 
-Scan this QR code with your authenticator app:
-█████████████████████████████
-█ ▄▄▄▄▄ █ ▄ ▄ ██▀██ ▄▄▄▄▄ █
-...
-```
+The wizard walks through two steps:
 
-This does several things at once:
+1. **Choose a trust profile** — who is this mesh for? (Just Me, My Team, My Organization, or Custom)
+2. **Set the CA passphrase** — three options:
+   - **Mash the keyboard** (default) — type random keys for a few seconds to collect entropy, then a secure EFF-wordlist passphrase is generated from your input
+   - **Generate one for me** — automatic entropy collection, then a passphrase is generated
+   - **Type my own** — enter and confirm a passphrase of your choice
+
+After reviewing your choices, the wizard creates the mesh and then:
+
 1. Generates an ECDSA P-256 CA keypair
-2. Encrypts the private key with your passphrase
+2. Encrypts the private key with your passphrase (Argon2id + AES-256-GCM)
 3. Creates a roster with this host as the primary member
-4. Starts certmesh audit logging
-5. Generates a TOTP secret and shows a QR code for your authenticator app
-6. Installs the CA certificate in the system trust store
+4. Issues a certificate for the local hostname (self-enrollment)
+5. Starts certmesh audit logging
+6. Generates a TOTP secret and shows a QR code for your authenticator app
+7. **Verifies** you captured the TOTP secret by asking for a code
+8. Installs the CA certificate in the system trust store
 
-The QR code is important — scan it now with any TOTP authenticator (Google Authenticator, Authy, 1Password, etc.). You'll need the rotating code to enroll new members.
+The TOTP verification step is important — the wizard won't finish until you enter a valid code from your authenticator app. If you're having trouble, after two failed attempts you can choose to generate a new TOTP secret.
+
+The QR code supports any TOTP authenticator (Google Authenticator, Authy, 1Password, etc.). You'll need the rotating code to enroll new members.
 
 ### Choosing a trust profile
 
@@ -60,14 +63,18 @@ The operator field is a human-readable label for audit trails. In the "just-me" 
 
 ### Interactive wizard + flags
 
-By default, `koi certmesh create` runs a 2-step wizard:
+By default, `koi certmesh create` runs an interactive 2-step wizard:
 
-1. Choose a trust profile
-2. Set the CA passphrase (generated proposal with accept-or-override)
+1. **Choose a trust profile** — pick from presets or configure custom settings
+2. **Set the CA passphrase** — keyboard mashing (default), auto-generate, or type your own
+
+The wizard includes a review screen where you can go back to change any step before confirming. Press **ESC** at any time to cancel without making changes.
 
 If you choose **Custom** in step 1, you can explicitly set:
 - Enrollment at creation: `open` or `closed`
 - Join approval: `required` or `not required`
+
+After creation, the wizard displays a QR code for your authenticator app and asks you to verify a TOTP code before finishing. If verification fails twice, you can regenerate the TOTP secret.
 
 For non-interactive use (automation), provide flags:
 
@@ -75,8 +82,7 @@ For non-interactive use (automation), provide flags:
 koi certmesh create --profile just-me --enrollment open --require-approval false --passphrase "my-secret"
 ```
 
-`--profile` skips the profile step. `--enrollment` and `--require-approval` override policy defaults. `--passphrase` skips the passphrase step.
-With `--json`, both are required.
+`--profile` skips the profile step. `--enrollment` and `--require-approval` override policy defaults. `--passphrase` skips the passphrase step. With `--json`, all required fields must be provided.
 
 ---
 
@@ -191,6 +197,7 @@ All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 | `POST` | `/v1/certmesh/close-enrollment` | Close enrollment |
 | `PUT` | `/v1/certmesh/set-policy` | Update trust policy |
 | `POST` | `/v1/certmesh/destroy` | Destroy the CA and all state |
+| `POST` | `/v1/certmesh/verify` | Verify mesh health |
 
 ### Join example
 
@@ -234,7 +241,8 @@ Understanding what certmesh produces helps when debugging TLS issues:
 - **Algorithm**: ECDSA P-256 (fast, widely supported, small keys)
 - **CA validity**: 10 years
 - **Service cert lifetime**: 30 days (auto-renewed)
-- **SANs**: hostname, hostname.local
+- **CA self-enrollment SANs**: hostname, localhost, 127.0.0.1, ::1
+- **Member cert SANs**: hostname, hostname.local
 - **Trust store**: CA cert is installed in the system trust store at creation time
 
 ### File layout
@@ -281,3 +289,25 @@ The announcement includes TXT records:
 - `profile=<trust profile>`
 
 This means you can also discover certmesh CAs with `koi mdns discover certmesh` — a nice way to check what's advertising before you join.
+
+---
+
+## Destroying the mesh
+
+To permanently delete all certmesh state — CA keys, certificates, enrollments, and audit logs:
+
+```
+koi certmesh destroy
+```
+
+This is a destructive, irreversible operation. In interactive mode, you must type `DESTROY` to confirm. If this node is the root CA, all mesh members will lose their ability to renew certificates.
+
+In `--json` mode (scripting), the confirmation is skipped:
+
+```
+koi certmesh destroy --json
+```
+
+```json
+{"destroyed": true}
+```

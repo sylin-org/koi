@@ -1,6 +1,6 @@
 ﻿# Certmesh Create Wizard — UX Proposal
 
-**Status:** Draft  
+**Status:** Implemented  
 **Date:** 2026-02-13  
 **Scope:** `koi certmesh create` interactive flow  
 **Lineage:** Zen Garden `place keystone` wizard → this proposal

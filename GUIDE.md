@@ -279,6 +279,7 @@ koi mdns admin unregister ID                     # force-remove
 
 # Certificate mesh
 koi certmesh create [--profile just-me|team|organization] [--operator NAME]
+                                                         # interactive wizard (2 steps: profile, passphrase)
 koi certmesh status                              # show mesh status
 koi certmesh join [ENDPOINT]                     # join existing mesh (discovers CA via mDNS)
 koi certmesh unlock                              # decrypt CA key
@@ -289,7 +290,7 @@ koi certmesh open-enrollment [--until DURATION]  # open enrollment window
 koi certmesh close-enrollment                    # close enrollment window
 koi certmesh set-policy [--domain ...] [--subnet ...] [--clear]
 koi certmesh rotate-totp                         # rotate TOTP secret
-koi certmesh destroy                             # destroy all certmesh state
+koi certmesh destroy                             # destroy all certmesh state (requires typing DESTROY)
 
 # DNS
 koi dns serve                                    # start resolver
