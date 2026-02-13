@@ -24,7 +24,7 @@ pub enum ErrorCode {
     // Certmesh (Phase 2)
     CaNotInitialized,
     CaLocked,
-    InvalidTotp,
+    InvalidAuth,
     RateLimited,
     EnrollmentClosed,
     CapabilityDisabled,
@@ -60,7 +60,7 @@ impl ErrorCode {
             | Self::CaNotInitialized
             | Self::CaLocked
             | Self::CapabilityDisabled => 503,
-            Self::InvalidTotp => 401,
+            Self::InvalidAuth => 401,
             Self::RateLimited => 429,
             Self::EnrollmentClosed
             | Self::NotStandby
@@ -112,7 +112,7 @@ mod tests {
             (ErrorCode::AmbiguousId, 400),
             (ErrorCode::ParseError, 400),
             // 401 Unauthorized
-            (ErrorCode::InvalidTotp, 401),
+            (ErrorCode::InvalidAuth, 401),
             // 403 Forbidden
             (ErrorCode::SessionMismatch, 403),
             (ErrorCode::EnrollmentClosed, 403),
@@ -178,7 +178,7 @@ mod tests {
             (ErrorCode::Internal, "internal"),
             (ErrorCode::CaNotInitialized, "ca_not_initialized"),
             (ErrorCode::CaLocked, "ca_locked"),
-            (ErrorCode::InvalidTotp, "invalid_totp"),
+            (ErrorCode::InvalidAuth, "invalid_auth"),
             (ErrorCode::RateLimited, "rate_limited"),
             (ErrorCode::EnrollmentClosed, "enrollment_closed"),
             (ErrorCode::CapabilityDisabled, "capability_disabled"),

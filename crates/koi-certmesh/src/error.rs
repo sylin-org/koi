@@ -10,8 +10,8 @@ pub enum CertmeshError {
     #[error("CA is locked — run `koi certmesh unlock`")]
     CaLocked,
 
-    #[error("invalid TOTP code")]
-    InvalidTotp,
+    #[error("invalid auth credential")]
+    InvalidAuth,
 
     #[error("rate limited — try again in {remaining_secs} seconds")]
     RateLimited { remaining_secs: u64 },
@@ -76,12 +76,18 @@ impl From<koi_crypto::keys::CryptoError> for CertmeshError {
     }
 }
 
+impl From<koi_crypto::auth::AuthError> for CertmeshError {
+    fn from(e: koi_crypto::auth::AuthError) -> Self {
+        Self::Internal(e.to_string())
+    }
+}
+
 impl From<&CertmeshError> for ErrorCode {
     fn from(e: &CertmeshError) -> Self {
         match e {
             CertmeshError::CaNotInitialized => ErrorCode::CaNotInitialized,
             CertmeshError::CaLocked => ErrorCode::CaLocked,
-            CertmeshError::InvalidTotp => ErrorCode::InvalidTotp,
+            CertmeshError::InvalidAuth => ErrorCode::InvalidAuth,
             CertmeshError::RateLimited { .. } => ErrorCode::RateLimited,
             CertmeshError::EnrollmentClosed => ErrorCode::EnrollmentClosed,
             CertmeshError::AlreadyEnrolled(_) => ErrorCode::Conflict,
@@ -119,7 +125,7 @@ mod tests {
                 503,
             ),
             (CertmeshError::CaLocked, ErrorCode::CaLocked, 503),
-            (CertmeshError::InvalidTotp, ErrorCode::InvalidTotp, 401),
+            (CertmeshError::InvalidAuth, ErrorCode::InvalidAuth, 401),
             (
                 CertmeshError::RateLimited { remaining_secs: 60 },
                 ErrorCode::RateLimited,
