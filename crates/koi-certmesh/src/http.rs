@@ -213,7 +213,7 @@ async fn create_handler(
     let totp_uri = koi_crypto::totp::build_totp_uri(&totp_secret, "Koi Certmesh", "enrollment");
 
     // Create roster
-    let new_roster = crate::roster::Roster::new_with_policy(
+    let mut new_roster = crate::roster::Roster::new_with_policy(
         request.profile,
         request.operator.clone(),
         request.enrollment_open,
@@ -222,6 +222,63 @@ async fn create_handler(
     let roster_path = crate::ca::roster_path();
     if let Err(e) = crate::roster::save_roster(&new_roster, &roster_path) {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::Io(e));
+    }
+
+    // Self-enroll the CA node as the first (primary) member.
+    // This issues a certificate for the local hostname so applications
+    // on this machine can use TLS immediately.
+    let local_hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "localhost".to_string());
+    let sans = vec![
+        local_hostname.clone(),
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        "::1".to_string(),
+    ];
+    match crate::ca::issue_certificate(&ca_state, &local_hostname, &sans) {
+        Ok(issued) => {
+            let cert_dir = match crate::certfiles::write_cert_files(&local_hostname, &issued) {
+                Ok(dir) => dir,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Could not write CA node cert files");
+                    koi_common::paths::koi_certs_dir().join(&local_hostname)
+                }
+            };
+            let ca_fp = crate::ca::ca_fingerprint(&ca_state);
+            let member = crate::roster::RosterMember {
+                hostname: local_hostname.clone(),
+                role: crate::roster::MemberRole::Primary,
+                enrolled_at: chrono::Utc::now(),
+                enrolled_by: request.operator.clone(),
+                cert_fingerprint: issued.fingerprint,
+                cert_expires: issued.expires,
+                cert_sans: sans,
+                cert_path: cert_dir.display().to_string(),
+                status: crate::roster::MemberStatus::Active,
+                reload_hook: None,
+                last_seen: Some(chrono::Utc::now()),
+                pinned_ca_fingerprint: Some(ca_fp),
+                proxy_entries: Vec::new(),
+            };
+            new_roster.members.push(member);
+            // Persist updated roster with the self-enrolled member
+            if let Err(e) = crate::roster::save_roster(&new_roster, &roster_path) {
+                tracing::warn!(error = %e, "Could not save roster after self-enrollment");
+            }
+            let _ = crate::audit::append_entry(
+                "member_joined",
+                &[
+                    ("hostname", local_hostname.as_str()),
+                    ("role", "primary"),
+                    ("approved_by", "self-enroll"),
+                ],
+            );
+            tracing::info!(hostname = %local_hostname, "CA node self-enrolled as primary");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Could not self-enroll CA node — roster will be empty");
+        }
     }
 
     // Install CA cert in OS trust store (best-effort)
