@@ -16,7 +16,7 @@ const CA_DIR_NAME: &str = "certmesh";
 const CA_SUBDIR: &str = "ca";
 const CA_KEY_FILENAME: &str = "ca-key.enc";
 const CA_CERT_FILENAME: &str = "ca-cert.pem";
-const TOTP_SECRET_FILENAME: &str = "totp-secret.enc";
+const AUTH_FILENAME: &str = "auth.json";
 const ROSTER_FILENAME: &str = "roster.json";
 
 /// Certificate lifetime for issued service certificates.
@@ -79,9 +79,9 @@ pub fn ca_cert_path() -> PathBuf {
     ca_dir().join(CA_CERT_FILENAME)
 }
 
-/// Path to the encrypted TOTP secret file.
-pub fn totp_secret_path() -> PathBuf {
-    ca_dir().join(TOTP_SECRET_FILENAME)
+/// Path to the auth credential file.
+pub fn auth_path() -> PathBuf {
+    ca_dir().join(AUTH_FILENAME)
 }
 
 /// Path to the roster file.

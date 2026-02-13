@@ -1,10 +1,11 @@
 //! Enrollment flow logic.
 //!
-//! Processes join requests: verifies TOTP, issues certificate,
+//! Processes join requests: verifies auth (TOTP/FIDO2), issues certificate,
 //! adds member to roster, writes cert files, appends audit log.
 
 use chrono::Utc;
-use koi_crypto::totp::{RateLimiter, TotpSecret};
+use koi_crypto::auth::{AuthChallenge, AuthState};
+use koi_crypto::totp::RateLimiter;
 
 use crate::audit;
 use crate::ca::{self, CaState, IssuedCert};
@@ -68,7 +69,7 @@ pub fn parse_cidr(cidr: &str) -> Result<ipnet::IpNet, CertmeshError> {
 /// Process an enrollment request from a joining member.
 ///
 /// 1. Check enrollment is open (including deadline)
-/// 2. Verify TOTP code
+/// 2. Verify auth response (TOTP or FIDO2)
 /// 3. Validate scope constraints
 /// 4. Check not already enrolled
 /// 5. Approval (handled by caller)
@@ -80,7 +81,8 @@ pub fn parse_cidr(cidr: &str) -> Result<ipnet::IpNet, CertmeshError> {
 pub fn process_enrollment(
     ca: &CaState,
     roster: &mut Roster,
-    totp_secret: &TotpSecret,
+    auth_state: &AuthState,
+    challenge: &AuthChallenge,
     rate_limiter: &mut RateLimiter,
     request: &JoinRequest,
     hostname: &str,
@@ -92,16 +94,19 @@ pub fn process_enrollment(
         return Err(CertmeshError::EnrollmentClosed);
     }
 
-    // 2. Verify TOTP code (rate limiter checks lockout internally)
-    let valid = koi_crypto::totp::verify_code(totp_secret, &request.totp_code);
+    // 2. Verify auth response (adapter-dispatched)
+    let adapter = koi_crypto::auth::adapter_for(auth_state);
+    let valid = adapter
+        .verify(auth_state, challenge, &request.auth)
+        .unwrap_or(false);
 
     match rate_limiter.check_and_record(valid) {
-        Ok(()) => {} // Valid code, proceed
+        Ok(()) => {} // Valid, proceed
         Err(koi_crypto::totp::RateLimitError::LockedOut { remaining_secs }) => {
             return Err(CertmeshError::RateLimited { remaining_secs });
         }
         Err(koi_crypto::totp::RateLimitError::InvalidCode { .. }) => {
-            return Err(CertmeshError::InvalidTotp);
+            return Err(CertmeshError::InvalidAuth);
         }
     }
 
@@ -200,6 +205,19 @@ mod tests {
         ca::create_ca("test-pass", &entropy).unwrap()
     }
 
+    fn make_auth_and_code(secret: &totp::TotpSecret, valid: bool) -> (AuthState, AuthChallenge, koi_crypto::auth::AuthResponse) {
+        let state = AuthState::Totp(totp::TotpSecret::from_bytes(secret.as_bytes().to_vec()));
+        let challenge = AuthChallenge::Totp;
+        let code = if valid {
+            koi_crypto::totp::current_code(secret).expect("current_code")
+        } else {
+            let v = koi_crypto::totp::current_code(secret).expect("current_code");
+            if v != "000000" { "000000".to_string() } else { "111111".to_string() }
+        };
+        let response = koi_crypto::auth::AuthResponse::Totp { code };
+        (state, challenge, response)
+    }
+
     #[test]
     fn enrollment_with_invalid_totp_fails() {
         let ca = make_test_ca();
@@ -207,24 +225,19 @@ mod tests {
         let secret = totp::generate_secret();
         let mut rl = RateLimiter::new();
 
-        // Generate a valid code, then deterministically produce an invalid one
-        let valid = koi_crypto::totp::current_code(&secret).expect("current_code");
-        let invalid = if valid != "000000" {
-            "000000".to_string()
-        } else {
-            "111111".to_string()
-        };
+        let (auth_state, challenge, bad_response) = make_auth_and_code(&secret, false);
 
         let request = JoinRequest {
             hostname: "stone-05".to_string(),
-            totp_code: invalid,
+            auth: bad_response,
             sans: vec![],
         };
 
         let result = process_enrollment(
             &ca,
             &mut roster,
-            &secret,
+            &auth_state,
+            &challenge,
             &mut rl,
             &request,
             "stone-05",
@@ -234,8 +247,8 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            CertmeshError::InvalidTotp => {}
-            other => panic!("expected InvalidTotp, got: {other}"),
+            CertmeshError::InvalidAuth => {}
+            other => panic!("expected InvalidAuth, got: {other}"),
         }
     }
 
@@ -250,16 +263,20 @@ mod tests {
         let secret = totp::generate_secret();
         let mut rl = RateLimiter::new();
 
+        let (auth_state, challenge, _) = make_auth_and_code(&secret, true);
         let request = JoinRequest {
             hostname: "stone-05".to_string(),
-            totp_code: "123456".to_string(),
+            auth: koi_crypto::auth::AuthResponse::Totp {
+                code: "123456".to_string(),
+            },
             sans: vec![],
         };
 
         let result = process_enrollment(
             &ca,
             &mut roster,
-            &secret,
+            &auth_state,
+            &challenge,
             &mut rl,
             &request,
             "stone-05",
@@ -277,9 +294,12 @@ mod tests {
         let secret = totp::generate_secret();
         let mut rl = RateLimiter::new();
 
+        let (auth_state, challenge, _) = make_auth_and_code(&secret, false);
         let bad_request = JoinRequest {
             hostname: "stone-05".to_string(),
-            totp_code: "000000".to_string(),
+            auth: koi_crypto::auth::AuthResponse::Totp {
+                code: "000000".to_string(),
+            },
             sans: vec![],
         };
 
@@ -288,7 +308,8 @@ mod tests {
             let _ = process_enrollment(
                 &ca,
                 &mut roster,
-                &secret,
+                &auth_state,
+                &challenge,
                 &mut rl,
                 &bad_request,
                 "stone-05",
@@ -301,7 +322,8 @@ mod tests {
         let result = process_enrollment(
             &ca,
             &mut roster,
-            &secret,
+            &auth_state,
+            &challenge,
             &mut rl,
             &bad_request,
             "stone-05",

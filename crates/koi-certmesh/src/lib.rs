@@ -1,8 +1,8 @@
-//! Koi Certmesh — certificate mesh with TOTP enrollment (Phase 2).
+//! Koi Certmesh — certificate mesh with pluggable enrollment auth (Phase 2+).
 //!
 //! Provides a private Certificate Authority that mints ECDSA P-256 certificates,
-//! TOTP-based enrollment for mesh members, trust store installation, and a
-//! roster of enrolled members. Two machines on the same LAN can establish
+//! pluggable enrollment authentication (TOTP or FIDO2), trust store installation,
+//! and a roster of enrolled members. Two machines on the same LAN can establish
 //! mutual TLS trust without external infrastructure.
 
 pub mod audit;
@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use koi_common::capability::{Capability, CapabilityStatus};
+use koi_crypto::auth::AuthState;
 use koi_crypto::totp::RateLimiter;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -60,7 +61,8 @@ pub enum CertmeshEvent {
 pub(crate) struct CertmeshState {
     pub(crate) ca: tokio::sync::Mutex<Option<ca::CaState>>,
     pub(crate) roster: tokio::sync::Mutex<Roster>,
-    pub(crate) totp_secret: tokio::sync::Mutex<Option<koi_crypto::totp::TotpSecret>>,
+    pub(crate) auth: tokio::sync::Mutex<Option<AuthState>>,
+    pub(crate) pending_challenge: tokio::sync::Mutex<Option<koi_crypto::auth::AuthChallenge>>,
     pub(crate) rate_limiter: tokio::sync::Mutex<RateLimiter>,
     pub(crate) profile: tokio::sync::Mutex<TrustProfile>,
     pub(crate) approval_tx: tokio::sync::Mutex<Option<mpsc::Sender<ApprovalRequest>>>,
@@ -89,7 +91,8 @@ impl CertmeshState {
     pub(crate) async fn destroy(&self) -> Result<(), CertmeshError> {
         // Clear in-memory state first
         *self.ca.lock().await = None;
-        *self.totp_secret.lock().await = None;
+        *self.auth.lock().await = None;
+        *self.pending_challenge.lock().await = None;
         *self.roster.lock().await = Roster::empty();
         *self.profile.lock().await = TrustProfile::default();
 
@@ -144,14 +147,15 @@ impl CertmeshCore {
     pub fn new(
         ca: ca::CaState,
         roster: Roster,
-        totp_secret: koi_crypto::totp::TotpSecret,
+        auth_state: AuthState,
         profile: TrustProfile,
     ) -> Self {
         Self {
             state: Arc::new(CertmeshState {
                 ca: tokio::sync::Mutex::new(Some(ca)),
                 roster: tokio::sync::Mutex::new(roster),
-                totp_secret: tokio::sync::Mutex::new(Some(totp_secret)),
+                auth: tokio::sync::Mutex::new(Some(auth_state)),
+                pending_challenge: tokio::sync::Mutex::new(None),
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
                 profile: tokio::sync::Mutex::new(profile),
                 approval_tx: tokio::sync::Mutex::new(None),
@@ -166,7 +170,8 @@ impl CertmeshCore {
             state: Arc::new(CertmeshState {
                 ca: tokio::sync::Mutex::new(None),
                 roster: tokio::sync::Mutex::new(roster),
-                totp_secret: tokio::sync::Mutex::new(None),
+                auth: tokio::sync::Mutex::new(None),
+                pending_challenge: tokio::sync::Mutex::new(None),
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
                 profile: tokio::sync::Mutex::new(profile),
                 approval_tx: tokio::sync::Mutex::new(None),
@@ -184,7 +189,8 @@ impl CertmeshCore {
             state: Arc::new(CertmeshState {
                 ca: tokio::sync::Mutex::new(None),
                 roster: tokio::sync::Mutex::new(Roster::empty()),
-                totp_secret: tokio::sync::Mutex::new(None),
+                auth: tokio::sync::Mutex::new(None),
+                pending_challenge: tokio::sync::Mutex::new(None),
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
                 profile: tokio::sync::Mutex::new(TrustProfile::default()),
                 approval_tx: tokio::sync::Mutex::new(None),
@@ -270,8 +276,10 @@ impl CertmeshCore {
         })?;
 
         let roster = self.state.roster.lock().await;
-        let totp_guard = self.state.totp_secret.lock().await;
-        let totp_secret = totp_guard.as_ref().ok_or(CertmeshError::CaLocked)?;
+        let auth_guard = self.state.auth.lock().await;
+        let auth_state = auth_guard.as_ref().ok_or(CertmeshError::CaLocked)?;
+        let challenge_guard = self.state.pending_challenge.lock().await;
+        let challenge = challenge_guard.as_ref().cloned().unwrap_or(koi_crypto::auth::AuthChallenge::Totp);
         let mut rate_limiter = self.state.rate_limiter.lock().await;
         let profile = roster.metadata.trust_profile;
         let requires_approval = roster.requires_approval();
@@ -289,7 +297,8 @@ impl CertmeshCore {
         let (response, _issued) = enrollment::process_enrollment(
             ca,
             &mut roster,
-            totp_secret,
+            auth_state,
+            &challenge,
             &mut rate_limiter,
             request,
             hostname,
@@ -316,7 +325,9 @@ impl CertmeshCore {
         let ca_guard = self.state.ca.lock().await;
         let roster = self.state.roster.lock().await;
         let profile = self.state.profile.lock().await;
-        build_status(&ca_guard, &roster, &profile)
+        let auth_guard = self.state.auth.lock().await;
+        let auth_method = auth_guard.as_ref().map(|a| a.method_name());
+        build_status(&ca_guard, &roster, &profile, auth_method)
     }
 
     /// Produce an mDNS announcement descriptor if this node is an unlocked primary.
@@ -362,12 +373,16 @@ impl CertmeshCore {
     pub async fn unlock(&self, passphrase: &str) -> Result<(), CertmeshError> {
         let ca_state = ca::load_ca(passphrase)?;
 
-        // Load TOTP secret
-        let totp_path = ca::totp_secret_path();
-        if totp_path.exists() {
-            let encrypted = koi_crypto::keys::load_encrypted_key(&totp_path)?;
-            let secret = koi_crypto::totp::decrypt_secret(&encrypted, passphrase)?;
-            *self.state.totp_secret.lock().await = Some(secret);
+        // Load auth credential from auth.json
+        let auth_path = ca::auth_path();
+        if auth_path.exists() {
+            let json = std::fs::read_to_string(&auth_path)?;
+            let stored: koi_crypto::auth::StoredAuth = serde_json::from_str(&json)
+                .map_err(|e| CertmeshError::Internal(format!("auth.json parse error: {e}")))?;
+            let auth_state = stored
+                .unlock(passphrase)
+                .map_err(|e| CertmeshError::Internal(format!("auth unlock failed: {e}")))?;
+            *self.state.auth.lock().await = Some(auth_state);
         }
 
         *self.state.ca.lock().await = Some(ca_state);
@@ -469,10 +484,15 @@ impl CertmeshCore {
         Ok(())
     }
 
-    /// Rotate the TOTP secret — generates a new secret, encrypts, and saves.
+    /// Rotate the auth credential — generates new credential, persists, returns setup info.
     ///
-    /// Returns the TOTP provisioning URI for QR code display.
-    pub async fn rotate_totp(&self, passphrase: &str) -> Result<String, CertmeshError> {
+    /// If `method` is `None`, keeps the current method. If `Some("totp")` or
+    /// `Some("fido2")`, switches to that method.
+    pub async fn rotate_auth(
+        &self,
+        passphrase: &str,
+        method: Option<&str>,
+    ) -> Result<koi_crypto::auth::AuthSetup, CertmeshError> {
         // Verify CA is unlocked
         let ca_guard = self.state.ca.lock().await;
         if ca_guard.is_none() {
@@ -484,16 +504,47 @@ impl CertmeshCore {
         }
         drop(ca_guard);
 
-        let new_secret = koi_crypto::totp::generate_secret();
-        let encrypted = koi_crypto::totp::encrypt_secret(&new_secret, passphrase)?;
-        koi_crypto::keys::save_encrypted_key(&ca::totp_secret_path(), &encrypted)?;
+        let current_method = self
+            .state
+            .auth
+            .lock()
+            .await
+            .as_ref()
+            .map(|a| a.method_name())
+            .unwrap_or("totp");
+        let target = method.unwrap_or(current_method);
 
-        let totp_uri = koi_crypto::totp::build_totp_uri(&new_secret, "Koi Certmesh", "enrollment");
-        *self.state.totp_secret.lock().await = Some(new_secret);
+        let (new_state, stored, setup) = match target {
+            "totp" => {
+                let new_secret = koi_crypto::totp::generate_secret();
+                let stored = koi_crypto::auth::store_totp(&new_secret, passphrase)?;
+                let uri = koi_crypto::totp::build_totp_uri(&new_secret, "Koi Certmesh", "enrollment");
+                let setup = koi_crypto::auth::AuthSetup::Totp { totp_uri: uri };
+                (AuthState::Totp(new_secret), stored, setup)
+            }
+            "fido2" => {
+                // FIDO2 rotation requires re-registration via the CLI.
+                // For now, return an error — the full flow is wired through the
+                // /auth/challenge + /auth/register endpoints (future).
+                return Err(CertmeshError::Internal(
+                    "FIDO2 rotation requires re-registration via CLI".into(),
+                ));
+            }
+            other => {
+                return Err(CertmeshError::Internal(format!(
+                    "unknown auth method: {other}"
+                )));
+            }
+        };
 
-        tracing::info!("TOTP secret rotated");
-        let _ = audit::append_entry("totp_rotated", &[]);
-        Ok(totp_uri)
+        let json = serde_json::to_string_pretty(&stored)
+            .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?;
+        std::fs::write(ca::auth_path(), json)?;
+        *self.state.auth.lock().await = Some(new_state);
+
+        tracing::info!(method = target, "auth credential rotated");
+        let _ = audit::append_entry("auth_rotated", &[("method", target)]);
+        Ok(setup)
     }
 
     // ── Phase 5 — Backup/Restore/Revocation ───────────────────────
@@ -510,9 +561,15 @@ impl CertmeshCore {
 
         let ca_state = ca::load_ca(ca_passphrase)?;
 
-        let totp_path = ca::totp_secret_path();
-        let encrypted_totp = koi_crypto::keys::load_encrypted_key(&totp_path)?;
-        let totp_secret = koi_crypto::totp::decrypt_secret(&encrypted_totp, ca_passphrase)?;
+        // Load auth state for backup
+        let auth_path = ca::auth_path();
+        let json = std::fs::read_to_string(&auth_path)
+            .map_err(|e| CertmeshError::Internal(format!("cannot read auth.json: {e}")))?;
+        let stored: koi_crypto::auth::StoredAuth = serde_json::from_str(&json)
+            .map_err(|e| CertmeshError::Internal(format!("auth.json parse error: {e}")))?;
+        let auth_state = stored
+            .unlock(ca_passphrase)
+            .map_err(|e| CertmeshError::Internal(format!("auth unlock failed: {e}")))?;
 
         let roster = self.state.roster.lock().await;
         let roster_json = serde_json::to_string(&*roster)
@@ -524,7 +581,8 @@ impl CertmeshCore {
         let payload = backup::BackupPayload::new(
             ca_key_pem,
             ca_state.cert_pem.clone(),
-            totp_secret.as_bytes().to_vec(),
+            auth_state.method_name().to_string(),
+            auth_state.to_backup_bytes(),
             roster_json,
             audit_log,
         );
@@ -549,9 +607,17 @@ impl CertmeshCore {
         koi_crypto::keys::save_encrypted_key(&ca::ca_key_path(), &encrypted_key)?;
         std::fs::write(ca::ca_cert_path(), &payload.ca_cert_pem)?;
 
-        let totp_secret = koi_crypto::totp::TotpSecret::from_bytes(payload.totp_secret);
-        let encrypted_totp = koi_crypto::totp::encrypt_secret(&totp_secret, new_passphrase)?;
-        koi_crypto::keys::save_encrypted_key(&ca::totp_secret_path(), &encrypted_totp)?;
+        let auth_state = AuthState::from_backup(&payload.auth_method, payload.auth_data)
+            .map_err(|e| CertmeshError::Internal(format!("auth restore failed: {e}")))?;
+
+        // Persist restored auth credential
+        let stored = match &auth_state {
+            AuthState::Totp(secret) => koi_crypto::auth::store_totp(secret, new_passphrase)?,
+            AuthState::Fido2(cred) => koi_crypto::auth::store_fido2(cred.clone()),
+        };
+        let auth_json = serde_json::to_string_pretty(&stored)
+            .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?;
+        std::fs::write(ca::auth_path(), auth_json)?;
 
         if let Some(parent) = ca::roster_path().parent() {
             std::fs::create_dir_all(parent)?;
@@ -567,7 +633,7 @@ impl CertmeshCore {
 
         let ca_state = ca::load_ca(new_passphrase)?;
         *self.state.ca.lock().await = Some(ca_state);
-        *self.state.totp_secret.lock().await = Some(totp_secret);
+        *self.state.auth.lock().await = Some(auth_state);
         *self.state.profile.lock().await = restored_roster.metadata.trust_profile;
         *self.state.roster.lock().await = restored_roster;
 
@@ -897,11 +963,11 @@ impl CertmeshCore {
             }
         })?;
 
-        let totp_guard = self.state.totp_secret.lock().await;
-        let totp_secret = totp_guard.as_ref().ok_or(CertmeshError::CaLocked)?;
+        let auth_guard = self.state.auth.lock().await;
+        let auth_state = auth_guard.as_ref().ok_or(CertmeshError::CaLocked)?;
 
         let roster = self.state.roster.lock().await;
-        failover::prepare_promotion(ca, totp_secret, &roster, passphrase)
+        failover::prepare_promotion(ca, auth_state, &roster, passphrase)
     }
 }
 
@@ -1010,6 +1076,7 @@ pub(crate) fn build_status(
     ca_guard: &Option<ca::CaState>,
     roster: &Roster,
     profile: &TrustProfile,
+    auth_method: Option<&str>,
 ) -> protocol::CertmeshStatus {
     let ca_fingerprint = match ca_guard {
         Some(ca) => Some(ca::ca_fingerprint(ca)),
@@ -1025,6 +1092,7 @@ pub(crate) fn build_status(
         enrollment_deadline: roster.metadata.enrollment_deadline.map(|d| d.to_rfc3339()),
         allowed_domain: roster.metadata.allowed_domain.clone(),
         allowed_subnet: roster.metadata.allowed_subnet.clone(),
+        auth_method: auth_method.map(|s| s.to_string()),
         member_count: roster.active_count(),
         members: roster
             .members
@@ -1074,7 +1142,8 @@ mod tests {
     fn make_unlocked_core(ca: ca::CaState, roster: Roster) -> CertmeshCore {
         let _ = koi_common::test::ensure_data_dir("koi-certmesh-core-tests");
         let totp = koi_crypto::totp::generate_secret();
-        CertmeshCore::new(ca, roster, totp, TrustProfile::JustMe)
+        let auth_state = koi_crypto::auth::AuthState::Totp(totp);
+        CertmeshCore::new(ca, roster, auth_state, TrustProfile::JustMe)
     }
 
     fn make_locked_core(roster: Roster) -> CertmeshCore {
@@ -1339,7 +1408,7 @@ mod tests {
 
         let response = core.promote("test-passphrase").await.unwrap();
         assert!(!response.encrypted_ca_key.ciphertext.is_empty());
-        assert!(!response.encrypted_totp_secret.ciphertext.is_empty());
+        assert!(!response.auth_data.is_null());
         assert!(!response.roster_json.is_empty());
         assert!(response.ca_cert_pem.contains("BEGIN CERTIFICATE"));
     }
@@ -1353,10 +1422,10 @@ mod tests {
         let response = core.promote("round-trip-pass").await.unwrap();
 
         // Accept the promotion on the standby side
-        let (ca_key, totp, accepted_roster) =
+        let (ca_key, accepted_auth, accepted_roster) =
             failover::accept_promotion(&response, "round-trip-pass").unwrap();
         assert!(!ca_key.public_key_pem().is_empty());
-        assert!(!totp.as_bytes().is_empty());
+        assert_eq!(accepted_auth.method_name(), "totp");
         assert_eq!(accepted_roster.members.len(), 1);
     }
 
@@ -1474,7 +1543,7 @@ mod tests {
     #[test]
     fn build_status_locked_ca() {
         let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let status = build_status(&None, &roster, &TrustProfile::JustMe);
+        let status = build_status(&None, &roster, &TrustProfile::JustMe, None);
         assert!(status.ca_locked);
         assert_eq!(status.member_count, 1);
         assert_eq!(status.members.len(), 1);
@@ -1486,7 +1555,7 @@ mod tests {
     fn build_status_unlocked_ca() {
         let ca = make_test_ca();
         let roster = Roster::new(TrustProfile::JustMe, None);
-        let status = build_status(&Some(ca), &roster, &TrustProfile::JustMe);
+        let status = build_status(&Some(ca), &roster, &TrustProfile::JustMe, None);
         assert!(!status.ca_locked);
         assert_eq!(status.member_count, 0);
     }
@@ -1509,7 +1578,7 @@ mod tests {
             pinned_ca_fingerprint: None,
             proxy_entries: Vec::new(),
         });
-        let status = build_status(&None, &roster, &TrustProfile::JustMe);
+        let status = build_status(&None, &roster, &TrustProfile::JustMe, None);
         assert_eq!(status.members[0].role, "standby");
         assert_eq!(status.members[0].status, "active");
     }
@@ -1616,10 +1685,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rotate_totp_fails_when_ca_locked() {
+    async fn rotate_auth_fails_when_ca_locked() {
         let roster = Roster::new(TrustProfile::JustMe, None);
         let core = make_locked_core(roster);
-        let result = core.rotate_totp("test-pass").await;
+        let result = core.rotate_auth("test-pass", None).await;
         assert!(result.is_err());
     }
 
@@ -1631,7 +1700,7 @@ mod tests {
         roster.metadata.allowed_subnet = Some("10.0.0.0/8".to_string());
         roster.metadata.enrollment_deadline = Some(Utc::now() + Duration::hours(1));
 
-        let status = build_status(&Some(ca), &roster, &TrustProfile::MyOrganization);
+        let status = build_status(&Some(ca), &roster, &TrustProfile::MyOrganization, None);
         assert_eq!(status.allowed_domain.as_deref(), Some("school.local"));
         assert_eq!(status.allowed_subnet.as_deref(), Some("10.0.0.0/8"));
         assert!(status.enrollment_deadline.is_some());
@@ -1657,7 +1726,9 @@ mod tests {
         let core = CertmeshCore::uninitialized();
         let request = protocol::JoinRequest {
             hostname: "stone-05".to_string(),
-            totp_code: "123456".to_string(),
+            auth: koi_crypto::auth::AuthResponse::Totp {
+                code: "123456".to_string(),
+            },
             sans: vec![],
         };
         let result = core.enroll(&request).await;
@@ -1686,9 +1757,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uninitialized_core_rotate_totp_returns_error() {
+    async fn uninitialized_core_rotate_auth_returns_error() {
         let core = CertmeshCore::uninitialized();
-        let result = core.rotate_totp("passphrase").await;
+        let result = core.rotate_auth("passphrase", None).await;
         assert!(result.is_err());
     }
 
@@ -1829,7 +1900,8 @@ mod tests {
         let ca = make_test_ca();
         let roster = Roster::new(TrustProfile::MyOrganization, Some("ops".to_string()));
         let totp = koi_crypto::totp::generate_secret();
-        let core = CertmeshCore::new(ca, roster, totp, TrustProfile::MyOrganization);
+        let auth = koi_crypto::auth::AuthState::Totp(totp);
+        let core = CertmeshCore::new(ca, roster, auth, TrustProfile::MyOrganization);
         let status = core.certmesh_status().await;
         assert_eq!(status.profile, TrustProfile::MyOrganization);
     }

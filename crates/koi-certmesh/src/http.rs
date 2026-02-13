@@ -19,7 +19,7 @@ use crate::protocol::{
     BackupRequest, BackupResponse, ComplianceResponse, CreateCaRequest, CreateCaResponse,
     HealthRequest, HealthResponse, JoinRequest, PolicyRequest, PolicySummary, PromoteRequest,
     RenewRequest, RenewResponse, RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse,
-    RotateTotpRequest, RotateTotpResponse, SetHookRequest, UnlockRequest, UnlockResponse,
+    RotateAuthRequest, RotateAuthResponse, SetHookRequest, UnlockRequest, UnlockResponse,
 };
 
 /// Route path constants — single source of truth for axum routing AND the command manifest.
@@ -35,7 +35,7 @@ pub mod paths {
     pub const HEALTH: &str = "/v1/certmesh/health";
     pub const CREATE: &str = "/v1/certmesh/create";
     pub const UNLOCK: &str = "/v1/certmesh/unlock";
-    pub const ROTATE_TOTP: &str = "/v1/certmesh/rotate-totp";
+    pub const ROTATE_AUTH: &str = "/v1/certmesh/rotate-auth";
     pub const LOG: &str = "/v1/certmesh/log";
     pub const DESTROY: &str = "/v1/certmesh/destroy";
     pub const BACKUP: &str = "/v1/certmesh/backup";
@@ -68,7 +68,7 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         // Service delegation — CA management
         .route(rel(paths::CREATE), post(create_handler))
         .route(rel(paths::UNLOCK), post(unlock_handler))
-        .route(rel(paths::ROTATE_TOTP), post(rotate_totp_handler))
+        .route(rel(paths::ROTATE_AUTH), post(rotate_auth_handler))
         .route(rel(paths::LOG), get(log_handler))
         .route(rel(paths::DESTROY), post(destroy_handler))
         .route(rel(paths::BACKUP), post(backup_handler))
@@ -111,7 +111,9 @@ async fn status_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl
     let ca_guard = state.ca.lock().await;
     let roster = state.roster.lock().await;
     let profile = state.profile.lock().await;
-    let status = crate::build_status(&ca_guard, &roster, &profile);
+    let auth_guard = state.auth.lock().await;
+    let auth_method = auth_guard.as_ref().map(|a| a.method_name());
+    let status = crate::build_status(&ca_guard, &roster, &profile, auth_method);
     Json(status)
 }
 
@@ -196,18 +198,28 @@ async fn create_handler(
     };
     let ca_fingerprint = crate::ca::ca_fingerprint(&ca_state);
 
-    // Generate TOTP secret
+    // Generate auth credential (default=TOTP)
     let totp_secret = koi_crypto::totp::generate_secret();
-    let encrypted_totp = match koi_crypto::totp::encrypt_secret(&totp_secret, &request.passphrase) {
-        Ok(enc) => enc,
+    let stored = match koi_crypto::auth::store_totp(&totp_secret, &request.passphrase) {
+        Ok(s) => s,
         Err(e) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e))
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &CertmeshError::Internal(format!("auth store: {e}")),
+            )
         }
     };
-    if let Err(e) =
-        koi_crypto::keys::save_encrypted_key(&crate::ca::totp_secret_path(), &encrypted_totp)
-    {
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e));
+    let auth_json = match serde_json::to_string_pretty(&stored) {
+        Ok(j) => j,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &CertmeshError::Internal(format!("auth serialize: {e}")),
+            )
+        }
+    };
+    if let Err(e) = std::fs::write(crate::ca::auth_path(), auth_json) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::Io(e));
     }
 
     let totp_uri = koi_crypto::totp::build_totp_uri(&totp_secret, "Koi Certmesh", "enrollment");
@@ -288,8 +300,7 @@ async fn create_handler(
 
     // Update in-memory state
     *state.ca.lock().await = Some(ca_state);
-    let state_secret = koi_crypto::totp::TotpSecret::from_bytes(totp_secret.as_bytes().to_vec());
-    *state.totp_secret.lock().await = Some(state_secret);
+    *state.auth.lock().await = Some(koi_crypto::auth::AuthState::Totp(totp_secret));
     *state.roster.lock().await = new_roster;
     *state.profile.lock().await = request.profile;
 
@@ -304,7 +315,7 @@ async fn create_handler(
     tracing::info!(profile = %request.profile, "CA initialized via service");
 
     let response = CreateCaResponse {
-        totp_uri,
+        auth_setup: koi_crypto::auth::AuthSetup::Totp { totp_uri },
         ca_fingerprint,
     };
     match serde_json::to_value(&response) {
@@ -331,19 +342,20 @@ async fn unlock_handler(
         }
     };
 
-    // Load TOTP secret
-    let totp_path = crate::ca::totp_secret_path();
-    if totp_path.exists() {
-        match koi_crypto::keys::load_encrypted_key(&totp_path) {
-            Ok(encrypted) => {
-                match koi_crypto::totp::decrypt_secret(&encrypted, &request.passphrase) {
-                    Ok(secret) => {
-                        *state.totp_secret.lock().await = Some(secret);
+    // Load auth credential from auth.json
+    let auth_path = crate::ca::auth_path();
+    if auth_path.exists() {
+        match std::fs::read_to_string(&auth_path) {
+            Ok(json) => match serde_json::from_str::<koi_crypto::auth::StoredAuth>(&json) {
+                Ok(stored) => match stored.unlock(&request.passphrase) {
+                    Ok(auth_state) => {
+                        *state.auth.lock().await = Some(auth_state);
                     }
-                    Err(e) => tracing::warn!(error = %e, "Failed to decrypt TOTP secret"),
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "Failed to load TOTP secret"),
+                    Err(e) => tracing::warn!(error = %e, "Failed to unlock auth credential"),
+                },
+                Err(e) => tracing::warn!(error = %e, "Failed to parse auth.json"),
+            },
+            Err(e) => tracing::warn!(error = %e, "Failed to read auth.json"),
         }
     }
 
@@ -360,50 +372,32 @@ async fn unlock_handler(
     }
 }
 
-/// POST /rotate-totp — Rotate the TOTP enrollment secret.
-async fn rotate_totp_handler(
+/// POST /rotate-auth — Rotate the enrollment auth credential.
+async fn rotate_auth_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
-    Json(request): Json<RotateTotpRequest>,
+    Json(request): Json<RotateAuthRequest>,
 ) -> impl IntoResponse {
-    // Verify CA is unlocked
-    let ca_guard = state.ca.lock().await;
-    if ca_guard.is_none() {
-        return if crate::ca::is_ca_initialized() {
-            error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
-        } else {
-            error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                &CertmeshError::CaNotInitialized,
-            )
-        };
-    }
-    drop(ca_guard);
-
-    let new_secret = koi_crypto::totp::generate_secret();
-    let encrypted = match koi_crypto::totp::encrypt_secret(&new_secret, &request.passphrase) {
-        Ok(enc) => enc,
-        Err(e) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e))
-        }
-    };
-    if let Err(e) = koi_crypto::keys::save_encrypted_key(&crate::ca::totp_secret_path(), &encrypted)
+    let core = CertmeshCore::from_state(Arc::clone(&state));
+    match core
+        .rotate_auth(&request.passphrase, request.method.as_deref())
+        .await
     {
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::from(e));
-    }
-
-    let totp_uri = koi_crypto::totp::build_totp_uri(&new_secret, "Koi Certmesh", "enrollment");
-    *state.totp_secret.lock().await = Some(new_secret);
-
-    tracing::info!("TOTP secret rotated via service");
-    let _ = crate::audit::append_entry("totp_rotated", &[]);
-
-    let response = RotateTotpResponse { totp_uri };
-    match serde_json::to_value(&response) {
-        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &CertmeshError::Internal(format!("Serialization error: {e}")),
-        ),
+        Ok(setup) => {
+            let response = RotateAuthResponse { auth_setup: setup };
+            match serde_json::to_value(&response) {
+                Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+                Err(e) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &CertmeshError::Internal(format!("Serialization error: {e}")),
+                ),
+            }
+        }
+        Err(e) => {
+            let code = koi_common::error::ErrorCode::from(&e);
+            let status = StatusCode::from_u16(code.http_status())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            error_response(status, &e)
+        }
     }
 }
 
@@ -685,10 +679,10 @@ async fn compliance_handler(Extension(state): Extension<Arc<CertmeshState>>) -> 
 
 // ── Phase 3 handlers ────────────────────────────────────────────────
 
-/// POST /promote — TOTP-verified CA key transfer to a standby.
+/// POST /promote — auth-verified CA key transfer to a standby.
 ///
-/// The requesting standby provides a TOTP code. If valid, the handler
-/// returns the encrypted CA key, TOTP secret, roster, and CA cert.
+/// The requesting standby provides an auth response. If valid, the handler
+/// returns the encrypted CA key, auth data, roster, and CA cert.
 /// The passphrase for decryption is handled out-of-band (CLI prompt).
 async fn promote_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
@@ -709,8 +703,8 @@ async fn promote_handler(
         }
     };
 
-    let totp_guard = state.totp_secret.lock().await;
-    let totp_secret = match totp_guard.as_ref() {
+    let auth_guard = state.auth.lock().await;
+    let auth_state = match auth_guard.as_ref() {
         Some(s) => s,
         None => {
             return error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked);
@@ -719,8 +713,16 @@ async fn promote_handler(
 
     let mut rate_limiter = state.rate_limiter.lock().await;
 
-    // Verify TOTP
-    let valid = koi_crypto::totp::verify_code(totp_secret, &request.totp_code);
+    // Verify auth
+    let adapter = koi_crypto::auth::adapter_for(auth_state);
+    let challenge_guard = state.pending_challenge.lock().await;
+    let challenge = challenge_guard
+        .as_ref()
+        .cloned()
+        .unwrap_or(koi_crypto::auth::AuthChallenge::Totp);
+    let valid = adapter
+        .verify(auth_state, &challenge, &request.auth)
+        .unwrap_or(false);
     match rate_limiter.check_and_record(valid) {
         Ok(()) => {}
         Err(koi_crypto::totp::RateLimitError::LockedOut { remaining_secs }) => {
@@ -730,15 +732,13 @@ async fn promote_handler(
             );
         }
         Err(koi_crypto::totp::RateLimitError::InvalidCode { .. }) => {
-            return error_response(StatusCode::UNAUTHORIZED, &CertmeshError::InvalidTotp);
+            return error_response(StatusCode::UNAUTHORIZED, &CertmeshError::InvalidAuth);
         }
     }
 
     let roster = state.roster.lock().await;
 
-    // Prepare the promotion response — use the CA's own passphrase to encrypt
-    // the transfer material. The standby will need this passphrase to decrypt.
-    match crate::failover::prepare_promotion(ca, totp_secret, &roster, "") {
+    match crate::failover::prepare_promotion(ca, auth_state, &roster, "") {
         Ok(response) => match serde_json::to_value(&response) {
             Ok(val) => {
                 let _ = crate::audit::append_entry("promotion_prepared", &[]);
@@ -930,8 +930,8 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
     crate::protocol::CreateCaResponse,
     crate::protocol::UnlockRequest,
     crate::protocol::UnlockResponse,
-    crate::protocol::RotateTotpRequest,
-    crate::protocol::RotateTotpResponse,
+    crate::protocol::RotateAuthRequest,
+    crate::protocol::RotateAuthResponse,
     crate::protocol::AuditLogResponse,
     crate::protocol::DestroyResponse,
     crate::protocol::BackupRequest,
@@ -987,7 +987,8 @@ mod tests {
                 members: vec![],
                 revocation_list: vec![],
             }),
-            totp_secret: tokio::sync::Mutex::new(None),
+            auth: tokio::sync::Mutex::new(None),
+            pending_challenge: tokio::sync::Mutex::new(None),
             rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
             profile: tokio::sync::Mutex::new(TrustProfile::JustMe),
             approval_tx: tokio::sync::Mutex::new(None),
@@ -1028,7 +1029,7 @@ mod tests {
         let req = Request::post("/join")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"hostname":"stone-05","totp_code":"123456"}"#,
+                r#"{"hostname":"stone-05","auth":{"method":"totp","code":"123456"}}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1041,7 +1042,7 @@ mod tests {
         let app = routes(test_extension());
         let req = Request::post("/promote")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"totp_code":"654321"}"#))
+            .body(Body::from(r#"{"auth":{"method":"totp","code":"654321"}}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -1123,7 +1124,7 @@ mod tests {
         let req = Request::post("/join")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"hostname":"stone-05","totp_code":"123456"}"#,
+                r#"{"hostname":"stone-05","auth":{"method":"totp","code":"123456"}}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1139,7 +1140,7 @@ mod tests {
         let app = routes(test_extension());
         let req = Request::post("/promote")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"totp_code":"654321"}"#))
+            .body(Body::from(r#"{"auth":{"method":"totp","code":"654321"}}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -1392,9 +1393,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rotate_totp_without_ca_returns_503() {
+    async fn rotate_auth_without_ca_returns_503() {
         let app = routes(test_extension());
-        let req = Request::post("/rotate-totp")
+        let req = Request::post("/rotate-auth")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"passphrase":"test"}"#))
             .unwrap();

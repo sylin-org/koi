@@ -1,15 +1,15 @@
 //! Promotion, roster sync, and failover detection.
 //!
-//! - **Promotion**: transfers the encrypted CA key + TOTP secret to a standby.
+//! - **Promotion**: transfers the encrypted CA key + auth credential to a standby.
 //! - **Roster sync**: standby periodically pulls a signed roster manifest.
 //! - **Failover detection**: monitors mDNS presence; after grace period,
 //!   standby with the lowest hostname takes over.
 
 use std::time::{Duration, Instant};
 
+use koi_crypto::auth::AuthState;
 use koi_crypto::keys::{self, CaKeyPair};
 use koi_crypto::signing;
-use koi_crypto::totp::TotpSecret;
 
 use crate::ca::CaState;
 use crate::error::CertmeshError;
@@ -24,49 +24,66 @@ pub const ROSTER_SYNC_INTERVAL_SECS: u64 = 300; // 5 minutes
 
 // ── Promotion ──────────────────────────────────────────────────────
 
-/// Package the CA key, TOTP secret, roster, and CA cert for transfer to a standby.
+/// Package the CA key, auth credential, roster, and CA cert for transfer to a standby.
 ///
-/// The CA key and TOTP secret are encrypted with the provided passphrase
-/// so the standby can decrypt them locally. The passphrase is never
-/// sent over the wire — only the already-encrypted material is transferred.
+/// The CA key is encrypted with the provided passphrase so the standby
+/// can decrypt it locally. Auth data is serialized as a JSON value.
+/// The passphrase is never sent over the wire.
 pub fn prepare_promotion(
     ca: &CaState,
-    totp_secret: &TotpSecret,
+    auth_state: &AuthState,
     roster: &Roster,
     passphrase: &str,
 ) -> Result<PromoteResponse, CertmeshError> {
     let encrypted_ca_key = keys::encrypt_key(&ca.key, passphrase)?;
-    let encrypted_totp = koi_crypto::totp::encrypt_secret(totp_secret, passphrase)?;
+
+    // Serialize auth state for transfer
+    let auth_data = match auth_state {
+        AuthState::Totp(secret) => {
+            let encrypted_totp = koi_crypto::totp::encrypt_secret(secret, passphrase)?;
+            serde_json::to_value(&koi_crypto::auth::StoredAuth::Totp {
+                encrypted_secret: encrypted_totp,
+            })
+            .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?  
+        }
+        AuthState::Fido2(cred) => {
+            serde_json::to_value(&koi_crypto::auth::store_fido2(cred.clone()))
+                .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?  
+        }
+    };
 
     let roster_json = serde_json::to_string(roster)
         .map_err(|e| CertmeshError::Internal(format!("roster serialization failed: {e}")))?;
 
     Ok(PromoteResponse {
         encrypted_ca_key,
-        encrypted_totp_secret: encrypted_totp,
+        auth_data,
         roster_json,
         ca_cert_pem: ca.cert_pem.clone(),
     })
 }
 
-/// Accept a promotion response and decrypt the CA key and TOTP secret.
+/// Accept a promotion response and decrypt the CA key and auth credential.
 ///
 /// The standby calls this after receiving the `PromoteResponse` from the primary.
-/// Returns the decrypted CA key pair, TOTP secret, and roster.
+/// Returns the decrypted CA key pair, auth state, and roster.
 pub fn accept_promotion(
     response: &PromoteResponse,
     passphrase: &str,
-) -> Result<(CaKeyPair, TotpSecret, Roster), CertmeshError> {
+) -> Result<(CaKeyPair, AuthState, Roster), CertmeshError> {
     let ca_key = keys::decrypt_key(&response.encrypted_ca_key, passphrase)
         .map_err(|e| CertmeshError::PromotionFailed(format!("CA key decryption: {e}")))?;
 
-    let totp_secret = koi_crypto::totp::decrypt_secret(&response.encrypted_totp_secret, passphrase)
-        .map_err(|e| CertmeshError::PromotionFailed(format!("TOTP secret decryption: {e}")))?;
+    let stored: koi_crypto::auth::StoredAuth = serde_json::from_value(response.auth_data.clone())
+        .map_err(|e| CertmeshError::PromotionFailed(format!("auth data deserialization: {e}")))?;
+    let auth_state = stored
+        .unlock(passphrase)
+        .map_err(|e| CertmeshError::PromotionFailed(format!("auth unlock: {e}")))?;
 
     let roster: Roster = serde_json::from_str(&response.roster_json)
         .map_err(|e| CertmeshError::PromotionFailed(format!("roster deserialization: {e}")))?;
 
-    Ok((ca_key, totp_secret, roster))
+    Ok((ca_key, auth_state, roster))
 }
 
 // ── Roster Sync ────────────────────────────────────────────────────
@@ -196,25 +213,26 @@ mod tests {
     fn promotion_round_trip() {
         let ca = make_test_ca();
         let totp = koi_crypto::totp::generate_secret();
+        let auth_state = AuthState::Totp(totp);
         let roster = make_test_roster();
         let passphrase = "standby-pass-123";
 
-        let response = prepare_promotion(&ca, &totp, &roster, passphrase).unwrap();
+        let response = prepare_promotion(&ca, &auth_state, &roster, passphrase).unwrap();
 
         // Verify encrypted material is non-empty
         assert!(!response.encrypted_ca_key.ciphertext.is_empty());
-        assert!(!response.encrypted_totp_secret.ciphertext.is_empty());
+        assert!(!response.auth_data.is_null());
         assert!(!response.roster_json.is_empty());
         assert!(response.ca_cert_pem.contains("BEGIN CERTIFICATE"));
 
         // Accept on the standby side
-        let (ca_key, totp_secret, accepted_roster) =
+        let (ca_key, accepted_auth, accepted_roster) =
             accept_promotion(&response, passphrase).unwrap();
 
         // Verify the decrypted key produces the same public key
         assert_eq!(ca_key.public_key_pem(), ca.key.public_key_pem());
-        // Verify TOTP secret survived the round-trip
-        assert!(!totp_secret.as_bytes().is_empty());
+        // Verify auth state survived the round-trip
+        assert_eq!(accepted_auth.method_name(), "totp");
         // Verify roster survived
         assert_eq!(accepted_roster.members.len(), 1);
         assert_eq!(accepted_roster.members[0].hostname, "stone-01");
@@ -224,9 +242,10 @@ mod tests {
     fn promotion_wrong_passphrase_fails() {
         let ca = make_test_ca();
         let totp = koi_crypto::totp::generate_secret();
+        let auth_state = AuthState::Totp(totp);
         let roster = make_test_roster();
 
-        let response = prepare_promotion(&ca, &totp, &roster, "correct-pass").unwrap();
+        let response = prepare_promotion(&ca, &auth_state, &roster, "correct-pass").unwrap();
         let result = accept_promotion(&response, "wrong-pass");
         assert!(matches!(result, Err(CertmeshError::PromotionFailed(_))));
     }
@@ -356,11 +375,12 @@ mod tests {
     fn promotion_with_empty_passphrase() {
         let ca = make_test_ca();
         let totp = koi_crypto::totp::generate_secret();
+        let auth = koi_crypto::auth::AuthState::Totp(totp);
         let roster = make_test_roster();
 
         // Empty passphrase should still work (encryption doesn't require length)
-        let response = prepare_promotion(&ca, &totp, &roster, "").unwrap();
-        let (ca_key, _totp, accepted_roster) = accept_promotion(&response, "").unwrap();
+        let response = prepare_promotion(&ca, &auth, &roster, "").unwrap();
+        let (ca_key, _auth, accepted_roster) = accept_promotion(&response, "").unwrap();
         assert_eq!(ca_key.public_key_pem(), ca.key.public_key_pem());
         assert_eq!(accepted_roster.members.len(), 1);
     }
@@ -369,10 +389,11 @@ mod tests {
     fn promotion_with_unicode_passphrase() {
         let ca = make_test_ca();
         let totp = koi_crypto::totp::generate_secret();
+        let auth = koi_crypto::auth::AuthState::Totp(totp);
         let roster = make_test_roster();
         let passphrase = "café-naïve-résumé-日本語";
 
-        let response = prepare_promotion(&ca, &totp, &roster, passphrase).unwrap();
+        let response = prepare_promotion(&ca, &auth, &roster, passphrase).unwrap();
         let (ca_key, _, _) = accept_promotion(&response, passphrase).unwrap();
         assert_eq!(ca_key.public_key_pem(), ca.key.public_key_pem());
     }
@@ -381,10 +402,11 @@ mod tests {
     fn promotion_preserves_roster_metadata() {
         let ca = make_test_ca();
         let totp = koi_crypto::totp::generate_secret();
+        let auth = koi_crypto::auth::AuthState::Totp(totp);
         let mut roster = make_test_roster();
         roster.metadata.operator = Some("ops-team".to_string());
 
-        let response = prepare_promotion(&ca, &totp, &roster, "pass").unwrap();
+        let response = prepare_promotion(&ca, &auth, &roster, "pass").unwrap();
         let (_, _, accepted_roster) = accept_promotion(&response, "pass").unwrap();
         assert_eq!(
             accepted_roster.metadata.operator.as_deref(),
@@ -400,10 +422,11 @@ mod tests {
     fn promotion_with_empty_roster() {
         let ca = make_test_ca();
         let totp = koi_crypto::totp::generate_secret();
+        let auth = koi_crypto::auth::AuthState::Totp(totp);
         let roster = Roster::new(TrustProfile::JustMe, None);
         assert!(roster.members.is_empty());
 
-        let response = prepare_promotion(&ca, &totp, &roster, "pass").unwrap();
+        let response = prepare_promotion(&ca, &auth, &roster, "pass").unwrap();
         let (_, _, accepted_roster) = accept_promotion(&response, "pass").unwrap();
         assert!(accepted_roster.members.is_empty());
     }

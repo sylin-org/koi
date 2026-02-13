@@ -1,7 +1,7 @@
 //! Certmesh backup/restore encoding.
 //!
 //! Encodes a versioned, encrypted backup bundle containing CA key material,
-//! TOTP secret, roster JSON, and audit log contents.
+//! auth credential, roster JSON, and audit log contents.
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use koi_crypto::keys::{decrypt_bytes, encrypt_bytes, EncryptedKey};
 
 use crate::error::CertmeshError;
 
-pub const BACKUP_VERSION: u16 = 1;
+pub const BACKUP_VERSION: u16 = 2;
 const BACKUP_MAGIC: &[u8; 8] = b"KOIBACK1";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -19,7 +19,10 @@ pub struct BackupPayload {
     pub created_at: String,
     pub ca_key_pem: String,
     pub ca_cert_pem: String,
-    pub totp_secret: Vec<u8>,
+    /// Auth method name ("totp" or "fido2").
+    pub auth_method: String,
+    /// Auth credential bytes — TOTP raw secret or FIDO2 credential JSON.
+    pub auth_data: Vec<u8>,
     pub roster_json: String,
     pub audit_log: String,
 }
@@ -28,7 +31,8 @@ impl BackupPayload {
     pub fn new(
         ca_key_pem: String,
         ca_cert_pem: String,
-        totp_secret: Vec<u8>,
+        auth_method: String,
+        auth_data: Vec<u8>,
         roster_json: String,
         audit_log: String,
     ) -> Self {
@@ -37,7 +41,8 @@ impl BackupPayload {
             created_at: Utc::now().to_rfc3339(),
             ca_key_pem,
             ca_cert_pem,
-            totp_secret,
+            auth_method,
+            auth_data,
             roster_json,
             audit_log,
         }
