@@ -9,13 +9,25 @@ mod safety;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use koi_common::capability::{Capability, CapabilityStatus};
 
 pub use config::ProxyEntry;
 pub use safety::ensure_backend_allowed;
+
+/// Capacity for the proxy event broadcast channel.
+const BROADCAST_CHANNEL_CAPACITY: usize = 256;
+
+/// Events emitted by the proxy subsystem when entries change.
+#[derive(Debug, Clone)]
+pub enum ProxyEvent {
+    /// A proxy entry was added or updated.
+    EntryUpdated { entry: ProxyEntry },
+    /// A proxy entry was removed.
+    EntryRemoved { name: String },
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
@@ -46,6 +58,7 @@ pub struct ProxyStatus {
 
 pub struct ProxyCore {
     entries: Arc<Mutex<Vec<ProxyEntry>>>,
+    event_tx: broadcast::Sender<ProxyEvent>,
 }
 
 impl ProxyCore {
@@ -53,6 +66,7 @@ impl ProxyCore {
         let entries = config::load_entries()?;
         Ok(Self {
             entries: Arc::new(Mutex::new(entries)),
+            event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
         })
     }
 
@@ -68,9 +82,10 @@ impl ProxyCore {
     }
 
     pub async fn upsert(&self, entry: ProxyEntry) -> Result<Vec<ProxyEntry>, ProxyError> {
-        let entries = config::upsert_entry(entry)?;
+        let entries = config::upsert_entry(entry.clone())?;
         let mut guard = self.entries.lock().await;
         *guard = entries.clone();
+        let _ = self.event_tx.send(ProxyEvent::EntryUpdated { entry });
         Ok(entries)
     }
 
@@ -78,7 +93,15 @@ impl ProxyCore {
         let entries = config::remove_entry(name)?;
         let mut guard = self.entries.lock().await;
         *guard = entries.clone();
+        let _ = self.event_tx.send(ProxyEvent::EntryRemoved {
+            name: name.to_string(),
+        });
         Ok(entries)
+    }
+
+    /// Subscribe to proxy events.
+    pub fn subscribe(&self) -> broadcast::Receiver<ProxyEvent> {
+        self.event_tx.subscribe()
     }
 }
 

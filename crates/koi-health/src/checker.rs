@@ -82,6 +82,10 @@ pub async fn run_checks_once(
             if let Err(e) = append_transition(&check.name, previous.status, next.status, &reason) {
                 tracing::warn!(error = %e, check = %check.name, "Failed to write health transition");
             }
+            core.emit(crate::HealthEvent::StatusChanged {
+                name: check.name.clone(),
+                status: next.status,
+            });
         }
 
         let mut guard = states.write().await;

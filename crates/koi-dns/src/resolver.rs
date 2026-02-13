@@ -16,7 +16,7 @@ use koi_common::capability::{Capability, CapabilityStatus};
 use koi_common::types::{ServiceRecord, META_QUERY};
 use koi_config::state::{load_dns_state, DnsState};
 use tokio::net::{TcpListener, UdpSocket};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::aliases::AliasFeedback;
@@ -32,6 +32,18 @@ const DEFAULT_MAX_QPS: u32 = 200;
 const TCP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Alias feedback flush interval.
 const FEEDBACK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Capacity for the DNS event broadcast channel.
+const BROADCAST_CHANNEL_CAPACITY: usize = 256;
+
+/// Events emitted by the DNS subsystem when static entries change.
+#[derive(Debug, Clone)]
+pub enum DnsEvent {
+    /// A static DNS entry was added or updated.
+    EntryUpdated { name: String, ip: String },
+    /// A static DNS entry was removed.
+    EntryRemoved { name: String },
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum DnsError {
@@ -89,6 +101,7 @@ pub struct DnsCore {
     alias_tx: Option<mpsc::Sender<AliasFeedback>>,
     started_at: std::time::Instant,
     rate_limiter: Arc<RateLimiter>,
+    event_tx: broadcast::Sender<DnsEvent>,
 }
 
 impl DnsCore {
@@ -130,11 +143,22 @@ impl DnsCore {
             alias_tx,
             started_at: std::time::Instant::now(),
             rate_limiter: Arc::new(RateLimiter::new(max_qps)),
+            event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
         })
     }
 
     pub fn config(&self) -> &DnsConfig {
         &self.config
+    }
+
+    /// Subscribe to DNS events.
+    pub fn subscribe(&self) -> broadcast::Receiver<DnsEvent> {
+        self.event_tx.subscribe()
+    }
+
+    /// Emit a DNS event (used by HTTP handlers after state changes).
+    pub fn emit(&self, event: DnsEvent) {
+        let _ = self.event_tx.send(event);
     }
 
     pub fn snapshot(&self) -> RecordsSnapshot {
@@ -304,6 +328,7 @@ impl Clone for DnsCore {
             alias_tx: self.alias_tx.clone(),
             started_at: self.started_at,
             rate_limiter: Arc::clone(&self.rate_limiter),
+            event_tx: self.event_tx.clone(),
         }
     }
 }

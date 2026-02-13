@@ -11,6 +11,7 @@ use utoipa::{IntoParams, ToSchema};
 use koi_common::error::ErrorCode;
 use koi_config::state::{load_dns_state, save_dns_state, DnsEntry, DnsState};
 
+use crate::resolver::DnsEvent;
 use crate::runtime::DnsRuntime;
 use crate::zone::DnsZone;
 
@@ -215,8 +216,8 @@ async fn add_entry_handler(
     upsert_entry(
         &mut state,
         DnsEntry {
-            name,
-            ip: payload.ip,
+            name: name.clone(),
+            ip: payload.ip.clone(),
             ttl: payload.ttl,
         },
     );
@@ -229,6 +230,11 @@ async fn add_entry_handler(
         )
         .into_response();
     }
+
+    runtime.core().emit(DnsEvent::EntryUpdated {
+        name,
+        ip: payload.ip,
+    });
 
     Json(EntriesResponse {
         entries: state.entries,
@@ -296,6 +302,8 @@ async fn remove_entry_handler(
         )
         .into_response();
     }
+
+    runtime.core().emit(DnsEvent::EntryRemoved { name });
 
     Json(EntriesResponse {
         entries: state.entries,

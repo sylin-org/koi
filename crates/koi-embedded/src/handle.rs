@@ -106,15 +106,9 @@ impl KoiHandle {
         match &self.backend {
             HandleBackend::Embedded { dns, .. } => {
                 let runtime = dns.as_ref().ok_or(KoiError::DisabledCapability("dns"))?;
-                Ok(DnsHandle::new_embedded(
-                    Arc::clone(runtime),
-                    self.events.clone(),
-                ))
+                Ok(DnsHandle::new_embedded(Arc::clone(runtime)))
             }
-            HandleBackend::Remote { client } => Ok(DnsHandle::new_remote(
-                Arc::clone(client),
-                self.events.clone(),
-            )),
+            HandleBackend::Remote { client } => Ok(DnsHandle::new_remote(Arc::clone(client))),
         }
     }
 
@@ -324,7 +318,6 @@ impl MdnsHandle {
 
 pub struct DnsHandle {
     backend: DnsBackend,
-    events: broadcast::Sender<KoiEvent>,
 }
 
 enum DnsBackend {
@@ -333,17 +326,15 @@ enum DnsBackend {
 }
 
 impl DnsHandle {
-    fn new_embedded(runtime: Arc<DnsRuntime>, events: broadcast::Sender<KoiEvent>) -> Self {
+    fn new_embedded(runtime: Arc<DnsRuntime>) -> Self {
         Self {
             backend: DnsBackend::Embedded { runtime },
-            events,
         }
     }
 
-    fn new_remote(client: Arc<KoiClient>, events: broadcast::Sender<KoiEvent>) -> Self {
+    fn new_remote(client: Arc<KoiClient>) -> Self {
         Self {
             backend: DnsBackend::Remote { client },
-            events,
         }
     }
 
@@ -438,7 +429,7 @@ impl DnsHandle {
 
     pub fn add_entry(&self, entry: DnsEntry) -> Result<Vec<DnsEntry>, KoiError> {
         match &self.backend {
-            DnsBackend::Embedded { .. } => {
+            DnsBackend::Embedded { runtime } => {
                 let mut state = load_dns_state().unwrap_or_default();
                 if let Some(existing) = state.entries.iter_mut().find(|e| e.name == entry.name) {
                     *existing = entry.clone();
@@ -446,11 +437,9 @@ impl DnsHandle {
                     state.entries.push(entry.clone());
                 }
                 save_dns_state(&state)?;
-                let ips = entry.ip.parse().ok().into_iter().collect();
-                let _ = self.events.send(KoiEvent::DnsUpdated {
+                runtime.core().emit(koi_dns::DnsEvent::EntryUpdated {
                     name: entry.name,
-                    ips,
-                    source: "static".to_string(),
+                    ip: entry.ip,
                 });
                 Ok(state.entries)
             }
@@ -463,14 +452,12 @@ impl DnsHandle {
 
     pub fn remove_entry(&self, name: &str) -> Result<Vec<DnsEntry>, KoiError> {
         match &self.backend {
-            DnsBackend::Embedded { .. } => {
+            DnsBackend::Embedded { runtime } => {
                 let mut state = load_dns_state().unwrap_or_default();
                 state.entries.retain(|entry| entry.name != name);
                 save_dns_state(&state)?;
-                let _ = self.events.send(KoiEvent::DnsUpdated {
+                runtime.core().emit(koi_dns::DnsEvent::EntryRemoved {
                     name: name.to_string(),
-                    ips: Vec::new(),
-                    source: "static".to_string(),
                 });
                 Ok(state.entries)
             }

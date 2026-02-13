@@ -799,7 +799,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .health(true)
         .certmesh(with_certmesh)
         .proxy(true)
-        .event_poll_interval_secs(1)
         .build()?;
     let handle = koi.start().await?;
 
@@ -871,13 +870,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event = wait_for_event(
         &mut rx,
         Duration::from_secs(2),
-        |event| matches!(event, KoiEvent::DnsUpdated { name, .. } if name == "embedded-test.lan"),
+        |event| matches!(event, KoiEvent::DnsEntryUpdated { name, .. } if name == "embedded-test.lan"),
     )
     .await;
     if event.is_some() {
         harness.pass("dns: event emitted");
     } else {
-        harness.fail("dns: event emitted", "no DnsUpdated event received");
+        harness.fail("dns: event emitted", "no DnsEntryUpdated event received");
     }
 
     let result = dns
@@ -902,16 +901,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let _ = dns.remove_entry("embedded-test.lan");
-    let removed_event = wait_for_event(&mut rx, Duration::from_secs(2), |event| {
-        matches!(event, KoiEvent::DnsUpdated { name, ips, .. } if name == "embedded-test.lan" && ips.is_empty())
-    })
+    let removed_event = wait_for_event(
+        &mut rx,
+        Duration::from_secs(2),
+        |event| matches!(event, KoiEvent::DnsEntryRemoved { name } if name == "embedded-test.lan"),
+    )
     .await;
     if removed_event.is_some() {
-        harness.pass("dns: remove emits empty update");
+        harness.pass("dns: remove emits removal event");
     } else {
         harness.fail(
-            "dns: remove emits empty update",
-            "no removal update received",
+            "dns: remove emits removal event",
+            "no removal event received",
         );
     }
 
@@ -1027,13 +1028,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             harness.fail("proxy: upsert entry", "entry missing after upsert");
         }
         let event = wait_for_event(&mut rx, Duration::from_secs(3), |event| {
-            matches!(event, KoiEvent::ProxyUpdated { entry } if entry.name == "embedded-proxy")
+            matches!(event, KoiEvent::ProxyEntryUpdated { entry } if entry.name == "embedded-proxy")
         })
         .await;
         if event.is_some() {
             harness.pass("proxy: event emitted");
         } else {
-            harness.fail("proxy: event emitted", "no ProxyUpdated event received");
+            harness.fail(
+                "proxy: event emitted",
+                "no ProxyEntryUpdated event received",
+            );
         }
         let _ = proxy.remove("embedded-proxy").await;
         let entries = proxy.entries().await;

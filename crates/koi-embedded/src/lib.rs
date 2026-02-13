@@ -3,14 +3,12 @@ mod events;
 mod handle;
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use koi_client::KoiClient;
-use koi_config::state::{load_dns_state, DnsState};
 use koi_mdns::MdnsEvent;
 
 pub use config::{DnsConfigBuilder, KoiConfig, ServiceMode};
@@ -129,8 +127,8 @@ impl Builder {
         self
     }
 
-    pub fn event_poll_interval_secs(mut self, secs: u64) -> Self {
-        self.config.event_poll_interval_secs = secs;
+    #[deprecated(note = "no longer needed — events are now push-based via broadcast channels")]
+    pub fn event_poll_interval_secs(self, _secs: u64) -> Self {
         self
     }
 
@@ -266,160 +264,83 @@ impl KoiEmbedded {
             }));
         }
 
-        if self.config.event_poll_interval_secs > 0 {
-            let interval = Duration::from_secs(self.config.event_poll_interval_secs);
+        if self.config.health_enabled {
             if let Some(runtime) = &health {
-                let core = runtime.core();
+                let mut rx = runtime.core().subscribe();
                 let tx = event_tx.clone();
                 let token = cancel.clone();
                 let handler = self.event_handler.clone();
                 tasks.push(tokio::spawn(async move {
-                    let mut last_status = std::collections::HashMap::new();
                     loop {
                         tokio::select! {
                             _ = token.cancelled() => break,
-                            _ = tokio::time::sleep(interval) => {
-                                let snapshot = core.snapshot().await;
-                                for service in snapshot.services {
-                                    let key = service.name.clone();
-                                    let status = service.status;
-                                    let changed = last_status
-                                        .get(&key)
-                                        .map(|prev| *prev != status)
-                                        .unwrap_or(true);
-                                    if changed {
-                                        last_status.insert(key.clone(), status);
-                                        emit_event(&tx, handler.as_ref(), KoiEvent::HealthChanged {
-                                            name: key,
-                                            status,
-                                        });
-                                    }
-                                }
+                            msg = rx.recv() => {
+                                let Ok(event) = msg else { continue; };
+                                let mapped = map_health_event(event);
+                                emit_event(&tx, handler.as_ref(), mapped);
                             }
                         }
                     }
                 }));
             }
+        }
 
-            if self.config.dns_enabled {
+        if self.config.dns_enabled {
+            if let Some(runtime) = &dns {
+                let mut rx = runtime.core().subscribe();
                 let tx = event_tx.clone();
                 let token = cancel.clone();
                 let handler = self.event_handler.clone();
                 tasks.push(tokio::spawn(async move {
-                    let mut last_mtime: Option<SystemTime> = None;
-                    let mut last_state = DnsState::default();
                     loop {
                         tokio::select! {
                             _ = token.cancelled() => break,
-                            _ = tokio::time::sleep(interval) => {
-                                let path = koi_config::state::dns_state_path();
-                                let mtime = std::fs::metadata(&path)
-                                    .and_then(|m| m.modified())
-                                    .ok();
-                                if mtime == last_mtime {
-                                    continue;
-                                }
-                                last_mtime = mtime;
-                                let Ok(state) = load_dns_state() else { continue; };
-                                let mut seen = std::collections::HashMap::new();
-                                for entry in &state.entries {
-                                    seen.insert(entry.name.clone(), entry.ip.clone());
-                                    let changed = last_state
-                                        .entries
-                                        .iter()
-                                        .find(|e| e.name == entry.name)
-                                        .map(|e| e.ip != entry.ip)
-                                        .unwrap_or(true);
-                                    if changed {
-                                        let ip = entry.ip.parse().ok().into_iter().collect();
-                                        emit_event(&tx, handler.as_ref(), KoiEvent::DnsUpdated {
-                                            name: entry.name.clone(),
-                                            ips: ip,
-                                            source: "static".to_string(),
-                                        });
-                                    }
-                                }
-
-                                for old in &last_state.entries {
-                                    if !seen.contains_key(&old.name) {
-                                        emit_event(&tx, handler.as_ref(), KoiEvent::DnsUpdated {
-                                            name: old.name.clone(),
-                                            ips: Vec::new(),
-                                            source: "static".to_string(),
-                                        });
-                                    }
-                                }
-
-                                last_state = state;
+                            msg = rx.recv() => {
+                                let Ok(event) = msg else { continue; };
+                                let mapped = map_dns_event(event);
+                                emit_event(&tx, handler.as_ref(), mapped);
                             }
                         }
                     }
                 }));
             }
+        }
 
-            if self.config.certmesh_enabled {
+        if self.config.certmesh_enabled {
+            if let Some(core) = &certmesh {
+                let mut rx = core.subscribe();
                 let tx = event_tx.clone();
                 let token = cancel.clone();
                 let handler = self.event_handler.clone();
                 tasks.push(tokio::spawn(async move {
-                    let mut last_mtime: Option<SystemTime> = None;
-                    let mut last_members = std::collections::HashMap::new();
                     loop {
                         tokio::select! {
                             _ = token.cancelled() => break,
-                            _ = tokio::time::sleep(interval) => {
-                                let path = koi_certmesh::ca::roster_path();
-                                let mtime = std::fs::metadata(&path)
-                                    .and_then(|m| m.modified())
-                                    .ok();
-                                if mtime == last_mtime {
-                                    continue;
-                                }
-                                last_mtime = mtime;
-                                let Ok(roster) = koi_certmesh::roster::load_roster(&path) else { continue; };
-                                let mut current = std::collections::HashMap::new();
-                                for member in &roster.members {
-                                    current.insert(member.hostname.clone(), member.cert_fingerprint.clone());
-                                    if !last_members.contains_key(&member.hostname) {
-                                        emit_event(&tx, handler.as_ref(), KoiEvent::CertmeshMemberJoined {
-                                            hostname: member.hostname.clone(),
-                                            fingerprint: member.cert_fingerprint.clone(),
-                                        });
-                                    }
-                                }
-                                last_members = current;
+                            msg = rx.recv() => {
+                                let Ok(event) = msg else { continue; };
+                                let mapped = map_certmesh_event(event);
+                                emit_event(&tx, handler.as_ref(), mapped);
                             }
                         }
                     }
                 }));
             }
+        }
 
-            if self.config.proxy_enabled {
+        if self.config.proxy_enabled {
+            if let Some(runtime) = &proxy {
+                let mut rx = runtime.core().subscribe();
                 let tx = event_tx.clone();
                 let token = cancel.clone();
                 let handler = self.event_handler.clone();
                 tasks.push(tokio::spawn(async move {
-                    let mut last_entries = std::collections::HashMap::new();
                     loop {
                         tokio::select! {
                             _ = token.cancelled() => break,
-                            _ = tokio::time::sleep(interval) => {
-                                let Ok(entries) = koi_proxy::config::load_entries() else { continue; };
-                                let mut current = std::collections::HashMap::new();
-                                for entry in entries {
-                                    let name = entry.name.clone();
-                                    let changed = last_entries
-                                        .get(&name)
-                                        .map(|prev| prev != &entry)
-                                        .unwrap_or(true);
-                                    if changed {
-                                        emit_event(&tx, handler.as_ref(), KoiEvent::ProxyUpdated {
-                                            entry: entry.clone(),
-                                        });
-                                    }
-                                    current.insert(name, entry);
-                                }
-                                last_entries = current;
+                            msg = rx.recv() => {
+                                let Ok(event) = msg else { continue; };
+                                let mapped = map_proxy_event(event);
+                                emit_event(&tx, handler.as_ref(), mapped);
                             }
                         }
                     }
@@ -458,6 +379,44 @@ fn map_mdns_event(event: MdnsEvent) -> Option<KoiEvent> {
         MdnsEvent::Removed { name, service_type } => {
             Some(KoiEvent::MdnsRemoved { name, service_type })
         }
+    }
+}
+
+fn map_health_event(event: koi_health::HealthEvent) -> KoiEvent {
+    match event {
+        koi_health::HealthEvent::StatusChanged { name, status } => {
+            KoiEvent::HealthChanged { name, status }
+        }
+    }
+}
+
+fn map_dns_event(event: koi_dns::DnsEvent) -> KoiEvent {
+    match event {
+        koi_dns::DnsEvent::EntryUpdated { name, ip } => KoiEvent::DnsEntryUpdated { name, ip },
+        koi_dns::DnsEvent::EntryRemoved { name } => KoiEvent::DnsEntryRemoved { name },
+    }
+}
+
+fn map_certmesh_event(event: koi_certmesh::CertmeshEvent) -> KoiEvent {
+    match event {
+        koi_certmesh::CertmeshEvent::MemberJoined {
+            hostname,
+            fingerprint,
+        } => KoiEvent::CertmeshMemberJoined {
+            hostname,
+            fingerprint,
+        },
+        koi_certmesh::CertmeshEvent::MemberRevoked { hostname } => {
+            KoiEvent::CertmeshMemberRevoked { hostname }
+        }
+        koi_certmesh::CertmeshEvent::Destroyed => KoiEvent::CertmeshDestroyed,
+    }
+}
+
+fn map_proxy_event(event: koi_proxy::ProxyEvent) -> KoiEvent {
+    match event {
+        koi_proxy::ProxyEvent::EntryUpdated { entry } => KoiEvent::ProxyEntryUpdated { entry },
+        koi_proxy::ProxyEvent::EntryRemoved { name } => KoiEvent::ProxyEntryRemoved { name },
     }
 }
 

@@ -1011,6 +1011,7 @@ mod tests {
             rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
             profile: tokio::sync::Mutex::new(TrustProfile::JustMe),
             approval_tx: tokio::sync::Mutex::new(None),
+            event_tx: tokio::sync::broadcast::channel(16).0,
         })
     }
 

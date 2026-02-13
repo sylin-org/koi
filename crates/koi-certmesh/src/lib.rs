@@ -26,7 +26,7 @@ use std::sync::Arc;
 use axum::Router;
 use koi_common::capability::{Capability, CapabilityStatus};
 use koi_crypto::totp::RateLimiter;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 pub use error::CertmeshError;
 use profiles::TrustProfile;
@@ -35,6 +35,23 @@ use roster::Roster;
 /// mDNS service type for CA discovery.
 /// Used by the binary crate to announce the CA via koi-mdns.
 pub const CERTMESH_SERVICE_TYPE: &str = "_certmesh._tcp";
+
+/// Capacity for the certmesh event broadcast channel.
+const BROADCAST_CHANNEL_CAPACITY: usize = 256;
+
+/// Events emitted by the certmesh subsystem when roster membership changes.
+#[derive(Debug, Clone)]
+pub enum CertmeshEvent {
+    /// A new member was enrolled in the mesh.
+    MemberJoined {
+        hostname: String,
+        fingerprint: String,
+    },
+    /// A member was revoked from the mesh.
+    MemberRevoked { hostname: String },
+    /// All certmesh state was destroyed.
+    Destroyed,
+}
 
 // ── Internal shared state ───────────────────────────────────────────
 
@@ -47,6 +64,7 @@ pub(crate) struct CertmeshState {
     pub(crate) rate_limiter: tokio::sync::Mutex<RateLimiter>,
     pub(crate) profile: tokio::sync::Mutex<TrustProfile>,
     pub(crate) approval_tx: tokio::sync::Mutex<Option<mpsc::Sender<ApprovalRequest>>>,
+    pub(crate) event_tx: broadcast::Sender<CertmeshEvent>,
 }
 
 /// Enrollment approval request sent to the operator prompt.
@@ -132,6 +150,7 @@ impl CertmeshCore {
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
                 profile: tokio::sync::Mutex::new(profile),
                 approval_tx: tokio::sync::Mutex::new(None),
+                event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
             }),
         }
     }
@@ -146,6 +165,7 @@ impl CertmeshCore {
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
                 profile: tokio::sync::Mutex::new(profile),
                 approval_tx: tokio::sync::Mutex::new(None),
+                event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
             }),
         }
     }
@@ -163,6 +183,7 @@ impl CertmeshCore {
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
                 profile: tokio::sync::Mutex::new(TrustProfile::default()),
                 approval_tx: tokio::sync::Mutex::new(None),
+                event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
             }),
         }
     }
@@ -184,6 +205,11 @@ impl CertmeshCore {
     /// Set the approval channel used for enrollment approvals.
     pub async fn set_approval_channel(&self, tx: mpsc::Sender<ApprovalRequest>) {
         *self.state.approval_tx.lock().await = Some(tx);
+    }
+
+    /// Subscribe to certmesh events.
+    pub fn subscribe(&self) -> broadcast::Receiver<CertmeshEvent> {
+        self.state.event_tx.subscribe()
     }
 
     /// Initialize a new CA from scratch (called via HTTP from CLI).
@@ -264,7 +290,9 @@ impl CertmeshCore {
     /// uninitialized. This is irreversible. Used for testing cleanup and
     /// full mesh teardown.
     pub async fn destroy(&self) -> Result<(), CertmeshError> {
-        self.state.destroy().await
+        self.state.destroy().await?;
+        let _ = self.state.event_tx.send(CertmeshEvent::Destroyed);
+        Ok(())
     }
 
     /// Process an enrollment request. Returns the join response on success.
@@ -319,6 +347,11 @@ impl CertmeshCore {
         if let Err(e) = roster::save_roster(&roster, &roster_path) {
             tracing::warn!(error = %e, "Failed to save roster after enrollment");
         }
+
+        let _ = self.state.event_tx.send(CertmeshEvent::MemberJoined {
+            hostname: response.hostname.clone(),
+            fingerprint: response.ca_fingerprint.clone(),
+        });
 
         Ok(response)
     }
@@ -601,6 +634,10 @@ impl CertmeshCore {
 
         let roster_path = ca::roster_path();
         roster::save_roster(&roster, &roster_path)?;
+
+        let _ = self.state.event_tx.send(CertmeshEvent::MemberRevoked {
+            hostname: hostname.to_string(),
+        });
 
         let _ = audit::append_entry(
             "member_revoked",

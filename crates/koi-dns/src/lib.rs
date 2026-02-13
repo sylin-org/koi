@@ -10,7 +10,7 @@ mod zone;
 
 use koi_common::firewall::{FirewallPort, FirewallProtocol};
 
-pub use resolver::{DnsConfig, DnsCore, DnsError, DnsLookupResult};
+pub use resolver::{DnsConfig, DnsCore, DnsError, DnsEvent, DnsLookupResult};
 pub use runtime::{DnsRuntime, DnsRuntimeStatus};
 pub use zone::DnsZone;
 

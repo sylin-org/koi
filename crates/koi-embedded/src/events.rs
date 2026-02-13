@@ -1,5 +1,3 @@
-use std::net::IpAddr;
-
 use koi_common::types::ServiceRecord;
 use koi_health::HealthStatus;
 use koi_proxy::ProxyEntry;
@@ -12,10 +10,12 @@ pub enum KoiEvent {
         name: String,
         service_type: String,
     },
-    DnsUpdated {
+    DnsEntryUpdated {
         name: String,
-        ips: Vec<IpAddr>,
-        source: String,
+        ip: String,
+    },
+    DnsEntryRemoved {
+        name: String,
     },
     HealthChanged {
         name: String,
@@ -25,7 +25,14 @@ pub enum KoiEvent {
         hostname: String,
         fingerprint: String,
     },
-    ProxyUpdated {
+    CertmeshMemberRevoked {
+        hostname: String,
+    },
+    CertmeshDestroyed,
+    ProxyEntryUpdated {
         entry: ProxyEntry,
+    },
+    ProxyEntryRemoved {
+        name: String,
     },
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use koi_common::capability::{Capability, CapabilityStatus};
@@ -31,6 +31,16 @@ pub use state::HealthCheckConfig as HealthCheck;
 
 /// Default machine health threshold (seconds since last seen).
 pub const DEFAULT_MACHINE_THRESHOLD_SECS: u64 = 60;
+
+/// Capacity for the health event broadcast channel.
+const BROADCAST_CHANNEL_CAPACITY: usize = 256;
+
+/// Events emitted by the health subsystem when service status changes.
+#[derive(Debug, Clone)]
+pub enum HealthEvent {
+    /// A service's health status changed.
+    StatusChanged { name: String, status: ServiceStatus },
+}
 
 /// Snapshot returned by health status queries.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
@@ -74,6 +84,7 @@ pub struct HealthCore {
     service_states: Arc<RwLock<HashMap<String, ServiceCheckState>>>,
     machine_threshold: Duration,
     started_at: Instant,
+    event_tx: broadcast::Sender<HealthEvent>,
 }
 
 impl HealthCore {
@@ -90,6 +101,8 @@ impl HealthCore {
             None => None,
         };
 
+        let (event_tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
+
         Self {
             mdns_tracker,
             dns,
@@ -97,6 +110,7 @@ impl HealthCore {
             service_states: Arc::new(RwLock::new(HashMap::new())),
             machine_threshold: Duration::from_secs(DEFAULT_MACHINE_THRESHOLD_SECS),
             started_at: Instant::now(),
+            event_tx,
         }
     }
 
@@ -187,6 +201,16 @@ impl HealthCore {
 
     pub async fn run_checks_once(&self) {
         run_checks_once(self, &self.service_states).await;
+    }
+
+    /// Subscribe to health events.
+    pub fn subscribe(&self) -> broadcast::Receiver<HealthEvent> {
+        self.event_tx.subscribe()
+    }
+
+    /// Emit a health event (used by the checker loop).
+    pub(crate) fn emit(&self, event: HealthEvent) {
+        let _ = self.event_tx.send(event);
     }
 }
 

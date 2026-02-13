@@ -1,5 +1,4 @@
-﻿use std::net::{IpAddr, Ipv4Addr};
-use std::path::PathBuf;
+﻿use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use koi_config::state::DnsEntry;
@@ -32,7 +31,6 @@ async fn dns_add_entry_emits_event() -> Result<(), Box<dyn std::error::Error>> {
         .health(false)
         .certmesh(false)
         .proxy(false)
-        .event_poll_interval_secs(0)
         .build()?;
     let handle = koi.start().await?;
 
@@ -48,10 +46,9 @@ async fn dns_add_entry_emits_event() -> Result<(), Box<dyn std::error::Error>> {
 
     let event = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await??;
     match event {
-        KoiEvent::DnsUpdated { name, ips, source } => {
+        KoiEvent::DnsEntryUpdated { name, ip } => {
             assert_eq!(name, "test.lan");
-            assert_eq!(source, "static");
-            assert_eq!(ips, vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))]);
+            assert_eq!(ip, "127.0.0.1");
         }
         other => panic!("unexpected event: {other:?}"),
     }
