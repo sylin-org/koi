@@ -357,7 +357,9 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         let parsed: JoinRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.hostname, "stone-05");
-        assert!(matches!(parsed.auth, koi_crypto::auth::AuthResponse::Totp { ref code } if code == "123456"));
+        assert!(
+            matches!(parsed.auth, koi_crypto::auth::AuthResponse::Totp { ref code } if code == "123456")
+        );
         assert_eq!(parsed.sans, vec!["10.0.0.5"]);
     }
 
@@ -438,7 +440,9 @@ mod tests {
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: PromoteRequest = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed.auth, koi_crypto::auth::AuthResponse::Totp { ref code } if code == "654321"));
+        assert!(
+            matches!(parsed.auth, koi_crypto::auth::AuthResponse::Totp { ref code } if code == "654321")
+        );
     }
 
     #[test]

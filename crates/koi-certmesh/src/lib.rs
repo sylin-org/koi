@@ -279,7 +279,10 @@ impl CertmeshCore {
         let auth_guard = self.state.auth.lock().await;
         let auth_state = auth_guard.as_ref().ok_or(CertmeshError::CaLocked)?;
         let challenge_guard = self.state.pending_challenge.lock().await;
-        let challenge = challenge_guard.as_ref().cloned().unwrap_or(koi_crypto::auth::AuthChallenge::Totp);
+        let challenge = challenge_guard
+            .as_ref()
+            .cloned()
+            .unwrap_or(koi_crypto::auth::AuthChallenge::Totp);
         let mut rate_limiter = self.state.rate_limiter.lock().await;
         let profile = roster.metadata.trust_profile;
         let requires_approval = roster.requires_approval();
@@ -518,7 +521,8 @@ impl CertmeshCore {
             "totp" => {
                 let new_secret = koi_crypto::totp::generate_secret();
                 let stored = koi_crypto::auth::store_totp(&new_secret, passphrase)?;
-                let uri = koi_crypto::totp::build_totp_uri(&new_secret, "Koi Certmesh", "enrollment");
+                let uri =
+                    koi_crypto::totp::build_totp_uri(&new_secret, "Koi Certmesh", "enrollment");
                 let setup = koi_crypto::auth::AuthSetup::Totp { totp_uri: uri };
                 (AuthState::Totp(new_secret), stored, setup)
             }

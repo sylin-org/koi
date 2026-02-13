@@ -1481,7 +1481,9 @@ pub async fn promote(
 
     // Persist auth credential to auth.json
     let stored = match &auth_state {
-        koi_crypto::auth::AuthState::Totp(secret) => koi_crypto::auth::store_totp(secret, &passphrase)?,
+        koi_crypto::auth::AuthState::Totp(secret) => {
+            koi_crypto::auth::store_totp(secret, &passphrase)?
+        }
         koi_crypto::auth::AuthState::Fido2(cred) => koi_crypto::auth::store_fido2(cred.clone()),
     };
     let auth_json = serde_json::to_string_pretty(&stored)?;

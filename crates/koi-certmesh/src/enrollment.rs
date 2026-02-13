@@ -205,14 +205,21 @@ mod tests {
         ca::create_ca("test-pass", &entropy).unwrap()
     }
 
-    fn make_auth_and_code(secret: &totp::TotpSecret, valid: bool) -> (AuthState, AuthChallenge, koi_crypto::auth::AuthResponse) {
+    fn make_auth_and_code(
+        secret: &totp::TotpSecret,
+        valid: bool,
+    ) -> (AuthState, AuthChallenge, koi_crypto::auth::AuthResponse) {
         let state = AuthState::Totp(totp::TotpSecret::from_bytes(secret.as_bytes().to_vec()));
         let challenge = AuthChallenge::Totp;
         let code = if valid {
             koi_crypto::totp::current_code(secret).expect("current_code")
         } else {
             let v = koi_crypto::totp::current_code(secret).expect("current_code");
-            if v != "000000" { "000000".to_string() } else { "111111".to_string() }
+            if v != "000000" {
+                "000000".to_string()
+            } else {
+                "111111".to_string()
+            }
         };
         let response = koi_crypto::auth::AuthResponse::Totp { code };
         (state, challenge, response)

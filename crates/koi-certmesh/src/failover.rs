@@ -44,11 +44,11 @@ pub fn prepare_promotion(
             serde_json::to_value(&koi_crypto::auth::StoredAuth::Totp {
                 encrypted_secret: encrypted_totp,
             })
-            .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?  
+            .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?
         }
         AuthState::Fido2(cred) => {
-            serde_json::to_value(&koi_crypto::auth::store_fido2(cred.clone()))
-                .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?  
+            serde_json::to_value(koi_crypto::auth::store_fido2(cred.clone()))
+                .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?
         }
     };
 
@@ -75,7 +75,9 @@ pub fn accept_promotion(
         .map_err(|e| CertmeshError::PromotionFailed(format!("CA key decryption: {e}")))?;
 
     let stored: koi_crypto::auth::StoredAuth = serde_json::from_value(response.auth_data.clone())
-        .map_err(|e| CertmeshError::PromotionFailed(format!("auth data deserialization: {e}")))?;
+        .map_err(|e| {
+        CertmeshError::PromotionFailed(format!("auth data deserialization: {e}"))
+    })?;
     let auth_state = stored
         .unlock(passphrase)
         .map_err(|e| CertmeshError::PromotionFailed(format!("auth unlock: {e}")))?;

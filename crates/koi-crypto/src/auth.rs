@@ -1,4 +1,4 @@
-﻿//! Pluggable authentication adapter system.
+//! Pluggable authentication adapter system.
 //!
 //! One flow, N auth methods. The enrollment/promote/rotate flow is
 //! identical regardless of which method the CA is configured to use.
@@ -65,8 +65,9 @@ impl AuthState {
         match method {
             "totp" => Ok(AuthState::Totp(TotpSecret::from_bytes(bytes))),
             "fido2" => {
-                let cred: Fido2Credential = serde_json::from_slice(&bytes)
-                    .map_err(|e| AuthError::VerificationFailed(format!("FIDO2 deserialize: {e}")))?;
+                let cred: Fido2Credential = serde_json::from_slice(&bytes).map_err(|e| {
+                    AuthError::VerificationFailed(format!("FIDO2 deserialize: {e}"))
+                })?;
                 Ok(AuthState::Fido2(cred))
             }
             other => Err(AuthError::MethodMismatch {
@@ -353,7 +354,12 @@ impl AuthAdapter for Fido2Adapter {
         }
 
         // Verify ECDSA P-256 signature over (authenticator_data || client_data_hash)
-        verify_fido2_signature(&cred.public_key, authenticator_data, client_data_hash, signature)
+        verify_fido2_signature(
+            &cred.public_key,
+            authenticator_data,
+            client_data_hash,
+            signature,
+        )
     }
 }
 
@@ -744,10 +750,10 @@ mod tests {
 
         // Should error (invalid DER) or return false
         let result = adapter.verify(&state, &challenge, &response);
-        match result {
-            Ok(valid) => assert!(!valid),
-            Err(_) => {} // DER parse error is acceptable
+        if let Ok(valid) = result {
+            assert!(!valid);
         }
+        // Err (DER parse error) is also acceptable
     }
 
     #[test]
@@ -830,8 +836,10 @@ mod tests {
         let c1 = adapter.challenge(&state).unwrap();
         let c2 = adapter.challenge(&state).unwrap();
 
-        let (AuthChallenge::Fido2 { challenge: b1, .. }, AuthChallenge::Fido2 { challenge: b2, .. }) =
-            (&c1, &c2)
+        let (
+            AuthChallenge::Fido2 { challenge: b1, .. },
+            AuthChallenge::Fido2 { challenge: b2, .. },
+        ) = (&c1, &c2)
         else {
             panic!("expected Fido2 challenges");
         };
