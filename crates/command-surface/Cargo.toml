@@ -1,0 +1,16 @@
+﻿[package]
+name = "command-surface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+render = ["dep:console", "dep:is-terminal", "dep:supports-color", "dep:terminal_size"]
+
+[dependencies]
+console = { workspace = true, optional = true }
+is-terminal = { workspace = true, optional = true }
+supports-color = { workspace = true, optional = true }
+terminal_size = { workspace = true, optional = true }
