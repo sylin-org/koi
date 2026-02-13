@@ -1518,7 +1518,14 @@ to renew certificates. Create a backup first with 'certmesh backup'.",
             query_params: &[],
             content_type: None,
         }],
-        confirmation: None,
+        confirmation: Some(Confirmation::TypeToken {
+            message: "\
+This will PERMANENTLY DELETE all certmesh state including CA keys,\n\
+certificates, enrollments, and audit logs.\n\
+If this node is the root CA, all mesh members will lose their\n\
+ability to renew certificates.",
+            token: "DESTROY",
+        }),
     });
 
     // ── DNS ──────────────────────────────────────────────────────────

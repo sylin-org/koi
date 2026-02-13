@@ -167,28 +167,21 @@ pub fn create(
 
     // ── Intro box ──────────────────────────────────────────────────
     println!();
-    println!("  ╭──────────────────────────────────────────────────────╮");
-    println!("  │  Create a certificate mesh                           │");
-    println!("  │                                                      │");
-    println!(
-        "  │  {}         │",
-        color::dim("A certificate mesh is a private Certificate")
+    print_box(
+        "  ",
+        None,
+        &[
+            "Create a certificate mesh".to_string(),
+            String::new(),
+            color::dim("A certificate mesh is a private Certificate"),
+            color::dim("Authority (CA) for your local network. It lets"),
+            color::dim("your machines issue and trust TLS certificates"),
+            color::dim("without relying on an external provider."),
+            String::new(),
+            "ESC at any time to cancel.".to_string(),
+        ],
+        BoxStyle::Rounded,
     );
-    println!(
-        "  │  {}      │",
-        color::dim("Authority (CA) for your local network. It lets")
-    );
-    println!(
-        "  │  {}      │",
-        color::dim("your machines issue and trust TLS certificates")
-    );
-    println!(
-        "  │  {}            │",
-        color::dim("without relying on an external provider.")
-    );
-    println!("  │                                                      │");
-    println!("  │  ESC at any time to cancel.                          │");
-    println!("  ╰──────────────────────────────────────────────────────╯");
 
     // ── Step 1: Profile (skip if --profile provided) ───────────────
     let mut selection = if let Some(profile_value) = profile {
@@ -361,11 +354,106 @@ pub fn create(
         );
         println!("  └─────────────────────────────────────────────────────┘");
         println!();
-        let _ = prompt_line(&format!(
-            "  {} {}: ",
-            color::cyan("Enter"),
-            color::cyan("Continue")
-        ));
+
+        // Verify the user actually captured the TOTP secret by asking for a code.
+        // A single prompt handles everything: 6-digit codes are verified,
+        // "1" retries, "2" regenerates. No overlap since TOTP codes are always 6 digits.
+        if let Some(mut secret) = extract_totp_secret_from_uri(totp_uri) {
+            println!(
+                "  {}",
+                color::dim("Enter a code from your authenticator app to verify setup.")
+            );
+            let mut attempts = 0u32;
+            loop {
+                let prompt = if attempts >= 2 {
+                    format!(
+                        "  {} {}, {} {}, or {}: ",
+                        color::dim("[1]"),
+                        color::dim("try again"),
+                        color::dim("[2]"),
+                        color::dim("new secret"),
+                        color::cyan("code")
+                    )
+                } else {
+                    format!("  {} ", color::cyan("TOTP code:"))
+                };
+                let input = prompt_line(&prompt)?;
+                let trimmed = input.trim().replace(' ', "");
+
+                if trimmed.is_empty() || trimmed == "1" {
+                    continue;
+                }
+
+                if trimmed == "2" && attempts >= 2 {
+                    println!("\n  Rotating TOTP secret...\n");
+                    let rotate_resp = client.post_json(
+                        "/v1/certmesh/rotate-totp",
+                        &serde_json::json!({ "passphrase": ca_passphrase }),
+                    )?;
+                    let new_uri = rotate_resp
+                        .get("totp_uri")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if let Some(new_secret) = extract_totp_secret_from_uri(new_uri) {
+                        secret = new_secret;
+                        let hostname = hostname::get()
+                            .map(|h| h.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| "localhost".to_string());
+                        let qr = koi_crypto::totp::qr_code_unicode(
+                            &secret,
+                            "Koi Certmesh",
+                            &format!("admin@{hostname}"),
+                        );
+                        println!("  Scan the new QR code:\n");
+                        println!("{qr}");
+                        if let Some(b32) = extract_totp_secret_base32_from_uri(new_uri) {
+                            println!(
+                                "  Or enter this code manually: {}\n",
+                                color::cyan_bold(&b32)
+                            );
+                        }
+                        println!(
+                            "  {}",
+                            color::dim(
+                                "Enter a code from your authenticator app to verify setup."
+                            )
+                        );
+                    }
+                    attempts = 0;
+                    continue;
+                }
+
+                if koi_crypto::totp::verify_code(&secret, &trimmed) {
+                    println!(
+                        "  {} TOTP verified — authenticator is set up correctly.\n",
+                        color::green("✓")
+                    );
+                    break;
+                }
+
+                attempts += 1;
+                if attempts >= 2 {
+                    println!(
+                        "  {} Code doesn't match. {}",
+                        color::red("✗"),
+                        color::dim("Enter code, [1] retry, or [2] generate new secret.")
+                    );
+                } else {
+                    println!(
+                        "  {} Code doesn't match. {}",
+                        color::red("✗"),
+                        color::dim("Wait for a fresh code and try again.")
+                    );
+                }
+            }
+        } else {
+            // Fallback if we couldn't parse the secret — just continue
+            let _ = prompt_line(&format!(
+                "  {} {}: ",
+                color::cyan("Enter"),
+                color::cyan("Continue")
+            ));
+        }
     }
 
     // ── Verification ───────────────────────────────────────────────
@@ -420,23 +508,22 @@ pub fn create(
         .join(&hostname);
 
     println!();
-    println!(
-        "  ╭── {} ────────────────────────╮",
-        color::green("Certificate mesh created")
+    print_box(
+        "  ",
+        Some(&color::green("Certificate mesh created")),
+        &[
+            String::new(),
+            format!("Profile:        {}", selection.profile),
+            format!("CA fingerprint: {}", truncate_str(ca_fingerprint, 35)),
+            format!("Hostname:       {}", truncate_str(&hostname, 35)),
+            format!(
+                "Certificates:   {}",
+                truncate_str(&cert_path.display().to_string(), 35)
+            ),
+            String::new(),
+        ],
+        BoxStyle::Rounded,
     );
-    println!("  │                                                     │");
-    println!("  │  Profile:        {:<35}│", selection.profile);
-    println!(
-        "  │  CA fingerprint: {:<35}│",
-        truncate_str(ca_fingerprint, 35)
-    );
-    println!("  │  Hostname:       {:<35}│", truncate_str(&hostname, 35));
-    println!(
-        "  │  Certificates:   {:<35}│",
-        truncate_str(&cert_path.display().to_string(), 35)
-    );
-    println!("  │                                                     │");
-    println!("  ╰─────────────────────────────────────────────────────╯");
     println!();
     println!("  What's next:");
     println!(
@@ -470,6 +557,95 @@ fn truncate_str(s: &str, max: usize) -> String {
     } else {
         format!("{}…", &s[..max - 1])
     }
+}
+
+/// Visible width of a string, ignoring ANSI escape sequences.
+///
+/// Counts Unicode characters outside of `\x1b[…m` sequences.
+fn visible_width(s: &str) -> usize {
+    let mut width = 0usize;
+    let mut in_escape = false;
+    for ch in s.chars() {
+        if in_escape {
+            if ch == 'm' {
+                in_escape = false;
+            }
+        } else if ch == '\x1b' {
+            in_escape = true;
+        } else {
+            width += 1;
+        }
+    }
+    width
+}
+
+/// Pad a string with trailing spaces so its *visible* width equals `target`.
+///
+/// If the visible width already exceeds `target`, the string is returned as-is.
+fn pad_visible(s: &str, target: usize) -> String {
+    let vw = visible_width(s);
+    if vw >= target {
+        s.to_string()
+    } else {
+        format!("{}{}", s, " ".repeat(target - vw))
+    }
+}
+
+/// Box style: `╭╮╰╯│─` (rounded) or `┌┐└┘│─` (square).
+#[derive(Clone, Copy)]
+enum BoxStyle {
+    Rounded,
+    Square,
+}
+
+/// Print a box with auto-aligned right border.
+///
+/// `indent` is the leading whitespace (e.g. `"  "`).
+/// `title` if `Some`, is embedded in the top border: `╭── Title ──…╮`.
+/// `lines` are the content lines (may contain ANSI color codes).
+/// The inner width is derived from the widest visible line + 2 padding.
+fn print_box(indent: &str, title: Option<&str>, lines: &[String], style: BoxStyle) {
+    let (tl, tr, bl, br, h, v) = match style {
+        BoxStyle::Rounded => ('╭', '╮', '╰', '╯', '─', '│'),
+        BoxStyle::Square => ('┌', '┐', '└', '┘', '─', '│'),
+    };
+
+    // Determine inner width: max visible width + 2 spaces (left + right padding)
+    let max_content = lines.iter().map(|l| visible_width(l)).max().unwrap_or(0);
+    let title_width = title.map(|t| visible_width(t) + 6).unwrap_or(0); // "── Title ──"
+    let inner = max_content.max(title_width).max(20) + 2; // +2 for side padding
+
+    // Top border
+    if let Some(t) = title {
+        let label = format!("{h}{h} {t} ");
+        let label_vw = visible_width(&label);
+        let remaining = if inner + 2 > label_vw {
+            inner + 2 - label_vw
+        } else {
+            1
+        };
+        println!(
+            "{indent}{tl}{label}{}{tr}",
+            std::iter::repeat_n(h, remaining).collect::<String>()
+        );
+    } else {
+        println!(
+            "{indent}{tl}{}{tr}",
+            std::iter::repeat_n(h, inner + 2).collect::<String>()
+        );
+    }
+
+    // Content lines
+    for line in lines {
+        let padded = pad_visible(line, inner);
+        println!("{indent}{v} {padded} {v}");
+    }
+
+    // Bottom border
+    println!(
+        "{indent}{bl}{}{br}",
+        std::iter::repeat_n(h, inner + 2).collect::<String>()
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -750,21 +926,27 @@ fn prompt_passphrase_and_entropy() -> anyhow::Result<(String, [u8; 32])> {
         color::dim("This passphrase protects your CA's private key. You'll need")
     );
     println!("  {}\n", color::dim("it every time the daemon restarts."));
-    println!("  ┌─────────────────────────────────────────────────────┐");
-    println!(
-        "  │  {}  {}                 │",
-        color::yellow("⚠"),
-        color::yellow("There is no recovery mechanism.")
+    print_box(
+        "  ",
+        None,
+        &[
+            format!(
+                "{}  {}",
+                color::yellow("⚠"),
+                color::yellow("There is no recovery mechanism.")
+            ),
+            format!(
+                "   {}",
+                color::yellow("If you lose this passphrase, the entire mesh")
+            ),
+            format!(
+                "   {}",
+                color::yellow("must be recreated from scratch.")
+            ),
+        ],
+        BoxStyle::Square,
     );
-    println!(
-        "  │     {}    │",
-        color::yellow("If you lose this passphrase, the entire mesh")
-    );
-    println!(
-        "  │     {}                 │",
-        color::yellow("must be recreated from scratch.")
-    );
-    println!("  └─────────────────────────────────────────────────────┘\n");
+    println!();
     println!(
         "  [1] {}   {}",
         color::cyan("Let me mash the keyboard!"),
@@ -952,56 +1134,51 @@ fn print_create_review(
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "localhost".to_string());
 
-    println!();
-    println!("  ╭── Review ──────────────────────────────────────────╮");
-    println!("  │                                                     │");
-    println!("  │  1. Profile:     {:<35}│", profile);
-    if let Some(open) = enrollment_open {
-        println!(
-            "  │     Enrollment: {:<35}│",
-            if open { "Open" } else { "Closed" }
-        );
-    }
-    if let Some(required) = requires_approval {
-        println!(
-            "  │     Approval:   {:<35}│",
-            if required { "Required" } else { "Not required" }
-        );
-    }
-    if let Some(op) = operator {
-        println!("  │     Operator:   {:<35}│", truncate_str(op, 35));
-    }
-    println!("  │  2. Passphrase: {:<35}│", truncate_str(passphrase, 35));
-    println!("  │                                                     │");
-    println!("  │  {:<51}│", color::dim("This will:"));
-    println!(
-        "  │  {:<51}│",
-        color::dim("• Generate an ECDSA P-256 CA keypair")
-    );
-    println!(
-        "  │  {:<51}│",
-        color::dim(&format!(
-            "• Create a CA on this machine ({})",
-            truncate_str(&hostname, 19)
-        ))
-    );
-    println!(
-        "  │  {:<51}│",
-        color::dim("• Install the CA in your system trust store")
-    );
-
     let enrollment_action = match enrollment_open {
         Some(true) | None => "• Open enrollment for other machines",
         Some(false) => "• Keep enrollment closed",
     };
-    println!("  │  {:<51}│", color::dim(enrollment_action));
-    println!("  │                                                     │");
-    println!(
-        "  │  {}│",
-        color::yellow("⚠ passphrase will not be shown again after creation ")
-    );
-    println!("  │                                                     │");
-    println!("  ╰─────────────────────────────────────────────────────╯");
+
+    let mut lines = vec![
+        String::new(),
+        format!("1. Profile:     {profile}"),
+    ];
+    if let Some(open) = enrollment_open {
+        lines.push(format!(
+            "   Enrollment: {}",
+            if open { "Open" } else { "Closed" }
+        ));
+    }
+    if let Some(required) = requires_approval {
+        lines.push(format!(
+            "   Approval:   {}",
+            if required { "Required" } else { "Not required" }
+        ));
+    }
+    if let Some(op) = operator {
+        lines.push(format!("   Operator:   {}", truncate_str(op, 35)));
+    }
+    lines.push(format!(
+        "2. Passphrase: {}",
+        color::cyan_bold(&truncate_str(passphrase, 35))
+    ));
+    lines.push(String::new());
+    lines.push(color::dim("This will:"));
+    lines.push(color::dim("• Generate an ECDSA P-256 CA keypair"));
+    lines.push(color::dim(&format!(
+        "• Create a CA on this machine ({})",
+        truncate_str(&hostname, 19)
+    )));
+    lines.push(color::dim("• Install the CA in your system trust store"));
+    lines.push(color::dim(enrollment_action));
+    lines.push(String::new());
+    lines.push(color::yellow(
+        "⚠ passphrase will not be shown again after creation",
+    ));
+    lines.push(String::new());
+
+    println!();
+    print_box("  ", Some("Review"), &lines, BoxStyle::Rounded);
 
     if profile_locked {
         println!(
@@ -1588,6 +1765,36 @@ pub fn revoke(
 
 pub fn destroy(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
     let client = require_daemon(endpoint)?;
+
+    // Interactive confirmation gate — skip in --json (scripting) mode
+    if !json {
+        println!();
+        println!(
+            "  {}  This will {} all certmesh state:",
+            color::yellow("⚠"),
+            color::yellow("permanently delete")
+        );
+        println!("     {}", color::dim("CA keys, certificates, enrollments, and audit logs."));
+        println!(
+            "     {}",
+            color::dim("If this node is the root CA, all mesh members will")
+        );
+        println!(
+            "     {}",
+            color::dim("lose their ability to renew certificates.")
+        );
+        println!();
+        let answer = prompt_line(&format!(
+            "  Type {} to confirm: ",
+            color::red("DESTROY")
+        ))?;
+        if answer.trim() != "DESTROY" {
+            println!("  Aborted. No changes made.");
+            return Ok(());
+        }
+        println!();
+    }
+
     let resp = client.post_json("/v1/certmesh/destroy", &serde_json::json!({}))?;
 
     let destroyed = resp
