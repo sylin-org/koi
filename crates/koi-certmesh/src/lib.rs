@@ -1056,9 +1056,15 @@ pub(crate) fn build_status(
     roster: &Roster,
     profile: &TrustProfile,
 ) -> protocol::CertmeshStatus {
+    let ca_fingerprint = match ca_guard {
+        Some(ca) => Some(ca::ca_fingerprint(ca)),
+        None => ca::ca_fingerprint_from_disk().ok(),
+    };
+
     protocol::CertmeshStatus {
         ca_initialized: ca::is_ca_initialized(),
         ca_locked: ca_guard.is_none(),
+        ca_fingerprint,
         profile: *profile,
         enrollment_state: roster.metadata.enrollment_state.clone(),
         enrollment_deadline: roster.metadata.enrollment_deadline.map(|d| d.to_rfc3339()),

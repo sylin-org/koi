@@ -34,6 +34,8 @@ pub struct JoinResponse {
 pub struct CertmeshStatus {
     pub ca_initialized: bool,
     pub ca_locked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_fingerprint: Option<String>,
     pub profile: TrustProfile,
     pub enrollment_state: EnrollmentState,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -527,6 +529,7 @@ mod tests {
         let status = CertmeshStatus {
             ca_initialized: true,
             ca_locked: false,
+            ca_fingerprint: Some("abc123".to_string()),
             profile: TrustProfile::JustMe,
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
@@ -551,6 +554,7 @@ mod tests {
         let status = CertmeshStatus {
             ca_initialized: true,
             ca_locked: false,
+            ca_fingerprint: None,
             profile: TrustProfile::JustMe,
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
@@ -570,6 +574,7 @@ mod tests {
         let status = CertmeshStatus {
             ca_initialized: true,
             ca_locked: false,
+            ca_fingerprint: Some("fp-org".to_string()),
             profile: TrustProfile::MyOrganization,
             enrollment_state: EnrollmentState::Closed,
             enrollment_deadline: Some("2026-03-01T00:00:00Z".to_string()),
@@ -748,6 +753,7 @@ mod tests {
         let status = CertmeshStatus {
             ca_initialized: true,
             ca_locked: false,
+            ca_fingerprint: Some("fp-round-trip".to_string()),
             profile: TrustProfile::MyTeam,
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: Some("2026-03-01T00:00:00Z".to_string()),
@@ -787,6 +793,7 @@ mod tests {
         let status = CertmeshStatus {
             ca_initialized: false,
             ca_locked: false,
+            ca_fingerprint: None,
             profile: TrustProfile::JustMe,
             enrollment_state: EnrollmentState::Closed,
             enrollment_deadline: None,
