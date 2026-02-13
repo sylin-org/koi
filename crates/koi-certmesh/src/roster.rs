@@ -27,6 +27,11 @@ pub struct RosterMetadata {
     pub trust_profile: TrustProfile,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operator: Option<String>,
+    /// Whether enrollment requires operator approval.
+    ///
+    /// When absent (older rosters), this falls back to trust-profile defaults.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub requires_approval: Option<bool>,
     pub enrollment_state: EnrollmentState,
     /// When the enrollment window automatically closes (if set).
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -122,6 +127,7 @@ impl Roster {
                 created_at: Utc::now(),
                 trust_profile: TrustProfile::default(),
                 operator: None,
+                requires_approval: Some(TrustProfile::default().requires_approval()),
                 enrollment_state: EnrollmentState::Closed,
                 enrollment_deadline: None,
                 allowed_domain: None,
@@ -134,10 +140,25 @@ impl Roster {
 
     /// Create a new empty roster with the given profile.
     pub fn new(profile: TrustProfile, operator: Option<String>) -> Self {
+        Self::new_with_policy(profile, operator, None, None)
+    }
+
+    /// Create a new empty roster with optional policy overrides.
+    pub fn new_with_policy(
+        profile: TrustProfile,
+        operator: Option<String>,
+        enrollment_open: Option<bool>,
+        requires_approval: Option<bool>,
+    ) -> Self {
         let enrollment_state = if profile.enrollment_default_open() {
             EnrollmentState::Open
         } else {
             EnrollmentState::Closed
+        };
+        let enrollment_state = match enrollment_open {
+            Some(true) => EnrollmentState::Open,
+            Some(false) => EnrollmentState::Closed,
+            None => enrollment_state,
         };
 
         Self {
@@ -145,6 +166,9 @@ impl Roster {
                 created_at: Utc::now(),
                 trust_profile: profile,
                 operator,
+                requires_approval: Some(
+                    requires_approval.unwrap_or_else(|| profile.requires_approval()),
+                ),
                 enrollment_state,
                 enrollment_deadline: None,
                 allowed_domain: None,
@@ -153,6 +177,13 @@ impl Roster {
             members: Vec::new(),
             revocation_list: Vec::new(),
         }
+    }
+
+    /// Effective approval requirement with backward compatibility.
+    pub fn requires_approval(&self) -> bool {
+        self.metadata
+            .requires_approval
+            .unwrap_or_else(|| self.metadata.trust_profile.requires_approval())
     }
 
     /// Check if enrollment is currently open, considering both state and deadline.

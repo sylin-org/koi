@@ -19,6 +19,80 @@ use crate::format;
 /// mDNS discovery timeout for finding a CA on the local network.
 const CA_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+// ── Color helpers ────────────────────────────────────────────────────
+//
+// Semantic color system per CERTMESH-CREATE-WIZARD.md:
+//   Cyan       — active trigger-effect pair (Enter + what it activates)
+//   Cyan bold  — critical value to capture (passphrase, TOTP manual code)
+//   Green      — completed / success (✓ checkmarks)
+//   Yellow     — irreversible warning (⚠, "no recovery mechanism")
+//   Red        — error (✗ wrong input, failed verification)
+//   Dim        — supporting / secondary (descriptions, hints, Cancel)
+//   Default    — neutral / settled text, box chrome
+//
+// Degrades gracefully: respects NO_COLOR, TERM=dumb, non-interactive stdout.
+
+mod color {
+    use std::io::IsTerminal;
+
+    /// Whether the terminal supports ANSI color output.
+    fn enabled() -> bool {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            if std::env::var_os("NO_COLOR").is_some() {
+                return false;
+            }
+            if std::env::var("TERM")
+                .map(|t| t.eq_ignore_ascii_case("dumb"))
+                .unwrap_or(false)
+            {
+                return false;
+            }
+            std::io::stdout().is_terminal()
+        })
+    }
+
+    /// Wrap text in an ANSI escape sequence, returning plain text when colors
+    /// are unavailable.
+    fn wrap(code: &str, text: &str) -> String {
+        if enabled() {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
+    }
+
+    /// Cyan — active trigger-effect pair.
+    pub fn cyan(text: &str) -> String {
+        wrap("36", text)
+    }
+
+    /// Cyan bold — critical value to capture (passphrase, TOTP code).
+    pub fn cyan_bold(text: &str) -> String {
+        wrap("1;36", text)
+    }
+
+    /// Green — completed / success.
+    pub fn green(text: &str) -> String {
+        wrap("32", text)
+    }
+
+    /// Yellow — irreversible warning.
+    pub fn yellow(text: &str) -> String {
+        wrap("33", text)
+    }
+
+    /// Red — error.
+    pub fn red(text: &str) -> String {
+        wrap("31", text)
+    }
+
+    /// Dim — supporting / secondary text.
+    pub fn dim(text: &str) -> String {
+        wrap("2", text)
+    }
+}
+
 // ── Shared helper ────────────────────────────────────────────────────
 
 /// Resolve the daemon endpoint or bail with a clear message.
@@ -40,34 +114,46 @@ fn require_daemon(endpoint: Option<&str>) -> anyhow::Result<KoiClient> {
 pub fn create(
     profile: Option<&str>,
     operator: Option<&str>,
-    entropy_mode: &str,
+    enrollment: Option<&str>,
+    require_approval: Option<bool>,
     passphrase: Option<&str>,
     json: bool,
     endpoint: Option<&str>,
 ) -> anyhow::Result<()> {
     let client = require_daemon(endpoint)?;
-    let trust_profile = resolve_profile(profile);
-    validate_operator(&trust_profile, operator)?;
+    if preflight_ca_exists(&client)? {
+        return Ok(());
+    }
 
-    // Collect entropy locally — keyboard mode not available over HTTP
-    let entropy_seed = collect_entropy_seed(entropy_mode, passphrase)?;
-    let ca_passphrase = resolve_passphrase(passphrase)?;
-
-    let body = serde_json::json!({
-        "passphrase": ca_passphrase,
-        "entropy_hex": hex_encode(&entropy_seed),
-        "profile": trust_profile,
-        "operator": operator,
-    });
-    let resp = client.post_json("/v1/certmesh/create", &body)?;
-
-    let totp_uri = resp.get("totp_uri").and_then(|v| v.as_str()).unwrap_or("");
-    let ca_fingerprint = resp
-        .get("ca_fingerprint")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-
+    // ── Fully non-interactive JSON mode ────────────────────────────
     if json {
+        let trust_profile = profile
+            .and_then(TrustProfile::from_str_loose)
+            .ok_or_else(|| anyhow::anyhow!("--profile is required with --json"))?;
+        let ca_passphrase = passphrase
+            .map(ToString::to_string)
+            .ok_or_else(|| anyhow::anyhow!("--passphrase is required with --json"))?;
+        validate_operator(
+            require_approval.unwrap_or_else(|| trust_profile.requires_approval()),
+            operator,
+        )?;
+        let entropy_seed =
+            entropy::collect_entropy(entropy::EntropyMode::Manual(ca_passphrase.clone()))?;
+
+        let enrollment_open = parse_enrollment_open(enrollment)?;
+        let body = serde_json::json!({
+            "passphrase": ca_passphrase,
+            "entropy_hex": hex_encode(&entropy_seed),
+            "profile": trust_profile,
+            "operator": operator,
+            "enrollment_open": enrollment_open,
+            "requires_approval": require_approval,
+        });
+        let resp = client.post_json("/v1/certmesh/create", &body)?;
+        let ca_fingerprint = resp
+            .get("ca_fingerprint")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         println!(
             "{}",
             serde_json::json!({
@@ -76,15 +162,173 @@ pub fn create(
                 "ca_fingerprint": ca_fingerprint,
             })
         );
-    } else {
-        println!("Certificate mesh created.");
-        println!("  Profile:        {trust_profile}");
-        println!("  CA fingerprint: {ca_fingerprint}");
+        return Ok(());
     }
 
-    // Render QR code locally from the returned TOTP URI
+    // ── Intro box ──────────────────────────────────────────────────
+    println!();
+    println!("  ╭──────────────────────────────────────────────────────╮");
+    println!("  │  Create a certificate mesh                           │");
+    println!("  │                                                      │");
+    println!(
+        "  │  {}         │",
+        color::dim("A certificate mesh is a private Certificate")
+    );
+    println!(
+        "  │  {}      │",
+        color::dim("Authority (CA) for your local network. It lets")
+    );
+    println!(
+        "  │  {}      │",
+        color::dim("your machines issue and trust TLS certificates")
+    );
+    println!(
+        "  │  {}            │",
+        color::dim("without relying on an external provider.")
+    );
+    println!("  │                                                      │");
+    println!("  │  ESC at any time to cancel.                          │");
+    println!("  ╰──────────────────────────────────────────────────────╯");
+
+    // ── Step 1: Profile (skip if --profile provided) ───────────────
+    let mut selection = if let Some(profile_value) = profile {
+        let trust_profile = TrustProfile::from_str_loose(profile_value)
+            .ok_or_else(|| anyhow::anyhow!("Invalid profile '{profile_value}'"))?;
+        println!(
+            "\n  {} Profile: {trust_profile} {}",
+            color::green("✓"),
+            color::dim("(from --profile)")
+        );
+        ProfileSelection {
+            profile: trust_profile,
+            enrollment_open: parse_enrollment_open(enrollment)?,
+            requires_approval: require_approval,
+        }
+    } else {
+        prompt_profile_selection()?
+    };
+
+    let mut operator_name = resolve_operator_interactive(
+        selection.profile,
+        selection.effective_requires_approval(),
+        operator,
+    )?;
+
+    // ── Step 2: Passphrase (skip if --passphrase provided) ─────────
+    let (mut passphrase_value, mut entropy_seed) = if let Some(provided) = passphrase {
+        let es = entropy::collect_entropy(entropy::EntropyMode::Manual(provided.to_string()))?;
+        println!(
+            "  {} Passphrase: {}",
+            color::green("✓"),
+            color::dim("(from --passphrase)")
+        );
+        (Some(provided.to_string()), es)
+    } else {
+        let (pp, es) = prompt_passphrase_and_entropy()?;
+        (Some(pp), es)
+    };
+
+    // ── Review loop ────────────────────────────────────────────────
+    loop {
+        print_create_review(
+            selection.profile,
+            operator_name.as_deref(),
+            passphrase_value.as_deref().unwrap_or(""),
+            selection.enrollment_open,
+            selection.requires_approval,
+            profile.is_some(),
+            passphrase.is_some(),
+        );
+        let nav = prompt_line(&format!(
+            "\n  {} {}  {} {} {}  {} {}: ",
+            color::cyan("Enter"),
+            color::cyan("Create"),
+            color::dim("1-2"),
+            color::dim("Go back"),
+            color::dim(" "),
+            "esc",
+            color::dim("Cancel"),
+        ))?;
+        match nav.trim().to_ascii_lowercase().as_str() {
+            "" => break,
+            "1" if profile.is_none() => {
+                selection = prompt_profile_selection()?;
+                operator_name = resolve_operator_interactive(
+                    selection.profile,
+                    selection.effective_requires_approval(),
+                    operator_name.as_deref(),
+                )?;
+            }
+            "2" if passphrase.is_none() => {
+                let (pp, es) = prompt_passphrase_and_entropy()?;
+                passphrase_value = Some(pp);
+                entropy_seed = es;
+            }
+            "esc" => {
+                println!("\n  Canceled. No changes made.");
+                return Ok(());
+            }
+            _ => println!(
+                "  {}",
+                color::dim("Press Enter to create, 1 or 2 to go back, or esc to cancel.")
+            ),
+        }
+    }
+
+    // ── Execute creation ───────────────────────────────────────────
+    let ca_passphrase = passphrase_value.unwrap_or_default();
+    if ca_passphrase.is_empty() {
+        anyhow::bail!("Passphrase cannot be empty.");
+    }
+    validate_operator(
+        selection.effective_requires_approval(),
+        operator_name.as_deref(),
+    )?;
+
+    let body = serde_json::json!({
+        "passphrase": ca_passphrase,
+        "entropy_hex": hex_encode(&entropy_seed),
+        "profile": selection.profile,
+        "operator": operator_name,
+        "enrollment_open": selection.enrollment_open,
+        "requires_approval": selection.requires_approval,
+    });
+
+    println!("\n  Creating certificate mesh...\n");
+    let resp = client.post_json("/v1/certmesh/create", &body)?;
+
+    let totp_uri = resp.get("totp_uri").and_then(|v| v.as_str()).unwrap_or("");
+    let ca_fingerprint = resp
+        .get("ca_fingerprint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    // ── Creation output ────────────────────────────────────────────
+    println!("  {} CA keypair generated (ECDSA P-256)", color::green("✓"));
+    println!(
+        "  {} Private key encrypted (Argon2id + AES-256-GCM)",
+        color::green("✓")
+    );
+    println!("  {} Roster initialized", color::green("✓"));
+    println!("  {} Audit log started", color::green("✓"));
+
+    // ── TOTP setup (QR first, then manual code, per proposal) ──────
     if !totp_uri.is_empty() {
-        // Parse the secret from the otpauth:// URI so we can build a QR code
+        println!("\n  Authenticator setup\n");
+        println!(
+            "  {}",
+            color::dim("When other machines join this mesh, they'll prove")
+        );
+        println!(
+            "  {}",
+            color::dim("authorization with a one-time code from an authenticator")
+        );
+        println!(
+            "  {}\n",
+            color::dim("app (Google Authenticator, Authy, 1Password, etc.).")
+        );
+
+        // QR code first
         if let Some(secret) = extract_totp_secret_from_uri(totp_uri) {
             let hostname = hostname::get()
                 .map(|h| h.to_string_lossy().to_string())
@@ -94,61 +338,710 @@ pub fn create(
                 "Koi Certmesh",
                 &format!("admin@{hostname}"),
             );
-            println!("\nScan this QR code with your authenticator app:\n");
+            println!("  Scan this QR code:\n");
             println!("{qr}");
         }
+
+        // Manual code second
+        if let Some(secret_base32) = extract_totp_secret_base32_from_uri(totp_uri) {
+            println!(
+                "  Or enter this code manually: {}\n",
+                color::cyan_bold(&secret_base32)
+            );
+        }
+
+        println!("  ┌─────────────────────────────────────────────────────┐");
+        println!(
+            "  │  {}         │",
+            color::yellow("Save this now. It will not be shown again.")
+        );
+        println!(
+            "  │  {}     │",
+            color::dim("(rotate later with 'koi certmesh rotate-totp')")
+        );
+        println!("  └─────────────────────────────────────────────────────┘");
+        println!();
+        let _ = prompt_line(&format!(
+            "  {} {}: ",
+            color::cyan("Enter"),
+            color::cyan("Continue")
+        ));
     }
 
-    Ok(())
-}
+    // ── Verification ───────────────────────────────────────────────
+    println!("\n  Verifying setup...\n");
+    if let Ok(status_resp) = client.get_json("/v1/certmesh/status") {
+        let ca_initialized = status_resp
+            .get("ca_initialized")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let member_count = status_resp
+            .get("member_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let ca_locked = status_resp
+            .get("ca_locked")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
-fn resolve_profile(profile: Option<&str>) -> TrustProfile {
-    profile
-        .and_then(TrustProfile::from_str_loose)
-        .unwrap_or(TrustProfile::JustMe)
-}
-
-fn validate_operator(trust_profile: &TrustProfile, operator: Option<&str>) -> anyhow::Result<()> {
-    if trust_profile.requires_operator() && operator.is_none() {
-        anyhow::bail!(
-            "The '{}' profile requires --operator <name>.",
-            trust_profile
+        println!(
+            "  {} CA initialized",
+            if ca_initialized {
+                color::green("✓")
+            } else {
+                color::red("✗")
+            }
+        );
+        println!(
+            "  {} CA key decrypts successfully",
+            if !ca_locked {
+                color::green("✓")
+            } else {
+                color::red("✗")
+            }
+        );
+        println!(
+            "  {} Roster reachable ({member_count} member{})",
+            if member_count > 0 {
+                color::green("✓")
+            } else {
+                color::red("✗")
+            },
+            if member_count == 1 { "" } else { "s" }
         );
     }
+
+    // ── Summary box ────────────────────────────────────────────────
+    let hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "localhost".to_string());
+    let cert_path = koi_common::paths::koi_data_dir()
+        .join("certs")
+        .join(&hostname);
+
+    println!();
+    println!(
+        "  ╭── {} ────────────────────────╮",
+        color::green("Certificate mesh created")
+    );
+    println!("  │                                                     │");
+    println!("  │  Profile:        {:<35}│", selection.profile);
+    println!(
+        "  │  CA fingerprint: {:<35}│",
+        truncate_str(ca_fingerprint, 35)
+    );
+    println!("  │  Hostname:       {:<35}│", truncate_str(&hostname, 35));
+    println!(
+        "  │  Certificates:   {:<35}│",
+        truncate_str(&cert_path.display().to_string(), 35)
+    );
+    println!("  │                                                     │");
+    println!("  ╰─────────────────────────────────────────────────────╯");
+    println!();
+    println!("  What's next:");
+    println!(
+        "  {}       koi certmesh join",
+        color::dim("• On another machine:")
+    );
+    println!(
+        "  {}   koi certmesh unlock",
+        color::dim("• After a daemon restart:")
+    );
+    println!(
+        "  {}     koi certmesh status",
+        color::dim("• Check status anytime:")
+    );
+
     Ok(())
 }
 
-fn collect_entropy_seed(entropy_mode: &str, passphrase: Option<&str>) -> anyhow::Result<[u8; 32]> {
-    Ok(match entropy_mode {
-        "manual" => {
-            let phrase = passphrase
-                .ok_or_else(|| anyhow::anyhow!("--passphrase required with --entropy=manual"))?;
-            entropy::collect_entropy(entropy::EntropyMode::Manual(phrase.to_string()))?
+// ── Create helpers ──────────────────────────────────────────────────
+
+fn validate_operator(requires_approval: bool, operator: Option<&str>) -> anyhow::Result<()> {
+    if requires_approval && operator.is_none() {
+        anyhow::bail!("This policy requires --operator <name>.");
+    }
+    Ok(())
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max - 1])
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ProfileSelection {
+    profile: TrustProfile,
+    enrollment_open: Option<bool>,
+    requires_approval: Option<bool>,
+}
+
+impl ProfileSelection {
+    fn effective_requires_approval(&self) -> bool {
+        self.requires_approval
+            .unwrap_or_else(|| self.profile.requires_approval())
+    }
+}
+
+fn preflight_ca_exists(client: &KoiClient) -> anyhow::Result<bool> {
+    let status = client.get_json("/v1/certmesh/status")?;
+    let ca_init = status
+        .get("ca_initialized")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !ca_init {
+        return Ok(false);
+    }
+
+    let profile = status
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let fingerprint = status
+        .get("ca_fingerprint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let member_count = status
+        .get("member_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    println!();
+    println!(
+        "  {}  A certificate mesh already exists on this machine.",
+        color::yellow("⚠")
+    );
+    println!();
+    println!("     Profile:        {profile}");
+    println!("     CA fingerprint: {fingerprint}");
+    println!("     Members:        {member_count} active");
+    println!();
+    println!("  {}", color::dim("To inspect:   koi certmesh status"));
+    println!("  {}", color::dim("To destroy:   koi certmesh destroy"));
+    println!();
+    println!("  No changes made.");
+    Ok(true)
+}
+
+fn prompt_profile_selection() -> anyhow::Result<ProfileSelection> {
+    println!("\n  Step 1 of 2 — Who is this mesh for?\n");
+    println!(
+        "  [1] {}          {}",
+        color::cyan("Just me"),
+        color::dim("You control every machine on the network.")
+    );
+    println!(
+        "                       {}\n",
+        color::dim("Anyone with the authenticator code can join.")
+    );
+    println!(
+        "  [2] My team          {}",
+        color::dim("A small group. An operator name is recorded")
+    );
+    println!(
+        "                       {}\n",
+        color::dim("in the audit log for accountability.")
+    );
+    println!(
+        "  [3] My organization  {}",
+        color::dim("Strict access control. Enrollment starts")
+    );
+    println!(
+        "                       {}\n",
+        color::dim("closed — each machine must be approved.")
+    );
+    println!(
+        "  [4] Custom           {}\n",
+        color::dim("Choose each policy individually.")
+    );
+
+    loop {
+        let line = prompt_line(&format!(
+            "  Choose [1-4, {}=1, esc={}]: ",
+            color::cyan("Enter"),
+            color::dim("cancel")
+        ))?;
+        match line.trim().to_ascii_lowercase().as_str() {
+            "" | "1" | "just-me" | "just me" => {
+                println!("  {} Just me\n", color::green("✓"));
+                return Ok(ProfileSelection {
+                    profile: TrustProfile::JustMe,
+                    enrollment_open: None,
+                    requires_approval: None,
+                });
+            }
+            "2" | "team" | "my-team" | "my team" => {
+                println!("  {} My team\n", color::green("✓"));
+                return Ok(ProfileSelection {
+                    profile: TrustProfile::MyTeam,
+                    enrollment_open: None,
+                    requires_approval: None,
+                });
+            }
+            "3" | "organization" | "org" | "my-organization" | "my organization" => {
+                println!("  {} My organization\n", color::green("✓"));
+                return Ok(ProfileSelection {
+                    profile: TrustProfile::MyOrganization,
+                    enrollment_open: None,
+                    requires_approval: None,
+                });
+            }
+            "4" | "custom" => return prompt_custom_policy(),
+            "esc" => anyhow::bail!("Canceled. No changes made."),
+            _ => println!("  {} Pick 1, 2, 3, or 4.", color::red("✗")),
         }
-        _ => entropy::collect_entropy(entropy::EntropyMode::AutoPassphrase)?,
+    }
+}
+
+fn prompt_custom_policy() -> anyhow::Result<ProfileSelection> {
+    println!("\n  {} Custom\n", color::green("✓"));
+
+    println!("    Enrollment when mesh is created:\n");
+    println!(
+        "    [1] {}   {}",
+        color::cyan("Open (default)"),
+        color::dim("Any machine with a valid TOTP code can join")
+    );
+    println!(
+        "                         {}\n",
+        color::dim("immediately. You can close enrollment later.")
+    );
+    println!(
+        "    [2] Closed           {}",
+        color::dim("Machines cannot join until you explicitly")
+    );
+    println!(
+        "                         {}\n",
+        color::dim("run 'certmesh open-enrollment'.")
+    );
+
+    let enrollment_open = loop {
+        let line = prompt_line(&format!(
+            "    Choose [1-2, {}=1, esc={}]: ",
+            color::cyan("Enter"),
+            color::dim("cancel")
+        ))?;
+        match line.trim().to_ascii_lowercase().as_str() {
+            "" | "1" | "open" | "o" => {
+                println!("    {} Enrollment: Open\n", color::green("✓"));
+                break true;
+            }
+            "2" | "closed" | "close" | "c" => {
+                println!("    {} Enrollment: Closed\n", color::green("✓"));
+                break false;
+            }
+            "esc" => anyhow::bail!("Canceled. No changes made."),
+            _ => println!("    {} Enter 1 (open) or 2 (closed).", color::red("✗")),
+        }
+    };
+
+    println!("    Require approval for each join request?\n");
+    println!(
+        "    [1] {}     {}",
+        color::cyan("No (default)"),
+        color::dim("TOTP code is sufficient. Machine joins")
+    );
+    println!(
+        "                         {}\n",
+        color::dim("immediately after verification.")
+    );
+    println!(
+        "    [2] Yes              {}",
+        color::dim("After TOTP verification, an operator must")
+    );
+    println!(
+        "                         {}\n",
+        color::dim("approve the request before a cert is issued.")
+    );
+
+    let requires_approval = loop {
+        let line = prompt_line(&format!(
+            "    Choose [1-2, {}=1, esc={}]: ",
+            color::cyan("Enter"),
+            color::dim("cancel")
+        ))?;
+        match line.trim().to_ascii_lowercase().as_str() {
+            "" | "1" | "no" | "n" => {
+                println!("    {} Approval: No\n", color::green("✓"));
+                break false;
+            }
+            "2" | "yes" | "y" => {
+                println!("    {} Approval: Yes\n", color::green("✓"));
+                break true;
+            }
+            "esc" => anyhow::bail!("Canceled. No changes made."),
+            _ => println!("    {} Enter 1 (no) or 2 (yes).", color::red("✗")),
+        }
+    };
+
+    let enroll_label = if enrollment_open { "Open" } else { "Closed" };
+    let approval_label = if requires_approval {
+        "approval required"
+    } else {
+        "no approval"
+    };
+    println!(
+        "  {} Custom ({enroll_label} enrollment, {approval_label})\n",
+        color::green("✓")
+    );
+
+    let baseline_profile = match (enrollment_open, requires_approval) {
+        (true, false) => TrustProfile::JustMe,
+        (true, true) => TrustProfile::MyTeam,
+        (false, true) => TrustProfile::MyOrganization,
+        (false, false) => TrustProfile::JustMe,
+    };
+
+    Ok(ProfileSelection {
+        profile: baseline_profile,
+        enrollment_open: Some(enrollment_open),
+        requires_approval: Some(requires_approval),
     })
 }
 
-fn resolve_passphrase(passphrase: Option<&str>) -> anyhow::Result<String> {
-    let result = passphrase.map(|s| s.to_string()).unwrap_or_else(|| {
-        eprintln!("Enter a passphrase to protect the CA key:");
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line).unwrap_or_default();
-        line.trim().to_string()
-    });
-    if result.is_empty() {
-        anyhow::bail!("Passphrase cannot be empty.");
+fn resolve_operator_interactive(
+    _profile: TrustProfile,
+    requires_approval: bool,
+    current: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    if !requires_approval {
+        return Ok(None);
     }
-    Ok(result)
+
+    if let Some(op) = current {
+        return Ok(Some(op.to_string()));
+    }
+
+    let default_operator = format!(
+        "{}\\{}",
+        hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "host".to_string()),
+        std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "operator".to_string())
+    );
+    println!("    {}", color::dim("Operator name (for audit trails):"));
+    let line = prompt_line(&format!(
+        "    {}: ",
+        color::dim(&format!("(default: {default_operator})"))
+    ))?;
+    if line.trim().is_empty() {
+        println!("    {} Operator: {default_operator}\n", color::green("✓"));
+        Ok(Some(default_operator))
+    } else {
+        let op = line.trim().to_string();
+        println!("    {} Operator: {op}\n", color::green("✓"));
+        Ok(Some(op))
+    }
+}
+
+/// Step 2 — CA passphrase. Three paths per the proposal:
+/// 1. Keyboard mashing (default) — interactive entropy, then generate passphrase
+/// 2. Generate one for me — OS RNG entropy, then generate passphrase
+/// 3. I'll type my own — user provides passphrase, entropy derived from it
+fn prompt_passphrase_and_entropy() -> anyhow::Result<(String, [u8; 32])> {
+    println!("\n  Step 2 of 2 — CA passphrase\n");
+    println!(
+        "  {}",
+        color::dim("This passphrase protects your CA's private key. You'll need")
+    );
+    println!("  {}\n", color::dim("it every time the daemon restarts."));
+    println!("  ┌─────────────────────────────────────────────────────┐");
+    println!(
+        "  │  {}  {}                 │",
+        color::yellow("⚠"),
+        color::yellow("There is no recovery mechanism.")
+    );
+    println!(
+        "  │     {}    │",
+        color::yellow("If you lose this passphrase, the entire mesh")
+    );
+    println!(
+        "  │     {}                 │",
+        color::yellow("must be recreated from scratch.")
+    );
+    println!("  └─────────────────────────────────────────────────────┘\n");
+    println!(
+        "  [1] {}   {}",
+        color::cyan("Let me mash the keyboard!"),
+        color::dim("Fun & secure. (default)")
+    );
+    println!(
+        "  [2] Generate one for me          {}",
+        color::dim("Quick — just wait.")
+    );
+    println!(
+        "  [3] I'll type my own             {}\n",
+        color::dim("For password manager users.")
+    );
+
+    let choice = loop {
+        let line = prompt_line(&format!(
+            "  Choose [1-3, {}=1, esc={}]: ",
+            color::cyan("Enter"),
+            color::dim("cancel")
+        ))?;
+        match line.trim().to_ascii_lowercase().as_str() {
+            "" | "1" | "mash" => break 1,
+            "2" | "generate" | "gen" => break 2,
+            "3" | "own" | "manual" => break 3,
+            "esc" => anyhow::bail!("Canceled. No changes made."),
+            _ => println!("  {} Pick 1, 2, or 3.", color::red("✗")),
+        }
+    };
+
+    match choice {
+        1 => {
+            // Keyboard mashing → entropy → generate passphrase
+            let entropy_seed = entropy::collect_entropy(entropy::EntropyMode::KeyboardMashing)?;
+            let passphrase = entropy::generate_passphrase(&entropy_seed);
+            prompt_passphrase_proposal(&passphrase, entropy_seed)
+        }
+        2 => {
+            // Auto-generate → entropy → generate passphrase
+            println!("\n  Generating a secure passphrase...\n");
+            let entropy_seed = entropy::collect_entropy(entropy::EntropyMode::AutoGenerate)?;
+            println!("  {} Done! Secure entropy collected.\n", color::green("✓"));
+            println!("  Press {} to see your passphrase...", color::cyan("Enter"));
+            let _ = prompt_line("  ")?;
+            let passphrase = entropy::generate_passphrase(&entropy_seed);
+            prompt_passphrase_proposal(&passphrase, entropy_seed)
+        }
+        3 => {
+            // User types their own passphrase
+            prompt_own_passphrase()
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Show the generated passphrase proposal and let the user accept or switch.
+fn prompt_passphrase_proposal(
+    passphrase: &str,
+    entropy_seed: [u8; 32],
+) -> anyhow::Result<(String, [u8; 32])> {
+    let hint = entropy::memorization_hint(passphrase);
+
+    println!("\n  Your generated passphrase:\n");
+    println!("      {}\n", color::cyan_bold(passphrase));
+    if !hint.is_empty() {
+        println!(
+            "  {} {}\n",
+            color::dim("Memorization hint:"),
+            color::dim(&hint)
+        );
+    }
+    println!(
+        "  [1] {} {}",
+        color::cyan("Accept this passphrase"),
+        color::dim("(default)")
+    );
+    println!("  [2] I'll use my own instead\n");
+
+    let accept = loop {
+        let line = prompt_line(&format!(
+            "  Choose [1-2, {}=1, esc={}]: ",
+            color::cyan("Enter"),
+            color::dim("cancel")
+        ))?;
+        match line.trim().to_ascii_lowercase().as_str() {
+            "" | "1" => break true,
+            "2" => break false,
+            "esc" => anyhow::bail!("Canceled. No changes made."),
+            _ => println!("  Pick 1 or 2."),
+        }
+    };
+
+    if accept {
+        // Confirm by typing the last word
+        let parts: Vec<&str> = passphrase.split('-').collect();
+        let last_word = parts
+            .get(2)
+            .copied()
+            .unwrap_or(parts.last().copied().unwrap_or(""));
+        loop {
+            let typed = prompt_line(&format!(
+                "  Confirm by typing the last word ({last_word}): "
+            ))?;
+            if typed.trim() == last_word {
+                println!("  {} Passphrase set\n", color::green("✓"));
+                return Ok((passphrase.to_string(), entropy_seed));
+            }
+            println!("  {} That doesn't match. Try again.", color::red("✗"));
+        }
+    } else {
+        // Switch to own passphrase — preserve entropy seed from mashing/generation
+        let (pp, _) = prompt_own_passphrase()?;
+        // Mix user passphrase into the existing entropy seed
+        let mixed = entropy::hash_passphrase(&pp);
+        // XOR the two seeds for best-of-both
+        let mut combined = [0u8; 32];
+        for i in 0..32 {
+            combined[i] = entropy_seed[i] ^ mixed[i];
+        }
+        Ok((pp, combined))
+    }
+}
+
+/// Freeform passphrase entry with strength validation.
+fn prompt_own_passphrase() -> anyhow::Result<(String, [u8; 32])> {
+    loop {
+        let first = prompt_line("  Passphrase: ")?;
+        if first.trim().is_empty() {
+            println!("  Passphrase cannot be empty.");
+            continue;
+        }
+        let bits = entropy::estimate_entropy_bits(first.trim());
+        if bits < 40 {
+            println!("\n  {} Entropy: {bits} bits — too weak", color::yellow("⚠"));
+            println!(
+                "     {}",
+                color::dim("Minimum: 40 bits. Try a longer phrase,")
+            );
+            println!("     {}\n", color::dim("or accept a generated one."));
+            continue;
+        }
+        let confirm = prompt_line("  Confirm passphrase: ")?;
+        if first != confirm {
+            println!("  {} Passphrases do not match.\n", color::red("✗"));
+            continue;
+        }
+        let strength = if bits >= 60 {
+            "excellent"
+        } else if bits >= 52 {
+            "strong"
+        } else {
+            "acceptable"
+        };
+        println!(
+            "  {} Passphrase set {} {}\n",
+            color::green("✓"),
+            color::dim(&format!("(entropy: {bits} bits —")),
+            color::dim(&format!("{strength})"))
+        );
+        let seed = entropy::hash_passphrase(first.trim());
+        return Ok((first.trim().to_string(), seed));
+    }
+}
+
+fn parse_enrollment_open(enrollment: Option<&str>) -> anyhow::Result<Option<bool>> {
+    match enrollment {
+        None => Ok(None),
+        Some(value) => match value.to_ascii_lowercase().as_str() {
+            "open" => Ok(Some(true)),
+            "closed" | "close" => Ok(Some(false)),
+            other => anyhow::bail!("Invalid --enrollment value '{other}'. Use 'open' or 'closed'."),
+        },
+    }
+}
+
+fn print_create_review(
+    profile: TrustProfile,
+    operator: Option<&str>,
+    passphrase: &str,
+    enrollment_open: Option<bool>,
+    requires_approval: Option<bool>,
+    profile_locked: bool,
+    passphrase_locked: bool,
+) {
+    let hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "localhost".to_string());
+
+    println!();
+    println!("  ╭── Review ──────────────────────────────────────────╮");
+    println!("  │                                                     │");
+    println!("  │  1. Profile:     {:<35}│", profile);
+    if let Some(open) = enrollment_open {
+        println!(
+            "  │     Enrollment: {:<35}│",
+            if open { "Open" } else { "Closed" }
+        );
+    }
+    if let Some(required) = requires_approval {
+        println!(
+            "  │     Approval:   {:<35}│",
+            if required { "Required" } else { "Not required" }
+        );
+    }
+    if let Some(op) = operator {
+        println!("  │     Operator:   {:<35}│", truncate_str(op, 35));
+    }
+    println!("  │  2. Passphrase: {:<35}│", truncate_str(passphrase, 35));
+    println!("  │                                                     │");
+    println!("  │  {:<51}│", color::dim("This will:"));
+    println!(
+        "  │  {:<51}│",
+        color::dim("• Generate an ECDSA P-256 CA keypair")
+    );
+    println!(
+        "  │  {:<51}│",
+        color::dim(&format!(
+            "• Create a CA on this machine ({})",
+            truncate_str(&hostname, 19)
+        ))
+    );
+    println!(
+        "  │  {:<51}│",
+        color::dim("• Install the CA in your system trust store")
+    );
+
+    let enrollment_action = match enrollment_open {
+        Some(true) | None => "• Open enrollment for other machines",
+        Some(false) => "• Keep enrollment closed",
+    };
+    println!("  │  {:<51}│", color::dim(enrollment_action));
+    println!("  │                                                     │");
+    println!(
+        "  │  {}│",
+        color::yellow("⚠ passphrase will not be shown again after creation ")
+    );
+    println!("  │                                                     │");
+    println!("  ╰─────────────────────────────────────────────────────╯");
+
+    if profile_locked {
+        println!(
+            "  {}",
+            color::dim("(Profile came from --profile and cannot be edited here.)")
+        );
+    }
+    if passphrase_locked {
+        println!(
+            "  {}",
+            color::dim("(Passphrase came from --passphrase and cannot be edited here.)")
+        );
+    }
+}
+
+fn prompt_line(prompt: &str) -> anyhow::Result<String> {
+    use std::io::Write;
+
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim_end().to_string())
+}
+
+fn extract_totp_secret_base32_from_uri(uri: &str) -> Option<String> {
+    let query = uri.split('?').nth(1)?;
+    for param in query.split('&') {
+        if let Some(val) = param.strip_prefix("secret=") {
+            return Some(val.to_string());
+        }
+    }
+    None
 }
 
 /// Extract the TOTP secret from an otpauth:// URI and reconstruct a TotpSecret.
 fn extract_totp_secret_from_uri(uri: &str) -> Option<koi_crypto::totp::TotpSecret> {
-    // Parse "otpauth://totp/...?secret=BASE32&..."
     let query = uri.split('?').nth(1)?;
     for param in query.split('&') {
         if let Some(val) = param.strip_prefix("secret=") {
-            // Decode base32
             let decoded = base32_decode(val)?;
             return Some(koi_crypto::totp::TotpSecret::from_bytes(decoded));
         }

@@ -1,27 +1,28 @@
-# Certmesh — Certificate Mesh Guide
+# Certmesh — Certificate Mesh
 
-Koi's certmesh capability provides a private Certificate Authority (CA) with TOTP-based enrollment. Two machines on the same LAN can establish mutual TLS trust without external infrastructure — no Let's Encrypt, no self-signed cert warnings, no manual copying of PEM files.
+TLS is the foundation of trust on the internet. But on a local network, getting TLS right is surprisingly hard. Let's Encrypt doesn't issue certificates for `.local` names or private IPs. Self-signed certs trigger browser warnings and break API clients. Manually copying PEM files between machines is fragile and doesn't scale past two hosts. Corporate PKI requires infrastructure most teams don't have.
 
-All CLI commands use the `koi certmesh` moniker. All HTTP endpoints live under `/v1/certmesh/`.
+Koi's certmesh solves this by running a private Certificate Authority directly on your LAN. Two machines can establish mutual TLS trust in under a minute, with no external infrastructure, no manual certificate copying, and no self-signed warnings. The CA handles enrollment, issuance, renewal, and revocation automatically.
 
-Certmesh commands require a running daemon. Use `koi install` or run `koi --daemon` first.
+**When to use certmesh**: You have multiple machines on a LAN that need to communicate over TLS. A homelab where services should trust each other. A development team that needs HTTPS without public DNS. A staging environment that mirrors production's TLS requirements. If you need real certificates but don't have (or want) a public CA, certmesh is the answer.
+
+All CLI commands use the `koi certmesh` prefix. All HTTP endpoints live under `/v1/certmesh/`. Certmesh commands require a running daemon — use `koi install` or `koi --daemon` first.
 
 ---
 
 ## Creating a certificate mesh
 
-Initialize a new CA on the machine that will be the primary:
+The first step is initializing a CA on the machine that will be the primary authority. This is a deliberate act — you're creating a root of trust for your network:
 
 ```
-koi certmesh create --profile just-me --entropy manual --passphrase "my-secret"
+koi certmesh create
 ```
 
 ```
-Certificate mesh created!
+Certificate mesh created.
   Profile:      Just Me
   CA fingerprint: a1b2c3d4e5f6...
-  Primary host: stone-01
-  Certificates: %ProgramData%\koi\certs\stone-01
+  Members:      1
 
 Scan this QR code with your authenticator app:
 █████████████████████████████
@@ -29,23 +30,25 @@ Scan this QR code with your authenticator app:
 ...
 ```
 
-This does several things:
+This does several things at once:
 1. Generates an ECDSA P-256 CA keypair
 2. Encrypts the private key with your passphrase
-3. Issues the first service certificate for this host
-4. Creates a roster with this host as the primary member
+3. Creates a roster with this host as the primary member
+4. Starts certmesh audit logging
 5. Generates a TOTP secret and shows a QR code for your authenticator app
 6. Installs the CA certificate in the system trust store
 
-### Trust profiles
+The QR code is important — scan it now with any TOTP authenticator (Google Authenticator, Authy, 1Password, etc.). You'll need the rotating code to enroll new members.
 
-Choose a profile that matches your environment:
+### Choosing a trust profile
 
-| Profile | Flag value | Enrollment default | Operator required | Use case |
+The profile determines how much ceremony is required to join the mesh. Pick the one that matches your threat model:
+
+| Profile | Flag value | Enrollment default | Operator required | Best for |
 |---|---|---|---|---|
-| **Just Me** | `just-me` | Open | No | Personal homelab |
-| **My Team** | `team` | Open | Yes | Small office or lab |
-| **My Organization** | `organization` | Closed | Yes | Institution with strict controls |
+| **Just Me** | `just-me` | Open | No | Personal homelab — you control all machines |
+| **My Team** | `team` | Open | Yes | Small office or lab — trust but verify |
+| **My Organization** | `organization` | Closed | Yes | Strict environments — explicit approval for each member |
 
 ```
 koi certmesh create --profile just-me
@@ -53,21 +56,70 @@ koi certmesh create --profile team --operator "Alice"
 koi certmesh create --profile organization --operator "Security Team"
 ```
 
-### Entropy modes
+The operator field is a human-readable label for audit trails. In the "just-me" profile, you are the operator by default.
 
-The CA keypair needs entropy. Three modes:
+### Interactive wizard + flags
 
-| Mode | Flag | Description |
-|---|---|---|
-| Auto passphrase | `--entropy passphrase` (default) | Generates a random passphrase, prompts for CA passphrase |
-| Keyboard | `--entropy keyboard` | Interactive key-mashing for entropy |
-| Manual | `--entropy manual --passphrase "..."` | You provide the passphrase directly |
+By default, `koi certmesh create` runs a 2-step wizard:
 
-For scripting, use `--entropy manual --passphrase "..."`.
+1. Choose a trust profile
+2. Set the CA passphrase (generated proposal with accept-or-override)
+
+If you choose **Custom** in step 1, you can explicitly set:
+- Enrollment at creation: `open` or `closed`
+- Join approval: `required` or `not required`
+
+For non-interactive use (automation), provide flags:
+
+```
+koi certmesh create --profile just-me --enrollment open --require-approval false --passphrase "my-secret"
+```
+
+`--profile` skips the profile step. `--enrollment` and `--require-approval` override policy defaults. `--passphrase` skips the passphrase step.
+With `--json`, both are required.
 
 ---
 
-## Checking status
+## Joining the mesh
+
+From a second machine, joining is a single command. Koi discovers the CA automatically via mDNS — the same discovery protocol the rest of Koi uses:
+
+```
+koi certmesh join
+```
+
+```
+Searching for certmesh CA on the local network...
+Found CA: stone-01 Certmesh CA at http://192.168.1.10:5641
+Enter the TOTP code from your authenticator app:
+123456
+Enrolled as: stone-02
+Certificates written to: /var/lib/koi/certs/stone-02
+```
+
+The flow is intentionally simple because the hard part — proving you're authorized — is handled by the TOTP code. The CA verifies the code, issues a certificate, and enrolls the new member in the roster. No certificate signing requests, no out-of-band key exchange, no manual approval queues (unless you chose the organization profile).
+
+If multiple CAs are found on the network, or the machines aren't on the same broadcast domain, specify the endpoint directly:
+
+```
+koi certmesh join http://stone-01:5641
+```
+
+---
+
+## Unlocking the CA
+
+The CA private key is encrypted at rest — always. When the daemon starts (or restarts), it loads the roster but the CA is **locked**. It can serve status queries, but it can't issue certificates or process enrollments until you unlock it:
+
+```
+koi certmesh unlock
+```
+
+This is a deliberate security boundary. A machine reboot shouldn't automatically grant certificate-issuing power. Someone needs to provide the passphrase. While locked, enrollment requests receive a `503 CA locked` response, which is a clear, non-ambiguous signal to waiting clients.
+
+---
+
+## Monitoring the mesh
 
 ```
 koi certmesh status
@@ -85,79 +137,11 @@ Certificate Mesh Status
     Cert path:   %ProgramData%\koi\certs\stone-01
 ```
 
-JSON output:
+This is your at-a-glance view: who's in the mesh, whether enrollment is open or closed, and when certificates expire. JSON output (`--json`) is available for monitoring integrations.
 
-```
-koi certmesh status --json
-```
+### Audit log
 
-```json
-{
-  "ca_initialized": true,
-  "profile": "just_me",
-  "enrollment_state": "open",
-  "member_count": 1,
-  "members": [
-    {
-      "hostname": "stone-01",
-      "role": "primary",
-      "status": "active",
-      "cert_fingerprint": "a1b2c3d4...",
-      "cert_expires": "2026-03-13T00:00:00Z"
-    }
-  ]
-}
-```
-
----
-
-## Joining a mesh
-
-From a second machine, join the mesh. Koi discovers the CA automatically via mDNS:
-
-```
-koi certmesh join
-```
-
-```
-Searching for certmesh CA on the local network...
-Found CA: stone-01 Certmesh CA at http://192.168.1.10:5641
-Enter the TOTP code from your authenticator app:
-123456
-Enrolled as: stone-02
-Certificates written to: /var/lib/koi/certs/stone-02
-```
-
-If multiple CAs are found, or if the machines aren't on the same broadcast domain, specify the endpoint directly:
-
-```
-koi certmesh join http://stone-01:5641
-```
-
-The TOTP code comes from the authenticator app you set up when creating the mesh. The primary CA verifies the code, issues a certificate, and enrolls the new member in the roster.
-
----
-
-## Unlocking the CA
-
-The CA private key is encrypted at rest. When the daemon starts, it loads the roster but the CA is **locked** — it can't issue certificates or process enrollments until unlocked.
-
-```
-koi certmesh unlock
-```
-
-```
-Enter the CA passphrase:
-CA unlocked successfully.
-```
-
-While locked, the daemon still serves status queries but enrollment requests return `503 CA locked`.
-
----
-
-## Audit log
-
-Every significant action is appended to an audit log:
+Every significant action — creation, enrollment, renewal, revocation — is appended to an immutable audit log:
 
 ```
 koi certmesh log
@@ -168,27 +152,19 @@ koi certmesh log
 2026-02-11T10:05:00Z member_joined hostname=stone-02 fingerprint=b2c3d4e5... role=member
 ```
 
+This is your paper trail. When something goes wrong three months from now, the log tells you what happened and when.
+
 ---
 
-## Setting a reload hook
+## Certificate renewal and hooks
 
-Koi periodically renews certificates and pushes updated material to members. Each member can configure a shell command to run after receiving a new certificate — for example, to restart a web server:
+Koi renews certificates automatically before they expire. But your applications need to know about it — a web server can't use a new certificate without reloading. That's what hooks are for:
 
 ```
 koi certmesh set-hook --reload "systemctl restart nginx"
 ```
 
-The hook is stored in the roster and will be executed after each successful certificate renewal. This command requires a running daemon.
-
-JSON output:
-
-```
-koi certmesh set-hook --reload "systemctl restart nginx" --json
-```
-
-```json
-{"hostname": "stone-01", "reload": "systemctl restart nginx"}
-```
+The hook is stored in the roster and runs after each successful certificate renewal. This closes the loop: Koi issues the cert, writes it to disk, and kicks your application to pick it up. No cron jobs, no manual rotation.
 
 ---
 
@@ -196,25 +172,27 @@ koi certmesh set-hook --reload "systemctl restart nginx" --json
 
 All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 
-### Endpoint summary
+### Core endpoints
 
-- `POST /v1/certmesh/create`
-- `POST /v1/certmesh/join`
-- `GET /v1/certmesh/status`
-- `POST /v1/certmesh/unlock`
-- `PUT /v1/certmesh/set-hook`
-- `POST /v1/certmesh/promote`
-- `POST /v1/certmesh/renew`
-- `GET /v1/certmesh/roster`
-- `POST /v1/certmesh/health`
-- `POST /v1/certmesh/rotate-totp`
-- `GET /v1/certmesh/log`
-- `POST /v1/certmesh/open-enrollment`
-- `POST /v1/certmesh/close-enrollment`
-- `PUT /v1/certmesh/set-policy`
-- `POST /v1/certmesh/destroy`
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/v1/certmesh/create` | Initialize a new CA |
+| `POST` | `/v1/certmesh/join` | Enroll in an existing mesh |
+| `GET` | `/v1/certmesh/status` | Mesh status, members, CA state |
+| `POST` | `/v1/certmesh/unlock` | Decrypt the CA key |
+| `PUT` | `/v1/certmesh/set-hook` | Configure renewal hook |
+| `POST` | `/v1/certmesh/promote` | Promote a member to primary |
+| `POST` | `/v1/certmesh/renew` | Force certificate renewal |
+| `GET` | `/v1/certmesh/roster` | Full membership roster |
+| `POST` | `/v1/certmesh/health` | Mesh health check |
+| `POST` | `/v1/certmesh/rotate-totp` | Rotate the TOTP secret |
+| `GET` | `/v1/certmesh/log` | Audit log |
+| `POST` | `/v1/certmesh/open-enrollment` | Re-open enrollment |
+| `POST` | `/v1/certmesh/close-enrollment` | Close enrollment |
+| `PUT` | `/v1/certmesh/set-policy` | Update trust policy |
+| `POST` | `/v1/certmesh/destroy` | Destroy the CA and all state |
 
-### Join the mesh
+### Join example
 
 ```
 POST /v1/certmesh/join
@@ -236,47 +214,26 @@ Response:
 }
 ```
 
-### Status
-
-```
-GET /v1/certmesh/status
-```
-
-Returns mesh status including CA state, profile, enrollment state, and member list.
-
-### Set reload hook
-
-```
-PUT /v1/certmesh/set-hook
-Content-Type: application/json
-
-{"hostname": "stone-01", "reload": "systemctl restart nginx"}
-```
-
-Response:
-
-```json
-{"hostname": "stone-01", "reload": "systemctl restart nginx"}
-```
-
 ### Error responses
 
-| Error code | HTTP status | When |
+| Error code | HTTP status | Meaning |
 |---|---|---|
-| `ca_not_initialized` | 503 | CA hasn't been created yet |
-| `ca_locked` | 503 | CA key not decrypted |
+| `ca_not_initialized` | 503 | No CA has been created yet |
+| `ca_locked` | 503 | CA key hasn't been decrypted |
 | `invalid_totp` | 401 | Wrong TOTP code |
 | `rate_limited` | 429 | Too many failed TOTP attempts |
-| `enrollment_closed` | 403 | Enrollment is closed (organization profile) |
+| `enrollment_closed` | 403 | Enrollment is closed |
 | `conflict` | 409 | Hostname already enrolled |
 
 ---
 
 ## Certificate details
 
-- **Algorithm**: ECDSA P-256
+Understanding what certmesh produces helps when debugging TLS issues:
+
+- **Algorithm**: ECDSA P-256 (fast, widely supported, small keys)
 - **CA validity**: 10 years
-- **Service cert lifetime**: 30 days
+- **Service cert lifetime**: 30 days (auto-renewed)
 - **SANs**: hostname, hostname.local
 - **Trust store**: CA cert is installed in the system trust store at creation time
 
@@ -300,7 +257,7 @@ certs/<hostname>/
   fullchain.pem   # cert + CA chain
 ```
 
-CA state:
+CA state (on the primary):
 
 ```
 certmesh/ca/
@@ -310,13 +267,17 @@ certmesh/ca/
 certmesh/roster.json  # mesh membership roster
 ```
 
+The `fullchain.pem` is what most applications want — it includes both the service certificate and the CA certificate, which is what `nginx`, `traefik`, and `curl --cacert` expect.
+
 ---
 
 ## mDNS self-announcement
 
-When the daemon starts with both mDNS and certmesh enabled, Koi automatically announces the CA via mDNS as `_certmesh._tcp`. This is what `koi certmesh join` uses to discover the CA when no endpoint is specified.
+When the daemon starts with both mDNS and certmesh enabled, Koi automatically announces the CA via mDNS as `_certmesh._tcp`. This is how `koi certmesh join` discovers the CA automatically — it's mDNS all the way down.
 
 The announcement includes TXT records:
 - `role=primary`
 - `fingerprint=<CA fingerprint>`
 - `profile=<trust profile>`
+
+This means you can also discover certmesh CAs with `koi mdns discover certmesh` — a nice way to check what's advertising before you join.

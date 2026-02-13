@@ -218,12 +218,14 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     Some(CertmeshSubcommand::Create {
                         profile,
                         operator,
-                        entropy,
+                        enrollment,
+                        require_approval,
                         passphrase,
                     }) => commands::certmesh::create(
                         profile.as_deref(),
                         operator.as_deref(),
-                        entropy,
+                        enrollment.as_deref(),
+                        *require_approval,
                         passphrase.as_deref(),
                         cli.json,
                         ep,

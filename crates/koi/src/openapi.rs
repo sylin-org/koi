@@ -9,8 +9,10 @@ use std::collections::HashSet;
 
 use command_surface::ApiEndpoint;
 use utoipa::openapi::{
+    external_docs::ExternalDocs,
     path::{HttpMethod, OperationBuilder, ParameterBuilder, ParameterIn},
     request_body::RequestBodyBuilder,
+    tag::TagBuilder,
     Content, InfoBuilder, LicenseBuilder, ObjectBuilder, OpenApi, PathItem, PathsBuilder, Ref,
     Required, Response, ResponseBuilder, Type,
 };
@@ -56,6 +58,67 @@ pub fn build_openapi(schema_docs: OpenApi) -> OpenApi {
 
     let mut openapi = OpenApi::new(info, paths);
     openapi.merge(schema_docs);
+
+    // Tag definitions — appear in the order listed here in the Scalar UI.
+    // Each tag gets a description and a link to its GitHub documentation.
+    let base = "https://github.com/sylin-org/koi/blob/main/docs";
+    openapi.tags = Some(vec![
+        TagBuilder::new()
+            .name("system")
+            .description(Some(
+                "Core daemon lifecycle — status, version, health probes, \
+                 and graceful shutdown.",
+            ))
+            .external_docs(Some(ExternalDocs::new(format!("{base}/guide-system.md"))))
+            .build(),
+        TagBuilder::new()
+            .name("mdns")
+            .description(Some(
+                "Multicast DNS service discovery — announce, discover, \
+                 and manage services on the local network. Includes \
+                 admin operations for inspecting and controlling \
+                 individual registrations.",
+            ))
+            .external_docs(Some(ExternalDocs::new(format!("{base}/guide-mdns.md"))))
+            .build(),
+        TagBuilder::new()
+            .name("certmesh")
+            .description(Some(
+                "Zero-config TLS certificate mesh — automatic CA \
+                 bootstrapping, certificate enrollment, renewal, \
+                 revocation, and cluster-wide trust distribution.",
+            ))
+            .external_docs(Some(ExternalDocs::new(format!("{base}/guide-certmesh.md"))))
+            .build(),
+        TagBuilder::new()
+            .name("dns")
+            .description(Some(
+                "Local DNS server — custom record management, \
+                 upstream forwarding, and split-horizon resolution \
+                 for development environments.",
+            ))
+            .external_docs(Some(ExternalDocs::new(format!("{base}/guide-dns.md"))))
+            .build(),
+        TagBuilder::new()
+            .name("health")
+            .description(Some(
+                "Endpoint health monitoring — configure checks, \
+                 view live status, and receive real-time health \
+                 change events via SSE.",
+            ))
+            .external_docs(Some(ExternalDocs::new(format!("{base}/guide-health.md"))))
+            .build(),
+        TagBuilder::new()
+            .name("proxy")
+            .description(Some(
+                "TLS-terminating reverse proxy — route traffic \
+                 to local services with automatic certificate \
+                 provisioning from the certmesh CA.",
+            ))
+            .external_docs(Some(ExternalDocs::new(format!("{base}/guide-proxy.md"))))
+            .build(),
+    ]);
+
     openapi
 }
 

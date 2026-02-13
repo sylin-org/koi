@@ -14,9 +14,9 @@ use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_service::{define_windows_service, service_dispatcher};
 
 const SERVICE_NAME: &str = "koi";
-const DISPLAY_NAME: &str = "Koi mDNS Service";
+const DISPLAY_NAME: &str = "Koi Network Toolkit";
 const SERVICE_DESCRIPTION: &str =
-    "Koi mDNS/DNS-SD daemon \u{2014} local service discovery for HTTP, IPC, and CLI clients";
+    "Koi daemon \u{2014} mDNS discovery, certificate mesh, DNS, health checks, and TLS proxy";
 
 const FIREWALL_RULE_MDNS_LEGACY: &str = "Koi mDNS (UDP)";
 const FIREWALL_RULE_HTTP_LEGACY: &str = "Koi HTTP (TCP)";
@@ -65,7 +65,7 @@ define_windows_service!(ffi_service_main, service_main);
 pub fn install() -> anyhow::Result<()> {
     ensure_elevated("install")?;
     let exe_path = std::env::current_exe()?;
-    println!("Installing Koi mDNS service...");
+    println!("Installing Koi service...");
     println!("  Binary: {}", exe_path.display());
 
     let manager = ServiceManager::local_computer(
@@ -227,8 +227,17 @@ pub fn install() -> anyhow::Result<()> {
     }
 
     println!();
-    println!("Koi mDNS service installed.");
+    println!("Koi service installed.");
     println!("  \u{b0}\u{2027} \u{1f41f} \u{b7}\u{ff61} the local waters are calm");
+    println!();
+    println!("  Modules enabled:");
+    println!("    mDNS        service discovery (active)");
+    println!("    DNS         static + certmesh entries (ready)");
+    println!("    CertMesh    certificate mesh CA (ready \u{2014} run certmesh create)");
+    println!("    Health      endpoint health checks (ready)");
+    println!("    Proxy       TLS reverse proxy (ready)");
+    println!();
+    println!("  Use `koi status` to see module state.");
 
     Ok(())
 }
@@ -273,7 +282,7 @@ pub fn uninstall() -> anyhow::Result<()> {
     }
 
     ensure_elevated("uninstall")?;
-    println!("Uninstalling Koi mDNS service...");
+    println!("Uninstalling Koi service...");
 
     // Best-effort graceful shutdown via HTTP (before SCM stop)
     if let Some(ep) = koi_config::breadcrumb::read_breadcrumb() {
@@ -348,7 +357,7 @@ pub fn uninstall() -> anyhow::Result<()> {
     let _ = std::fs::remove_dir(&data_dir); // silent — either empty or has logs
 
     println!();
-    println!("Koi mDNS service uninstalled.");
+    println!("Koi service uninstalled.");
 
     Ok(())
 }

@@ -339,10 +339,13 @@ pub enum CertmeshSubcommand {
         /// Operator name (required for team/organization profiles)
         #[arg(long)]
         operator: Option<String>,
-        /// Entropy mode: keyboard, passphrase, manual
-        #[arg(long, default_value = "passphrase")]
-        entropy: String,
-        /// Manual passphrase (only used with --entropy=manual)
+        /// Initial enrollment state override (open|closed)
+        #[arg(long)]
+        enrollment: Option<String>,
+        /// Override whether join requests require operator approval (true|false)
+        #[arg(long)]
+        require_approval: Option<bool>,
+        /// CA passphrase (when provided, skips interactive passphrase step)
         #[arg(long)]
         passphrase: Option<String>,
     },
@@ -759,8 +762,10 @@ mod tests {
             "team",
             "--operator",
             "ops",
-            "--entropy",
-            "manual",
+            "--enrollment",
+            "open",
+            "--require-approval",
+            "true",
             "--passphrase",
             "my-secret",
         ])
@@ -771,13 +776,15 @@ mod tests {
                     Some(CertmeshSubcommand::Create {
                         profile,
                         operator,
-                        entropy,
+                        enrollment,
+                        require_approval,
                         passphrase,
                     }),
             })) => {
                 assert_eq!(profile.as_deref(), Some("team"));
                 assert_eq!(operator.as_deref(), Some("ops"));
-                assert_eq!(entropy, "manual");
+                assert_eq!(enrollment.as_deref(), Some("open"));
+                assert_eq!(require_approval, Some(true));
                 assert_eq!(passphrase.as_deref(), Some("my-secret"));
             }
             other => panic!("Expected Certmesh Create, got: {other:?}"),

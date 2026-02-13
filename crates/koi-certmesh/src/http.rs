@@ -213,7 +213,12 @@ async fn create_handler(
     let totp_uri = koi_crypto::totp::build_totp_uri(&totp_secret, "Koi Certmesh", "enrollment");
 
     // Create roster
-    let new_roster = crate::roster::Roster::new(request.profile, request.operator.clone());
+    let new_roster = crate::roster::Roster::new_with_policy(
+        request.profile,
+        request.operator.clone(),
+        request.enrollment_open,
+        request.requires_approval,
+    );
     let roster_path = crate::ca::roster_path();
     if let Err(e) = crate::roster::save_roster(&new_roster, &roster_path) {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::Io(e));
@@ -620,7 +625,7 @@ async fn compliance_handler(Extension(state): Extension<Arc<CertmeshState>>) -> 
         allowed_domain: roster.metadata.allowed_domain.clone(),
         allowed_subnet: roster.metadata.allowed_subnet.clone(),
         profile,
-        requires_approval: profile.requires_approval(),
+        requires_approval: roster.requires_approval(),
     };
     drop(roster);
 
@@ -936,6 +941,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     trust_profile: TrustProfile::JustMe,
                     operator: None,
+                    requires_approval: Some(false),
                     enrollment_state: EnrollmentState::Closed,
                     enrollment_deadline: None,
                     allowed_domain: None,

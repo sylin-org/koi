@@ -24,7 +24,7 @@ pub fn install() -> anyhow::Result<()> {
     let install_path = install_bin_path();
     let plist_path = plist_path();
 
-    println!("Installing Koi mDNS service...");
+    println!("Installing Koi service...");
     println!("  Binary: {}", exe_path.display());
 
     // Check for existing daemon
@@ -74,11 +74,19 @@ pub fn install() -> anyhow::Result<()> {
     }
 
     println!();
-    println!("Koi mDNS service installed.");
+    println!("Koi service installed.");
     println!("  \u{b0}\u{2027} \u{1f41f} \u{b7}\u{ff61} the local waters are calm");
+    println!();
+    println!("  Modules enabled:");
+    println!("    mDNS        service discovery (active)");
+    println!("    DNS         static + certmesh entries (ready)");
+    println!("    CertMesh    certificate mesh CA (ready \u{2014} run certmesh create)");
+    println!("    Health      endpoint health checks (ready)");
+    println!("    Proxy       TLS reverse proxy (ready)");
     println!();
     println!("  Logs: /var/log/koi.log");
     println!("  Status: sudo launchctl list | grep {LABEL}");
+    println!("  Use `koi status` to see module state.");
 
     Ok(())
 }
@@ -98,7 +106,7 @@ pub fn uninstall() -> anyhow::Result<()> {
     }
 
     check_root("uninstall")?;
-    println!("Uninstalling Koi mDNS service...");
+    println!("Uninstalling Koi service...");
 
     // Best-effort graceful shutdown via HTTP
     if let Some(ep) = koi_config::breadcrumb::read_breadcrumb() {
@@ -142,7 +150,7 @@ pub fn uninstall() -> anyhow::Result<()> {
     }
 
     println!();
-    println!("Koi mDNS service uninstalled.");
+    println!("Koi service uninstalled.");
 
     Ok(())
 }

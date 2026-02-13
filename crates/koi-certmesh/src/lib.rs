@@ -19,6 +19,7 @@ pub mod lifecycle;
 pub mod profiles;
 pub mod protocol;
 pub mod roster;
+pub mod wordlist;
 
 use std::sync::Arc;
 
@@ -289,11 +290,12 @@ impl CertmeshCore {
         let totp_guard = self.state.totp_secret.lock().await;
         let totp_secret = totp_guard.as_ref().ok_or(CertmeshError::CaLocked)?;
         let mut rate_limiter = self.state.rate_limiter.lock().await;
-        let profile = *self.state.profile.lock().await;
+        let profile = roster.metadata.trust_profile;
+        let requires_approval = roster.requires_approval();
         let fallback_operator = roster.metadata.operator.clone();
         drop(roster);
 
-        let approved_by = if profile.requires_approval() {
+        let approved_by = if requires_approval {
             request_approval(&self.state, &hostname, profile).await?
         } else {
             fallback_operator
@@ -309,7 +311,6 @@ impl CertmeshCore {
             request,
             &hostname,
             &sans,
-            &profile,
             approved_by,
         )?;
 
@@ -985,23 +986,26 @@ impl Capability for CertmeshCore {
             .map(|p| *p)
             .unwrap_or_default();
 
-        let summary = if !ca_initialized {
-            "CA not initialized".to_string()
+        let (summary, healthy) = if !ca_initialized {
+            ("ready \u{2014} run certmesh create".to_string(), true)
         } else if ca_locked {
-            "CA locked".to_string()
+            ("CA locked".to_string(), false)
         } else {
-            format!(
-                "{} ({} member{})",
-                profile,
-                member_count,
-                if member_count == 1 { "" } else { "s" }
+            (
+                format!(
+                    "{} ({} member{})",
+                    profile,
+                    member_count,
+                    if member_count == 1 { "" } else { "s" }
+                ),
+                true,
             )
         };
 
         CapabilityStatus {
             name: "certmesh".to_string(),
             summary,
-            healthy: ca_initialized && !ca_locked,
+            healthy,
         }
     }
 }
@@ -1774,13 +1778,24 @@ mod tests {
         let core = CertmeshCore::uninitialized();
         let status = core.status();
         assert_eq!(status.name, "certmesh");
-        assert!(!status.healthy);
-        // Summary should mention not initialized or locked
-        assert!(
-            status.summary.contains("not initialized") || status.summary.contains("locked"),
-            "unexpected summary: {}",
-            status.summary
-        );
+        // When no CA files exist on disk this is a healthy "ready" state.
+        // On a dev machine with existing CA files it appears as "CA locked"
+        // because the filesystem check sees them but the core has no loaded CA.
+        if ca::is_ca_initialized() {
+            assert!(!status.healthy);
+            assert!(
+                status.summary.contains("locked"),
+                "unexpected summary: {}",
+                status.summary
+            );
+        } else {
+            assert!(status.healthy);
+            assert!(
+                status.summary.contains("ready"),
+                "unexpected summary: {}",
+                status.summary
+            );
+        }
     }
 
     #[test]

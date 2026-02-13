@@ -558,7 +558,7 @@ Koi registers as a Windows service via the `windows-service` crate, integrating 
 
 ```
 Service Name: koi
-Display Name: Koi mDNS Service
+Display Name: Koi Network Toolkit
 Startup Type: Automatic
 ```
 
@@ -573,7 +573,7 @@ koi.exe uninstall
 
 ```ini
 [Unit]
-Description=Koi mDNS Service
+Description=Koi Network Toolkit
 After=network-online.target
 Wants=network-online.target
 

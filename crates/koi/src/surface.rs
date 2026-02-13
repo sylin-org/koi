@@ -4,8 +4,8 @@ use command_surface::render::{
     OutputWriter, Segment, TerminalProfile, TextStyle,
 };
 use command_surface::{
-    ApiEndpoint, Category, Color, CommandDef, CommandManifest, Example, Glyph, Presentation,
-    QueryParam, Scope, Tag,
+    ApiEndpoint, Category, Color, CommandDef, CommandManifest, Confirmation, Example, Glyph,
+    Presentation, QueryParam, Scope, Tag,
 };
 use once_cell::sync::Lazy;
 use std::io::{self};
@@ -316,6 +316,7 @@ pub enum KoiTag {
     ReadOnly,
     Elevated,
     Admin,
+    CliOnly,
 }
 
 impl Tag for KoiTag {
@@ -327,11 +328,15 @@ impl Tag for KoiTag {
             Self::ReadOnly => "Read-only",
             Self::Elevated => "Elevated",
             Self::Admin => "Admin",
+            Self::CliOnly => "CLI-only",
         }
     }
 
     fn highlight(&self) -> bool {
-        matches!(self, Self::Destructive | Self::Elevated | Self::Streaming)
+        matches!(
+            self,
+            Self::Destructive | Self::Elevated | Self::Streaming | Self::CliOnly
+        )
     }
 }
 
@@ -341,6 +346,7 @@ impl Glyph for KoiTag {
             Self::Streaming => &[Presentation::Emoji("⇶"), Presentation::Ascii(">>")],
             Self::Destructive => &[Presentation::Emoji("⚠"), Presentation::Ascii("!!")],
             Self::Elevated => &[Presentation::Emoji("🔒"), Presentation::Ascii("^^")],
+            Self::CliOnly => &[Presentation::Emoji("⌨"), Presentation::Ascii("[cli]")],
             _ => &[],
         }
     }
@@ -351,6 +357,7 @@ impl Glyph for KoiTag {
             Self::Elevated => Some(Color::Warning),
             Self::Streaming => Some(Color::Info),
             Self::Admin => Some(Color::Warning),
+            Self::CliOnly => Some(Color::Muted),
             _ => None,
         }
     }
@@ -363,6 +370,7 @@ impl Glyph for KoiTag {
             Self::ReadOnly => Some("read-only"),
             Self::Elevated => Some("elevated"),
             Self::Admin => Some("admin"),
+            Self::CliOnly => Some("cli-only"),
         }
     }
 }
@@ -523,7 +531,7 @@ port (default 5641) and the IPC pipe for local CLI communication.
 
 Requires elevated privileges (Administrator / sudo).",
         category: KoiCategory::Core,
-        tags: &[KoiTag::Elevated, KoiTag::Mutating],
+        tags: &[KoiTag::Elevated, KoiTag::Mutating, KoiTag::CliOnly],
         scope: KoiScope::Admin,
         examples: &[Example {
             command: "koi install",
@@ -531,6 +539,7 @@ Requires elevated privileges (Administrator / sudo).",
         }],
         see_also: &["uninstall"],
         api: &[],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "uninstall",
@@ -544,14 +553,20 @@ registration itself. You can re-install later with 'koi install'.
 
 Requires elevated privileges (Administrator / sudo).",
         category: KoiCategory::Core,
-        tags: &[KoiTag::Elevated, KoiTag::Destructive, KoiTag::Mutating],
+        tags: &[
+            KoiTag::Elevated,
+            KoiTag::Destructive,
+            KoiTag::Mutating,
+            KoiTag::CliOnly,
+        ],
         scope: KoiScope::Admin,
         examples: &[Example {
             command: "koi uninstall",
             description: "Remove the system service",
         }],
-        see_also: &["install"],
+        see_also: &["install", "factory-reset"],
         api: &[],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "version",
@@ -583,6 +598,7 @@ output.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "status",
@@ -618,6 +634,7 @@ mode, it reads local state files directly.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     });
 
     // ── Discovery (mDNS) ─────────────────────────────────────────────
@@ -668,6 +685,7 @@ services until you press Ctrl+C or the --timeout expires.",
             ],
             content_type: Some("text/event-stream"),
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "mdns announce",
@@ -705,6 +723,7 @@ convention (e.g. _http._tcp, _ssh._tcp). TXT records can carry metadata.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "mdns unregister",
@@ -731,6 +750,7 @@ also be found via 'koi mdns admin ls'.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "mdns resolve",
@@ -764,6 +784,7 @@ The instance name is the full mDNS name including the service type and
             }],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "mdns subscribe",
@@ -811,6 +832,7 @@ as a line of JSON when --json is used, or as a formatted line otherwise.",
             ],
             content_type: Some("text/event-stream"),
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "mdns admin status",
@@ -836,6 +858,7 @@ how many are alive vs draining, and whether the mDNS engine is running.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "mdns admin ls",
@@ -861,6 +884,7 @@ registration IDs, service types, ports, and current state (alive/draining).",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "mdns admin inspect",
@@ -887,6 +911,7 @@ You can use a full ID or a unique prefix.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "mdns admin unregister",
@@ -913,6 +938,7 @@ instantly. Use 'mdns admin drain' for a graceful removal.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "mdns admin drain",
@@ -939,6 +965,7 @@ period expires, the registration is fully removed.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "mdns admin revive",
@@ -964,6 +991,7 @@ resumes normal mDNS announcements on the network.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     });
 
     // ── Trust (Certmesh) ─────────────────────────────────────────────
@@ -975,13 +1003,17 @@ Initializes a new certificate mesh on this node, making it the root CA.
 This generates the root keypair, self-signed certificate, and local
 configuration.
 
-Profiles control default certificate lifetimes and renewal policies:
-  team     — 90-day certs, auto-renew at 2/3 life
-  homelab  — 1-year certs, relaxed validation
-  ops      — 30-day certs, strict compliance
+Profiles control enrollment defaults and approval policy:
+    just-me       — open enrollment, no operator requirement
+    team          — open enrollment, operator required
+    organization  — closed enrollment by default, operator required
 
-After creation, use 'certmesh open-enrollment' to allow other nodes
-to join the mesh.",
+Without flags, this command runs an interactive wizard that guides
+profile selection and CA passphrase setup.
+
+Optional policy overrides:
+    --enrollment open|closed
+    --require-approval true|false",
         category: KoiCategory::Trust,
         tags: &[KoiTag::Mutating],
         scope: KoiScope::Admin,
@@ -991,8 +1023,12 @@ to join the mesh.",
                 description: "Initialize a CA mesh",
             },
             Example {
-                command: "koi certmesh create --profile homelab",
-                description: "Homelab-friendly defaults",
+                command: "koi certmesh create --profile just-me --enrollment closed --require-approval false",
+                description: "Override default enrollment policy",
+            },
+            Example {
+                command: "koi certmesh create",
+                description: "Run the guided interactive wizard",
             },
         ],
         see_also: &[
@@ -1010,6 +1046,7 @@ to join the mesh.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh join",
@@ -1046,6 +1083,7 @@ mesh's automatic renewal cycle.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh status",
@@ -1078,6 +1116,7 @@ the enrollment window is open.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh log",
@@ -1104,6 +1143,7 @@ a timestamp and actor.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh compliance",
@@ -1130,6 +1170,7 @@ window state, and backup freshness. Useful for audits.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh unlock",
@@ -1156,6 +1197,7 @@ Unlocking requires the CA passphrase if one was set during creation.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh set-hook",
@@ -1191,6 +1233,7 @@ or --exec for a custom script.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh promote",
@@ -1218,6 +1261,7 @@ This is the key operation for high-availability certmesh deployments.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh open-enrollment",
@@ -1253,6 +1297,7 @@ actively adding nodes to the mesh.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh close-enrollment",
@@ -1278,6 +1323,7 @@ until enrollment is re-opened. Existing members are unaffected.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh set-policy",
@@ -1313,6 +1359,7 @@ Use --cidr to restrict by IP range.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh rotate-totp",
@@ -1339,6 +1386,7 @@ who need to enroll new nodes.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh backup",
@@ -1375,6 +1423,7 @@ exists, the entire mesh must be recreated.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh restore",
@@ -1403,6 +1452,7 @@ The restore will prompt for the backup passphrase.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh revoke",
@@ -1438,6 +1488,7 @@ compromised, superseded, departed.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "certmesh destroy",
@@ -1467,6 +1518,7 @@ to renew certificates. Create a backup first with 'certmesh backup'.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     });
 
     // ── DNS ──────────────────────────────────────────────────────────
@@ -1497,6 +1549,7 @@ Requires elevated privileges because port 53 is a privileged port.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "dns stop",
@@ -1522,6 +1575,7 @@ served again when the resolver is restarted.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "dns status",
@@ -1547,6 +1601,7 @@ configured for, and the number of static and mDNS-derived records.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "dns lookup",
@@ -1594,6 +1649,7 @@ resolve correctly before pointing production traffic at the resolver.",
             ],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "dns add",
@@ -1629,6 +1685,7 @@ The name should be within the configured DNS zone (default: .lan).",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "dns remove",
@@ -1654,6 +1711,7 @@ immediately and is persisted to disk.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "dns list",
@@ -1679,6 +1737,7 @@ via 'dns add' and entries derived from mDNS service discovery.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     });
 
     // ── Health ────────────────────────────────────────────────────────
@@ -1712,6 +1771,7 @@ check type (HTTP/TCP/process), last result, and last transition time.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "health watch",
@@ -1746,6 +1806,7 @@ Use --interval to control refresh rate.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "health add",
@@ -1783,6 +1844,7 @@ transitions (healthy → unhealthy and back).",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "health remove",
@@ -1808,6 +1870,7 @@ and its history is removed from the transition log.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "health log",
@@ -1834,6 +1897,7 @@ name, old state, new state, and reason.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     });
 
     // ── Proxy ─────────────────────────────────────────────────────────
@@ -1872,6 +1936,7 @@ If a proxy with the same name exists, it is updated in place.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "proxy remove",
@@ -1897,6 +1962,7 @@ port is released.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "proxy status",
@@ -1922,6 +1988,7 @@ TLS certificate source, and connection counts.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
     })
     .add(CommandDef {
         name: "proxy list",
@@ -1947,6 +2014,56 @@ and backend URLs. Use 'proxy status' for runtime details.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
+    })
+    .add(CommandDef {
+        name: "factory-reset",
+        summary: "Wipe all state and restart the service",
+        long_description: "\
+Destroys the Koi program data folder and recreates it from scratch,
+then restarts the system service. This removes ALL local state:
+
+  • mDNS registrations
+  • CA private keys and issued certificates
+  • DNS records
+  • Health-check configurations
+  • Proxy routes
+  • config.toml
+
+Log files are preserved by default. Use --include-logs to remove them too.
+
+This is irreversible. If this node is the certmesh CA root, every
+certificate it ever issued becomes unverifiable.
+
+Requires elevated privileges (Administrator / sudo).",
+        category: KoiCategory::Core,
+        tags: &[
+            KoiTag::Elevated,
+            KoiTag::Destructive,
+            KoiTag::Mutating,
+            KoiTag::CliOnly,
+        ],
+        scope: KoiScope::Admin,
+        examples: &[
+            Example {
+                command: "koi factory-reset",
+                description: "Wipe all state and restart",
+            },
+            Example {
+                command: "koi factory-reset --include-logs",
+                description: "Wipe everything including logs",
+            },
+        ],
+        see_also: &["uninstall", "install"],
+        api: &[],
+        confirmation: Some(Confirmation::TypeToken {
+            message: "\
+This will PERMANENTLY DELETE all Koi state including CA keys,\n\
+certificates, DNS records, and configuration.\n\
+If this node is the certmesh CA root, all issued certificates\n\
+will become unverifiable.",
+            token: "RESET",
+        }),
     });
 
     m

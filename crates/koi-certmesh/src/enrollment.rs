@@ -10,7 +10,6 @@ use crate::audit;
 use crate::ca::{self, CaState, IssuedCert};
 use crate::certfiles;
 use crate::error::CertmeshError;
-use crate::profiles::TrustProfile;
 use crate::protocol::{JoinRequest, JoinResponse};
 use crate::roster::{MemberRole, MemberStatus, Roster, RosterMember, RosterMetadata};
 
@@ -111,7 +110,6 @@ pub fn process_enrollment(
     request: &JoinRequest,
     hostname: &str,
     sans: &[String],
-    profile: &TrustProfile,
     approved_by: Option<String>,
 ) -> Result<(JoinResponse, IssuedCert), CertmeshError> {
     // 1. Check enrollment is open (includes deadline auto-close)
@@ -146,7 +144,7 @@ pub fn process_enrollment(
     }
 
     // 5. Approval handled by caller when required
-    if profile.requires_approval() && approved_by.as_deref().unwrap_or("").is_empty() {
+    if roster.requires_approval() && approved_by.as_deref().unwrap_or("").is_empty() {
         return Err(CertmeshError::ApprovalDenied);
     }
 
@@ -217,6 +215,7 @@ pub fn process_enrollment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profiles::TrustProfile;
     use crate::roster::EnrollmentState;
     use koi_crypto::totp;
 
@@ -251,7 +250,6 @@ mod tests {
             &request,
             "stone-05",
             &["stone-05".to_string(), "stone-05.local".to_string()],
-            &TrustProfile::JustMe,
             None,
         );
 
@@ -285,7 +283,6 @@ mod tests {
             &request,
             "stone-05",
             &["stone-05".to_string()],
-            &TrustProfile::MyOrganization,
             None,
         );
 
@@ -313,7 +310,6 @@ mod tests {
                 &bad_request,
                 "stone-05",
                 &["stone-05".to_string()],
-                &TrustProfile::JustMe,
                 None,
             );
         }
@@ -327,7 +323,6 @@ mod tests {
             &bad_request,
             "stone-05",
             &["stone-05".to_string()],
-            &TrustProfile::JustMe,
             None,
         );
 
@@ -342,6 +337,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             trust_profile: TrustProfile::JustMe,
             operator: None,
+            requires_approval: Some(false),
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
             allowed_domain: None,
@@ -356,6 +352,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             trust_profile: TrustProfile::MyTeam,
             operator: None,
+            requires_approval: Some(false),
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
             allowed_domain: Some("lab.local".to_string()),
@@ -370,6 +367,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             trust_profile: TrustProfile::MyTeam,
             operator: None,
+            requires_approval: Some(false),
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
             allowed_domain: Some("lab.local".to_string()),
@@ -385,6 +383,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             trust_profile: TrustProfile::MyTeam,
             operator: None,
+            requires_approval: Some(false),
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
             allowed_domain: Some("Lab.Local".to_string()),
@@ -399,6 +398,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             trust_profile: TrustProfile::MyOrganization,
             operator: None,
+            requires_approval: Some(false),
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
             allowed_domain: Some("school.local".to_string()),
@@ -415,6 +415,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             trust_profile: TrustProfile::MyOrganization,
             operator: None,
+            requires_approval: Some(false),
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
             allowed_domain: Some("school.local".to_string()),
@@ -430,6 +431,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             trust_profile: TrustProfile::JustMe,
             operator: None,
+            requires_approval: Some(false),
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
             allowed_domain: None,
@@ -445,6 +447,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             trust_profile: TrustProfile::JustMe,
             operator: None,
+            requires_approval: Some(false),
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
             allowed_domain: None,
@@ -460,6 +463,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             trust_profile: TrustProfile::JustMe,
             operator: None,
+            requires_approval: Some(false),
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
             allowed_domain: None,
@@ -474,6 +478,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             trust_profile: TrustProfile::JustMe,
             operator: None,
+            requires_approval: Some(false),
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
             allowed_domain: None,

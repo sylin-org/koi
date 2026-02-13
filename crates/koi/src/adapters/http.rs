@@ -71,7 +71,10 @@ pub async fn start(
             koi_mdns::http::routes(mdns_core.clone()),
         );
     } else {
-        app = app.nest(koi_mdns::http::paths::PREFIX, disabled_fallback_router("mdns"));
+        app = app.nest(
+            koi_mdns::http::paths::PREFIX,
+            disabled_fallback_router("mdns"),
+        );
     }
 
     if let Some(ref certmesh_core) = cores.certmesh {
@@ -89,7 +92,10 @@ pub async fn start(
             koi_dns::http::routes(dns_runtime.clone()),
         );
     } else {
-        app = app.nest(koi_dns::http::paths::PREFIX, disabled_fallback_router("dns"));
+        app = app.nest(
+            koi_dns::http::paths::PREFIX,
+            disabled_fallback_router("dns"),
+        );
     }
 
     if let Some(ref health_runtime) = cores.health {

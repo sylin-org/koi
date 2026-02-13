@@ -101,6 +101,17 @@ pub struct CreateCaRequest {
     /// Optional operator name (required for Organization profile).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operator: Option<String>,
+    /// Optional override for initial enrollment state.
+    ///
+    /// `Some(true)` opens enrollment immediately, `Some(false)` starts closed.
+    /// `None` uses the trust profile default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enrollment_open: Option<bool>,
+    /// Optional override for whether joins require operator approval.
+    ///
+    /// `None` uses the trust profile default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requires_approval: Option<bool>,
 }
 
 /// POST /create response.
@@ -617,6 +628,8 @@ mod tests {
             entropy_hex: "0a1b2c3d".to_string(),
             profile: TrustProfile::JustMe,
             operator: None,
+            enrollment_open: None,
+            requires_approval: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: CreateCaRequest = serde_json::from_str(&json).unwrap();
@@ -624,6 +637,8 @@ mod tests {
         assert_eq!(parsed.entropy_hex, "0a1b2c3d");
         assert_eq!(parsed.profile, TrustProfile::JustMe);
         assert!(parsed.operator.is_none());
+        assert!(parsed.enrollment_open.is_none());
+        assert!(parsed.requires_approval.is_none());
     }
 
     #[test]
@@ -633,11 +648,15 @@ mod tests {
             entropy_hex: "ff".to_string(),
             profile: TrustProfile::MyOrganization,
             operator: Some("ops@acme.com".to_string()),
+            enrollment_open: Some(false),
+            requires_approval: Some(true),
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: CreateCaRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.operator.as_deref(), Some("ops@acme.com"));
         assert_eq!(parsed.profile, TrustProfile::MyOrganization);
+        assert_eq!(parsed.enrollment_open, Some(false));
+        assert_eq!(parsed.requires_approval, Some(true));
     }
 
     #[test]
@@ -647,9 +666,13 @@ mod tests {
             entropy_hex: "aa".to_string(),
             profile: TrustProfile::JustMe,
             operator: None,
+            enrollment_open: None,
+            requires_approval: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("operator"));
+        assert!(!json.contains("enrollment_open"));
+        assert!(!json.contains("requires_approval"));
     }
 
     #[test]
