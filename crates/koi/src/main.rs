@@ -262,8 +262,8 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         cli.json,
                         ep,
                     ),
-                    Some(CertmeshSubcommand::RotateTotp) => {
-                        commands::certmesh::rotate_totp(cli.json, ep)
+                    Some(CertmeshSubcommand::RotateAuth) => {
+                        commands::certmesh::rotate_auth(cli.json, ep)
                     }
                     Some(CertmeshSubcommand::Backup { path }) => {
                         commands::certmesh::backup(path, cli.json, ep)

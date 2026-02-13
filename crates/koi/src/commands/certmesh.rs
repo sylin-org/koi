@@ -350,7 +350,7 @@ pub fn create(
         );
         println!(
             "  │  {}     │",
-            color::dim("(rotate later with 'koi certmesh rotate-totp')")
+            color::dim("(rotate later with 'koi certmesh rotate-auth')")
         );
         println!("  └─────────────────────────────────────────────────────┘");
         println!();
@@ -385,13 +385,14 @@ pub fn create(
                 }
 
                 if trimmed == "2" && attempts >= 2 {
-                    println!("\n  Rotating TOTP secret...\n");
+                    println!("\n  Rotating auth credential...\n");
                     let rotate_resp = client.post_json(
-                        "/v1/certmesh/rotate-totp",
+                        "/v1/certmesh/rotate-auth",
                         &serde_json::json!({ "passphrase": ca_passphrase }),
                     )?;
                     let new_uri = rotate_resp
-                        .get("totp_uri")
+                        .get("auth_setup")
+                        .and_then(|s| s.get("totp_uri"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     if let Some(new_secret) = extract_totp_secret_from_uri(new_uri) {
@@ -1403,7 +1404,7 @@ pub async fn join(
         .unwrap_or_else(|_| "unknown".to_string());
     let body = serde_json::json!({
         "hostname": local_hostname,
-        "totp_code": code,
+        "auth": { "method": "totp", "code": code },
     });
     let resp = client.post_json("/v1/certmesh/join", &body)?;
 
@@ -1455,7 +1456,7 @@ pub async fn promote(
 
     // Request promotion from the primary
     let client = KoiClient::new(&resolved_endpoint);
-    let body = serde_json::json!({ "totp_code": code });
+    let body = serde_json::json!({ "auth": { "method": "totp", "code": code } });
     let resp = client.post_json("/v1/certmesh/promote", &body)?;
 
     // Parse the promotion response
@@ -1463,8 +1464,8 @@ pub async fn promote(
         serde_json::from_value(resp.clone())
             .map_err(|e| anyhow::anyhow!("Failed to parse promotion response: {e}"))?;
 
-    // Decrypt and install the CA key, TOTP secret, and roster locally
-    let (ca_key, totp_secret, roster) =
+    // Decrypt and install the CA key, auth credential, and roster locally
+    let (ca_key, auth_state, roster) =
         koi_certmesh::failover::accept_promotion(&promote_response, &passphrase)?;
 
     // Save to local disk
@@ -1478,8 +1479,13 @@ pub async fn promote(
         &promote_response.ca_cert_pem,
     )?;
 
-    let encrypted_totp = koi_crypto::totp::encrypt_secret(&totp_secret, &passphrase)?;
-    koi_crypto::keys::save_encrypted_key(&koi_certmesh::ca::totp_secret_path(), &encrypted_totp)?;
+    // Persist auth credential to auth.json
+    let stored = match &auth_state {
+        koi_crypto::auth::AuthState::Totp(secret) => koi_crypto::auth::store_totp(secret, &passphrase)?,
+        koi_crypto::auth::AuthState::Fido2(cred) => koi_crypto::auth::store_fido2(cred.clone()),
+    };
+    let auth_json = serde_json::to_string_pretty(&stored)?;
+    std::fs::write(koi_certmesh::ca::auth_path(), auth_json)?;
 
     koi_certmesh::roster::save_roster(&roster, &koi_certmesh::ca::roster_path())?;
 
@@ -1608,9 +1614,9 @@ fn print_policy_result(domain: &Option<String>, subnet: &Option<String>, clear: 
     }
 }
 
-// ── Rotate TOTP ─────────────────────────────────────────────────────
+// ── Rotate Auth ─────────────────────────────────────────────────────
 
-pub fn rotate_totp(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
+pub fn rotate_auth(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
     let client = require_daemon(endpoint)?;
 
     eprintln!("Enter the CA passphrase:");
@@ -1623,14 +1629,18 @@ pub fn rotate_totp(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
     }
 
     let body = serde_json::json!({ "passphrase": passphrase });
-    let resp = client.post_json("/v1/certmesh/rotate-totp", &body)?;
+    let resp = client.post_json("/v1/certmesh/rotate-auth", &body)?;
 
-    let totp_uri = resp.get("totp_uri").and_then(|v| v.as_str()).unwrap_or("");
+    let totp_uri = resp
+        .get("auth_setup")
+        .and_then(|s| s.get("totp_uri"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     if json {
         println!("{}", serde_json::json!({ "rotated": true }));
     } else {
-        println!("TOTP secret rotated successfully.");
+        println!("Auth credential rotated successfully.");
         if !totp_uri.is_empty() {
             if let Some(secret) = extract_totp_secret_from_uri(totp_uri) {
                 let hostname = hostname::get()

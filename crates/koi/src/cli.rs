@@ -394,8 +394,8 @@ pub enum CertmeshSubcommand {
         #[arg(long)]
         clear: bool,
     },
-    /// Rotate the TOTP enrollment secret
-    RotateTotp,
+    /// Rotate the enrollment auth credential
+    RotateAuth,
     /// Create an encrypted backup bundle
     Backup {
         /// Path to write the backup bundle
@@ -1293,13 +1293,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_certmesh_rotate_totp() {
-        let cli = Cli::try_parse_from(["koi", "certmesh", "rotate-totp"]).unwrap();
+    fn parse_certmesh_rotate_auth() {
+        let cli = Cli::try_parse_from(["koi", "certmesh", "rotate-auth"]).unwrap();
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
-                command: Some(CertmeshSubcommand::RotateTotp),
+                command: Some(CertmeshSubcommand::RotateAuth),
             })) => {}
-            other => panic!("Expected RotateTotp, got: {other:?}"),
+            other => panic!("Expected RotateAuth, got: {other:?}"),
         }
     }
 
