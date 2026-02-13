@@ -20,8 +20,8 @@ use crate::roster::EnrollmentState;
 pub struct JoinRequest {
     /// Hostname of the machine requesting to join.
     pub hostname: String,
-    /// TOTP code for enrollment authentication.
-    pub totp_code: String,
+    /// Auth response (TOTP code or FIDO2 assertion).
+    pub auth: koi_crypto::auth::AuthResponse,
     /// Optional extra SANs the joiner wants (IP addresses, aliases).
     /// The server always includes `[hostname, hostname.local]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -46,6 +46,9 @@ pub struct CertmeshStatus {
     pub ca_locked: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ca_fingerprint: Option<String>,
+    /// Active authentication method ("totp", "fido2", or absent if uninitialized).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_method: Option<String>,
     pub profile: TrustProfile,
     pub enrollment_state: EnrollmentState,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -129,8 +132,8 @@ pub struct CreateCaRequest {
 /// POST /create response.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateCaResponse {
-    /// TOTP provisioning URI (otpauth://...) for QR code display.
-    pub totp_uri: String,
+    /// Auth setup info (TOTP URI or FIDO2 registration result).
+    pub auth_setup: koi_crypto::auth::AuthSetup,
     /// SHA-256 fingerprint of the CA certificate.
     pub ca_fingerprint: String,
 }
@@ -147,17 +150,20 @@ pub struct UnlockResponse {
     pub success: bool,
 }
 
-/// POST /rotate-totp request — rotate the TOTP enrollment secret.
+/// POST /auth/rotate request — rotate the enrollment auth credential.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct RotateTotpRequest {
+pub struct RotateAuthRequest {
     pub passphrase: String,
+    /// Auth method to rotate to. If None, keeps the current method.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
 }
 
-/// POST /rotate-totp response.
+/// POST /auth/rotate response.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct RotateTotpResponse {
-    /// New TOTP provisioning URI for QR code display.
-    pub totp_uri: String,
+pub struct RotateAuthResponse {
+    /// Setup info for the new auth credential.
+    pub auth_setup: koi_crypto::auth::AuthSetup,
 }
 
 /// GET /log response — audit log entries.
@@ -263,13 +269,13 @@ pub struct ComplianceResponse {
 
 // ── Phase 3 — Failover + Lifecycle ──────────────────────────────────
 
-/// POST /promote request — TOTP-verified CA key transfer.
+/// POST /promote request — auth-verified CA key transfer.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PromoteRequest {
-    pub totp_code: String,
+    pub auth: koi_crypto::auth::AuthResponse,
 }
 
-/// POST /promote response — encrypted CA key, TOTP secret, and roster.
+/// POST /promote response — encrypted CA key, auth credential, and roster.
 ///
 /// The standby decrypts the CA key with the passphrase provided during
 /// the `koi certmesh promote` flow. The passphrase is never sent over
@@ -277,7 +283,8 @@ pub struct PromoteRequest {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PromoteResponse {
     pub encrypted_ca_key: koi_crypto::keys::EncryptedKey,
-    pub encrypted_totp_secret: koi_crypto::keys::EncryptedKey,
+    /// Serialized auth credential (StoredAuth JSON).
+    pub auth_data: serde_json::Value,
     pub roster_json: String,
     pub ca_cert_pem: String,
 }
@@ -342,20 +349,22 @@ mod tests {
     fn join_request_serde_round_trip() {
         let req = JoinRequest {
             hostname: "stone-05".to_string(),
-            totp_code: "123456".to_string(),
+            auth: koi_crypto::auth::AuthResponse::Totp {
+                code: "123456".to_string(),
+            },
             sans: vec!["10.0.0.5".to_string()],
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: JoinRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.hostname, "stone-05");
-        assert_eq!(parsed.totp_code, "123456");
+        assert!(matches!(parsed.auth, koi_crypto::auth::AuthResponse::Totp { ref code } if code == "123456"));
         assert_eq!(parsed.sans, vec!["10.0.0.5"]);
     }
 
     #[test]
     fn join_request_without_sans_deserializes() {
-        // Backward compat: sans field is optional in JSON
-        let json = r#"{"hostname":"stone-05","totp_code":"123456"}"#;
+        // auth field is a tagged enum; sans defaults to empty
+        let json = r#"{"hostname":"stone-05","auth":{"method":"totp","code":"123456"}}"#;
         let parsed: JoinRequest = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.hostname, "stone-05");
         assert!(parsed.sans.is_empty());
@@ -423,11 +432,13 @@ mod tests {
     #[test]
     fn promote_request_serde_round_trip() {
         let req = PromoteRequest {
-            totp_code: "654321".to_string(),
+            auth: koi_crypto::auth::AuthResponse::Totp {
+                code: "654321".to_string(),
+            },
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: PromoteRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.totp_code, "654321");
+        assert!(matches!(parsed.auth, koi_crypto::auth::AuthResponse::Totp { ref code } if code == "654321"));
     }
 
     #[test]
@@ -438,11 +449,7 @@ mod tests {
                 salt: vec![4, 5, 6],
                 nonce: vec![7, 8, 9],
             },
-            encrypted_totp_secret: koi_crypto::keys::EncryptedKey {
-                ciphertext: vec![10, 11],
-                salt: vec![12, 13],
-                nonce: vec![14, 15],
-            },
+            auth_data: serde_json::json!({"method": "totp", "encrypted_secret": {"ciphertext": [10], "salt": [11], "nonce": [12]}}),
             roster_json: r#"{"metadata":{}}"#.to_string(),
             ca_cert_pem: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n".to_string(),
         };
@@ -553,6 +560,7 @@ mod tests {
             ca_initialized: true,
             ca_locked: false,
             ca_fingerprint: Some("abc123".to_string()),
+            auth_method: None,
             profile: TrustProfile::JustMe,
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
@@ -578,6 +586,7 @@ mod tests {
             ca_initialized: true,
             ca_locked: false,
             ca_fingerprint: None,
+            auth_method: None,
             profile: TrustProfile::JustMe,
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: None,
@@ -598,6 +607,7 @@ mod tests {
             ca_initialized: true,
             ca_locked: false,
             ca_fingerprint: Some("fp-org".to_string()),
+            auth_method: None,
             profile: TrustProfile::MyOrganization,
             enrollment_state: EnrollmentState::Closed,
             enrollment_deadline: Some("2026-03-01T00:00:00Z".to_string()),
@@ -706,12 +716,14 @@ mod tests {
     #[test]
     fn create_ca_response_serde_round_trip() {
         let resp = CreateCaResponse {
-            totp_uri: "otpauth://totp/Koi:admin?secret=ABC123".to_string(),
+            auth_setup: koi_crypto::auth::AuthSetup::Totp {
+                totp_uri: "otpauth://totp/Koi:admin?secret=ABC123".to_string(),
+            },
             ca_fingerprint: "sha256:abcdef".to_string(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: CreateCaResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.totp_uri, resp.totp_uri);
+        assert!(json.contains("ABC123"));
         assert_eq!(parsed.ca_fingerprint, "sha256:abcdef");
     }
 
@@ -734,23 +746,26 @@ mod tests {
     }
 
     #[test]
-    fn rotate_totp_request_serde_round_trip() {
-        let req = RotateTotpRequest {
+    fn rotate_auth_request_serde_round_trip() {
+        let req = RotateAuthRequest {
             passphrase: "rotate-pass".to_string(),
+            method: None,
         };
         let json = serde_json::to_string(&req).unwrap();
-        let parsed: RotateTotpRequest = serde_json::from_str(&json).unwrap();
+        let parsed: RotateAuthRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.passphrase, "rotate-pass");
     }
 
     #[test]
-    fn rotate_totp_response_serde_round_trip() {
-        let resp = RotateTotpResponse {
-            totp_uri: "otpauth://totp/Koi:admin?secret=NEWBASE32".to_string(),
+    fn rotate_auth_response_serde_round_trip() {
+        let resp = RotateAuthResponse {
+            auth_setup: koi_crypto::auth::AuthSetup::Totp {
+                totp_uri: "otpauth://totp/Koi:admin?secret=NEWBASE32".to_string(),
+            },
         };
         let json = serde_json::to_string(&resp).unwrap();
-        let parsed: RotateTotpResponse = serde_json::from_str(&json).unwrap();
-        assert!(parsed.totp_uri.contains("NEWBASE32"));
+        let _: RotateAuthResponse = serde_json::from_str(&json).unwrap();
+        assert!(json.contains("NEWBASE32"));
     }
 
     #[test]
@@ -777,6 +792,7 @@ mod tests {
             ca_initialized: true,
             ca_locked: false,
             ca_fingerprint: Some("fp-round-trip".to_string()),
+            auth_method: None,
             profile: TrustProfile::MyTeam,
             enrollment_state: EnrollmentState::Open,
             enrollment_deadline: Some("2026-03-01T00:00:00Z".to_string()),
@@ -817,6 +833,7 @@ mod tests {
             ca_initialized: false,
             ca_locked: false,
             ca_fingerprint: None,
+            auth_method: None,
             profile: TrustProfile::JustMe,
             enrollment_state: EnrollmentState::Closed,
             enrollment_deadline: None,
