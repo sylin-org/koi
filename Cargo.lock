@@ -450,7 +450,7 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "command-surface"
-version = "0.2.202602130830"
+version = "0.2.202602130853"
 dependencies = [
  "console",
  "is-terminal",
@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "koi-certmesh"
-version = "0.2.202602130830"
+version = "0.2.202602130853"
 dependencies = [
  "axum",
  "chrono",
@@ -1470,7 +1470,7 @@ dependencies = [
 
 [[package]]
 name = "koi-client"
-version = "0.2.202602130830"
+version = "0.2.202602130853"
 dependencies = [
  "hickory-proto",
  "koi-common",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "koi-common"
-version = "0.2.202602130830"
+version = "0.2.202602130853"
 dependencies = [
  "axum",
  "serde",
@@ -1497,7 +1497,7 @@ dependencies = [
 
 [[package]]
 name = "koi-config"
-version = "0.2.202602130830"
+version = "0.2.202602130853"
 dependencies = [
  "koi-common",
  "serde",
@@ -1509,7 +1509,7 @@ dependencies = [
 
 [[package]]
 name = "koi-crypto"
-version = "0.2.202602130830"
+version = "0.2.202602130853"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "koi-dns"
-version = "0.2.202602130830"
+version = "0.2.202602130853"
 dependencies = [
  "axum",
  "hickory-proto",
@@ -1552,7 +1552,7 @@ dependencies = [
 
 [[package]]
 name = "koi-embedded"
-version = "0.2.202602130830"
+version = "0.2.202602130853"
 dependencies = [
  "axum",
  "futures-util",
@@ -1577,7 +1577,7 @@ dependencies = [
 
 [[package]]
 name = "koi-health"
-version = "0.2.202602130830"
+version = "0.2.202602130853"
 dependencies = [
  "axum",
  "chrono",
@@ -1599,7 +1599,7 @@ dependencies = [
 
 [[package]]
 name = "koi-mdns"
-version = "0.2.202602130830"
+version = "0.2.202602130853"
 dependencies = [
  "async-stream",
  "axum",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "koi-net"
-version = "0.2.202602130830"
+version = "0.2.202602130853"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1663,7 +1663,7 @@ dependencies = [
 
 [[package]]
 name = "koi-proxy"
-version = "0.2.202602130830"
+version = "0.2.202602130853"
 dependencies = [
  "axum",
  "axum-server",
@@ -1691,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "koi-truststore"
-version = "0.2.202602130830"
+version = "0.2.202602130853"
 dependencies = [
  "koi-common",
  "thiserror",

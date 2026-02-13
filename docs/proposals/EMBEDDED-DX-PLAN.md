@@ -2,7 +2,7 @@
 
 Date: 2026-02-12
 Owner: Maintainers
-Status: Proposed
+Status: Implemented
 
 ## Summary
 Introduce an embedded facade crate that provides a premium DX for in-process use
@@ -73,10 +73,18 @@ handle.mdns().browse("_http._tcp").await?;
 - `KoiEvent::MdnsFound(ServiceRecord)`
 - `KoiEvent::MdnsRemoved(ServiceRecord)`
 - `KoiEvent::MdnsResolved(ServiceRecord)`
-- `KoiEvent::DnsUpdated { name, ips, source }`
+- `KoiEvent::DnsEntryUpdated { name, ip }`
+- `KoiEvent::DnsEntryRemoved { name }`
 - `KoiEvent::HealthChanged { name, status }`
 - `KoiEvent::CertmeshMemberJoined { hostname, fingerprint }`
-- `KoiEvent::ProxyUpdated { entry }`
+- `KoiEvent::CertmeshMemberRevoked { hostname }`
+- `KoiEvent::CertmeshDestroyed`
+- `KoiEvent::ProxyEntryUpdated { entry }`
+- `KoiEvent::ProxyEntryRemoved { name }`
+
+Each domain crate owns a `broadcast::Sender<DomainEvent>` (capacity 256).
+The facade subscribes to each crate's channel and maps domain events into
+`KoiEvent` variants — zero-latency, no file-polling.
 
 The facade exposes:
 - `handle.events()` -> `impl Stream<Item = KoiEvent>`
@@ -103,22 +111,22 @@ The facade exposes:
 
 ## Phases and Milestones
 
-### Phase 1: Facade skeleton (1-2 weeks)
+### Phase 1: Facade skeleton — DONE
 - Create `koi-embedded` crate
 - Add `Builder`, `KoiConfig`, `KoiHandle`
 - Wire mdns + dns minimal handles
 - Add event bus skeleton
 
-### Phase 2: Event bus + capability handles (1-2 weeks)
+### Phase 2: Event bus + capability handles — DONE
 - Full `KoiEvent` model
 - mdns/dns/health/certmesh/proxy handles
-- Event fan-out from domain signals
+- Event fan-out from domain broadcast channels (no file-polling)
 
-### Phase 3: Embedded tests (1 week)
+### Phase 3: Embedded tests — DONE
 - New in-process test project
 - Replace most integration script coverage
 
-### Phase 4: Docs + examples (2-4 days)
+### Phase 4: Docs + examples — DONE
 - Quickstart guide
 - Example binaries
 

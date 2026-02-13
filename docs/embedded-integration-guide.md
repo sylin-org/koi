@@ -109,7 +109,7 @@ Certmesh create/destroy touches the trust store and may require elevated permiss
 ## Tips for Production Integration
 
 - Set `data_dir` to isolate state per process or environment.
-- Keep `event_poll_interval_secs` small if you need rapid state updates.
+- Events are push-based via broadcast channels — no polling delay.
 - On startup, explicitly enable/disable capabilities to match your deployment.
 
 ## Example Integration Checklist

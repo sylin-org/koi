@@ -414,9 +414,7 @@ pub fn create(
                         }
                         println!(
                             "  {}",
-                            color::dim(
-                                "Enter a code from your authenticator app to verify setup."
-                            )
+                            color::dim("Enter a code from your authenticator app to verify setup.")
                         );
                     }
                     attempts = 0;
@@ -939,10 +937,7 @@ fn prompt_passphrase_and_entropy() -> anyhow::Result<(String, [u8; 32])> {
                 "   {}",
                 color::yellow("If you lose this passphrase, the entire mesh")
             ),
-            format!(
-                "   {}",
-                color::yellow("must be recreated from scratch.")
-            ),
+            format!("   {}", color::yellow("must be recreated from scratch.")),
         ],
         BoxStyle::Square,
     );
@@ -1139,10 +1134,7 @@ fn print_create_review(
         Some(false) => "• Keep enrollment closed",
     };
 
-    let mut lines = vec![
-        String::new(),
-        format!("1. Profile:     {profile}"),
-    ];
+    let mut lines = vec![String::new(), format!("1. Profile:     {profile}")];
     if let Some(open) = enrollment_open {
         lines.push(format!(
             "   Enrollment: {}",
@@ -1774,7 +1766,10 @@ pub fn destroy(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
             color::yellow("⚠"),
             color::yellow("permanently delete")
         );
-        println!("     {}", color::dim("CA keys, certificates, enrollments, and audit logs."));
+        println!(
+            "     {}",
+            color::dim("CA keys, certificates, enrollments, and audit logs.")
+        );
         println!(
             "     {}",
             color::dim("If this node is the root CA, all mesh members will")
@@ -1784,10 +1779,7 @@ pub fn destroy(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
             color::dim("lose their ability to renew certificates.")
         );
         println!();
-        let answer = prompt_line(&format!(
-            "  Type {} to confirm: ",
-            color::red("DESTROY")
-        ))?;
+        let answer = prompt_line(&format!("  Type {} to confirm: ", color::red("DESTROY")))?;
         if answer.trim() != "DESTROY" {
             println!("  Aborted. No changes made.");
             return Ok(());
