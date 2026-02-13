@@ -103,7 +103,7 @@ $registerResults = Invoke-ParallelRequests -Count $Requests -Throttle $Parallel 
     $client = [System.Net.Http.HttpClient]::new()
     $body = @{ name = "Burst$i"; type = "_http._tcp"; port = 18000 + $i; lease_secs = 0 } | ConvertTo-Json -Compress
     $content = New-Object System.Net.Http.StringContent($body, [System.Text.Encoding]::UTF8, 'application/json')
-    $resp = $client.PostAsync("$using:Endpoint/v1/mdns/services", $content).GetAwaiter().GetResult()
+    $resp = $client.PostAsync("$using:Endpoint/v1/mdns/announce", $content).GetAwaiter().GetResult()
     $json = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
     $client.Dispose()
     return $json
@@ -138,7 +138,7 @@ $null = Invoke-ParallelRequests -Count $ids.Count -Throttle $Parallel -Action {
     $idsLocal = $using:ids
     $id = $idsLocal[$i - 1]
     $client = [System.Net.Http.HttpClient]::new()
-    $null = $client.PutAsync("$using:Endpoint/v1/mdns/services/$id/heartbeat", $null).GetAwaiter().GetResult()
+    $null = $client.PutAsync("$using:Endpoint/v1/mdns/heartbeat/$id", $null).GetAwaiter().GetResult()
     $client.Dispose()
     return $true
 }
@@ -151,7 +151,7 @@ $null = Invoke-ParallelRequests -Count $ids.Count -Throttle $Parallel -Action {
     $idsLocal = $using:ids
     $id = $idsLocal[$i - 1]
     $client = [System.Net.Http.HttpClient]::new()
-    $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Delete, "$using:Endpoint/v1/mdns/services/$id")
+    $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Delete, "$using:Endpoint/v1/mdns/unregister/$id")
     $null = $client.SendAsync($req).GetAwaiter().GetResult()
     $client.Dispose()
     return $true

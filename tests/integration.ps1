@@ -399,7 +399,7 @@ if ($Service) {
 
     # S.2 - mDNS browse endpoint
     try {
-        $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/browse?type=_http._tcp&idle_for=1" -TimeoutSec 5
+        $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/discover?type=_http._tcp&idle_for=1" -TimeoutSec 5
         Pass 'mDNS browse endpoint reachable'
     } catch {
         Fail 'mDNS browse endpoint' $_.Exception.Message
@@ -409,7 +409,7 @@ if ($Service) {
     $svcRegId = $null
     try {
         $body = '{"name":"ServiceTest","type":"_http._tcp","port":19998}'
-        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body $body
         $json = $resp.Content | ConvertFrom-Json
         if ($json.registered.id) {
             $svcRegId = $json.registered.id
@@ -423,7 +423,7 @@ if ($Service) {
 
     if ($svcRegId) {
         try {
-            $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$svcRegId"
+            $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/unregister/$svcRegId"
             Pass "unregister via HTTP (id: $($svcRegId.Substring(0, 8)))"
         } catch {
             Fail 'unregister via HTTP' $_.Exception.Message
@@ -444,7 +444,7 @@ if ($Service) {
     }
 
     try {
-        $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations"
+        $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/ls"
         Pass 'admin registrations list'
     } catch {
         Fail 'admin registrations list' $_.Exception.Message
@@ -584,7 +584,7 @@ if ($Service) {
 
     # S.10 - Open enrollment
     try {
-        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/enrollment/open" -Body '{}'
+        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/open-enrollment" -Body '{}'
         $json = $resp.Content | ConvertFrom-Json
         if ($json.enrollment_state -eq 'open') {
             Pass 'open enrollment'
@@ -597,7 +597,7 @@ if ($Service) {
 
     # S.11 - Close enrollment
     try {
-        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/enrollment/close"
+        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/close-enrollment"
         $json = $resp.Content | ConvertFrom-Json
         if ($json.enrollment_state -eq 'closed') {
             Pass 'close enrollment'
@@ -611,7 +611,7 @@ if ($Service) {
     # S.12 - Set policy
     try {
         $policyBody = '{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}'
-        $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/certmesh/policy" -Body $policyBody
+        $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/certmesh/set-policy" -Body $policyBody
         $json = $resp.Content | ConvertFrom-Json
         if ($json.allowed_domain -eq 'lab.local') {
             Pass 'set policy (domain=lab.local)'
@@ -655,7 +655,7 @@ if ($Service) {
 
     # S.N2 - Set policy with invalid CIDR returns 400
     try {
-        $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/certmesh/policy" -Body '{"allowed_subnet":"not-a-cidr"}'
+        $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/certmesh/set-policy" -Body '{"allowed_subnet":"not-a-cidr"}'
         if ($errResp.StatusCode -eq 400) {
             Pass 'set policy with invalid CIDR returns 400'
         } else {
@@ -691,7 +691,7 @@ if ($Service) {
 
     # S.N5 - Set hook for unknown member returns 404
     try {
-        $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/certmesh/hook" -Body '{"hostname":"nonexistent-host","reload":"echo hi"}'
+        $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/certmesh/set-hook" -Body '{"hostname":"nonexistent-host","reload":"echo hi"}'
         if ($errResp.StatusCode -eq 404) {
             Pass 'set hook for unknown member returns 404'
         } else {
@@ -706,7 +706,7 @@ if ($Service) {
     if ($weCreatedCa) {
         # Clear policy before destroy
         try {
-            $null = Invoke-Http -Method PUT -Uri "$Endpoint/v1/certmesh/policy" -Body '{}'
+            $null = Invoke-Http -Method PUT -Uri "$Endpoint/v1/certmesh/set-policy" -Body '{}'
             Pass 'clear policy before destroy'
         } catch {
             Fail 'clear policy before destroy' $_.Exception.Message
@@ -1280,7 +1280,7 @@ try {
     $dnsName = 'daemon-test'
     $dnsIp = '10.0.0.77'
     $body = @{ name = $dnsName; ip = $dnsIp } | ConvertTo-Json
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/dns/entries" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/dns/add" -Body $body
     $respJson = $resp.Content | ConvertFrom-Json
     $entries = @($respJson.entries)
     if ($entries.Count -ge 1) {
@@ -1307,7 +1307,7 @@ try {
         Fail 'dns lookup resolves added entry' "ips=$($ips -join ',')"
     }
 
-    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/dns/entries/$dnsName"
+    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/dns/remove/$dnsName"
     $respJson = $resp.Content | ConvertFrom-Json
     Pass 'dns remove entry via HTTP'
 } catch {
@@ -1316,7 +1316,7 @@ try {
 
 # 2.2h - DNS admin stop/start endpoints
 try {
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/dns/admin/stop"
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/dns/stop"
     $json = $resp.Content | ConvertFrom-Json
     if ($null -ne $json.stopped) {
         Pass 'dns stop endpoint responds'
@@ -1324,7 +1324,7 @@ try {
         Fail 'dns stop endpoint responds' 'Missing stopped field'
     }
 
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/dns/admin/start"
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/dns/serve"
     $json = $resp.Content | ConvertFrom-Json
     if ($null -ne $json.started) {
         Pass 'dns start endpoint responds'
@@ -1364,7 +1364,7 @@ try {
 try {
     $checkName = 'daemon-health-test'
     $body = @{ name = $checkName; kind = 'tcp'; target = '127.0.0.1:1'; interval_secs = 1; timeout_secs = 1 } | ConvertTo-Json
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/health/checks" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/health/add" -Body $body
     $respJson = $resp.Content | ConvertFrom-Json
     if ($respJson.status -eq 'ok') {
         Pass 'health add check via HTTP'
@@ -1382,7 +1382,7 @@ try {
         Fail 'health status includes added check via HTTP' 'Service check not found'
     }
 
-    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/health/checks/$checkName"
+    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/health/remove/$checkName"
     $respJson = $resp.Content | ConvertFrom-Json
     if ($respJson.status -eq 'ok') {
         Pass 'health remove check via HTTP'
@@ -1391,6 +1391,85 @@ try {
     }
 } catch {
     Fail 'health add/remove via HTTP' $_.Exception.Message
+}
+
+# 2.2l - Health list endpoint
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/health/list"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json) {
+        Pass 'health list endpoint returns OK'
+    } else {
+        Fail 'health list endpoint' 'Null response'
+    }
+} catch {
+    Fail 'health list endpoint' $_.Exception.Message
+}
+
+# -- Proxy daemon tests (HTTP) -----------------------------------------------
+
+# 2.R1 - Proxy status endpoint
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/proxy/status"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json) {
+        Pass 'proxy status endpoint returns OK'
+    } else {
+        Fail 'proxy status endpoint' 'Null response'
+    }
+} catch {
+    Fail 'proxy status endpoint' $_.Exception.Message
+}
+
+# 2.R2 - Proxy list endpoint
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/proxy/list"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json) {
+        Pass 'proxy list endpoint returns OK'
+    } else {
+        Fail 'proxy list endpoint' 'Null response'
+    }
+} catch {
+    Fail 'proxy list endpoint' $_.Exception.Message
+}
+
+# 2.R3 - Proxy add/remove via HTTP
+try {
+    $proxyName = 'daemon-proxy-test'
+    $body = @{ name = $proxyName; listen = '127.0.0.1:19990'; target = '127.0.0.1:19991' } | ConvertTo-Json
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/proxy/add" -Body $body
+    $respJson = $resp.Content | ConvertFrom-Json
+    if ($null -ne $respJson) {
+        Pass 'proxy add via HTTP'
+    } else {
+        Fail 'proxy add via HTTP' 'Null response'
+    }
+
+    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/proxy/remove/$proxyName"
+    $respJson = $resp.Content | ConvertFrom-Json
+    if ($null -ne $respJson) {
+        Pass 'proxy remove via HTTP'
+    } else {
+        Fail 'proxy remove via HTTP' 'Null response'
+    }
+} catch {
+    Fail 'proxy add/remove via HTTP' $_.Exception.Message
+}
+
+# -- DNS entries endpoint test -----------------------------------------------
+
+# 2.2m - DNS entries (GET) returns entry list
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/dns/entries"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json) {
+        Pass 'dns entries endpoint returns OK'
+    } else {
+        Fail 'dns entries endpoint' 'Null response'
+    }
+} catch {
+    Fail 'dns entries endpoint' $_.Exception.Message
 }
 
 # -- Certmesh daemon tests (HTTP) -------------------------------------------
@@ -1538,7 +1617,7 @@ try {
 
 # 2.P1 - Open enrollment
 try {
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/enrollment/open" -Body '{}'
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/open-enrollment" -Body '{}'
     $json = $resp.Content | ConvertFrom-Json
     if ($json.enrollment_state -eq 'open') {
         Pass 'open enrollment returns state=open'
@@ -1551,7 +1630,7 @@ try {
 
 # 2.P2 - Open enrollment with deadline
 try {
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/enrollment/open" -Body '{"deadline":"2030-12-31T23:59:59Z"}'
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/open-enrollment" -Body '{"deadline":"2030-12-31T23:59:59Z"}'
     $json = $resp.Content | ConvertFrom-Json
     if ($json.deadline) {
         Pass "open enrollment with deadline ($($json.deadline))"
@@ -1564,7 +1643,7 @@ try {
 
 # 2.P3 - Close enrollment
 try {
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/enrollment/close"
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/close-enrollment"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.enrollment_state -eq 'closed') {
         Pass 'close enrollment returns state=closed'
@@ -1578,7 +1657,7 @@ try {
 # 2.P4 - Set policy (domain + subnet)
 try {
     $policyBody = '{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}'
-    $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/certmesh/policy" -Body $policyBody
+    $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/certmesh/set-policy" -Body $policyBody
     $json = $resp.Content | ConvertFrom-Json
     if ($json.allowed_domain -eq 'lab.local' -and $json.allowed_subnet -eq '192.168.1.0/24') {
         Pass 'set policy (domain=lab.local, subnet=192.168.1.0/24)'
@@ -1591,7 +1670,7 @@ try {
 
 # 2.P5 - Set policy — invalid CIDR rejected (400)
 try {
-    $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/certmesh/policy" -Body '{"allowed_subnet":"not-a-cidr"}'
+    $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/certmesh/set-policy" -Body '{"allowed_subnet":"not-a-cidr"}'
     if ($errResp.StatusCode -eq 400) {
         Pass 'set policy (invalid CIDR) returns 400'
     } else {
@@ -1663,11 +1742,76 @@ if ($backupHex) {
     }
 }
 
+# -- Certmesh additional endpoint coverage ------------------------------------
+
+# 2.CM1 - Certmesh roster (GET) — returns member list
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/roster"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json.members) {
+        Pass "certmesh roster returns members (count=$(@($json.members).Count))"
+    } else {
+        Fail 'certmesh roster' 'Missing members field'
+    }
+} catch {
+    Fail 'certmesh roster' $_.Exception.Message
+}
+
+# 2.CM2 - Certmesh compliance (GET) — returns compliance report
+try {
+    $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/compliance"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json) {
+        Pass 'certmesh compliance returns OK'
+    } else {
+        Fail 'certmesh compliance' 'Null response'
+    }
+} catch {
+    Fail 'certmesh compliance' $_.Exception.Message
+}
+
+# 2.CM3 - Certmesh health (POST) — returns health check
+try {
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/health"
+    $json = $resp.Content | ConvertFrom-Json
+    if ($null -ne $json) {
+        Pass 'certmesh health returns OK'
+    } else {
+        Fail 'certmesh health' 'Null response'
+    }
+} catch {
+    Fail 'certmesh health' $_.Exception.Message
+}
+
+# 2.CM4 - Certmesh promote (POST) — expect error (no member to promote)
+try {
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/promote" -Body '{"hostname":"nonexistent-host"}'
+    if ($errResp.StatusCode -ge 400) {
+        Pass "certmesh promote (nonexistent) returns $($errResp.StatusCode)"
+    } else {
+        Fail 'certmesh promote (nonexistent)' "Expected error status, got $($errResp.StatusCode)"
+    }
+} catch {
+    Fail 'certmesh promote (nonexistent)' $_.Exception.Message
+}
+
+# 2.CM5 - Certmesh renew (POST) — expect error (no cert to renew)
+try {
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/renew" -Body '{"hostname":"nonexistent-host"}'
+    if ($errResp.StatusCode -ge 400) {
+        Pass "certmesh renew (nonexistent) returns $($errResp.StatusCode)"
+    } else {
+        Fail 'certmesh renew (nonexistent)' "Expected error status, got $($errResp.StatusCode)"
+    }
+} catch {
+    Fail 'certmesh renew (nonexistent)' $_.Exception.Message
+}
+
 # 2.3 - Register via HTTP
 $regId = $null
 try {
     $body = '{"name":"DaemonTest","type":"_http._tcp","port":19998}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     if ($json.registered.id) {
         $regId = $json.registered.id
@@ -1683,12 +1827,12 @@ try {
 $txtRegId = $null
 try {
     $body = '{"name":"TxtTest","type":"_http._tcp","port":19997,"txt":{"env":"test","ver":"1"}}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $txtRegId = $json.registered.id
 
     # Verify via admin inspect — deep field assertion
-    $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
+    $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/inspect/$txtRegId"
     $insp = $inspResp.Content | ConvertFrom-Json
     # AdminRegistration fields: id, name, type, port, mode, state, lease_secs,
     # remaining_secs, grace_secs, session_id, registered_at, last_seen, txt
@@ -1717,12 +1861,12 @@ try {
 $leaseRegId = $null
 try {
     $body = '{"name":"LeaseTest","type":"_http._tcp","port":19994,"lease_secs":300}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $leaseRegId = $json.registered.id
     if ($json.registered.lease_secs -eq 300 -and $json.registered.mode -eq 'heartbeat') {
         # Heartbeat and verify lease round-trips
-        $hbResp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/mdns/services/$leaseRegId/heartbeat"
+        $hbResp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/mdns/heartbeat/$leaseRegId"
         $hbJson = $hbResp.Content | ConvertFrom-Json
         if ($hbJson.renewed.lease_secs -eq 300) {
             Pass 'register with lease_secs=300 + heartbeat round-trip'
@@ -1740,7 +1884,7 @@ try {
 $permanentRegId = $null
 try {
     $body = '{"name":"PermanentTest","type":"_http._tcp","port":19991,"lease_secs":0}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $permanentRegId = $json.registered.id
     # lease_secs is omitted (skip_serializing_if) for permanent — check via PSObject.Properties
@@ -1832,7 +1976,7 @@ try {
 # service via HTTP specifically for the CLI unregister test.
 try {
     $body = '{"name":"UnregTarget","type":"_http._tcp","port":19995,"lease_secs":0}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $unregTargetId = $json.registered.id
 
@@ -1850,7 +1994,7 @@ try {
 # 2.11 - Heartbeat via HTTP
 if ($regId) {
     try {
-        $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/mdns/services/$regId/heartbeat"
+        $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/mdns/heartbeat/$regId"
         $json = $resp.Content | ConvertFrom-Json
         if ($json.renewed.id -eq $regId -and $json.renewed.lease_secs -gt 0) {
             Pass "heartbeat via HTTP (lease: $($json.renewed.lease_secs)s)"
@@ -1904,7 +2048,7 @@ try {
 
 # 2.14 - Browse SSE returns events
 try {
-    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/discover?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
     if ($events.Count -gt 0) {
         $hasFound = $false
         $hasId = $false
@@ -1930,7 +2074,7 @@ try {
 
 # 2.15 - Events SSE returns lifecycle events
 try {
-    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/events?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/subscribe?type=_http._tcp" -MaxEvents 5 -TimeoutMs 4000
     if ($events.Count -gt 0) {
         $hasEvent = $false
         $hasId = $false
@@ -1956,7 +2100,7 @@ try {
 
 # 2.17 - Browse meta-query via HTTP SSE (discovers service types)
 try {
-    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_services._dns-sd._udp.local." -MaxEvents 5 -TimeoutMs 4000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/discover?type=_services._dns-sd._udp.local." -MaxEvents 5 -TimeoutMs 4000
     if ($events.Count -gt 0) {
         # Meta-query returns found events where the name is a service type (e.g. "_http._tcp.local.")
         $hasType = $false
@@ -1986,7 +2130,7 @@ try {
 try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     # idle_for=2 on a quiet type: stream should close ~2s after opening (no events to find)
-    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/discover?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
     $sw.Stop()
     $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
 
@@ -2005,7 +2149,7 @@ try {
 try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     # idle_for=0 on a quiet type: server never closes, client timeout (3s) stops it
-    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_koi-idle-test._tcp&idle_for=0" -MaxEvents 20 -TimeoutMs 3000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/discover?type=_koi-idle-test._tcp&idle_for=0" -MaxEvents 20 -TimeoutMs 3000
     $sw.Stop()
     $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
 
@@ -2023,7 +2167,7 @@ try {
 # 2.X3 - Events SSE idle_for closes stream automatically
 try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/events?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/subscribe?type=_koi-idle-test._tcp&idle_for=2" -MaxEvents 20 -TimeoutMs 10000
     $sw.Stop()
     $elapsed = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
 
@@ -2086,7 +2230,7 @@ if (-not $txtRegId) {
 
 # 2.18 - Revive non-draining (expect 409)
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId/revive"
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/admin/revive/$txtRegId"
     if ($errResp.StatusCode -eq 409) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'not_draining') {
@@ -2103,7 +2247,7 @@ try {
 
 # 2.19 - Admin drain
 try {
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId/drain"
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/admin/drain/$txtRegId"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.drained -eq $txtRegId) {
         Pass 'admin drain'
@@ -2116,7 +2260,7 @@ try {
 
 # 2.20 - Admin inspect shows draining state
 try {
-    $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
+    $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/inspect/$txtRegId"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.state -eq 'draining') {
         Pass 'admin inspect shows draining state'
@@ -2129,7 +2273,7 @@ try {
 
 # 2.21 - Double-drain (expect 409)
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId/drain"
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/admin/drain/$txtRegId"
     if ($errResp.StatusCode -eq 409) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'already_draining') {
@@ -2146,7 +2290,7 @@ try {
 
 # 2.22 - Admin revive
 try {
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId/revive"
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/admin/revive/$txtRegId"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.revived -eq $txtRegId) {
         Pass 'admin revive'
@@ -2159,7 +2303,7 @@ try {
 
 # 2.23 - Admin inspect shows alive after revive
 try {
-    $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
+    $resp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/inspect/$txtRegId"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.state -eq 'alive') {
         Pass 'admin inspect shows alive after revive'
@@ -2172,7 +2316,7 @@ try {
 
 # 2.24 - Admin force-unregister
 try {
-    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
+    $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/admin/unregister/$txtRegId"
     $json = $resp.Content | ConvertFrom-Json
     if ($json.unregistered -eq $txtRegId) {
         Pass 'admin force-unregister'
@@ -2185,7 +2329,7 @@ try {
 
 # 2.25 - Admin inspect after delete returns 404
 try {
-    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/mdns/admin/registrations/$txtRegId"
+    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/mdns/admin/inspect/$txtRegId"
     if ($errResp.StatusCode -eq 404) {
         Pass 'admin inspect after delete returns 404'
     } else {
@@ -2201,7 +2345,7 @@ try {
 
 # 2.26 - Unregister nonexistent ID returns 404
 try {
-    $errResp = Invoke-HttpExpectError -Method DELETE -Uri "$Endpoint/v1/mdns/services/nonexistent_id_999"
+    $errResp = Invoke-HttpExpectError -Method DELETE -Uri "$Endpoint/v1/mdns/unregister/nonexistent_id_999"
     if ($errResp.StatusCode -eq 404) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'not_found') {
@@ -2218,7 +2362,7 @@ try {
 
 # 2.27 - Heartbeat nonexistent ID returns 404
 try {
-    $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/mdns/services/nonexistent_id_999/heartbeat"
+    $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/mdns/heartbeat/nonexistent_id_999"
     if ($errResp.StatusCode -eq 404) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'not_found') {
@@ -2235,7 +2379,7 @@ try {
 
 # 2.28 - Malformed JSON body returns 4xx
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/services" -Body '{broken json'
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body '{broken json'
     if ($errResp.StatusCode -ge 400 -and $errResp.StatusCode -lt 500) {
         Pass "malformed JSON body returns $($errResp.StatusCode)"
     } else {
@@ -2248,7 +2392,7 @@ try {
 # 2.29 - Invalid service type via register returns 400
 # ServiceType::parse rejects invalid protocol (only tcp/udp allowed)
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/services" -Body '{"name":"Bad","type":"_x._xyz","port":9999}'
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body '{"name":"Bad","type":"_x._xyz","port":9999}'
     if ($errResp.StatusCode -eq 400) {
         $errJson = $errResp.Content | ConvertFrom-Json
         if ($errJson.error -eq 'invalid_type') {
@@ -2265,7 +2409,7 @@ try {
 
 # 2.30 - Invalid service type via browse SSE returns error event
 try {
-    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/browse?type=_x._xyz" -MaxEvents 1 -TimeoutMs 3000
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/discover?type=_x._xyz" -MaxEvents 1 -TimeoutMs 3000
     if ($events.Count -gt 0 -and $events[0].error -eq 'invalid_type') {
         Pass 'invalid service type via browse SSE returns error event'
     } else {
@@ -2275,16 +2419,15 @@ try {
     Fail 'invalid service type via browse SSE' $_.Exception.Message
 }
 
-# 2.31 - Browse without type param returns 400
+# 2.31 - Browse without type param defaults to meta-browse (SSE 200)
 try {
-    $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/mdns/browse"
-    if ($errResp.StatusCode -eq 400) {
-        Pass 'browse without type param returns 400'
-    } else {
-        Fail 'browse without type param returns 400' "Expected 400, got $($errResp.StatusCode)"
-    }
+    $events = Invoke-Sse -Uri "$Endpoint/v1/mdns/discover" -MaxEvents 5 -TimeoutMs 4000
+    # Without ?type=, the handler defaults to the meta-query (_services._dns-sd._udp.local.)
+    # which returns an SSE stream (status 200). We may or may not get events depending on
+    # whether any services are registered, but the key assertion is that it opens successfully.
+    Pass "browse without type param returns SSE stream ($($events.Count) events)"
 } catch {
-    Fail 'browse without type param returns 400' $_.Exception.Message
+    Fail 'browse without type param returns SSE stream' $_.Exception.Message
 }
 
 # 2.32 - Resolve without name param returns 400
@@ -2301,7 +2444,7 @@ try {
 
 # 2.33 - Register with empty body returns 422
 try {
-    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/services" -Body '{}'
+    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body '{}'
     if ($errResp.StatusCode -eq 422) {
         Pass 'register with empty body returns 422'
     } else {
@@ -2322,7 +2465,7 @@ if ($regId -and $leaseRegId) {
         $prefixMatches = @($allIds | Where-Object { $_.StartsWith($prefix) })
         if ($prefixMatches.Count -ge 2) {
             try {
-                $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/mdns/admin/registrations/$prefix"
+                $errResp = Invoke-HttpExpectError -Uri "$Endpoint/v1/mdns/admin/inspect/$prefix"
                 if ($errResp.StatusCode -eq 400) {
                     $errJson = $errResp.Content | ConvertFrom-Json
                     if ($errJson.error -eq 'ambiguous_id') {
@@ -2453,7 +2596,7 @@ try {
 $hlRegId = $null
 try {
     $body = '{"name":"HeartbeatLifecycleTest","type":"_http._tcp","port":19996,"lease_secs":6}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $hlRegId = $json.registered.id
 
@@ -2461,7 +2604,7 @@ try {
         Fail 'heartbeat lifecycle: register' 'No ID returned'
     } else {
         # Verify it's alive
-        $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$hlRegId"
+        $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/inspect/$hlRegId"
         $insp = $inspResp.Content | ConvertFrom-Json
         if ($insp.state -eq 'alive' -and $insp.mode -eq 'heartbeat') {
             Pass 'heartbeat lifecycle: register + alive'
@@ -2475,7 +2618,7 @@ try {
 
         # Check draining state
         try {
-            $inspResp2 = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$hlRegId"
+            $inspResp2 = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/inspect/$hlRegId"
             $insp2 = $inspResp2.Content | ConvertFrom-Json
             if ($insp2.state -eq 'draining') {
                 Pass 'heartbeat lifecycle: draining after lease expiry'
@@ -2493,7 +2636,7 @@ try {
 
         # Verify it's been removed (should return 404)
         try {
-            $null = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$hlRegId"
+            $null = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/inspect/$hlRegId"
             # If we get here without error, it hasn't been removed yet
             Fail 'heartbeat lifecycle: removed after grace' "Registration still exists"
         } catch {
@@ -2513,7 +2656,7 @@ try {
 $hl2RegId = $null
 try {
     $body = '{"name":"HeartbeatKeepAlive","type":"_http._tcp","port":19997,"lease_secs":6}'
-    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body $body
     $json = $resp.Content | ConvertFrom-Json
     $hl2RegId = $json.registered.id
 
@@ -2522,13 +2665,13 @@ try {
     } else {
         # Wait 4 seconds (before lease expires at 6s), then heartbeat
         Start-Sleep -Seconds 4
-        $hbResp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/mdns/services/$hl2RegId/heartbeat"
+        $hbResp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/mdns/heartbeat/$hl2RegId"
         $hbJson = $hbResp.Content | ConvertFrom-Json
 
         if ($hbJson.renewed.id -eq $hl2RegId) {
             # Wait another 4 seconds — should still be alive (heartbeat reset the lease)
             Start-Sleep -Seconds 4
-            $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$hl2RegId"
+            $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/inspect/$hl2RegId"
             $insp = $inspResp.Content | ConvertFrom-Json
             if ($insp.state -eq 'alive') {
                 Pass 'heartbeat keepalive: stays alive with timely heartbeat'
@@ -2540,7 +2683,7 @@ try {
         }
 
         # Clean up
-        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$hl2RegId" } catch {}
+        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/unregister/$hl2RegId" } catch {}
     }
 } catch {
     Fail 'heartbeat keepalive' $_.Exception.Message
@@ -2554,7 +2697,7 @@ try {
     $burstFailed = $false
     for ($i = 1; $i -le 5; $i++) {
         $body = "{`"name`":`"Burst$i`",`"type`":`"_http._tcp`",`"port`":$( 18000 + $i ),`"lease_secs`":0}"
-        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/services" -Body $body
+        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body $body
         $json = $resp.Content | ConvertFrom-Json
         if ($json.registered.id) {
             $burstIds += $json.registered.id
@@ -2576,7 +2719,7 @@ try {
 
     # Clean up burst registrations
     foreach ($bid in $burstIds) {
-        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$bid" } catch {}
+        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/unregister/$bid" } catch {}
     }
 } catch {
     Fail 'concurrent registration burst' $_.Exception.Message
@@ -2608,7 +2751,7 @@ try {
         Start-Sleep -Milliseconds 1500
 
         # Check state via admin inspect (HTTP)
-        $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/registrations/$sessionDrainId"
+        $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/inspect/$sessionDrainId"
         $insp = $inspResp.Content | ConvertFrom-Json
         if ($insp.state -eq 'draining') {
             Pass 'pipe disconnect triggers session draining'
@@ -2617,7 +2760,7 @@ try {
         }
 
         # Clean up via admin force-unregister
-        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/admin/registrations/$sessionDrainId" } catch {}
+        try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/admin/unregister/$sessionDrainId" } catch {}
     } else {
         $pipe.Dispose()
         Fail 'pipe disconnect triggers session draining' 'Could not register service'
@@ -2631,7 +2774,7 @@ try {
 # 2.39 - Unregister DaemonTest via HTTP
 if ($regId) {
     try {
-        $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$regId"
+        $resp = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/unregister/$regId"
         $json = $resp.Content | ConvertFrom-Json
         if ($json.unregistered -eq $regId) {
             Pass 'unregister via HTTP'
@@ -2647,10 +2790,10 @@ if ($regId) {
 
 # Clean up LeaseTest and PermanentTest if still alive
 if ($leaseRegId) {
-    try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$leaseRegId" } catch {}
+    try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/unregister/$leaseRegId" } catch {}
 }
 if ($permanentRegId) {
-    try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/services/$permanentRegId" } catch {}
+    try { $null = Invoke-Http -Method DELETE -Uri "$Endpoint/v1/mdns/unregister/$permanentRegId" } catch {}
 }
 
 # -- Shutdown via HTTP endpoint ------------------------------------------------
