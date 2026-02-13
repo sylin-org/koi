@@ -39,55 +39,30 @@ pub fn validate_scope(hostname: &str, metadata: &RosterMetadata) -> Result<(), C
 /// Validate an IP address against a CIDR subnet constraint.
 ///
 /// Returns `Ok(())` if no subnet constraint is set or the IP is within range.
+/// Uses `ipnet::IpNet` for correct CIDR parsing and containment checks.
 pub fn validate_subnet(ip: &str, metadata: &RosterMetadata) -> Result<(), CertmeshError> {
     if let Some(ref cidr) = metadata.allowed_subnet {
-        if let Some((net_str, prefix_str)) = cidr.split_once('/') {
-            let net_ip: std::net::IpAddr = net_str.parse().map_err(|_| {
-                CertmeshError::ScopeViolation(format!("invalid subnet CIDR: {cidr}"))
-            })?;
-            let prefix_len: u32 = prefix_str.parse().map_err(|_| {
-                CertmeshError::ScopeViolation(format!("invalid prefix length in CIDR: {cidr}"))
-            })?;
-            let client_ip: std::net::IpAddr = ip
-                .parse()
-                .map_err(|_| CertmeshError::ScopeViolation(format!("invalid IP address: {ip}")))?;
-            if !ip_in_subnet(client_ip, net_ip, prefix_len) {
-                let reason = format!("IP '{}' outside subnet '{}'", ip, cidr);
-                let _ = audit::append_entry("scope_violation", &[("ip", ip), ("reason", &reason)]);
-                return Err(CertmeshError::ScopeViolation(reason));
-            }
+        let network: ipnet::IpNet = cidr
+            .parse()
+            .map_err(|_| CertmeshError::ScopeViolation(format!("invalid subnet CIDR: {cidr}")))?;
+        let client_ip: std::net::IpAddr = ip
+            .parse()
+            .map_err(|_| CertmeshError::ScopeViolation(format!("invalid IP address: {ip}")))?;
+        if !network.contains(&client_ip) {
+            let reason = format!("IP '{}' outside subnet '{}'", ip, cidr);
+            let _ = audit::append_entry("scope_violation", &[("ip", ip), ("reason", &reason)]);
+            return Err(CertmeshError::ScopeViolation(reason));
         }
     }
     Ok(())
 }
 
-/// Check whether `ip` is within the CIDR subnet `net/prefix_len`.
-fn ip_in_subnet(ip: std::net::IpAddr, net: std::net::IpAddr, prefix_len: u32) -> bool {
-    match (ip, net) {
-        (std::net::IpAddr::V4(ip4), std::net::IpAddr::V4(net4)) => {
-            if prefix_len > 32 {
-                return false;
-            }
-            let mask = if prefix_len == 0 {
-                0u32
-            } else {
-                !0u32 << (32 - prefix_len)
-            };
-            (u32::from(ip4) & mask) == (u32::from(net4) & mask)
-        }
-        (std::net::IpAddr::V6(ip6), std::net::IpAddr::V6(net6)) => {
-            if prefix_len > 128 {
-                return false;
-            }
-            let mask = if prefix_len == 0 {
-                0u128
-            } else {
-                !0u128 << (128 - prefix_len)
-            };
-            (u128::from(ip6) & mask) == (u128::from(net6) & mask)
-        }
-        _ => false, // mismatched IP versions
-    }
+/// Parse and validate a CIDR string. Returns the canonical form.
+///
+/// Used at policy-set time so invalid CIDRs are rejected early.
+pub fn parse_cidr(cidr: &str) -> Result<ipnet::IpNet, CertmeshError> {
+    cidr.parse()
+        .map_err(|_| CertmeshError::ScopeViolation(format!("invalid CIDR format: {cidr}")))
 }
 
 /// Process an enrollment request from a joining member.
@@ -240,7 +215,11 @@ mod tests {
             "111111".to_string()
         };
 
-        let request = JoinRequest { totp_code: invalid };
+        let request = JoinRequest {
+            hostname: "stone-05".to_string(),
+            totp_code: invalid,
+            sans: vec![],
+        };
 
         let result = process_enrollment(
             &ca,
@@ -272,7 +251,9 @@ mod tests {
         let mut rl = RateLimiter::new();
 
         let request = JoinRequest {
+            hostname: "stone-05".to_string(),
             totp_code: "123456".to_string(),
+            sans: vec![],
         };
 
         let result = process_enrollment(
@@ -297,7 +278,9 @@ mod tests {
         let mut rl = RateLimiter::new();
 
         let bad_request = JoinRequest {
+            hostname: "stone-05".to_string(),
             totp_code: "000000".to_string(),
+            sans: vec![],
         };
 
         // Fail 3 times to trigger lockout
@@ -484,66 +467,73 @@ mod tests {
             allowed_domain: None,
             allowed_subnet: Some("not-a-cidr".to_string()),
         };
-        // No '/' in the CIDR, so validate_subnet should pass (no-op for malformed)
+        // ipnet rejects malformed CIDR strings
+        let result = validate_subnet("10.0.0.1", &metadata);
+        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
+    }
+
+    #[test]
+    fn validate_subnet_ipv6() {
+        let metadata = RosterMetadata {
+            created_at: chrono::Utc::now(),
+            trust_profile: TrustProfile::JustMe,
+            operator: None,
+            requires_approval: Some(false),
+            enrollment_state: EnrollmentState::Open,
+            enrollment_deadline: None,
+            allowed_domain: None,
+            allowed_subnet: Some("fd00::/16".to_string()),
+        };
+        assert!(validate_subnet("fd00::1", &metadata).is_ok());
+        let result = validate_subnet("fe80::1", &metadata);
+        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
+    }
+
+    #[test]
+    fn validate_subnet_prefix_32_exact_match() {
+        let metadata = RosterMetadata {
+            created_at: chrono::Utc::now(),
+            trust_profile: TrustProfile::JustMe,
+            operator: None,
+            requires_approval: Some(false),
+            enrollment_state: EnrollmentState::Open,
+            enrollment_deadline: None,
+            allowed_domain: None,
+            allowed_subnet: Some("10.0.0.1/32".to_string()),
+        };
         assert!(validate_subnet("10.0.0.1", &metadata).is_ok());
+        let result = validate_subnet("10.0.0.2", &metadata);
+        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
     }
 
     #[test]
-    fn ip_in_subnet_ipv4_various_prefixes() {
-        use std::net::IpAddr;
-        let net: IpAddr = "10.0.0.0".parse().unwrap();
-        let ip_in: IpAddr = "10.0.0.42".parse().unwrap();
-        let ip_out: IpAddr = "10.0.1.1".parse().unwrap();
-
-        assert!(ip_in_subnet(ip_in, net, 24));
-        assert!(!ip_in_subnet(ip_out, net, 24));
-        assert!(ip_in_subnet(ip_in, net, 8));
-        assert!(ip_in_subnet(ip_out, net, 8));
+    fn validate_subnet_mixed_versions_rejects() {
+        let metadata = RosterMetadata {
+            created_at: chrono::Utc::now(),
+            trust_profile: TrustProfile::JustMe,
+            operator: None,
+            requires_approval: Some(false),
+            enrollment_state: EnrollmentState::Open,
+            enrollment_deadline: None,
+            allowed_domain: None,
+            allowed_subnet: Some("10.0.0.0/8".to_string()),
+        };
+        // IPv6 address should not match IPv4 CIDR
+        let result = validate_subnet("fd00::1", &metadata);
+        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
     }
 
     #[test]
-    fn ip_in_subnet_ipv6() {
-        use std::net::IpAddr;
-        let net: IpAddr = "fd00::".parse().unwrap();
-        let ip_in: IpAddr = "fd00::1".parse().unwrap();
-        let ip_out: IpAddr = "fe80::1".parse().unwrap();
-
-        assert!(ip_in_subnet(ip_in, net, 16));
-        assert!(!ip_in_subnet(ip_out, net, 16));
+    fn parse_cidr_valid() {
+        assert!(parse_cidr("192.168.1.0/24").is_ok());
+        assert!(parse_cidr("fd00::/16").is_ok());
+        assert!(parse_cidr("10.0.0.0/8").is_ok());
     }
 
     #[test]
-    fn ip_in_subnet_mixed_versions_returns_false() {
-        use std::net::IpAddr;
-        let net_v4: IpAddr = "10.0.0.0".parse().unwrap();
-        let ip_v6: IpAddr = "fd00::1".parse().unwrap();
-        assert!(!ip_in_subnet(ip_v6, net_v4, 8));
-    }
-
-    #[test]
-    fn ip_in_subnet_prefix_zero_matches_all() {
-        use std::net::IpAddr;
-        let net: IpAddr = "10.0.0.0".parse().unwrap();
-        let ip: IpAddr = "192.168.1.1".parse().unwrap();
-        assert!(ip_in_subnet(ip, net, 0));
-    }
-
-    #[test]
-    fn ip_in_subnet_prefix_32_exact_match() {
-        use std::net::IpAddr;
-        let net: IpAddr = "10.0.0.1".parse().unwrap();
-        let ip_same: IpAddr = "10.0.0.1".parse().unwrap();
-        let ip_diff: IpAddr = "10.0.0.2".parse().unwrap();
-        assert!(ip_in_subnet(ip_same, net, 32));
-        assert!(!ip_in_subnet(ip_diff, net, 32));
-    }
-
-    #[test]
-    fn ip_in_subnet_invalid_prefix_returns_false() {
-        use std::net::IpAddr;
-        let net: IpAddr = "10.0.0.0".parse().unwrap();
-        let ip: IpAddr = "10.0.0.1".parse().unwrap();
-        // prefix > 32 for IPv4 is invalid
-        assert!(!ip_in_subnet(ip, net, 33));
+    fn parse_cidr_invalid() {
+        assert!(parse_cidr("not-a-cidr").is_err());
+        assert!(parse_cidr("300.0.0.0/24").is_err());
+        assert!(parse_cidr("10.0.0.0/99").is_err());
     }
 }

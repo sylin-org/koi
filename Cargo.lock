@@ -340,6 +340,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5dd9dc738b7a8311c7ade152424974d8115f2cdad61e8dab8dac9f2362298510"
 
 [[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+
+[[package]]
 name = "bytes"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -450,7 +456,7 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "command-surface"
-version = "0.2.202602131015"
+version = "0.2.202602131019"
 dependencies = [
  "console",
  "is-terminal",
@@ -482,6 +488,26 @@ name = "constant_time_eq"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
+
+[[package]]
+name = "core-foundation"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
+
+[[package]]
+name = "core-foundation"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
 
 [[package]]
 name = "core-foundation-sys"
@@ -1443,14 +1469,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyring"
+version = "3.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
+dependencies = [
+ "byteorder",
+ "linux-keyutils",
+ "log",
+ "security-framework 2.11.1",
+ "security-framework 3.5.1",
+ "windows-sys 0.60.2",
+ "zeroize",
+]
+
+[[package]]
 name = "koi-certmesh"
-version = "0.2.202602131015"
+version = "0.2.202602131019"
 dependencies = [
  "axum",
  "chrono",
  "crossterm",
  "hostname",
  "indicatif",
+ "ipnet",
  "koi-common",
  "koi-crypto",
  "koi-truststore",
@@ -1470,7 +1512,7 @@ dependencies = [
 
 [[package]]
 name = "koi-client"
-version = "0.2.202602131015"
+version = "0.2.202602131019"
 dependencies = [
  "hickory-proto",
  "koi-common",
@@ -1484,7 +1526,7 @@ dependencies = [
 
 [[package]]
 name = "koi-common"
-version = "0.2.202602131015"
+version = "0.2.202602131019"
 dependencies = [
  "axum",
  "serde",
@@ -1497,7 +1539,7 @@ dependencies = [
 
 [[package]]
 name = "koi-config"
-version = "0.2.202602131015"
+version = "0.2.202602131019"
 dependencies = [
  "koi-common",
  "serde",
@@ -1509,10 +1551,11 @@ dependencies = [
 
 [[package]]
 name = "koi-crypto"
-version = "0.2.202602131015"
+version = "0.2.202602131019"
 dependencies = [
  "aes-gcm",
  "argon2",
+ "keyring",
  "koi-common",
  "p256",
  "pem",
@@ -1531,7 +1574,7 @@ dependencies = [
 
 [[package]]
 name = "koi-dns"
-version = "0.2.202602131015"
+version = "0.2.202602131019"
 dependencies = [
  "axum",
  "hickory-proto",
@@ -1552,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "koi-embedded"
-version = "0.2.202602131015"
+version = "0.2.202602131019"
 dependencies = [
  "axum",
  "futures-util",
@@ -1577,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "koi-health"
-version = "0.2.202602131015"
+version = "0.2.202602131019"
 dependencies = [
  "axum",
  "chrono",
@@ -1599,7 +1642,7 @@ dependencies = [
 
 [[package]]
 name = "koi-mdns"
-version = "0.2.202602131015"
+version = "0.2.202602131019"
 dependencies = [
  "async-stream",
  "axum",
@@ -1620,7 +1663,7 @@ dependencies = [
 
 [[package]]
 name = "koi-net"
-version = "0.2.202602131015"
+version = "0.2.202602131019"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1663,7 +1706,7 @@ dependencies = [
 
 [[package]]
 name = "koi-proxy"
-version = "0.2.202602131015"
+version = "0.2.202602131019"
 dependencies = [
  "axum",
  "axum-server",
@@ -1691,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "koi-truststore"
-version = "0.2.202602131015"
+version = "0.2.202602131019"
 dependencies = [
  "koi-common",
  "thiserror",
@@ -1739,6 +1782,16 @@ dependencies = [
  "bitflags 2.10.0",
  "libc",
  "redox_syscall 0.7.1",
+]
+
+[[package]]
+name = "linux-keyutils"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "761e49ec5fd8a5a463f9b84e877c373d888935b71c6be78f3767fe2ae6bed18e"
+dependencies = [
+ "bitflags 2.10.0",
+ "libc",
 ]
 
 [[package]]
@@ -2491,6 +2544,42 @@ dependencies = [
  "pkcs8",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "security-framework"
+version = "2.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02"
+dependencies = [
+ "bitflags 2.10.0",
+ "core-foundation 0.9.4",
+ "core-foundation-sys",
+ "libc",
+ "security-framework-sys",
+]
+
+[[package]]
+name = "security-framework"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3297343eaf830f66ede390ea39da1d462b6b0c1b000f420d0a83f898bbbe6ef"
+dependencies = [
+ "bitflags 2.10.0",
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
+ "libc",
+ "security-framework-sys",
+]
+
+[[package]]
+name = "security-framework-sys"
+version = "2.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc1f0cbffaac4852523ce30d8bd3c5cdc873501d96ff467ca09b6767bb8cd5c0"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
 ]
 
 [[package]]

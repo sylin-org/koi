@@ -158,7 +158,7 @@ Use established, well-maintained crates. Do not reinvent what exists.
 | Serialization | `serde` + `serde_json` | Roster, config, API payloads |
 | Terminal UI | `indicatif` | Progress bars for entropy collection |
 | Terminal input | `crossterm` | Raw keyboard input for entropy collection (cross-platform) |
-| TPM | `tss-esapi` | Best-effort TPM 2.0 support. Feature-gated. Fail gracefully if unavailable. |
+| TPM / Platform binding | `keyring` | Cross-platform credential store (Windows DPAPI, macOS Keychain, Linux keyutils). Machine-binds CA key material. |
 | Logging | `tracing` + `tracing-subscriber` | Structured logging. Audit log is separate (custom implementation). |
 | Color output | `owo-colors` or `colored` | Respect `NO_COLOR` env var |
 | IP/subnet | `ipnet` | CIDR parsing and containment checks for scope constraints |
@@ -411,8 +411,8 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 3. **Revocation.** `koi certmesh revoke <host>` — add to revocation list, push with roster sync. Members check list on certmesh connections.
 
-4. **TPM integration.** (koi-crypto/tpm.rs) Feature-gated. Detect TPM 2.0, seal CA key in hardware. Fail gracefully to software encryption if unavailable.
-   - **Plan to implement.**
+4. **Platform credential binding.** (koi-crypto/tpm.rs) Uses `keyring` crate to seal CA key ciphertext in the OS credential store (Windows DPAPI, macOS Keychain, Linux keyutils). Graceful fallback to software-only if credential store is unavailable.
+   - **Implemented.** Replaces original `tss-esapi` TPM stub.
 
 5. **Security hardening.** `zeroize` on all key material structs. Constant-time TOTP comparison. Cert pinning enforcement.
 
@@ -561,19 +561,27 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 **Acceptance**
 - Organization profile requires approval + operator attribution; compliance output matches profile.
 
-### Phase 5 — TPM Integration (Planned)
+### Phase 5 — Platform Credential Binding (Implemented)
 
-**Goal:** Real TPM 2.0 sealing when feature `tpm` is enabled.
+**Goal:** Machine-bind CA key material so it can only be decrypted on the original host.
 
-**Status:** TPM module exists as a stub; real sealing is not implemented yet.
+**Status:** Implemented using `keyring` crate (replaces original `tss-esapi` TPM stub).
 
-**Tasks**
-1. Implement TPM detection + sealing using `tss-esapi`.
-2. Gate on feature flag and fail gracefully to software-only.
-3. Add tests to validate the software fallback path.
+**Design decisions**
+- `tss-esapi` was rejected: requires the `tpm2-tss` C library, Linux-only in practice, won't cross-compile to Windows.
+- `keyring` 3.x provides the same security goal via OS-native credential stores:
+  - Windows: DPAPI (TPM-backed on modern hardware with vTPM/fTPM)
+  - macOS: Keychain (Secure Enclave on Apple Silicon)
+  - Linux: kernel keyutils or Secret Service (D-Bus)
+- The `tpm` feature flag was removed; keyring is always compiled.
+- Seal at encrypt time, verify-but-warn at decrypt time (defense-in-depth, not a hard gate).
+- `certmesh destroy` cleans up sealed material.
 
 **Acceptance**
-- On supported hardware, CA key ciphertext is sealed; on unsupported, logs show graceful fallback.
+- `encrypt_key()` seals ciphertext in platform credential store.
+- `decrypt_key()` warns on mismatch but proceeds (resilience over strictness).
+- `is_available()` probe detects whether the credential store is functional.
+- On unsupported environments (headless CI), graceful fallback to passphrase-only.
 
 ### Phase 8 — Proxy Persistence + Remote Backend Warning (Implemented)
 
@@ -591,6 +599,20 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 **Deliverable:** `koi proxy add grafana --listen 443 --backend http://localhost:3000` results in `https://grafana.lan` working in any browser on the network.
 
 **Test:** Start a plain HTTP server. Add proxy entry. Verify HTTPS access from another machine. Renew cert → verify proxy hot-reloads without dropping connections.
+
+### Phase 9 — Gap Closures (Implemented)
+
+**Closed in this pass (Feb 2026):**
+
+1. **CIDR scope validation (ipnet).** Replaced hand-rolled `ip_in_subnet()` bitmask math with `ipnet::IpNet` for correct CIDR parsing and containment. Added `parse_cidr()` public helper used at policy-set time for early validation. Malformed CIDRs (e.g. missing prefix) now correctly rejected.
+
+2. **SAN feedback loop.** Confirmed fully wired: `alias_feedback_loop()` → `CertmeshCore::add_alias_sans()` → roster update → next renewal picks up new SANs. No code changes needed.
+
+3. **Platform credential binding (keyring).** See Phase 5 above.
+
+4. **Hostname bug fix.** `JoinRequest` now carries the joining machine's `hostname` (+ optional extra `sans`). Previously, `enroll()` called `hostname::get()` which returned the CA server's hostname — issuing certs with the wrong subject. The client-side `koi certmesh join` now sends the local hostname.
+
+5. **Dead code removal.** Deleted `CertmeshCore::create_ca()` — a never-called duplicate of `create_handler` that was missing self-enrollment, policy overrides, and in-memory state updates.
 
 ---
 

@@ -612,30 +612,10 @@ async fn set_policy_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<PolicyRequest>,
 ) -> impl IntoResponse {
-    // Validate subnet CIDR format if provided
+    // Validate subnet CIDR format if provided (rejects malformed early)
     if let Some(ref cidr) = request.allowed_subnet {
-        if let Some((net_str, prefix_str)) = cidr.split_once('/') {
-            if net_str.parse::<std::net::IpAddr>().is_err() {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    &CertmeshError::ScopeViolation(format!("invalid subnet CIDR: {cidr}")),
-                );
-            }
-            if prefix_str.parse::<u32>().is_err() {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    &CertmeshError::ScopeViolation(format!(
-                        "invalid prefix length in CIDR: {cidr}"
-                    )),
-                );
-            }
-        } else {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                &CertmeshError::ScopeViolation(format!(
-                    "invalid CIDR format (expected x.x.x.x/N): {cidr}"
-                )),
-            );
+        if let Err(e) = crate::enrollment::parse_cidr(cidr) {
+            return error_response(StatusCode::BAD_REQUEST, &e);
         }
     }
 
@@ -1047,7 +1027,9 @@ mod tests {
         let app = routes(test_extension());
         let req = Request::post("/join")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"totp_code":"123456"}"#))
+            .body(Body::from(
+                r#"{"hostname":"stone-05","totp_code":"123456"}"#,
+            ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         // CA not initialized → 503
@@ -1140,7 +1122,9 @@ mod tests {
         let app = routes(test_extension());
         let req = Request::post("/join")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"totp_code":"123456"}"#))
+            .body(Body::from(
+                r#"{"hostname":"stone-05","totp_code":"123456"}"#,
+            ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)

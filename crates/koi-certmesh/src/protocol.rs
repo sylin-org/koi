@@ -12,10 +12,20 @@ use crate::profiles::TrustProfile;
 use crate::roster::EnrollmentState;
 
 /// Client request to join the mesh.
+///
+/// The joining machine must identify itself by hostname so the CA
+/// issues a certificate with the correct subject (not the CA’s own
+/// hostname).
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct JoinRequest {
+    /// Hostname of the machine requesting to join.
+    pub hostname: String,
     /// TOTP code for enrollment authentication.
     pub totp_code: String,
+    /// Optional extra SANs the joiner wants (IP addresses, aliases).
+    /// The server always includes `[hostname, hostname.local]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sans: Vec<String>,
 }
 
 /// Server response after successful enrollment.
@@ -331,11 +341,24 @@ mod tests {
     #[test]
     fn join_request_serde_round_trip() {
         let req = JoinRequest {
+            hostname: "stone-05".to_string(),
             totp_code: "123456".to_string(),
+            sans: vec!["10.0.0.5".to_string()],
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: JoinRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.hostname, "stone-05");
         assert_eq!(parsed.totp_code, "123456");
+        assert_eq!(parsed.sans, vec!["10.0.0.5"]);
+    }
+
+    #[test]
+    fn join_request_without_sans_deserializes() {
+        // Backward compat: sans field is optional in JSON
+        let json = r#"{"hostname":"stone-05","totp_code":"123456"}"#;
+        let parsed: JoinRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.hostname, "stone-05");
+        assert!(parsed.sans.is_empty());
     }
 
     #[test]

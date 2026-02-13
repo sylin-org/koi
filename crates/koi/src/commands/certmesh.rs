@@ -1398,7 +1398,13 @@ pub async fn join(
     let code = code.trim().to_string();
 
     let client = KoiClient::new(&resolved_endpoint);
-    let body = serde_json::json!({ "totp_code": code });
+    let local_hostname = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let body = serde_json::json!({
+        "hostname": local_hostname,
+        "totp_code": code,
+    });
     let resp = client.post_json("/v1/certmesh/join", &body)?;
 
     if json {

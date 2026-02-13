@@ -93,6 +93,11 @@ impl CertmeshState {
         *self.roster.lock().await = Roster::empty();
         *self.profile.lock().await = TrustProfile::default();
 
+        // Remove platform-sealed key material (best-effort)
+        if let Err(e) = koi_crypto::tpm::delete_key_material("koi-certmesh-ca") {
+            tracing::debug!(error = %e, "No platform-sealed key material to clean up");
+        }
+
         // Remove certmesh directory (contains ca/, roster.json)
         let certmesh_dir = ca::certmesh_dir();
         if certmesh_dir.exists() {
@@ -212,72 +217,10 @@ impl CertmeshCore {
         self.state.event_tx.subscribe()
     }
 
-    /// Initialize a new CA from scratch (called via HTTP from CLI).
-    ///
-    /// Creates the CA key pair, self-signed cert, TOTP secret, roster,
-    /// installs the CA cert in the OS trust store, and returns the TOTP
-    /// provisioning URI so the CLI can display a QR code.
-    pub async fn create_ca(
-        &self,
-        passphrase: &str,
-        entropy: &[u8],
-        profile: TrustProfile,
-        operator: Option<&str>,
-    ) -> Result<protocol::CreateCaResponse, CertmeshError> {
-        // Reject if CA already initialized
-        if ca::is_ca_initialized() {
-            return Err(CertmeshError::Internal(
-                "CA is already initialized".to_string(),
-            ));
-        }
-
-        // Create CA
-        let ca_state = ca::create_ca(passphrase, entropy)?;
-        let ca_fingerprint = ca::ca_fingerprint(&ca_state);
-
-        // Generate TOTP secret
-        let totp_secret = koi_crypto::totp::generate_secret();
-        let encrypted_totp = koi_crypto::totp::encrypt_secret(&totp_secret, passphrase)?;
-        koi_crypto::keys::save_encrypted_key(&ca::totp_secret_path(), &encrypted_totp)?;
-
-        // Build TOTP URI for QR code
-        let totp_uri = koi_crypto::totp::build_totp_uri(&totp_secret, "Koi Certmesh", "enrollment");
-
-        // Create roster
-        let new_roster = Roster::new(profile, operator.map(String::from));
-        let roster_path = ca::roster_path();
-        roster::save_roster(&new_roster, &roster_path)?;
-
-        // Install CA cert in OS trust store (best-effort)
-        if let Err(e) = koi_truststore::install_ca_cert(&ca_state.cert_pem, "koi-certmesh") {
-            tracing::warn!(error = %e, "Could not install CA cert in trust store");
-        }
-
-        // Update in-memory state
-        *self.state.ca.lock().await = Some(ca_state);
-        // Create a copy from raw bytes for state (original consumed by totp_uri)
-        let state_secret =
-            koi_crypto::totp::TotpSecret::from_bytes(totp_secret.as_bytes().to_vec());
-        *self.state.totp_secret.lock().await = Some(state_secret);
-        *self.state.roster.lock().await = new_roster;
-        *self.state.profile.lock().await = profile;
-
-        // Audit log
-        let _ = audit::append_entry(
-            "pond_initialized",
-            &[
-                ("profile", &profile.to_string()),
-                ("operator", operator.unwrap_or("none")),
-            ],
-        );
-
-        tracing::info!(profile = %profile, "CA initialized via service");
-
-        Ok(protocol::CreateCaResponse {
-            totp_uri,
-            ca_fingerprint,
-        })
-    }
+    // NOTE: CA creation logic lives exclusively in `create_handler` (http.rs)
+    // which handles entropy decoding, self-enrollment, policy overrides,
+    // and trust-store installation. There is no separate CertmeshCore method
+    // to avoid divergence between two code paths.
 
     /// Read the audit log entries.
     pub fn read_audit_log(&self) -> Result<String, CertmeshError> {
@@ -296,14 +239,26 @@ impl CertmeshCore {
     }
 
     /// Process an enrollment request. Returns the join response on success.
+    ///
+    /// The joining machine’s hostname comes from the request — not from
+    /// `hostname::get()` which would return the CA server’s hostname.
     pub async fn enroll(
         &self,
         request: &protocol::JoinRequest,
     ) -> Result<protocol::JoinResponse, CertmeshError> {
-        let hostname = hostname::get()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "unknown".to_string());
-        let sans = vec![hostname.clone(), format!("{hostname}.local")];
+        let hostname = &request.hostname;
+        if hostname.is_empty() {
+            return Err(CertmeshError::Internal(
+                "join request must include the joining machine's hostname".to_string(),
+            ));
+        }
+        // Default SANs: hostname + hostname.local, plus any extras the joiner sent
+        let mut sans = vec![hostname.clone(), format!("{hostname}.local")];
+        for extra in &request.sans {
+            if !sans.contains(extra) {
+                sans.push(extra.clone());
+            }
+        }
 
         let ca_guard = self.state.ca.lock().await;
         let ca = ca_guard.as_ref().ok_or_else(|| {
@@ -324,7 +279,7 @@ impl CertmeshCore {
         drop(roster);
 
         let approved_by = if requires_approval {
-            request_approval(&self.state, &hostname, profile).await?
+            request_approval(&self.state, hostname, profile).await?
         } else {
             fallback_operator
         };
@@ -337,7 +292,7 @@ impl CertmeshCore {
             totp_secret,
             &mut rate_limiter,
             request,
-            &hostname,
+            hostname,
             &sans,
             approved_by,
         )?;
@@ -1701,7 +1656,9 @@ mod tests {
     async fn uninitialized_core_enroll_returns_error() {
         let core = CertmeshCore::uninitialized();
         let request = protocol::JoinRequest {
+            hostname: "stone-05".to_string(),
             totp_code: "123456".to_string(),
+            sans: vec![],
         };
         let result = core.enroll(&request).await;
         assert!(result.is_err());
