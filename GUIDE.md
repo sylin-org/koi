@@ -290,6 +290,10 @@ koi certmesh open-enrollment [--until DURATION]  # open enrollment window
 koi certmesh close-enrollment                    # close enrollment window
 koi certmesh set-policy [--domain ...] [--subnet ...] [--clear]
 koi certmesh rotate-totp                         # rotate TOTP secret
+koi certmesh backup PATH                         # create encrypted backup bundle
+koi certmesh restore PATH                        # restore from backup bundle
+koi certmesh revoke HOSTNAME [--reason REASON]   # revoke a member's certificate
+koi certmesh compliance                          # compliance summary
 koi certmesh destroy                             # destroy all certmesh state (requires typing DESTROY)
 
 # DNS

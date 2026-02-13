@@ -196,8 +196,11 @@ All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 | `POST` | `/v1/certmesh/open-enrollment` | Re-open enrollment |
 | `POST` | `/v1/certmesh/close-enrollment` | Close enrollment |
 | `PUT` | `/v1/certmesh/set-policy` | Update trust policy |
+| `POST` | `/v1/certmesh/backup` | Create an encrypted backup bundle |
+| `POST` | `/v1/certmesh/restore` | Restore from a backup bundle |
+| `POST` | `/v1/certmesh/revoke` | Revoke a member's certificate |
+| `GET` | `/v1/certmesh/compliance` | Compliance summary |
 | `POST` | `/v1/certmesh/destroy` | Destroy the CA and all state |
-| `POST` | `/v1/certmesh/verify` | Verify mesh health |
 
 ### Join example
 
@@ -289,6 +292,48 @@ The announcement includes TXT records:
 - `profile=<trust profile>`
 
 This means you can also discover certmesh CAs with `koi mdns discover certmesh` — a nice way to check what's advertising before you join.
+
+---
+
+## Revoking a member
+
+If a machine is compromised, decommissioned, or simply no longer trusted, revoke its certificate:
+
+```
+koi certmesh revoke stone-02 --reason "decommissioned"
+```
+
+This marks the member as revoked in the roster and records the event in the audit log. The revoked host's certificate remains on disk but will no longer be renewed, and other members can check revocation status.
+
+---
+
+## Backup and restore
+
+The CA state — private key, certificates, roster, TOTP secret, and audit log — should be backed up. Certmesh creates encrypted backup bundles:
+
+```
+koi certmesh backup ./mesh-backup.tar.enc
+```
+
+To restore on a new machine (or after data loss):
+
+```
+koi certmesh restore ./mesh-backup.tar.enc
+```
+
+The backup is encrypted with the CA passphrase, so the same passphrase is required to restore.
+
+---
+
+## Compliance
+
+For environments that need to demonstrate certificate management compliance:
+
+```
+koi certmesh compliance
+```
+
+This shows a summary of the mesh's security posture: key algorithm, cert lifetimes, enrollment policy, revocation state, and audit log integrity. Use `--json` for integration with compliance tooling.
 
 ---
 
