@@ -12,7 +12,7 @@
 Today, `koi certmesh create` accepts flags and silently creates an irrevocable
 root of trust. A user who types the command with no context gets no guidance, no
 explanation, and no chance to cancel. Three passphrase-adjacent concepts
-(entropy seed, CA passphrase, TOTP secret) are introduced in a single
+(entropy seed, CA passphrase, auth credential) are introduced in a single
 interaction with no separation. The flow was designed for scripting, not for
 humans.
 
@@ -46,7 +46,7 @@ if this were monochrome?"
 | Treatment | Role | Used for |
 |---|---|---|
 | **Cyan** | Active trigger-effect pair | `Enter` + the thing Enter activates (e.g. `Just me`). Only one pair at a time. |
-| **Cyan bold** | Critical value to capture | The passphrase, the TOTP manual code |
+| **Cyan bold** | Critical value to capture | The passphrase, the TOTP manual code (or FIDO2 registration) |
 | **Green** | Completed / success | `✓` checkmarks, "Certificate mesh created" title |
 | **Yellow** | Irreversible warning | "No recovery mechanism", "will not be shown again" |
 | **Red** | Error | `✗` wrong input, failed verification |
@@ -156,7 +156,7 @@ is part of step 1, not a separate step.
 
     Enrollment when mesh is created:
 
-    › ● Open              Any machine with a valid TOTP code can join
+    › ● Open              Any machine with a valid auth credential can join
                            immediately. You can close enrollment later.
 
       ○ Closed            Machines cannot join until you explicitly
@@ -170,10 +170,10 @@ is part of step 1, not a separate step.
 
     Require approval for each join request?
 
-    › ● No                TOTP code is sufficient. Machine joins
+    › ● No                Auth credential is sufficient. Machine joins
                            immediately after verification.
 
-      ○ Yes               After TOTP verification, an operator must
+      ○ Yes               After auth verification, an operator must
                            approve the request before a cert is issued.
 
     ↑↓ Navigate  Enter No  ESC Cancel
@@ -435,14 +435,15 @@ until Enter is pressed here.
 
 ---
 
-### TOTP setup (post-creation output)
+### Auth setup (post-creation output)
 
 ```
   Authenticator setup
 
   When other machines join this mesh, they'll prove
   authorization with a one-time code from an authenticator
-  app (Google Authenticator, Authy, 1Password, etc.).
+  app (Google Authenticator, Authy, 1Password, etc.)
+  or a FIDO2 security key.
 
   Scan this QR code:
 
@@ -454,7 +455,7 @@ until Enter is pressed here.
 
   ┌─────────────────────────────────────────────────────┐
   │  Save this now. It will not be shown again.         │
-  │  (rotate later with 'koi certmesh rotate-totp')     │
+  │  (rotate later with 'koi certmesh rotate-auth')      │
   └─────────────────────────────────────────────────────┘
 
   Enter Continue  ESC Cancel
@@ -464,7 +465,7 @@ until Enter is pressed here.
 - "will not be shown again" is **yellow**.
 - `Enter` and `Continue` are **cyan** — cause-effect pair.
 
-The TOTP is generated server-side during the `POST /v1/certmesh/create` call.
+The auth credential is generated server-side during the `POST /v1/certmesh/create` call.
 It's shown here as output, not as a wizard step. The user isn't making a
 decision — they're acknowledging and recording.
 
@@ -482,7 +483,7 @@ where the QR may not render.
   ✓ Trust store recognizes the CA
   ✓ CA key decrypts successfully
   ✓ mDNS announcing _certmesh._tcp
-  ✓ TOTP verification ready
+  ✓ Auth verification ready
 ```
 
 - All `✓` **green**. Failed checks: `✗` in **red** with explanation.

@@ -29,7 +29,7 @@ Unless noted otherwise, tests assume:
 - Machine B: `stone-05` at `192.168.1.15`
 - A third machine C (`stone-09` at `192.168.1.22`) for multi-member tests
 - A plain HTTP service (e.g., `python3 -m http.server 3000`) available on Machine B for proxy tests
-- TOTP code available (either from a real authenticator or a test harness that generates codes from a known secret)
+- Auth credential available (TOTP authenticator app or FIDO2 security key, or a test harness that generates codes from a known secret)
 
 For CI, use loopback interfaces with different ports to simulate separate machines. mDNS tests that require actual multicast should be marked `#[ignore]` in CI and run manually.
 
@@ -113,16 +113,16 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 | P2-21 | Entropy from auto-generated passphrase | XKCD-style words displayed, key generated | Manual |
 | P2-22 | Entropy mixed with system RNG | Key differs from pure keyboard input (entropy sources combined) | ✓ |
 
-### P2 — TOTP Enrollment
+### P2 — Enrollment Auth
 
 | ID | Test | Expected | Auto? |
 |----|------|----------|-------|
-| P2-30 | Run `koi certmesh join` on Machine B | Discovers CA via mDNS, prompts for TOTP | Manual |
-| P2-31 | Enter valid TOTP code | Enrollment succeeds, cert files written to `/var/lib/koi/certs/stone-05/` or `%ProgramData%\koi\certs\stone-05\` | ✓ |
-| P2-32 | Enter invalid TOTP code | Enrollment fails with clear error message | ✓ |
+| P2-30 | Run `koi certmesh join` on Machine B | Discovers CA via mDNS, prompts for auth | Manual |
+| P2-31 | Enter valid auth credential (e.g. TOTP code) | Enrollment succeeds, cert files written to `/var/lib/koi/certs/stone-05/` or `%ProgramData%\koi\certs\stone-05\` | ✓ |
+| P2-32 | Enter invalid auth credential | Enrollment fails with clear error message | ✓ |
 | P2-33 | Enter 3 invalid codes | 5-minute lockout triggered, subsequent valid codes rejected | ✓ |
 | P2-34 | Wait for lockout to expire, enter valid code | Enrollment succeeds | ✓ |
-| P2-35 | Verify TOTP comparison is constant-time | No timing difference between valid and invalid codes (use statistical test) | ✓ |
+| P2-35 | Verify auth comparison is constant-time | No timing difference between valid and invalid codes (use statistical test) | ✓ |
 | P2-36 | Verify Machine B's cert SANs | Includes stone-05's hostname, FQDN, mDNS name, all LAN IPs | ✓ |
 | P2-37 | Verify Machine B has root CA in trust store | `curl https://stone-01.lan` succeeds without `--insecure` | Manual |
 | P2-38 | Verify audit log entry | `stone_joined` with host and approver | ✓ |
@@ -153,7 +153,7 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 
 | ID | Test | Expected | Auto? |
 |----|------|----------|-------|
-| P3-01 | Run `koi certmesh promote` on Machine B | TOTP verified, CA key transferred, Machine B becomes standby | Manual |
+| P3-01 | Run `koi certmesh promote` on Machine B | Auth verified, CA key transferred, Machine B becomes standby | Manual |
 | P3-02 | Verify standby has full roster | Roster on Machine B matches Machine A | ✓ |
 | P3-03 | Verify standby syncs periodically | Add Machine C to mesh on primary, verify standby picks up new member | ✓ |
 | P3-04 | Verify roster sync integrity | Signed manifest validates on standby | ✓ |
@@ -207,7 +207,7 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 | P4-01 | Enrollment with approval required | CA terminal shows approval prompt, enrollment waits for y/N | Manual |
 | P4-02 | Deny enrollment | Enrolling machine gets rejection, audit log records denial | ✓ |
 | P4-03 | Open enrollment window `--duration 1m` | Enrollment succeeds within window | ✓ |
-| P4-04 | Attempt enrollment after window closes | Valid TOTP rejected with "enrollment closed" message | ✓ |
+| P4-04 | Attempt enrollment after window closes | Valid auth rejected with "enrollment closed" message | ✓ |
 | P4-05 | Auto-close after duration expires | Window closes without manual intervention | ✓ |
 | P4-06 | Create mesh with `--operator "Test User"` | Operator name in roster metadata and audit log | ✓ |
 | P4-07 | Create mesh with `--subnet 192.168.1.0/24` | Cert request from IP outside subnet refused | ✓ |
@@ -215,9 +215,9 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 | P4-09 | Scope violation logged | Audit log records refused request with reason | ✓ |
 | P4-10 | `koi certmesh compliance` with personal profile | Simple health check output | ✓ |
 | P4-11 | `koi certmesh compliance` with organization profile | Full audit-ready summary with all fields | ✓ |
-| P4-12 | `koi certmesh rotate-secret` | New QR code, old codes invalid, existing members unaffected | Manual |
-| P4-13 | Attempt enrollment with old TOTP after rotation | Rejected | ✓ |
-| P4-14 | Enroll new member with new TOTP after rotation | Succeeds | ✓ |
+| P4-12 | `koi certmesh rotate-auth` | New auth credential, old credential invalid, existing members unaffected | Manual |
+| P4-13 | Attempt enrollment with old auth credential after rotation | Rejected | ✓ |
+| P4-14 | Enroll new member with new auth credential after rotation | Succeeds | ✓ |
 
 ---
 
@@ -230,14 +230,14 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 | P5-03 | `koi certmesh restore` with correct passphrase | CA rebuilt, roster restored, audit log restored | ✓ |
 | P5-04 | `koi certmesh restore` with wrong passphrase | Restore fails, clear error message | ✓ |
 | P5-05 | After restore, existing members can connect | Cert chain still valid, heartbeat succeeds | Manual |
-| P5-06 | After restore, new members can join | Enrollment works with the restored TOTP secret | Manual |
+| P5-06 | After restore, new members can join | Enrollment works with the restored auth credential | Manual |
 | P5-07 | `koi certmesh revoke stone-05` | stone-05 added to revocation list | ✓ |
 | P5-08 | Revocation list pushed to members | Other members see stone-05 as revoked | ✓ |
 | P5-09 | Revoked member's certmesh connections rejected | stone-05 cannot connect to CA's certmesh API | ✓ |
 | P5-10 | Revoked member's existing cert still works for TLS (until expiry) | HTTPS to stone-05 still works (cert is technically valid) | Manual |
 | P5-11 | After 30-day cert expiry, revoked member's TLS fails | Cert expired, not renewed (member is revoked) | Manual |
 | P5-12 | Verify `zeroize` on key material | Key structs implement `ZeroizeOnDrop` (compile-time check) | ✓ |
-| P5-13 | Verify no secrets in logs | `RUST_LOG=trace`, run enrollment — no TOTP codes, keys, or passphrases in output | ✓ |
+| P5-13 | Verify no secrets in logs | `RUST_LOG=trace`, run enrollment — no auth secrets, keys, or passphrases in output | ✓ |
 
 ---
 
@@ -442,8 +442,8 @@ These are the "it all works" tests. Run as final acceptance after Phase 8.
 | Step | Command | Expected |
 |------|---------|----------|
 | 1 | Machine A: `koi certmesh create` (profile: Just Me) | CA created, QR code displayed |
-| 2 | Scan QR code into authenticator | TOTP secret stored |
-| 3 | Machine B: `koi certmesh join` | Discovers CA, prompts for TOTP, enrolls |
+| 2 | Scan QR code into authenticator (or register FIDO2 key) | Auth credential stored |
+| 3 | Machine B: `koi certmesh join` | Discovers CA, prompts for auth, enrolls |
 | 4 | Machine A: `koi dns serve` | DNS resolver starts |
 | 5 | Verify: `koi dns list` | Shows `stone-01.lan`, `stone-05.lan`, `grafana.lan` |
 | 6 | Machine B: `koi proxy add grafana --listen 443 --backend http://localhost:3000` | Proxy starts |
@@ -474,10 +474,10 @@ These are the "it all works" tests. Run as final acceptance after Phase 8.
 |------|---------|----------|
 | 1 | `koi certmesh create --operator "Maria Santos"` (profile: Organization, scope: `test.local`, `192.168.1.0/24`) | Enrollment closed by default |
 | 2 | `koi certmesh open-enrollment --duration 5m` | Window opens |
-| 3 | Machine B: `koi certmesh join` | TOTP accepted, approval prompt on Machine A |
+| 3 | Machine B: `koi certmesh join` | Auth accepted, approval prompt on Machine A |
 | 4 | Machine A: approve | Machine B enrolled with operator attribution |
 | 5 | Wait 5 minutes | Window auto-closes |
-| 6 | Machine C: `koi certmesh join` | TOTP rejected: "enrollment closed" |
+| 6 | Machine C: `koi certmesh join` | Auth rejected: "enrollment closed" |
 | 7 | `koi certmesh compliance` | Full audit summary with all details |
 | 8 | `koi certmesh log` | Every step audited with operator names |
 
@@ -516,7 +516,7 @@ These verify that security boundaries hold.
 
 | ID | Test | Expected |
 |----|------|----------|
-| NEG-01 | Attempt enrollment with random 6-digit code | Rejected |
+| NEG-01 | Attempt enrollment with invalid auth credential (e.g., random 6-digit code) | Rejected |
 | NEG-02 | Attempt enrollment from IP outside subnet scope | Rejected with scope violation logged |
 | NEG-03 | Attempt enrollment when window is closed (organization profile) | Rejected with "enrollment closed" |
 | NEG-04 | Extract CA private key from enrolled member's filesystem | Key is NOT on member machines — only public CA cert and own service cert |
@@ -525,7 +525,7 @@ These verify that security boundaries hold.
 | NEG-07 | Access certmesh API with revoked member's certificate | Rejected |
 | NEG-08 | Two CAs claim primary simultaneously | Deterministic tiebreaker resolves within seconds, one defers |
 | NEG-09 | `koi certmesh backup` without typing "EXPORT" | Backup aborted |
-| NEG-10 | Grep all log files for TOTP codes, private keys, passphrases | Zero matches |
+| NEG-10 | Grep all log files for auth secrets, private keys, passphrases | Zero matches |
 | NEG-11 | Run `koi certmesh create` on a machine that is already in a mesh | Error: "Already part of a mesh. Run `koi certmesh revoke` first or use a different data directory." |
 | NEG-12 | Run `koi certmesh join` when no CA is on the network | Timeout with helpful message: "No certmesh CA found on this network." |
 
@@ -558,7 +558,7 @@ For quick reference — the must-pass gates at each phase:
 |-------|-----------|-------|
 | 0 | Old commands work with deprecation notice, new `koi mdns` commands work, `--json` on all, workspace compiles | ☐ |
 | 1 | `koi status` shows mDNS, event system fires on service appear/disappear, data dir structure exists | ☐ |
-| 2 | Two machines enrolled via TOTP, cert files at standard path, mutual TLS works, browser shows green lock | ☐ |
+| 2 | Two machines enrolled via auth, cert files at standard path, mutual TLS works, browser shows green lock | ☐ |
 | 3 | Failover within 60s, old primary defers on return, cert renewal overwrites files, reload hook fires | ☐ |
 | 4 | Org profile requires approval + operator + scope, enrollment windows auto-close, compliance summary adapts | ☐ |
 | 5 | Backup/restore cycle works, revocation propagates, no secrets in logs, key material zeroized | ☐ |

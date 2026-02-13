@@ -38,8 +38,8 @@ Route handlers are defined in `crates/koi-certmesh/src/http.rs`.
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| POST | `/v1/certmesh/create` | Initialize CA (create key, cert, TOTP secret) |
-| POST | `/v1/certmesh/join` | Join the certificate mesh (TOTP enrollment) |
+| POST | `/v1/certmesh/create` | Initialize CA (create key, cert, auth credential) |
+| POST | `/v1/certmesh/join` | Join the certificate mesh (auth-verified enrollment) |
 | GET | `/v1/certmesh/status` | Mesh status overview |
 | POST | `/v1/certmesh/unlock` | Decrypt CA key with passphrase |
 | PUT | `/v1/certmesh/hook` | Set reload hook for a member |
@@ -47,7 +47,7 @@ Route handlers are defined in `crates/koi-certmesh/src/http.rs`.
 | POST | `/v1/certmesh/renew` | Trigger certificate renewal |
 | GET | `/v1/certmesh/roster` | Get signed roster manifest |
 | POST | `/v1/certmesh/health` | Member health heartbeat |
-| POST | `/v1/certmesh/rotate-totp` | Rotate TOTP enrollment secret |
+| POST | `/v1/certmesh/rotate-auth` | Rotate enrollment auth credential |
 | GET | `/v1/certmesh/log` | Read audit log entries |
 | POST | `/v1/certmesh/enrollment/open` | Open enrollment window |
 | POST | `/v1/certmesh/enrollment/close` | Close enrollment window |
@@ -171,7 +171,7 @@ Streaming responses include a `status` field:
 | `koi certmesh open-enrollment` | Client | Open enrollment window |
 | `koi certmesh close-enrollment` | Client | Close enrollment window |
 | `koi certmesh set-policy` | Client | Set enrollment scope constraints |
-| `koi certmesh rotate-totp` | Client | Rotate TOTP enrollment secret |
+| `koi certmesh rotate-auth` | Client | Rotate enrollment auth credential |
 | `koi certmesh destroy` | Client | Destroy all certmesh state |
 | `koi status` | Standalone/Client | Unified capability status |
 | `koi install` | - | Install as OS service |

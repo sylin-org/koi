@@ -62,7 +62,7 @@ crates/
 │           └── macos.rs         # launchd, service paths
 ├── koi-common/            # Shared kernel (types, errors, pipeline)
 ├── koi-config/            # Config & breadcrumb discovery
-├── koi-crypto/            # Cryptographic primitives (keys, TOTP)
+├── koi-crypto/            # Cryptographic primitives (keys, TOTP, FIDO2, auth adapters)
 ├── koi-truststore/        # Platform trust store installation
 ├── koi-mdns/              # mDNS domain (core, daemon, registry, protocol, http)
 ├── koi-certmesh/          # Certificate mesh (CA, enrollment, roster)

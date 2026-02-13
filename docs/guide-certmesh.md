@@ -35,13 +35,13 @@ After reviewing your choices, the wizard creates the mesh and then:
 3. Creates a roster with this host as the primary member
 4. Issues a certificate for the local hostname (self-enrollment)
 5. Starts certmesh audit logging
-6. Generates a TOTP secret and shows a QR code for your authenticator app
-7. **Verifies** you captured the TOTP secret by asking for a code
+6. Sets up enrollment authentication (TOTP by default — shows a QR code for your authenticator app; or FIDO2 if a hardware security key is available)
+7. **Verifies** you can authenticate (TOTP: enter a code from your app; FIDO2: tap your key)
 8. Installs the CA certificate in the system trust store
 
-The TOTP verification step is important — the wizard won't finish until you enter a valid code from your authenticator app. If you're having trouble, after two failed attempts you can choose to generate a new TOTP secret.
+The verification step is important — the wizard won't finish until you prove you can authenticate. For TOTP, if you're having trouble, after two failed attempts you can choose to generate a new secret.
 
-The QR code supports any TOTP authenticator (Google Authenticator, Authy, 1Password, etc.). You'll need the rotating code to enroll new members.
+TOTP supports any authenticator app (Google Authenticator, Authy, 1Password, etc.). FIDO2 supports USB security keys (YubiKey, SoloKey, Nitrokey, etc.). You'll need the chosen auth method to enroll new members.
 
 ### Choosing a trust profile
 
@@ -74,7 +74,7 @@ If you choose **Custom** in step 1, you can explicitly set:
 - Enrollment at creation: `open` or `closed`
 - Join approval: `required` or `not required`
 
-After creation, the wizard displays a QR code for your authenticator app and asks you to verify a TOTP code before finishing. If verification fails twice, you can regenerate the TOTP secret.
+After creation, the wizard displays authentication setup for enrollment. For TOTP (default), this is a QR code and manual key — scan it with your authenticator app and enter a code to verify. For FIDO2, you'll register your hardware security key. If TOTP verification fails twice, you can regenerate the secret.
 
 For non-interactive use (automation), provide flags:
 
@@ -97,13 +97,13 @@ koi certmesh join
 ```
 Searching for certmesh CA on the local network...
 Found CA: stone-01 Certmesh CA at http://192.168.1.10:5641
-Enter the TOTP code from your authenticator app:
+Authenticate to join (TOTP code or tap security key):
 123456
 Enrolled as: stone-02
 Certificates written to: /var/lib/koi/certs/stone-02
 ```
 
-The flow is intentionally simple because the hard part — proving you're authorized — is handled by the TOTP code. The CA verifies the code, issues a certificate, and enrolls the new member in the roster. No certificate signing requests, no out-of-band key exchange, no manual approval queues (unless you chose the organization profile).
+The flow is intentionally simple because the hard part — proving you're authorized — is handled by the enrollment auth (TOTP code or FIDO2 key tap). The CA verifies the credential, issues a certificate, and enrolls the new member in the roster. No certificate signing requests, no out-of-band key exchange, no manual approval queues (unless you chose the organization profile).
 
 If multiple CAs are found on the network, or the machines aren't on the same broadcast domain, specify the endpoint directly:
 
@@ -191,7 +191,7 @@ All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 | `POST` | `/v1/certmesh/renew` | Force certificate renewal |
 | `GET` | `/v1/certmesh/roster` | Full membership roster |
 | `POST` | `/v1/certmesh/health` | Mesh health check |
-| `POST` | `/v1/certmesh/rotate-totp` | Rotate the TOTP secret |
+| `POST` | `/v1/certmesh/rotate-auth` | Rotate the enrollment auth credential |
 | `GET` | `/v1/certmesh/log` | Audit log |
 | `POST` | `/v1/certmesh/open-enrollment` | Re-open enrollment |
 | `POST` | `/v1/certmesh/close-enrollment` | Close enrollment |
@@ -208,7 +208,7 @@ All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 POST /v1/certmesh/join
 Content-Type: application/json
 
-{"totp_code": "123456"}
+{"hostname": "stone-02", "auth": {"method": "totp", "code": "123456"}}
 ```
 
 Response:
@@ -230,8 +230,8 @@ Response:
 |---|---|---|
 | `ca_not_initialized` | 503 | No CA has been created yet |
 | `ca_locked` | 503 | CA key hasn't been decrypted |
-| `invalid_totp` | 401 | Wrong TOTP code |
-| `rate_limited` | 429 | Too many failed TOTP attempts |
+| `invalid_auth` | 401 | Wrong auth credential (TOTP code or FIDO2 signature) |
+| `rate_limited` | 429 | Too many failed auth attempts |
 | `enrollment_closed` | 403 | Enrollment is closed |
 | `conflict` | 409 | Hostname already enrolled |
 
@@ -274,7 +274,7 @@ CA state (on the primary):
 certmesh/ca/
   ca-key.enc      # encrypted CA private key
   ca-cert.pem     # CA certificate (public)
-  totp-secret.enc # encrypted TOTP secret
+  auth.json       # enrollment auth credential (encrypted TOTP secret or FIDO2 public key)
 certmesh/roster.json  # mesh membership roster
 ```
 
@@ -309,7 +309,7 @@ This marks the member as revoked in the roster and records the event in the audi
 
 ## Backup and restore
 
-The CA state — private key, certificates, roster, TOTP secret, and audit log — should be backed up. Certmesh creates encrypted backup bundles:
+The CA state — private key, certificates, roster, auth credential, and audit log — should be backed up. Certmesh creates encrypted backup bundles:
 
 ```
 koi certmesh backup ./mesh-backup.tar.enc

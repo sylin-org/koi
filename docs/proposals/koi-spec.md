@@ -15,7 +15,7 @@
 Koi is a single-binary local network toolkit that makes LAN services discoverable, trustworthy, named, monitored, and reachable over HTTPS. It provides five capabilities — each under its own namespace — that solve specific pain points in local network operations:
 
 1. **mDNS** — cross-platform service discovery. They find each other.
-2. **Certmesh** — certificate mesh with TOTP enrollment. They trust each other.
+2. **Certmesh** — certificate mesh with pluggable auth (TOTP/FIDO2). They trust each other.
 3. **DNS** — lightweight local resolver. They name each other.
 4. **Health** — present-tense network state. They watch each other.
 5. **Proxy** — TLS-terminating reverse proxy. They serve each other.
@@ -192,7 +192,7 @@ This sets security defaults appropriate to the trust model. Every feature remain
 | Operator name | Not prompted |
 | Enrollment | Always open |
 | Scope constraint | None |
-| TOTP rotation reminder | None |
+| Auth credential rotation reminder | None |
 | Compliance summary | Simple health check |
 | Cert lifetime | 30 days, renew at day 20 |
 | Audit log | On (minimal) |
@@ -207,7 +207,7 @@ This sets security defaults appropriate to the trust model. Every feature remain
 | Operator name | Prompted |
 | Enrollment | Open by default, `close-enrollment` available |
 | Scope constraint | Inferred from current subnet |
-| TOTP rotation reminder | Every 6 months |
+| Auth credential rotation reminder | Every 6 months |
 | Compliance summary | Standard |
 | Cert lifetime | 30 days, renew at day 20 |
 | Audit log | On (standard) |
@@ -222,7 +222,7 @@ This sets security defaults appropriate to the trust model. Every feature remain
 | Operator name | Required |
 | Enrollment | Closed by default (must explicitly open) |
 | Scope constraint | Required (prompted for domain and subnet) |
-| TOTP rotation reminder | Every 6 months |
+| Auth credential rotation reminder | Every 6 months |
 | Compliance summary | Full (audit-ready) |
 | Cert lifetime | 30 days, renew at day 20 |
 | Audit log | On (full, with operator attribution) |
@@ -232,14 +232,14 @@ The selected profile is stored in roster metadata as `trust_profile: personal | 
 ### 4.4 CLI Surface
 
 ```
-koi certmesh create              # Initialize CA, TOTP enrollment
-koi certmesh join                # Discover mesh, enroll with TOTP
+koi certmesh create              # Initialize CA, auth enrollment
+koi certmesh join                # Discover mesh, enroll with auth
 koi certmesh promote             # Become standby CA
 koi certmesh status              # Enrollment roster, cert expiry
 koi certmesh revoke <host>       # Remove machine from mesh
 koi certmesh backup              # Export CA key + roster (encrypted)
 koi certmesh restore             # Rebuild from backup
-koi certmesh rotate-secret       # Generate new TOTP secret, invalidate old
+koi certmesh rotate-auth         # Generate new auth credential, invalidate old
 koi certmesh open-enrollment     # Open enrollment window (--duration <time>)
 koi certmesh close-enrollment    # Close enrollment window
 koi certmesh compliance          # Security summary (adapts to trust profile)
@@ -287,8 +287,8 @@ The CA keypair is born from human entropy. On hardware with a TPM, the TPM's har
 
 3. **Root CA generation.** ECDSA keypair generated, seeded by the collected entropy.
 4. **CA key encryption.** The CA private key is encrypted at rest with a passphrase. After reboot, `koi certmesh unlock` is required before the CA can sign.
-5. **TOTP secret generation.** A TOTP shared secret is created (seeded by the same entropy pool) and encrypted alongside the CA key.
-6. **QR code display.** The TOTP secret is presented as a QR code for scanning into an authenticator app (Google Authenticator, Authy, etc.).
+5. **Auth credential setup.** An auth credential is created for enrollment verification. By default, this is a TOTP shared secret (seeded by the same entropy pool) encrypted alongside the CA key. Alternatively, a FIDO2 security key can be registered.
+6. **QR code display.** For TOTP (default), the secret is presented as a QR code for scanning into an authenticator app (Google Authenticator, Authy, etc.). For FIDO2, the security key is registered directly.
 7. **Trust store installation.** The root CA public cert is installed in Machine A's local trust store.
 8. **mDNS advertisement.** Machine A begins advertising `_certmesh._tcp` via Koi's mDNS.
 9. **Self-certification.** Machine A mints its own service certificate, signed by the new root CA. Cert files are written to the standard cert path (see §4.9).
@@ -299,13 +299,13 @@ The CA keypair is born from human entropy. On hardware with a TPM, the TPM's har
 Machine B: `koi certmesh join`
 
 1. **Discovery.** Koi discovers `_certmesh._tcp` via mDNS. Connects to the CA's certmesh API.
-2. **TOTP challenge.** User is prompted for a six-digit code from their authenticator app.
+2. **Auth challenge.** User is prompted to authenticate — enter a six-digit TOTP code from their authenticator app, or tap a FIDO2 security key.
 3. **Rate limiting.** Three failed attempts trigger a 5-minute lockout.
 4. **Approval (if enabled).** On the CA node, the administrator sees:
 
 ```
 Enrollment request from: stone-05 (192.168.1.50)
-TOTP code: valid
+TOTP code: valid  (or FIDO2: verified)
 Approve? [y/N]:
 ```
 
@@ -341,8 +341,8 @@ Two-party authorization: the joiner provides the code, the administrator approve
 
 Machine B (already enrolled as a member) runs `koi certmesh promote`.
 
-1. TOTP challenge — same UX as joining.
-2. The root CA private key is transferred, encrypted, over the TOTP-verified channel.
+1. Auth challenge — same UX as joining.
+2. The root CA private key is transferred, encrypted, over the auth-verified channel.
 3. Machine B receives the full enrollment roster.
 4. Machine B becomes the **standby** (warm secondary). Machine A remains the **primary** (active CA).
 5. The standby syncs the roster periodically from the primary — a pull model. The response is the full registry plus a signed manifest, so the standby can verify integrity.
@@ -373,13 +373,13 @@ Machine B (already enrolled as a member) runs `koi certmesh promote`.
 
 These features are activated by the "My team" and "My organization" trust profiles, or by explicit flags on any profile.
 
-#### TOTP Secret Rotation
+#### Auth Credential Rotation
 
 ```
-koi certmesh rotate-secret
+koi certmesh rotate-auth
 ```
 
-Generates a new TOTP secret, displays a new QR code, invalidates the old one. Existing enrolled machines are unaffected — they're already in the mesh. Only future enrollments use the new secret.
+Generates a new auth credential (TOTP secret or FIDO2 registration), invalidates the old one. Existing enrolled machines are unaffected — they're already in the mesh. Only future enrollments use the new credential.
 
 **Use case:** Run when someone with access leaves the organization.
 
@@ -393,7 +393,7 @@ koi certmesh close-enrollment
   Enrollment window closed.
 ```
 
-Outside an enrollment window, valid TOTP codes are rejected. The IT person opens enrollment while setting up machines. The rest of the time, it's closed.
+Outside an enrollment window, valid auth credentials are rejected. The IT person opens enrollment while setting up machines. The rest of the time, it's closed.
 
 #### Operator Attribution
 
@@ -433,7 +433,7 @@ Certmesh Security Summary
 Created:          2026-02-10 by Maria Santos
 Profile:          organization
 CA protection:    TPM 2.0 (hardware-backed)
-TOTP secret:      Last rotated 2026-02-10
+Auth credential:  Last rotated 2026-02-10
 Enrollment:       Closed (last open: 2026-02-10 14:00-15:00)
 Approval mode:    Required (two-party)
 Cert lifetime:    30 days (renews at day 20)
@@ -458,10 +458,10 @@ Health:           All members reachable
 | Control | Implementation |
 |---------|---------------|
 | CA key at rest | Encrypted with operator passphrase. Requires `koi certmesh unlock` after reboot. Sealed in TPM when hardware supports it. |
-| TOTP secret at rest | Encrypted alongside CA key, same protection. |
+| Auth credential at rest | Encrypted alongside CA key, same protection. |
 | Certificate pinning | On first enrollment, members record CA cert fingerprint. Future connections verify chain AND fingerprint. |
 | Cert lifetime | 30-day default, auto-renew at day 20. Exercises renewal machinery constantly. |
-| Enrollment rate limiting | 3 failed TOTP attempts → 5-minute lockout. |
+| Enrollment rate limiting | 3 failed auth attempts → 5-minute lockout. |
 | SAN auto-population | Hostname, FQDN, mDNS name, all LAN IPs from Koi discovery. Prevents "cert doesn't match" bypasses. |
 | Entropy collection | Active keyboard mashing (248+ bits), mixed with TPM hardware RNG when available. |
 
@@ -471,7 +471,7 @@ Health:           All members reachable
 
 #### Audit Log
 
-Append-only, timestamped, signed. Records every: enrollment, promotion, revocation, failover event, cert renewal, enrollment window open/close, TOTP rotation, and failed enrollment attempts.
+Append-only, timestamped, signed. Records every: enrollment, promotion, revocation, failover event, cert renewal, enrollment window open/close, auth credential rotation, and failed enrollment attempts.
 
 #### Backup and Recovery
 
@@ -479,7 +479,7 @@ Append-only, timestamped, signed. Records every: enrollment, promotion, revocati
 koi certmesh backup
 ```
 
-Exports: CA private key, TOTP secret, full roster, audit log. Encrypted with a user-provided passphrase (distinct from the unlock passphrase).
+Exports: CA private key, auth credential, full roster, audit log. Encrypted with a user-provided passphrase (distinct from the unlock passphrase).
 
 CLI requires confirmation:
 
@@ -583,10 +583,10 @@ Certmesh was reviewed against ISO 27001 Annex A controls for proportionality to 
 
 | Control | Annex A Reference | Implementation |
 |---------|-------------------|----------------|
-| Authentication information | A.5.17 | TOTP enrollment — human-in-the-loop authorization |
+| Authentication information | A.5.17 | Authenticated enrollment (TOTP/FIDO2) — human-in-the-loop authorization |
 | Records protection | A.5.33 | Single canonical CA, signed roster, deterministic failover |
 | Use of cryptography | A.8.24 | Encrypted key at rest, certificate pinning, active entropy collection, TPM when available |
-| Secure authentication | A.8.5 | TOTP rate limiting (3 attempts / 5-minute lockout) |
+| Secure authentication | A.8.5 | Auth rate limiting (3 attempts / 5-minute lockout) |
 | Logging | A.8.15 | Append-only signed audit log with operator attribution |
 | Monitoring | A.8.16 | Health heartbeat with cert chain validation |
 | Security policies | A.5.1 | Trust profiles, compliance summary, security model documentation |
@@ -938,7 +938,7 @@ Five capabilities. One installation. One binary. One `koi status`.
 A user sets up a new homelab. Here's what happens:
 
 1. Install Koi on each machine. Run `koi certmesh create` on the first one.
-2. Scan the QR code. Run `koi certmesh join` on each subsequent machine — type the TOTP code.
+2. Scan the QR code. Run `koi certmesh join` on each subsequent machine — authenticate (TOTP code or security key).
 3. Start services. Docker Compose, systemd, whatever.
 
 From this point forward, without any additional configuration:
@@ -958,7 +958,7 @@ The user types `https://grafana.lan` in their browser. It works. No browser warn
 | Service discovery | mDNS `_koi._tcp` | Koi instances finding each other |
 | CA discovery | mDNS `_certmesh._tcp` | Joining machines finding the CA |
 | DNS advertisement | mDNS `_dns._udp` | Advertising Koi as local resolver |
-| Cert enrollment | Koi REST API `/v1/certmesh/join` | TOTP-authenticated enrollment |
+| Cert enrollment | Koi REST API `/v1/certmesh/join` | Authenticated enrollment (TOTP/FIDO2) |
 | Cert renewal | Koi REST API `/v1/certmesh/renew` | Push renewals, validated by existing cert chain |
 | Roster sync | Koi REST API `/v1/certmesh/roster` | Standby pulls full registry + signed manifest |
 | Certmesh heartbeat | Koi REST API `/v1/certmesh/health` | Periodic cert chain validation |
@@ -1004,8 +1004,8 @@ roster:
     operator: "Maria Santos"
     domain_scope: "lincoln-elementary.local"
     subnet_scope: "192.168.1.0/24"
-    totp_secret_hash: <sha256>           # For rotation detection
-    totp_rotated_at: 2026-02-10T14:30:15Z
+    auth_method: totp                    # totp | fido2
+    auth_rotated_at: 2026-02-10T14:30:15Z
     enrollment_state: closed             # open | closed
     enrollment_closes_at: null           # ISO timestamp or null
 
@@ -1054,7 +1054,7 @@ These fields must exist in the roster from day one, even if optional and usually
 - `domain_scope`, `subnet_scope` — cert issuance constraints
 - `enrollment_state`, `enrollment_closes_at` — window management
 - `enrolled_by` — per-member attribution
-- `totp_rotated_at` — tracks secret rotation history
+- `auth_rotated_at` — tracks credential rotation history
 - `cert_path` — where cert files live on each member
 - `reload_hook` — post-renewal command
 - `proxy_entries` — proxy configuration per machine
@@ -1069,7 +1069,7 @@ Per ISO 27001 A.5.1, certmesh includes a single-page security model document. Th
 
 **What's protected:** All network traffic between enrolled machines is encrypted with TLS. Every service certificate is signed by a certificate authority that you created and control.
 
-**How enrollment works:** You scan a QR code into your authenticator app during setup. To add a new machine, type the six-digit code from your app. If approval mode is enabled, the administrator must also confirm at the CA machine.
+**How enrollment works:** You scan a QR code into your authenticator app during setup (or register a FIDO2 security key). To add a new machine, type the six-digit code from your app or tap your security key. If approval mode is enabled, the administrator must also confirm at the CA machine.
 
 **Where keys are stored:** The CA's signing key is encrypted on disk and requires a passphrase to unlock after reboot. On hardware with a TPM, the key is additionally sealed in hardware. The signing key exists only on the primary CA and its standby — never on regular member machines. Each machine's own service cert and key are stored at a well-known path (`/var/lib/koi/certs/`) and are readable only by the owning user.
 
@@ -1080,7 +1080,7 @@ Per ISO 27001 A.5.1, certmesh includes a single-page security model document. Th
 **What you're responsible for:**
 - Keep your authenticator app (it's how you authorize new machines)
 - Store your backup passphrase somewhere safe and offline
-- Run `koi certmesh rotate-secret` when someone with access leaves
+- Run `koi certmesh rotate-auth` when someone with access leaves
 - Run `koi certmesh backup` periodically and store the file offline
 
 ---
@@ -1152,7 +1152,7 @@ URL rewriting, load balancing, WebSocket protocol upgrade, virtual host routing,
 | CA (Certificate Authority) | The machine running the certmesh primary that signs certificates for the mesh. |
 | Capability | A named functional module within Koi (mdns, certmesh, dns, health, proxy). |
 | Cert path | The filesystem location where Koi writes cert and key files (`/var/lib/koi/certs/<hostname>/`). |
-| Enrollment | The process of joining a new machine to the certmesh via TOTP verification. |
+| Enrollment | The process of joining a new machine to the certmesh via TOTP or FIDO2 verification. |
 | Failover dance | The deterministic process by which a standby becomes primary when the primary is unavailable. |
 | Fullchain | The service certificate concatenated with the CA certificate (`fullchain.pem`). |
 | Health check | An HTTP GET or TCP connect probe that verifies service reachability. |
@@ -1203,7 +1203,7 @@ $ koi certmesh create
 # Machine 2: Join
 $ koi certmesh join
   Found certmesh CA: stone-01 (192.168.1.10)
-  TOTP code: 847293
+  TOTP code: 847293    # (TOTP shown as example; FIDO2 security keys also supported)
   ✓ Enrolled. Cert written to /var/lib/koi/certs/stone-05/
 
 # Start DNS
@@ -1259,13 +1259,13 @@ $ koi certmesh open-enrollment --duration 2h
 
 # Each lab machine:
 $ koi certmesh join
-  TOTP code: 384721
+  TOTP code: 384721    # (TOTP shown as example; FIDO2 security keys also supported)
   Waiting for approval...
 
 # On the CA machine:
   Enrollment request from: lab-05 (192.168.1.50)
   Operator: Maria Santos
-  TOTP: valid | Hostname: in scope | IP: in scope
+  TOTP: valid | Hostname: in scope | IP: in scope    # (or FIDO2: verified)
   Approve? [y/N]: y
 
 # Window auto-closes at 16:30

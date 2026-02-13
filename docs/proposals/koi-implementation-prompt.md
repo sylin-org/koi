@@ -60,7 +60,7 @@ koi/
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── ca.rs                 # CA creation, key management, cert signing
-│   │       ├── enrollment.rs         # Join flow, TOTP verification, approval
+│   │       ├── enrollment.rs         # Join flow, auth verification, approval
 │   │       ├── failover.rs           # Primary/standby detection, promotion, demotion
 │   │       ├── lifecycle.rs          # Cert renewal, push distribution, reload hooks
 │   │       ├── roster.rs             # Roster data model, sync, revocation list
@@ -118,6 +118,7 @@ koi/
 │   │       ├── lib.rs
 │   │       ├── keys.rs               # ECDSA key generation, encryption at rest
 │   │       ├── totp.rs               # TOTP generation, verification, QR code
+│   │       ├── auth.rs               # AuthAdapter trait, FIDO2 adapter
 │   │       ├── pinning.rs            # Certificate fingerprint pinning
 │   │       └── tpm.rs                # TPM detection and sealing (best-effort)
 │   └── koi-config/                   # Library crate — config and state persistence
@@ -151,6 +152,7 @@ Use established, well-maintained crates. Do not reinvent what exists.
 | X.509 / CA | `rcgen` + `rustls` | `rcgen` for cert generation, `rustls` for TLS. Avoid OpenSSL dependency. |
 | ECDSA | `p256` (from RustCrypto) | ECDSA P-256 key generation and signing |
 | TOTP | `totp-rs` | Standard TOTP/HOTP implementation |
+| FIDO2 | `p256` (RustCrypto) | ECDSA P-256 for FIDO2 key verification |
 | QR code | `qrcode` + `image` | Generate QR code, render to terminal via Unicode blocks |
 | Encryption at rest | `aes-gcm` + `argon2` (RustCrypto) | Argon2id for key derivation from passphrase, AES-256-GCM for encryption |
 | HTTP server | `axum` | Tokio-native, composable middleware, TLS via `axum-server` + `rustls` |
@@ -162,7 +164,7 @@ Use established, well-maintained crates. Do not reinvent what exists.
 | Logging | `tracing` + `tracing-subscriber` | Structured logging. Audit log is separate (custom implementation). |
 | Color output | `owo-colors` or `colored` | Respect `NO_COLOR` env var |
 | IP/subnet | `ipnet` | CIDR parsing and containment checks for scope constraints |
-| Constant-time comparison | `subtle` (RustCrypto) | For TOTP verification — prevent timing attacks |
+| Constant-time comparison | `subtle` (RustCrypto) | For auth verification — prevent timing attacks |
 | Memory zeroing | `zeroize` | Derive `Zeroize` + `ZeroizeOnDrop` on all key material structs |
 | Platform paths | `dirs` | Platform-appropriate config/data directories |
 | Error handling (lib) | `thiserror` | Typed error enums in library crates |
@@ -266,7 +268,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 ### Phase 2: Certmesh Core (Local CA Mode)
 
-**Goal:** Implement the core certificate mesh — CA creation, TOTP enrollment, and cert file management.
+**Goal:** Implement the core certificate mesh — CA creation, authenticated enrollment, and cert file management.
 
 **Steps:**
 
@@ -282,10 +284,10 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - Encrypt private key at rest with Argon2id + AES-256-GCM
    - Write CA files to `/var/lib/koi/certmesh/ca/` (or `%ProgramData%\koi\certmesh\ca\` on Windows)
 
-3. **TOTP enrollment.** (koi-certmesh/enrollment.rs, koi-crypto/totp.rs)
-   - Generate TOTP secret, encrypt alongside CA key
-   - QR code display via `qrcode` crate (Unicode block rendering to terminal)
-   - Six-digit code verification with `totp-rs`
+3. **Auth enrollment.** (koi-certmesh/enrollment.rs, koi-crypto/totp.rs, koi-crypto/auth.rs)
+   - Generate auth credential (TOTP secret by default), encrypt alongside CA key
+   - QR code display via `qrcode` crate (Unicode block rendering to terminal) for TOTP; direct registration for FIDO2
+   - Six-digit code verification with `totp-rs` (TOTP) or P-256 signature verification (FIDO2)
    - Rate limiting: 3 failures → 5-minute lockout (constant-time comparison via `subtle`)
 
 4. **Trust profiles.** (koi-certmesh/profiles.rs)
@@ -313,7 +315,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - Serialize/deserialize with serde
 
 8. **REST API for enrollment.** (koi-api/)
-   - `/v1/certmesh/join` — TOTP-authenticated enrollment endpoint
+   - `/v1/certmesh/join` — auth-verified enrollment endpoint
    - mDNS advertisement of `_certmesh._tcp`
    - CA discovery on join via mDNS
 
@@ -324,7 +326,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 **Deliverable:** `koi certmesh create`, `koi certmesh join`, working TLS between two machines, cert files at standard path, trust store installation, audit log.
 
-**Test:** Machine A creates mesh, Machine B joins via TOTP. Both machines can `curl https://stone-01.lan` without cert errors. Cert files exist at `/var/lib/koi/certs/` (or `%ProgramData%\koi\certs\`).
+**Test:** Machine A creates mesh, Machine B joins via auth (TOTP or FIDO2). Both machines can `curl https://stone-01.lan` without cert errors. Cert files exist at `/var/lib/koi/certs/` (or `%ProgramData%\koi\certs\`).
 
 ---
 
@@ -335,7 +337,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 **Steps:**
 
 1. **Promotion.** (koi-certmesh/failover.rs)
-   - `koi certmesh promote` — TOTP-verified CA key transfer
+   - `koi certmesh promote` — auth-verified CA key transfer
    - Encrypted transfer over the certmesh API
    - Standby receives full roster
    - Periodic roster sync (pull model with signed manifest)
@@ -383,7 +385,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 1. **Approval workflow.** Interactive prompt on CA terminal during enrollment. Uses `tokio::sync::mpsc` channel between API handler and terminal.
    - **Plan to implement.**
 
-2. **Enrollment windows.** `open-enrollment --duration`, `close-enrollment`. Auto-close timer. TOTP codes rejected outside windows.
+2. **Enrollment windows.** `open-enrollment --duration`, `close-enrollment`. Auto-close timer. Auth credentials rejected outside windows.
 
 3. **Operator attribution.** `--operator` flag on create/join, logged to audit trail.
 
@@ -392,8 +394,8 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 5. **Compliance summary.** `koi certmesh compliance` — adapts to trust profile. Simple health check for personal, full audit summary for organization.
    - **Plan to implement.**
 
-6. **TOTP rotation.** `koi certmesh rotate-secret` — new QR code, old codes invalidated, existing members unaffected.
-   - **Plan to implement.** (CLI uses `rotate-totp`, mismatch acceptable.)
+6. **Auth credential rotation.** `koi certmesh rotate-auth` — new credential, old invalidated, existing members unaffected.
+   - **Plan to implement.**
 
 **Deliverable:** Full institutional workflow. Organization profile requires approval + operator + scope.
 
@@ -405,7 +407,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 **Steps:**
 
-1. **Backup.** `koi certmesh backup` — export CA key + TOTP secret + roster + audit log. Encrypted with user-provided passphrase. Scary confirmation prompt.
+1. **Backup.** `koi certmesh backup` — export CA key + auth credential + roster + audit log. Encrypted with user-provided passphrase. Scary confirmation prompt.
 
 2. **Restore.** `koi certmesh restore` — rebuild from backup. Prompt for backup passphrase, then new unlock passphrase.
 
@@ -414,7 +416,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 4. **Platform credential binding.** (koi-crypto/tpm.rs) Uses `keyring` crate to seal CA key ciphertext in the OS credential store (Windows DPAPI, macOS Keychain, Linux keyutils). Graceful fallback to software-only if credential store is unavailable.
    - **Implemented.** Replaces original `tss-esapi` TPM stub.
 
-5. **Security hardening.** `zeroize` on all key material structs. Constant-time TOTP comparison. Cert pinning enforcement.
+5. **Security hardening.** `zeroize` on all key material structs. Constant-time auth verification. Cert pinning enforcement.
 
 **Deliverable:** Complete backup/restore cycle. Revocation works across mesh. TPM sealing on supported hardware.
 
@@ -628,8 +630,8 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 ### Security
 
 - All key material structs derive `Zeroize` + `ZeroizeOnDrop`.
-- TOTP comparison uses `subtle::ConstantTimeEq`.
-- No logging of TOTP codes, private keys, or passphrases — even at trace level.
+- Auth comparison uses `subtle::ConstantTimeEq`.
+- No logging of auth secrets, private keys, or passphrases — even at trace level.
 - Cert files written with restrictive permissions (0600 on Unix).
 - CA private key encrypted at rest, always. No "skip encryption for development" mode.
 
@@ -687,13 +689,13 @@ koi mdns status                               # Discovered services, cache state
 
 # Certmesh (Phase 2-5)
 koi certmesh create                           # Initialize CA
-koi certmesh join                             # Enroll with TOTP
+koi certmesh join                             # Enroll with auth
 koi certmesh promote                          # Become standby CA
 koi certmesh status                           # Roster, cert expiry
 koi certmesh revoke <host>                    # Remove from mesh
 koi certmesh backup                           # Encrypted export
 koi certmesh restore                          # Rebuild from backup
-koi certmesh rotate-secret                    # New TOTP secret
+koi certmesh rotate-auth                      # New auth credential
 koi certmesh open-enrollment                  # Open enrollment window
 koi certmesh close-enrollment                 # Close enrollment window
 koi certmesh compliance                       # Security summary

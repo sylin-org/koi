@@ -1,11 +1,11 @@
 # Koi User Guide
 
-Koi is a local infrastructure toolkit. It handles service discovery (mDNS/DNS-SD) and certificate management (private CA with TOTP enrollment) — the two things every LAN needs but nobody wants to set up manually.
+Koi is a local infrastructure toolkit. It handles service discovery (mDNS/DNS-SD) and certificate management (private CA with pluggable enrollment auth) — the two things every LAN needs but nobody wants to set up manually.
 
 This guide covers the basics. Each capability has a detailed reference:
 
 - **[mDNS — Service Discovery](docs/guide-mdns.md)** — find, advertise, and monitor services on your network
-- **[Certmesh — Certificate Mesh](docs/guide-certmesh.md)** — private CA, TOTP enrollment, mutual TLS trust
+- **[Certmesh — Certificate Mesh](docs/guide-certmesh.md)** — private CA, TOTP/FIDO2 enrollment, mutual TLS trust
 - **[DNS — Local Resolver](docs/guide-dns.md)** — map friendly hostnames to local IPs
 
 ---
@@ -289,7 +289,7 @@ koi certmesh promote [ENDPOINT]                  # promote standby CA
 koi certmesh open-enrollment [--until DURATION]  # open enrollment window
 koi certmesh close-enrollment                    # close enrollment window
 koi certmesh set-policy [--domain ...] [--subnet ...] [--clear]
-koi certmesh rotate-totp                         # rotate TOTP secret
+koi certmesh rotate-auth                         # rotate enrollment auth credential
 koi certmesh backup PATH                         # create encrypted backup bundle
 koi certmesh restore PATH                        # restore from backup bundle
 koi certmesh revoke HOSTNAME [--reason REASON]   # revoke a member's certificate

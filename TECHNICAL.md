@@ -644,7 +644,7 @@ crates/
 ├── koi-mdns/           # mDNS domain — core, daemon, registry, protocol, http
 ├── koi-config/         # Config & state — breadcrumb discovery
 ├── koi-certmesh/       # Certificate mesh — CA, enrollment, roster
-├── koi-crypto/         # Cryptographic primitives — key gen, TOTP
+├── koi-crypto/         # Cryptographic primitives — key gen, TOTP, FIDO2, auth adapters
 └── koi-truststore/     # Trust store — platform cert installation
 ```
 

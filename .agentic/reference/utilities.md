@@ -218,15 +218,15 @@ No other module should contain `println!`-based presentation functions.
 
 | Type | Purpose |
 |------|---------|
-| `JoinRequest` | Enrollment request (member_id, totp, csr) |
+| `JoinRequest` | Enrollment request (hostname, auth response) |
 | `JoinResponse` | Enrollment response (cert chain, CA fingerprint) |
-| `CertmeshStatus` | Status overview (ca_initialized, member_count, etc.) |
+| `CertmeshStatus` | Status overview (ca_initialized, member_count, auth_method, etc.) |
 | `CreateCaRequest` | CA creation request (passphrase, entropy_hex, profile, operator) |
-| `CreateCaResponse` | CA creation response (totp_uri, ca_fingerprint) |
+| `CreateCaResponse` | CA creation response (auth_setup, ca_fingerprint) |
 | `UnlockRequest` | CA unlock request (passphrase) |
 | `UnlockResponse` | CA unlock response (success) |
-| `RotateTotpRequest` | TOTP rotation request (passphrase) |
-| `RotateTotpResponse` | TOTP rotation response (totp_uri) |
+| `RotateAuthRequest` | Auth credential rotation request (passphrase, optional method) |
+| `RotateAuthResponse` | Auth credential rotation response (auth_setup) |
 | `AuditLogResponse` | Audit log read response (entries) |
 | `DestroyResponse` | Certmesh destroy response (destroyed) |
 | `TrustProfile` | CA policy (key size, validity, enrollment mode) |
@@ -235,7 +235,7 @@ No other module should contain `println!`-based presentation functions.
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| `CertmeshState` | `lib.rs` | `pub(crate)` shared state (CA, roster, TOTP, rate limiter) |
+| `CertmeshState` | `lib.rs` | `pub(crate)` shared state (CA, roster, auth, rate limiter) |
 | `CaState` | `ca.rs` | Certificate authority state (key pair, cert) |
 | `Roster` | `roster.rs` | Enrolled members registry |
 
@@ -298,7 +298,7 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 | `internal` | 500 | Internal error |
 | `ca_not_initialized` | 503 | CA not yet created |
 | `ca_locked` | 503 | CA key is locked |
-| `invalid_totp` | 401 | Bad TOTP code |
+| `invalid_auth` | 401 | Bad auth credential |
 | `rate_limited` | 429 | Too many requests |
 | `enrollment_closed` | 403 | Enrollment not open |
 | `capability_disabled` | 503 | Capability disabled at runtime |
@@ -329,4 +329,5 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 | `ring` | 0.17 | koi-crypto | Cryptographic primitives |
 | `rcgen` | 0.13 | koi-crypto | X.509 certificate generation |
 | `totp-rs` | 5 | koi-crypto | TOTP enrollment codes |
+| `p256` | 0.13 | koi-crypto | FIDO2 ECDSA P-256 signature verification |
 | `chrono` | 0.4 | koi-certmesh | Timestamp handling |

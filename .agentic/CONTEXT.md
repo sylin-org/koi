@@ -27,7 +27,7 @@ crates/
 ├── koi-mdns/         # mDNS domain — core, daemon, registry, protocol, http routes
 ├── koi-config/       # Config & state — breadcrumb discovery
 ├── koi-certmesh/     # Certificate mesh domain — CA, enrollment, roster
-├── koi-crypto/       # Cryptographic primitives — key gen, signing, TOTP
+├── koi-crypto/       # Cryptographic primitives — key gen, signing, TOTP, FIDO2, auth adapters
 ├── koi-truststore/   # Trust store — platform cert installation
 ├── koi-dns/          # Placeholder (Phase 6)
 ├── koi-health/       # Placeholder (Phase 7)
@@ -58,7 +58,7 @@ Each domain crate exposes three faces:
 koi (bin) → koi-common, koi-mdns, koi-certmesh, koi-crypto, koi-truststore, koi-config
 koi-mdns      → koi-common, mdns-sd, axum, tokio
 koi-certmesh  → koi-common, koi-crypto, koi-truststore, axum, tokio
-koi-crypto    → (standalone: ring/rcgen/totp-rs)
+koi-crypto    → (standalone: ring/rcgen/totp-rs/p256)
 koi-truststore → (standalone: platform cert APIs)
 koi-config    → koi-common
 ```
