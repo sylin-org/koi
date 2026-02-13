@@ -707,3 +707,61 @@ async fn alias_feedback_loop(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subscribe_receives_emitted_entry_updated() {
+        let (tx, _) = broadcast::channel::<DnsEvent>(16);
+        let mut rx = tx.subscribe();
+
+        let _ = tx.send(DnsEvent::EntryUpdated {
+            name: "test.lan".to_string(),
+            ip: "10.0.0.1".to_string(),
+        });
+
+        let event = rx.try_recv().expect("should receive event");
+        match event {
+            DnsEvent::EntryUpdated { name, ip } => {
+                assert_eq!(name, "test.lan");
+                assert_eq!(ip, "10.0.0.1");
+            }
+            other => panic!("expected EntryUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subscribe_receives_emitted_entry_removed() {
+        let (tx, _) = broadcast::channel::<DnsEvent>(16);
+        let mut rx = tx.subscribe();
+
+        let _ = tx.send(DnsEvent::EntryRemoved {
+            name: "gone.lan".to_string(),
+        });
+
+        let event = rx.try_recv().expect("should receive event");
+        match event {
+            DnsEvent::EntryRemoved { name } => {
+                assert_eq!(name, "gone.lan");
+            }
+            other => panic!("expected EntryRemoved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multiple_subscribers_each_receive_event() {
+        let (tx, _) = broadcast::channel::<DnsEvent>(16);
+        let mut rx1 = tx.subscribe();
+        let mut rx2 = tx.subscribe();
+
+        let _ = tx.send(DnsEvent::EntryUpdated {
+            name: "multi.lan".to_string(),
+            ip: "10.0.0.2".to_string(),
+        });
+
+        assert!(rx1.try_recv().is_ok());
+        assert!(rx2.try_recv().is_ok());
+    }
+}

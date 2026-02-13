@@ -229,3 +229,66 @@ impl Clone for ProxyRuntime {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subscribe_receives_emitted_entry_updated() {
+        let (tx, _) = broadcast::channel::<ProxyEvent>(16);
+        let mut rx = tx.subscribe();
+
+        let entry = ProxyEntry {
+            name: "test-svc".to_string(),
+            listen_port: 9090,
+            backend: "http://127.0.0.1:8080".to_string(),
+            allow_remote: false,
+        };
+        let _ = tx.send(ProxyEvent::EntryUpdated {
+            entry: entry.clone(),
+        });
+
+        let event = rx.try_recv().expect("should receive event");
+        match event {
+            ProxyEvent::EntryUpdated { entry: received } => {
+                assert_eq!(received.name, "test-svc");
+                assert_eq!(received.listen_port, 9090);
+                assert_eq!(received.backend, "http://127.0.0.1:8080");
+            }
+            other => panic!("expected EntryUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subscribe_receives_emitted_entry_removed() {
+        let (tx, _) = broadcast::channel::<ProxyEvent>(16);
+        let mut rx = tx.subscribe();
+
+        let _ = tx.send(ProxyEvent::EntryRemoved {
+            name: "rm-svc".to_string(),
+        });
+
+        let event = rx.try_recv().expect("should receive event");
+        match event {
+            ProxyEvent::EntryRemoved { name } => {
+                assert_eq!(name, "rm-svc");
+            }
+            other => panic!("expected EntryRemoved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multiple_subscribers_each_receive_event() {
+        let (tx, _) = broadcast::channel::<ProxyEvent>(16);
+        let mut rx1 = tx.subscribe();
+        let mut rx2 = tx.subscribe();
+
+        let _ = tx.send(ProxyEvent::EntryRemoved {
+            name: "multi".to_string(),
+        });
+
+        assert!(rx1.try_recv().is_ok());
+        assert!(rx2.try_recv().is_ok());
+    }
+}

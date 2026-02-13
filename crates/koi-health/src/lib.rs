@@ -230,6 +230,57 @@ fn proxy_checks() -> Vec<HealthCheckConfig> {
         .collect()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subscribe_receives_emitted_status_changed() {
+        let (tx, _) = broadcast::channel::<HealthEvent>(16);
+        let mut rx = tx.subscribe();
+
+        let _ = tx.send(HealthEvent::StatusChanged {
+            name: "my-tcp".to_string(),
+            status: ServiceStatus::Up,
+        });
+
+        let event = rx.try_recv().expect("should receive event");
+        match event {
+            HealthEvent::StatusChanged { name, status } => {
+                assert_eq!(name, "my-tcp");
+                assert!(matches!(status, ServiceStatus::Up));
+            }
+        }
+    }
+
+    #[test]
+    fn subscribe_receives_status_down() {
+        let (tx, _) = broadcast::channel::<HealthEvent>(16);
+        let mut rx = tx.subscribe();
+
+        let _ = tx.send(HealthEvent::StatusChanged {
+            name: "my-http".to_string(),
+            status: ServiceStatus::Down,
+        });
+
+        let event = rx.try_recv().expect("should receive event");
+        match event {
+            HealthEvent::StatusChanged { name, status } => {
+                assert_eq!(name, "my-http");
+                assert!(matches!(status, ServiceStatus::Down));
+            }
+        }
+    }
+
+    #[test]
+    fn no_event_when_no_send() {
+        let (tx, _) = broadcast::channel::<HealthEvent>(16);
+        let mut rx = tx.subscribe();
+        assert!(rx.try_recv().is_err());
+        drop(tx);
+    }
+}
+
 impl Capability for HealthCore {
     fn name(&self) -> &str {
         "health"
