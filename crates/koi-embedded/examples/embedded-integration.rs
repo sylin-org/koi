@@ -220,7 +220,7 @@ async fn run_http_tests(
         "txt": {"source": "http"}
     });
     let register_resp: serde_json::Value = client
-        .post(format!("{base_url}/v1/mdns/services"))
+        .post(format!("{base_url}/v1/mdns/announce"))
         .json(&mdns_payload)
         .send()
         .await?
@@ -262,7 +262,7 @@ async fn run_http_tests(
     });
     let sse_future = read_sse_body(client, &events_url, Duration::from_secs(3));
     let register_future = client
-        .post(format!("{base_url}/v1/mdns/services"))
+        .post(format!("{base_url}/v1/mdns/announce"))
         .json(&sse_payload)
         .send();
     let (events_body, register_result) = tokio::join!(sse_future, register_future);
@@ -276,7 +276,7 @@ async fn run_http_tests(
 
     if let Some(id) = mdns_id {
         let unregister_resp: serde_json::Value = client
-            .delete(format!("{base_url}/v1/mdns/services/{id}"))
+            .delete(format!("{base_url}/v1/mdns/unregister/{id}"))
             .send()
             .await?
             .json()
@@ -294,7 +294,7 @@ async fn run_http_tests(
         "ttl": null
     });
     let add_resp: serde_json::Value = client
-        .post(format!("{base_url}/v1/dns/entries"))
+        .post(format!("{base_url}/v1/dns/add"))
         .json(&dns_entry)
         .send()
         .await?
@@ -338,7 +338,7 @@ async fn run_http_tests(
     }
 
     let start_resp: serde_json::Value = client
-        .post(format!("{base_url}/v1/dns/admin/start"))
+        .post(format!("{base_url}/v1/dns/serve"))
         .send()
         .await?
         .json()
@@ -350,7 +350,7 @@ async fn run_http_tests(
     }
 
     let stop_resp: serde_json::Value = client
-        .post(format!("{base_url}/v1/dns/admin/stop"))
+        .post(format!("{base_url}/v1/dns/stop"))
         .send()
         .await?
         .json()
@@ -362,7 +362,7 @@ async fn run_http_tests(
     }
 
     let remove_resp: serde_json::Value = client
-        .delete(format!("{base_url}/v1/dns/entries/http-test"))
+        .delete(format!("{base_url}/v1/dns/remove/http-test"))
         .send()
         .await?
         .json()
@@ -381,7 +381,7 @@ async fn run_http_tests(
         "timeout_secs": 1
     });
     let health_resp: serde_json::Value = client
-        .post(format!("{base_url}/v1/health/checks"))
+        .post(format!("{base_url}/v1/health/add"))
         .json(&health_add)
         .send()
         .await?
@@ -394,7 +394,7 @@ async fn run_http_tests(
     }
 
     let checks_resp: serde_json::Value = client
-        .get(format!("{base_url}/v1/health/checks"))
+        .get(format!("{base_url}/v1/health/list"))
         .send()
         .await?
         .json()
@@ -406,7 +406,7 @@ async fn run_http_tests(
     }
 
     let remove_health: serde_json::Value = client
-        .delete(format!("{base_url}/v1/health/checks/http-tcp"))
+        .delete(format!("{base_url}/v1/health/remove/http-tcp"))
         .send()
         .await?
         .json()
@@ -424,7 +424,7 @@ async fn run_http_tests(
         "allow_remote": false
     });
     let proxy_resp: serde_json::Value = client
-        .post(format!("{base_url}/v1/proxy/entries"))
+        .post(format!("{base_url}/v1/proxy/add"))
         .json(&proxy_payload)
         .send()
         .await?
@@ -437,7 +437,7 @@ async fn run_http_tests(
     }
 
     let proxy_entries: serde_json::Value = client
-        .get(format!("{base_url}/v1/proxy/entries"))
+        .get(format!("{base_url}/v1/proxy/list"))
         .send()
         .await?
         .json()
@@ -449,7 +449,7 @@ async fn run_http_tests(
     }
 
     let proxy_remove: serde_json::Value = client
-        .delete(format!("{base_url}/v1/proxy/entries/http-proxy"))
+        .delete(format!("{base_url}/v1/proxy/remove/http-proxy"))
         .send()
         .await?
         .json()
@@ -492,12 +492,12 @@ async fn run_http_tests(
     }
 
     let _ = client
-        .post(format!("{base_url}/v1/certmesh/enrollment/open"))
+        .post(format!("{base_url}/v1/certmesh/open-enrollment"))
         .json(&serde_json::json!({"deadline": null}))
         .send()
         .await?;
     let _ = client
-        .post(format!("{base_url}/v1/certmesh/enrollment/close"))
+        .post(format!("{base_url}/v1/certmesh/close-enrollment"))
         .send()
         .await?;
     harness.pass("http: certmesh enrollment open/close");

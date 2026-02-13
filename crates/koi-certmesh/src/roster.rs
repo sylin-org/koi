@@ -40,7 +40,7 @@ pub struct RosterMetadata {
 }
 
 /// Whether the mesh is accepting new members.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EnrollmentState {
     Open,

@@ -6,19 +6,20 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::profiles::TrustProfile;
 use crate::roster::EnrollmentState;
 
 /// Client request to join the mesh.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct JoinRequest {
     /// TOTP code for enrollment authentication.
     pub totp_code: String,
 }
 
 /// Server response after successful enrollment.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct JoinResponse {
     pub hostname: String,
     pub ca_cert: String,
@@ -29,7 +30,7 @@ pub struct JoinResponse {
 }
 
 /// Certmesh status overview (returned by GET /status).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CertmeshStatus {
     pub ca_initialized: bool,
     pub ca_locked: bool,
@@ -46,7 +47,7 @@ pub struct CertmeshStatus {
 }
 
 /// Compact member summary for status display.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct MemberSummary {
     pub hostname: String,
     pub role: String,
@@ -71,7 +72,7 @@ pub struct CaAnnouncement {
 }
 
 /// Request to set a post-renewal reload hook for this host.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SetHookRequest {
     /// Hostname of the member setting the hook.
     pub hostname: String,
@@ -80,7 +81,7 @@ pub struct SetHookRequest {
 }
 
 /// Response after setting a reload hook.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct SetHookResponse {
     pub hostname: String,
     pub reload: String,
@@ -89,7 +90,7 @@ pub struct SetHookResponse {
 // ── Service Delegation — CA management via HTTP ─────────────────────
 
 /// POST /create request — initialize a new CA via the running service.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateCaRequest {
     /// Passphrase for encrypting the CA key.
     pub passphrase: String,
@@ -103,7 +104,7 @@ pub struct CreateCaRequest {
 }
 
 /// POST /create response.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateCaResponse {
     /// TOTP provisioning URI (otpauth://...) for QR code display.
     pub totp_uri: String,
@@ -112,38 +113,38 @@ pub struct CreateCaResponse {
 }
 
 /// POST /unlock request — decrypt the CA key.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UnlockRequest {
     pub passphrase: String,
 }
 
 /// POST /unlock response.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UnlockResponse {
     pub success: bool,
 }
 
 /// POST /rotate-totp request — rotate the TOTP enrollment secret.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RotateTotpRequest {
     pub passphrase: String,
 }
 
 /// POST /rotate-totp response.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RotateTotpResponse {
     /// New TOTP provisioning URI for QR code display.
     pub totp_uri: String,
 }
 
 /// GET /log response — audit log entries.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct AuditLogResponse {
     pub entries: String,
 }
 
 /// POST /destroy response — CA and all certmesh state removed.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct DestroyResponse {
     pub destroyed: bool,
 }
@@ -151,14 +152,14 @@ pub struct DestroyResponse {
 // ── Phase 5 — Backup/Restore/Revocation ───────────────────────────
 
 /// POST /backup request — create an encrypted backup bundle.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct BackupRequest {
     pub ca_passphrase: String,
     pub backup_passphrase: String,
 }
 
 /// POST /backup response — backup encoded as hex.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct BackupResponse {
     pub backup_hex: String,
     pub format: String,
@@ -166,7 +167,7 @@ pub struct BackupResponse {
 }
 
 /// POST /restore request — restore from an encrypted backup bundle.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RestoreRequest {
     pub backup_hex: String,
     pub backup_passphrase: String,
@@ -174,13 +175,13 @@ pub struct RestoreRequest {
 }
 
 /// POST /restore response.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RestoreResponse {
     pub restored: bool,
 }
 
 /// POST /revoke request — revoke a member.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RevokeRequest {
     pub hostname: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -190,7 +191,7 @@ pub struct RevokeRequest {
 }
 
 /// POST /revoke response.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RevokeResponse {
     pub revoked: bool,
 }
@@ -198,7 +199,7 @@ pub struct RevokeResponse {
 // ── Phase 4 — Enrollment Policy ─────────────────────────────────────
 
 /// Request to set enrollment scope constraints.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PolicyRequest {
     /// Domain scope constraint (e.g. "lincoln-elementary.local").
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -209,7 +210,7 @@ pub struct PolicyRequest {
 }
 
 /// Request to open the enrollment window.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct OpenEnrollmentRequest {
     /// Optional deadline (RFC 3339). After this time, enrollment auto-closes.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -217,7 +218,7 @@ pub struct OpenEnrollmentRequest {
 }
 
 /// Enrollment policy summary for compliance display.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PolicySummary {
     pub enrollment_state: EnrollmentState,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -231,7 +232,7 @@ pub struct PolicySummary {
 }
 
 /// Compliance summary response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ComplianceResponse {
     pub policy: PolicySummary,
     pub audit_entries: usize,
@@ -240,7 +241,7 @@ pub struct ComplianceResponse {
 // ── Phase 3 — Failover + Lifecycle ──────────────────────────────────
 
 /// POST /promote request — TOTP-verified CA key transfer.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PromoteRequest {
     pub totp_code: String,
 }
@@ -250,7 +251,7 @@ pub struct PromoteRequest {
 /// The standby decrypts the CA key with the passphrase provided during
 /// the `koi certmesh promote` flow. The passphrase is never sent over
 /// the wire — only the already-encrypted material is transferred.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PromoteResponse {
     pub encrypted_ca_key: koi_crypto::keys::EncryptedKey,
     pub encrypted_totp_secret: koi_crypto::keys::EncryptedKey,
@@ -259,7 +260,7 @@ pub struct PromoteResponse {
 }
 
 /// POST /renew request — CA pushes renewed cert to a member.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RenewRequest {
     pub hostname: String,
     pub cert_pem: String,
@@ -271,7 +272,7 @@ pub struct RenewRequest {
 }
 
 /// POST /renew response.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RenewResponse {
     pub hostname: String,
     pub renewed: bool,
@@ -280,7 +281,7 @@ pub struct RenewResponse {
 }
 
 /// Result of executing a reload hook after cert renewal.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct HookResult {
     pub success: bool,
     pub command: String,
@@ -289,7 +290,7 @@ pub struct HookResult {
 }
 
 /// GET /roster response — signed manifest for standby sync.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RosterManifest {
     pub roster_json: String,
     pub signature: Vec<u8>,
@@ -297,14 +298,14 @@ pub struct RosterManifest {
 }
 
 /// POST /health request — member heartbeat.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct HealthRequest {
     pub hostname: String,
     pub pinned_ca_fingerprint: String,
 }
 
 /// POST /health response.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct HealthResponse {
     pub valid: bool,
     pub ca_fingerprint: String,

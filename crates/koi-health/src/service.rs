@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::state::HealthCheckConfig;
 
 /// Health status for machines and services.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceStatus {
     Up,
@@ -14,7 +14,7 @@ pub enum ServiceStatus {
 }
 
 /// Supported service check kinds.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceCheckKind {
     Http,

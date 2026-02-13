@@ -184,7 +184,7 @@ All mDNS endpoints are mounted at `/v1/mdns/` on the daemon.
 ### Browse for services (SSE stream)
 
 ```
-GET /v1/mdns/browse?type=_http._tcp
+GET /v1/mdns/discover?type=_http._tcp
 ```
 
 Returns a Server-Sent Events stream. Each event's `data` field contains JSON:
@@ -196,14 +196,14 @@ data: {"found":{"name":"My NAS","type":"_http._tcp","host":"nas.local.","ip":"19
 The stream closes after 5 seconds of no new events. Control with `idle_for`:
 
 ```
-GET /v1/mdns/browse?type=_http._tcp&idle_for=0     # stream indefinitely
-GET /v1/mdns/browse?type=_http._tcp&idle_for=15    # 15 seconds idle timeout
+GET /v1/mdns/discover?type=_http._tcp&idle_for=0     # stream indefinitely
+GET /v1/mdns/discover?type=_http._tcp&idle_for=15    # 15 seconds idle timeout
 ```
 
 ### Register a service
 
 ```
-POST /v1/mdns/services
+POST /v1/mdns/announce
 Content-Type: application/json
 
 {"name": "My App", "type": "_http._tcp", "port": 8080, "txt": {"version": "2.1"}}
@@ -230,13 +230,13 @@ Custom heartbeat interval:
 ### Unregister a service
 
 ```
-DELETE /v1/mdns/services/a1b2c3d4
+DELETE /v1/mdns/unregister/a1b2c3d4
 ```
 
 ### Heartbeat (renew a lease)
 
 ```
-PUT /v1/mdns/services/a1b2c3d4/heartbeat
+PUT /v1/mdns/heartbeat/a1b2c3d4
 ```
 
 ```json
@@ -254,7 +254,7 @@ GET /v1/mdns/resolve?name=My%20NAS._http._tcp.local.
 ### Subscribe to lifecycle events (SSE stream)
 
 ```
-GET /v1/mdns/events?type=_http._tcp
+GET /v1/mdns/subscribe?type=_http._tcp
 ```
 
 ```
@@ -332,11 +332,11 @@ koi mdns admin unregister a1b2   # remove immediately, send goodbye packets
 | Method | Endpoint | Purpose |
 |---|---|---|
 | GET | `/v1/mdns/admin/status` | Daemon mDNS status |
-| GET | `/v1/mdns/admin/registrations` | List all registrations |
-| GET | `/v1/mdns/admin/registrations/{id}` | Inspect one registration |
-| DELETE | `/v1/mdns/admin/registrations/{id}` | Force-remove |
-| POST | `/v1/mdns/admin/registrations/{id}/drain` | Force-drain |
-| POST | `/v1/mdns/admin/registrations/{id}/revive` | Force-revive |
+| GET | `/v1/mdns/admin/ls` | List all registrations |
+| GET | `/v1/mdns/admin/inspect/{id}` | Inspect one registration |
+| DELETE | `/v1/mdns/admin/unregister/{id}` | Force-remove |
+| POST | `/v1/mdns/admin/drain/{id}` | Force-drain |
+| POST | `/v1/mdns/admin/revive/{id}` | Force-revive |
 
 All `{id}` parameters support prefix matching.
 
@@ -348,7 +348,7 @@ Registrations have a **lease mode** that determines how they prove they're still
 
 | Mode | Mechanism | When it's used | Default timing |
 |---|---|---|---|
-| **Heartbeat** | Client sends periodic `PUT /v1/mdns/services/{id}/heartbeat` | HTTP API registrations | 90s lease, 30s grace |
+| **Heartbeat** | Client sends periodic `PUT /v1/mdns/heartbeat/{id}` | HTTP API registrations | 90s lease, 30s grace |
 | **Session** | Connection open = alive. Drop = grace starts. | IPC (pipe/socket) and piped stdin | 30s grace (IPC), 5s grace (CLI) |
 | **Permanent** | Lives until explicit removal or daemon shutdown. | `lease_secs: 0` from any transport | No expiry |
 

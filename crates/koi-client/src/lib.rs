@@ -79,7 +79,7 @@ impl KoiClient {
     // ── Service operations (mDNS) ──────────────────────────────────
 
     pub fn register(&self, payload: &RegisterPayload) -> Result<RegistrationResult> {
-        let url = format!("{}/v1/mdns/services", self.endpoint);
+        let url = format!("{}/v1/mdns/announce", self.endpoint);
         let json_val =
             serde_json::to_value(payload).map_err(|e| ClientError::Decode(e.to_string()))?;
         let resp = self
@@ -94,13 +94,13 @@ impl KoiClient {
     }
 
     pub fn unregister(&self, id: &str) -> Result<()> {
-        let url = format!("{}/v1/mdns/services/{id}", self.endpoint);
+        let url = format!("{}/v1/mdns/unregister/{id}", self.endpoint);
         self.agent.delete(&url).call().map_err(map_error)?;
         Ok(())
     }
 
     pub fn heartbeat(&self, id: &str) -> Result<RenewalResult> {
-        let url = format!("{}/v1/mdns/services/{id}/heartbeat", self.endpoint);
+        let url = format!("{}/v1/mdns/heartbeat/{id}", self.endpoint);
         let resp = self.agent.put(&url).send_bytes(&[]).map_err(map_error)?;
         let json: serde_json::Value = resp
             .into_json()
@@ -124,7 +124,7 @@ impl KoiClient {
 
     /// Start a browse SSE stream. Returns an iterator of JSON events.
     pub fn browse_stream(&self, service_type: &str) -> Result<SseStream> {
-        let url = format!("{}/v1/mdns/browse", self.endpoint);
+        let url = format!("{}/v1/mdns/discover", self.endpoint);
         let resp = self
             .stream_agent()
             .get(&url)
@@ -136,7 +136,7 @@ impl KoiClient {
 
     /// Start an events SSE stream. Returns an iterator of JSON events.
     pub fn events_stream(&self, service_type: &str) -> Result<SseStream> {
-        let url = format!("{}/v1/mdns/events", self.endpoint);
+        let url = format!("{}/v1/mdns/subscribe", self.endpoint);
         let resp = self
             .stream_agent()
             .get(&url)
@@ -185,22 +185,22 @@ impl KoiClient {
             "ip": ip,
             "ttl": ttl,
         });
-        self.post_json("/v1/dns/entries", &body)
+        self.post_json("/v1/dns/add", &body)
     }
 
     pub fn dns_remove(&self, name: &str) -> Result<serde_json::Value> {
-        let url = format!("{}/v1/dns/entries/{}", self.endpoint, name);
+        let url = format!("{}/v1/dns/remove/{}", self.endpoint, name);
         let resp = self.agent.delete(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
     pub fn dns_start(&self) -> Result<serde_json::Value> {
-        self.post_json("/v1/dns/admin/start", &serde_json::json!({}))
+        self.post_json("/v1/dns/serve", &serde_json::json!({}))
     }
 
     pub fn dns_stop(&self) -> Result<serde_json::Value> {
-        self.post_json("/v1/dns/admin/stop", &serde_json::json!({}))
+        self.post_json("/v1/dns/stop", &serde_json::json!({}))
     }
 
     // ── Health operations (Phase 7) ───────────────────────────────
@@ -224,11 +224,11 @@ impl KoiClient {
             "interval_secs": interval_secs,
             "timeout_secs": timeout_secs,
         });
-        self.post_json("/v1/health/checks", &body)
+        self.post_json("/v1/health/add", &body)
     }
 
     pub fn health_remove_check(&self, name: &str) -> Result<serde_json::Value> {
-        let url = format!("{}/v1/health/checks/{}", self.endpoint, name);
+        let url = format!("{}/v1/health/remove/{}", self.endpoint, name);
         let resp = self.agent.delete(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
@@ -241,7 +241,7 @@ impl KoiClient {
     }
 
     pub fn proxy_list(&self) -> Result<serde_json::Value> {
-        self.get_json("/v1/proxy/entries")
+        self.get_json("/v1/proxy/list")
     }
 
     pub fn proxy_add(
@@ -257,11 +257,11 @@ impl KoiClient {
             "backend": backend,
             "allow_remote": allow_remote,
         });
-        self.post_json("/v1/proxy/entries", &body)
+        self.post_json("/v1/proxy/add", &body)
     }
 
     pub fn proxy_remove(&self, name: &str) -> Result<serde_json::Value> {
-        let url = format!("{}/v1/proxy/entries/{}", self.endpoint, name);
+        let url = format!("{}/v1/proxy/remove/{}", self.endpoint, name);
         let resp = self.agent.delete(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
@@ -311,33 +311,33 @@ impl KoiClient {
     }
 
     pub fn admin_registrations(&self) -> Result<Vec<AdminRegistration>> {
-        let url = format!("{}/v1/mdns/admin/registrations", self.endpoint);
+        let url = format!("{}/v1/mdns/admin/ls", self.endpoint);
         let resp = self.agent.get(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
     pub fn admin_inspect(&self, id: &str) -> Result<AdminRegistration> {
-        let url = format!("{}/v1/mdns/admin/registrations/{id}", self.endpoint);
+        let url = format!("{}/v1/mdns/admin/inspect/{id}", self.endpoint);
         let resp = self.agent.get(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
     pub fn admin_force_unregister(&self, id: &str) -> Result<()> {
-        let url = format!("{}/v1/mdns/admin/registrations/{id}", self.endpoint);
+        let url = format!("{}/v1/mdns/admin/unregister/{id}", self.endpoint);
         self.agent.delete(&url).call().map_err(map_error)?;
         Ok(())
     }
 
     pub fn admin_drain(&self, id: &str) -> Result<()> {
-        let url = format!("{}/v1/mdns/admin/registrations/{id}/drain", self.endpoint);
+        let url = format!("{}/v1/mdns/admin/drain/{id}", self.endpoint);
         self.agent.post(&url).call().map_err(map_error)?;
         Ok(())
     }
 
     pub fn admin_revive(&self, id: &str) -> Result<()> {
-        let url = format!("{}/v1/mdns/admin/registrations/{id}/revive", self.endpoint);
+        let url = format!("{}/v1/mdns/admin/revive/{id}", self.endpoint);
         self.agent.post(&url).call().map_err(map_error)?;
         Ok(())
     }

@@ -13,7 +13,7 @@ use crate::service::ServiceStatus;
 
 const CERT_EXPIRY_WARN_DAYS: i64 = 7;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct MachineHealth {
     pub hostname: String,
     pub status: ServiceStatus,

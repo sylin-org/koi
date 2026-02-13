@@ -202,16 +202,16 @@ All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 - `POST /v1/certmesh/join`
 - `GET /v1/certmesh/status`
 - `POST /v1/certmesh/unlock`
-- `PUT /v1/certmesh/hook`
+- `PUT /v1/certmesh/set-hook`
 - `POST /v1/certmesh/promote`
 - `POST /v1/certmesh/renew`
 - `GET /v1/certmesh/roster`
 - `POST /v1/certmesh/health`
 - `POST /v1/certmesh/rotate-totp`
 - `GET /v1/certmesh/log`
-- `POST /v1/certmesh/enrollment/open`
-- `POST /v1/certmesh/enrollment/close`
-- `PUT /v1/certmesh/policy`
+- `POST /v1/certmesh/open-enrollment`
+- `POST /v1/certmesh/close-enrollment`
+- `PUT /v1/certmesh/set-policy`
 - `POST /v1/certmesh/destroy`
 
 ### Join the mesh
@@ -247,7 +247,7 @@ Returns mesh status including CA state, profile, enrollment state, and member li
 ### Set reload hook
 
 ```
-PUT /v1/certmesh/hook
+PUT /v1/certmesh/set-hook
 Content-Type: application/json
 
 {"hostname": "stone-01", "reload": "systemctl restart nginx"}

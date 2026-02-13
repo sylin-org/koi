@@ -33,14 +33,14 @@ pub use state::HealthCheckConfig as HealthCheck;
 pub const DEFAULT_MACHINE_THRESHOLD_SECS: u64 = 60;
 
 /// Snapshot returned by health status queries.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct HealthSnapshot {
     pub machines: Vec<MachineHealth>,
     pub services: Vec<ServiceHealth>,
 }
 
 /// Service health summary (config + current status).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct ServiceHealth {
     pub name: String,
     pub kind: ServiceCheckKind,

@@ -1,4 +1,4 @@
-﻿//! Networking utilities — Happy Eyeballs endpoint resolution.
+//! Networking utilities — Happy Eyeballs endpoint resolution.
 //!
 //! When a URL contains `localhost`, the OS may resolve it to both `[::1]` (IPv6)
 //! and `127.0.0.1` (IPv4). If the server only listens on one protocol, the client
@@ -103,8 +103,7 @@ fn replace_localhost(endpoint: &str, winner: &str, port: u16) -> String {
         format!("{before}{winner}{after_host}")
     } else {
         // Shouldn't happen given the guard in resolve_localhost, but be safe.
-        endpoint
-            .replace("localhost", &format!("{winner}:{port}"))
+        endpoint.replace("localhost", &format!("{winner}:{port}"))
     }
 }
 

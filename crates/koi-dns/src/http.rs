@@ -6,6 +6,7 @@ use axum::routing::{delete, get, post};
 use axum::Router;
 use hickory_proto::rr::RecordType;
 use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 use koi_common::error::ErrorCode;
 use koi_config::state::{load_dns_state, save_dns_state, DnsEntry, DnsState};
@@ -13,28 +14,28 @@ use koi_config::state::{load_dns_state, save_dns_state, DnsEntry, DnsState};
 use crate::runtime::DnsRuntime;
 use crate::zone::DnsZone;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 struct LookupParams {
     name: String,
     #[serde(rename = "type")]
     record_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct EntryRequest {
     name: String,
     ip: String,
     ttl: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct LookupResponse {
     name: String,
     ips: Vec<String>,
     source: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct StatusResponse {
     running: bool,
     zone: String,
@@ -42,36 +43,68 @@ struct StatusResponse {
     records: RecordSummary,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct RecordSummary {
     static_entries: usize,
     certmesh_entries: usize,
     mdns_entries: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct EntriesResponse {
     entries: Vec<DnsEntry>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 struct NamesResponse {
     names: Vec<String>,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+struct StartedResponse {
+    started: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct StoppedResponse {
+    stopped: bool,
+}
+
+/// Route path constants — single source of truth for axum routing AND the command manifest.
+pub mod paths {
+    pub const PREFIX: &str = "/v1/dns";
+
+    pub const STATUS: &str = "/v1/dns/status";
+    pub const LOOKUP: &str = "/v1/dns/lookup";
+    pub const LIST: &str = "/v1/dns/list";
+    pub const ENTRIES: &str = "/v1/dns/entries";
+    pub const ADD: &str = "/v1/dns/add";
+    pub const REMOVE: &str = "/v1/dns/remove/{name}";
+    pub const SERVE: &str = "/v1/dns/serve";
+    pub const STOP: &str = "/v1/dns/stop";
+
+    /// Strip the crate nest prefix to get the relative path for axum routing.
+    pub fn rel(full: &str) -> &str {
+        full.strip_prefix(PREFIX).unwrap_or(full)
+    }
+}
+
 /// Build DNS domain routes. The binary crate mounts these at `/v1/dns/`.
 pub fn routes(runtime: Arc<DnsRuntime>) -> Router {
+    use paths::rel;
     Router::new()
-        .route("/status", get(status_handler))
-        .route("/lookup", get(lookup_handler))
-        .route("/list", get(list_handler))
-        .route("/entries", get(entries_handler).post(add_entry_handler))
-        .route("/entries/{name}", delete(remove_entry_handler))
-        .route("/admin/start", post(start_handler))
-        .route("/admin/stop", post(stop_handler))
+        .route(rel(paths::STATUS), get(status_handler))
+        .route(rel(paths::LOOKUP), get(lookup_handler))
+        .route(rel(paths::LIST), get(list_handler))
+        .route(rel(paths::ENTRIES), get(entries_handler))
+        .route(rel(paths::ADD), post(add_entry_handler))
+        .route(rel(paths::REMOVE), delete(remove_entry_handler))
+        .route(rel(paths::SERVE), post(start_handler))
+        .route(rel(paths::STOP), post(stop_handler))
         .layer(Extension(runtime))
 }
 
+/// DNS server status overview.
 async fn status_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     let runtime_status = runtime.status().await;
     let core = runtime.core();
@@ -88,6 +121,7 @@ async fn status_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl 
     })
 }
 
+/// Look up a DNS record.
 async fn lookup_handler(
     Extension(runtime): Extension<Arc<DnsRuntime>>,
     Query(params): Query<LookupParams>,
@@ -116,12 +150,14 @@ async fn lookup_handler(
     .into_response()
 }
 
+/// List all known DNS names.
 async fn list_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     let core = runtime.core();
     let names = core.list_names();
     Json(NamesResponse { names })
 }
 
+/// List static DNS entries.
 async fn entries_handler(_runtime: Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     match load_dns_state() {
         Ok(state) => Json(EntriesResponse {
@@ -137,6 +173,7 @@ async fn entries_handler(_runtime: Extension<Arc<DnsRuntime>>) -> impl IntoRespo
     }
 }
 
+/// Add or update a static DNS entry.
 async fn add_entry_handler(
     Extension(runtime): Extension<Arc<DnsRuntime>>,
     Json(payload): Json<EntryRequest>,
@@ -199,6 +236,7 @@ async fn add_entry_handler(
     .into_response()
 }
 
+/// Remove a static DNS entry by name.
 async fn remove_entry_handler(
     Extension(runtime): Extension<Arc<DnsRuntime>>,
     Path(name): Path<String>,
@@ -265,6 +303,7 @@ async fn remove_entry_handler(
     .into_response()
 }
 
+/// Start the DNS server.
 async fn start_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     match runtime.start().await {
         Ok(started) => Json(serde_json::json!({ "started": started })).into_response(),
@@ -277,6 +316,7 @@ async fn start_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl I
     }
 }
 
+/// Stop the DNS server.
 async fn stop_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     let stopped = runtime.stop().await;
     Json(serde_json::json!({ "stopped": stopped }))
@@ -317,3 +357,18 @@ fn error_response(
     });
     (status, Json(body))
 }
+
+/// OpenAPI documentation for the DNS domain.
+#[derive(utoipa::OpenApi)]
+#[openapi(components(schemas(
+    StatusResponse,
+    LookupResponse,
+    NamesResponse,
+    EntriesResponse,
+    EntryRequest,
+    RecordSummary,
+    StartedResponse,
+    StoppedResponse,
+    koi_config::state::DnsEntry,
+)))]
+pub struct DnsApiDoc;

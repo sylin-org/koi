@@ -22,32 +22,63 @@ use crate::protocol::{
     RotateTotpRequest, RotateTotpResponse, SetHookRequest, UnlockRequest, UnlockResponse,
 };
 
+/// Route path constants — single source of truth for axum routing AND the command manifest.
+pub mod paths {
+    pub const PREFIX: &str = "/v1/certmesh";
+
+    pub const JOIN: &str = "/v1/certmesh/join";
+    pub const STATUS: &str = "/v1/certmesh/status";
+    pub const SET_HOOK: &str = "/v1/certmesh/set-hook";
+    pub const PROMOTE: &str = "/v1/certmesh/promote";
+    pub const RENEW: &str = "/v1/certmesh/renew";
+    pub const ROSTER: &str = "/v1/certmesh/roster";
+    pub const HEALTH: &str = "/v1/certmesh/health";
+    pub const CREATE: &str = "/v1/certmesh/create";
+    pub const UNLOCK: &str = "/v1/certmesh/unlock";
+    pub const ROTATE_TOTP: &str = "/v1/certmesh/rotate-totp";
+    pub const LOG: &str = "/v1/certmesh/log";
+    pub const DESTROY: &str = "/v1/certmesh/destroy";
+    pub const BACKUP: &str = "/v1/certmesh/backup";
+    pub const RESTORE: &str = "/v1/certmesh/restore";
+    pub const REVOKE: &str = "/v1/certmesh/revoke";
+    pub const COMPLIANCE: &str = "/v1/certmesh/compliance";
+    pub const OPEN_ENROLLMENT: &str = "/v1/certmesh/open-enrollment";
+    pub const CLOSE_ENROLLMENT: &str = "/v1/certmesh/close-enrollment";
+    pub const SET_POLICY: &str = "/v1/certmesh/set-policy";
+
+    /// Strip the crate nest prefix to get the relative path for axum routing.
+    pub fn rel(full: &str) -> &str {
+        full.strip_prefix(PREFIX).unwrap_or(full)
+    }
+}
+
 /// Build the certmesh router with domain-owned routes.
 ///
 /// The binary crate mounts this at `/v1/certmesh/`.
 pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
+    use paths::rel;
     Router::new()
-        .route("/join", post(join_handler))
-        .route("/status", get(status_handler))
-        .route("/hook", put(set_hook_handler))
-        .route("/promote", post(promote_handler))
-        .route("/renew", post(renew_handler))
-        .route("/roster", get(roster_handler))
-        .route("/health", post(health_handler))
+        .route(rel(paths::JOIN), post(join_handler))
+        .route(rel(paths::STATUS), get(status_handler))
+        .route(rel(paths::SET_HOOK), put(set_hook_handler))
+        .route(rel(paths::PROMOTE), post(promote_handler))
+        .route(rel(paths::RENEW), post(renew_handler))
+        .route(rel(paths::ROSTER), get(roster_handler))
+        .route(rel(paths::HEALTH), post(health_handler))
         // Service delegation — CA management
-        .route("/create", post(create_handler))
-        .route("/unlock", post(unlock_handler))
-        .route("/rotate-totp", post(rotate_totp_handler))
-        .route("/log", get(log_handler))
-        .route("/destroy", post(destroy_handler))
-        .route("/backup", post(backup_handler))
-        .route("/restore", post(restore_handler))
-        .route("/revoke", post(revoke_handler))
-        .route("/compliance", get(compliance_handler))
+        .route(rel(paths::CREATE), post(create_handler))
+        .route(rel(paths::UNLOCK), post(unlock_handler))
+        .route(rel(paths::ROTATE_TOTP), post(rotate_totp_handler))
+        .route(rel(paths::LOG), get(log_handler))
+        .route(rel(paths::DESTROY), post(destroy_handler))
+        .route(rel(paths::BACKUP), post(backup_handler))
+        .route(rel(paths::RESTORE), post(restore_handler))
+        .route(rel(paths::REVOKE), post(revoke_handler))
+        .route(rel(paths::COMPLIANCE), get(compliance_handler))
         // Phase 4 — Enrollment Policy
-        .route("/enrollment/open", post(open_enrollment_handler))
-        .route("/enrollment/close", post(close_enrollment_handler))
-        .route("/policy", put(set_policy_handler))
+        .route(rel(paths::OPEN_ENROLLMENT), post(open_enrollment_handler))
+        .route(rel(paths::CLOSE_ENROLLMENT), post(close_enrollment_handler))
+        .route(rel(paths::SET_POLICY), put(set_policy_handler))
         .layer(Extension(state))
 }
 
@@ -844,6 +875,47 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
     koi_common::http::error_response_with_status(status, code, error.to_string())
 }
 
+/// OpenAPI documentation for the certmesh domain.
+#[derive(utoipa::OpenApi)]
+#[openapi(components(schemas(
+    crate::protocol::JoinRequest,
+    crate::protocol::JoinResponse,
+    crate::protocol::CertmeshStatus,
+    crate::protocol::MemberSummary,
+    crate::protocol::SetHookRequest,
+    crate::protocol::SetHookResponse,
+    crate::protocol::CreateCaRequest,
+    crate::protocol::CreateCaResponse,
+    crate::protocol::UnlockRequest,
+    crate::protocol::UnlockResponse,
+    crate::protocol::RotateTotpRequest,
+    crate::protocol::RotateTotpResponse,
+    crate::protocol::AuditLogResponse,
+    crate::protocol::DestroyResponse,
+    crate::protocol::BackupRequest,
+    crate::protocol::BackupResponse,
+    crate::protocol::RestoreRequest,
+    crate::protocol::RestoreResponse,
+    crate::protocol::RevokeRequest,
+    crate::protocol::RevokeResponse,
+    crate::protocol::PolicyRequest,
+    crate::protocol::OpenEnrollmentRequest,
+    crate::protocol::PolicySummary,
+    crate::protocol::ComplianceResponse,
+    crate::protocol::PromoteRequest,
+    crate::protocol::PromoteResponse,
+    crate::protocol::RenewRequest,
+    crate::protocol::RenewResponse,
+    crate::protocol::HookResult,
+    crate::protocol::RosterManifest,
+    crate::protocol::HealthRequest,
+    crate::protocol::HealthResponse,
+    crate::profiles::TrustProfile,
+    crate::roster::EnrollmentState,
+    koi_crypto::keys::EncryptedKey,
+)))]
+pub struct CertmeshApiDoc;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -953,7 +1025,7 @@ mod tests {
     #[tokio::test]
     async fn set_hook_unknown_member_returns_404() {
         let app = routes(test_extension());
-        let req = Request::put("/hook")
+        let req = Request::put("/set-hook")
             .header("content-type", "application/json")
             .body(Body::from(
                 r#"{"hostname":"nobody","reload":"systemctl restart nginx"}"#,
@@ -1084,7 +1156,7 @@ mod tests {
     #[tokio::test]
     async fn set_hook_not_found_body_has_error() {
         let app = routes(test_extension());
-        let req = Request::put("/hook")
+        let req = Request::put("/set-hook")
             .header("content-type", "application/json")
             .body(Body::from(
                 r#"{"hostname":"nobody","reload":"systemctl restart nginx"}"#,
@@ -1108,7 +1180,7 @@ mod tests {
     #[tokio::test]
     async fn open_enrollment_returns_200() {
         let app = routes(test_extension());
-        let req = Request::post("/enrollment/open")
+        let req = Request::post("/open-enrollment")
             .header("content-type", "application/json")
             .body(Body::from("{}"))
             .unwrap();
@@ -1127,7 +1199,7 @@ mod tests {
     #[tokio::test]
     async fn open_enrollment_with_deadline() {
         let app = routes(test_extension());
-        let req = Request::post("/enrollment/open")
+        let req = Request::post("/open-enrollment")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"deadline":"2026-12-31T23:59:59Z"}"#))
             .unwrap();
@@ -1143,7 +1215,7 @@ mod tests {
     #[tokio::test]
     async fn open_enrollment_accepts_empty_body() {
         let app = routes(test_extension());
-        let req = Request::post("/enrollment/open")
+        let req = Request::post("/open-enrollment")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1153,7 +1225,7 @@ mod tests {
     #[tokio::test]
     async fn close_enrollment_returns_200() {
         let app = routes(test_extension());
-        let req = Request::post("/enrollment/close")
+        let req = Request::post("/close-enrollment")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1171,7 +1243,7 @@ mod tests {
     #[tokio::test]
     async fn set_policy_returns_200() {
         let app = routes(test_extension());
-        let req = Request::put("/policy")
+        let req = Request::put("/set-policy")
             .header("content-type", "application/json")
             .body(Body::from(
                 r#"{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}"#,
@@ -1196,7 +1268,7 @@ mod tests {
     #[tokio::test]
     async fn set_policy_invalid_cidr_returns_400() {
         let app = routes(test_extension());
-        let req = Request::put("/policy")
+        let req = Request::put("/set-policy")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"allowed_subnet":"not-a-cidr"}"#))
             .unwrap();
@@ -1207,7 +1279,7 @@ mod tests {
     #[tokio::test]
     async fn set_policy_invalid_cidr_ip_returns_400() {
         let app = routes(test_extension());
-        let req = Request::put("/policy")
+        let req = Request::put("/set-policy")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"allowed_subnet":"xyz.abc/24"}"#))
             .unwrap();
@@ -1218,7 +1290,7 @@ mod tests {
     #[tokio::test]
     async fn set_policy_clears_with_nulls() {
         let app = routes(test_extension());
-        let req = Request::put("/policy")
+        let req = Request::put("/set-policy")
             .header("content-type", "application/json")
             .body(Body::from(r#"{}"#))
             .unwrap();

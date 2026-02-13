@@ -332,12 +332,12 @@ The HTTP adapter translates REST semantics to core API calls using Axum.
 
 | Method | Path | Core operation | Response |
 |---|---|---|---|
-| `GET` | `/v1/mdns/browse?type=_http._tcp` | `browse()` | SSE stream of `found` events |
-| `POST` | `/v1/mdns/services` | `register()` | JSON `registered` response |
-| `DELETE` | `/v1/mdns/services/{id}` | `unregister()` | JSON `unregistered` response |
-| `PUT` | `/v1/mdns/services/{id}/heartbeat` | `heartbeat()` | JSON `renewed` response |
+| `GET` | `/v1/mdns/discover?type=_http._tcp` | `browse()` | SSE stream of `found` events |
+| `POST` | `/v1/mdns/announce` | `register()` | JSON `registered` response |
+| `DELETE` | `/v1/mdns/unregister/{id}` | `unregister()` | JSON `unregistered` response |
+| `PUT` | `/v1/mdns/heartbeat/{id}` | `heartbeat()` | JSON `renewed` response |
 | `GET` | `/v1/mdns/resolve?name={instance}` | `resolve()` | JSON `resolved` response |
-| `GET` | `/v1/mdns/events?type=_http._tcp` | `subscribe()` | SSE stream of lifecycle events |
+| `GET` | `/v1/mdns/subscribe?type=_http._tcp` | `subscribe()` | SSE stream of lifecycle events |
 | `GET` | `/v1/status` | — | Unified capability status |
 | `POST` | `/v1/admin/shutdown` | — | Initiate graceful shutdown |
 | `GET` | `/healthz` | — | `"OK"` |
@@ -347,7 +347,7 @@ The HTTP adapter translates REST semantics to core API calls using Axum.
 Browse and subscribe endpoints use [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events). Each event is a JSON line:
 
 ```
-GET /v1/mdns/browse?type=_http._tcp
+GET /v1/mdns/discover?type=_http._tcp
 Accept: text/event-stream
 
 data: {"found": {"name": "Server A", "type": "_http._tcp", ...}}
@@ -504,13 +504,13 @@ The socket mount option is significant — it gives containers mDNS access with 
 **Browse** — Discover services on the physical LAN that the container cannot reach via multicast:
 ```bash
 # Inside a container: find all printers on the office network
-curl http://172.17.0.1:5641/v1/mdns/browse?type=_ipp._tcp
+curl http://172.17.0.1:5641/v1/mdns/discover?type=_ipp._tcp
 ```
 
 **Register** — Advertise a containerized service on the LAN so non-container devices can find it:
 ```bash
 # Inside a container: announce a web service to the LAN
-curl -X POST http://172.17.0.1:5641/v1/mdns/services \
+curl -X POST http://172.17.0.1:5641/v1/mdns/announce \
   -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
 ```
 
@@ -519,7 +519,7 @@ This makes the containerized service visible to mDNS browsers on the physical ne
 **Subscribe** — Stream real-time service events for dynamic service mesh behavior:
 ```bash
 # Inside a container: watch for new services appearing on the LAN
-curl http://172.17.0.1:5641/v1/mdns/events?type=_http._tcp
+curl http://172.17.0.1:5641/v1/mdns/subscribe?type=_http._tcp
 ```
 
 ### Docker Compose examples

@@ -305,7 +305,7 @@ pub fn set_hook(reload: &str, json: bool, endpoint: Option<&str>) -> anyhow::Res
         "hostname": hostname,
         "reload": reload,
     });
-    let resp = client.put_json("/v1/certmesh/hook", &body)?;
+    let resp = client.put_json("/v1/certmesh/set-hook", &body)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -457,7 +457,7 @@ pub fn open_enrollment(
     let body = serde_json::json!({
         "deadline": deadline.map(|d| d.to_rfc3339()),
     });
-    let resp = client.post_json("/v1/certmesh/enrollment/open", &body)?;
+    let resp = client.post_json("/v1/certmesh/open-enrollment", &body)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -478,7 +478,7 @@ pub fn open_enrollment(
 
 pub fn close_enrollment(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
     let client = require_daemon(endpoint)?;
-    let resp = client.post_json("/v1/certmesh/enrollment/close", &serde_json::json!({}))?;
+    let resp = client.post_json("/v1/certmesh/close-enrollment", &serde_json::json!({}))?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -513,7 +513,7 @@ pub fn set_policy(
         "allowed_domain": allowed_domain,
         "allowed_subnet": allowed_subnet,
     });
-    let resp = client.put_json("/v1/certmesh/policy", &body)?;
+    let resp = client.put_json("/v1/certmesh/set-policy", &body)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);

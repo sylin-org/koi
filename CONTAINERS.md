@@ -55,7 +55,7 @@ Use this when the container only needs to discover LAN services.
 
 ```bash
 # Browse services
-curl -s "http://$KOI_HOST:5641/v1/mdns/browse?type=_http._tcp"
+curl -s "http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp"
 
 # Resolve a specific instance
 curl -s "http://$KOI_HOST:5641/v1/mdns/resolve?name=My%20NAS._http._tcp.local."
@@ -70,7 +70,7 @@ Use this when containers need friendly names mapped to LAN IPs.
 curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
 
 # Add a static entry
-curl -s -X POST http://$KOI_HOST:5641/v1/dns/entries \
+curl -s -X POST http://$KOI_HOST:5641/v1/dns/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"grafana","ip":"192.168.1.42"}'
 ```
@@ -81,7 +81,7 @@ Use this when containers rely on shared health checks (HTTP/TCP).
 
 ```bash
 # Add a TCP check
-curl -s -X POST http://$KOI_HOST:5641/v1/health/checks \
+curl -s -X POST http://$KOI_HOST:5641/v1/health/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"db","kind":"tcp","target":"10.0.0.10:5432"}'
 
@@ -129,7 +129,7 @@ A container that needs to find services on the local network — printers, NAS b
 
 ```bash
 # From inside a container
-curl -s http://$KOI_HOST:5641/v1/mdns/browse?type=_http._tcp
+curl -s http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp
 ```
 
 This returns a Server-Sent Events stream. Each line is a discovered service:
@@ -142,7 +142,7 @@ data: {"found":{"name":"Pi-hole","type":"_http._tcp","host":"pihole.local.","ip"
 The stream closes automatically after 5 seconds of quiet — once all known services have been reported. For long-lived watching, set `idle_for=0`:
 
 ```bash
-curl -s "http://$KOI_HOST:5641/v1/mdns/browse?type=_http._tcp&idle_for=0"
+curl -s "http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp&idle_for=0"
 ```
 
 ### Resolve a specific instance
@@ -168,7 +168,7 @@ This is the part that's normally impossible. A container behind Docker's NAT bri
 ### Register a service
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/mdns/services \
+curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
   -H 'Content-Type: application/json' \
   -d '{"name": "My Container App", "type": "_http._tcp", "port": 8080}'
 ```
@@ -186,7 +186,7 @@ HTTP registrations use a lease model. The default lease is 90 seconds — if Koi
 Send a heartbeat at half the lease interval (every 45 seconds is a safe default):
 
 ```bash
-curl -s -X PUT http://$KOI_HOST:5641/v1/mdns/services/a1b2c3d4/heartbeat
+curl -s -X PUT http://$KOI_HOST:5641/v1/mdns/heartbeat/a1b2c3d4
 ```
 
 ```json
@@ -198,7 +198,7 @@ curl -s -X PUT http://$KOI_HOST:5641/v1/mdns/services/a1b2c3d4/heartbeat
 If the service should live for as long as Koi runs (or until you explicitly remove it), set `lease_secs` to 0:
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/mdns/services \
+curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
   -H 'Content-Type: application/json' \
   -d '{"name": "My Container App", "type": "_http._tcp", "port": 8080, "lease_secs": 0}'
 ```
@@ -212,7 +212,7 @@ No heartbeats needed. The registration persists until you delete it or Koi shuts
 ### Unregister
 
 ```bash
-curl -s -X DELETE http://$KOI_HOST:5641/v1/mdns/services/a1b2c3d4
+curl -s -X DELETE http://$KOI_HOST:5641/v1/mdns/unregister/a1b2c3d4
 ```
 
 ```json
@@ -267,7 +267,7 @@ docker compose up -d
 Now register the web server from inside its container:
 
 ```bash
-docker exec web curl -s -X POST http://host.docker.internal:5641/v1/mdns/services \
+docker exec web curl -s -X POST http://host.docker.internal:5641/v1/mdns/announce \
   -H 'Content-Type: application/json' \
   -d '{"name": "Nginx", "type": "_http._tcp", "port": 8080, "lease_secs": 0}'
 ```
@@ -298,7 +298,7 @@ until curl -sf "$KOI_URL/healthz" > /dev/null 2>&1; do
 done
 
 # Register this service
-RESULT=$(curl -sf -X POST "$KOI_URL/v1/mdns/services" \
+RESULT=$(curl -sf -X POST "$KOI_URL/v1/mdns/announce" \
   -H 'Content-Type: application/json' \
   -d "{\"name\": \"$SERVICE_NAME\", \"type\": \"_http._tcp\", \"port\": $SERVICE_PORT, \"lease_secs\": 0}")
 
@@ -308,7 +308,7 @@ echo "Registered with Koi: $REG_ID"
 # Unregister on exit
 cleanup() {
   echo "Unregistering from Koi..."
-  curl -sf -X DELETE "$KOI_URL/v1/mdns/services/$REG_ID" > /dev/null 2>&1
+  curl -sf -X DELETE "$KOI_URL/v1/mdns/unregister/$REG_ID" > /dev/null 2>&1
 }
 trap cleanup EXIT TERM INT
 
@@ -342,7 +342,7 @@ until curl -sf "$KOI_URL/healthz" > /dev/null 2>&1; do
   sleep 2
 done
 
-RESULT=$(curl -sf -X POST "$KOI_URL/v1/mdns/services" \
+RESULT=$(curl -sf -X POST "$KOI_URL/v1/mdns/announce" \
   -H 'Content-Type: application/json' \
   -d "{\"name\": \"$SERVICE_NAME\", \"type\": \"_http._tcp\", \"port\": $SERVICE_PORT}")
 
@@ -351,13 +351,13 @@ REG_ID=$(echo "$RESULT" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
 # Background heartbeat loop
 (while true; do
   sleep 45
-  curl -sf -X PUT "$KOI_URL/v1/mdns/services/$REG_ID/heartbeat" > /dev/null 2>&1 || break
+  curl -sf -X PUT "$KOI_URL/v1/mdns/heartbeat/$REG_ID" > /dev/null 2>&1 || break
 done) &
 HEARTBEAT_PID=$!
 
 cleanup() {
   kill $HEARTBEAT_PID 2>/dev/null
-  curl -sf -X DELETE "$KOI_URL/v1/mdns/services/$REG_ID" > /dev/null 2>&1
+  curl -sf -X DELETE "$KOI_URL/v1/mdns/unregister/$REG_ID" > /dev/null 2>&1
 }
 trap cleanup EXIT TERM INT
 
@@ -417,7 +417,7 @@ The worker container waits until "Config Server" appears on the network, extract
 For containers that need to react to services coming and going — load balancers, monitoring dashboards, mesh proxies — use the SSE events endpoint.
 
 ```bash
-curl -s -N http://$KOI_HOST:5641/v1/mdns/events?type=_http._tcp
+curl -s -N http://$KOI_HOST:5641/v1/mdns/subscribe?type=_http._tcp
 ```
 
 ```
@@ -429,7 +429,7 @@ data: {"event":"removed","service":{"name":"My NAS","type":"_http._tcp","txt":{}
 Like browse, this stream closes after 5 seconds of quiet by default. For long-lived watching (load balancers, dashboards), set `idle_for=0`:
 
 ```bash
-curl -s -N "http://$KOI_HOST:5641/v1/mdns/events?type=_http._tcp&idle_for=0"
+curl -s -N "http://$KOI_HOST:5641/v1/mdns/subscribe?type=_http._tcp&idle_for=0"
 ```
 
 Each event tells you what happened:
@@ -447,7 +447,7 @@ import requests
 import json
 
 KOI = "http://host.docker.internal:5641"
-response = requests.get(f"{KOI}/v1/mdns/events?type=_http._tcp&idle_for=0", stream=True)
+response = requests.get(f"{KOI}/v1/mdns/subscribe?type=_http._tcp&idle_for=0", stream=True)
 
 for line in response.iter_lines(decode_unicode=True):
     if line.startswith("data: "):
@@ -488,18 +488,18 @@ curl -s "http://$KOI_HOST:5641/v1/dns/list"
 ### Add and remove static entries
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/dns/entries \
+curl -s -X POST http://$KOI_HOST:5641/v1/dns/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"grafana","ip":"192.168.1.42"}'
 
-curl -s -X DELETE http://$KOI_HOST:5641/v1/dns/entries/grafana
+curl -s -X DELETE http://$KOI_HOST:5641/v1/dns/remove/grafana
 ```
 
 If you need to start or stop the resolver from a container, use:
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/dns/admin/start
-curl -s -X POST http://$KOI_HOST:5641/v1/dns/admin/stop
+curl -s -X POST http://$KOI_HOST:5641/v1/dns/serve
+curl -s -X POST http://$KOI_HOST:5641/v1/dns/stop
 ```
 
 ---
@@ -511,7 +511,7 @@ Use Koi to maintain a shared health view for services that containers depend on.
 ### Add a TCP check
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/health/checks \
+curl -s -X POST http://$KOI_HOST:5641/v1/health/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"db","kind":"tcp","target":"10.0.0.10:5432"}'
 ```
@@ -519,7 +519,7 @@ curl -s -X POST http://$KOI_HOST:5641/v1/health/checks \
 ### Add an HTTP check
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/health/checks \
+curl -s -X POST http://$KOI_HOST:5641/v1/health/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"api","kind":"http","target":"http://10.0.0.20:8080/health"}'
 ```
@@ -529,7 +529,7 @@ curl -s -X POST http://$KOI_HOST:5641/v1/health/checks \
 ```bash
 curl -s http://$KOI_HOST:5641/v1/health/status
 curl -s http://$KOI_HOST:5641/v1/health/checks
-curl -s -X DELETE http://$KOI_HOST:5641/v1/health/checks/db
+curl -s -X DELETE http://$KOI_HOST:5641/v1/health/remove/db
 ```
 
 ---
@@ -543,8 +543,8 @@ store and cert files live in the host data directory.
 ```bash
 curl -s http://$KOI_HOST:5641/v1/certmesh/status
 curl -s http://$KOI_HOST:5641/v1/certmesh/log
-curl -s -X POST http://$KOI_HOST:5641/v1/certmesh/enrollment/open -H 'Content-Type: application/json' -d '{}'
-curl -s -X POST http://$KOI_HOST:5641/v1/certmesh/enrollment/close
+curl -s -X POST http://$KOI_HOST:5641/v1/certmesh/open-enrollment -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST http://$KOI_HOST:5641/v1/certmesh/close-enrollment
 ```
 
 If you do enroll from a container, the `/v1/certmesh/join` response includes PEM
@@ -560,7 +560,7 @@ certificates and forward traffic to local backends.
 ### Add a proxy entry
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/proxy/entries \
+curl -s -X POST http://$KOI_HOST:5641/v1/proxy/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"app","listen_port":443,"backend":"http://127.0.0.1:8080"}'
 ```
@@ -569,8 +569,8 @@ curl -s -X POST http://$KOI_HOST:5641/v1/proxy/entries \
 
 ```bash
 curl -s http://$KOI_HOST:5641/v1/proxy/status
-curl -s http://$KOI_HOST:5641/v1/proxy/entries
-curl -s -X DELETE http://$KOI_HOST:5641/v1/proxy/entries/app
+curl -s http://$KOI_HOST:5641/v1/proxy/list
+curl -s -X DELETE http://$KOI_HOST:5641/v1/proxy/remove/app
 ```
 
 ---
@@ -622,7 +622,7 @@ services:
 Register with port `8080`, not `80`:
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/mdns/services \
+curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
   -H 'Content-Type: application/json' \
   -d '{"name": "My Web Server", "type": "_http._tcp", "port": 8080}'
 ```
@@ -640,7 +640,7 @@ By default, Koi advertises **all** of the host's IP addresses in the mDNS A reco
 Use the `ip` field to pin the registration to a specific LAN address:
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/mdns/services \
+curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
   -H 'Content-Type: application/json' \
   -d '{"name": "My Service", "type": "_http._tcp", "port": 8080, "ip": "192.168.1.42"}'
 ```
@@ -698,7 +698,7 @@ env:
 Then from any pod:
 
 ```bash
-curl -s http://$KOI_HOST:5641/v1/mdns/browse?type=_http._tcp
+curl -s http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp
 ```
 
 The DaemonSet needs `hostNetwork: true` because mDNS requires multicast on the physical network interface. Koi handles the multicast; pods talk to it over plain HTTP.
@@ -773,7 +773,7 @@ koi mdns admin unregister <id>
 Or via the HTTP API from another container:
 
 ```bash
-curl -s -X DELETE http://$KOI_HOST:5641/v1/mdns/admin/registrations/<id>
+curl -s -X DELETE http://$KOI_HOST:5641/v1/mdns/admin/unregister/<id>
 ```
 
 For automatic cleanup, prefer heartbeat mode over permanent mode in containers.
@@ -791,32 +791,32 @@ Koi allows all origins (CORS is fully permissive), so this shouldn't happen. If 
 curl -s http://$KOI_HOST:5641/healthz
 
 # Browse for HTTP services (SSE stream)
-curl -s http://$KOI_HOST:5641/v1/mdns/browse?type=_http._tcp
+curl -s http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp
 
 # Resolve a specific instance
 curl -s http://$KOI_HOST:5641/v1/mdns/resolve?name=My%20NAS._http._tcp.local.
 
 # Register a service (heartbeat mode, 90s lease)
-curl -s -X POST http://$KOI_HOST:5641/v1/mdns/services \
+curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
   -H 'Content-Type: application/json' \
   -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
 
 # Register permanently (no heartbeat needed)
-curl -s -X POST http://$KOI_HOST:5641/v1/mdns/services \
+curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
   -H 'Content-Type: application/json' \
   -d '{"name": "My App", "type": "_http._tcp", "port": 8080, "lease_secs": 0}'
 
 # Send heartbeat
-curl -s -X PUT http://$KOI_HOST:5641/v1/mdns/services/{id}/heartbeat
+curl -s -X PUT http://$KOI_HOST:5641/v1/mdns/heartbeat/{id}
 
 # Unregister
-curl -s -X DELETE http://$KOI_HOST:5641/v1/mdns/services/{id}
+curl -s -X DELETE http://$KOI_HOST:5641/v1/mdns/unregister/{id}
 
 # Subscribe to lifecycle events (SSE stream)
-curl -s http://$KOI_HOST:5641/v1/mdns/events?type=_http._tcp
+curl -s http://$KOI_HOST:5641/v1/mdns/subscribe?type=_http._tcp
 
 # Discover all service types
-curl -s http://$KOI_HOST:5641/v1/mdns/browse?type=_services._dns-sd._udp.local.
+curl -s http://$KOI_HOST:5641/v1/mdns/discover?type=_services._dns-sd._udp.local.
 
 # DNS lookup
 curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
@@ -825,7 +825,7 @@ curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
 curl -s http://$KOI_HOST:5641/v1/dns/list
 
 # Add a DNS entry
-curl -s -X POST http://$KOI_HOST:5641/v1/dns/entries \
+curl -s -X POST http://$KOI_HOST:5641/v1/dns/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"grafana","ip":"192.168.1.42"}'
 
@@ -833,7 +833,7 @@ curl -s -X POST http://$KOI_HOST:5641/v1/dns/entries \
 curl -s http://$KOI_HOST:5641/v1/health/status
 
 # Add a health check
-curl -s -X POST http://$KOI_HOST:5641/v1/health/checks \
+curl -s -X POST http://$KOI_HOST:5641/v1/health/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"db","kind":"tcp","target":"10.0.0.10:5432"}'
 

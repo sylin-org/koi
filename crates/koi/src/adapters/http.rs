@@ -1,6 +1,6 @@
 //! HTTP adapter — builds and serves the axum router.
 //!
-//! Mounts domain routes, health check, unified status, and CORS.
+//! Mounts domain routes, health check, unified status, CORS, and OpenAPI docs.
 //! Called by `daemon_mode()` in `main.rs` and `run_service()` in `platform/windows.rs`.
 
 use std::sync::Arc;
@@ -10,10 +10,23 @@ use axum::response::Json;
 use axum::routing::{get, post};
 use axum::Router;
 use koi_common::capability::Capability;
+use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
+use utoipa::OpenApi;
+use utoipa::ToSchema;
+use utoipa_scalar::{Scalar, Servable};
 
 use crate::DaemonCores;
+
+// ── System-level route path constants ───────────────────────────────
+
+/// Route path constants for system endpoints not owned by any domain crate.
+pub mod paths {
+    pub const HEALTHZ: &str = "/healthz";
+    pub const UNIFIED_STATUS: &str = "/v1/status";
+    pub const SHUTDOWN: &str = "/v1/admin/shutdown";
+}
 
 // ── App state ───────────────────────────────────────────────────────
 
@@ -47,43 +60,89 @@ pub async fn start(
     };
 
     let mut app = Router::new()
-        .route("/healthz", get(health))
-        .route("/v1/status", get(unified_status_handler))
-        .route("/v1/admin/shutdown", post(shutdown_handler));
+        .route(paths::HEALTHZ, get(health))
+        .route(paths::UNIFIED_STATUS, get(unified_status_handler))
+        .route(paths::SHUTDOWN, post(shutdown_handler));
 
     // Mount domain routes or fallback routers
     if let Some(ref mdns_core) = cores.mdns {
-        app = app.nest("/v1/mdns", koi_mdns::http::routes(mdns_core.clone()));
+        app = app.nest(
+            koi_mdns::http::paths::PREFIX,
+            koi_mdns::http::routes(mdns_core.clone()),
+        );
     } else {
-        app = app.nest("/v1/mdns", disabled_fallback_router("mdns"));
+        app = app.nest(koi_mdns::http::paths::PREFIX, disabled_fallback_router("mdns"));
     }
 
     if let Some(ref certmesh_core) = cores.certmesh {
-        app = app.nest("/v1/certmesh", certmesh_core.routes());
+        app = app.nest(koi_certmesh::http::paths::PREFIX, certmesh_core.routes());
     } else {
-        app = app.nest("/v1/certmesh", disabled_fallback_router("certmesh"));
+        app = app.nest(
+            koi_certmesh::http::paths::PREFIX,
+            disabled_fallback_router("certmesh"),
+        );
     }
 
     if let Some(ref dns_runtime) = cores.dns {
-        app = app.nest("/v1/dns", koi_dns::http::routes(dns_runtime.clone()));
+        app = app.nest(
+            koi_dns::http::paths::PREFIX,
+            koi_dns::http::routes(dns_runtime.clone()),
+        );
     } else {
-        app = app.nest("/v1/dns", disabled_fallback_router("dns"));
+        app = app.nest(koi_dns::http::paths::PREFIX, disabled_fallback_router("dns"));
     }
 
     if let Some(ref health_runtime) = cores.health {
         app = app.nest(
-            "/v1/health",
+            koi_health::http::paths::PREFIX,
             koi_health::http::routes(health_runtime.core()),
         );
     } else {
-        app = app.nest("/v1/health", disabled_fallback_router("health"));
+        app = app.nest(
+            koi_health::http::paths::PREFIX,
+            disabled_fallback_router("health"),
+        );
     }
 
     if let Some(ref proxy_runtime) = cores.proxy {
-        app = app.nest("/v1/proxy", koi_proxy::http::routes(proxy_runtime.clone()));
+        app = app.nest(
+            koi_proxy::http::paths::PREFIX,
+            koi_proxy::http::routes(proxy_runtime.clone()),
+        );
     } else {
-        app = app.nest("/v1/proxy", disabled_fallback_router("proxy"));
+        app = app.nest(
+            koi_proxy::http::paths::PREFIX,
+            disabled_fallback_router("proxy"),
+        );
     }
+
+    // OpenAPI spec — manifest-driven paths + per-crate schemas
+    let mut schema_docs = KoiSchemas::openapi();
+    schema_docs.merge(koi_mdns::http::MdnsApiDoc::openapi());
+    schema_docs.merge(koi_certmesh::http::CertmeshApiDoc::openapi());
+    schema_docs.merge(koi_dns::http::DnsApiDoc::openapi());
+    schema_docs.merge(koi_health::http::HealthApiDoc::openapi());
+    schema_docs.merge(koi_proxy::http::ProxyApiDoc::openapi());
+
+    let openapi = crate::openapi::build_openapi(schema_docs);
+
+    // Serve interactive API docs at /docs and raw spec at /openapi.json
+    app = app.merge(Scalar::with_url("/docs", openapi.clone()));
+    let spec_json = openapi
+        .to_pretty_json()
+        .expect("OpenAPI JSON serialization");
+    app = app.route(
+        "/openapi.json",
+        get(move || {
+            let json = spec_json.clone();
+            async move {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    json,
+                )
+            }
+        }),
+    );
 
     app = app.layer(Extension(app_state));
     app = app.layer(CorsLayer::permissive());
@@ -101,12 +160,44 @@ pub async fn start(
     Ok(())
 }
 
+// ── Response types for top-level endpoints ──────────────────────────
+
+#[derive(Debug, Serialize, ToSchema)]
+struct UnifiedStatusResponse {
+    version: String,
+    platform: String,
+    uptime_secs: u64,
+    daemon: bool,
+    capabilities: Vec<koi_common::capability::CapabilityStatus>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct ShutdownResponse {
+    status: String,
+}
+
+// ── System-level schemas (no paths — paths come from the manifest) ──
+
+/// Schema-only doc for top-level types. Paths are generated by
+/// `crate::openapi::build_openapi` from the command manifest.
+#[derive(OpenApi)]
+#[openapi(components(schemas(
+    UnifiedStatusResponse,
+    ShutdownResponse,
+    koi_common::capability::CapabilityStatus,
+    koi_common::error::ErrorCode,
+    koi_common::api::ErrorBody,
+)))]
+struct KoiSchemas;
+
 // ── Handlers ────────────────────────────────────────────────────────
 
+/// Basic liveness probe.
 async fn health() -> &'static str {
     "OK"
 }
 
+/// Unified status of all capabilities.
 async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<serde_json::Value> {
     use koi_common::capability::CapabilityStatus;
 
@@ -203,6 +294,7 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
     }))
 }
 
+/// Request graceful shutdown.
 async fn shutdown_handler(Extension(state): Extension<AppState>) -> Json<serde_json::Value> {
     tracing::info!("Shutdown requested via admin endpoint");
     state.cancel.cancel();

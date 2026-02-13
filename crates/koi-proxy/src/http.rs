@@ -1,17 +1,18 @@
-﻿use std::sync::Arc;
+use std::sync::Arc;
 
 use axum::extract::{Extension, Path};
 use axum::response::{IntoResponse, Json};
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::Router;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use koi_common::error::ErrorCode;
 
 use crate::config::ProxyEntry;
 use crate::{ensure_backend_allowed, ProxyError, ProxyRuntime};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 struct AddProxyRequest {
     name: String,
     listen_port: u16,
@@ -20,25 +21,60 @@ struct AddProxyRequest {
     allow_remote: bool,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+struct ProxyStatusResponse {
+    proxies: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct ProxyEntriesResponse {
+    entries: Vec<ProxyEntry>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct StatusOk {
+    status: String,
+}
+
+/// Route path constants — single source of truth for axum routing AND the command manifest.
+pub mod paths {
+    pub const PREFIX: &str = "/v1/proxy";
+
+    pub const STATUS: &str = "/v1/proxy/status";
+    pub const LIST: &str = "/v1/proxy/list";
+    pub const ADD: &str = "/v1/proxy/add";
+    pub const REMOVE: &str = "/v1/proxy/remove/{name}";
+
+    /// Strip the crate nest prefix to get the relative path for axum routing.
+    pub fn rel(full: &str) -> &str {
+        full.strip_prefix(PREFIX).unwrap_or(full)
+    }
+}
+
 /// Build proxy domain routes. The binary crate mounts these at `/v1/proxy/`.
 pub fn routes(runtime: Arc<ProxyRuntime>) -> Router {
+    use paths::rel;
     Router::new()
-        .route("/status", get(status_handler))
-        .route("/entries", get(entries_handler).post(add_entry_handler))
-        .route("/entries/{name}", delete(remove_entry_handler))
+        .route(rel(paths::STATUS), get(status_handler))
+        .route(rel(paths::LIST), get(entries_handler))
+        .route(rel(paths::ADD), post(add_entry_handler))
+        .route(rel(paths::REMOVE), delete(remove_entry_handler))
         .layer(Extension(runtime))
 }
 
+/// Proxy runtime status.
 async fn status_handler(Extension(runtime): Extension<Arc<ProxyRuntime>>) -> impl IntoResponse {
     let status = runtime.status().await;
     Json(serde_json::json!({ "proxies": status }))
 }
 
+/// List proxy entries.
 async fn entries_handler(Extension(runtime): Extension<Arc<ProxyRuntime>>) -> impl IntoResponse {
     let entries = runtime.core().entries().await;
     Json(serde_json::json!({ "entries": entries }))
 }
 
+/// Add or update a proxy entry.
 async fn add_entry_handler(
     Extension(runtime): Extension<Arc<ProxyRuntime>>,
     Json(payload): Json<AddProxyRequest>,
@@ -80,6 +116,7 @@ async fn add_entry_handler(
     }
 }
 
+/// Remove a proxy entry by name.
 async fn remove_entry_handler(
     Extension(runtime): Extension<Arc<ProxyRuntime>>,
     Path(name): Path<String>,
@@ -106,3 +143,14 @@ fn map_error(err: ProxyError) -> impl IntoResponse {
         }
     }
 }
+
+/// OpenAPI documentation for the proxy domain.
+#[derive(utoipa::OpenApi)]
+#[openapi(components(schemas(
+    AddProxyRequest,
+    ProxyEntry,
+    ProxyStatusResponse,
+    ProxyEntriesResponse,
+    StatusOk
+)))]
+pub struct ProxyApiDoc;

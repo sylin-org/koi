@@ -10,9 +10,13 @@ use tokio_stream::Stream;
 
 use koi_common::error::ErrorCode;
 use koi_common::pipeline::PipelineResponse;
+use utoipa::IntoParams;
 
 use crate::error::MdnsError;
-use crate::protocol::{RegisterPayload, RenewalResult, Response};
+use crate::protocol::{
+    AdminRegistration, DaemonStatus, RegisterPayload, RegistrationCounts, RegistrationResult,
+    RenewalResult, Response,
+};
 use crate::{LeasePolicy, MdnsCore};
 
 /// Default heartbeat lease duration for HTTP-registered services.
@@ -25,19 +29,19 @@ const DEFAULT_HEARTBEAT_GRACE: Duration = Duration::from_secs(30);
 /// Stream closes after this duration with no new events.
 const DEFAULT_SSE_IDLE: Duration = Duration::from_secs(5);
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, IntoParams)]
 pub struct BrowseParams {
-    #[serde(rename = "type")]
-    pub service_type: String,
+    #[serde(rename = "type", default)]
+    pub service_type: Option<String>,
     pub idle_for: Option<u64>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, IntoParams)]
 pub struct ResolveParams {
     pub name: String,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, IntoParams)]
 pub struct EventsParams {
     #[serde(rename = "type")]
     pub service_type: String,
@@ -56,34 +60,60 @@ fn idle_duration(idle_for: Option<u64>) -> Option<Duration> {
     }
 }
 
-/// Build mDNS domain routes. The binary crate mounts these at `/v1/mdns/`.
+/// Route path constants — single source of truth for axum routing AND the command manifest.
+pub mod paths {
+    pub const PREFIX: &str = "/v1/mdns";
+
+    pub const DISCOVER: &str = "/v1/mdns/discover";
+    pub const ANNOUNCE: &str = "/v1/mdns/announce";
+    pub const UNREGISTER: &str = "/v1/mdns/unregister/{id}";
+    pub const RESOLVE: &str = "/v1/mdns/resolve";
+    pub const SUBSCRIBE: &str = "/v1/mdns/subscribe";
+    pub const HEARTBEAT: &str = "/v1/mdns/heartbeat/{id}";
+    pub const ADMIN_STATUS: &str = "/v1/mdns/admin/status";
+    pub const ADMIN_LS: &str = "/v1/mdns/admin/ls";
+    pub const ADMIN_INSPECT: &str = "/v1/mdns/admin/inspect/{id}";
+    pub const ADMIN_UNREGISTER: &str = "/v1/mdns/admin/unregister/{id}";
+    pub const ADMIN_DRAIN: &str = "/v1/mdns/admin/drain/{id}";
+    pub const ADMIN_REVIVE: &str = "/v1/mdns/admin/revive/{id}";
+
+    /// Strip the crate nest prefix to get the relative path for axum routing.
+    pub fn rel(full: &str) -> &str {
+        full.strip_prefix(PREFIX).unwrap_or(full)
+    }
+}
+
 pub fn routes(core: Arc<MdnsCore>) -> Router {
+    use paths::rel;
     Router::new()
-        .route("/browse", get(browse_handler))
-        .route("/services", post(register_handler))
-        .route("/services/{id}", delete(unregister_handler))
-        .route("/services/{id}/heartbeat", put(heartbeat_handler))
-        .route("/resolve", get(resolve_handler))
-        .route("/events", get(events_handler))
-        .route("/admin/status", get(admin_status_handler))
-        .route("/admin/registrations", get(admin_registrations_handler))
+        .route(rel(paths::DISCOVER), get(browse_handler))
+        .route(rel(paths::ANNOUNCE), post(register_handler))
+        .route(rel(paths::UNREGISTER), delete(unregister_handler))
+        .route(rel(paths::HEARTBEAT), put(heartbeat_handler))
+        .route(rel(paths::RESOLVE), get(resolve_handler))
+        .route(rel(paths::SUBSCRIBE), get(events_handler))
+        .route(rel(paths::ADMIN_STATUS), get(admin_status_handler))
+        .route(rel(paths::ADMIN_LS), get(admin_registrations_handler))
+        .route(rel(paths::ADMIN_INSPECT), get(admin_inspect_handler))
         .route(
-            "/admin/registrations/{id}",
-            get(admin_inspect_handler).delete(admin_unregister_handler),
+            rel(paths::ADMIN_UNREGISTER),
+            delete(admin_unregister_handler),
         )
-        .route("/admin/registrations/{id}/drain", post(admin_drain_handler))
-        .route(
-            "/admin/registrations/{id}/revive",
-            post(admin_revive_handler),
-        )
+        .route(rel(paths::ADMIN_DRAIN), post(admin_drain_handler))
+        .route(rel(paths::ADMIN_REVIVE), post(admin_revive_handler))
         .layer(Extension(core))
 }
 
+/// Browse for mDNS services (SSE stream).
 async fn browse_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Query(params): Query<BrowseParams>,
 ) -> impl IntoResponse {
-    let handle = match core.browse(&params.service_type).await {
+    let browse_type = params
+        .service_type
+        .as_deref()
+        .unwrap_or(koi_common::types::META_QUERY);
+    let handle = match core.browse(browse_type).await {
         Ok(h) => h,
         Err(e) => return Sse::new(error_event_stream(e)).into_response(),
     };
@@ -114,6 +144,7 @@ async fn browse_handler(
     Sse::new(stream).into_response()
 }
 
+/// Register a new mDNS service.
 async fn register_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Json(payload): Json<RegisterPayload>,
@@ -128,6 +159,7 @@ async fn register_handler(
     }
 }
 
+/// Unregister an mDNS service.
 async fn unregister_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
@@ -141,6 +173,7 @@ async fn unregister_handler(
     }
 }
 
+/// Resolve an mDNS service by name.
 async fn resolve_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Query(params): Query<ResolveParams>,
@@ -154,6 +187,7 @@ async fn resolve_handler(
     }
 }
 
+/// Subscribe to mDNS events (SSE stream).
 async fn events_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Query(params): Query<EventsParams>,
@@ -189,6 +223,7 @@ async fn events_handler(
     Sse::new(stream).into_response()
 }
 
+/// Renew a service lease (heartbeat).
 async fn heartbeat_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
@@ -203,11 +238,12 @@ async fn heartbeat_handler(
 }
 
 // ── Admin ─────────────────────────────────────────────────────────────
-
+/// Daemon status overview.
 async fn admin_status_handler(Extension(core): Extension<Arc<MdnsCore>>) -> impl IntoResponse {
     Json(core.admin_status())
 }
 
+/// List all registrations.
 async fn admin_registrations_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
 ) -> impl IntoResponse {
@@ -219,6 +255,7 @@ async fn admin_registrations_handler(
     Json(entries)
 }
 
+/// Inspect a single registration.
 async fn admin_inspect_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
@@ -229,6 +266,7 @@ async fn admin_inspect_handler(
     }
 }
 
+/// Force-unregister a service.
 async fn admin_unregister_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
@@ -242,6 +280,7 @@ async fn admin_unregister_handler(
     }
 }
 
+/// Drain a registration (mark for removal).
 async fn admin_drain_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
@@ -252,6 +291,7 @@ async fn admin_drain_handler(
     }
 }
 
+/// Revive a draining registration.
 async fn admin_revive_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
@@ -296,6 +336,20 @@ fn policy_from_lease_secs(lease_secs: Option<u64>) -> LeasePolicy {
         },
     }
 }
+
+/// OpenAPI documentation for the mDNS domain.
+#[derive(utoipa::OpenApi)]
+#[openapi(components(schemas(
+    RegisterPayload,
+    RegistrationResult,
+    RenewalResult,
+    AdminRegistration,
+    DaemonStatus,
+    RegistrationCounts,
+    crate::protocol::LeaseMode,
+    crate::protocol::LeaseState,
+)))]
+pub struct MdnsApiDoc;
 
 #[cfg(test)]
 mod tests {
@@ -361,8 +415,15 @@ mod tests {
     fn browse_params_deserializes_type_field() {
         let json = r#"{"type": "_http._tcp"}"#;
         let params: BrowseParams = serde_json::from_str(json).unwrap();
-        assert_eq!(params.service_type, "_http._tcp");
+        assert_eq!(params.service_type.as_deref(), Some("_http._tcp"));
         assert!(params.idle_for.is_none());
+    }
+
+    #[test]
+    fn browse_params_type_is_optional() {
+        let json = r#"{}"#;
+        let params: BrowseParams = serde_json::from_str(json).unwrap();
+        assert!(params.service_type.is_none());
     }
 
     #[test]

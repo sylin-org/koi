@@ -1,7 +1,8 @@
 use serde::Serialize;
+use utoipa::ToSchema;
 
 /// Pipeline status for streaming responses.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PipelineStatus {
     Ongoing,

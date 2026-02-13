@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 koi-common.workspace = true
 koi-certmesh.workspace = true
+utoipa.workspace = true
 koi-dns.workspace = true
 koi-mdns.workspace = true
 koi-proxy.workspace = true

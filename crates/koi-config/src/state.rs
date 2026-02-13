@@ -8,7 +8,7 @@ use koi_common::paths;
 use koi_common::persist;
 
 /// DNS static entry stored in the local state file.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct DnsEntry {
     pub name: String,
     pub ip: String,

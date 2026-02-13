@@ -10,46 +10,19 @@ use crate::client::KoiClient;
 use crate::format;
 
 pub fn status(cli: &Cli, config: &Config) -> anyhow::Result<()> {
-    use serde::Serialize;
-
-    #[derive(Serialize)]
-    struct UnifiedStatus {
-        version: String,
-        platform: String,
-        daemon: bool,
-        capabilities: Vec<CapabilityStatus>,
-    }
-
-    // Try to connect to daemon first
-    if !cli.standalone {
-        if let Some(endpoint) = cli
-            .endpoint
-            .clone()
-            .or_else(koi_config::breadcrumb::read_breadcrumb)
-        {
-            let c = KoiClient::new(&endpoint);
-            if c.health().is_ok() {
-                match c.unified_status() {
-                    Ok(status_json) => {
-                        if cli.json {
-                            println!("{}", serde_json::to_string_pretty(&status_json)?);
-                        } else {
-                            print!("{}", format::unified_status(&status_json));
-                        }
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        tracing::debug!(error = %e, "Could not fetch unified status");
-                    }
-                }
-            }
+    if let Some(status_json) = try_daemon_status(cli) {
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&status_json)?);
+        } else {
+            print!("{}", format::unified_status(&status_json));
         }
+        return Ok(());
     }
 
     // No daemon — report offline status
     let capabilities = offline_capabilities(config);
 
-    let status = UnifiedStatus {
+    let status = LocalStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
         platform: std::env::consts::OS.to_string(),
         daemon: false,
@@ -69,6 +42,39 @@ pub fn status(cli: &Cli, config: &Config) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct LocalStatus {
+    version: String,
+    platform: String,
+    daemon: bool,
+    capabilities: Vec<CapabilityStatus>,
+}
+
+/// Probe for a running daemon and return unified status JSON if reachable.
+pub fn try_daemon_status(cli: &Cli) -> Option<serde_json::Value> {
+    if cli.standalone {
+        return None;
+    }
+
+    let endpoint = cli
+        .endpoint
+        .clone()
+        .or_else(koi_config::breadcrumb::read_breadcrumb)?;
+
+    let client = KoiClient::new(&endpoint);
+    if client.health().is_err() {
+        return None;
+    }
+
+    match client.unified_status() {
+        Ok(status_json) => Some(status_json),
+        Err(e) => {
+            tracing::debug!(error = %e, "Could not fetch unified status");
+            None
+        }
+    }
 }
 
 fn offline_capabilities(config: &Config) -> Vec<CapabilityStatus> {

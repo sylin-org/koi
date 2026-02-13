@@ -658,8 +658,8 @@ Default level: `info`. During normal healthy operation, Koi should be **silent**
 
 - [ ] `echo '{"browse":"_http._tcp"}' | koi` discovers services on the LAN
 - [ ] `echo '{"register":{"name":"test","type":"_http._tcp","port":9999}}' | koi` makes a service visible to Avahi/Bonjour/dns-sd on other machines
-- [ ] `curl localhost:5641/v1/mdns/browse?type=_http._tcp` streams SSE events
-- [ ] `curl -X POST localhost:5641/v1/mdns/services -d '{...}'` registers a service
+- [ ] `curl localhost:5641/v1/mdns/discover?type=_http._tcp` streams SSE events
+- [ ] `curl -X POST localhost:5641/v1/mdns/announce -d '{...}'` registers a service
 - [ ] Pipeline properties (`status`, `warning`) appear only when relevant
 - [ ] Runs as a Windows Service via `koi install` / `koi uninstall`
 - [ ] Runs as a systemd service via the provided unit file

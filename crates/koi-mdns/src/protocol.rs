@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
+use utoipa::ToSchema;
 
 use koi_common::api::{error_body, ErrorBody};
 use koi_common::error::ErrorCode;
@@ -13,7 +14,7 @@ use crate::events::MdnsEvent;
 // ── mDNS-specific wire types ─────────────────────────────────────────
 
 /// Payload for registering a new service.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct RegisterPayload {
     pub name: String,
     #[serde(rename = "type")]
@@ -32,7 +33,7 @@ pub struct RegisterPayload {
 }
 
 /// Result of a successful registration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct RegistrationResult {
     pub id: String,
     pub name: String,
@@ -45,14 +46,14 @@ pub struct RegistrationResult {
 }
 
 /// Result of a successful lease renewal (heartbeat).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct RenewalResult {
     pub id: String,
     pub lease_secs: u64,
 }
 
 /// How a registration stays alive (wire representation).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum LeaseMode {
     Session,
@@ -61,7 +62,7 @@ pub enum LeaseMode {
 }
 
 /// Wire-level registration state (display-only projection).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum LeaseState {
     Alive,
@@ -69,7 +70,7 @@ pub enum LeaseState {
 }
 
 /// Full registration state as exposed to admin queries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AdminRegistration {
     pub id: String,
     pub name: String,
@@ -92,7 +93,7 @@ pub struct AdminRegistration {
 }
 
 /// Daemon status overview for admin queries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DaemonStatus {
     pub version: String,
     pub uptime_secs: u64,
@@ -101,7 +102,7 @@ pub struct DaemonStatus {
 }
 
 /// Registration counts by state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RegistrationCounts {
     pub alive: usize,
     pub draining: usize,

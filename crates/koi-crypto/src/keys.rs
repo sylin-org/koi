@@ -24,7 +24,7 @@ const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 
 /// Encrypted key material stored on disk.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct EncryptedKey {
     pub ciphertext: Vec<u8>,
     pub salt: Vec<u8>,

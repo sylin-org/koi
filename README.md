@@ -23,8 +23,8 @@ koi status
 Or over HTTP — from any language, any container, any script:
 
 ```bash
-curl http://localhost:5641/v1/mdns/browse?type=_http._tcp
-curl -X POST http://localhost:5641/v1/mdns/services \
+curl http://localhost:5641/v1/mdns/discover?type=_http._tcp
+curl -X POST http://localhost:5641/v1/mdns/announce \
   -d '{"name": "My App", "type": "_http._tcp", "port": 8080, "ip": "192.168.1.42"}'
 ```
 
@@ -70,7 +70,7 @@ When Koi runs on the host, every container gains LAN capabilities through plain 
 
 ```bash
 # From inside any Docker container:
-curl http://host.docker.internal:5641/v1/mdns/browse?type=_http._tcp
+curl http://host.docker.internal:5641/v1/mdns/discover?type=_http._tcp
 curl http://host.docker.internal:5641/v1/dns/lookup?name=grafana
 ```
 
@@ -111,12 +111,12 @@ Koi's HTTP API uses SSE (Server-Sent Events) for streaming and JSON for everythi
 
 | Method   | Path                               | Description                         |
 | -------- | ---------------------------------- | ----------------------------------- |
-| `GET`    | `/v1/mdns/browse?type=_http._tcp`  | SSE stream of discovered services   |
-| `POST`   | `/v1/mdns/services`                | Register a service                  |
-| `DELETE` | `/v1/mdns/services/{id}`           | Unregister a service                |
-| `PUT`    | `/v1/mdns/services/{id}/heartbeat` | Renew heartbeat lease               |
+| `GET`    | `/v1/mdns/discover?type=_http._tcp`| SSE stream of discovered services   |
+| `POST`   | `/v1/mdns/announce`                | Register a service                  |
+| `DELETE` | `/v1/mdns/unregister/{id}`         | Unregister a service                |
+| `PUT`    | `/v1/mdns/heartbeat/{id}`          | Renew heartbeat lease               |
 | `GET`    | `/v1/mdns/resolve?name={instance}` | Resolve a specific service instance |
-| `GET`    | `/v1/mdns/events?type=_http._tcp`  | SSE stream of lifecycle events      |
+| `GET`    | `/v1/mdns/subscribe?type=_http._tcp`| SSE stream of lifecycle events      |
 | `GET`    | `/v1/dns/status`                   | DNS resolver status                 |
 | `GET`    | `/v1/dns/lookup?name=grafana`      | Resolve a local name                |
 | `GET`    | `/v1/health/status`                | Health snapshot                     |

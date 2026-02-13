@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 koi-common.workspace = true
 koi-crypto.workspace = true
+utoipa.workspace = true
 koi-truststore.workspace = true
 rcgen.workspace = true
 time.workspace = true

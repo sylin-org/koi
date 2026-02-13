@@ -449,6 +449,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
+name = "command-surface"
+version = "0.2.202602122214"
+dependencies = [
+ "console",
+ "is-terminal",
+ "supports-color",
+ "terminal_size",
+]
+
+[[package]]
 name = "console"
 version = "0.15.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -537,7 +547,7 @@ dependencies = [
  "crossterm_winapi",
  "mio 1.1.1",
  "parking_lot",
- "rustix",
+ "rustix 0.38.44",
  "signal-hook",
  "signal-hook-mio",
  "winapi",
@@ -959,6 +969,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hermit-abi"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
+
+[[package]]
 name = "hickory-proto"
 version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1300,6 +1316,8 @@ checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
 dependencies = [
  "equivalent",
  "hashbrown",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -1376,6 +1394,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "is-terminal"
+version = "0.4.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
+dependencies = [
+ "hermit-abi",
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "is_ci"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7655c9839580ee829dfacba1d1278c2b7883e50a277ff7541299489d6bdfdc45"
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1409,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "koi-certmesh"
-version = "0.2.202602121703"
+version = "0.2.202602122214"
 dependencies = [
  "axum",
  "chrono",
@@ -1430,11 +1465,12 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "utoipa",
 ]
 
 [[package]]
 name = "koi-client"
-version = "0.2.202602121703"
+version = "0.2.202602122214"
 dependencies = [
  "hickory-proto",
  "koi-common",
@@ -1448,30 +1484,32 @@ dependencies = [
 
 [[package]]
 name = "koi-common"
-version = "0.2.202602121703"
+version = "0.2.202602122214"
 dependencies = [
  "axum",
  "serde",
  "serde_json",
  "thiserror",
  "tracing",
+ "utoipa",
  "uuid",
 ]
 
 [[package]]
 name = "koi-config"
-version = "0.2.202602121703"
+version = "0.2.202602122214"
 dependencies = [
  "koi-common",
  "serde",
  "serde_json",
  "toml",
  "tracing",
+ "utoipa",
 ]
 
 [[package]]
 name = "koi-crypto"
-version = "0.2.202602121703"
+version = "0.2.202602122214"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1487,12 +1525,13 @@ dependencies = [
  "thiserror",
  "totp-rs",
  "tracing",
+ "utoipa",
  "zeroize",
 ]
 
 [[package]]
 name = "koi-dns"
-version = "0.2.202602121703"
+version = "0.2.202602122214"
 dependencies = [
  "axum",
  "hickory-proto",
@@ -1508,11 +1547,12 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "utoipa",
 ]
 
 [[package]]
 name = "koi-embedded"
-version = "0.2.202602121703"
+version = "0.2.202602122214"
 dependencies = [
  "axum",
  "futures-util",
@@ -1537,7 +1577,7 @@ dependencies = [
 
 [[package]]
 name = "koi-health"
-version = "0.2.202602121703"
+version = "0.2.202602122214"
 dependencies = [
  "axum",
  "chrono",
@@ -1554,11 +1594,12 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "utoipa",
 ]
 
 [[package]]
 name = "koi-mdns"
-version = "0.2.202602121703"
+version = "0.2.202602122214"
 dependencies = [
  "async-stream",
  "axum",
@@ -1573,18 +1614,20 @@ dependencies = [
  "tokio-util",
  "tower-http",
  "tracing",
+ "utoipa",
  "uuid",
 ]
 
 [[package]]
 name = "koi-net"
-version = "0.2.202602121703"
+version = "0.2.202602122214"
 dependencies = [
  "anyhow",
  "async-stream",
  "axum",
  "chrono",
  "clap",
+ "command-surface",
  "crossterm",
  "hickory-proto",
  "hostname",
@@ -1598,6 +1641,7 @@ dependencies = [
  "koi-mdns",
  "koi-proxy",
  "koi-truststore",
+ "once_cell",
  "serde",
  "serde_json",
  "thiserror",
@@ -1610,13 +1654,15 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "url",
+ "utoipa",
+ "utoipa-scalar",
  "uuid",
  "windows-service",
 ]
 
 [[package]]
 name = "koi-proxy"
-version = "0.2.202602121703"
+version = "0.2.202602122214"
 dependencies = [
  "axum",
  "axum-server",
@@ -1639,11 +1685,12 @@ dependencies = [
  "toml",
  "tracing",
  "url",
+ "utoipa",
 ]
 
 [[package]]
 name = "koi-truststore"
-version = "0.2.202602121703"
+version = "0.2.202602122214"
 dependencies = [
  "koi-common",
  "thiserror",
@@ -1698,6 +1745,12 @@ name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
+
+[[package]]
+name = "linux-raw-sys"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
 
 [[package]]
 name = "litemap"
@@ -2220,6 +2273,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex"
+version = "1.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "regex-automata"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2322,8 +2387,21 @@ dependencies = [
  "bitflags 2.10.0",
  "errno",
  "libc",
- "linux-raw-sys",
+ "linux-raw-sys 0.4.15",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "rustix"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "146c9e247ccc180c1f61615433868c99f3de3ae256a30a43b49f67c2d9171f34"
+dependencies = [
+ "bitflags 2.10.0",
+ "errno",
+ "libc",
+ "linux-raw-sys 0.11.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2654,6 +2732,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
+name = "supports-color"
+version = "3.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c64fc7232dd8d2e4ac5ce4ef302b1d81e0b80d055b9d77c7c4f51f6aa4c867d6"
+dependencies = [
+ "is_ci",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.114"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2689,6 +2776,16 @@ name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
+
+[[package]]
+name = "terminal_size"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60b8cb979cb11c32ce1603f8137b22262a9d131aaa5c37b5678025f22b8becd0"
+dependencies = [
+ "rustix 1.1.3",
+ "windows-sys 0.60.2",
+]
 
 [[package]]
 name = "thiserror"
@@ -3096,6 +3193,42 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
+
+[[package]]
+name = "utoipa"
+version = "5.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fcc29c80c21c31608227e0912b2d7fddba57ad76b606890627ba8ee7964e993"
+dependencies = [
+ "indexmap",
+ "serde",
+ "serde_json",
+ "utoipa-gen",
+]
+
+[[package]]
+name = "utoipa-gen"
+version = "5.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d79d08d92ab8af4c5e8a6da20c47ae3f61a0f1dabc1997cdf2d082b757ca08b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn",
+]
+
+[[package]]
+name = "utoipa-scalar"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59559e1509172f6b26c1cdbc7247c4ddd1ac6560fe94b584f81ee489b141f719"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "utoipa",
+]
 
 [[package]]
 name = "uuid"

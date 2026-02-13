@@ -4,9 +4,10 @@
 //! Selected once at `koi certmesh create` time and stored in roster metadata.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Trust profile — drives security posture for the mesh.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustProfile {
     /// Personal homelab. No approval required, enrollment always open.

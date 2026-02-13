@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 koi-common.workspace = true
+utoipa.workspace = true
 p256.workspace = true
 aes-gcm.workspace = true
 argon2.workspace = true

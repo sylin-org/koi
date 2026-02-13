@@ -5,7 +5,7 @@ use koi_common::paths;
 
 use crate::ProxyError;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ProxyEntry {
     pub name: String,
     pub listen_port: u16,

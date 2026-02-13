@@ -41,6 +41,10 @@ hostname = "0.4"
 hickory-proto.workspace = true
 crossterm.workspace = true
 url.workspace = true
+command-surface = { path = "../command-surface", version = "0.2", features = ["render"] }
+utoipa.workspace = true
+utoipa-scalar = { workspace = true }
+once_cell.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

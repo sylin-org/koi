@@ -11,7 +11,7 @@ pub const DEFAULT_INTERVAL_SECS: u64 = 30;
 pub const DEFAULT_TIMEOUT_SECS: u64 = 5;
 
 /// Persisted health checks configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct HealthCheckConfig {
     pub name: String,
     pub kind: crate::service::ServiceCheckKind,

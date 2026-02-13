@@ -4,12 +4,15 @@ pub(crate) mod cli;
 mod client;
 mod commands;
 mod format;
+mod openapi;
 mod platform;
+mod surface;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use clap::CommandFactory;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
@@ -17,6 +20,7 @@ use cli::{
     CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, HealthSubcommand, MdnsSubcommand,
     ProxySubcommand,
 };
+use commands::status::try_daemon_status;
 use koi_common::types::ServiceRecord;
 
 /// Maximum time to wait for orderly shutdown before forcing exit.
@@ -32,6 +36,25 @@ fn main() -> anyhow::Result<()> {
     #[cfg(windows)]
     {
         if platform::windows::try_run_as_service() {
+            return Ok(());
+        }
+    }
+
+    // ── Help query syntax: koi certmesh backup? ─────────────────────
+    // Intercept before Clap so we can handle "command?" without Clap
+    // treating the `?` as an unknown subcommand.
+    {
+        let raw_args: Vec<String> = std::env::args().skip(1).collect();
+        if let Some(cmd_name) = extract_help_query(&raw_args) {
+            if let Some(def) = surface::MANIFEST.get(&cmd_name) {
+                if let Err(e) = surface::print_command_detail(def) {
+                    eprintln!("Error: {e}");
+                }
+            } else {
+                eprintln!("Unknown command: {cmd_name}");
+                eprintln!("Run koi to see available commands.");
+                std::process::exit(1);
+            }
             return Ok(());
         }
     }
@@ -126,10 +149,21 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             Command::Mdns(mdns_cmd) => {
                 config.require_capability("mdns")?;
                 match &mdns_cmd.command {
-                    MdnsSubcommand::Admin(admin_cmd) => {
-                        commands::mdns::admin(&admin_cmd.command, &cli)
+                    None => {
+                        surface::print_category_catalog(surface::KoiCategory::Discovery, None)?;
+                        Ok(())
                     }
-                    MdnsSubcommand::Discover { service_type } => {
+                    Some(MdnsSubcommand::Admin(admin_cmd)) => match &admin_cmd.command {
+                        Some(admin) => commands::mdns::admin(admin, &cli),
+                        None => {
+                            surface::print_category_catalog(
+                                surface::KoiCategory::Discovery,
+                                Some(surface::KoiScope::Admin),
+                            )?;
+                            Ok(())
+                        }
+                    },
+                    Some(MdnsSubcommand::Discover { service_type }) => {
                         let mode = commands::detect_mode(&cli);
                         commands::mdns::discover(
                             service_type.as_deref(),
@@ -139,13 +173,13 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         )
                         .await
                     }
-                    MdnsSubcommand::Announce {
+                    Some(MdnsSubcommand::Announce {
                         name,
                         service_type,
                         port,
                         ip,
                         txt,
-                    } => {
+                    }) => {
                         let mode = commands::detect_mode(&cli);
                         commands::mdns::announce(
                             name,
@@ -159,15 +193,15 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         )
                         .await
                     }
-                    MdnsSubcommand::Unregister { id } => {
+                    Some(MdnsSubcommand::Unregister { id }) => {
                         let mode = commands::detect_mode(&cli);
                         commands::mdns::unregister(id, cli.json, mode).await
                     }
-                    MdnsSubcommand::Resolve { instance } => {
+                    Some(MdnsSubcommand::Resolve { instance }) => {
                         let mode = commands::detect_mode(&cli);
                         commands::mdns::resolve(instance, cli.json, mode).await
                     }
-                    MdnsSubcommand::Subscribe { service_type } => {
+                    Some(MdnsSubcommand::Subscribe { service_type }) => {
                         let mode = commands::detect_mode(&cli);
                         commands::mdns::subscribe(service_type, cli.json, cli.timeout, mode).await
                     }
@@ -177,12 +211,16 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 config.require_capability("certmesh")?;
                 let ep = cli.endpoint.as_deref();
                 match &cm_cmd.command {
-                    CertmeshSubcommand::Create {
+                    None => {
+                        surface::print_category_catalog(surface::KoiCategory::Trust, None)?;
+                        Ok(())
+                    }
+                    Some(CertmeshSubcommand::Create {
                         profile,
                         operator,
                         entropy,
                         passphrase,
-                    } => commands::certmesh::create(
+                    }) => commands::certmesh::create(
                         profile.as_deref(),
                         operator.as_deref(),
                         entropy,
@@ -190,85 +228,99 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         cli.json,
                         ep,
                     ),
-                    CertmeshSubcommand::Status => commands::certmesh::status(cli.json, ep),
-                    CertmeshSubcommand::Log => commands::certmesh::log(ep),
-                    CertmeshSubcommand::Compliance => commands::certmesh::compliance(cli.json, ep),
-                    CertmeshSubcommand::Unlock => commands::certmesh::unlock(ep),
-                    CertmeshSubcommand::SetHook { reload } => {
+                    Some(CertmeshSubcommand::Status) => commands::certmesh::status(cli.json, ep),
+                    Some(CertmeshSubcommand::Log) => commands::certmesh::log(ep),
+                    Some(CertmeshSubcommand::Compliance) => {
+                        commands::certmesh::compliance(cli.json, ep)
+                    }
+                    Some(CertmeshSubcommand::Unlock) => commands::certmesh::unlock(ep),
+                    Some(CertmeshSubcommand::SetHook { reload }) => {
                         commands::certmesh::set_hook(reload, cli.json, ep)
                     }
-                    CertmeshSubcommand::Join { endpoint } => {
+                    Some(CertmeshSubcommand::Join { endpoint }) => {
                         commands::certmesh::join(endpoint.as_deref(), cli.json, ep).await
                     }
-                    CertmeshSubcommand::Promote { endpoint } => {
+                    Some(CertmeshSubcommand::Promote { endpoint }) => {
                         commands::certmesh::promote(endpoint.as_deref(), cli.json, ep).await
                     }
-                    CertmeshSubcommand::OpenEnrollment { until } => {
+                    Some(CertmeshSubcommand::OpenEnrollment { until }) => {
                         commands::certmesh::open_enrollment(until.as_deref(), cli.json, ep)
                     }
-                    CertmeshSubcommand::CloseEnrollment => {
+                    Some(CertmeshSubcommand::CloseEnrollment) => {
                         commands::certmesh::close_enrollment(cli.json, ep)
                     }
-                    CertmeshSubcommand::SetPolicy {
+                    Some(CertmeshSubcommand::SetPolicy {
                         domain,
                         subnet,
                         clear,
-                    } => commands::certmesh::set_policy(
+                    }) => commands::certmesh::set_policy(
                         domain.as_deref(),
                         subnet.as_deref(),
                         *clear,
                         cli.json,
                         ep,
                     ),
-                    CertmeshSubcommand::RotateTotp => commands::certmesh::rotate_totp(cli.json, ep),
-                    CertmeshSubcommand::Backup { path } => {
+                    Some(CertmeshSubcommand::RotateTotp) => {
+                        commands::certmesh::rotate_totp(cli.json, ep)
+                    }
+                    Some(CertmeshSubcommand::Backup { path }) => {
                         commands::certmesh::backup(path, cli.json, ep)
                     }
-                    CertmeshSubcommand::Restore { path } => {
+                    Some(CertmeshSubcommand::Restore { path }) => {
                         commands::certmesh::restore(path, cli.json, ep)
                     }
-                    CertmeshSubcommand::Revoke { hostname, reason } => {
+                    Some(CertmeshSubcommand::Revoke { hostname, reason }) => {
                         commands::certmesh::revoke(hostname, reason.as_deref(), cli.json, ep)
                     }
-                    CertmeshSubcommand::Destroy => commands::certmesh::destroy(cli.json, ep),
+                    Some(CertmeshSubcommand::Destroy) => commands::certmesh::destroy(cli.json, ep),
                 }
             }
             Command::Dns(dns_cmd) => {
                 config.require_capability("dns")?;
                 let mode = commands::detect_mode(&cli);
                 match &dns_cmd.command {
-                    DnsSubcommand::Serve => commands::dns::serve(&config, mode).await,
-                    DnsSubcommand::Stop => commands::dns::stop(mode).await,
-                    DnsSubcommand::Status => commands::dns::status(&config, mode, cli.json).await,
-                    DnsSubcommand::Lookup { name, record_type } => {
+                    None => {
+                        surface::print_category_catalog(surface::KoiCategory::Dns, None)?;
+                        Ok(())
+                    }
+                    Some(DnsSubcommand::Serve) => commands::dns::serve(&config, mode).await,
+                    Some(DnsSubcommand::Stop) => commands::dns::stop(mode).await,
+                    Some(DnsSubcommand::Status) => {
+                        commands::dns::status(&config, mode, cli.json).await
+                    }
+                    Some(DnsSubcommand::Lookup { name, record_type }) => {
                         commands::dns::lookup(name, record_type, mode, cli.json, &config).await
                     }
-                    DnsSubcommand::Add { name, ip, ttl } => {
+                    Some(DnsSubcommand::Add { name, ip, ttl }) => {
                         commands::dns::add(name, ip, *ttl, mode, cli.json, &config.dns_zone)
                     }
-                    DnsSubcommand::Remove { name } => {
+                    Some(DnsSubcommand::Remove { name }) => {
                         commands::dns::remove(name, mode, cli.json, &config.dns_zone)
                     }
-                    DnsSubcommand::List => commands::dns::list(mode, cli.json, &config).await,
+                    Some(DnsSubcommand::List) => commands::dns::list(mode, cli.json, &config).await,
                 }
             }
             Command::Health(health_cmd) => {
                 config.require_capability("health")?;
                 let mode = commands::detect_mode(&cli);
                 match &health_cmd.command {
-                    HealthSubcommand::Status => {
+                    None => {
+                        surface::print_category_catalog(surface::KoiCategory::Health, None)?;
+                        Ok(())
+                    }
+                    Some(HealthSubcommand::Status) => {
                         commands::health::status(&config, mode, cli.json).await
                     }
-                    HealthSubcommand::Watch { interval } => {
+                    Some(HealthSubcommand::Watch { interval }) => {
                         commands::health::watch(&config, mode, *interval).await
                     }
-                    HealthSubcommand::Add {
+                    Some(HealthSubcommand::Add {
                         name,
                         http,
                         tcp,
                         interval,
                         timeout,
-                    } => {
+                    }) => {
                         commands::health::add(
                             name,
                             http.as_deref(),
@@ -281,22 +333,26 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         )
                         .await
                     }
-                    HealthSubcommand::Remove { name } => {
+                    Some(HealthSubcommand::Remove { name }) => {
                         commands::health::remove(name, mode, cli.json, &config).await
                     }
-                    HealthSubcommand::Log => commands::health::log(),
+                    Some(HealthSubcommand::Log) => commands::health::log(),
                 }
             }
             Command::Proxy(proxy_cmd) => {
                 config.require_capability("proxy")?;
                 let mode = commands::detect_mode(&cli);
                 match &proxy_cmd.command {
-                    ProxySubcommand::Add {
+                    None => {
+                        surface::print_category_catalog(surface::KoiCategory::Proxy, None)?;
+                        Ok(())
+                    }
+                    Some(ProxySubcommand::Add {
                         name,
                         listen,
                         backend,
                         backend_remote,
-                    } => {
+                    }) => {
                         commands::proxy::add(
                             name,
                             *listen,
@@ -307,11 +363,11 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         )
                         .await
                     }
-                    ProxySubcommand::Remove { name } => {
+                    Some(ProxySubcommand::Remove { name }) => {
                         commands::proxy::remove(name, mode, cli.json).await
                     }
-                    ProxySubcommand::Status => commands::proxy::status(mode, cli.json).await,
-                    ProxySubcommand::List => commands::proxy::list(mode, cli.json).await,
+                    Some(ProxySubcommand::Status) => commands::proxy::status(mode, cli.json).await,
+                    Some(ProxySubcommand::List) => commands::proxy::list(mode, cli.json).await,
                 }
             }
             // Install, Uninstall, Version handled before runtime
@@ -319,8 +375,15 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         };
     }
 
-    // ── Piped CLI mode ──────────────────────────────────────────────
-    if is_piped_stdin() && !cli.daemon {
+    // ── No subcommand provided ─────────────────────────────────────
+
+    // Explicit daemon request: start services
+    if cli.daemon {
+        return daemon_mode(config).await;
+    }
+
+    // Piped CLI mode still works without a subcommand
+    if is_piped_stdin() {
         if config.no_mdns {
             anyhow::bail!(
                 "Piped mode requires the mDNS capability. \
@@ -333,8 +396,25 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // ── Daemon mode ─────────────────────────────────────────────────
-    daemon_mode(config).await
+    // Try to show daemon status if a healthy daemon is reachable; otherwise stay quiet
+    if let Some(status_json) = try_daemon_status(&cli) {
+        if cli.json {
+            if let Ok(body) = serde_json::to_string_pretty(&status_json) {
+                println!("{body}");
+            }
+        } else {
+            print!("{}", format::unified_status(&status_json));
+        }
+    }
+
+    // Always show available commands/help for discoverability
+    let api_endpoint = cli
+        .endpoint
+        .clone()
+        .or_else(koi_config::breadcrumb::read_breadcrumb)
+        .unwrap_or_else(|| "http://localhost:5641".to_string());
+    print_top_level_help(&api_endpoint);
+    Ok(())
 }
 
 // ── Daemon mode ──────────────────────────────────────────────────────
@@ -1021,6 +1101,67 @@ fn read_line(prompt: &str) -> String {
 fn is_piped_stdin() -> bool {
     use std::io::IsTerminal;
     !std::io::stdin().is_terminal()
+}
+
+/// Print the top-level help (command list) without exiting with an error.
+fn print_top_level_help(api_endpoint: &str) {
+    if let Err(err) = surface::print_catalog(api_endpoint) {
+        tracing::debug!(error = %err, "Failed to render catalog, falling back to clap help");
+        // Clap prints to stdout by default; ignore errors because help display should be best-effort
+        let mut cmd = Cli::command();
+        let _ = cmd.print_help();
+        println!();
+    }
+}
+
+/// Extract a command name from `?`-suffixed args.
+///
+/// Supports:
+/// - `["certmesh", "backup?"]` → `"certmesh backup"`
+/// - `["backup?"]`             → `"backup"`
+/// - `["?certmesh"]`           → `"certmesh"`  (leading ? also works)
+///
+/// Returns `None` if no `?` query was detected.
+fn extract_help_query(raw_args: &[String]) -> Option<String> {
+    if raw_args.is_empty() {
+        return None;
+    }
+
+    // Check if the last arg ends with '?'
+    if let Some(last) = raw_args.last() {
+        if last.ends_with('?') && last.len() > 1 {
+            let mut parts: Vec<&str> = raw_args[..raw_args.len() - 1]
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+            let trimmed = last.trim_end_matches('?');
+            if !trimmed.is_empty() {
+                parts.push(trimmed);
+            }
+            // Skip global flags like --json, --verbose etc.
+            let parts: Vec<&str> = parts.into_iter().filter(|p| !p.starts_with('-')).collect();
+            if !parts.is_empty() {
+                return Some(parts.join(" "));
+            }
+        }
+    }
+
+    // Check if the first arg starts with '?'
+    if let Some(first) = raw_args.first() {
+        if first.starts_with('?') && first.len() > 1 {
+            let cmd_name = first.trim_start_matches('?');
+            // Remaining args joined
+            let mut parts = vec![cmd_name];
+            for arg in &raw_args[1..] {
+                if !arg.starts_with('-') {
+                    parts.push(arg);
+                }
+            }
+            return Some(parts.join(" "));
+        }
+    }
+
+    None
 }
 
 /// Wait for Ctrl+C or platform-specific shutdown signal.

@@ -13,3 +13,4 @@ thiserror.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 axum.workspace = true
+utoipa.workspace = true

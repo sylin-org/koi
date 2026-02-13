@@ -71,10 +71,10 @@ When the daemon is running, DNS endpoints live under `/v1/dns`:
 - `GET /v1/dns/lookup?name=grafana&type=A`
 - `GET /v1/dns/list`
 - `GET /v1/dns/entries`
-- `POST /v1/dns/entries` (JSON body: `{ "name": "grafana", "ip": "10.0.0.42" }`)
-- `DELETE /v1/dns/entries/{name}`
-- `POST /v1/dns/admin/start`
-- `POST /v1/dns/admin/stop`
+- `POST /v1/dns/add` (JSON body: `{ "name": "grafana", "ip": "10.0.0.42" }`)
+- `DELETE /v1/dns/remove/{name}`
+- `POST /v1/dns/serve`
+- `POST /v1/dns/stop`
 
 ---
 
