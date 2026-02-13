@@ -4,6 +4,7 @@
 //! TOTP generation/verification with rate limiting, certificate
 //! fingerprinting, and ECDSA signing/verification.
 
+pub mod auth;
 pub mod keys;
 pub mod pinning;
 pub mod signing;
