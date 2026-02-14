@@ -46,10 +46,8 @@ pub fn prepare_promotion(
             })
             .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?
         }
-        AuthState::Fido2(cred) => {
-            serde_json::to_value(koi_crypto::auth::store_fido2(cred.clone()))
-                .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?
-        }
+        AuthState::Fido2(cred) => serde_json::to_value(koi_crypto::auth::store_fido2(cred.clone()))
+            .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?,
     };
 
     let roster_json = serde_json::to_string(roster)

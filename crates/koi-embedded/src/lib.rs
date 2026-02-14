@@ -9,11 +9,18 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use koi_client::KoiClient;
-use koi_mdns::MdnsEvent;
 
 pub use config::{DnsConfigBuilder, KoiConfig, ServiceMode};
 pub use events::KoiEvent;
 pub use handle::{CertmeshHandle, DnsHandle, HealthHandle, KoiHandle, MdnsHandle, ProxyHandle};
+
+// Re-export types needed by downstream consumers (registration, discovery, DNS, proxy, health)
+pub use koi_common::types::ServiceRecord;
+pub use koi_config::state::DnsEntry;
+pub use koi_health::{HealthCheck, HealthSnapshot, ServiceCheckKind};
+pub use koi_mdns::protocol::{RegisterPayload, RegistrationResult};
+pub use koi_mdns::MdnsEvent;
+pub use koi_proxy::ProxyEntry;
 
 pub type Result<T> = std::result::Result<T, KoiError>;
 
