@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Duration, Utc};
 use koi_crypto::keys::{self, CaKeyPair, CryptoError};
 use koi_crypto::pinning;
+use koi_crypto::unlock_slots::{self, SlotTable};
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose, SanType};
 
 use crate::error::CertmeshError;
@@ -16,6 +17,7 @@ const CA_DIR_NAME: &str = "certmesh";
 const CA_SUBDIR: &str = "ca";
 const CA_KEY_FILENAME: &str = "ca-key.enc";
 const CA_CERT_FILENAME: &str = "ca-cert.pem";
+const SLOT_TABLE_FILENAME: &str = "unlock-slots.json";
 const AUTH_FILENAME: &str = "auth.json";
 const ROSTER_FILENAME: &str = "roster.json";
 
@@ -89,6 +91,35 @@ pub fn roster_path() -> PathBuf {
     certmesh_dir().join(ROSTER_FILENAME)
 }
 
+/// Path to the unlock slot table.
+pub fn slot_table_path() -> PathBuf {
+    ca_dir().join(SLOT_TABLE_FILENAME)
+}
+
+/// Check whether envelope encryption (slot table) is active.
+pub fn has_slot_table() -> bool {
+    slot_table_path().exists()
+}
+
+/// Load the slot table from disk. Returns `None` if no slot table exists
+/// (legacy passphrase-direct encryption).
+pub fn load_slot_table() -> Result<Option<SlotTable>, CertmeshError> {
+    let path = slot_table_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let table = SlotTable::load(&path).map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+    Ok(Some(table))
+}
+
+/// Save the slot table to disk.
+pub fn save_slot_table(table: &SlotTable) -> Result<(), CertmeshError> {
+    table
+        .save(&slot_table_path())
+        .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+    Ok(())
+}
+
 /// Build the CA's CertificateParams (without key — rcgen 0.13 style).
 fn build_ca_params() -> Result<CertificateParams, CertmeshError> {
     let mut ca_params = CertificateParams::default();
@@ -112,11 +143,18 @@ fn build_ca_params() -> Result<CertificateParams, CertmeshError> {
     Ok(ca_params)
 }
 
-/// Create a new CA from scratch.
+/// Create a new CA from scratch with envelope encryption.
 ///
 /// Generates a keypair, creates a self-signed root CA certificate,
-/// encrypts the key with the passphrase, and writes everything to disk.
-pub fn create_ca(passphrase: &str, entropy_seed: &[u8]) -> Result<CaState, CertmeshError> {
+/// encrypts the key with a random master key, creates a slot table
+/// with a passphrase slot, and writes everything to disk.
+///
+/// Returns the CA state and the master key (so callers can add
+/// additional unlock slots before discarding it).
+pub fn create_ca(
+    passphrase: &str,
+    entropy_seed: &[u8],
+) -> Result<(CaState, [u8; 32]), CertmeshError> {
     let ca_key = keys::generate_ca_keypair(entropy_seed);
 
     // Build rcgen KeyPair from our P-256 key
@@ -133,45 +171,133 @@ pub fn create_ca(passphrase: &str, entropy_seed: &[u8]) -> Result<CaState, Certm
     let cert_pem = ca_cert.pem();
     let cert_der = ca_cert.der().to_vec();
 
-    // Encrypt and save key
+    // Envelope encryption: master key wraps CA key, passphrase wraps master key
     let dir = ca_dir();
     std::fs::create_dir_all(&dir)?;
 
-    let encrypted_key = keys::encrypt_key(&ca_key, passphrase)?;
+    let ca_key_der =
+        keys::ca_keypair_to_der(&ca_key).map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+    let (encrypted_key, slot_table, master_key) =
+        unlock_slots::envelope_encrypt_new(&ca_key_der, passphrase)
+            .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+
     keys::save_encrypted_key(&dir.join(CA_KEY_FILENAME), &encrypted_key)?;
+    slot_table
+        .save(&dir.join(SLOT_TABLE_FILENAME))
+        .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
     // Save CA certificate
     std::fs::write(dir.join(CA_CERT_FILENAME), &cert_pem)?;
 
-    tracing::info!("CA created and key encrypted");
+    // Platform credential binding — seal the ciphertext in the OS
+    // credential store so the key blob is machine-bound.
+    if koi_crypto::tpm::is_available() {
+        if let Err(e) =
+            koi_crypto::tpm::seal_key_material("koi-certmesh-ca", &encrypted_key.ciphertext)
+        {
+            tracing::warn!(error = %e, "Platform credential sealing failed; falling back to software-only protection");
+        } else {
+            tracing::info!("CA key material sealed in platform credential store");
+        }
+    }
 
-    Ok(CaState {
-        key: ca_key,
-        rcgen_key,
-        ca_cert,
-        cert_pem,
-        cert_der,
-    })
+    tracing::info!("CA created with envelope encryption");
+
+    Ok((
+        CaState {
+            key: ca_key,
+            rcgen_key,
+            ca_cert,
+            cert_pem,
+            cert_der,
+        },
+        master_key,
+    ))
 }
 
 /// Load an existing CA by decrypting the key with the passphrase.
+///
+/// Supports both legacy (direct passphrase encryption) and envelope
+/// encryption (slot table). Legacy keys are auto-migrated to envelope
+/// encryption on load.
 pub fn load_ca(passphrase: &str) -> Result<CaState, CertmeshError> {
     let dir = ca_dir();
     let key_path = dir.join(CA_KEY_FILENAME);
-    let cert_path = dir.join(CA_CERT_FILENAME);
+    let slot_path = dir.join(SLOT_TABLE_FILENAME);
 
     if !key_path.exists() {
         return Err(CertmeshError::CaNotInitialized);
     }
 
     let encrypted = keys::load_encrypted_key(&key_path)?;
-    let ca_key = keys::decrypt_key(&encrypted, passphrase).map_err(|e| match e {
-        CryptoError::Decryption(_) => {
-            CertmeshError::Crypto("wrong passphrase or corrupted key file".into())
-        }
-        other => CertmeshError::Crypto(other.to_string()),
-    })?;
 
+    let ca_key_der = if slot_path.exists() {
+        // ── Envelope encryption path ──
+        let slot_table = SlotTable::load(&slot_path)
+            .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+        let master_key = slot_table
+            .unwrap_with_passphrase(passphrase)
+            .map_err(|e| match e {
+                CryptoError::Decryption(_) => {
+                    CertmeshError::Crypto("wrong passphrase or corrupted key file".into())
+                }
+                other => CertmeshError::Crypto(other.to_string()),
+            })?;
+        unlock_slots::decrypt_with_master_key(&encrypted, &master_key)
+            .map_err(|e| CertmeshError::Crypto(e.to_string()))?
+    } else {
+        // ── Legacy path: direct passphrase encryption ──
+        // Decrypt, then auto-migrate to envelope encryption.
+        let plaintext =
+            keys::decrypt_bytes(&encrypted, passphrase).map_err(|e| match e {
+                CryptoError::Decryption(_) => {
+                    CertmeshError::Crypto("wrong passphrase or corrupted key file".into())
+                }
+                other => CertmeshError::Crypto(other.to_string()),
+            })?;
+
+        tracing::info!("Migrating CA key from legacy encryption to envelope encryption");
+        let (new_encrypted, slot_table, _master_key) =
+            unlock_slots::migrate_to_envelope(&encrypted, passphrase)
+                .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+
+        keys::save_encrypted_key(&key_path, &new_encrypted)?;
+        slot_table
+            .save(&slot_path)
+            .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+        tracing::info!("CA key migrated to envelope encryption");
+
+        plaintext
+    };
+
+    build_ca_state_from_der(&ca_key_der)
+}
+
+/// Load an existing CA using a pre-unwrapped master key.
+///
+/// Used when the master key was obtained via TOTP, FIDO2, or auto-unlock
+/// rather than passphrase.
+pub fn load_ca_with_master_key(master_key: &[u8; 32]) -> Result<CaState, CertmeshError> {
+    let dir = ca_dir();
+    let key_path = dir.join(CA_KEY_FILENAME);
+
+    if !key_path.exists() {
+        return Err(CertmeshError::CaNotInitialized);
+    }
+
+    let encrypted = keys::load_encrypted_key(&key_path)?;
+    let ca_key_der = unlock_slots::decrypt_with_master_key(&encrypted, master_key)
+        .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+
+    build_ca_state_from_der(&ca_key_der)
+}
+
+/// Reconstruct `CaState` from decrypted PKCS#8 DER key bytes.
+fn build_ca_state_from_der(ca_key_der: &[u8]) -> Result<CaState, CertmeshError> {
+    let ca_key = keys::ca_keypair_from_der(ca_key_der)
+        .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+
+    let cert_path = ca_dir().join(CA_CERT_FILENAME);
     let cert_pem = std::fs::read_to_string(&cert_path)?;
 
     // Parse the cert PEM to get DER for fingerprinting
@@ -308,7 +434,7 @@ mod tests {
 
     #[test]
     fn full_ca_and_issue_round_trip() {
-        let ca = create_ca("test-pass", &test_entropy()).unwrap();
+        let (ca, _master_key) = create_ca("test-pass", &test_entropy()).unwrap();
         assert!(ca.cert_pem.contains("BEGIN CERTIFICATE"));
         assert!(!ca.cert_der.is_empty());
 

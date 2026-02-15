@@ -710,6 +710,17 @@ impl Prompt {
             required: true,
         }
     }
+
+    /// Create a `Fido2` prompt (WebAuthn hardware key interaction).
+    pub fn fido2(key: impl Into<String>, prompt: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            prompt: prompt.into(),
+            input_type: InputType::Fido2,
+            options: Vec::new(),
+            required: true,
+        }
+    }
 }
 
 impl SelectOption {

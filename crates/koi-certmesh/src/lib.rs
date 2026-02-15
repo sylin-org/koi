@@ -395,6 +395,50 @@ impl CertmeshCore {
         Ok(())
     }
 
+    /// Unlock the CA with a pre-unwrapped master key (TOTP, FIDO2, or auto-unlock).
+    ///
+    /// This bypasses passphrase-based auth.json decryption. The auth
+    /// credential (for API gating) is not loaded — callers should use
+    /// the slot table's embedded TOTP shared_secret for verification
+    /// if auth gating is needed.
+    pub async fn unlock_with_master_key(&self, master_key: &[u8; 32]) -> Result<(), CertmeshError> {
+        let ca_state = ca::load_ca_with_master_key(master_key)?;
+        *self.state.ca.lock().await = Some(ca_state);
+        tracing::info!("CA unlocked via master key (non-passphrase slot)");
+        Ok(())
+    }
+
+    /// Unlock the CA using a TOTP code against the unlock slot table.
+    ///
+    /// Loads the slot table, verifies the TOTP code, unwraps the master
+    /// key, and decrypts the CA key.
+    pub async fn unlock_with_totp(&self, code: &str) -> Result<(), CertmeshError> {
+        let slot_table = ca::load_slot_table()?
+            .ok_or_else(|| CertmeshError::Internal("no slot table found".into()))?;
+
+        let master_key = slot_table
+            .unwrap_with_totp(code)
+            .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+
+        self.unlock_with_master_key(&master_key).await
+    }
+
+    /// Unlock the CA using a FIDO2 credential (after assertion verification).
+    ///
+    /// The caller is responsible for verifying the WebAuthn assertion.
+    /// This function performs the cryptographic unwrap using the
+    /// credential ID.
+    pub async fn unlock_with_fido2(&self, credential_id: &[u8]) -> Result<(), CertmeshError> {
+        let slot_table = ca::load_slot_table()?
+            .ok_or_else(|| CertmeshError::Internal("no slot table found".into()))?;
+
+        let master_key = slot_table
+            .unwrap_with_fido2(credential_id)
+            .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+
+        self.unlock_with_master_key(&master_key).await
+    }
+
     // ── Phase 4 — Enrollment Policy ─────────────────────────────────
 
     /// Open the enrollment window, optionally with a deadline.
@@ -1121,7 +1165,7 @@ mod tests {
 
     fn make_test_ca() -> ca::CaState {
         let _ = koi_common::test::ensure_data_dir("koi-certmesh-core-tests");
-        ca::create_ca("test-pass", &[42u8; 32]).unwrap()
+        ca::create_ca("test-pass", &[42u8; 32]).unwrap().0
     }
 
     fn make_test_roster_with_member(hostname: &str, role: MemberRole) -> Roster {

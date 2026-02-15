@@ -170,7 +170,7 @@ mod tests {
 
     fn make_test_ca() -> CaState {
         let _ = koi_common::test::ensure_data_dir("koi-certmesh-lifecycle-tests");
-        ca::create_ca("test-pass", &[42u8; 32]).unwrap()
+        ca::create_ca("test-pass", &[42u8; 32]).unwrap().0
     }
 
     fn make_member(hostname: &str, expires_in_days: i64) -> RosterMember {

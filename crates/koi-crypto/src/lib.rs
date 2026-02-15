@@ -10,3 +10,4 @@ pub mod pinning;
 pub mod signing;
 pub mod totp;
 pub mod tpm;
+pub mod unlock_slots;

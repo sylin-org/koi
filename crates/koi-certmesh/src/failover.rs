@@ -184,7 +184,7 @@ mod tests {
 
     fn make_test_ca() -> CaState {
         let _ = koi_common::test::ensure_data_dir("koi-certmesh-failover-tests");
-        ca::create_ca("test-pass", &[42u8; 32]).unwrap()
+        ca::create_ca("test-pass", &[42u8; 32]).unwrap().0
     }
 
     fn make_test_roster() -> Roster {
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn wrong_key_manifest_fails_verification() {
         let ca1 = make_test_ca();
-        let ca2 = ca::create_ca("other-pass", &[99u8; 32]).unwrap();
+        let (ca2, _) = ca::create_ca("other-pass", &[99u8; 32]).unwrap();
         let roster = make_test_roster();
 
         let mut manifest = build_signed_manifest(&ca1, &roster).unwrap();

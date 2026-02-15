@@ -167,6 +167,22 @@ pub fn ca_keypair_from_pem(pem: &str) -> Result<CaKeyPair, CryptoError> {
     Ok(CaKeyPair { signing_key })
 }
 
+/// Decode a CA keypair from PKCS#8 DER bytes.
+pub fn ca_keypair_from_der(der: &[u8]) -> Result<CaKeyPair, CryptoError> {
+    let signing_key =
+        SigningKey::from_pkcs8_der(der).map_err(|e| CryptoError::KeyEncoding(e.to_string()))?;
+    Ok(CaKeyPair { signing_key })
+}
+
+/// Export a CA keypair's private key as PKCS#8 DER bytes.
+pub fn ca_keypair_to_der(key: &CaKeyPair) -> Result<Vec<u8>, CryptoError> {
+    let der = key
+        .signing_key
+        .to_pkcs8_der()
+        .map_err(|e| CryptoError::KeyEncoding(e.to_string()))?;
+    Ok(der.as_bytes().to_vec())
+}
+
 /// Save an encrypted key to a JSON file.
 pub fn save_encrypted_key(path: &Path, encrypted: &EncryptedKey) -> Result<(), CryptoError> {
     let json = serde_json::to_string_pretty(encrypted)

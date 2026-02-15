@@ -16,15 +16,20 @@
 //!   - `entropy`              – raw user input (keyboard mashing) for key-gen entropy
 //!   - `passphrase_choice`    – "keep" | "again" | "own" (after seeing suggestion)
 //!   - `passphrase`           – string, min 8 chars (set from suggestion or manual)
-//!   - `auto_unlock`           – "yes" | "no" (only if profile=custom)
+//!   - `auto_unlock`           – "auto" | "token" | "passphrase" (only if profile=custom)
 //!   - `auth_mode`            – "totp"
 //!   - `verification_code`    – 6-digit TOTP code
+//!   - `unlock_token_type`    — "totp" | "fido2" (only if unlock_method=token)
+//!   - `unlock_totp_code`     — 6-digit code to verify unlock TOTP registration
 //!
 //! **Internal** (underscore prefix, set by rules):
 //!   - `_effective_profile`   – resolved TrustProfile after custom→baseline mapping
 //!   - `_enrollment_open`     – bool (effective enrollment state)
 //!   - `_requires_approval`   – bool (effective approval state)
-//!   - `_auto_unlock`         – bool (auto-unlock CA on boot)
+//!   - `_auto_unlock`         – bool (auto-unlock CA on boot — derived from _unlock_method)
+//!   - `_unlock_method`       – "auto" | "token" | "passphrase"
+//!   - `_unlock_totp_secret`  – hex-encoded TOTP secret for unlock slot
+//!   - `_unlock_totp_uri`     – otpauth:// URI for unlock TOTP QR
 //!   - `_server_entropy`      – hex-encoded 32 bytes of server entropy
 //!   - `_entropy_seed`        – hex-encoded 32-byte final seed
 //!   - `_suggested_passphrase`– XKCD-style passphrase derived from entropy
@@ -208,12 +213,17 @@ fn eval_init(
 
         let enroll_open = trust != TrustProfile::MyOrganization;
         let approval = trust.requires_approval();
-        let auto_unlock = trust != TrustProfile::MyOrganization;
+        let unlock_method = if trust == TrustProfile::MyOrganization {
+            "passphrase"
+        } else {
+            "auto"
+        };
 
         bag.insert("_effective_profile".into(), serde_json::json!(trust.to_string()));
         bag.insert("_enrollment_open".into(), serde_json::json!(enroll_open));
         bag.insert("_requires_approval".into(), serde_json::json!(approval));
-        bag.insert("_auto_unlock".into(), serde_json::json!(auto_unlock));
+        bag.insert("_unlock_method".into(), serde_json::json!(unlock_method));
+        bag.insert("_auto_unlock".into(), serde_json::json!(unlock_method == "auto"));
     }
 
     // ── 1b. Operator name (when approval is required) ───────────────
@@ -426,11 +436,11 @@ fn eval_init(
         }
     }
 
-    // ── 3b. Auto-unlock (custom profiles only) ─────────────────────
+    // ── 3b. Unlock method (custom profiles only) ────────────────────
     //
-    // Standard profiles set _auto_unlock from defaults above.
-    // Custom profiles ask the user.
-    if !bag.contains_key("_auto_unlock") {
+    // Standard profiles set _unlock_method from defaults above.
+    // Custom profiles ask the user to choose from three options.
+    if !bag.contains_key("_unlock_method") {
         match bag.get("auto_unlock").and_then(|v| v.as_str()).map(String::from) {
             None => {
                 return EvalResult::NeedInput {
@@ -439,18 +449,23 @@ fn eval_init(
                         "Unlock behavior after reboot",
                         vec![
                             SelectOption::with_description(
-                                "yes",
+                                "auto",
                                 "Auto-unlock (recommended)",
                                 "The passphrase is saved locally so the pond \
                                  unlocks automatically when the stone reboots. \
                                  Best for headless machines.",
                             ),
                             SelectOption::with_description(
-                                "no",
-                                "Stay locked until operator unlocks",
-                                "After each reboot, an operator must run \
-                                 'pond unlock' with the passphrase. \
-                                 Best when physical device theft is a concern.",
+                                "token",
+                                "Token authentication",
+                                "Register an authenticator app or security key. \
+                                 An operator authenticates to unlock after reboot.",
+                            ),
+                            SelectOption::with_description(
+                                "passphrase",
+                                "Manual passphrase",
+                                "Enter the passphrase on every boot. \
+                                 Most secure, least convenient.",
                             ),
                         ],
                     )],
@@ -458,8 +473,14 @@ fn eval_init(
                 };
             }
             Some(choice) => {
-                let auto = choice == "yes";
-                bag.insert("_auto_unlock".into(), serde_json::json!(auto));
+                let method = match choice.as_str() {
+                    "auto" | "yes" => "auto",
+                    "token" => "token",
+                    "passphrase" | "no" => "passphrase",
+                    _ => "auto",
+                };
+                bag.insert("_unlock_method".into(), serde_json::json!(method));
+                bag.insert("_auto_unlock".into(), serde_json::json!(method == "auto"));
             }
         }
     }
@@ -585,6 +606,164 @@ fn eval_init(
         }
     }
 
+    // ── 6. Token registration sub-flow ─────────────────────────────
+    //
+    // When unlock_method == "token", the user registers an authenticator
+    // app or security key for use at boot time. This runs while the
+    // passphrase is still in the bag (not yet consumed).
+    let unlock_method = bag
+        .get("_unlock_method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("auto")
+        .to_string();
+
+    if unlock_method == "token" {
+        // 6a. Token type selection
+        let token_type = match bag
+            .get("unlock_token_type")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+        {
+            None => {
+                return EvalResult::NeedInput {
+                    prompts: vec![Prompt::select_one(
+                        "unlock_token_type",
+                        "Choose your unlock token type",
+                        vec![
+                            SelectOption::with_description(
+                                "totp",
+                                "Authenticator app (TOTP)",
+                                "Use a 6-digit code from any TOTP app \
+                                 (Google Authenticator, Authy, etc.) to \
+                                 unlock the pond after reboot.",
+                            ),
+                            SelectOption::with_description(
+                                "fido2",
+                                "Security key (FIDO2)",
+                                "Tap a hardware security key (YubiKey, etc.) \
+                                 to unlock. Requires the /pond web UI.",
+                            ),
+                        ],
+                    )],
+                    messages: vec![Message::info(
+                        "Unlock Token",
+                        "This token will be used to unlock the pond after \
+                         the keystone stone reboots. It is separate from \
+                         the enrollment authenticator you just set up.",
+                    )],
+                };
+            }
+            Some(t) => t,
+        };
+
+        if token_type == "totp" {
+            // 6b. TOTP unlock token registration
+            if !bag.contains_key("_unlock_totp_secret") {
+                let secret = koi_crypto::totp::generate_secret();
+                let secret_hex = hex_encode(secret.as_bytes());
+
+                let account = bag
+                    .get("_self_hostname")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("pond");
+                let uri = koi_crypto::totp::build_totp_uri(
+                    &secret,
+                    "ZenGarden-Unlock",
+                    account,
+                );
+
+                bag.insert(
+                    "_unlock_totp_secret".into(),
+                    serde_json::Value::String(secret_hex),
+                );
+                bag.insert(
+                    "_unlock_totp_uri".into(),
+                    serde_json::Value::String(uri),
+                );
+            }
+
+            if !bag.contains_key("unlock_totp_code") {
+                let uri = bag["_unlock_totp_uri"].as_str().unwrap_or("");
+                let qr_content = render_qr(uri, render);
+
+                return EvalResult::NeedInput {
+                    prompts: vec![Prompt::code(
+                        "unlock_totp_code",
+                        "Enter the 6-digit code to verify your unlock token",
+                    )],
+                    messages: vec![
+                        Message::qr_code(
+                            "Scan this QR code with your authenticator app (unlock token)",
+                            &qr_content,
+                        ),
+                        Message::info(
+                            "Separate Token",
+                            "This is a **separate** token from your enrollment code. \
+                             Add it as a second entry in your authenticator app. \
+                             It will be labeled 'ZenGarden-Unlock'.",
+                        ),
+                    ],
+                };
+            }
+
+            // Verify the TOTP code
+            let code = bag
+                .get("unlock_totp_code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let secret_hex = bag
+                .get("_unlock_totp_secret")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let valid = if let Ok(secret_bytes) = hex_decode(secret_hex) {
+                let secret = koi_crypto::totp::TotpSecret::from_bytes(secret_bytes);
+                koi_crypto::totp::verify_code(&secret, code)
+            } else {
+                false
+            };
+
+            if !valid {
+                bag.remove("unlock_totp_code");
+                let uri = bag.get("_unlock_totp_uri").and_then(|v| v.as_str()).unwrap_or("");
+                let qr_content = render_qr(uri, render);
+
+                return EvalResult::ValidationError {
+                    prompts: vec![Prompt::code(
+                        "unlock_totp_code",
+                        "Enter the 6-digit code to verify your unlock token",
+                    )],
+                    messages: vec![Message::qr_code(
+                        "Scan this QR code with your authenticator app (unlock token)",
+                        &qr_content,
+                    )],
+                    error: "Invalid code. Check your authenticator app and try again.".into(),
+                };
+            }
+        } else if token_type == "fido2" {
+            // 6c. FIDO2 registration
+            // The actual WebAuthn registration happens via the /pond web UI.
+            // The ceremony indicates that FIDO2 is the chosen method so Moss
+            // can drive the WebAuthn registration flow after CA creation.
+            if !bag.contains_key("_fido2_registered") {
+                return EvalResult::NeedInput {
+                    prompts: vec![Prompt::fido2(
+                        "_fido2_registered",
+                        "Tap your security key to register it for pond unlock",
+                    )],
+                    messages: vec![Message::info(
+                        "Security Key Registration",
+                        "Insert your security key and tap it when prompted. \
+                         This key will be required to unlock the pond after \
+                         the keystone stone reboots.\n\n\
+                         The key's credential is stored locally. If you lose \
+                         the key, use the passphrase to unlock instead.",
+                    )],
+                };
+            }
+        }
+    }
+
     // ── Complete ────────────────────────────────────────────────────
     let effective_profile = bag.get("_effective_profile")
         .and_then(|v| v.as_str())
@@ -593,10 +772,20 @@ fn eval_init(
         .and_then(|v| v.as_bool()).unwrap_or(true) { "Open" } else { "Closed" };
     let approval_label = if requires_approval { "Required" } else { "Not required" };
 
-    let auto_unlock = bag.get("_auto_unlock")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    let unlock_label = if auto_unlock { "Auto-unlock on boot" } else { "Locked until operator unlocks" };
+    let unlock_label = match unlock_method.as_str() {
+        "auto" => "Auto-unlock on boot",
+        "token" => {
+            let token_type = bag
+                .get("unlock_token_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("totp");
+            match token_type {
+                "fido2" => "Security key (FIDO2) required after reboot",
+                _ => "Authenticator code (TOTP) required after reboot",
+            }
+        }
+        _ => "Passphrase required after reboot",
+    };
 
     let mut summary_lines = vec![
         format!("Profile: {effective_profile}"),
@@ -611,11 +800,17 @@ fn eval_init(
     summary_lines.push(String::new());
     summary_lines.push("This will:".into());
     summary_lines.push("• Generate an ECDSA P-256 CA keypair".into());
-    summary_lines.push("• Encrypt the private key with your passphrase".into());
+    summary_lines.push("• Encrypt the private key with envelope encryption (key slots)".into());
     summary_lines.push("• Install the CA in the system trust store".into());
     summary_lines.push(format!("• {enrollment_label} enrollment for other machines"));
-    if auto_unlock {
-        summary_lines.push("• Save passphrase locally for auto-unlock on reboot".into());
+    match unlock_method.as_str() {
+        "auto" => {
+            summary_lines.push("• Save passphrase locally for auto-unlock on reboot".into());
+        }
+        "token" => {
+            summary_lines.push("• Register unlock token for boot authentication".into());
+        }
+        _ => {}
     }
 
     EvalResult::Complete {
@@ -696,25 +891,115 @@ fn eval_unlock(
     bag: &mut serde_json::Map<String, serde_json::Value>,
     _render: &RenderHints,
 ) -> EvalResult {
-    if !bag.contains_key("passphrase") {
+    // Determine available unlock methods from the slot table
+    let slot_table_path = crate::ca::slot_table_path();
+    let available_methods = if slot_table_path.exists() {
+        match koi_crypto::unlock_slots::SlotTable::load(&slot_table_path) {
+            Ok(table) => table.available_methods().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            Err(_) => vec!["passphrase".to_string()],
+        }
+    } else {
+        vec!["passphrase".to_string()]
+    };
+
+    let has_totp = available_methods.contains(&"totp".to_string());
+    let has_fido2 = available_methods.contains(&"fido2".to_string());
+
+    // Step 1: Choose unlock method (if multiple are available)
+    if (has_totp || has_fido2) && !bag.contains_key("_unlock_choice") {
+        let mut options = vec![
+            SelectOption::with_description("passphrase", "Passphrase", "Enter your pond passphrase"),
+        ];
+        if has_totp {
+            options.push(SelectOption::with_description(
+                "totp",
+                "Authenticator code",
+                "Enter a code from your authenticator app",
+            ));
+        }
+        if has_fido2 {
+            options.push(SelectOption::with_description(
+                "fido2",
+                "Security key",
+                "Tap your hardware security key",
+            ));
+        }
+
         return EvalResult::NeedInput {
-            prompts: vec![Prompt::secret(
-                "passphrase",
-                "Enter the pond passphrase to unlock",
+            prompts: vec![Prompt::select_one(
+                "_unlock_choice",
+                "How do you want to unlock the pond?",
+                options,
             )],
             messages: vec![Message::info(
                 "Unlock Pond",
-                "The pond CA is locked. Enter the passphrase to decrypt the CA key \
-                 and resume operations.",
+                "The pond CA is locked. Choose how to unlock it.",
             )],
         };
     }
 
+    let method = bag
+        .get("_unlock_choice")
+        .and_then(|v| v.as_str())
+        .unwrap_or("passphrase");
+
+    // Step 2: Collect the credential for the chosen method
+    match method {
+        "totp" => {
+            if !bag.contains_key("_unlock_totp_input") {
+                return EvalResult::NeedInput {
+                    prompts: vec![Prompt::code(
+                        "_unlock_totp_input",
+                        "Enter the 6-digit code from your authenticator app",
+                    )],
+                    messages: vec![Message::info(
+                        "TOTP Unlock",
+                        "Enter the current code from the authenticator app you \
+                         registered during pond setup.",
+                    )],
+                };
+            }
+        }
+        "fido2" => {
+            if !bag.contains_key("_unlock_fido2_assertion") {
+                return EvalResult::NeedInput {
+                    prompts: vec![Prompt::fido2(
+                        "_unlock_fido2_assertion",
+                        "Tap your security key to unlock the pond",
+                    )],
+                    messages: vec![Message::info(
+                        "FIDO2 Unlock",
+                        "Touch your hardware security key when it blinks.",
+                    )],
+                };
+            }
+        }
+        _ => {
+            // Passphrase path (original behavior)
+            if !bag.contains_key("passphrase") {
+                return EvalResult::NeedInput {
+                    prompts: vec![Prompt::secret(
+                        "passphrase",
+                        "Enter the pond passphrase to unlock",
+                    )],
+                    messages: vec![Message::info(
+                        "Unlock Pond",
+                        "The pond CA is locked. Enter the passphrase to decrypt the CA key \
+                         and resume operations.",
+                    )],
+                };
+            }
+        }
+    }
+
+    let summary = match method {
+        "totp" => "The CA key will be decrypted using your authenticator code.",
+        "fido2" => "The CA key will be decrypted using your security key.",
+        _ => "The CA key will be decrypted and pond operations resumed.",
+    };
+
     EvalResult::Complete {
-        messages: vec![Message::summary(
-            "Unlock ready",
-            "The CA key will be decrypted and pond operations resumed.",
-        )],
+        messages: vec![Message::summary("Unlock ready", summary)],
     }
 }
 

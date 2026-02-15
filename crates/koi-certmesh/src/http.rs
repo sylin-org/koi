@@ -192,7 +192,7 @@ async fn create_handler(
     }
 
     // Create CA
-    let ca_state = match crate::ca::create_ca(&request.passphrase, &entropy) {
+    let (ca_state, _master_key) = match crate::ca::create_ca(&request.passphrase, &entropy) {
         Ok(ca) => ca,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
