@@ -148,14 +148,14 @@ impl CertmeshCore {
     pub fn new(
         ca: ca::CaState,
         roster: Roster,
-        auth_state: AuthState,
+        auth_state: Option<AuthState>,
         profile: TrustProfile,
     ) -> Self {
         Self {
             state: Arc::new(CertmeshState {
                 ca: tokio::sync::Mutex::new(Some(ca)),
                 roster: tokio::sync::Mutex::new(roster),
-                auth: tokio::sync::Mutex::new(Some(auth_state)),
+                auth: tokio::sync::Mutex::new(auth_state),
                 pending_challenge: tokio::sync::Mutex::new(None),
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
                 profile: tokio::sync::Mutex::new(profile),
@@ -414,11 +414,22 @@ impl CertmeshCore {
     /// key, and decrypts the CA key.
     pub async fn unlock_with_totp(&self, code: &str) -> Result<(), CertmeshError> {
         let slot_table = ca::load_slot_table()?
-            .ok_or_else(|| CertmeshError::Internal("no slot table found".into()))?;
+            .ok_or_else(|| CertmeshError::NoSlotFound("no slot table found — pond may use legacy passphrase format".into()))?;
+
+        if !slot_table.has_totp_slot() {
+            return Err(CertmeshError::NoSlotFound("TOTP unlock is not configured for this pond".into()));
+        }
 
         let master_key = slot_table
             .unwrap_with_totp(code)
-            .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("invalid TOTP code") {
+                    CertmeshError::InvalidAuth
+                } else {
+                    CertmeshError::Crypto(msg)
+                }
+            })?;
 
         self.unlock_with_master_key(&master_key).await
     }
@@ -430,13 +441,85 @@ impl CertmeshCore {
     /// credential ID.
     pub async fn unlock_with_fido2(&self, credential_id: &[u8]) -> Result<(), CertmeshError> {
         let slot_table = ca::load_slot_table()?
-            .ok_or_else(|| CertmeshError::Internal("no slot table found".into()))?;
+            .ok_or_else(|| CertmeshError::NoSlotFound("no slot table found — pond may use legacy passphrase format".into()))?;
+
+        if slot_table.fido2_credential().is_none() {
+            return Err(CertmeshError::NoSlotFound("FIDO2 unlock is not configured for this pond".into()));
+        }
 
         let master_key = slot_table
             .unwrap_with_fido2(credential_id)
             .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
         self.unlock_with_master_key(&master_key).await
+    }
+
+    // ── Auto-unlock key management ──────────────────────────────────
+
+    /// Path to the auto-unlock key file (inside the koi data directory).
+    fn auto_unlock_key_path() -> std::path::PathBuf {
+        koi_common::paths::koi_data_dir().join("auto-unlock-key")
+    }
+
+    /// Save a passphrase for automatic unlock on reboot.
+    ///
+    /// On Unix the file gets `chmod 0600`.  On Windows it inherits the
+    /// parent directory's ACL (acceptable for a daemon data directory).
+    pub fn save_auto_unlock_key(passphrase: &str) -> Result<(), CertmeshError> {
+        let path = Self::auto_unlock_key_path();
+        std::fs::write(&path, passphrase.as_bytes())?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+
+        tracing::info!("Auto-unlock key saved — pond will unlock automatically on reboot");
+        Ok(())
+    }
+
+    /// Delete the auto-unlock key file (idempotent).
+    pub fn delete_auto_unlock_key() {
+        let path = Self::auto_unlock_key_path();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Try to auto-unlock the CA from a saved key file.
+    ///
+    /// Returns `Ok(true)` if the CA was unlocked, `Ok(false)` if there
+    /// is no key file, and `Err` if the key file exists but decryption
+    /// failed (corrupt key, changed passphrase, etc.).
+    pub async fn try_auto_unlock(&self) -> Result<bool, CertmeshError> {
+        let path = Self::auto_unlock_key_path();
+        let passphrase = match std::fs::read_to_string(&path) {
+            Ok(pp) if !pp.is_empty() => pp,
+            _ => return Ok(false),
+        };
+        self.unlock(&passphrase).await?;
+        tracing::info!("Pond auto-unlocked on boot via saved key");
+        Ok(true)
+    }
+
+    /// Configure auto-unlock based on the trust profile.
+    ///
+    /// This is the **single source of truth** for the profile → unlock
+    /// mode decision.  Call it after CA creation from any init path
+    /// (direct API or ceremony) and the right thing happens.
+    pub fn configure_auto_unlock_for_profile(
+        profile: profiles::TrustProfile,
+        passphrase: &str,
+    ) -> Result<(), CertmeshError> {
+        if profile.should_auto_unlock() && !passphrase.is_empty() {
+            Self::save_auto_unlock_key(passphrase)?;
+
+            // Mark auto-unlock in the slot table (if it exists)
+            if let Some(mut table) = ca::load_slot_table()? {
+                table.add_auto_unlock();
+                ca::save_slot_table(&table)?;
+            }
+        }
+        Ok(())
     }
 
     // ── Phase 4 — Enrollment Policy ─────────────────────────────────
@@ -1192,7 +1275,7 @@ mod tests {
         let _ = koi_common::test::ensure_data_dir("koi-certmesh-core-tests");
         let totp = koi_crypto::totp::generate_secret();
         let auth_state = koi_crypto::auth::AuthState::Totp(totp);
-        CertmeshCore::new(ca, roster, auth_state, TrustProfile::JustMe)
+        CertmeshCore::new(ca, roster, Some(auth_state), TrustProfile::JustMe)
     }
 
     fn make_locked_core(roster: Roster) -> CertmeshCore {
@@ -1950,7 +2033,7 @@ mod tests {
         let roster = Roster::new(TrustProfile::MyOrganization, Some("ops".to_string()));
         let totp = koi_crypto::totp::generate_secret();
         let auth = koi_crypto::auth::AuthState::Totp(totp);
-        let core = CertmeshCore::new(ca, roster, auth, TrustProfile::MyOrganization);
+        let core = CertmeshCore::new(ca, roster, Some(auth), TrustProfile::MyOrganization);
         let status = core.certmesh_status().await;
         assert_eq!(status.profile, TrustProfile::MyOrganization);
     }

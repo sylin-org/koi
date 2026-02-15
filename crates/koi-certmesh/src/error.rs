@@ -60,6 +60,9 @@ pub enum CertmeshError {
     #[error("scope violation: {0}")]
     ScopeViolation(String),
 
+    #[error("unlock slot not configured: {0}")]
+    NoSlotFound(String),
+
     #[error("enrollment denied by operator")]
     ApprovalDenied,
 
@@ -94,6 +97,7 @@ impl From<&CertmeshError> for ErrorCode {
             CertmeshError::NotFound(_) => ErrorCode::NotFound,
             CertmeshError::Revoked(_) => ErrorCode::Revoked,
             CertmeshError::Crypto(_) | CertmeshError::Certificate(_) => ErrorCode::Internal,
+            CertmeshError::NoSlotFound(_) => ErrorCode::InvalidPayload,
             CertmeshError::Io(_) => ErrorCode::IoError,
             CertmeshError::Internal(_) => ErrorCode::Internal,
             CertmeshError::BackupInvalid(_) => ErrorCode::InvalidPayload,
@@ -205,6 +209,11 @@ mod tests {
                 CertmeshError::ScopeViolation("hostname outside domain".into()),
                 ErrorCode::ScopeViolation,
                 403,
+            ),
+            (
+                CertmeshError::NoSlotFound("TOTP".into()),
+                ErrorCode::InvalidPayload,
+                400,
             ),
             (
                 CertmeshError::ApprovalDenied,

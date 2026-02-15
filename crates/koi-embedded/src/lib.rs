@@ -370,6 +370,52 @@ fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
     };
 
     let profile = roster.metadata.trust_profile;
+
+    // ── Auto-unlock at init: single source of truth ─────────────
+    // If the auto-unlock key file exists, boot the core already
+    // unlocked.  This collapses the "create locked → read key →
+    // unlock" three-step into a single atomic construction.
+    let auto_key_path = koi_common::paths::koi_data_dir().join("auto-unlock-key");
+    if let Ok(pp) = std::fs::read_to_string(&auto_key_path) {
+        if !pp.is_empty() {
+            match koi_certmesh::ca::load_ca(&pp) {
+                Ok(ca_state) => {
+                    // Reload roster (fresh copy for the new Arc)
+                    if let Ok(fresh_roster) =
+                        koi_certmesh::roster::load_roster(&roster_path)
+                    {
+                        let auth_path = koi_certmesh::ca::auth_path();
+                        let auth = if auth_path.exists() {
+                            std::fs::read_to_string(&auth_path)
+                                .ok()
+                                .and_then(|json| {
+                                    serde_json::from_str::<koi_crypto::auth::StoredAuth>(&json).ok()
+                                })
+                                .and_then(|stored| stored.unlock(&pp).ok())
+                        } else {
+                            None
+                        };
+
+                        tracing::info!("Certmesh CA auto-unlocked at init");
+                        return Some(Arc::new(koi_certmesh::CertmeshCore::new(
+                            ca_state,
+                            fresh_roster,
+                            auth,
+                            profile,
+                        )));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Auto-unlock key exists but decryption failed"
+                    );
+                }
+            }
+        }
+    }
+
+    // No auto-unlock key — boot locked
     let core = koi_certmesh::CertmeshCore::locked(roster, profile);
     Some(Arc::new(core))
 }

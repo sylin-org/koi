@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 koi-common.workspace = true
+koi-crypto.workspace = true
 koi-mdns.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true

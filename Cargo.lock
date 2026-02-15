@@ -1640,6 +1640,7 @@ dependencies = [
  "koi-client",
  "koi-common",
  "koi-config",
+ "koi-crypto",
  "koi-dns",
  "koi-health",
  "koi-mdns",

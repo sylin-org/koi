@@ -40,6 +40,15 @@ impl TrustProfile {
         30
     }
 
+    /// Whether this profile auto-unlocks the CA on boot.
+    ///
+    /// JustMe and MyTeam profiles save the passphrase locally so the
+    /// pond unlocks automatically after a reboot.  MyOrganization
+    /// requires a manual unlock (passphrase / TOTP / FIDO2).
+    pub fn should_auto_unlock(&self) -> bool {
+        matches!(self, Self::JustMe | Self::MyTeam)
+    }
+
     /// Parse from CLI string input.
     pub fn from_str_loose(s: &str) -> Option<Self> {
         // Try serde snake_case first (just_me, my_team, my_organization)
@@ -94,6 +103,13 @@ mod tests {
         assert!(p.requires_approval());
         assert!(p.requires_operator());
         assert!(!p.enrollment_default_open());
+    }
+
+    #[test]
+    fn auto_unlock_policy() {
+        assert!(TrustProfile::JustMe.should_auto_unlock());
+        assert!(TrustProfile::MyTeam.should_auto_unlock());
+        assert!(!TrustProfile::MyOrganization.should_auto_unlock());
     }
 
     #[test]
