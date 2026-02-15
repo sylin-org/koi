@@ -312,15 +312,16 @@ fn eval_init(
                     .unwrap_or("");
 
                 let mut hint_text = format!(
-                    "Your suggested passphrase:\n\n    {}\n",
+                    "Your suggested passphrase:\n\n## {}\n",
                     suggested
                 );
                 if !hint.is_empty() {
-                    hint_text.push_str(&format!("\nMemorization hint: {hint}"));
+                    hint_text.push_str(&format!("\nMemorization hint: *{hint}*"));
                 }
                 hint_text.push_str(
-                    "\n\nThis passphrase encrypts the CA private key. \
-                     You'll need it every time the daemon restarts.",
+                    "\n\nThis passphrase protects your pond's private key. \
+                     Write it down somewhere safe — you'll need it if the \
+                     keystone stone reboots.",
                 );
 
                 return EvalResult::NeedInput {
@@ -348,9 +349,9 @@ fn eval_init(
                     messages: vec![
                         Message::info("Your Passphrase", &hint_text),
                         Message::info(
-                            "⚠ No recovery mechanism",
-                            "If you lose this passphrase, the entire pond must be \
-                             recreated from scratch.",
+                            "⚠ No recovery",
+                            "If you lose this passphrase, the pond must be \
+                             recreated from scratch. There is no reset.",
                         ),
                     ],
                 };
@@ -396,8 +397,9 @@ fn eval_init(
                 )],
                 messages: vec![Message::info(
                     "Custom Passphrase",
-                    "This passphrase encrypts the CA private key. You'll need it \
-                     every time the daemon restarts. Minimum 8 characters.",
+                    "This passphrase protects your pond's private key. \
+                     Write it down — you'll need it if the keystone stone reboots.\n\n\
+                     Minimum 8 characters.",
                 )],
             };
         }
