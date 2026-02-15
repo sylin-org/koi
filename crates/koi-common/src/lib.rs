@@ -1,5 +1,6 @@
 pub mod api;
 pub mod capability;
+pub mod ceremony;
 pub mod encoding;
 pub mod error;
 pub mod firewall;

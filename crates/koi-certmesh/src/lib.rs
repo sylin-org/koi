@@ -16,6 +16,7 @@ pub mod failover;
 pub mod health;
 pub mod http;
 pub mod lifecycle;
+pub mod pond_ceremony;
 pub mod profiles;
 pub mod protocol;
 pub mod roster;

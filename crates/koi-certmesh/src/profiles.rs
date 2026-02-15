@@ -42,6 +42,10 @@ impl TrustProfile {
 
     /// Parse from CLI string input.
     pub fn from_str_loose(s: &str) -> Option<Self> {
+        // Try serde snake_case first (just_me, my_team, my_organization)
+        if let Ok(p) = serde_json::from_value(serde_json::Value::String(s.to_string())) {
+            return Some(p);
+        }
         match s.to_lowercase().as_str() {
             "just-me" | "justme" | "personal" | "1" => Some(Self::JustMe),
             "team" | "my-team" | "myteam" | "2" => Some(Self::MyTeam),

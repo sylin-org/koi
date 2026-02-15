@@ -47,14 +47,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 thiserror = "2"
-uuid = { version = "1", features = ["v7"] }
+uuid = { version = "1", features = ["v7", "serde"] }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 async-stream = "0.3"
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 hostname = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
 futures-util = "0.3"
 hickory-server = "0.25"
 hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
@@ -83,7 +85,7 @@ rand = "0.8"
 zeroize = { version = "1", features = ["derive"] }
 subtle = "2"
 totp-rs = { version = "5", features = ["gen_secret"] }
-qrcode = { version = "0.14", default-features = false }
+qrcode = { version = "0.14", default-features = false, features = ["image"] }
 pem = "3"
 rcgen = "0.13"
 time = "0.3"

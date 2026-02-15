@@ -57,17 +57,76 @@ pub fn generate_secret() -> TotpSecret {
 /// The QR code encodes a `otpauth://` URI that authenticator apps
 /// (Google Authenticator, Authy, etc.) can scan.
 pub fn qr_code_unicode(secret: &TotpSecret, issuer: &str, account: &str) -> String {
+    qr_code_unicode_raw(&build_totp_uri(secret, issuer, account))
+}
+
+/// Render an arbitrary string as a Unicode QR code for terminal display.
+///
+/// This lower-level variant accepts any payload string, not just TOTP URIs,
+/// making it reusable for enrollment tokens, invite links, etc.
+pub fn qr_code_unicode_raw(payload: &str) -> String {
     use qrcode::render::unicode;
     use qrcode::QrCode;
 
-    let uri = build_totp_uri(secret, issuer, account);
-
-    match QrCode::new(uri.as_bytes()) {
+    match QrCode::new(payload.as_bytes()) {
         Ok(code) => code
             .render::<unicode::Dense1x2>()
             .dark_color(unicode::Dense1x2::Light)
             .light_color(unicode::Dense1x2::Dark)
             .build(),
+        Err(e) => {
+            tracing::warn!(error = %e, "QR code generation failed");
+            format!("(QR code unavailable: {e})")
+        }
+    }
+}
+
+/// Render a QR code as a base64-encoded PNG data URI.
+///
+/// Returns a string like `data:image/png;base64,iVBOR...` suitable for
+/// embedding in `<img src="...">` tags in web UIs.
+///
+/// Each QR module is rendered as a `scale × scale` block of pixels
+/// (default 8×8) with a 4-module quiet zone.
+pub fn qr_code_png_base64(secret: &TotpSecret, issuer: &str, account: &str) -> String {
+    qr_code_png_base64_raw(&build_totp_uri(secret, issuer, account))
+}
+
+/// Render an arbitrary string as a base64-encoded PNG QR code data URI.
+///
+/// This lower-level variant accepts any payload string, not just TOTP URIs,
+/// making it reusable for enrollment tokens, invite links, etc.
+pub fn qr_code_png_base64_raw(payload: &str) -> String {
+    use image::Luma;
+    use qrcode::QrCode;
+
+    let scale: u32 = 8;
+
+    match QrCode::new(payload.as_bytes()) {
+        Ok(code) => {
+            let img = code
+                .render::<Luma<u8>>()
+                .quiet_zone(true)
+                .min_dimensions(scale * 21, scale * 21)
+                .build();
+
+            let mut png_bytes: Vec<u8> = Vec::new();
+            let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
+            if let Err(e) = image::ImageEncoder::write_image(
+                encoder,
+                img.as_raw(),
+                img.width(),
+                img.height(),
+                image::ExtendedColorType::L8,
+            ) {
+                tracing::warn!(error = %e, "PNG encoding failed");
+                return format!("(QR PNG unavailable: {e})");
+            }
+
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+            format!("data:image/png;base64,{b64}")
+        }
         Err(e) => {
             tracing::warn!(error = %e, "QR code generation failed");
             format!("(QR code unavailable: {e})")
