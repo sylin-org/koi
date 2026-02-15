@@ -16,6 +16,7 @@
 //!   - `entropy`              – raw user input (keyboard mashing) for key-gen entropy
 //!   - `passphrase_choice`    – "keep" | "again" | "own" (after seeing suggestion)
 //!   - `passphrase`           – string, min 8 chars (set from suggestion or manual)
+//!   - `auto_unlock`           – "yes" | "no" (only if profile=custom)
 //!   - `auth_mode`            – "totp"
 //!   - `verification_code`    – 6-digit TOTP code
 //!
@@ -23,6 +24,7 @@
 //!   - `_effective_profile`   – resolved TrustProfile after custom→baseline mapping
 //!   - `_enrollment_open`     – bool (effective enrollment state)
 //!   - `_requires_approval`   – bool (effective approval state)
+//!   - `_auto_unlock`         – bool (auto-unlock CA on boot)
 //!   - `_server_entropy`      – hex-encoded 32 bytes of server entropy
 //!   - `_entropy_seed`        – hex-encoded 32-byte final seed
 //!   - `_suggested_passphrase`– XKCD-style passphrase derived from entropy
@@ -186,6 +188,7 @@ fn eval_init(
         bag.insert("_effective_profile".into(), serde_json::json!(baseline.to_string()));
         bag.insert("_enrollment_open".into(), serde_json::json!(enroll_open));
         bag.insert("_requires_approval".into(), serde_json::json!(approval));
+        // Custom profiles get auto_unlock from a separate prompt (handled below)
     } else {
         // Standard profile — validate and resolve defaults
         let trust = match TrustProfile::from_str_loose(&profile_raw) {
@@ -205,10 +208,12 @@ fn eval_init(
 
         let enroll_open = trust != TrustProfile::MyOrganization;
         let approval = trust.requires_approval();
+        let auto_unlock = trust != TrustProfile::MyOrganization;
 
         bag.insert("_effective_profile".into(), serde_json::json!(trust.to_string()));
         bag.insert("_enrollment_open".into(), serde_json::json!(enroll_open));
         bag.insert("_requires_approval".into(), serde_json::json!(approval));
+        bag.insert("_auto_unlock".into(), serde_json::json!(auto_unlock));
     }
 
     // ── 1b. Operator name (when approval is required) ───────────────
@@ -421,6 +426,44 @@ fn eval_init(
         }
     }
 
+    // ── 3b. Auto-unlock (custom profiles only) ─────────────────────
+    //
+    // Standard profiles set _auto_unlock from defaults above.
+    // Custom profiles ask the user.
+    if !bag.contains_key("_auto_unlock") {
+        match bag.get("auto_unlock").and_then(|v| v.as_str()).map(String::from) {
+            None => {
+                return EvalResult::NeedInput {
+                    prompts: vec![Prompt::select_one(
+                        "auto_unlock",
+                        "Unlock behavior after reboot",
+                        vec![
+                            SelectOption::with_description(
+                                "yes",
+                                "Auto-unlock (recommended)",
+                                "The passphrase is saved locally so the pond \
+                                 unlocks automatically when the stone reboots. \
+                                 Best for headless machines.",
+                            ),
+                            SelectOption::with_description(
+                                "no",
+                                "Stay locked until operator unlocks",
+                                "After each reboot, an operator must run \
+                                 'pond unlock' with the passphrase. \
+                                 Best when physical device theft is a concern.",
+                            ),
+                        ],
+                    )],
+                    messages: Vec::new(),
+                };
+            }
+            Some(choice) => {
+                let auto = choice == "yes";
+                bag.insert("_auto_unlock".into(), serde_json::json!(auto));
+            }
+        }
+    }
+
     // ── 4. Auth mode ────────────────────────────────────────────────
     // (unchanged numbering — was 4, still 4)
     let auth_mode = match bag.get("auth_mode").and_then(|v| v.as_str()).map(String::from) {
@@ -550,6 +593,11 @@ fn eval_init(
         .and_then(|v| v.as_bool()).unwrap_or(true) { "Open" } else { "Closed" };
     let approval_label = if requires_approval { "Required" } else { "Not required" };
 
+    let auto_unlock = bag.get("_auto_unlock")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let unlock_label = if auto_unlock { "Auto-unlock on boot" } else { "Locked until operator unlocks" };
+
     let mut summary_lines = vec![
         format!("Profile: {effective_profile}"),
         format!("Enrollment: {enrollment_label}"),
@@ -559,12 +607,16 @@ fn eval_init(
         summary_lines.push(format!("Operator: {op}"));
     }
     summary_lines.push(format!("Auth: {auth_mode}"));
+    summary_lines.push(format!("Boot: {unlock_label}"));
     summary_lines.push(String::new());
     summary_lines.push("This will:".into());
     summary_lines.push("• Generate an ECDSA P-256 CA keypair".into());
     summary_lines.push("• Encrypt the private key with your passphrase".into());
     summary_lines.push("• Install the CA in the system trust store".into());
     summary_lines.push(format!("• {enrollment_label} enrollment for other machines"));
+    if auto_unlock {
+        summary_lines.push("• Save passphrase locally for auto-unlock on reboot".into());
+    }
 
     EvalResult::Complete {
         messages: vec![Message::summary(
