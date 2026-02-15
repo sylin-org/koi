@@ -13,8 +13,9 @@
 //!   - `enrollment_open`      – "open" | "closed"   (only if profile=custom)
 //!   - `requires_approval`    – "yes" | "no"         (only if profile=custom)
 //!   - `operator`             – string               (when approval required)
-//!   - `passphrase`           – string, min 8 chars
-//!   - `entropy`              – raw user input for key-gen entropy
+//!   - `entropy`              – raw user input (keyboard mashing) for key-gen entropy
+//!   - `passphrase_choice`    – "keep" | "again" | "own" (after seeing suggestion)
+//!   - `passphrase`           – string, min 8 chars (set from suggestion or manual)
 //!   - `auth_mode`            – "totp"
 //!   - `verification_code`    – 6-digit TOTP code
 //!
@@ -22,10 +23,11 @@
 //!   - `_effective_profile`   – resolved TrustProfile after custom→baseline mapping
 //!   - `_enrollment_open`     – bool (effective enrollment state)
 //!   - `_requires_approval`   – bool (effective approval state)
-//!   - `_totp_secret_hex`     – hex-encoded TOTP secret bytes
-//!   - `_totp_uri`            – otpauth:// URI
 //!   - `_server_entropy`      – hex-encoded 32 bytes of server entropy
 //!   - `_entropy_seed`        – hex-encoded 32-byte final seed
+//!   - `_suggested_passphrase`– XKCD-style passphrase derived from entropy
+//!   - `_totp_secret_hex`     – hex-encoded TOTP secret bytes
+//!   - `_totp_uri`            – otpauth:// URI
 
 use koi_common::ceremony::{
     CeremonyRules, EvalResult, Message, Prompt, RenderHints, SelectOption,
@@ -228,44 +230,10 @@ fn eval_init(
         };
     }
 
-    // ── 2. Passphrase ───────────────────────────────────────────────
-    match bag.get("passphrase").and_then(|v| v.as_str()) {
-        None => {
-            return EvalResult::NeedInput {
-                prompts: vec![Prompt::secret_confirm(
-                    "passphrase",
-                    "Choose a passphrase to protect the pond keystone",
-                )],
-                messages: vec![
-                    Message::info(
-                        "Passphrase",
-                        "This passphrase encrypts the CA private key. You'll need it \
-                         every time the daemon restarts. Minimum 8 characters.",
-                    ),
-                    Message::info(
-                        "⚠ No recovery mechanism",
-                        "If you lose this passphrase, the entire pond must be \
-                         recreated from scratch.",
-                    ),
-                ],
-            };
-        }
-        Some(pp) => {
-            if pp.len() < 8 {
-                bag.remove("passphrase");
-                return EvalResult::ValidationError {
-                    prompts: vec![Prompt::secret_confirm(
-                        "passphrase",
-                        "Choose a passphrase to protect the pond keystone",
-                    )],
-                    messages: Vec::new(),
-                    error: "Passphrase must be at least 8 characters.".into(),
-                };
-            }
-        }
-    }
-
-    // ── 3. Entropy ──────────────────────────────────────────────────
+    // ── 2. Entropy ──────────────────────────────────────────────────
+    //
+    // "Mash the keyboard!" — collect raw entropy first, then derive
+    // a suggested XKCD-style passphrase from it.
     if !bag.contains_key("entropy") {
         let server_entropy = generate_server_entropy_hex();
         bag.insert(
@@ -276,17 +244,17 @@ fn eval_init(
         return EvalResult::NeedInput {
             prompts: vec![Prompt::entropy(
                 "entropy",
-                "Contribute additional entropy for key generation",
+                "Mash your keyboard!",
             )],
             messages: vec![Message::info(
                 "Entropy Collection",
-                "Type random characters, move your mouse, or paste random text. \
-                 This is mixed with server-generated randomness for defense in depth.",
+                "Type random characters — go wild! This will be mixed with \
+                 server-generated randomness to create your passphrase.",
             )],
         };
     }
 
-    // Combine server + client entropy
+    // Combine server + client entropy → seed
     if !bag.contains_key("_entropy_seed") {
         let client_entropy = bag
             .get("entropy")
@@ -304,7 +272,155 @@ fn eval_init(
         );
     }
 
+    // ── 3. Passphrase (suggest from entropy or manual) ──────────────
+    //
+    // Generate an XKCD-style passphrase from the entropy seed and
+    // present it. User can keep it, mash again, or type their own.
+    if !bag.contains_key("passphrase") {
+        // Generate suggestion from entropy seed
+        if !bag.contains_key("_suggested_passphrase") {
+            let seed_hex = bag["_entropy_seed"].as_str().unwrap_or("");
+            if let Ok(seed_bytes) = hex_decode(seed_hex) {
+                let mut seed_arr = [0u8; 32];
+                let len = seed_bytes.len().min(32);
+                seed_arr[..len].copy_from_slice(&seed_bytes[..len]);
+                let suggested = crate::entropy::generate_passphrase(&seed_arr);
+                let hint = crate::entropy::memorization_hint(&suggested);
+                bag.insert(
+                    "_suggested_passphrase".into(),
+                    serde_json::json!(suggested),
+                );
+                if !hint.is_empty() {
+                    bag.insert(
+                        "_passphrase_hint".into(),
+                        serde_json::json!(hint),
+                    );
+                }
+            }
+        }
+
+        // Show the suggestion and ask what to do
+        match bag.get("passphrase_choice").and_then(|v| v.as_str()).map(String::from) {
+            None => {
+                let suggested = bag
+                    .get("_suggested_passphrase")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(generation failed)");
+                let hint = bag
+                    .get("_passphrase_hint")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let mut hint_text = format!(
+                    "Your suggested passphrase:\n\n    {}\n",
+                    suggested
+                );
+                if !hint.is_empty() {
+                    hint_text.push_str(&format!("\nMemorization hint: {hint}"));
+                }
+                hint_text.push_str(
+                    "\n\nThis passphrase encrypts the CA private key. \
+                     You'll need it every time the daemon restarts.",
+                );
+
+                return EvalResult::NeedInput {
+                    prompts: vec![Prompt::select_one(
+                        "passphrase_choice",
+                        "What would you like to do?",
+                        vec![
+                            SelectOption::with_description(
+                                "keep",
+                                "Keep this passphrase",
+                                "Use the generated passphrase. Write it down!",
+                            ),
+                            SelectOption::with_description(
+                                "again",
+                                "Mash again",
+                                "Collect new entropy and generate a different passphrase.",
+                            ),
+                            SelectOption::with_description(
+                                "own",
+                                "Enter my own",
+                                "Type a custom passphrase (minimum 8 characters).",
+                            ),
+                        ],
+                    )],
+                    messages: vec![
+                        Message::info("Your Passphrase", &hint_text),
+                        Message::info(
+                            "⚠ No recovery mechanism",
+                            "If you lose this passphrase, the entire pond must be \
+                             recreated from scratch.",
+                        ),
+                    ],
+                };
+            }
+            Some(choice) => match choice.as_str() {
+                "keep" => {
+                    let suggested = bag
+                        .get("_suggested_passphrase")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    bag.insert(
+                        "passphrase".into(),
+                        serde_json::json!(suggested),
+                    );
+                }
+                "again" => {
+                    // Clear entropy state and loop back to mashing
+                    bag.remove("entropy");
+                    bag.remove("_server_entropy");
+                    bag.remove("_entropy_seed");
+                    bag.remove("_suggested_passphrase");
+                    bag.remove("_passphrase_hint");
+                    bag.remove("passphrase_choice");
+                    return eval_init(bag, render);
+                }
+                "own" => {
+                    // Will fall through to manual prompt below
+                }
+                _ => {
+                    bag.remove("passphrase_choice");
+                    return eval_init(bag, render);
+                }
+            },
+        }
+
+        // Manual passphrase entry ("own" choice)
+        if !bag.contains_key("passphrase") {
+            return EvalResult::NeedInput {
+                prompts: vec![Prompt::secret_confirm(
+                    "passphrase",
+                    "Enter your passphrase (minimum 8 characters)",
+                )],
+                messages: vec![Message::info(
+                    "Custom Passphrase",
+                    "This passphrase encrypts the CA private key. You'll need it \
+                     every time the daemon restarts. Minimum 8 characters.",
+                )],
+            };
+        }
+    }
+
+    // Validate passphrase length
+    if let Some(pp) = bag.get("passphrase").and_then(|v| v.as_str()) {
+        if pp.len() < 8 {
+            bag.remove("passphrase");
+            bag.remove("passphrase_choice");
+            return EvalResult::ValidationError {
+                prompts: vec![Prompt::secret_confirm(
+                    "passphrase",
+                    "Enter your passphrase (minimum 8 characters)",
+                )],
+                messages: Vec::new(),
+                error: "Passphrase must be at least 8 characters.".into(),
+            };
+        }
+    }
+
     // ── 4. Auth mode ────────────────────────────────────────────────
+    // (unchanged numbering — was 4, still 4)
     let auth_mode = match bag.get("auth_mode").and_then(|v| v.as_str()).map(String::from) {
         None => {
             return EvalResult::NeedInput {
@@ -343,6 +459,7 @@ fn eval_init(
     };
 
     // ── 5. TOTP setup + verification ────────────────────────────────
+    // (unchanged numbering — was 5, still 5)
     if auth_mode == "totp" {
         if !bag.contains_key("_totp_secret_hex") {
             let secret = koi_crypto::totp::generate_secret();
@@ -635,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn init_profile_then_passphrase() {
+    fn init_profile_then_entropy() {
         let host = make_host();
 
         let r1 = host
@@ -659,8 +776,52 @@ mod tests {
             .unwrap();
 
         assert!(!r2.complete);
-        assert_eq!(r2.prompts[0].key, "passphrase");
-        assert_eq!(r2.prompts[0].input_type, InputType::SecretConfirm);
+        assert_eq!(r2.prompts[0].key, "entropy");
+        assert_eq!(r2.prompts[0].input_type, InputType::Entropy);
+    }
+
+    #[test]
+    fn init_entropy_then_passphrase_suggestion() {
+        let host = make_host();
+
+        // Step 1: start with profile
+        let mut data = serde_json::Map::new();
+        data.insert("profile".into(), serde_json::json!("just_me"));
+        let r1 = host
+            .step(CeremonyRequest {
+                session_id: None,
+                ceremony: Some("init".into()),
+                data,
+                render: None,
+            })
+            .unwrap();
+
+        // Step 2: provide entropy
+        let mut data = serde_json::Map::new();
+        data.insert("entropy".into(), serde_json::json!("asdfghjklqwertyuiop"));
+        let r2 = host
+            .step(CeremonyRequest {
+                session_id: Some(r1.session_id),
+                ceremony: None,
+                data,
+                render: None,
+            })
+            .unwrap();
+
+        // Should show passphrase_choice with keep/again/own
+        assert!(!r2.complete);
+        assert_eq!(r2.prompts[0].key, "passphrase_choice");
+        assert_eq!(r2.prompts[0].input_type, InputType::SelectOne);
+        assert_eq!(r2.prompts[0].options.len(), 3);
+        assert_eq!(r2.prompts[0].options[0].value, "keep");
+        assert_eq!(r2.prompts[0].options[1].value, "again");
+        assert_eq!(r2.prompts[0].options[2].value, "own");
+
+        // Should have a message containing the suggested passphrase
+        let has_passphrase_msg = r2.messages.iter().any(|m| {
+            m.content.contains('-') && m.title.contains("Passphrase")
+        });
+        assert!(has_passphrase_msg, "Expected passphrase suggestion in messages");
     }
 
     #[test]
@@ -741,8 +902,11 @@ mod tests {
     fn init_rejects_short_passphrase() {
         let host = make_host();
 
+        // Pre-fill profile + entropy + own choice + short passphrase
         let mut data = serde_json::Map::new();
         data.insert("profile".into(), serde_json::json!("just_me"));
+        data.insert("entropy".into(), serde_json::json!("keyboard mashing"));
+        data.insert("passphrase_choice".into(), serde_json::json!("own"));
         let r1 = host
             .step(CeremonyRequest {
                 session_id: None,
@@ -752,6 +916,12 @@ mod tests {
             })
             .unwrap();
 
+        // Should now prompt for manual passphrase
+        assert!(!r1.complete);
+        assert_eq!(r1.prompts[0].key, "passphrase");
+        assert_eq!(r1.prompts[0].input_type, InputType::SecretConfirm);
+
+        // Provide a short one
         let mut data = serde_json::Map::new();
         data.insert("passphrase".into(), serde_json::json!("short"));
         let r2 = host
