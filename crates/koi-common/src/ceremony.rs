@@ -108,7 +108,7 @@ impl Default for QrFormat {
 ///
 /// This is the universal request shape for every ceremony step.
 /// The client sends key-value data which is merged into the session bag.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct CeremonyRequest {
     /// Session ID from a previous response. `None` to start a new ceremony.
     #[serde(default)]
@@ -134,7 +134,7 @@ pub struct CeremonyRequest {
 ///
 /// Contains prompts (what to ask the user), messages (what to show),
 /// completion status, and any errors.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CeremonyResponse {
     /// Session ID — include in the next request.
     pub session_id: Uuid,
@@ -153,6 +153,12 @@ pub struct CeremonyResponse {
     /// Validation or fatal error detail.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+
+    /// The final bag state when the ceremony completes.
+    /// Only present when `complete` is true and no fatal error occurred.
+    /// Contains all collected data including internal keys (prefixed `_`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_data: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 // ── Prompts ─────────────────────────────────────────────────────────
@@ -567,6 +573,13 @@ impl<R: CeremonyRules> CeremonyHost<R> {
 
         session.complete = complete;
 
+        // Capture the final bag before the session is dropped.
+        let result_data = if complete && error.is_none() {
+            Some(session.bag.clone())
+        } else {
+            None
+        };
+
         // Only store if not complete
         if !complete {
             let mut sessions = self.sessions.lock().expect("session lock poisoned");
@@ -579,6 +592,7 @@ impl<R: CeremonyRules> CeremonyHost<R> {
             messages,
             complete,
             error,
+            result_data,
         })
     }
 }
@@ -1090,6 +1104,7 @@ mod tests {
             messages: vec![Message::info("Note", "Something")],
             complete: false,
             error: None,
+            result_data: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

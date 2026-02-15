@@ -8,6 +8,7 @@
 //!
 //! Shared infrastructure (mode detection, payload builders, formatting) lives here.
 
+pub mod ceremony_cli;
 pub mod certmesh;
 pub mod dns;
 pub mod health;

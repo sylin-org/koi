@@ -127,6 +127,13 @@ pub struct CreateCaRequest {
     /// `None` uses the trust profile default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requires_approval: Option<bool>,
+    /// Optional hex-encoded TOTP secret.
+    ///
+    /// When provided by a ceremony-driven client, the server uses this
+    /// secret instead of generating one. The client has already shown
+    /// the QR code and verified the user's authenticator app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totp_secret_hex: Option<String>,
 }
 
 /// POST /create response.
@@ -672,6 +679,7 @@ mod tests {
             operator: None,
             enrollment_open: None,
             requires_approval: None,
+            totp_secret_hex: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: CreateCaRequest = serde_json::from_str(&json).unwrap();
@@ -692,6 +700,7 @@ mod tests {
             operator: Some("ops@acme.com".to_string()),
             enrollment_open: Some(false),
             requires_approval: Some(true),
+            totp_secret_hex: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: CreateCaRequest = serde_json::from_str(&json).unwrap();
@@ -710,6 +719,7 @@ mod tests {
             operator: None,
             enrollment_open: None,
             requires_approval: None,
+            totp_secret_hex: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("operator"));

@@ -198,8 +198,24 @@ async fn create_handler(
     };
     let ca_fingerprint = crate::ca::ca_fingerprint(&ca_state);
 
-    // Generate auth credential (default=TOTP)
-    let totp_secret = koi_crypto::totp::generate_secret();
+    // Generate auth credential (default=TOTP).
+    // If the client provided a ceremony-verified secret, use it;
+    // otherwise generate a fresh one.
+    let totp_secret = if let Some(ref hex) = request.totp_secret_hex {
+        match koi_common::encoding::hex_decode(hex) {
+            Ok(bytes) => koi_crypto::totp::TotpSecret::from_bytes(bytes),
+            Err(_) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    &CertmeshError::Internal(
+                        "totp_secret_hex: invalid hex encoding".into(),
+                    ),
+                );
+            }
+        }
+    } else {
+        koi_crypto::totp::generate_secret()
+    };
     let stored = match koi_crypto::auth::store_totp(&totp_secret, &request.passphrase) {
         Ok(s) => s,
         Err(e) => {
