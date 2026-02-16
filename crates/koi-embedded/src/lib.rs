@@ -1,7 +1,7 @@
 mod config;
 mod events;
 mod handle;
-mod http;
+pub(crate) mod http;
 
 use std::sync::Arc;
 
@@ -15,14 +15,13 @@ pub use config::{DnsConfigBuilder, KoiConfig, ServiceMode};
 pub use events::KoiEvent;
 pub use handle::{CertmeshHandle, DnsHandle, HealthHandle, KoiHandle, MdnsHandle, ProxyHandle};
 
-// Re-export types needed by downstream consumers (registration, discovery, DNS, proxy, health, UDP)
+// Re-export types needed by downstream consumers (registration, discovery, DNS, proxy, health)
 pub use koi_common::types::ServiceRecord;
 pub use koi_config::state::DnsEntry;
 pub use koi_health::{HealthCheck, HealthSnapshot, ServiceCheckKind};
 pub use koi_mdns::protocol::{RegisterPayload, RegistrationResult};
 pub use koi_mdns::MdnsEvent;
 pub use koi_proxy::ProxyEntry;
-pub use koi_udp::{UdpRuntime, UdpBindRequest, UdpDatagram, UdpSendRequest, BindingInfo as UdpBindingInfo};
 
 pub type Result<T> = std::result::Result<T, KoiError>;
 
@@ -79,11 +78,6 @@ impl Builder {
         self
     }
 
-    pub fn http_port(mut self, port: u16) -> Self {
-        self.config.http_port = port;
-        self
-    }
-
     pub fn mdns(mut self, enabled: bool) -> Self {
         self.config.mdns_enabled = enabled;
         self
@@ -135,6 +129,11 @@ impl Builder {
 
     pub fn udp(mut self, enabled: bool) -> Self {
         self.config.udp_enabled = enabled;
+        self
+    }
+
+    pub fn http_port(mut self, port: u16) -> Self {
+        self.config.http_port = port;
         self
     }
 
@@ -239,12 +238,6 @@ impl KoiEmbedded {
             None
         };
 
-        let udp = if self.config.udp_enabled {
-            Some(Arc::new(koi_udp::UdpRuntime::new(cancel.clone())))
-        } else {
-            None
-        };
-
         if let Some(runtime) = &dns {
             if self.config.dns_auto_start {
                 let _ = runtime.start().await?;
@@ -261,6 +254,37 @@ impl KoiEmbedded {
             if self.config.proxy_auto_start {
                 runtime.start_all().await?;
             }
+        }
+
+        let udp = if self.config.udp_enabled {
+            Some(Arc::new(koi_udp::UdpRuntime::new(cancel.clone())))
+        } else {
+            None
+        };
+
+        // Spawn embedded HTTP adapter if enabled
+        if self.config.http_enabled {
+            let http_port = self.config.http_port;
+            let http_cancel = cancel.clone();
+            let http_mdns = mdns.clone();
+            let http_dns = dns.clone();
+            let http_health = health.clone();
+            let http_certmesh = certmesh.clone();
+            let http_proxy = proxy.clone();
+            let http_udp = udp.clone();
+            tasks.push(tokio::spawn(async move {
+                http::serve(
+                    http_port,
+                    http_mdns,
+                    http_dns,
+                    http_health,
+                    http_certmesh,
+                    http_proxy,
+                    http_udp,
+                    http_cancel,
+                )
+                .await;
+            }));
         }
 
         if let Some(core) = &mdns {
@@ -368,31 +392,6 @@ impl KoiEmbedded {
             }
         }
 
-        // ── Embedded HTTP adapter ────────────────────────────────
-        if self.config.http_enabled {
-            let http_cancel = cancel.clone();
-            let http_port = self.config.http_port;
-            let http_mdns = mdns.clone();
-            let http_dns = dns.clone();
-            let http_health = health.clone();
-            let http_certmesh = certmesh.clone();
-            let http_proxy = proxy.clone();
-            let http_udp = udp.clone();
-            tasks.push(tokio::spawn(async move {
-                http::serve(
-                    http_port,
-                    http_mdns,
-                    http_dns,
-                    http_health,
-                    http_certmesh,
-                    http_proxy,
-                    http_udp,
-                    http_cancel,
-                )
-                .await;
-            }));
-        }
-
         Ok(KoiHandle::new_embedded(
             mdns, dns, health, certmesh, proxy, udp, event_tx, cancel, tasks,
         ))
@@ -456,7 +455,7 @@ fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
         }
     }
 
-    // No auto-unlock key — boot locked
+    // No auto-unlock key - boot locked
     let core = koi_certmesh::CertmeshCore::locked(roster, profile);
     Some(Arc::new(core))
 }

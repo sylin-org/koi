@@ -1,4 +1,4 @@
-﻿//! Embedded HTTP adapter — lightweight axum server for koi-embedded.
+﻿//! Embedded HTTP adapter - lightweight axum server for koi-embedded.
 //!
 //! When `http_enabled` is set on the builder, this module spins up a minimal
 //! HTTP server that mounts the same domain routes as the standalone daemon,
@@ -128,7 +128,7 @@ pub(crate) async fn serve(
     tracing::debug!("Embedded HTTP adapter stopped");
 }
 
-/// Liveness probe — matches standalone `/healthz`.
+/// Liveness probe - matches standalone `/healthz`.
 async fn healthz() -> &'static str {
     "OK"
 }

@@ -31,3 +31,6 @@ reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
 futures-util.workspace = true
 
+[dev-dependencies]
+base64.workspace = true
+
