@@ -38,14 +38,11 @@ koi install
 ```
 
 ```bash
-# Linux
-sudo koi install
-
-# macOS
+# Linux / macOS
 sudo koi install
 ```
 
-That's it. Koi is now running on port 5641, ready for HTTP, IPC, and CLI clients.
+Koi is now running on port 5641, ready for HTTP, IPC, and CLI clients.
 
 For temporary or interactive use, run in the foreground instead:
 
@@ -64,7 +61,7 @@ mDNS is the invisible backbone of local networking. Printers, smart speakers, Ai
 
 Koi fills the gap: a single daemon that speaks mDNS on the network side and JSON over HTTP/IPC/stdio on the application side. Any language with an HTTP client or the ability to spawn a process can discover, name, and secure services on the local network.
 
-## Containers get LAN tooling
+## Containers
 
 When Koi runs on the host, every container gains LAN capabilities through plain HTTP — no `--network=host`, no macvlan, no mDNS reflectors.
 
@@ -74,27 +71,17 @@ curl http://host.docker.internal:5641/v1/mdns/discover?type=_http._tcp
 curl http://host.docker.internal:5641/v1/dns/lookup?name=grafana
 ```
 
-The container makes a plain HTTP request; Koi speaks multicast on the physical network. Browse, register, resolve — all of it works from inside the most minimal scratch container. See [CONTAINERS.md](CONTAINERS.md) for Docker Compose examples, startup patterns, and Kubernetes DaemonSet configuration.
+See [CONTAINERS.md](CONTAINERS.md) for Docker Compose examples, startup patterns, and Kubernetes DaemonSet configuration.
 
 ## Capabilities
 
-| Capability | What it does | CLI moniker |
-| --- | --- | --- |
-| **mDNS** | Service discovery (DNS-SD) | `koi mdns ...` |
-| **DNS** | Local resolver for friendly names | `koi dns ...` |
-| **Certmesh** | Private CA + enrollment for LAN TLS | `koi certmesh ...` |
-| **Health** | Machine/service health view | `koi health ...` |
-| **Proxy** | TLS-terminating local reverse proxy | `koi proxy ...` |
-
-## Features
-
-- **Service discovery** — browse, resolve, subscribe to mDNS events
-- **Local DNS** — static entries, mDNS aliases, certmesh SANs
-- **LAN TLS** — private CA, envelope encryption with multi-method unlock (passphrase, TOTP, FIDO2, auto-unlock), ceremony-driven setup
-- **Health view** — machine synthesis + opt-in HTTP/TCP checks
-- **Local TLS proxy** — terminate TLS with certmesh-managed certs
-- **Single binary** — HTTP, IPC, and CLI in one daemon
-- **UUIDv7 identifiers** — time-ordered IDs for sessions, events, and correlation
+| Capability | What it does | CLI | Guide |
+| --- | --- | --- | --- |
+| **mDNS** | Service discovery (DNS-SD) | `koi mdns ...` | [mDNS guide](docs/guides/mdns.md) |
+| **DNS** | Local resolver for friendly names | `koi dns ...` | [DNS guide](docs/guides/dns.md) |
+| **Certmesh** | Private CA + enrollment for LAN TLS | `koi certmesh ...` | [Certmesh guide](docs/guides/certmesh.md) |
+| **Health** | Machine/service health monitoring | `koi health ...` | [Health guide](docs/guides/health.md) |
+| **Proxy** | TLS-terminating local reverse proxy | `koi proxy ...` | [Proxy guide](docs/guides/proxy.md) |
 
 ## Platform support
 
@@ -105,67 +92,6 @@ The container makes a plain HTTP request; Koi speaks multicast on the physical n
 | macOS    | Pure Rust (no Bonjour needed) | launchd plist         |
 
 Zero OS dependencies. No Bonjour, no Avahi, no system mDNS service required.
-
-## HTTP API
-
-Koi's HTTP API uses SSE (Server-Sent Events) for streaming and JSON for everything else.
-
-| Method   | Path                               | Description                         |
-| -------- | ---------------------------------- | ----------------------------------- |
-| `GET`    | `/v1/mdns/discover?type=_http._tcp`| SSE stream of discovered services   |
-| `POST`   | `/v1/mdns/announce`                | Register a service                  |
-| `DELETE` | `/v1/mdns/unregister/{id}`         | Unregister a service                |
-| `PUT`    | `/v1/mdns/heartbeat/{id}`          | Renew heartbeat lease               |
-| `GET`    | `/v1/mdns/resolve?name={instance}` | Resolve a specific service instance |
-| `GET`    | `/v1/mdns/subscribe?type=_http._tcp`| SSE stream of lifecycle events      |
-| `GET`    | `/v1/dns/status`                   | DNS resolver status                 |
-| `GET`    | `/v1/dns/lookup?name=grafana`      | Resolve a local name                |
-| `GET`    | `/v1/health/status`                | Health snapshot                     |
-| `GET`    | `/v1/status`                       | Unified capability status           |
-| `POST`   | `/v1/admin/shutdown`               | Initiate graceful shutdown          |
-| `GET`    | `/healthz`                         | Health check                        |
-
-SSE streams close after 5 seconds of quiet by default. Set `idle_for=0` for infinite streaming, or `idle_for=15` to wait longer on slow networks.
-
-## CLI
-
-```bash
-koi mdns discover http                              # discover HTTP services
-koi mdns announce "My App" http 8080 version=1.0    # advertise a service
-koi mdns resolve "My Server._http._tcp.local."      # resolve an instance
-koi dns add grafana 10.0.0.42                        # add DNS entry
-koi dns lookup grafana                               # resolve local name
-koi certmesh status                                  # private CA status
-koi health status                                    # health snapshot
-koi status                                           # unified capability status
-```
-
-When stdin is piped, Koi reads NDJSON commands directly:
-
-```bash
-echo '{"browse": "_http._tcp"}' | koi
-```
-
-## Configuration
-
-| Setting            | Flag           | Env var          | Default                              |
-| ------------------ | -------------- | ---------------- | ------------------------------------ |
-| HTTP port          | `--port`       | `KOI_PORT`       | `5641`                               |
-| Pipe/socket path   | `--pipe`       | `KOI_PIPE`       | `\\.\pipe\koi` / `/var/run/koi.sock` |
-| Log level          | `--log-level`  | `KOI_LOG`        | `info`                               |
-| Verbosity          | `-v`, `-vv`    | —                | off                                  |
-| Log file           | `--log-file`   | `KOI_LOG_FILE`   | —                                    |
-| Disable HTTP       | `--no-http`    | `KOI_NO_HTTP`    | —                                    |
-| Disable IPC        | `--no-ipc`     | `KOI_NO_IPC`     | —                                    |
-| Disable mDNS       | `--no-mdns`    | `KOI_NO_MDNS`    | —                                    |
-| Disable Certmesh   | `--no-certmesh`| `KOI_NO_CERTMESH`| —                                    |
-| Disable DNS        | `--no-dns`     | `KOI_NO_DNS`     | —                                    |
-| Disable Health     | `--no-health`  | `KOI_NO_HEALTH`  | —                                    |
-| Disable Proxy      | `--no-proxy`   | `KOI_NO_PROXY`   | —                                    |
-| DNS port           | `--dns-port`   | `KOI_DNS_PORT`   | `53`                                 |
-| DNS zone           | `--dns-zone`   | `KOI_DNS_ZONE`   | `lan`                                |
-| DNS public         | `--dns-public` | `KOI_DNS_PUBLIC` | off                                  |
-| JSON output        | `--json`       | —                | off                                  |
 
 ## Installation
 
@@ -189,19 +115,35 @@ Or install from [crates.io](https://crates.io/crates/koi-net):
 cargo install koi-net
 ```
 
-Or build and install locally:
-
-```bash
-cargo install --path crates/koi
-```
-
 ## Documentation
 
-- [**User Guide**](GUIDE.md) — step-by-step walkthrough from first command to advanced usage
-- [**Embedded Integration Guide**](docs/embedded-integration-guide.md) — embed Koi in Rust apps and validate full adapter surfaces
-- [**DNS Guide**](docs/guide-dns.md) — local resolver usage and HTTP endpoints
-- [**Container Guide**](CONTAINERS.md) — Docker, Compose, and Kubernetes integration
-- [**Technical Details**](TECHNICAL.md) — protocol spec, wire format, standards compliance
+**Using Koi:**
+
+- [**User Guide**](GUIDE.md) — from first command to advanced usage
+- [**Container Guide**](CONTAINERS.md) — Docker Compose, startup patterns, Kubernetes
+
+**Capability deep-dives:**
+
+- [mDNS — Service Discovery](docs/guides/mdns.md)
+- [Certmesh — Certificate Mesh](docs/guides/certmesh.md)
+- [DNS — Local Resolver](docs/guides/dns.md)
+- [Health — Endpoint Monitoring](docs/guides/health.md)
+- [Proxy — TLS Termination](docs/guides/proxy.md)
+- [System — Daemon Lifecycle](docs/guides/system.md)
+- [Embedded — Rust In-Process](docs/guides/embedded.md)
+
+**Reference:**
+
+- [Architecture](docs/reference/architecture.md) — crate structure, boundaries, design
+- [HTTP API](docs/reference/http-api.md) — all 43 endpoints
+- [CLI Reference](docs/reference/cli.md) — every command and flag
+- [Wire Protocol](docs/reference/wire-protocol.md) — JSON protocol spec
+- [Ceremony Protocol](docs/reference/ceremony-protocol.md) — interactive flow engine
+- [Envelope Encryption](docs/reference/envelope-encryption.md) — CA key protection
+
+**Decisions:**
+
+- [Architecture Decision Records](docs/adr/) — why things are the way they are
 
 ## Name
 
@@ -221,4 +163,4 @@ Free to use, embed, bundle, and redistribute, commercially or otherwise. Just li
 
 ## Contributing
 
-Contributions welcome. Please open an issue to discuss before submitting large changes.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, and contribution guidelines.

@@ -2,11 +2,17 @@
 
 Koi is a local infrastructure toolkit. It handles service discovery (mDNS/DNS-SD) and certificate management (private CA with pluggable enrollment auth) — the two things every LAN needs but nobody wants to set up manually.
 
-This guide covers the basics. Each capability has a detailed reference:
+This guide covers the basics. Each capability has a detailed walkthrough:
 
-- **[mDNS — Service Discovery](docs/guide-mdns.md)** — find, advertise, and monitor services on your network
-- **[Certmesh — Certificate Mesh](docs/guide-certmesh.md)** — private CA, TOTP/FIDO2 enrollment, mutual TLS trust
-- **[DNS — Local Resolver](docs/guide-dns.md)** — map friendly hostnames to local IPs
+- **[mDNS — Service Discovery](docs/guides/mdns.md)** — find, advertise, and monitor services on your network
+- **[Certmesh — Certificate Mesh](docs/guides/certmesh.md)** — private CA, TOTP/FIDO2 enrollment, mutual TLS trust
+- **[DNS — Local Resolver](docs/guides/dns.md)** — map friendly hostnames to local IPs
+- **[Health — Endpoint Monitoring](docs/guides/health.md)** — HTTP and TCP health checks
+- **[Proxy — TLS Termination](docs/guides/proxy.md)** — local TLS-terminating reverse proxy
+- **[System — Daemon Lifecycle](docs/guides/system.md)** — install, manage, uninstall
+- **[Embedded — Rust In-Process](docs/guides/embedded.md)** — use Koi as a library in Rust apps
+
+For full CLI flags and configuration, see the [CLI Reference](docs/reference/cli.md). For the HTTP API, see the [HTTP API Reference](docs/reference/http-api.md).
 
 ---
 
@@ -40,17 +46,7 @@ Other devices running any mDNS browser will see it. Press Ctrl+C to stop.
 
 ## Capabilities
 
-Koi is organized into **capabilities** — independent domains that can be enabled or disabled individually.
-
-| Capability | What it does | CLI moniker |
-|---|---|---|
-| **mdns** | mDNS/DNS-SD service discovery | `koi mdns ...` |
-| **certmesh** | Private CA, certificate enrollment | `koi certmesh ...` |
-| **dns** | Local DNS resolver for `.lan` names | `koi dns ...` |
-| **health** | Machine/service health view | `koi health ...` |
-| **proxy** | TLS-terminating local reverse proxy | `koi proxy ...` |
-
-Check the status of all capabilities:
+Koi is organized into **capabilities** — independent domains that can be enabled or disabled individually. Each capability can be turned off with `--no-<capability>` (e.g., `--no-dns`). Check the status of all capabilities:
 
 ```
 koi status
@@ -150,39 +146,17 @@ echo '{"browse":"_http._tcp"}' | koi
 
 ## Configuration
 
-All daemon settings can be set via CLI flags or environment variables:
-
-| Flag | Env var | Default | Description |
-|---|---|---|---|
-| `--port` | `KOI_PORT` | `5641` | HTTP API port |
-| `--pipe` | `KOI_PIPE` | platform-specific | IPC socket/pipe path |
-| `--log-level` | `KOI_LOG` | `info` | Log level (error/warn/info/debug/trace) |
-| `-v`, `--verbose` | | off | Increase verbosity (`-v` = debug, `-vv` = trace) |
-| `--log-file` | `KOI_LOG_FILE` | _(none)_ | Write logs to file (in addition to stderr) |
-| `--no-http` | `KOI_NO_HTTP` | `false` | Disable the HTTP adapter |
-| `--no-ipc` | `KOI_NO_IPC` | `false` | Disable the IPC adapter |
-| `--no-mdns` | `KOI_NO_MDNS` | `false` | Disable the mDNS capability |
-| `--no-certmesh` | `KOI_NO_CERTMESH` | `false` | Disable the certmesh capability |
-| `--no-dns` | `KOI_NO_DNS` | `false` | Disable the DNS capability |
-| `--no-health` | `KOI_NO_HEALTH` | `false` | Disable the health capability |
-| `--no-proxy` | `KOI_NO_PROXY` | `false` | Disable the proxy capability |
-| `--dns-port` | `KOI_DNS_PORT` | `53` | DNS server port |
-| `--dns-zone` | `KOI_DNS_ZONE` | `lan` | Local DNS zone suffix |
-| `--dns-public` | `KOI_DNS_PUBLIC` | `false` | Allow queries from non-private clients |
-
-When `-v` is used, it takes precedence over `--log-level`.
-
-Examples:
+All daemon settings can be set via CLI flags or environment variables. A few common examples:
 
 ```bash
 koi --port 8053 -v                       # custom port, debug logging
 koi -vv --log-file /var/log/koi.log      # trace-level with log file
-koi --no-http                            # IPC only
-koi --no-certmesh                        # disable certmesh capability
-koi --no-dns                             # disable DNS capability
-KOI_DNS_PORT=15353 koi                   # run DNS on a high port
+koi --no-http                            # IPC only, no HTTP adapter
+koi --no-certmesh --no-dns               # disable specific capabilities
 KOI_PORT=9090 KOI_LOG=trace koi          # all via environment
 ```
+
+For the full configuration table (all flags, env vars, and defaults), see the [CLI Reference](docs/reference/cli.md).
 
 ---
 
@@ -260,77 +234,9 @@ koi dns stop --endpoint http://localhost:5641
 
 ---
 
-## Quick reference
+## What's next
 
-```
-# Service discovery (mDNS)
-koi mdns discover [TYPE]                         # browse for services (5s default)
-koi mdns announce NAME TYPE PORT [KEY=VALUE ...] # advertise a service
-koi mdns unregister ID                           # stop advertising
-koi mdns resolve INSTANCE                        # look up a specific instance
-koi mdns subscribe TYPE                          # stream lifecycle events
-
-koi mdns admin status                            # daemon mDNS status
-koi mdns admin ls                                # list all registrations
-koi mdns admin inspect ID                        # detailed view (prefix matching)
-koi mdns admin drain ID                          # start grace timer
-koi mdns admin revive ID                         # cancel drain
-koi mdns admin unregister ID                     # force-remove
-
-# Certificate mesh
-koi certmesh create [--profile just-me|team|organization] [--operator NAME]
-                                                         # interactive ceremony (profile, entropy, passphrase,
-                                                         # unlock method, TOTP/FIDO2 setup)
-koi certmesh status                              # show mesh status
-koi certmesh join [ENDPOINT]                     # join existing mesh (discovers CA via mDNS)
-koi certmesh unlock                              # decrypt CA key (passphrase, TOTP, FIDO2, or auto)
-koi certmesh log                                 # show audit log
-koi certmesh set-hook --reload "COMMAND"         # set renewal hook
-koi certmesh promote [ENDPOINT]                  # promote standby CA
-koi certmesh open-enrollment [--until DURATION]  # open enrollment window
-koi certmesh close-enrollment                    # close enrollment window
-koi certmesh set-policy [--domain ...] [--subnet ...] [--clear]
-koi certmesh rotate-auth                         # rotate enrollment auth credential
-koi certmesh backup PATH                         # create encrypted backup bundle
-koi certmesh restore PATH                        # restore from backup bundle
-koi certmesh revoke HOSTNAME [--reason REASON]   # revoke a member's certificate
-koi certmesh compliance                          # compliance summary
-koi certmesh destroy                             # destroy all certmesh state (requires typing DESTROY)
-
-# DNS
-koi dns serve                                    # start resolver
-koi dns stop                                     # stop resolver (daemon mode)
-koi dns status                                   # resolver status
-koi dns lookup NAME [--record-type A|AAAA|ANY]   # query a name
-koi dns add NAME IP [--ttl SECS]                 # static entry
-koi dns remove NAME                              # remove static entry
-koi dns list                                     # list all resolvable names
-
-# Health
-koi health status                                # health snapshot
-koi health watch                                 # live watch view
-koi health add NAME --http URL                   # add HTTP check
-koi health add NAME --tcp HOST:PORT              # add TCP check
-koi health remove NAME                           # remove check
-koi health log                                   # show health transitions
-
-# Proxy
-koi proxy add NAME --listen 443 --backend http://127.0.0.1:8080
-koi proxy remove NAME
-koi proxy status
-koi proxy list
-
-# Global
-koi status                                       # unified capability status
-koi install                                      # install system service
-koi uninstall                                    # remove system service
-koi version                                      # show version
-
-# Flags (work with any subcommand)
-  --json              JSON output
-  --timeout SECONDS   auto-exit (0 = run forever)
-  --endpoint URL      connect to a specific daemon
-  --standalone        skip daemon detection
-  -v, -vv             increase verbosity
-  --log-file PATH     write logs to file
-```
+- **[CLI Reference](docs/reference/cli.md)** — complete list of every command, flag, and environment variable
+- **[HTTP API Reference](docs/reference/http-api.md)** — all 43 HTTP endpoints with request/response shapes
+- **[Architecture](docs/reference/architecture.md)** — how the crates fit together
+- **[Architecture Decision Records](docs/adr/)** — why Koi is built the way it is
