@@ -10,19 +10,18 @@ All CLI commands use the `koi health` prefix. All HTTP endpoints live under `/v1
 
 ---
 
-## Three check types
+## Two check types
 
-Koi supports three kinds of health checks, each suited to a different situation:
+Koi supports two kinds of health checks, each suited to a different situation:
 
 | Type | Flag | What it does | When to use |
 |---|---|---|---|
 | **HTTP** | `--http <url>` | Sends a `GET` request; healthy if the response is 2xx | Web services, APIs, anything with a health endpoint |
 | **TCP** | `--tcp <host:port>` | Opens a TCP connection; healthy if the connect succeeds | Databases, message queues, any service that accepts connections |
-| **Process** | `--process <name>` | Checks if a process with that name is running | Local services without a network interface |
 
-HTTP checks are the most common — most modern services expose a `/health` or `/healthz` endpoint. TCP checks are useful when the service doesn't speak HTTP but accepts connections (think PostgreSQL, Redis, MQTT brokers). Process checks are the fallback for services that don't listen on a network port at all.
+HTTP checks are the most common — most modern services expose a `/health` or `/healthz` endpoint. TCP checks are useful when the service doesn't speak HTTP but accepts connections (think PostgreSQL, Redis, MQTT brokers).
 
-All three types run at the daemon's configured polling interval. Koi fires a state-transition event when the result changes — not on every poll. This means your event stream and audit log show meaningful transitions, not a noisy heartbeat.
+Both types run at the daemon's configured polling interval. Koi fires a state-transition event when the result changes — not on every poll. This means your event stream and audit log show meaningful transitions, not a noisy heartbeat.
 
 ---
 
@@ -33,7 +32,6 @@ Add a few checks:
 ```
 koi health add api --http https://localhost:3000/health
 koi health add db --tcp 127.0.0.1:5432
-koi health add nginx --process nginx
 ```
 
 See the current state:
@@ -58,7 +56,6 @@ koi health watch
  SERVICE   STATE     SINCE              REASON
  api       healthy   2026-01-15 08:42   HTTP 200
  db        healthy   2026-01-15 08:42   TCP connect OK
- nginx     unhealthy 2026-01-15 09:01   process not found
 ```
 
 This is your at-a-glance dashboard. Leave it running in a terminal tab while you work. The default refresh is every 2 seconds; for a calmer view:
@@ -90,7 +87,6 @@ koi health status                               # Current state of all checks
 koi health watch [--interval SECS]              # Live dashboard
 koi health add NAME --http URL                  # Register an HTTP check
 koi health add NAME --tcp HOST:PORT             # Register a TCP check
-koi health add NAME --process NAME              # Register a process check
 koi health remove NAME                          # Remove a check
 koi health log                                  # Transition history
 ```
@@ -119,7 +115,7 @@ Content-Type: application/json
 {"name": "api", "http": "https://localhost:3000/health"}
 ```
 
-For TCP checks, use `{"name": "db", "tcp": "127.0.0.1:5432"}`. For process checks, `{"name": "nginx", "process": "nginx"}`.
+For TCP checks, use `{"name": "db", "tcp": "127.0.0.1:5432"}`.
 
 ---
 

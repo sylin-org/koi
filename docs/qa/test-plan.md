@@ -12,7 +12,7 @@ Scope: Follow-ups 1-4 (service lifecycle automation, persistence corruption, con
 
 ## Entry Criteria
 - `cargo test` passes.
-- `tests/integration.ps1` and `tests/integration.sh` pass in Tier 1/2.
+- `tests/integration.ps1` passes in Tier 1/2.
 - Release binary can be built (`cargo build --release`).
 
 ## Exit Criteria
