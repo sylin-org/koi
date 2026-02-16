@@ -20,17 +20,17 @@ This directory contains tool-agnostic context for AI coding assistants (Claude, 
 
 Tool-specific configurations bootstrap from this directory:
 
-| Tool | Config File |
-|------|-------------|
-| **GitHub Copilot** | `.github/copilot-instructions.md` |
-| **Claude Code** | `CLAUDE.md` |
-| **Cursor** | `.cursorrules` |
-| **Windsurf** | `.windsurfrules` |
-| **Cline** | `.clinerules` |
-| **Aider** | `CONVENTIONS.md` |
-| **Cody (Sourcegraph)** | `.sourcegraph/cody.md` |
-| **CodeGPT** | `.codegpt/instructions.md` |
-| **Amazon Q** | `.amazonq/rules.md` |
+| Tool                   | Config File                       |
+| ---------------------- | --------------------------------- |
+| **GitHub Copilot**     | `.github/copilot-instructions.md` |
+| **Claude Code**        | `CLAUDE.md`                       |
+| **Cursor**             | `.cursorrules`                    |
+| **Windsurf**           | `.windsurfrules`                  |
+| **Cline**              | `.clinerules`                     |
+| **Aider**              | `CONVENTIONS.md`                  |
+| **Cody (Sourcegraph)** | `.sourcegraph/cody.md`            |
+| **CodeGPT**            | `.codegpt/instructions.md`        |
+| **Amazon Q**           | `.amazonq/rules.md`               |
 
 All bootstrappers point to this `.agentic/` directory as the single source of truth.
 
@@ -43,6 +43,7 @@ Create a new file in `rules/` with frontmatter:
 globs: src/adapters/**/*.rs
 alwaysApply: false
 ---
+
 # Rule Name
 
 [Your rules here]
@@ -72,6 +73,7 @@ docs/
 ```
 
 When editing docs, follow three voices:
-- **Guides**: wise mentor — walk beside the reader, anticipate confusion
-- **Reference**: precise technician — exact shapes, validated against code
-- **ADRs**: honest historian — context, decision, consequences
+
+- **Guides**: wise mentor - walk beside the reader, anticipate confusion
+- **Reference**: precise technician - exact shapes, validated against code
+- **ADRs**: honest historian - context, decision, consequences

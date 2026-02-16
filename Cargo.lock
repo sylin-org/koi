@@ -1634,6 +1634,7 @@ name = "koi-embedded"
 version = "0.2.202602161546"
 dependencies = [
  "axum",
+ "base64",
  "futures-util",
  "hickory-proto",
  "koi-certmesh",
@@ -1707,6 +1708,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "axum",
+ "base64",
  "chrono",
  "clap",
  "command-surface",
@@ -1723,6 +1725,7 @@ dependencies = [
  "koi-mdns",
  "koi-proxy",
  "koi-truststore",
+ "koi-udp",
  "once_cell",
  "rand 0.8.5",
  "serde",
@@ -1784,6 +1787,7 @@ dependencies = [
 name = "koi-udp"
 version = "0.2.202602161546"
 dependencies = [
+ "async-stream",
  "axum",
  "base64",
  "chrono",

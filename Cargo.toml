@@ -25,7 +25,7 @@ repository = "https://github.com/sylin-org/koi"
 homepage = "https://sylin.org/koi"
 
 [workspace.dependencies]
-# Internal crates — version is required for crates.io publish; path is used locally
+# Internal crates - version is required for crates.io publish; path is used locally
 koi-common = { path = "crates/koi-common", version = "0.2" }
 koi-client = { path = "crates/koi-client", version = "0.2" }
 koi-embedded = { path = "crates/koi-embedded", version = "0.2" }
@@ -39,7 +39,7 @@ koi-health = { path = "crates/koi-health", version = "0.2" }
 koi-proxy = { path = "crates/koi-proxy", version = "0.2" }
 koi-udp = { path = "crates/koi-udp", version = "0.2" }
 
-# Shared external dependencies — single version pin
+# Shared external dependencies - single version pin
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

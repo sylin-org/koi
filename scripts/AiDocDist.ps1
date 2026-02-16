@@ -7,7 +7,7 @@ Dynamically discovers all folders and .md files under docs/ and consolidates the
 into namespaced files suitable for flat-folder AI ingestion. Merges related documents
 by folder while preserving all essential content.
 
-ADRs (docs/adr/) are excluded by default — they document historical decisions and
+ADRs (docs/adr/) are excluded by default - they document historical decisions and
 add noise for most LLM tasks. Use -IncludeADRs to override.
 
 New folders added under docs/ are automatically discovered and consolidated.
@@ -52,7 +52,8 @@ Write-Host "Target: $OutputDir"
 if ($IncludeADRs) {
     $SkipFolders = @()
     Write-Host "ADRs:   included" -ForegroundColor Yellow
-} else {
+}
+else {
     Write-Host "ADRs:   excluded (use -IncludeADRs to include)"
 }
 Write-Host ""
@@ -206,7 +207,7 @@ function Merge-Folder {
     }
 
     $dateStr = Get-Date -Format "MMMM dd, yyyy"
-    $content = "# Koi — $title`n`n"
+    $content = "# Koi - $title`n`n"
     $content += "**Consolidated from:** ``docs/$FolderName/`` ($($files.Count) files)`n"
     $content += "**Generated:** $dateStr`n`n"
     $content += "## Table of Contents`n`n"
@@ -229,8 +230,8 @@ function Merge-Folder {
 # ============================================================================
 
 $allFolders = Get-ChildItem -Path $SourceRoot -Directory |
-    Where-Object { $SkipFolders -notcontains $_.Name } |
-    Sort-Object Name
+Where-Object { $SkipFolders -notcontains $_.Name } |
+Sort-Object Name
 
 $folderNames = $allFolders | ForEach-Object { $_.Name }
 
@@ -265,7 +266,7 @@ foreach ($folder in $allFolders) {
 # ============================================================================
 
 $rootDocFiles = Get-ChildItem -Path $SourceRoot -Filter "*.md" -File |
-    Where-Object { $processedFiles -notcontains $_.FullName }
+Where-Object { $processedFiles -notcontains $_.FullName }
 
 if ($rootDocFiles.Count -gt 0) {
     $stepNum++
@@ -291,9 +292,9 @@ $stepNum++
 Write-Host "`n$stepNum. Root project files..." -ForegroundColor Cyan
 
 $specialFiles = @(
-    @{ Source = "README.md";      Target = "$Namespace-readme.md" }
-    @{ Source = "GUIDE.md";       Target = "$Namespace-guide.md" }
-    @{ Source = "CONTAINERS.md";  Target = "$Namespace-containers.md" }
+    @{ Source = "README.md"; Target = "$Namespace-readme.md" }
+    @{ Source = "GUIDE.md"; Target = "$Namespace-guide.md" }
+    @{ Source = "CONTAINERS.md"; Target = "$Namespace-containers.md" }
     @{ Source = "CONTRIBUTING.md"; Target = "$Namespace-contributing.md" }
 )
 
@@ -320,27 +321,27 @@ $dateStr = Get-Date -Format "MMMM dd, yyyy HH:mm"
 # --- Distribution README ---
 
 $categoryList = ($folderNames | ForEach-Object {
-    "- **$Namespace-$_-all.md** — ``docs/$_/`` consolidated"
-}) -join "`n"
+        "- **$Namespace-$_-all.md** - ``docs/$_/`` consolidated"
+    }) -join "`n"
 
 $specialList = ($specialFiles | ForEach-Object {
-    "- **$($_.Target)** — $($_.Source)"
-}) -join "`n"
+        "- **$($_.Target)** - $($_.Source)"
+    }) -join "`n"
 
 $distReadme = @"
 # Koi AI Distribution
 
 **Documentation set optimized for LLM ingestion.**
 
-Koi is a cross-platform local network toolkit — service discovery, local DNS,
+Koi is a cross-platform local network toolkit - service discovery, local DNS,
 certificate mesh, health monitoring, and TLS proxy in a single binary.
 
 ## Reading Order
 
-1. **$Namespace-readme.md** — what Koi is and why it exists
-2. **$Namespace-guide.md** — tutorial walkthrough
-3. **$Namespace-reference-all.md** — architecture, HTTP API, CLI, wire protocol
-4. **$Namespace-guides-all.md** — per-capability deep-dives
+1. **$Namespace-readme.md** - what Koi is and why it exists
+2. **$Namespace-guide.md** - tutorial walkthrough
+3. **$Namespace-reference-all.md** - architecture, HTTP API, CLI, wire protocol
+4. **$Namespace-guides-all.md** - per-capability deep-dives
 
 ## Consolidated Docs
 
@@ -389,7 +390,7 @@ foreach ($file in $outputFiles) {
         }
     }
 
-    $indexContent += "- **$($file.Name)** ($size KB) — $desc`n"
+    $indexContent += "- **$($file.Name)** ($size KB) - $desc`n"
 }
 
 $totalSize = ($outputFiles | Measure-Object -Property Length -Sum).Sum / 1MB

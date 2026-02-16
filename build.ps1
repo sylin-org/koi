@@ -6,7 +6,7 @@
     Reads version.json for major.minor, appends a timestamp build number,
     patches Cargo.toml permanently, builds, tests, and copies the binary to dist/.
 
-    Cargo.toml keeps the real version after each build — no restore.
+    Cargo.toml keeps the real version after each build - no restore.
 
     Version format: major.minor.YYYYMMDDHHmm
     Example: 0.1.202502071430
@@ -43,7 +43,7 @@ Write-Host ""
 Write-Host "  Building Koi $version" -ForegroundColor Cyan
 Write-Host ""
 
-# Patch Cargo.toml version (permanent — no restore)
+# Patch Cargo.toml version (permanent - no restore)
 $cargoToml = Join-Path $Root "Cargo.toml"
 $content = Get-Content $cargoToml -Raw
 $content = $content -replace '(?m)^version\s*=\s*"[^"]*"', "version = `"$version`""
@@ -53,7 +53,8 @@ Set-Content $cargoToml -Value $content -NoNewline
 if ($DebugBuild) {
     $targetDir = "debug"
     cargo build
-} else {
+}
+else {
     $targetDir = "release"
     cargo build --release
 }
@@ -73,7 +74,8 @@ if (-not $SkipTests) {
         cargo test -p koi-certmesh -- --test-threads=1
         if ($LASTEXITCODE -ne 0) { throw "Certmesh tests failed." }
         cargo test --workspace --exclude koi-certmesh
-    } else {
+    }
+    else {
         cargo test --release -p koi-certmesh -- --test-threads=1
         if ($LASTEXITCODE -ne 0) { throw "Certmesh tests failed." }
         cargo test --release --workspace --exclude koi-certmesh

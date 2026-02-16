@@ -255,7 +255,7 @@ jobs:
             WAIT_MIN=$(( (BATCHES - 1) * 10 ))
             echo "⚠️  ${NEW_TOTAL} new crate(s) → ${BATCHES} batch(es), ~${WAIT_MIN} min of rate-limit waits"
           else
-            echo "✅ All crates are updates — no rate-limit waits needed"
+            echo "✅ All crates are updates - no rate-limit waits needed"
           fi
           echo ""
 
