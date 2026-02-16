@@ -381,9 +381,7 @@ fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
             match koi_certmesh::ca::load_ca(&pp) {
                 Ok(ca_state) => {
                     // Reload roster (fresh copy for the new Arc)
-                    if let Ok(fresh_roster) =
-                        koi_certmesh::roster::load_roster(&roster_path)
-                    {
+                    if let Ok(fresh_roster) = koi_certmesh::roster::load_roster(&roster_path) {
                         let auth_path = koi_certmesh::ca::auth_path();
                         let auth = if auth_path.exists() {
                             std::fs::read_to_string(&auth_path)

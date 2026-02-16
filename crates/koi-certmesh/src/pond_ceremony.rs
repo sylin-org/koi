@@ -1,4 +1,4 @@
-﻿//! Pond ceremony rules — the domain-specific bag→prompts logic
+//! Pond ceremony rules — the domain-specific bag→prompts logic
 //! for certmesh ceremonies (init, join, invite, unlock).
 //!
 //! These rules implement [`CeremonyRules`] from koi-common. They
@@ -36,9 +36,7 @@
 //!   - `_totp_secret_hex`     – hex-encoded TOTP secret bytes
 //!   - `_totp_uri`            – otpauth:// URI
 
-use koi_common::ceremony::{
-    CeremonyRules, EvalResult, Message, Prompt, RenderHints, SelectOption,
-};
+use koi_common::ceremony::{CeremonyRules, EvalResult, Message, Prompt, RenderHints, SelectOption};
 use koi_common::encoding::{hex_decode, hex_encode};
 
 use crate::profiles::TrustProfile;
@@ -83,7 +81,11 @@ fn eval_init(
     render: &RenderHints,
 ) -> EvalResult {
     // ── 1. Profile ──────────────────────────────────────────────────
-    let profile_raw = match bag.get("profile").and_then(|v| v.as_str()).map(String::from) {
+    let profile_raw = match bag
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+    {
         None => {
             return EvalResult::NeedInput {
                 prompts: vec![Prompt::select_one(
@@ -176,12 +178,16 @@ fn eval_init(
         }
 
         // Resolve custom → effective settings
-        let enroll_open = bag.get("enrollment_open")
+        let enroll_open = bag
+            .get("enrollment_open")
             .and_then(|v| v.as_str())
-            .unwrap_or("open") == "open";
-        let approval = bag.get("requires_approval")
+            .unwrap_or("open")
+            == "open";
+        let approval = bag
+            .get("requires_approval")
             .and_then(|v| v.as_str())
-            .unwrap_or("no") == "yes";
+            .unwrap_or("no")
+            == "yes";
 
         let baseline = match (enroll_open, approval) {
             (true, false) => TrustProfile::JustMe,
@@ -190,7 +196,10 @@ fn eval_init(
             (false, false) => TrustProfile::JustMe,
         };
 
-        bag.insert("_effective_profile".into(), serde_json::json!(baseline.to_string()));
+        bag.insert(
+            "_effective_profile".into(),
+            serde_json::json!(baseline.to_string()),
+        );
         bag.insert("_enrollment_open".into(), serde_json::json!(enroll_open));
         bag.insert("_requires_approval".into(), serde_json::json!(approval));
         // Custom profiles get auto_unlock from a separate prompt (handled below)
@@ -219,24 +228,28 @@ fn eval_init(
             "auto"
         };
 
-        bag.insert("_effective_profile".into(), serde_json::json!(trust.to_string()));
+        bag.insert(
+            "_effective_profile".into(),
+            serde_json::json!(trust.to_string()),
+        );
         bag.insert("_enrollment_open".into(), serde_json::json!(enroll_open));
         bag.insert("_requires_approval".into(), serde_json::json!(approval));
         bag.insert("_unlock_method".into(), serde_json::json!(unlock_method));
-        bag.insert("_auto_unlock".into(), serde_json::json!(unlock_method == "auto"));
+        bag.insert(
+            "_auto_unlock".into(),
+            serde_json::json!(unlock_method == "auto"),
+        );
     }
 
     // ── 1b. Operator name (when approval is required) ───────────────
-    let requires_approval = bag.get("_requires_approval")
+    let requires_approval = bag
+        .get("_requires_approval")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
     if requires_approval && !bag.contains_key("operator") {
         return EvalResult::NeedInput {
-            prompts: vec![Prompt::text(
-                "operator",
-                "Operator name (for audit trails)",
-            )],
+            prompts: vec![Prompt::text("operator", "Operator name (for audit trails)")],
             messages: vec![Message::info(
                 "Operator",
                 "This name will be recorded in the audit log alongside \
@@ -257,10 +270,7 @@ fn eval_init(
         );
 
         return EvalResult::NeedInput {
-            prompts: vec![Prompt::entropy(
-                "entropy",
-                "Mash your keyboard!",
-            )],
+            prompts: vec![Prompt::entropy("entropy", "Mash your keyboard!")],
             messages: vec![Message::info(
                 "Entropy Collection",
                 "Type random characters — go wild! This will be mixed with \
@@ -271,10 +281,7 @@ fn eval_init(
 
     // Combine server + client entropy → seed
     if !bag.contains_key("_entropy_seed") {
-        let client_entropy = bag
-            .get("entropy")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let client_entropy = bag.get("entropy").and_then(|v| v.as_str()).unwrap_or("");
         let server_entropy = bag
             .get("_server_entropy")
             .and_then(|v| v.as_str())
@@ -301,21 +308,19 @@ fn eval_init(
                 seed_arr[..len].copy_from_slice(&seed_bytes[..len]);
                 let suggested = crate::entropy::generate_passphrase(&seed_arr);
                 let hint = crate::entropy::memorization_hint(&suggested);
-                bag.insert(
-                    "_suggested_passphrase".into(),
-                    serde_json::json!(suggested),
-                );
+                bag.insert("_suggested_passphrase".into(), serde_json::json!(suggested));
                 if !hint.is_empty() {
-                    bag.insert(
-                        "_passphrase_hint".into(),
-                        serde_json::json!(hint),
-                    );
+                    bag.insert("_passphrase_hint".into(), serde_json::json!(hint));
                 }
             }
         }
 
         // Show the suggestion and ask what to do
-        match bag.get("passphrase_choice").and_then(|v| v.as_str()).map(String::from) {
+        match bag
+            .get("passphrase_choice")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+        {
             None => {
                 let suggested = bag
                     .get("_suggested_passphrase")
@@ -326,10 +331,7 @@ fn eval_init(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                let mut hint_text = format!(
-                    "Your suggested passphrase:\n\n## {}\n",
-                    suggested
-                );
+                let mut hint_text = format!("Your suggested passphrase:\n\n## {}\n", suggested);
                 if !hint.is_empty() {
                     hint_text.push_str(&format!("\nMemorization hint: *{hint}*"));
                 }
@@ -378,10 +380,7 @@ fn eval_init(
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    bag.insert(
-                        "passphrase".into(),
-                        serde_json::json!(suggested),
-                    );
+                    bag.insert("passphrase".into(), serde_json::json!(suggested));
                 }
                 "again" => {
                     // Clear entropy state and loop back to mashing
@@ -441,7 +440,11 @@ fn eval_init(
     // Standard profiles set _unlock_method from defaults above.
     // Custom profiles ask the user to choose from three options.
     if !bag.contains_key("_unlock_method") {
-        match bag.get("auto_unlock").and_then(|v| v.as_str()).map(String::from) {
+        match bag
+            .get("auto_unlock")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+        {
             None => {
                 return EvalResult::NeedInput {
                     prompts: vec![Prompt::select_one(
@@ -487,20 +490,22 @@ fn eval_init(
 
     // ── 4. Auth mode ────────────────────────────────────────────────
     // (unchanged numbering — was 4, still 4)
-    let auth_mode = match bag.get("auth_mode").and_then(|v| v.as_str()).map(String::from) {
+    let auth_mode = match bag
+        .get("auth_mode")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+    {
         None => {
             return EvalResult::NeedInput {
                 prompts: vec![Prompt::select_one(
                     "auth_mode",
                     "Choose how stones will authenticate when joining the pond",
-                    vec![
-                        SelectOption::with_description(
-                            "totp",
-                            "TOTP (Authenticator App)",
-                            "6-digit codes from any TOTP-compatible app \
+                    vec![SelectOption::with_description(
+                        "totp",
+                        "TOTP (Authenticator App)",
+                        "6-digit codes from any TOTP-compatible app \
                              (Google Authenticator, Authy, etc.)",
-                        ),
-                    ],
+                    )],
                 )],
                 messages: Vec::new(),
             };
@@ -541,10 +546,7 @@ fn eval_init(
                 "_totp_secret_hex".into(),
                 serde_json::Value::String(secret_hex),
             );
-            bag.insert(
-                "_totp_uri".into(),
-                serde_json::Value::String(uri),
-            );
+            bag.insert("_totp_uri".into(), serde_json::Value::String(uri));
         }
 
         if !bag.contains_key("verification_code") {
@@ -557,10 +559,7 @@ fn eval_init(
                     "Enter the 6-digit code from your authenticator app",
                 )],
                 messages: vec![
-                    Message::qr_code(
-                        "Scan this QR code with your authenticator app",
-                        &qr_content,
-                    ),
+                    Message::qr_code("Scan this QR code with your authenticator app", &qr_content),
                     Message::info(
                         "Save this now",
                         "This secret will not be shown again after pond creation. \
@@ -666,20 +665,13 @@ fn eval_init(
                     .get("_self_hostname")
                     .and_then(|v| v.as_str())
                     .unwrap_or("pond");
-                let uri = koi_crypto::totp::build_totp_uri(
-                    &secret,
-                    "ZenGarden-Unlock",
-                    account,
-                );
+                let uri = koi_crypto::totp::build_totp_uri(&secret, "ZenGarden-Unlock", account);
 
                 bag.insert(
                     "_unlock_totp_secret".into(),
                     serde_json::Value::String(secret_hex),
                 );
-                bag.insert(
-                    "_unlock_totp_uri".into(),
-                    serde_json::Value::String(uri),
-                );
+                bag.insert("_unlock_totp_uri".into(), serde_json::Value::String(uri));
             }
 
             if !bag.contains_key("unlock_totp_code") {
@@ -725,7 +717,10 @@ fn eval_init(
 
             if !valid {
                 bag.remove("unlock_totp_code");
-                let uri = bag.get("_unlock_totp_uri").and_then(|v| v.as_str()).unwrap_or("");
+                let uri = bag
+                    .get("_unlock_totp_uri")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let qr_content = render_qr(uri, render);
 
                 return EvalResult::ValidationError {
@@ -765,12 +760,24 @@ fn eval_init(
     }
 
     // ── Complete ────────────────────────────────────────────────────
-    let effective_profile = bag.get("_effective_profile")
+    let effective_profile = bag
+        .get("_effective_profile")
         .and_then(|v| v.as_str())
         .unwrap_or(&profile_raw);
-    let enrollment_label = if bag.get("_enrollment_open")
-        .and_then(|v| v.as_bool()).unwrap_or(true) { "Open" } else { "Closed" };
-    let approval_label = if requires_approval { "Required" } else { "Not required" };
+    let enrollment_label = if bag
+        .get("_enrollment_open")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+    {
+        "Open"
+    } else {
+        "Closed"
+    };
+    let approval_label = if requires_approval {
+        "Required"
+    } else {
+        "Not required"
+    };
 
     let unlock_label = match unlock_method.as_str() {
         "auto" => "Auto-unlock on boot",
@@ -802,7 +809,9 @@ fn eval_init(
     summary_lines.push("• Generate an ECDSA P-256 CA keypair".into());
     summary_lines.push("• Encrypt the private key with envelope encryption (key slots)".into());
     summary_lines.push("• Install the CA in the system trust store".into());
-    summary_lines.push(format!("• {enrollment_label} enrollment for other machines"));
+    summary_lines.push(format!(
+        "• {enrollment_label} enrollment for other machines"
+    ));
     match unlock_method.as_str() {
         "auto" => {
             summary_lines.push("• Save passphrase locally for auto-unlock on reboot".into());
@@ -895,7 +904,11 @@ fn eval_unlock(
     let slot_table_path = crate::ca::slot_table_path();
     let available_methods = if slot_table_path.exists() {
         match koi_crypto::unlock_slots::SlotTable::load(&slot_table_path) {
-            Ok(table) => table.available_methods().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            Ok(table) => table
+                .available_methods()
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
             Err(_) => vec!["passphrase".to_string()],
         }
     } else {
@@ -907,9 +920,11 @@ fn eval_unlock(
 
     // Step 1: Choose unlock method (if multiple are available)
     if (has_totp || has_fido2) && !bag.contains_key("_unlock_choice") {
-        let mut options = vec![
-            SelectOption::with_description("passphrase", "Passphrase", "Enter your pond passphrase"),
-        ];
+        let mut options = vec![SelectOption::with_description(
+            "passphrase",
+            "Passphrase",
+            "Enter your pond passphrase",
+        )];
         if has_totp {
             options.push(SelectOption::with_description(
                 "totp",
@@ -1010,26 +1025,14 @@ fn profile_prompt() -> Prompt {
         "profile",
         "Who is this pond for?",
         vec![
-            SelectOption::with_description(
-                "just_me",
-                "Just me",
-                "Single admin, personal garden.",
-            ),
-            SelectOption::with_description(
-                "my_team",
-                "My team",
-                "Small group with shared trust.",
-            ),
+            SelectOption::with_description("just_me", "Just me", "Single admin, personal garden."),
+            SelectOption::with_description("my_team", "My team", "Small group with shared trust."),
             SelectOption::with_description(
                 "my_organization",
                 "My organization",
                 "Structured admin, operator required.",
             ),
-            SelectOption::with_description(
-                "custom",
-                "Custom",
-                "Choose each policy individually.",
-            ),
+            SelectOption::with_description("custom", "Custom", "Choose each policy individually."),
         ],
     )
 }
@@ -1157,10 +1160,14 @@ mod tests {
         assert_eq!(r2.prompts[0].options[2].value, "own");
 
         // Should have a message containing the suggested passphrase
-        let has_passphrase_msg = r2.messages.iter().any(|m| {
-            m.content.contains('-') && m.title.contains("Passphrase")
-        });
-        assert!(has_passphrase_msg, "Expected passphrase suggestion in messages");
+        let has_passphrase_msg = r2
+            .messages
+            .iter()
+            .any(|m| m.content.contains('-') && m.title.contains("Passphrase"));
+        assert!(
+            has_passphrase_msg,
+            "Expected passphrase suggestion in messages"
+        );
     }
 
     #[test]

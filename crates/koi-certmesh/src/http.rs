@@ -207,9 +207,7 @@ async fn create_handler(
             Err(_) => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    &CertmeshError::Internal(
-                        "totp_secret_hex: invalid hex encoding".into(),
-                    ),
+                    &CertmeshError::Internal("totp_secret_hex: invalid hex encoding".into()),
                 );
             }
         }

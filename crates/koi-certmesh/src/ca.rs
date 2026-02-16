@@ -233,8 +233,8 @@ pub fn load_ca(passphrase: &str) -> Result<CaState, CertmeshError> {
 
     let ca_key_der = if slot_path.exists() {
         // ── Envelope encryption path ──
-        let slot_table = SlotTable::load(&slot_path)
-            .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+        let slot_table =
+            SlotTable::load(&slot_path).map_err(|e| CertmeshError::Crypto(e.to_string()))?;
         let master_key = slot_table
             .unwrap_with_passphrase(passphrase)
             .map_err(|e| match e {
@@ -248,13 +248,12 @@ pub fn load_ca(passphrase: &str) -> Result<CaState, CertmeshError> {
     } else {
         // ── Legacy path: direct passphrase encryption ──
         // Decrypt, then auto-migrate to envelope encryption.
-        let plaintext =
-            keys::decrypt_bytes(&encrypted, passphrase).map_err(|e| match e {
-                CryptoError::Decryption(_) => {
-                    CertmeshError::Crypto("wrong passphrase or corrupted key file".into())
-                }
-                other => CertmeshError::Crypto(other.to_string()),
-            })?;
+        let plaintext = keys::decrypt_bytes(&encrypted, passphrase).map_err(|e| match e {
+            CryptoError::Decryption(_) => {
+                CertmeshError::Crypto("wrong passphrase or corrupted key file".into())
+            }
+            other => CertmeshError::Crypto(other.to_string()),
+        })?;
 
         tracing::info!("Migrating CA key from legacy encryption to envelope encryption");
         let (new_encrypted, slot_table, _master_key) =
@@ -294,8 +293,8 @@ pub fn load_ca_with_master_key(master_key: &[u8; 32]) -> Result<CaState, Certmes
 
 /// Reconstruct `CaState` from decrypted PKCS#8 DER key bytes.
 fn build_ca_state_from_der(ca_key_der: &[u8]) -> Result<CaState, CertmeshError> {
-    let ca_key = keys::ca_keypair_from_der(ca_key_der)
-        .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+    let ca_key =
+        keys::ca_keypair_from_der(ca_key_der).map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
     let cert_path = ca_dir().join(CA_CERT_FILENAME);
     let cert_pem = std::fs::read_to_string(&cert_path)?;

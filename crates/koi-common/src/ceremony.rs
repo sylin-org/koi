@@ -429,10 +429,7 @@ impl<R: CeremonyRules> CeremonyHost<R> {
     ///   `data` into the bag, evaluates the rules, and returns prompts.
     /// - If `session_id` is `Some`, merges `data` into the existing
     ///   session bag, re-evaluates the rules, and returns prompts.
-    pub fn step(
-        &self,
-        request: CeremonyRequest,
-    ) -> Result<CeremonyResponse, CeremonyError> {
+    pub fn step(&self, request: CeremonyRequest) -> Result<CeremonyResponse, CeremonyError> {
         match request.session_id {
             None => self.start_new(request),
             Some(id) => self.continue_existing(id, request),
@@ -445,9 +442,7 @@ impl<R: CeremonyRules> CeremonyHost<R> {
         let mut sessions = self.sessions.lock().expect("session lock poisoned");
         let now = Instant::now();
         let before = sessions.len();
-        sessions.retain(|_id, session| {
-            now.duration_since(session.last_active) < self.session_ttl
-        });
+        sessions.retain(|_id, session| now.duration_since(session.last_active) < self.session_ttl);
         let removed = before - sessions.len();
         if removed > 0 {
             tracing::debug!(
@@ -466,10 +461,7 @@ impl<R: CeremonyRules> CeremonyHost<R> {
 
     // ── Internal ────────────────────────────────────────────────────
 
-    fn start_new(
-        &self,
-        request: CeremonyRequest,
-    ) -> Result<CeremonyResponse, CeremonyError> {
+    fn start_new(&self, request: CeremonyRequest) -> Result<CeremonyResponse, CeremonyError> {
         let ceremony = request
             .ceremony
             .as_deref()
@@ -531,7 +523,9 @@ impl<R: CeremonyRules> CeremonyHost<R> {
 
         let render = session.render.clone();
         let ceremony_type = session.ceremony_type.clone();
-        let result = self.rules.evaluate(&ceremony_type, &mut session.bag, &render);
+        let result = self
+            .rules
+            .evaluate(&ceremony_type, &mut session.bag, &render);
 
         // Extract session to finalize outside the lock
         let session = sessions.remove(&session_id).expect("just accessed");
@@ -550,17 +544,13 @@ impl<R: CeremonyRules> CeremonyHost<R> {
         let session_id = session.id;
 
         let (prompts, messages, complete, error) = match result {
-            EvalResult::NeedInput { prompts, messages } => {
-                (prompts, messages, false, None)
-            }
+            EvalResult::NeedInput { prompts, messages } => (prompts, messages, false, None),
             EvalResult::ValidationError {
                 prompts,
                 messages,
                 error,
             } => (prompts, messages, false, Some(error)),
-            EvalResult::Complete { messages } => {
-                (Vec::new(), messages, true, None)
-            }
+            EvalResult::Complete { messages } => (Vec::new(), messages, true, None),
             EvalResult::Fatal(msg) => {
                 let messages = vec![Message {
                     kind: MessageKind::Error,
@@ -665,10 +655,7 @@ impl Prompt {
     }
 
     /// Create a `SecretConfirm` prompt (passphrase + confirmation).
-    pub fn secret_confirm(
-        key: impl Into<String>,
-        prompt: impl Into<String>,
-    ) -> Self {
+    pub fn secret_confirm(key: impl Into<String>, prompt: impl Into<String>) -> Self {
         Self {
             key: key.into(),
             prompt: prompt.into(),
@@ -725,10 +712,7 @@ impl Prompt {
 
 impl SelectOption {
     /// Create a select option.
-    pub fn new(
-        value: impl Into<String>,
-        label: impl Into<String>,
-    ) -> Self {
+    pub fn new(value: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             value: value.into(),
             label: label.into(),
@@ -761,10 +745,7 @@ impl Message {
     }
 
     /// Create a `QrCode` message.
-    pub fn qr_code(
-        title: impl Into<String>,
-        content: impl Into<String>,
-    ) -> Self {
+    pub fn qr_code(title: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             kind: MessageKind::QrCode,
             title: title.into(),
@@ -773,10 +754,7 @@ impl Message {
     }
 
     /// Create a `Summary` message.
-    pub fn summary(
-        title: impl Into<String>,
-        content: impl Into<String>,
-    ) -> Self {
+    pub fn summary(title: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             kind: MessageKind::Summary,
             title: title.into(),
@@ -829,10 +807,7 @@ mod tests {
                     // No name yet — ask for it
                     EvalResult::NeedInput {
                         prompts: vec![Prompt::text("name", "What is your name?")],
-                        messages: vec![Message::info(
-                            "Welcome",
-                            "Please introduce yourself.",
-                        )],
+                        messages: vec![Message::info("Welcome", "Please introduce yourself.")],
                     }
                 }
                 Some(name) if name.is_empty() => {

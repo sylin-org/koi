@@ -1,4 +1,4 @@
-﻿//! Generic CLI ceremony render loop.
+//! Generic CLI ceremony render loop.
 //!
 //! A dumb render loop that drives a [`CeremonyHost`]. The loop:
 //!
@@ -13,8 +13,8 @@
 //! options, validation errors — is driven by the ceremony response.
 
 use koi_common::ceremony::{
-    CeremonyHost, CeremonyRequest, CeremonyResponse, CeremonyRules,
-    InputType, Message, MessageKind, Prompt, QrFormat, RenderHints,
+    CeremonyHost, CeremonyRequest, CeremonyResponse, CeremonyRules, InputType, Message,
+    MessageKind, Prompt, QrFormat, RenderHints,
 };
 
 // ── Color helpers (reused from certmesh module) ─────────────────────
@@ -107,15 +107,9 @@ fn print_box(indent: &str, title: Option<&str>, lines: &[String]) {
         } else {
             1
         };
-        println!(
-            "{indent}╭{label}{}╮",
-            "─".repeat(remaining)
-        );
+        println!("{indent}╭{label}{}╮", "─".repeat(remaining));
     } else {
-        println!(
-            "{indent}╭{}╮",
-            "─".repeat(inner + 2)
-        );
+        println!("{indent}╭{}╮", "─".repeat(inner + 2));
     }
 
     for line in lines {
@@ -123,10 +117,7 @@ fn print_box(indent: &str, title: Option<&str>, lines: &[String]) {
         println!("{indent}│ {padded} │");
     }
 
-    println!(
-        "{indent}╰{}╯",
-        "─".repeat(inner + 2)
-    );
+    println!("{indent}╰{}╯", "─".repeat(inner + 2));
 }
 
 // ── Prompt line ─────────────────────────────────────────────────────
@@ -166,9 +157,7 @@ pub fn run_ceremony<R: CeremonyRules>(
         render: Some(render_hints.clone()),
     };
 
-    let mut response = host
-        .step(request)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut response = host.step(request).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     loop {
         // Render the response
@@ -304,7 +293,11 @@ fn collect_select_one(prompt: &Prompt) -> anyhow::Result<String> {
         let default_marker = if num == 1 { " (default)" } else { "" };
         println!(
             "  [{}] {}{}",
-            if num == 1 { color::cyan(&num.to_string()) } else { num.to_string() },
+            if num == 1 {
+                color::cyan(&num.to_string())
+            } else {
+                num.to_string()
+            },
             opt.label,
             color::dim(default_marker)
         );
@@ -405,7 +398,10 @@ fn collect_secret_confirm(prompt: &Prompt) -> anyhow::Result<String> {
 
 fn collect_code(prompt: &Prompt) -> anyhow::Result<String> {
     println!();
-    let code = prompt_line(&format!("  {} ", color::cyan(&format!("{}:", prompt.prompt))))?;
+    let code = prompt_line(&format!(
+        "  {} ",
+        color::cyan(&format!("{}:", prompt.prompt))
+    ))?;
     let cleaned = code.trim().replace(' ', "");
     if cleaned.is_empty() {
         println!("  {} Code cannot be empty.", color::red("✗"));

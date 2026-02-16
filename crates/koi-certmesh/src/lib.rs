@@ -433,23 +433,26 @@ impl CertmeshCore {
     /// Loads the slot table, verifies the TOTP code, unwraps the master
     /// key, and decrypts the CA key.
     pub async fn unlock_with_totp(&self, code: &str) -> Result<(), CertmeshError> {
-        let slot_table = ca::load_slot_table()?
-            .ok_or_else(|| CertmeshError::NoSlotFound("no slot table found — pond may use legacy passphrase format".into()))?;
+        let slot_table = ca::load_slot_table()?.ok_or_else(|| {
+            CertmeshError::NoSlotFound(
+                "no slot table found — pond may use legacy passphrase format".into(),
+            )
+        })?;
 
         if !slot_table.has_totp_slot() {
-            return Err(CertmeshError::NoSlotFound("TOTP unlock is not configured for this pond".into()));
+            return Err(CertmeshError::NoSlotFound(
+                "TOTP unlock is not configured for this pond".into(),
+            ));
         }
 
-        let master_key = slot_table
-            .unwrap_with_totp(code)
-            .map_err(|e| {
-                let msg = e.to_string();
-                if msg.contains("invalid TOTP code") {
-                    CertmeshError::InvalidAuth
-                } else {
-                    CertmeshError::Crypto(msg)
-                }
-            })?;
+        let master_key = slot_table.unwrap_with_totp(code).map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("invalid TOTP code") {
+                CertmeshError::InvalidAuth
+            } else {
+                CertmeshError::Crypto(msg)
+            }
+        })?;
 
         self.unlock_with_master_key(&master_key).await
     }
@@ -460,11 +463,16 @@ impl CertmeshCore {
     /// This function performs the cryptographic unwrap using the
     /// credential ID.
     pub async fn unlock_with_fido2(&self, credential_id: &[u8]) -> Result<(), CertmeshError> {
-        let slot_table = ca::load_slot_table()?
-            .ok_or_else(|| CertmeshError::NoSlotFound("no slot table found — pond may use legacy passphrase format".into()))?;
+        let slot_table = ca::load_slot_table()?.ok_or_else(|| {
+            CertmeshError::NoSlotFound(
+                "no slot table found — pond may use legacy passphrase format".into(),
+            )
+        })?;
 
         if slot_table.fido2_credential().is_none() {
-            return Err(CertmeshError::NoSlotFound("FIDO2 unlock is not configured for this pond".into()));
+            return Err(CertmeshError::NoSlotFound(
+                "FIDO2 unlock is not configured for this pond".into(),
+            ));
         }
 
         let master_key = slot_table

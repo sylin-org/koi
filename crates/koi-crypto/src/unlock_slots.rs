@@ -127,9 +127,7 @@ impl SlotTable {
                 return bytes_to_master_key(&bytes);
             }
         }
-        Err(CryptoError::Decryption(
-            "no passphrase slot found".into(),
-        ))
+        Err(CryptoError::Decryption("no passphrase slot found".into()))
     }
 
     /// Add an auto-unlock marker slot.
@@ -146,7 +144,9 @@ impl SlotTable {
 
     /// Check if auto-unlock is enabled.
     pub fn has_auto_unlock(&self) -> bool {
-        self.slots.iter().any(|s| matches!(s, UnlockSlot::AutoUnlock))
+        self.slots
+            .iter()
+            .any(|s| matches!(s, UnlockSlot::AutoUnlock))
     }
 
     /// Add a TOTP unlock slot. The shared_secret is stored so the stone
@@ -190,9 +190,7 @@ impl SlotTable {
 
                 // Verify TOTP code
                 if !crate::totp::verify_code(&secret, code) {
-                    return Err(CryptoError::Decryption(
-                        "invalid TOTP code".into(),
-                    ));
+                    return Err(CryptoError::Decryption("invalid TOTP code".into()));
                 }
 
                 // Derive slot_kek and unwrap
@@ -207,7 +205,9 @@ impl SlotTable {
 
     /// Check if a TOTP slot exists.
     pub fn has_totp_slot(&self) -> bool {
-        self.slots.iter().any(|s| matches!(s, UnlockSlot::Totp { .. }))
+        self.slots
+            .iter()
+            .any(|s| matches!(s, UnlockSlot::Totp { .. }))
     }
 
     /// Add a FIDO2 unlock slot.
@@ -553,12 +553,7 @@ mod tests {
         let mut table = SlotTable::new_with_passphrase(&master_key, "pass").unwrap();
 
         table
-            .add_fido2_slot(
-                &master_key,
-                b"real-cred",
-                b"pub-key",
-                "garden.local",
-            )
+            .add_fido2_slot(&master_key, b"real-cred", b"pub-key", "garden.local")
             .unwrap();
 
         assert!(table.unwrap_with_fido2(b"wrong-cred").is_err());
