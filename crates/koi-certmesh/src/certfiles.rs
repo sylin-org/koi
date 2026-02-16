@@ -10,10 +10,10 @@ use crate::ca::IssuedCert;
 /// Write all certificate files for a host to the standard path.
 ///
 /// Creates the directory `~/.koi/certs/<hostname>/` and writes:
-/// - `cert.pem` — service certificate
-/// - `key.pem` — service private key (0600 on Unix)
-/// - `ca.pem` — root CA public certificate
-/// - `fullchain.pem` — cert.pem + ca.pem concatenated
+/// - `cert.pem` - service certificate
+/// - `key.pem` - service private key (0600 on Unix)
+/// - `ca.pem` - root CA public certificate
+/// - `fullchain.pem` - cert.pem + ca.pem concatenated
 ///
 /// Returns the directory path where files were written.
 pub fn write_cert_files(hostname: &str, issued: &IssuedCert) -> Result<PathBuf, std::io::Error> {

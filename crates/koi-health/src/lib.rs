@@ -1,4 +1,4 @@
-//! Koi Health — network health monitoring (Phase 7).
+//! Koi Health - network health monitoring (Phase 7).
 
 mod checker;
 pub mod http;

@@ -120,7 +120,7 @@ pub fn save_slot_table(table: &SlotTable) -> Result<(), CertmeshError> {
     Ok(())
 }
 
-/// Build the CA's CertificateParams (without key — rcgen 0.13 style).
+/// Build the CA's CertificateParams (without key - rcgen 0.13 style).
 fn build_ca_params() -> Result<CertificateParams, CertmeshError> {
     let mut ca_params = CertificateParams::default();
     ca_params
@@ -189,7 +189,7 @@ pub fn create_ca(
     // Save CA certificate
     std::fs::write(dir.join(CA_CERT_FILENAME), &cert_pem)?;
 
-    // Platform credential binding — seal the ciphertext in the OS
+    // Platform credential binding - seal the ciphertext in the OS
     // credential store so the key blob is machine-bound.
     if koi_crypto::tpm::is_available() {
         if let Err(e) =

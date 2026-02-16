@@ -19,7 +19,7 @@ use crate::roster::{MemberRole, MemberStatus, Roster, RosterMember, RosterMetada
 /// If `allowed_domain` is set, the hostname must end with that domain suffix
 /// (or match exactly). If `allowed_subnet` is set, the caller IP would be
 /// checked (subnet validation is deferred to the HTTP layer where IP is
-/// available — see `validate_subnet()`).
+/// available - see `validate_subnet()`).
 pub fn validate_scope(hostname: &str, metadata: &RosterMetadata) -> Result<(), CertmeshError> {
     if let Some(ref domain) = metadata.allowed_domain {
         let domain_lower = domain.to_lowercase();

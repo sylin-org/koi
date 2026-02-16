@@ -1,4 +1,4 @@
-//! Koi mDNS — mDNS/DNS-SD service discovery domain.
+//! Koi mDNS - mDNS/DNS-SD service discovery domain.
 //!
 //! This crate implements the mDNS capability for Koi. It exposes a domain
 //! boundary via [`MdnsCore`] with three faces:
@@ -74,7 +74,7 @@ impl MdnsCore {
         let (event_tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
         let started_at = Instant::now();
 
-        // Spawn reaper task — sweeps expired registrations every 5 seconds
+        // Spawn reaper task - sweeps expired registrations every 5 seconds
         let reaper_registry = registry.clone();
         let reaper_daemon = daemon.clone();
         let reaper_cancel = cancel.clone();

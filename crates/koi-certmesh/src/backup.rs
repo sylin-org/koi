@@ -21,7 +21,7 @@ pub struct BackupPayload {
     pub ca_cert_pem: String,
     /// Auth method name ("totp" or "fido2").
     pub auth_method: String,
-    /// Auth credential bytes — TOTP raw secret or FIDO2 credential JSON.
+    /// Auth credential bytes - TOTP raw secret or FIDO2 credential JSON.
     pub auth_data: Vec<u8>,
     pub roster_json: String,
     pub audit_log: String,

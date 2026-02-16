@@ -305,13 +305,13 @@ impl Registry {
 
         regs.retain(|id, reg| {
             match (&reg.state, &reg.policy) {
-                // Permanent — never expires
+                // Permanent - never expires
                 (_, LeasePolicy::Permanent) => true,
 
-                // Session, alive — connection still open
+                // Session, alive - connection still open
                 (RegistrationState::Alive, LeasePolicy::Session { .. }) => true,
 
-                // Draining — check grace (both session and heartbeat)
+                // Draining - check grace (both session and heartbeat)
                 (RegistrationState::Draining { since }, LeasePolicy::Session { grace })
                 | (RegistrationState::Draining { since }, LeasePolicy::Heartbeat { grace, .. }) => {
                     if now.duration_since(*since) >= *grace {
@@ -322,13 +322,13 @@ impl Registry {
                     }
                 }
 
-                // Heartbeat, alive — check if lease expired
+                // Heartbeat, alive - check if lease expired
                 (RegistrationState::Alive, LeasePolicy::Heartbeat { lease, .. }) => {
                     if now.duration_since(reg.last_seen) >= *lease {
                         // Transition to draining; grace starts now
                         reg.state = RegistrationState::Draining { since: now };
                     }
-                    true // Don't remove yet — grace period begins
+                    true // Don't remove yet - grace period begins
                 }
             }
         });
@@ -808,7 +808,7 @@ mod tests {
             start,
         );
 
-        // Session alive — reaper doesn't touch it regardless of elapsed time
+        // Session alive - reaper doesn't touch it regardless of elapsed time
         let expired = reg.reap_at(start + Duration::from_secs(3600));
         assert!(expired.is_empty());
         assert_eq!(reg.counts().total, 1);

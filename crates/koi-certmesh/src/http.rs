@@ -22,7 +22,7 @@ use crate::protocol::{
     RotateAuthRequest, RotateAuthResponse, SetHookRequest, UnlockRequest, UnlockResponse,
 };
 
-/// Route path constants — single source of truth for axum routing AND the command manifest.
+/// Route path constants - single source of truth for axum routing AND the command manifest.
 pub mod paths {
     pub const PREFIX: &str = "/v1/certmesh";
 
@@ -65,7 +65,7 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::RENEW), post(renew_handler))
         .route(rel(paths::ROSTER), get(roster_handler))
         .route(rel(paths::HEALTH), post(health_handler))
-        // Service delegation — CA management
+        // Service delegation - CA management
         .route(rel(paths::CREATE), post(create_handler))
         .route(rel(paths::UNLOCK), post(unlock_handler))
         .route(rel(paths::ROTATE_AUTH), post(rotate_auth_handler))
@@ -75,14 +75,14 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::RESTORE), post(restore_handler))
         .route(rel(paths::REVOKE), post(revoke_handler))
         .route(rel(paths::COMPLIANCE), get(compliance_handler))
-        // Phase 4 — Enrollment Policy
+        // Phase 4 - Enrollment Policy
         .route(rel(paths::OPEN_ENROLLMENT), post(open_enrollment_handler))
         .route(rel(paths::CLOSE_ENROLLMENT), post(close_enrollment_handler))
         .route(rel(paths::SET_POLICY), put(set_policy_handler))
         .layer(Extension(state))
 }
 
-/// POST /join — Enroll a new member in the mesh.
+/// POST /join - Enroll a new member in the mesh.
 async fn join_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<JoinRequest>,
@@ -106,7 +106,7 @@ async fn join_handler(
     }
 }
 
-/// GET /status — Certmesh status overview.
+/// GET /status - Certmesh status overview.
 async fn status_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     let ca_guard = state.ca.lock().await;
     let roster = state.roster.lock().await;
@@ -117,7 +117,7 @@ async fn status_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl
     Json(status)
 }
 
-/// PUT /hook — Set a post-renewal reload hook for a member.
+/// PUT /hook - Set a post-renewal reload hook for a member.
 async fn set_hook_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<SetHookRequest>,
@@ -158,7 +158,7 @@ async fn set_hook_handler(
 
 // ── Service delegation handlers ─────────────────────────────────────
 
-/// POST /create — Initialize a new CA via the running service.
+/// POST /create - Initialize a new CA via the running service.
 async fn create_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<CreateCaRequest>,
@@ -303,7 +303,7 @@ async fn create_handler(
             tracing::info!(hostname = %local_hostname, "CA node self-enrolled as primary");
         }
         Err(e) => {
-            tracing::warn!(error = %e, "Could not self-enroll CA node — roster will be empty");
+            tracing::warn!(error = %e, "Could not self-enroll CA node - roster will be empty");
         }
     }
 
@@ -341,7 +341,7 @@ async fn create_handler(
     }
 }
 
-/// POST /unlock — Decrypt the CA key.
+/// POST /unlock - Decrypt the CA key.
 async fn unlock_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<UnlockRequest>,
@@ -386,7 +386,7 @@ async fn unlock_handler(
     }
 }
 
-/// POST /rotate-auth — Rotate the enrollment auth credential.
+/// POST /rotate-auth - Rotate the enrollment auth credential.
 async fn rotate_auth_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<RotateAuthRequest>,
@@ -415,7 +415,7 @@ async fn rotate_auth_handler(
     }
 }
 
-/// GET /log — Return audit log entries.
+/// GET /log - Return audit log entries.
 async fn log_handler(Extension(_state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     match crate::audit::read_log() {
         Ok(entries) => {
@@ -432,7 +432,7 @@ async fn log_handler(Extension(_state): Extension<Arc<CertmeshState>>) -> impl I
     }
 }
 
-/// POST /destroy — Remove all certmesh state (CA, certs, roster, audit log).
+/// POST /destroy - Remove all certmesh state (CA, certs, roster, audit log).
 async fn destroy_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     if let Err(e) = state.destroy().await {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e);
@@ -450,7 +450,7 @@ async fn destroy_handler(Extension(state): Extension<Arc<CertmeshState>>) -> imp
 
 // ── Phase 5 handlers ───────────────────────────────────────────────
 
-/// POST /backup — Create an encrypted certmesh backup bundle.
+/// POST /backup - Create an encrypted certmesh backup bundle.
 async fn backup_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<BackupRequest>,
@@ -483,7 +483,7 @@ async fn backup_handler(
     }
 }
 
-/// POST /restore — Restore certmesh state from a backup bundle.
+/// POST /restore - Restore certmesh state from a backup bundle.
 async fn restore_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<RestoreRequest>,
@@ -521,7 +521,7 @@ async fn restore_handler(
     }
 }
 
-/// POST /revoke — Revoke a member.
+/// POST /revoke - Revoke a member.
 async fn revoke_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<RevokeRequest>,
@@ -556,7 +556,7 @@ async fn revoke_handler(
 
 // ── Phase 4 handlers ────────────────────────────────────────────────
 
-/// POST /enrollment/open — Open the enrollment window.
+/// POST /enrollment/open - Open the enrollment window.
 async fn open_enrollment_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     body: Option<Json<serde_json::Value>>,
@@ -594,7 +594,7 @@ async fn open_enrollment_handler(
     (StatusCode::OK, Json(body)).into_response()
 }
 
-/// POST /enrollment/close — Close the enrollment window.
+/// POST /enrollment/close - Close the enrollment window.
 async fn close_enrollment_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
 ) -> impl IntoResponse {
@@ -615,7 +615,7 @@ async fn close_enrollment_handler(
     (StatusCode::OK, Json(body)).into_response()
 }
 
-/// PUT /policy — Set enrollment scope constraints.
+/// PUT /policy - Set enrollment scope constraints.
 async fn set_policy_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<PolicyRequest>,
@@ -660,7 +660,7 @@ async fn set_policy_handler(
     (StatusCode::OK, Json(body)).into_response()
 }
 
-/// GET /compliance — Return policy summary and audit log counts.
+/// GET /compliance - Return policy summary and audit log counts.
 async fn compliance_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     let roster = state.roster.lock().await;
     let profile = roster.metadata.trust_profile;
@@ -693,7 +693,7 @@ async fn compliance_handler(Extension(state): Extension<Arc<CertmeshState>>) -> 
 
 // ── Phase 3 handlers ────────────────────────────────────────────────
 
-/// POST /promote — auth-verified CA key transfer to a standby.
+/// POST /promote - auth-verified CA key transfer to a standby.
 ///
 /// The requesting standby provides an auth response. If valid, the handler
 /// returns the encrypted CA key, auth data, roster, and CA cert.
@@ -772,7 +772,7 @@ async fn promote_handler(
     }
 }
 
-/// POST /renew — Receive renewed certificate from the CA.
+/// POST /renew - Receive renewed certificate from the CA.
 ///
 /// The CA pushes renewed cert material to members. The member writes
 /// the files and optionally executes its reload hook.
@@ -831,7 +831,7 @@ async fn renew_handler(
     }
 }
 
-/// GET /roster — Return a signed roster manifest for standby sync.
+/// GET /roster - Return a signed roster manifest for standby sync.
 async fn roster_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     let ca_guard = state.ca.lock().await;
     let ca = match ca_guard.as_ref() {
@@ -867,7 +867,7 @@ async fn roster_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl
     }
 }
 
-/// POST /health — Member heartbeat with pinned CA fingerprint validation.
+/// POST /health - Member heartbeat with pinned CA fingerprint validation.
 async fn health_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<HealthRequest>,
@@ -1238,7 +1238,7 @@ mod tests {
         );
     }
 
-    // ── Phase 4 — Enrollment policy endpoint tests ──────────────────
+    // ── Phase 4 - Enrollment policy endpoint tests ──────────────────
 
     #[tokio::test]
     async fn open_enrollment_returns_200() {

@@ -19,7 +19,7 @@ pub struct Example {
 /// Pre-invocation confirmation gate.
 ///
 /// Declared in the command manifest and checked by the CLI dispatch layer
-/// *before* the handler runs.  Has no effect on HTTP endpoints — the API
+/// *before* the handler runs.  Has no effect on HTTP endpoints - the API
 /// is not interactive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Confirmation {
@@ -80,7 +80,7 @@ pub struct QueryParam {
     pub description: &'static str,
 }
 
-/// An HTTP API endpoint — single source of truth for path, method,
+/// An HTTP API endpoint - single source of truth for path, method,
 /// request/response schemas, query parameters, and content type.
 ///
 /// The manifest-driven OpenAPI generator reads these at startup to

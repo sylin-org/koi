@@ -2,7 +2,7 @@
 //!
 //! One flow, N auth methods. The enrollment/promote/rotate flow is
 //! identical regardless of which method the CA is configured to use.
-//! Callers never branch on method — they call `adapter.verify()`.
+//! Callers never branch on method - they call `adapter.verify()`.
 //!
 //! # Adding a new method
 //!
@@ -36,7 +36,7 @@ pub enum AuthError {
 /// In-memory auth state held by the daemon while the CA is unlocked.
 ///
 /// For TOTP this holds the decrypted secret. For FIDO2 it holds the
-/// public credential (no decryption needed — private key never leaves
+/// public credential (no decryption needed - private key never leaves
 /// the hardware device).
 pub enum AuthState {
     Totp(TotpSecret),
@@ -80,7 +80,7 @@ impl AuthState {
 
 /// FIDO2 credential stored server-side after key registration.
 ///
-/// Contains only the public key and metadata — the private key
+/// Contains only the public key and metadata - the private key
 /// never leaves the hardware authenticator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fido2Credential {
@@ -166,7 +166,7 @@ pub enum AuthChallenge {
 
 /// Proof the client sends back in join/promote requests.
 ///
-/// Opaque to the transport layer — only the adapter inspects it.
+/// Opaque to the transport layer - only the adapter inspects it.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "method")]
 pub enum AuthResponse {
@@ -202,7 +202,7 @@ pub struct AuthMethodInfo {
 
 /// Auth adapter interface. The ONLY abstraction the flow touches.
 ///
-/// Stateless — each method receives the credential/challenge/response
+/// Stateless - each method receives the credential/challenge/response
 /// and returns a result. No side effects.
 pub trait AuthAdapter: Send + Sync {
     /// Short identifier (e.g. "totp", "fido2").
@@ -617,10 +617,10 @@ mod tests {
             false
         }
         fn description(&self) -> &'static str {
-            "Fake — test only"
+            "Fake - test only"
         }
         fn challenge(&self, _state: &AuthState) -> Result<AuthChallenge, AuthError> {
-            // Reuse TOTP challenge shape — callers never inspect internals
+            // Reuse TOTP challenge shape - callers never inspect internals
             Ok(AuthChallenge::Totp)
         }
         fn verify(

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 /// Root data directory for Koi.
 ///
 /// All Koi data is machine-scoped (CA keys, roster, certs, logs, state).
-/// The user never owns the data — certificates belong to the machine.
+/// The user never owns the data - certificates belong to the machine.
 ///
 /// - Linux: `/var/lib/koi/`
 /// - macOS: `/Library/Application Support/koi/`

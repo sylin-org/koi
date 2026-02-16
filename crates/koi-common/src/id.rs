@@ -4,7 +4,7 @@ const SHORT_ID_LEN: usize = 8;
 /// Generate a short 8-character hex ID from UUID v7.
 ///
 /// Takes the last 8 hex characters of the UUID, which come from the
-/// random portion — ensuring uniqueness even when multiple IDs are
+/// random portion - ensuring uniqueness even when multiple IDs are
 /// generated within the same millisecond. The UUID itself is still
 /// time-ordered via its v7 timestamp prefix.
 pub fn generate_short_id() -> String {

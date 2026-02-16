@@ -1,4 +1,4 @@
-//! Koi Proxy — TLS-terminating reverse proxy (Phase 8).
+//! Koi Proxy - TLS-terminating reverse proxy (Phase 8).
 
 pub mod config;
 mod forwarder;

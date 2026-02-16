@@ -72,7 +72,7 @@ impl Drop for CaKeyPair {
 ///
 /// `entropy_seed` is additional entropy collected from the operator
 /// (keyboard mashing, passphrase hash, etc.). It is mixed with the
-/// OS CSPRNG to produce the final key — never used alone.
+/// OS CSPRNG to produce the final key - never used alone.
 pub fn generate_ca_keypair(entropy_seed: &[u8]) -> CaKeyPair {
     // Mix operator entropy with OS RNG by hashing both together
     // to produce a seed that benefits from both sources.
@@ -107,7 +107,7 @@ pub fn encrypt_key(key: &CaKeyPair, passphrase: &str) -> Result<EncryptedKey, Cr
     let plaintext = der.as_bytes();
     let encrypted = encrypt_bytes(plaintext, passphrase)?;
 
-    // Platform credential binding — seal the ciphertext in the OS
+    // Platform credential binding - seal the ciphertext in the OS
     // credential store so the key blob is machine-bound.
     if crate::tpm::is_available() {
         if let Err(e) = crate::tpm::seal_key_material("koi-certmesh-ca", &encrypted.ciphertext) {
@@ -125,14 +125,14 @@ pub fn encrypt_key(key: &CaKeyPair, passphrase: &str) -> Result<EncryptedKey, Cr
 /// If the ciphertext was sealed in the platform credential store at
 /// encrypt time, we verify that the stored blob matches the on-disk
 /// ciphertext.  A mismatch means the key file was copied from another
-/// machine — we reject it to enforce machine-binding.
+/// machine - we reject it to enforce machine-binding.
 pub fn decrypt_key(encrypted: &EncryptedKey, passphrase: &str) -> Result<CaKeyPair, CryptoError> {
-    // Platform credential unseal — verify machine-binding
+    // Platform credential unseal - verify machine-binding
     if crate::tpm::is_available() {
         match crate::tpm::unseal_key_material("koi-certmesh-ca") {
             Ok(sealed) => {
                 if sealed != encrypted.ciphertext {
-                    // Warn but proceed — the passphrase + AES-GCM is the real
+                    // Warn but proceed - the passphrase + AES-GCM is the real
                     // security gate.  Platform binding is defense-in-depth;
                     // a hard failure here would lock operators out after
                     // credential-store resets or OS reinstalls.
@@ -144,7 +144,7 @@ pub fn decrypt_key(encrypted: &EncryptedKey, passphrase: &str) -> Result<CaKeyPa
             }
             Err(e) => {
                 // No sealed material (e.g. created before keyring was wired)
-                // — fall through to normal decryption.
+                // - fall through to normal decryption.
                 tracing::debug!(error = %e, "No platform-sealed material found; using passphrase only");
             }
         }

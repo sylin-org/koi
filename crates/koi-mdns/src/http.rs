@@ -60,7 +60,7 @@ fn idle_duration(idle_for: Option<u64>) -> Option<Duration> {
     }
 }
 
-/// Route path constants — single source of truth for axum routing AND the command manifest.
+/// Route path constants - single source of truth for axum routing AND the command manifest.
 pub mod paths {
     pub const PREFIX: &str = "/v1/mdns";
 
@@ -125,7 +125,7 @@ async fn browse_handler(
             let next = match idle {
                 Some(dur) => match tokio::time::timeout(dur, handle.recv()).await {
                     Ok(result) => result,
-                    Err(_) => break, // idle timeout — close stream
+                    Err(_) => break, // idle timeout - close stream
                 },
                 None => handle.recv().await,
             };
@@ -204,7 +204,7 @@ async fn events_handler(
             let next = match idle {
                 Some(dur) => match tokio::time::timeout(dur, handle.recv()).await {
                     Ok(result) => result,
-                    Err(_) => break, // idle timeout — close stream
+                    Err(_) => break, // idle timeout - close stream
                 },
                 None => handle.recv().await,
             };

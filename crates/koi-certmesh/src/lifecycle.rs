@@ -33,7 +33,7 @@ pub fn members_needing_renewal(roster: &Roster) -> Vec<&RosterMember> {
 
 /// Reissue a certificate for a member using the same SANs.
 ///
-/// Delegates to `ca::issue_certificate()` — the roster member's
+/// Delegates to `ca::issue_certificate()` - the roster member's
 /// existing `cert_sans` are reused so the renewed cert is equivalent.
 pub fn renew_member_cert(ca: &CaState, member: &RosterMember) -> Result<IssuedCert, CertmeshError> {
     ca::issue_certificate(ca, &member.hostname, &member.cert_sans)
@@ -52,7 +52,7 @@ pub fn write_renewed_cert_files(
 /// Execute a reload hook command after cert renewal.
 ///
 /// Runs the command via the platform shell, captures stdout+stderr,
-/// and returns a structured result. Never panics — failure is reported
+/// and returns a structured result. Never panics - failure is reported
 /// in the `HookResult`.
 pub fn execute_reload_hook(hook: &str) -> HookResult {
     let result = if cfg!(windows) {
@@ -194,11 +194,11 @@ mod tests {
     #[test]
     fn members_needing_renewal_filters_by_threshold() {
         let mut roster = Roster::new(TrustProfile::JustMe, None);
-        // Expires in 5 days — needs renewal (< 10 day threshold)
+        // Expires in 5 days - needs renewal (< 10 day threshold)
         roster.members.push(make_member("expiring-soon", 5));
-        // Expires in 25 days — does not need renewal
+        // Expires in 25 days - does not need renewal
         roster.members.push(make_member("fresh-cert", 25));
-        // Expires in 10 days — needs renewal (== threshold, <=)
+        // Expires in 10 days - needs renewal (== threshold, <=)
         roster.members.push(make_member("edge-case", 10));
 
         let due = members_needing_renewal(&roster);

@@ -1,4 +1,4 @@
-//! Koi DNS — lightweight local DNS resolver (Phase 6).
+//! Koi DNS - lightweight local DNS resolver (Phase 6).
 
 mod aliases;
 pub mod http;

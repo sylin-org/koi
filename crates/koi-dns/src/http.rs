@@ -71,7 +71,7 @@ struct StoppedResponse {
     stopped: bool,
 }
 
-/// Route path constants — single source of truth for axum routing AND the command manifest.
+/// Route path constants - single source of truth for axum routing AND the command manifest.
 pub mod paths {
     pub const PREFIX: &str = "/v1/dns";
 

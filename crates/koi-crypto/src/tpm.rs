@@ -4,10 +4,10 @@
 //! the machine where the CA was created.  Uses the OS-native credential
 //! store via the `keyring` crate:
 //!
-//! - **Windows** — Credential Manager (DPAPI-backed, TPM-backed on
+//! - **Windows** - Credential Manager (DPAPI-backed, TPM-backed on
 //!   modern hardware with vTPM or firmware TPM)
-//! - **macOS** — Keychain (Secure Enclave on Apple Silicon)
-//! - **Linux** — kernel keyutils or Secret Service (D-Bus)
+//! - **macOS** - Keychain (Secure Enclave on Apple Silicon)
+//! - **Linux** - kernel keyutils or Secret Service (D-Bus)
 //!
 //! This replaces the original `tss-esapi` TPM stub with a pragmatic
 //! cross-platform approach that achieves the same security goal: the
@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn is_available_returns_bool() {
-        // Just verify it doesn't panic — actual availability depends
+        // Just verify it doesn't panic - actual availability depends
         // on the CI/dev environment.
         let _ = is_available();
     }

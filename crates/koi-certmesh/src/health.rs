@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn fingerprint_comparison_is_case_sensitive() {
-        // Constant-time comparison is byte-level — case matters.
+        // Constant-time comparison is byte-level - case matters.
         // fingerprint_sha256() always produces lowercase hex, so
         // mixed-case inputs should not match (indicating a bug upstream).
         let lower = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";

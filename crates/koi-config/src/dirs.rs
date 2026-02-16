@@ -24,7 +24,7 @@ const DEFAULT_CONFIG_TOML: &str = "\
 /// - `~/.koi/state/`
 /// - `~/.koi/logs/`
 ///
-/// Errors are logged but not fatal — the daemon can run without
+/// Errors are logged but not fatal - the daemon can run without
 /// a data directory.
 pub fn ensure_data_dir() {
     let data_dir = paths::koi_data_dir();

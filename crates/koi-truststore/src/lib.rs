@@ -35,7 +35,7 @@ pub enum TrustStoreError {
 /// platform-appropriate location and the trust store is updated.
 ///
 /// This operation typically requires elevated privileges.
-/// Errors are returned but are non-fatal — callers should warn and continue.
+/// Errors are returned but are non-fatal - callers should warn and continue.
 pub fn install_ca_cert(cert_pem: &str, name: &str) -> Result<(), TrustStoreError> {
     #[cfg(target_os = "linux")]
     {

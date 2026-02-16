@@ -2,7 +2,7 @@
 //!
 //! A **ceremony** is a server-controlled dialogue between a server and a
 //! client (CLI, web UI, SDK). The server owns validation, branching, and
-//! all domain logic. Clients are dumb render loops — they display
+//! all domain logic. Clients are dumb render loops - they display
 //! whatever the server sends, collect input, and post it back.
 //!
 //! # Core model: bag of key-value + rules
@@ -93,7 +93,7 @@ pub enum QrFormat {
     Utf8,
     /// Base64-encoded PNG for `<img src="data:image/png;base64,...">`.
     PngBase64,
-    /// Raw URI only — no visual rendering.
+    /// Raw URI only - no visual rendering.
     UriOnly,
 }
 
@@ -131,7 +131,7 @@ pub struct CeremonyRequest {
 /// completion status, and any errors.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CeremonyResponse {
-    /// Session ID — include in the next request.
+    /// Session ID - include in the next request.
     pub session_id: Uuid,
 
     /// Data the server wants the client to collect.
@@ -158,7 +158,7 @@ pub struct CeremonyResponse {
 
 // ── Prompts ─────────────────────────────────────────────────────────
 
-/// A single data request — tells the client exactly one thing to collect.
+/// A single data request - tells the client exactly one thing to collect.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prompt {
     /// The bag key this prompt populates.
@@ -219,7 +219,7 @@ pub enum InputType {
 
 // ── Messages ────────────────────────────────────────────────────────
 
-/// An informational display item — not an input.
+/// An informational display item - not an input.
 ///
 /// Messages carry content to show the user without requiring input.
 /// They can appear alongside prompts (e.g., QR code + code input).
@@ -251,7 +251,7 @@ pub enum MessageKind {
 
 // ── Session ─────────────────────────────────────────────────────────
 
-/// A live ceremony session — just a bag of key-value pairs plus metadata.
+/// A live ceremony session - just a bag of key-value pairs plus metadata.
 ///
 /// There is no stage index, no stage name, no progress counter.
 /// The [`CeremonyRules`] derive everything from the bag contents.
@@ -359,7 +359,7 @@ pub enum EvalResult {
 /// # Thread safety
 ///
 /// The host calls `evaluate` while holding a session lock. Keep
-/// implementations fast — do heavy I/O before returning, or collect
+/// implementations fast - do heavy I/O before returning, or collect
 /// parameters here and execute in a post-step hook.
 pub trait CeremonyRules: Send + Sync {
     /// Validate a ceremony type string.
@@ -372,7 +372,7 @@ pub trait CeremonyRules: Send + Sync {
     ///
     /// The rules may read and write the bag (e.g. to inject derived keys
     /// like `_totp_secret`, or to remove conflicting keys). The bag
-    /// already contains any data the client sent in this request —
+    /// already contains any data the client sent in this request -
     /// it was merged before `evaluate` is called.
     fn evaluate(
         &self,
@@ -384,7 +384,7 @@ pub trait CeremonyRules: Send + Sync {
 
 // ── Ceremony host ───────────────────────────────────────────────────
 
-/// Generic ceremony host — manages sessions and delegates evaluation
+/// Generic ceremony host - manages sessions and delegates evaluation
 /// to a [`CeremonyRules`] implementation.
 ///
 /// Thread-safe. One host per domain, shared across HTTP handlers.
@@ -799,14 +799,14 @@ mod tests {
             // Check if name is in the bag
             match bag.get("name").and_then(|v| v.as_str()) {
                 None => {
-                    // No name yet — ask for it
+                    // No name yet - ask for it
                     EvalResult::NeedInput {
                         prompts: vec![Prompt::text("name", "What is your name?")],
                         messages: vec![Message::info("Welcome", "Please introduce yourself.")],
                     }
                 }
                 Some("") => {
-                    // Empty name — validation error
+                    // Empty name - validation error
                     bag.remove("name");
                     EvalResult::ValidationError {
                         prompts: vec![Prompt::text("name", "What is your name?")],
@@ -815,7 +815,7 @@ mod tests {
                     }
                 }
                 Some(name) => {
-                    // Name present and valid — done
+                    // Name present and valid - done
                     let summary = format!("Hello, {name}!");
                     EvalResult::Complete {
                         messages: vec![Message::summary("Greeting complete", &summary)],
@@ -1171,7 +1171,7 @@ mod tests {
     fn multi_prompt_returns_multiple_fields() {
         let host = CeremonyHost::new(MultiRules);
 
-        // Start with empty bag — should get 2 prompts
+        // Start with empty bag - should get 2 prompts
         let r1 = host
             .step(CeremonyRequest {
                 session_id: None,

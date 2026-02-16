@@ -102,9 +102,9 @@ pub struct SetHookResponse {
     pub reload: String,
 }
 
-// ── Service Delegation — CA management via HTTP ─────────────────────
+// ── Service Delegation - CA management via HTTP ─────────────────────
 
-/// POST /create request — initialize a new CA via the running service.
+/// POST /create request - initialize a new CA via the running service.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateCaRequest {
     /// Passphrase for encrypting the CA key.
@@ -145,7 +145,7 @@ pub struct CreateCaResponse {
     pub ca_fingerprint: String,
 }
 
-/// POST /unlock request — decrypt the CA key.
+/// POST /unlock request - decrypt the CA key.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UnlockRequest {
     pub passphrase: String,
@@ -157,7 +157,7 @@ pub struct UnlockResponse {
     pub success: bool,
 }
 
-/// POST /auth/rotate request — rotate the enrollment auth credential.
+/// POST /auth/rotate request - rotate the enrollment auth credential.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RotateAuthRequest {
     pub passphrase: String,
@@ -173,28 +173,28 @@ pub struct RotateAuthResponse {
     pub auth_setup: koi_crypto::auth::AuthSetup,
 }
 
-/// GET /log response — audit log entries.
+/// GET /log response - audit log entries.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct AuditLogResponse {
     pub entries: String,
 }
 
-/// POST /destroy response — CA and all certmesh state removed.
+/// POST /destroy response - CA and all certmesh state removed.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct DestroyResponse {
     pub destroyed: bool,
 }
 
-// ── Phase 5 — Backup/Restore/Revocation ───────────────────────────
+// ── Phase 5 - Backup/Restore/Revocation ───────────────────────────
 
-/// POST /backup request — create an encrypted backup bundle.
+/// POST /backup request - create an encrypted backup bundle.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct BackupRequest {
     pub ca_passphrase: String,
     pub backup_passphrase: String,
 }
 
-/// POST /backup response — backup encoded as hex.
+/// POST /backup response - backup encoded as hex.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct BackupResponse {
     pub backup_hex: String,
@@ -202,7 +202,7 @@ pub struct BackupResponse {
     pub version: u16,
 }
 
-/// POST /restore request — restore from an encrypted backup bundle.
+/// POST /restore request - restore from an encrypted backup bundle.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RestoreRequest {
     pub backup_hex: String,
@@ -216,7 +216,7 @@ pub struct RestoreResponse {
     pub restored: bool,
 }
 
-/// POST /revoke request — revoke a member.
+/// POST /revoke request - revoke a member.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RevokeRequest {
     pub hostname: String,
@@ -232,7 +232,7 @@ pub struct RevokeResponse {
     pub revoked: bool,
 }
 
-// ── Phase 4 — Enrollment Policy ─────────────────────────────────────
+// ── Phase 4 - Enrollment Policy ─────────────────────────────────────
 
 /// Request to set enrollment scope constraints.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -274,19 +274,19 @@ pub struct ComplianceResponse {
     pub audit_entries: usize,
 }
 
-// ── Phase 3 — Failover + Lifecycle ──────────────────────────────────
+// ── Phase 3 - Failover + Lifecycle ──────────────────────────────────
 
-/// POST /promote request — auth-verified CA key transfer.
+/// POST /promote request - auth-verified CA key transfer.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PromoteRequest {
     pub auth: koi_crypto::auth::AuthResponse,
 }
 
-/// POST /promote response — encrypted CA key, auth credential, and roster.
+/// POST /promote response - encrypted CA key, auth credential, and roster.
 ///
 /// The standby decrypts the CA key with the passphrase provided during
 /// the `koi certmesh promote` flow. The passphrase is never sent over
-/// the wire — only the already-encrypted material is transferred.
+/// the wire - only the already-encrypted material is transferred.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PromoteResponse {
     pub encrypted_ca_key: koi_crypto::keys::EncryptedKey,
@@ -296,7 +296,7 @@ pub struct PromoteResponse {
     pub ca_cert_pem: String,
 }
 
-/// POST /renew request — CA pushes renewed cert to a member.
+/// POST /renew request - CA pushes renewed cert to a member.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RenewRequest {
     pub hostname: String,
@@ -326,7 +326,7 @@ pub struct HookResult {
     pub output: Option<String>,
 }
 
-/// GET /roster response — signed manifest for standby sync.
+/// GET /roster response - signed manifest for standby sync.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RosterManifest {
     pub roster_json: String,
@@ -334,7 +334,7 @@ pub struct RosterManifest {
     pub ca_public_key: String,
 }
 
-/// POST /health request — member heartbeat.
+/// POST /health request - member heartbeat.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct HealthRequest {
     pub hostname: String,

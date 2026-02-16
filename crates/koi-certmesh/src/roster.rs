@@ -1,6 +1,6 @@
 //! Roster data model and persistence.
 //!
-//! The roster is the CA's source of truth — all enrolled members,
+//! The roster is the CA's source of truth - all enrolled members,
 //! their certificates, and enrollment history.
 
 use std::path::{Path, PathBuf};
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::profiles::TrustProfile;
 use koi_common::persist;
 
-/// The complete roster — serialized to `~/.koi/certmesh/roster.json`.
+/// The complete roster - serialized to `~/.koi/certmesh/roster.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Roster {
     pub metadata: RosterMetadata,
@@ -518,7 +518,7 @@ mod tests {
         );
     }
 
-    // ── Phase 4 — Enrollment window tests ──────────────────────────
+    // ── Phase 4 - Enrollment window tests ──────────────────────────
 
     #[test]
     fn open_and_close_enrollment() {

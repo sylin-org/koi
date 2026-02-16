@@ -1,17 +1,17 @@
-//! Networking utilities — Happy Eyeballs endpoint resolution.
+//! Networking utilities - Happy Eyeballs endpoint resolution.
 //!
 //! When a URL contains `localhost`, the OS may resolve it to both `[::1]` (IPv6)
 //! and `127.0.0.1` (IPv4). If the server only listens on one protocol, the client
 //! stalls for ~2 s on every request while the first SYN times out. This module
 //! races a TCP connect to both addresses in parallel and rewrites the URL to use
-//! whichever responds first — eliminating that per-request penalty.
+//! whichever responds first - eliminating that per-request penalty.
 
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
 use tracing::{debug, trace};
 
-/// Timeout for the parallel TCP race.  Kept short — we're probing loopback.
+/// Timeout for the parallel TCP race.  Kept short - we're probing loopback.
 const RACE_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// If `endpoint` contains `localhost`, race IPv4 vs IPv6 TCP connects and
@@ -35,7 +35,7 @@ pub fn resolve_localhost(endpoint: &str) -> String {
         return endpoint.to_string();
     }
 
-    // Extract port — default to 80 if not present.
+    // Extract port - default to 80 if not present.
     let port = extract_port(endpoint).unwrap_or(80);
 
     let v4_addr: SocketAddr = ([127, 0, 0, 1], port).into();
@@ -70,7 +70,7 @@ pub fn resolve_localhost(endpoint: &str) -> String {
             resolved
         }
         Err(_) => {
-            debug!("neither IPv4 nor IPv6 responded — keeping original endpoint");
+            debug!("neither IPv4 nor IPv6 responded - keeping original endpoint");
             endpoint.to_string()
         }
     }

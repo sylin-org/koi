@@ -1,4 +1,4 @@
-//! Pond ceremony rules — the domain-specific bag→prompts logic
+//! Pond ceremony rules - the domain-specific bag→prompts logic
 //! for certmesh ceremonies (init, join, invite, unlock).
 //!
 //! These rules implement [`CeremonyRules`] from koi-common. They
@@ -19,14 +19,14 @@
 //!   - `auto_unlock`           – "auto" | "token" | "passphrase" (only if profile=custom)
 //!   - `auth_mode`            – "totp"
 //!   - `verification_code`    – 6-digit TOTP code
-//!   - `unlock_token_type`    — "totp" | "fido2" (only if unlock_method=token)
-//!   - `unlock_totp_code`     — 6-digit code to verify unlock TOTP registration
+//!   - `unlock_token_type`    - "totp" | "fido2" (only if unlock_method=token)
+//!   - `unlock_totp_code`     - 6-digit code to verify unlock TOTP registration
 //!
 //! **Internal** (underscore prefix, set by rules):
 //!   - `_effective_profile`   – resolved TrustProfile after custom→baseline mapping
 //!   - `_enrollment_open`     – bool (effective enrollment state)
 //!   - `_requires_approval`   – bool (effective approval state)
-//!   - `_auto_unlock`         – bool (auto-unlock CA on boot — derived from _unlock_method)
+//!   - `_auto_unlock`         – bool (auto-unlock CA on boot - derived from _unlock_method)
 //!   - `_unlock_method`       – "auto" | "token" | "passphrase"
 //!   - `_unlock_totp_secret`  – hex-encoded TOTP secret for unlock slot
 //!   - `_unlock_totp_uri`     – otpauth:// URI for unlock TOTP QR
@@ -45,7 +45,7 @@ use crate::profiles::TrustProfile;
 
 /// Ceremony rules for pond operations.
 ///
-/// Stateless — all state lives in the session bag. The host (and the
+/// Stateless - all state lives in the session bag. The host (and the
 /// HTTP handler above it) hold the `CertmeshCore` needed to execute
 /// the terminal action.
 pub struct PondCeremonyRules;
@@ -108,7 +108,7 @@ fn eval_init(
                             "my_organization",
                             "My organization",
                             "Strict access control. Enrollment starts \
-                             closed — each machine must be approved.",
+                             closed - each machine must be approved.",
                         ),
                         SelectOption::with_description(
                             "custom",
@@ -204,7 +204,7 @@ fn eval_init(
         bag.insert("_requires_approval".into(), serde_json::json!(approval));
         // Custom profiles get auto_unlock from a separate prompt (handled below)
     } else {
-        // Standard profile — validate and resolve defaults
+        // Standard profile - validate and resolve defaults
         let trust = match TrustProfile::from_str_loose(&profile_raw) {
             Some(t) => t,
             None => {
@@ -260,7 +260,7 @@ fn eval_init(
 
     // ── 2. Entropy ──────────────────────────────────────────────────
     //
-    // "Mash the keyboard!" — collect raw entropy first, then derive
+    // "Mash the keyboard!" - collect raw entropy first, then derive
     // a suggested XKCD-style passphrase from it.
     if !bag.contains_key("entropy") {
         let server_entropy = generate_server_entropy_hex();
@@ -273,7 +273,7 @@ fn eval_init(
             prompts: vec![Prompt::entropy("entropy", "Mash your keyboard!")],
             messages: vec![Message::info(
                 "Entropy Collection",
-                "Type random characters — go wild! This will be mixed with \
+                "Type random characters - go wild! This will be mixed with \
                  server-generated randomness to create your passphrase.",
             )],
         };
@@ -337,7 +337,7 @@ fn eval_init(
                 }
                 hint_text.push_str(
                     "\n\nThis passphrase protects your pond's private key. \
-                     Write it down somewhere safe — you'll need it if the \
+                     Write it down somewhere safe - you'll need it if the \
                      keystone stone reboots.",
                 );
 
@@ -412,7 +412,7 @@ fn eval_init(
                 messages: vec![Message::info(
                     "Custom Passphrase",
                     "This passphrase protects your pond's private key. \
-                     Write it down — you'll need it if the keystone stone reboots.\n\n\
+                     Write it down - you'll need it if the keystone stone reboots.\n\n\
                      Minimum 8 characters.",
                 )],
             };
@@ -489,7 +489,7 @@ fn eval_init(
     }
 
     // ── 4. Auth mode ────────────────────────────────────────────────
-    // (unchanged numbering — was 4, still 4)
+    // (unchanged numbering - was 4, still 4)
     let auth_mode = match bag
         .get("auth_mode")
         .and_then(|v| v.as_str())
@@ -530,7 +530,7 @@ fn eval_init(
     };
 
     // ── 5. TOTP setup + verification ────────────────────────────────
-    // (unchanged numbering — was 5, still 5)
+    // (unchanged numbering - was 5, still 5)
     if auth_mode == "totp" {
         if !bag.contains_key("_totp_secret_hex") {
             let secret = koi_crypto::totp::generate_secret();

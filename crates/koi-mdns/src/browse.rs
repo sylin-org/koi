@@ -10,7 +10,7 @@ use crate::events::MdnsEvent as KoiEvent;
 /// Handle for an active browse operation.
 ///
 /// Owns the lifecycle of a single `stop_browse` call on the daemon.
-/// When dropped, the browse is stopped automatically — no leaked
+/// When dropped, the browse is stopped automatically - no leaked
 /// subscriptions in the mdns-sd engine.
 pub struct BrowseHandle {
     receiver: mdns_sd::Receiver<MdnsEvent>,

@@ -3,7 +3,7 @@
 //! Source: <https://www.eff.org/dice> (CC BY 3.0)
 //! Each word provides ~12.9 bits of entropy (log2(7776)).
 
-/// EFF large wordlist — 7,776 words, ~12.9 bits per word.
+/// EFF large wordlist - 7,776 words, ~12.9 bits per word.
 pub static EFF_WORDLIST: [&str; 7776] = [
     "abacus",
     "abdomen",

@@ -3,7 +3,7 @@
 //! Three modes:
 //! - **KeyboardMashing**: Operator mashes keyboard; timing + key entropy mixed with OS RNG.
 //!   The collected entropy seeds passphrase generation.
-//! - **AutoGenerate**: Uses OS RNG only — no interaction. Seeds passphrase generation.
+//! - **AutoGenerate**: Uses OS RNG only - no interaction. Seeds passphrase generation.
 //! - **Manual**: Operator provides their own passphrase. Entropy derived from passphrase + OS RNG.
 //!
 //! The first two modes produce an entropy seed that is used to deterministically
@@ -21,7 +21,7 @@ pub enum EntropyMode {
     /// Read raw keypresses with timing entropy. Interactive.
     /// Returns entropy seed; caller generates passphrase from it.
     KeyboardMashing,
-    /// Use OS RNG only — no interaction.
+    /// Use OS RNG only - no interaction.
     /// Returns entropy seed; caller generates passphrase from it.
     AutoGenerate,
     /// Hash a user-provided passphrase string. Non-interactive.
@@ -53,7 +53,7 @@ pub fn collect_entropy(mode: EntropyMode) -> Result<[u8; ENTROPY_BYTES], std::io
 ///
 /// Format: `word-word-word-NN` using the EFF large wordlist (7,776 words).
 /// Each word provides ~12.9 bits of entropy. Three words + a two-digit
-/// number yields ~45 bits — above the 40-bit minimum.
+/// number yields ~45 bits - above the 40-bit minimum.
 ///
 /// The entropy seed is hashed to derive word indices, ensuring the
 /// passphrase is deterministically tied to the collected entropy.
@@ -145,7 +145,7 @@ fn collect_keyboard_entropy() -> Result<[u8; ENTROPY_BYTES], std::io::Error> {
                 collected += 1;
                 pb.set_position(collected.min(MIN_KEYSTROKES) as u64);
 
-                // Auto-exit once we have enough keystrokes — no Enter required
+                // Auto-exit once we have enough keystrokes - no Enter required
                 if collected >= MIN_KEYSTROKES {
                     break;
                 }

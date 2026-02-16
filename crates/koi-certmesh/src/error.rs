@@ -4,16 +4,16 @@ use koi_common::error::ErrorCode;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CertmeshError {
-    #[error("CA not initialized — run `koi certmesh create` first")]
+    #[error("CA not initialized - run `koi certmesh create` first")]
     CaNotInitialized,
 
-    #[error("CA is locked — run `koi certmesh unlock`")]
+    #[error("CA is locked - run `koi certmesh unlock`")]
     CaLocked,
 
     #[error("invalid auth credential")]
     InvalidAuth,
 
-    #[error("rate limited — try again in {remaining_secs} seconds")]
+    #[error("rate limited - try again in {remaining_secs} seconds")]
     RateLimited { remaining_secs: u64 },
 
     #[error("enrollment is closed")]
@@ -43,7 +43,7 @@ pub enum CertmeshError {
     #[error("invalid backup: {0}")]
     BackupInvalid(String),
 
-    // Phase 3 — Failover + Lifecycle
+    // Phase 3 - Failover + Lifecycle
     #[error("not a standby: {0}")]
     NotStandby(String),
 
@@ -56,7 +56,7 @@ pub enum CertmeshError {
     #[error("invalid roster manifest signature")]
     InvalidManifest,
 
-    // Phase 4 — Enrollment Policy
+    // Phase 4 - Enrollment Policy
     #[error("scope violation: {0}")]
     ScopeViolation(String),
 

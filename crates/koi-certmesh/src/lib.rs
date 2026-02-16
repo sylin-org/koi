@@ -1,4 +1,4 @@
-//! Koi Certmesh — certificate mesh with pluggable enrollment auth (Phase 2+).
+//! Koi Certmesh - certificate mesh with pluggable enrollment auth (Phase 2+).
 //!
 //! Provides a private Certificate Authority that mints ECDSA P-256 certificates,
 //! pluggable enrollment authentication (TOTP or FIDO2), trust store installation,
@@ -58,7 +58,7 @@ pub enum CertmeshEvent {
 // ── Internal shared state ───────────────────────────────────────────
 
 /// Internal shared state for CertmeshCore and HTTP handlers.
-/// Not exposed outside this crate — all access goes through CertmeshCore methods.
+/// Not exposed outside this crate - all access goes through CertmeshCore methods.
 pub(crate) struct CertmeshState {
     pub(crate) ca: tokio::sync::Mutex<Option<ca::CaState>>,
     pub(crate) roster: tokio::sync::Mutex<Roster>,
@@ -88,7 +88,7 @@ pub enum ApprovalDecision {
 const APPROVAL_TIMEOUT_SECS: u64 = 300;
 
 impl CertmeshState {
-    /// Destroy all certmesh state — shared by CertmeshCore::destroy() and the HTTP handler.
+    /// Destroy all certmesh state - shared by CertmeshCore::destroy() and the HTTP handler.
     pub(crate) async fn destroy(&self) -> Result<(), CertmeshError> {
         // Clear in-memory state first
         *self.ca.lock().await = None;
@@ -128,9 +128,9 @@ impl CertmeshState {
     }
 }
 
-// ── CertmeshCore — domain facade ────────────────────────────────────
+// ── CertmeshCore - domain facade ────────────────────────────────────
 
-/// CertmeshCore — the main domain facade.
+/// CertmeshCore - the main domain facade.
 ///
 /// Wraps the shared certmesh state and exposes commands,
 /// status, and HTTP routes to the binary crate.
@@ -234,7 +234,7 @@ impl CertmeshCore {
         audit::read_log().map_err(CertmeshError::Io)
     }
 
-    /// Destroy all certmesh state — CA key, certs, roster, and audit log.
+    /// Destroy all certmesh state - CA key, certs, roster, and audit log.
     ///
     /// Removes all certmesh data from disk and resets in-memory state to
     /// uninitialized. This is irreversible. Used for testing cleanup and
@@ -247,7 +247,7 @@ impl CertmeshCore {
 
     /// Process an enrollment request. Returns the join response on success.
     ///
-    /// The joining machine’s hostname comes from the request — not from
+    /// The joining machine’s hostname comes from the request - not from
     /// `hostname::get()` which would return the CA server’s hostname.
     pub async fn enroll(
         &self,
@@ -418,7 +418,7 @@ impl CertmeshCore {
     /// Unlock the CA with a pre-unwrapped master key (TOTP, FIDO2, or auto-unlock).
     ///
     /// This bypasses passphrase-based auth.json decryption. The auth
-    /// credential (for API gating) is not loaded — callers should use
+    /// credential (for API gating) is not loaded - callers should use
     /// the slot table's embedded TOTP shared_secret for verification
     /// if auth gating is needed.
     pub async fn unlock_with_master_key(&self, master_key: &[u8; 32]) -> Result<(), CertmeshError> {
@@ -435,7 +435,7 @@ impl CertmeshCore {
     pub async fn unlock_with_totp(&self, code: &str) -> Result<(), CertmeshError> {
         let slot_table = ca::load_slot_table()?.ok_or_else(|| {
             CertmeshError::NoSlotFound(
-                "no slot table found — pond may use legacy passphrase format".into(),
+                "no slot table found - pond may use legacy passphrase format".into(),
             )
         })?;
 
@@ -465,7 +465,7 @@ impl CertmeshCore {
     pub async fn unlock_with_fido2(&self, credential_id: &[u8]) -> Result<(), CertmeshError> {
         let slot_table = ca::load_slot_table()?.ok_or_else(|| {
             CertmeshError::NoSlotFound(
-                "no slot table found — pond may use legacy passphrase format".into(),
+                "no slot table found - pond may use legacy passphrase format".into(),
             )
         })?;
 
@@ -503,7 +503,7 @@ impl CertmeshCore {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         }
 
-        tracing::info!("Auto-unlock key saved — pond will unlock automatically on reboot");
+        tracing::info!("Auto-unlock key saved - pond will unlock automatically on reboot");
         Ok(())
     }
 
@@ -550,7 +550,7 @@ impl CertmeshCore {
         Ok(())
     }
 
-    // ── Phase 4 — Enrollment Policy ─────────────────────────────────
+    // ── Phase 4 - Enrollment Policy ─────────────────────────────────
 
     /// Open the enrollment window, optionally with a deadline.
     pub async fn open_enrollment(
@@ -643,7 +643,7 @@ impl CertmeshCore {
         Ok(())
     }
 
-    /// Rotate the auth credential — generates new credential, persists, returns setup info.
+    /// Rotate the auth credential - generates new credential, persists, returns setup info.
     ///
     /// If `method` is `None`, keeps the current method. If `Some("totp")` or
     /// `Some("fido2")`, switches to that method.
@@ -684,7 +684,7 @@ impl CertmeshCore {
             }
             "fido2" => {
                 // FIDO2 rotation requires re-registration via the CLI.
-                // For now, return an error — the full flow is wired through the
+                // For now, return an error - the full flow is wired through the
                 // /auth/challenge + /auth/register endpoints (future).
                 return Err(CertmeshError::Internal(
                     "FIDO2 rotation requires re-registration via CLI".into(),
@@ -707,7 +707,7 @@ impl CertmeshCore {
         Ok(setup)
     }
 
-    // ── Phase 5 — Backup/Restore/Revocation ───────────────────────
+    // ── Phase 5 - Backup/Restore/Revocation ───────────────────────
 
     /// Create an encrypted backup bundle for the certmesh state.
     pub async fn backup(
@@ -831,7 +831,7 @@ impl CertmeshCore {
         Ok(())
     }
 
-    // ── Phase 3 — Lifecycle ────────────────────────────────────────
+    // ── Phase 3 - Lifecycle ────────────────────────────────────────
 
     /// Renew all members whose certs are within the renewal threshold.
     ///
@@ -1182,7 +1182,7 @@ impl Capability for CertmeshCore {
     }
 
     fn status(&self) -> CapabilityStatus {
-        // Use try_lock for sync Capability trait — best effort
+        // Use try_lock for sync Capability trait - best effort
         let ca_initialized = ca::is_ca_initialized();
         let ca_locked = self
             .state
@@ -1323,7 +1323,7 @@ mod tests {
     #[tokio::test]
     async fn renew_all_due_returns_empty_when_no_members_due() {
         let ca = make_test_ca();
-        // Cert expires in 25 days — well beyond the 10-day threshold
+        // Cert expires in 25 days - well beyond the 10-day threshold
         let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
         let results = core.renew_all_due().await;
@@ -1334,7 +1334,7 @@ mod tests {
     async fn renew_all_due_renews_expiring_members() {
         let ca = make_test_ca();
         let mut roster = Roster::new(TrustProfile::JustMe, None);
-        // Expires in 5 days — within the 10-day threshold
+        // Expires in 5 days - within the 10-day threshold
         roster.members.push(RosterMember {
             hostname: "expiring-host".to_string(),
             role: MemberRole::Member,
@@ -1634,7 +1634,7 @@ mod tests {
             expires: "not-a-date".to_string(),
         };
 
-        // Should not panic — falls back to Utc::now()
+        // Should not panic - falls back to Utc::now()
         let result = core.receive_renewal(&request).await.unwrap();
         assert!(result.renewed);
     }
@@ -1743,7 +1743,7 @@ mod tests {
         assert_eq!(status.members[0].status, "active");
     }
 
-    // ── Phase 4 — Enrollment policy facade tests ────────────────────
+    // ── Phase 4 - Enrollment policy facade tests ────────────────────
 
     #[tokio::test]
     async fn open_enrollment_changes_state() {
@@ -1933,7 +1933,7 @@ mod tests {
         // Empty roster has no members, so node_role returns None
         // (regardless of local hostname)
         let role = core.node_role().await;
-        // May or may not match the local hostname — depends on environment
+        // May or may not match the local hostname - depends on environment
         // but for an empty roster it should always be None
         assert!(role.is_none());
     }

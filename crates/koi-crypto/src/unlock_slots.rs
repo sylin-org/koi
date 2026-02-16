@@ -20,7 +20,7 @@
 //! {ca_dir}/unlock-slots.json   ← SlotTable with wrapped master_key per slot
 //! ```
 //!
-//! The `ca-key.enc` file format is *unchanged* — callers still see
+//! The `ca-key.enc` file format is *unchanged* - callers still see
 //! `EncryptedKey { ciphertext, salt, nonce }`. The difference is that
 //! the encryption key is now a random master key rather than passphrase-derived.
 //! The salt/nonce in `ca-key.enc` are from the master-key encryption, not
@@ -62,7 +62,7 @@ pub enum UnlockSlot {
         wrapped_master_key: EncryptedKey,
     },
 
-    /// Auto-unlock slot — master key stored in a local file.
+    /// Auto-unlock slot - master key stored in a local file.
     /// The file path is managed externally (Moss writes/reads it).
     /// This slot records that auto-unlock is enabled.
     #[serde(rename = "auto_unlock")]
@@ -93,7 +93,7 @@ pub enum UnlockSlot {
         /// Master key wrapped with a random slot_kek.
         wrapped_master_key: EncryptedKey,
         /// The slot_kek, encrypted with a key derived from the credential_id.
-        /// This is a software gate — assertion verification is the real gate.
+        /// This is a software gate - assertion verification is the real gate.
         encrypted_slot_kek: EncryptedKey,
     },
 }
@@ -232,7 +232,7 @@ impl SlotTable {
         let wrapped = encrypt_bytes(master_key, &slot_kek_hex)?;
 
         // Encrypt the slot_kek with a key derived from credential_id
-        // This is a software gate — the real gate is assertion verification
+        // This is a software gate - the real gate is assertion verification
         let cred_derived_key = derive_fido2_storage_key(credential_id);
         let encrypted_slot_kek = encrypt_bytes(&slot_kek, &hex_encode(&cred_derived_key))?;
 
@@ -408,7 +408,7 @@ fn derive_totp_slot_kek(shared_secret: &[u8]) -> [u8; 32] {
 }
 
 /// Derive a storage key from a FIDO2 credential ID for encrypting
-/// the slot_kek at rest. This is a software gate — the real security
+/// the slot_kek at rest. This is a software gate - the real security
 /// comes from assertion verification.
 fn derive_fido2_storage_key(credential_id: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
