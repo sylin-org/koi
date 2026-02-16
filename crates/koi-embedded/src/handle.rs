@@ -158,9 +158,7 @@ impl KoiHandle {
     pub fn udp(&self) -> Result<Arc<koi_udp::UdpRuntime>, KoiError> {
         match &self.backend {
             HandleBackend::Embedded { udp, .. } => {
-                let runtime = udp
-                    .as_ref()
-                    .ok_or(KoiError::DisabledCapability("udp"))?;
+                let runtime = udp.as_ref().ok_or(KoiError::DisabledCapability("udp"))?;
                 Ok(Arc::clone(runtime))
             }
             HandleBackend::Remote { .. } => Err(KoiError::DisabledCapability("udp (remote mode)")),

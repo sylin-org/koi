@@ -1,4 +1,4 @@
-﻿//! UDP datagram bridging over HTTP/SSE.
+//! UDP datagram bridging over HTTP/SSE.
 //!
 //! Containers cannot bind host UDP sockets directly. This crate exposes a
 //! lease-based HTTP API that lets a containerised process:
@@ -171,10 +171,7 @@ impl UdpRuntime {
     }
 
     /// Subscribe to incoming datagrams for a binding.
-    pub async fn subscribe(
-        &self,
-        id: &str,
-    ) -> Result<broadcast::Receiver<UdpDatagram>, UdpError> {
+    pub async fn subscribe(&self, id: &str) -> Result<broadcast::Receiver<UdpDatagram>, UdpError> {
         let bindings = self.bindings.read().await;
         let binding = bindings
             .get(id)
@@ -225,11 +222,6 @@ impl UdpRuntime {
                 lease_secs: b.lease_secs(),
             })
             .collect()
-    }
-
-    /// Shared bindings ref (for HTTP layer).
-    pub(crate) fn bindings(&self) -> &Arc<RwLock<HashMap<String, ActiveBinding>>> {
-        &self.bindings
     }
 
     /// Background task that reaps expired leases every 30 seconds.
@@ -287,11 +279,7 @@ impl koi_common::capability::Capability for UdpRuntime {
 
     fn status(&self) -> koi_common::capability::CapabilityStatus {
         // status() is async but trait is sync - use try_read for non-blocking check.
-        let count = self
-            .bindings
-            .try_read()
-            .map(|b| b.len())
-            .unwrap_or(0);
+        let count = self.bindings.try_read().map(|b| b.len()).unwrap_or(0);
 
         let summary = if count == 0 {
             "no bindings".to_string()

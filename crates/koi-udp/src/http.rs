@@ -1,4 +1,4 @@
-﻿//! HTTP routes for UDP bridging - bind, unbind, recv (SSE), send, status, heartbeat.
+//! HTTP routes for UDP bridging - bind, unbind, recv (SSE), send, status, heartbeat.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -88,9 +88,7 @@ pub fn routes(runtime: Arc<UdpRuntime>) -> Router {
 fn map_error(e: crate::UdpError) -> axum::response::Response {
     match &e {
         crate::UdpError::NotFound(_) => error_response(ErrorCode::NotFound, e.to_string()),
-        crate::UdpError::InvalidAddr(_) => {
-            error_response(ErrorCode::InvalidPayload, e.to_string())
-        }
+        crate::UdpError::InvalidAddr(_) => error_response(ErrorCode::InvalidPayload, e.to_string()),
         crate::UdpError::Io(_) => error_response(ErrorCode::IoError, e.to_string()),
         crate::UdpError::Base64(_) => error_response(ErrorCode::InvalidPayload, e.to_string()),
     }

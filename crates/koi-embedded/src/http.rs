@@ -1,4 +1,4 @@
-﻿//! Embedded HTTP adapter - lightweight axum server for koi-embedded.
+//! Embedded HTTP adapter - lightweight axum server for koi-embedded.
 //!
 //! When `http_enabled` is set on the builder, this module spins up a minimal
 //! HTTP server that mounts the same domain routes as the standalone daemon,
@@ -19,6 +19,7 @@ use tower_http::cors::CorsLayer;
 /// `/v1/certmesh`).  Disabled capabilities get a 503 fallback router.
 ///
 /// The server shuts down when `cancel` is cancelled.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve(
     port: u16,
     mdns: Option<Arc<koi_mdns::MdnsCore>>,
@@ -39,10 +40,7 @@ pub(crate) async fn serve(
             koi_mdns::http::routes(core.clone()),
         );
     } else {
-        app = app.nest(
-            koi_mdns::http::paths::PREFIX,
-            disabled_fallback("mdns"),
-        );
+        app = app.nest(koi_mdns::http::paths::PREFIX, disabled_fallback("mdns"));
     }
 
     if let Some(ref core) = certmesh {
@@ -60,10 +58,7 @@ pub(crate) async fn serve(
             koi_dns::http::routes(runtime.clone()),
         );
     } else {
-        app = app.nest(
-            koi_dns::http::paths::PREFIX,
-            disabled_fallback("dns"),
-        );
+        app = app.nest(koi_dns::http::paths::PREFIX, disabled_fallback("dns"));
     }
 
     if let Some(ref runtime) = health {
@@ -72,10 +67,7 @@ pub(crate) async fn serve(
             koi_health::http::routes(runtime.core()),
         );
     } else {
-        app = app.nest(
-            koi_health::http::paths::PREFIX,
-            disabled_fallback("health"),
-        );
+        app = app.nest(koi_health::http::paths::PREFIX, disabled_fallback("health"));
     }
 
     if let Some(ref runtime) = proxy {
@@ -84,10 +76,7 @@ pub(crate) async fn serve(
             koi_proxy::http::routes(runtime.clone()),
         );
     } else {
-        app = app.nest(
-            koi_proxy::http::paths::PREFIX,
-            disabled_fallback("proxy"),
-        );
+        app = app.nest(koi_proxy::http::paths::PREFIX, disabled_fallback("proxy"));
     }
 
     if let Some(ref runtime) = udp {
@@ -96,10 +85,7 @@ pub(crate) async fn serve(
             koi_udp::http::routes(runtime.clone()),
         );
     } else {
-        app = app.nest(
-            koi_udp::http::paths::PREFIX,
-            disabled_fallback("udp"),
-        );
+        app = app.nest(koi_udp::http::paths::PREFIX, disabled_fallback("udp"));
     }
 
     app = app.layer(CorsLayer::permissive());

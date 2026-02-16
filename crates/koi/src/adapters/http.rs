@@ -306,9 +306,7 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
     }
 
     if let Some(ref runtime) = state.udp {
-        capabilities.push(
-            koi_common::capability::Capability::status(runtime.as_ref()),
-        );
+        capabilities.push(koi_common::capability::Capability::status(runtime.as_ref()));
     } else {
         capabilities.push(CapabilityStatus {
             name: "udp".to_string(),

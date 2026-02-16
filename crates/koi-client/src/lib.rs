@@ -273,12 +273,7 @@ impl KoiClient {
         self.get_json("/v1/udp/status")
     }
 
-    pub fn udp_bind(
-        &self,
-        port: u16,
-        addr: &str,
-        lease_secs: u64,
-    ) -> Result<serde_json::Value> {
+    pub fn udp_bind(&self, port: u16, addr: &str, lease_secs: u64) -> Result<serde_json::Value> {
         let body = serde_json::json!({
             "port": port,
             "addr": addr,
@@ -294,12 +289,7 @@ impl KoiClient {
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
-    pub fn udp_send(
-        &self,
-        id: &str,
-        dest: &str,
-        payload_b64: &str,
-    ) -> Result<serde_json::Value> {
+    pub fn udp_send(&self, id: &str, dest: &str, payload_b64: &str) -> Result<serde_json::Value> {
         let body = serde_json::json!({
             "dest": dest,
             "payload": payload_b64,

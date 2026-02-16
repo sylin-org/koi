@@ -1,16 +1,10 @@
-﻿//! UDP command handlers.
+//! UDP command handlers.
 
 use base64::Engine;
 
 use crate::commands::{print_json, with_mode, Mode};
 
-pub async fn bind(
-    port: u16,
-    addr: &str,
-    lease: u64,
-    mode: Mode,
-    json: bool,
-) -> anyhow::Result<()> {
+pub async fn bind(port: u16, addr: &str, lease: u64, mode: Mode, json: bool) -> anyhow::Result<()> {
     with_mode(
         mode,
         || async {
@@ -86,8 +80,7 @@ pub async fn send(
             anyhow::bail!("UDP send requires a running daemon (no standalone mode)");
         },
         |client| async move {
-            let payload_b64 =
-                base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+            let payload_b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
             let resp = client.udp_send(id, dest, &payload_b64)?;
             if json {
                 print_json(&resp);
@@ -118,10 +111,7 @@ pub async fn status(mode: Mode, json: bool) -> anyhow::Result<()> {
                     println!("UDP bindings:");
                     for b in bindings {
                         let id = b.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                        let addr = b
-                            .get("local_addr")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
+                        let addr = b.get("local_addr").and_then(|v| v.as_str()).unwrap_or("?");
                         let lease = b.get("lease_secs").and_then(|v| v.as_u64()).unwrap_or(0);
                         println!("  {id}  {addr}  (lease {lease}s)");
                     }

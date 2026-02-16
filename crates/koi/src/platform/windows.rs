@@ -513,7 +513,9 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         };
 
         let udp_runtime = if !config.no_udp {
-            Some(std::sync::Arc::new(koi_udp::UdpRuntime::new(cancel.clone())))
+            Some(std::sync::Arc::new(koi_udp::UdpRuntime::new(
+                cancel.clone(),
+            )))
         } else {
             tracing::info!("UDP capability disabled");
             None
