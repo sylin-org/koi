@@ -25,6 +25,7 @@ enum HandleBackend {
         health: Option<Arc<HealthRuntime>>,
         certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
         proxy: Option<Arc<ProxyRuntime>>,
+        udp: Option<Arc<koi_udp::UdpRuntime>>,
     },
     Remote {
         client: Arc<KoiClient>,
@@ -46,6 +47,7 @@ impl KoiHandle {
         health: Option<Arc<HealthRuntime>>,
         certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
         proxy: Option<Arc<ProxyRuntime>>,
+        udp: Option<Arc<koi_udp::UdpRuntime>>,
         events: broadcast::Sender<KoiEvent>,
         cancel: CancellationToken,
         tasks: Vec<JoinHandle<()>>,
@@ -57,6 +59,7 @@ impl KoiHandle {
                 health,
                 certmesh,
                 proxy,
+                udp,
             },
             events,
             cancel,
@@ -145,6 +148,22 @@ impl KoiHandle {
                 Ok(ProxyHandle::new_embedded(Arc::clone(runtime)))
             }
             HandleBackend::Remote { client } => Ok(ProxyHandle::new_remote(Arc::clone(client))),
+        }
+    }
+
+    /// Get the UDP runtime handle.
+    ///
+    /// Only available in embedded mode — remote mode does not support UDP bridging
+    /// (the remote daemon itself handles bindings).
+    pub fn udp(&self) -> Result<Arc<koi_udp::UdpRuntime>, KoiError> {
+        match &self.backend {
+            HandleBackend::Embedded { udp, .. } => {
+                let runtime = udp
+                    .as_ref()
+                    .ok_or(KoiError::DisabledCapability("udp"))?;
+                Ok(Arc::clone(runtime))
+            }
+            HandleBackend::Remote { .. } => Err(KoiError::DisabledCapability("udp (remote mode)")),
         }
     }
 

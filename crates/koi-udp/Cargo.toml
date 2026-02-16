@@ -1,0 +1,24 @@
+﻿[package]
+name = "koi-udp"
+description = "UDP datagram bridging over HTTP/SSE for containerized workloads"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+koi-common.workspace = true
+
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-stream = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+axum.workspace = true
+uuid.workspace = true
+base64.workspace = true
+utoipa.workspace = true
+futures-util.workspace = true

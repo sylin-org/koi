@@ -14,10 +14,11 @@ members = [
     "crates/koi-dns",
     "crates/koi-health",
     "crates/koi-proxy",
+    "crates/koi-udp",
 ]
 
 [workspace.package]
-version = "0.2.202602151054"
+version = "0.2.202602161546"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/sylin-org/koi"
@@ -36,6 +37,7 @@ koi-truststore = { path = "crates/koi-truststore", version = "0.2" }
 koi-dns = { path = "crates/koi-dns", version = "0.2" }
 koi-health = { path = "crates/koi-health", version = "0.2" }
 koi-proxy = { path = "crates/koi-proxy", version = "0.2" }
+koi-udp = { path = "crates/koi-udp", version = "0.2" }
 
 # Shared external dependencies — single version pin
 serde = { version = "1", features = ["derive"] }

@@ -14,6 +14,7 @@ koi-dns.workspace = true
 koi-health.workspace = true
 koi-certmesh.workspace = true
 koi-proxy.workspace = true
+koi-udp.workspace = true
 koi-config.workspace = true
 koi-client.workspace = true
 hickory-proto.workspace = true
@@ -25,6 +26,7 @@ tracing.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 axum.workspace = true
+tower-http = { workspace = true, features = ["cors"] }
 reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
 futures-util.workspace = true
