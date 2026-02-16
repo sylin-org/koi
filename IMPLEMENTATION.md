@@ -46,6 +46,7 @@ crates/
 │       │   ├── mod.rs           # Shared helpers (detect_mode, run_streaming, etc.)
 │       │   ├── mdns.rs          # mDNS commands + admin routing
 │       │   ├── certmesh.rs      # Certmesh commands
+│       │   ├── ceremony_cli.rs  # Generic ceremony render loop (drives CeremonyHost)
 │       │   ├── dns.rs           # DNS commands
 │       │   ├── health.rs        # Health commands
 │       │   ├── proxy.rs         # Proxy commands
@@ -60,12 +61,13 @@ crates/
 │           ├── windows.rs       # Windows SCM, firewall, service paths
 │           ├── unix.rs          # systemd, service paths
 │           └── macos.rs         # launchd, service paths
-├── koi-common/            # Shared kernel (types, errors, pipeline)
+├── command-surface/       # Glyph-based command rendering traits
+├── koi-common/            # Shared kernel (types, errors, pipeline, ceremony engine)
 ├── koi-config/            # Config & breadcrumb discovery
-├── koi-crypto/            # Cryptographic primitives (keys, TOTP, FIDO2, auth adapters)
+├── koi-crypto/            # Cryptographic primitives (keys, TOTP, FIDO2, auth adapters, unlock slots)
 ├── koi-truststore/        # Platform trust store installation
 ├── koi-mdns/              # mDNS domain (core, daemon, registry, protocol, http)
-├── koi-certmesh/          # Certificate mesh (CA, enrollment, roster)
+├── koi-certmesh/          # Certificate mesh (CA, enrollment, roster, pond ceremony)
 ├── koi-dns/               # Local DNS resolver
 ├── koi-health/            # Machine & service health monitoring
 ├── koi-proxy/             # TLS-terminating reverse proxy
@@ -74,6 +76,73 @@ crates/
 ```
 
 Protocol types live in each domain crate (`koi-mdns/src/protocol.rs`, `koi-certmesh/src/protocol.rs`). Shared types live in `koi-common`. The binary crate contains no domain logic — only CLI parsing, adapter wiring, and formatting.
+
+---
+
+## Ceremony engine — server-driven interactive flows
+
+Interactive multi-step operations (creating a CA, joining a mesh, unlocking) use a **ceremony engine** — a generic server-controlled dialogue framework in `koi-common/src/ceremony.rs`. The core model is a **bag of key-value pairs** (session state) evaluated by a **rules function**. There is no stage index or linear pipeline. Every client submission merges into the bag and triggers re-evaluation.
+
+```
+Client                              CeremonyHost<R>
+  │                                       │
+  │─── CeremonyRequest { data: {} } ────►│  rules.evaluate(bag) → NeedInput
+  │◄── CeremonyResponse { prompts } ─────│
+  │                                       │
+  │─── CeremonyRequest { data: {...} } ──►│  merge → rules.evaluate(bag) → NeedInput
+  │◄── CeremonyResponse { prompts } ─────│
+  │                                       │
+  │─── CeremonyRequest { data: {...} } ──►│  merge → rules.evaluate(bag) → Complete
+  │◄── CeremonyResponse { complete } ────│
+```
+
+**Key types:**
+- `CeremonyHost<R>` — generic host managing sessions (UUIDv7 IDs, 5-minute TTL)
+- `CeremonyRules` trait — `evaluate(type, bag, render_hints) → EvalResult`
+- `CeremonyRequest` / `CeremonyResponse` — wire types for HTTP and CLI
+- `Prompt` — single input request with `InputType` (select, text, secret, entropy, code, FIDO2)
+- `Message` — informational display (info, QR code, summary, error)
+- `EvalResult` — `NeedInput`, `ValidationError`, `Complete`, `Fatal`
+
+**Domain ceremony:** `PondCeremonyRules` (in `koi-certmesh/src/pond_ceremony.rs`) implements `CeremonyRules` for four ceremonies: `init` (create CA), `join`, `invite`, and `unlock`.
+
+**CLI render loop:** `ceremony_cli.rs` is a "dumb render loop" that drives any `CeremonyHost` — it sends requests, renders prompts (with color, box drawing, QR codes), collects terminal input, and repeats until completion. The CLI never contains domain logic; all branching, validation, and content decisions live in the rules function.
+
+This separation means the same ceremony can be consumed from HTTP (JSON round-trips) or CLI (terminal I/O) with identical business logic.
+
+---
+
+## Envelope encryption — multi-method CA unlock
+
+CA private keys use **envelope encryption** (LUKS-inspired). A random 256-bit **master key** encrypts the CA private key. Each **unlock slot** independently wraps that master key. Any single slot can unlock the CA.
+
+```
+┌─────────────────────────────────────────────┐
+│  ca-key.enc  (master-key-encrypted CA key)  │
+└──────────────────┬──────────────────────────┘
+                   │ decrypted by
+┌──────────────────▼──────────────────────────┐
+│  unlock-slots.json                          │
+│  ├── Slot 0: Passphrase (Argon2id → KEK)    │
+│  ├── Slot 1: AutoUnlock (plaintext master)  │
+│  ├── Slot 2: TOTP (HKDF → KEK)             │
+│  └── Slot 3: FIDO2 (assertion → KEK)       │
+└─────────────────────────────────────────────┘
+```
+
+**Slot types:**
+- `Passphrase` — Argon2id key derivation → AES-256-GCM wrap of master key
+- `AutoUnlock` — marker slot; master key stored in a separate local file (for unattended boot on single-user profiles)
+- `Totp` — shared TOTP secret → HKDF → AES-256-GCM wrap of master key
+- `Fido2` — assertion-gated KEK → AES-256-GCM wrap of master key
+
+**Files:** `ca-key.enc` (encrypted CA key), `unlock-slots.json` (slot table with per-slot wrapped master key). Legacy single-passphrase keys are auto-migrated on first load.
+
+---
+
+## UUIDv7 — time-ordered identifiers
+
+All generated IDs use UUIDv7 (`Uuid::now_v7()`), which embeds a millisecond timestamp. This gives natural time-ordering for ceremony sessions, SSE event IDs, and correlation tokens. Short IDs (8 hex chars) are the first 8 characters of a UUIDv7.
 
 ---
 

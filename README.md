@@ -90,10 +90,11 @@ The container makes a plain HTTP request; Koi speaks multicast on the physical n
 
 - **Service discovery** — browse, resolve, subscribe to mDNS events
 - **Local DNS** — static entries, mDNS aliases, certmesh SANs
-- **LAN TLS** — private CA, TOTP/FIDO2 enrollment, automatic renewals
+- **LAN TLS** — private CA, envelope encryption with multi-method unlock (passphrase, TOTP, FIDO2, auto-unlock), ceremony-driven setup
 - **Health view** — machine synthesis + opt-in HTTP/TCP checks
 - **Local TLS proxy** — terminate TLS with certmesh-managed certs
 - **Single binary** — HTTP, IPC, and CLI in one daemon
+- **UUIDv7 identifiers** — time-ordered IDs for sessions, events, and correlation
 
 ## Platform support
 

@@ -279,10 +279,11 @@ koi mdns admin unregister ID                     # force-remove
 
 # Certificate mesh
 koi certmesh create [--profile just-me|team|organization] [--operator NAME]
-                                                         # interactive wizard (2 steps: profile, passphrase)
+                                                         # interactive ceremony (profile, entropy, passphrase,
+                                                         # unlock method, TOTP/FIDO2 setup)
 koi certmesh status                              # show mesh status
 koi certmesh join [ENDPOINT]                     # join existing mesh (discovers CA via mDNS)
-koi certmesh unlock                              # decrypt CA key
+koi certmesh unlock                              # decrypt CA key (passphrase, TOTP, FIDO2, or auto)
 koi certmesh log                                 # show audit log
 koi certmesh set-hook --reload "COMMAND"         # set renewal hook
 koi certmesh promote [ENDPOINT]                  # promote standby CA

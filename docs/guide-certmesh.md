@@ -18,28 +18,34 @@ The first step is initializing a CA on the machine that will be the primary auth
 koi certmesh create
 ```
 
-This launches an interactive wizard that guides you through creation.
+This launches an interactive **ceremony** — a server-driven wizard where all branching, validation, and content decisions happen in the domain logic, not the CLI. The terminal is a "dumb render loop" that displays prompts, collects input, and sends it back. This means identical creation logic whether you use the CLI or the HTTP API.
 
-The wizard walks through two steps:
+The ceremony walks through these steps:
 
 1. **Choose a trust profile** — who is this mesh for? (Just Me, My Team, My Organization, or Custom)
-2. **Set the CA passphrase** — three options:
-   - **Mash the keyboard** (default) — type random keys for a few seconds to collect entropy, then a secure EFF-wordlist passphrase is generated from your input
-   - **Generate one for me** — automatic entropy collection, then a passphrase is generated
-   - **Type my own** — enter and confirm a passphrase of your choice
+2. **Operator name** — prompted when the profile requires approval (team, organization, custom)
+3. **Entropy collection** — the server generates 32 bytes of entropy; you contribute more by mashing keys on the keyboard. Both are combined via SHA-256 to seed passphrase generation
+4. **Set the CA passphrase** — three options:
+   - **Keep the suggestion** (default) — an EFF-wordlist passphrase is generated from the combined entropy
+   - **Generate another** — re-derives a new passphrase from fresh entropy
+   - **Type my own** — enter and confirm a passphrase of your choice (minimum 8 characters)
+5. **Unlock method** (custom profile only) — choose how the CA can be unlocked on boot:
+   - `auto` — CA unlocks automatically on daemon start (single-user homelabs)
+   - `token` — requires a TOTP code or FIDO2 tap to unlock
+   - `passphrase` — requires the CA passphrase to unlock (default for team/org)
+6. **Enrollment auth setup** — TOTP by default. Shows a QR code for your authenticator app. You must enter a valid code to verify your setup. After two failed attempts, you can regenerate the secret. FIDO2 support (USB security keys) is also available.
+7. **Unlock token registration** (if unlock method = `token`) — registers a separate TOTP secret or FIDO2 key for CA unlock (distinct from enrollment auth)
 
-After reviewing your choices, the wizard creates the mesh and then:
+After the ceremony completes, Koi:
 
 1. Generates an ECDSA P-256 CA keypair
-2. Encrypts the private key with your passphrase (Argon2id + AES-256-GCM)
+2. Encrypts the private key using **envelope encryption**: a random 256-bit master key encrypts the CA key, and the master key is wrapped by each unlock slot (passphrase, auto-unlock, TOTP, and/or FIDO2)
 3. Creates a roster with this host as the primary member
 4. Issues a certificate for the local hostname (self-enrollment)
 5. Starts certmesh audit logging
-6. Sets up enrollment authentication (TOTP by default — shows a QR code for your authenticator app; or FIDO2 if a hardware security key is available)
-7. **Verifies** you can authenticate (TOTP: enter a code from your app; FIDO2: tap your key)
-8. Installs the CA certificate in the system trust store
+6. Installs the CA certificate in the system trust store
 
-The verification step is important — the wizard won't finish until you prove you can authenticate. For TOTP, if you're having trouble, after two failed attempts you can choose to generate a new secret.
+The ceremony design means every step can be replayed or revised before finalization. Press **ESC** at any time to cancel without making changes.
 
 TOTP supports any authenticator app (Google Authenticator, Authy, 1Password, etc.). FIDO2 supports USB security keys (YubiKey, SoloKey, Nitrokey, etc.). You'll need the chosen auth method to enroll new members.
 
@@ -63,18 +69,19 @@ The operator field is a human-readable label for audit trails. In the "just-me" 
 
 ### Interactive wizard + flags
 
-By default, `koi certmesh create` runs an interactive 2-step wizard:
+By default, `koi certmesh create` runs the interactive ceremony described above. The ceremony engine handles all branching and validation — the CLI is a generic render loop that works with any ceremony type.
 
-1. **Choose a trust profile** — pick from presets or configure custom settings
-2. **Set the CA passphrase** — keyboard mashing (default), auto-generate, or type your own
-
-The wizard includes a review screen where you can go back to change any step before confirming. Press **ESC** at any time to cancel without making changes.
-
-If you choose **Custom** in step 1, you can explicitly set:
+If you choose **Custom** in the profile step, you can explicitly set:
 - Enrollment at creation: `open` or `closed`
 - Join approval: `required` or `not required`
+- Unlock method: `auto`, `token`, or `passphrase`
 
-After creation, the wizard displays authentication setup for enrollment. For TOTP (default), this is a QR code and manual key — scan it with your authenticator app and enter a code to verify. For FIDO2, you'll register your hardware security key. If TOTP verification fails twice, you can regenerate the secret.
+Standard profiles (Just Me, My Team, My Organization) use sensible defaults:
+- **Just Me**: open enrollment, no approval, auto-unlock
+- **My Team**: open enrollment, approval required, passphrase unlock
+- **My Organization**: closed enrollment, approval required, passphrase unlock
+
+After creation, the ceremony displays authentication setup for enrollment. For TOTP (default), this is a QR code and manual key — scan it with your authenticator app and enter a code to verify. For FIDO2, you'll register your hardware security key. If TOTP verification fails twice, you can regenerate the secret.
 
 For non-interactive use (automation), provide flags:
 
@@ -121,7 +128,16 @@ The CA private key is encrypted at rest — always. When the daemon starts (or r
 koi certmesh unlock
 ```
 
-This is a deliberate security boundary. A machine reboot shouldn't automatically grant certificate-issuing power. Someone needs to provide the passphrase. While locked, enrollment requests receive a `503 CA locked` response, which is a clear, non-ambiguous signal to waiting clients.
+Koi supports multiple unlock methods via **envelope encryption**. Each method is stored as a slot in `unlock-slots.json`. The unlock ceremony detects which methods are available and prompts accordingly:
+
+- **Passphrase** — always available (the original CA passphrase)
+- **Auto-unlock** — if enabled during creation, the CA unlocks automatically on daemon start. No manual intervention needed. Best for single-user homelabs (the "Just Me" profile enables this by default)
+- **TOTP** — enter a 6-digit code from your authenticator app (if a TOTP unlock slot was registered during creation)
+- **FIDO2** — tap your hardware security key (if a FIDO2 unlock slot was registered)
+
+If only one method is available, it's used directly. If multiple unlock slots exist, the ceremony prompts you to choose.
+
+This is a deliberate security boundary. A machine reboot shouldn't automatically grant certificate-issuing power — unless you've explicitly configured auto-unlock for a single-user profile. While locked, enrollment requests receive a `503 CA locked` response, which is a clear, non-ambiguous signal to waiting clients.
 
 ---
 
@@ -272,11 +288,14 @@ CA state (on the primary):
 
 ```
 certmesh/ca/
-  ca-key.enc      # encrypted CA private key
-  ca-cert.pem     # CA certificate (public)
-  auth.json       # enrollment auth credential (encrypted TOTP secret or FIDO2 public key)
+  ca-key.enc          # master-key-encrypted CA private key
+  ca-cert.pem         # CA certificate (public)
+  unlock-slots.json   # unlock slot table (passphrase, auto-unlock, TOTP, FIDO2)
+  auth.json           # enrollment auth credential (encrypted TOTP secret or FIDO2 public key)
 certmesh/roster.json  # mesh membership roster
 ```
+
+The `unlock-slots.json` file holds the envelope encryption slots. Each slot wraps the same master key using a different method (passphrase, TOTP, FIDO2, or auto-unlock). Legacy deployments without `unlock-slots.json` are auto-migrated on first load.
 
 The `fullchain.pem` is what most applications want — it includes both the service certificate and the CA certificate, which is what `nginx`, `traefik`, and `curl --cacert` expect.
 

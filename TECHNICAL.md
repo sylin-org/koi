@@ -13,11 +13,15 @@
 6. [CLI Adapter](#cli-adapter)
 7. [Pipeline Properties](#pipeline-properties)
 8. [Service Record Schema](#service-record-schema)
-9. [Platform Integration](#platform-integration)
-10. [Project Structure](#project-structure)
-11. [Dependencies](#dependencies)
-12. [RFC Compliance](#rfc-compliance)
-13. [Design Decisions](#design-decisions)
+9. [Container Access Pattern](#container-access-pattern)
+10. [Platform Integration](#platform-integration)
+11. [Configuration](#configuration)
+12. [Project Structure](#project-structure)
+13. [Dependencies](#dependencies)
+14. [RFC Compliance](#rfc-compliance)
+15. [Ceremony Protocol](#ceremony-protocol)
+16. [Envelope Encryption](#envelope-encryption)
+17. [Design Decisions](#design-decisions)
 
 ---
 
@@ -630,6 +634,10 @@ crates/
 │       │   ├── mod.rs        # Shared helpers (detect_mode, run_streaming, etc.)
 │       │   ├── mdns.rs       # mDNS commands (discover, announce, etc.)
 │       │   ├── certmesh.rs   # Certmesh commands (create, join, etc.)
+│       │   ├── ceremony_cli.rs # Generic ceremony render loop (drives CeremonyHost)
+│       │   ├── dns.rs        # DNS commands
+│       │   ├── health.rs     # Health commands
+│       │   ├── proxy.rs      # Proxy commands
 │       │   └── status.rs     # Unified status command
 │       ├── adapters/
 │       │   ├── http.rs       # HTTP server (Axum router, health, status)
@@ -640,12 +648,18 @@ crates/
 │           ├── windows.rs    # Windows Service (SCM), firewall, paths
 │           ├── unix.rs       # systemd, paths
 │           └── macos.rs      # launchd, paths
-├── koi-common/         # Shared kernel — types, errors, pipeline, id
+├── command-surface/    # Glyph-based command rendering traits
+├── koi-common/         # Shared kernel — types, errors, pipeline, id, ceremony engine
 ├── koi-mdns/           # mDNS domain — core, daemon, registry, protocol, http
 ├── koi-config/         # Config & state — breadcrumb discovery
-├── koi-certmesh/       # Certificate mesh — CA, enrollment, roster
-├── koi-crypto/         # Cryptographic primitives — key gen, TOTP, FIDO2, auth adapters
-└── koi-truststore/     # Trust store — platform cert installation
+├── koi-certmesh/       # Certificate mesh — CA, enrollment, roster, pond ceremony
+├── koi-crypto/         # Cryptographic primitives — key gen, TOTP, FIDO2, auth adapters, unlock slots
+├── koi-truststore/     # Trust store — platform cert installation
+├── koi-dns/            # Local DNS resolver
+├── koi-health/         # Machine & service health monitoring
+├── koi-proxy/          # TLS-terminating reverse proxy
+├── koi-client/         # HTTP client for the Koi daemon
+└── koi-embedded/       # Embed Koi in Rust applications
 ```
 
 The `platform/` module is the only location with `#[cfg(target_os)]` conditional compilation. Everything else is pure cross-platform Rust. Domain crates depend on `koi-common` but never on each other.
@@ -689,6 +703,145 @@ The unicast limitation is irrelevant for Koi's use case — all discovery is mul
 
 ---
 
+## Ceremony Protocol
+
+Interactive multi-step operations use a **ceremony engine** — a generic server-driven dialogue framework. The design separates transport (CLI terminal I/O, HTTP JSON) from domain logic (what questions to ask, how to validate answers).
+
+### Architecture
+
+The ceremony engine lives in `koi-common/src/ceremony.rs`. Domain ceremonies implement the `CeremonyRules` trait. The CLI renders ceremonies via `ceremony_cli.rs`. Currently ceremonies are CLI-only; no HTTP ceremony endpoint is exposed yet.
+
+```
+Client (CLI/HTTP)          CeremonyHost<Rules>           Domain Rules
+  │                              │                           │
+  │── CeremonyRequest ───────▶│── merge bag ────────────▶│
+  │                              │   evaluate(bag) ◀────────│
+  │◀─ CeremonyResponse ───────│                           │
+```
+
+The core model is a **bag of key-value pairs** (session state). There is no stage index or linear pipeline. Every client submission merges into the bag and triggers re-evaluation by the rules function. The rules function inspects the bag and returns either `NeedInput` (with prompts), `ValidationError`, `Complete`, or `Fatal`.
+
+### Wire types
+
+**Request:**
+```json
+{
+  "session_id": "0195...",
+  "ceremony": "init",
+  "data": { "profile": "just_me" }
+}
+```
+
+**Response:**
+```json
+{
+  "session_id": "0195...",
+  "prompts": [
+    {
+      "key": "passphrase",
+      "prompt": "Choose a passphrase",
+      "input_type": "secret_confirm",
+      "required": true
+    }
+  ],
+  "messages": [
+    { "kind": "info", "title": "Profile", "content": "Just Me selected" }
+  ],
+  "complete": false
+}
+```
+
+### Input types
+
+| Type | Purpose |
+|---|---|
+| `select_one` | Numbered list with default |
+| `select_many` | Multi-select list |
+| `text` | Free-form text |
+| `secret` | Masked input |
+| `secret_confirm` | Masked input with confirmation |
+| `code` | Short code (e.g., TOTP 6-digit) |
+| `entropy` | Raw keyboard mashing for entropy |
+| `fido2` | FIDO2 assertion |
+
+### Message types
+
+| Kind | Purpose |
+|---|---|
+| `info` | Informational text |
+| `qr_code` | QR code (UTF-8 art, PNG base64, or URI) |
+| `summary` | Styled summary box |
+| `error` | Error message |
+
+### Session management
+
+Sessions use UUIDv7 IDs (time-ordered). Default TTL is 5 minutes. Expired sessions are swept every 60 seconds.
+
+### Pond ceremonies
+
+`PondCeremonyRules` (in `koi-certmesh/src/pond_ceremony.rs`) implements four ceremonies:
+
+| Ceremony | Purpose | Key steps |
+|---|---|---|
+| `init` | Create a new CA | Profile → operator → entropy → passphrase → unlock method → TOTP setup |
+| `join` | Enroll into existing mesh | Endpoint → auth code → certificate |
+| `invite` | Generate invitation | Passphrase → invite token |
+| `unlock` | Unlock a locked CA | Method selection → credential |
+
+The init ceremony supports four profiles (`just_me`, `my_team`, `my_organization`, `custom`) with per-profile defaults for enrollment openness, approval requirements, and unlock method. Custom mode exposes all sub-prompts.
+
+---
+
+## Envelope Encryption
+
+CA private keys use envelope encryption, inspired by LUKS. A random 256-bit master key encrypts the CA private key via AES-256-GCM. Each unlock slot independently wraps that master key. Any single slot can unlock the CA.
+
+### File layout
+
+```
+{ca_dir}/
+├── ca-key.enc          # Master-key-encrypted CA private key
+├── ca-cert.pem         # CA certificate (public)
+└── unlock-slots.json   # Slot table with per-slot wrapped master key
+```
+
+### Slot types
+
+| Slot type | Key derivation | Use case |
+|---|---|---|
+| `Passphrase` | Argon2id → KEK → AES-256-GCM wrap | Primary unlock (always present) |
+| `AutoUnlock` | Master key in separate local file (marker slot) | Unattended boot for single-user profiles |
+| `Totp` | HKDF(shared_secret) → KEK | TOTP-based unlock (6-digit code) |
+| `Fido2` | Assertion-gated KEK | Hardware security key unlock |
+
+### Slot table schema
+
+```json
+{
+  "version": 1,
+  "slots": [
+    { "type": "passphrase", "wrapped_master_key": { "ciphertext": "...", "nonce": "...", "salt": "..." } },
+    { "type": "auto_unlock" },
+    { "type": "totp", "shared_secret_hex": "...", "wrapped_master_key": { "ciphertext": "...", "nonce": "..." } }
+  ]
+}
+```
+
+### Operations
+
+- `new_with_passphrase(master_key, passphrase)` — bootstrap with slot 0
+- `unwrap_with_passphrase(passphrase)` — derive KEK, unwrap master key
+- `add_auto_unlock()` / `remove_auto_unlock()` — toggle unattended boot
+- `add_totp_slot(master_key, secret)` / `unwrap_with_totp(code)` — TOTP unlock
+- `add_fido2_slot(...)` / `unwrap_with_fido2(credential_id)` — FIDO2 unlock
+- `available_methods()` — list active slot types
+
+### Migration
+
+Legacy single-passphrase keys (pre-envelope) are auto-migrated on first load via `migrate_to_envelope()`. The function decrypts the old key, generates a fresh master key, re-encrypts under the master key, and creates a slot table with a passphrase slot.
+
+---
+
 ## Design Decisions
 
 ### Host service as the container mDNS bridge
@@ -729,4 +882,4 @@ The following were considered and deliberately excluded from v1:
 ---
 
 **Document Status:** Current
-**Last Updated:** 2026-02-11
+**Last Updated:** 2026-02-15

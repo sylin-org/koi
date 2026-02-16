@@ -106,6 +106,13 @@ What it covers:
 
 Certmesh create/destroy touches the trust store and may require elevated permissions on some platforms. The embedded integration example runs certmesh by default. If you embed certmesh in production, ensure your process has the right privileges and the data directory is isolated per environment.
 
+The `koi-embedded` crate re-exports key types from downstream crates for convenience:
+- `KoiConfig`, `ServiceMode`, `DnsConfigBuilder` from `koi-config`
+- `KoiEvent` from `koi-embedded::events`
+- `KoiHandle`, `MdnsHandle`, `DnsHandle`, `HealthHandle`, `CertmeshHandle`, `ProxyHandle`
+
+Certmesh initialization checks disk state on startup: no CA → `CertmeshCore::uninitialized()`; roster exists but no key decrypted → `CertmeshCore::locked()`. Use the ceremony protocol (via HTTP or direct `CeremonyHost` invocation) to create or unlock the CA.
+
 ## Tips for Production Integration
 
 - Set `data_dir` to isolate state per process or environment.
