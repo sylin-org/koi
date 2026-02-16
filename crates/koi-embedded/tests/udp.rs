@@ -1,4 +1,4 @@
-﻿//! Integration tests for koi-udp capabilities via koi-embedded.
+//! Integration tests for koi-udp capabilities via koi-embedded.
 //!
 //! Exercises: bind, status, send/recv, heartbeat, unbind, and lease expiry.
 
@@ -76,7 +76,10 @@ async fn udp_bind_and_status() {
     };
     let info = udp.bind(bind_req).await.expect("bind should succeed");
     assert!(!info.id.is_empty(), "binding ID should be non-empty");
-    assert!(info.local_addr.contains("127.0.0.1"), "should bind to localhost");
+    assert!(
+        info.local_addr.contains("127.0.0.1"),
+        "should bind to localhost"
+    );
     assert_eq!(info.lease_secs, 300);
 
     // Status shows exactly one binding
@@ -197,7 +200,9 @@ async fn udp_heartbeat_extends_lease() {
 
     // Wait a moment, then heartbeat
     tokio::time::sleep(Duration::from_millis(100)).await;
-    udp.heartbeat(&info.id).await.expect("heartbeat should succeed");
+    udp.heartbeat(&info.id)
+        .await
+        .expect("heartbeat should succeed");
 
     // Binding should still be alive
     let status = udp.status().await;
@@ -327,7 +332,10 @@ async fn udp_multi_subscriber_receives_same_datagram() {
         .expect("timeout rx2")
         .expect("recv rx2");
 
-    assert_eq!(d1.payload, d2.payload, "both subscribers should get same payload");
+    assert_eq!(
+        d1.payload, d2.payload,
+        "both subscribers should get same payload"
+    );
     assert_eq!(d1.binding_id, info.id);
     assert_eq!(d2.binding_id, info.id);
 
@@ -419,7 +427,9 @@ async fn udp_with_http_adapter() {
         "payload": base64::engine::general_purpose::STANDARD.encode(b"outbound via http")
     });
     let resp = client
-        .post(format!("http://127.0.0.1:{http_port}/v1/udp/send/{binding_id}"))
+        .post(format!(
+            "http://127.0.0.1:{http_port}/v1/udp/send/{binding_id}"
+        ))
         .json(&send_body)
         .send()
         .await
@@ -473,6 +483,305 @@ async fn udp_with_http_adapter() {
         .expect("status after unbind");
     let body: serde_json::Value = resp.json().await.expect("json");
     assert!(body["bindings"].as_array().unwrap().is_empty());
+
+    handle.shutdown().await.unwrap();
+}
+
+// ── SSE integration tests ───────────────────────────────────────────
+
+/// A parsed SSE event.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct SseEvent {
+    event_type: String,
+    id: String,
+    data: String,
+}
+
+/// Parse raw SSE text into individual events, skipping keep-alive comments.
+fn parse_sse_events(raw: &str) -> Vec<SseEvent> {
+    let mut events = Vec::new();
+    let mut event_type = String::new();
+    let mut id = String::new();
+    let mut data_lines: Vec<String> = Vec::new();
+
+    for line in raw.lines() {
+        if line.starts_with(':') {
+            continue; // keep-alive comment
+        }
+        if line.is_empty() {
+            if !event_type.is_empty() || !data_lines.is_empty() {
+                events.push(SseEvent {
+                    event_type: std::mem::take(&mut event_type),
+                    id: std::mem::take(&mut id),
+                    data: data_lines.join("\n"),
+                });
+                data_lines.clear();
+            }
+            continue;
+        }
+        if let Some(v) = line.strip_prefix("event:") {
+            event_type = v.trim_start().to_string();
+        } else if let Some(v) = line.strip_prefix("id:") {
+            id = v.trim_start().to_string();
+        } else if let Some(v) = line.strip_prefix("data:") {
+            data_lines.push(v.trim_start().to_string());
+        }
+    }
+    // Flush trailing event (server may not send a final blank line)
+    if !event_type.is_empty() || !data_lines.is_empty() {
+        events.push(SseEvent {
+            event_type: std::mem::take(&mut event_type),
+            id: std::mem::take(&mut id),
+            data: data_lines.join("\n"),
+        });
+    }
+    events
+}
+
+/// Helper: start embedded with HTTP + UDP, return (handle, http_port, data_dir).
+async fn udp_http_handle() -> (koi_embedded::KoiHandle, u16, PathBuf) {
+    let data_dir = temp_data_dir();
+    let http_port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        port
+    };
+    let koi = Builder::new()
+        .data_dir(&data_dir)
+        .service_mode(ServiceMode::EmbeddedOnly)
+        .mdns(false)
+        .dns_enabled(false)
+        .health(false)
+        .certmesh(false)
+        .proxy(false)
+        .udp(true)
+        .http(true)
+        .http_port(http_port)
+        .build()
+        .expect("build");
+    let handle = koi.start().await.expect("start");
+    // Give the HTTP server time to start
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    (handle, http_port, data_dir)
+}
+
+/// Bind a UDP port via HTTP, return (binding_id, local_addr).
+async fn http_bind(client: &reqwest::Client, http_port: u16) -> (String, std::net::SocketAddr) {
+    let resp = client
+        .post(format!("http://127.0.0.1:{http_port}/v1/udp/bind"))
+        .json(&serde_json::json!({ "port": 0, "addr": "127.0.0.1", "lease_secs": 300 }))
+        .send()
+        .await
+        .expect("bind request");
+    assert_eq!(resp.status(), 201);
+    let info: serde_json::Value = resp.json().await.expect("json");
+    let id = info["id"].as_str().expect("binding id").to_string();
+    let addr: std::net::SocketAddr = info["local_addr"].as_str().expect("addr").parse().unwrap();
+    (id, addr)
+}
+
+#[tokio::test]
+async fn udp_sse_recv_datagrams() {
+    let (handle, http_port, _dir) = udp_http_handle().await;
+    let client = reqwest::Client::new();
+    let (binding_id, local_addr) = http_bind(&client, http_port).await;
+
+    // Spawn SSE consumer with idle_for=3 (closes 3s after last datagram)
+    let sse_client = client.clone();
+    let bid = binding_id.clone();
+    let sse_task = tokio::spawn(async move {
+        let resp = sse_client
+            .get(format!(
+                "http://127.0.0.1:{http_port}/v1/udp/recv/{bid}?idle_for=3"
+            ))
+            .send()
+            .await
+            .expect("sse connect");
+        assert_eq!(resp.status(), 200);
+        resp.text().await.expect("sse body")
+    });
+
+    // Wait for SSE subscription to be established
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Send 3 datagrams from an external socket
+    let sender = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("sender socket");
+    let sender_addr = sender.local_addr().unwrap();
+    for msg in &[b"alpha" as &[u8], b"bravo", b"charlie"] {
+        sender.send_to(msg, local_addr).await.expect("send_to");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Wait for idle timeout to close the SSE stream
+    let sse_text = tokio::time::timeout(Duration::from_secs(15), sse_task)
+        .await
+        .expect("sse timeout")
+        .expect("sse join");
+
+    let events = parse_sse_events(&sse_text);
+    assert_eq!(
+        events.len(),
+        3,
+        "expected 3 SSE events, got {}:\n{sse_text}",
+        events.len()
+    );
+
+    use base64::Engine;
+    let mut prev_id = String::new();
+
+    for (i, (evt, expected)) in events.iter().zip(["alpha", "bravo", "charlie"]).enumerate() {
+        assert_eq!(evt.event_type, "datagram", "event {i} type");
+        assert!(!evt.id.is_empty(), "event {i} should have a UUIDv7 id");
+
+        // Event IDs should be monotonically increasing (UUIDv7)
+        if !prev_id.is_empty() {
+            assert!(
+                evt.id > prev_id,
+                "event ids should increase: {} > {}",
+                evt.id,
+                prev_id
+            );
+        }
+        prev_id.clone_from(&evt.id);
+
+        // Parse the datagram JSON
+        let dg: serde_json::Value = serde_json::from_str(&evt.data).expect("parse datagram json");
+        assert_eq!(
+            dg["binding_id"].as_str().unwrap(),
+            binding_id,
+            "event {i} binding_id"
+        );
+        assert_eq!(
+            dg["src"].as_str().unwrap(),
+            sender_addr.to_string(),
+            "event {i} src"
+        );
+
+        // Decode and verify payload
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(dg["payload"].as_str().expect("payload field"))
+            .expect("base64 decode");
+        assert_eq!(
+            String::from_utf8_lossy(&decoded),
+            expected,
+            "event {i} payload"
+        );
+    }
+
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn udp_sse_idle_timeout_closes_stream() {
+    let (handle, http_port, _dir) = udp_http_handle().await;
+    let client = reqwest::Client::new();
+    let (binding_id, _addr) = http_bind(&client, http_port).await;
+
+    // Subscribe with idle_for=1, send no datagrams
+    let start = std::time::Instant::now();
+    let resp = client
+        .get(format!(
+            "http://127.0.0.1:{http_port}/v1/udp/recv/{binding_id}?idle_for=1"
+        ))
+        .send()
+        .await
+        .expect("sse connect");
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.expect("sse body");
+    let elapsed = start.elapsed();
+
+    // Stream should close after ~1s of idle
+    assert!(
+        elapsed >= Duration::from_millis(800),
+        "stream closed too early: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "stream took too long to close: {elapsed:?}"
+    );
+
+    // No datagram events should have been received
+    let events = parse_sse_events(&body);
+    assert!(
+        events.is_empty(),
+        "expected no events, got {}",
+        events.len()
+    );
+
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn udp_sse_nonexistent_binding() {
+    let (handle, http_port, _dir) = udp_http_handle().await;
+    let client = reqwest::Client::new();
+
+    // Subscribe to a binding that doesn't exist
+    let resp = client
+        .get(format!(
+            "http://127.0.0.1:{http_port}/v1/udp/recv/nonexistent?idle_for=1"
+        ))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), 404, "should 404 for nonexistent binding");
+
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn udp_sse_multiple_subscribers() {
+    let (handle, http_port, _dir) = udp_http_handle().await;
+    let client = reqwest::Client::new();
+    let (binding_id, local_addr) = http_bind(&client, http_port).await;
+
+    // Spawn two SSE consumers on the same binding
+    let mut tasks = Vec::new();
+    for _ in 0..2 {
+        let c = client.clone();
+        let bid = binding_id.clone();
+        tasks.push(tokio::spawn(async move {
+            let resp = c
+                .get(format!(
+                    "http://127.0.0.1:{http_port}/v1/udp/recv/{bid}?idle_for=3"
+                ))
+                .send()
+                .await
+                .expect("sse");
+            resp.text().await.expect("body")
+        }));
+    }
+
+    // Wait for both subscriptions to establish
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Send a datagram
+    let sender = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("sender");
+    sender.send_to(b"fanout", local_addr).await.expect("send");
+
+    // Both consumers should receive the same event
+    for (i, task) in tasks.into_iter().enumerate() {
+        let text = tokio::time::timeout(Duration::from_secs(15), task)
+            .await
+            .expect("timeout")
+            .expect("join");
+        let events = parse_sse_events(&text);
+        assert_eq!(events.len(), 1, "subscriber {i} should get 1 event");
+        assert_eq!(events[0].event_type, "datagram");
+
+        use base64::Engine;
+        let dg: serde_json::Value = serde_json::from_str(&events[0].data).expect("parse");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(dg["payload"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(&decoded, b"fanout", "subscriber {i} payload");
+    }
 
     handle.shutdown().await.unwrap();
 }
