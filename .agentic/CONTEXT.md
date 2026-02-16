@@ -6,11 +6,16 @@
 
 ## Before Writing Code
 
-**Check existing constants & types**: [reference/utilities.md](reference/utilities.md)
-- Constants, wire protocol types, serde patterns
+**Check reference docs**: `docs/reference/`
+- [architecture.md](../docs/reference/architecture.md) — crate inventory, boundaries, dependency graph
+- [http-api.md](../docs/reference/http-api.md) — all 43 HTTP endpoints with request/response shapes
+- [wire-protocol.md](../docs/reference/wire-protocol.md) — JSON protocol, serde patterns, service records
+- [cli.md](../docs/reference/cli.md) — every command, flag, and environment variable
+- [ceremony-protocol.md](../docs/reference/ceremony-protocol.md) — ceremony engine, input types, session flow
+- [envelope-encryption.md](../docs/reference/envelope-encryption.md) — CA key protection, slot types
 
-**Check API & protocol**: [reference/api-endpoints.md](reference/api-endpoints.md)
-- HTTP endpoints, pipe/CLI protocol, request/response shapes
+**Check design decisions**: `docs/adr/`
+- 10 Architecture Decision Records documenting why things are built the way they are
 
 ---
 
@@ -29,9 +34,12 @@ crates/
 ├── koi-certmesh/     # Certificate mesh domain — CA, enrollment, roster
 ├── koi-crypto/       # Cryptographic primitives — key gen, signing, TOTP, FIDO2, auth adapters
 ├── koi-truststore/   # Trust store — platform cert installation
-├── koi-dns/          # Placeholder (Phase 6)
-├── koi-health/       # Placeholder (Phase 7)
-└── koi-proxy/        # Placeholder (Phase 8)
+├── koi-dns/          # Local DNS resolver — zone management, resolution, rate limiting
+├── koi-health/       # Machine & service health monitoring — HTTP/TCP checks, transitions
+├── koi-proxy/        # TLS-terminating reverse proxy — cert reload, forwarding
+├── koi-client/       # HTTP client for daemon communication (blocking ureq)
+├── koi-embedded/     # Embed Koi in Rust applications — builder, handles, events
+└── command-surface/  # Glyph-based command rendering — semantic metadata, profiles
 ```
 
 ### 2. Domain Boundary Model
@@ -55,12 +63,18 @@ Each domain crate exposes three faces:
 ### 3. Crate Dependency Graph
 
 ```
-koi (bin) → koi-common, koi-mdns, koi-certmesh, koi-crypto, koi-truststore, koi-config
+koi (bin) → koi-common, koi-mdns, koi-certmesh, koi-crypto, koi-truststore, koi-config, koi-dns, koi-health, koi-proxy, koi-client, koi-embedded, command-surface
 koi-mdns      → koi-common, mdns-sd, axum, tokio
 koi-certmesh  → koi-common, koi-crypto, koi-truststore, axum, tokio
 koi-crypto    → (standalone: ring/rcgen/totp-rs/p256)
 koi-truststore → (standalone: platform cert APIs)
 koi-config    → koi-common
+koi-dns       → koi-common, koi-config, hickory-server, hickory-resolver, axum, tokio
+koi-health    → koi-common, koi-config, axum, tokio
+koi-proxy     → koi-common, koi-config, axum-server, rustls, reqwest, tokio
+koi-client    → koi-common, ureq (blocking)
+koi-embedded  → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-config, tokio
+command-surface → (standalone: crossterm)
 ```
 
 Domain crates depend on `koi-common` but **never** on each other.
@@ -118,6 +132,9 @@ All domain capabilities are compiled into a **single binary**. Enable/disable at
 |------|---------|--------|
 | `--no-mdns` | `KOI_NO_MDNS=1` | Disable mDNS capability |
 | `--no-certmesh` | `KOI_NO_CERTMESH=1` | Disable certmesh capability |
+| `--no-dns` | `KOI_NO_DNS=1` | Disable DNS capability |
+| `--no-health` | `KOI_NO_HEALTH=1` | Disable health capability |
+| `--no-proxy` | `KOI_NO_PROXY=1` | Disable proxy capability |
 
 All capabilities are **enabled by default**.
 
