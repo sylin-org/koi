@@ -22,3 +22,4 @@ uuid.workspace = true
 base64.workspace = true
 utoipa.workspace = true
 futures-util.workspace = true
+async-stream.workspace = true

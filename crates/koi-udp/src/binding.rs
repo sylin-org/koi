@@ -1,4 +1,4 @@
-﻿//! Active UDP binding — wraps a socket, relay task, and heartbeat state.
+﻿//! Active UDP binding - wraps a socket, relay task, and heartbeat state.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::UdpDatagram;
 
-/// An active UDP binding — owns the socket and a relay task that broadcasts
+/// An active UDP binding - owns the socket and a relay task that broadcasts
 /// received datagrams to subscribers.
 pub struct ActiveBinding {
     id: String,
@@ -63,7 +63,7 @@ impl ActiveBinding {
                                     received_at: Utc::now(),
                                 };
 
-                                // Ignore send errors — means no subscribers
+                                // Ignore send errors - means no subscribers
                                 let _ = relay_tx.send(datagram);
                             }
                             Err(e) => {
@@ -72,7 +72,7 @@ impl ActiveBinding {
                                     error = %e,
                                     "UDP recv error"
                                 );
-                                // transient error — keep going
+                                // transient error - keep going
                             }
                         }
                     }
@@ -111,7 +111,7 @@ impl ActiveBinding {
     }
 
     pub fn last_heartbeat(&self) -> DateTime<Utc> {
-        // Use try_read to avoid blocking the reaper — if contended, use created_at as fallback
+        // Use try_read to avoid blocking the reaper - if contended, use created_at as fallback
         match self.last_heartbeat.try_read() {
             Ok(guard) => *guard,
             Err(_) => self.created_at,

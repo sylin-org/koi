@@ -30,7 +30,7 @@ pub use binding::ActiveBinding;
 // ── Public types ────────────────────────────────────────────────────
 
 /// A datagram received on a bound socket, ready to be relayed over SSE.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct UdpDatagram {
     pub binding_id: String,
     pub src: String,
@@ -40,7 +40,7 @@ pub struct UdpDatagram {
 }
 
 /// Request to send a datagram through a bound socket.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, utoipa::ToSchema)]
 pub struct UdpSendRequest {
     /// Destination address in `host:port` form.
     pub dest: String,
@@ -49,7 +49,7 @@ pub struct UdpSendRequest {
 }
 
 /// Request body for creating a new binding.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, utoipa::ToSchema)]
 pub struct UdpBindRequest {
     /// Port to bind on the host (0 = OS-assigned).
     #[serde(default)]
@@ -100,7 +100,7 @@ pub enum UdpError {
 pub struct UdpRuntime {
     bindings: Arc<RwLock<HashMap<String, ActiveBinding>>>,
     cancel: CancellationToken,
-    reaper_handle: Option<tokio::task::JoinHandle<()>>,
+    _reaper_handle: tokio::task::JoinHandle<()>,
 }
 
 impl UdpRuntime {
@@ -118,7 +118,7 @@ impl UdpRuntime {
         Self {
             bindings,
             cancel,
-            reaper_handle: Some(reaper_handle),
+            _reaper_handle: reaper_handle,
         }
     }
 
@@ -267,16 +267,42 @@ impl UdpRuntime {
         }
     }
 
-    /// Shut down the runtime — cancel reaper + close all bindings.
-    pub async fn shutdown(mut self) {
+    /// Shut down the runtime - cancel reaper + close all bindings.
+    pub async fn shutdown(&self) {
         self.cancel.cancel();
-        if let Some(handle) = self.reaper_handle.take() {
-            let _ = handle.await;
-        }
         let mut map = self.bindings.write().await;
         for (_, binding) in map.drain() {
             binding.shutdown();
         }
         tracing::debug!("UDP runtime shut down");
+    }
+}
+
+// ── Capability trait ────────────────────────────────────────────────
+
+impl koi_common::capability::Capability for UdpRuntime {
+    fn name(&self) -> &str {
+        "udp"
+    }
+
+    fn status(&self) -> koi_common::capability::CapabilityStatus {
+        // status() is async but trait is sync - use try_read for non-blocking check.
+        let count = self
+            .bindings
+            .try_read()
+            .map(|b| b.len())
+            .unwrap_or(0);
+
+        let summary = if count == 0 {
+            "no bindings".to_string()
+        } else {
+            format!("{count} binding{}", if count == 1 { "" } else { "s" })
+        };
+
+        koi_common::capability::CapabilityStatus {
+            name: "udp".to_string(),
+            summary,
+            healthy: true,
+        }
     }
 }
