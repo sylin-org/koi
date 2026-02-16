@@ -1,8 +1,8 @@
-# Koi — Implementation Guide
+# Koi - Implementation Guide
 
 **For:** Claude Code (agentic coding)  
 **From:** Claude (co-author, design phase)  
-**Context:** You are implementing Koi, a cross-platform mDNS/DNS-SD daemon. Read `README.md` and `TECHNICAL.md` first — they contain the full design. This document tells you *how* to build it well.
+**Context:** You are implementing Koi, a cross-platform mDNS/DNS-SD daemon. Read `README.md` and `TECHNICAL.md` first - they contain the full design. This document tells you _how_ to build it well.
 
 ---
 
@@ -14,7 +14,7 @@ The workspace name is `koi`. The published package name is `koi-net` (binary ins
 
 ---
 
-## Architecture — the non-negotiable shape
+## Architecture - the non-negotiable shape
 
 ```
 Adapters (HTTP, Pipe, CLI)  →  Core API  →  mdns-sd daemon
@@ -23,7 +23,7 @@ Adapters (HTTP, Pipe, CLI)  →  Core API  →  mdns-sd daemon
 
 Three layers. Adapters are dumb pipes. Core owns everything meaningful. The mdns-sd crate is an implementation detail the core wraps.
 
-**Do not let adapter code contain domain logic.** An adapter deserializes a transport-specific request, calls a core method, serializes the response back to the transport. That's it. If you find yourself writing `if service.health == ...` in an adapter, stop — that belongs in core.
+**Do not let adapter code contain domain logic.** An adapter deserializes a transport-specific request, calls a core method, serializes the response back to the transport. That's it. If you find yourself writing `if service.health == ...` in an adapter, stop - that belongs in core.
 
 **Do not let core code know about transports.** Core never references Axum types, pipe handles, or stdin. It takes and returns its own domain types. If you're importing `axum::` inside `core/`, something went wrong.
 
@@ -75,13 +75,13 @@ crates/
 └── koi-embedded/          # Embed Koi in Rust applications
 ```
 
-Protocol types live in each domain crate (`koi-mdns/src/protocol.rs`, `koi-certmesh/src/protocol.rs`). Shared types live in `koi-common`. The binary crate contains no domain logic — only CLI parsing, adapter wiring, and formatting.
+Protocol types live in each domain crate (`koi-mdns/src/protocol.rs`, `koi-certmesh/src/protocol.rs`). Shared types live in `koi-common`. The binary crate contains no domain logic - only CLI parsing, adapter wiring, and formatting.
 
 ---
 
-## Ceremony engine — server-driven interactive flows
+## Ceremony engine - server-driven interactive flows
 
-Interactive multi-step operations (creating a CA, joining a mesh, unlocking) use a **ceremony engine** — a generic server-controlled dialogue framework in `koi-common/src/ceremony.rs`. The core model is a **bag of key-value pairs** (session state) evaluated by a **rules function**. There is no stage index or linear pipeline. Every client submission merges into the bag and triggers re-evaluation.
+Interactive multi-step operations (creating a CA, joining a mesh, unlocking) use a **ceremony engine** - a generic server-controlled dialogue framework in `koi-common/src/ceremony.rs`. The core model is a **bag of key-value pairs** (session state) evaluated by a **rules function**. There is no stage index or linear pipeline. Every client submission merges into the bag and triggers re-evaluation.
 
 ```
 Client                              CeremonyHost<R>
@@ -97,22 +97,23 @@ Client                              CeremonyHost<R>
 ```
 
 **Key types:**
-- `CeremonyHost<R>` — generic host managing sessions (UUIDv7 IDs, 5-minute TTL)
-- `CeremonyRules` trait — `evaluate(type, bag, render_hints) → EvalResult`
-- `CeremonyRequest` / `CeremonyResponse` — wire types for HTTP and CLI
-- `Prompt` — single input request with `InputType` (select, text, secret, entropy, code, FIDO2)
-- `Message` — informational display (info, QR code, summary, error)
-- `EvalResult` — `NeedInput`, `ValidationError`, `Complete`, `Fatal`
+
+- `CeremonyHost<R>` - generic host managing sessions (UUIDv7 IDs, 5-minute TTL)
+- `CeremonyRules` trait - `evaluate(type, bag, render_hints) → EvalResult`
+- `CeremonyRequest` / `CeremonyResponse` - wire types for HTTP and CLI
+- `Prompt` - single input request with `InputType` (select, text, secret, entropy, code, FIDO2)
+- `Message` - informational display (info, QR code, summary, error)
+- `EvalResult` - `NeedInput`, `ValidationError`, `Complete`, `Fatal`
 
 **Domain ceremony:** `PondCeremonyRules` (in `koi-certmesh/src/pond_ceremony.rs`) implements `CeremonyRules` for four ceremonies: `init` (create CA), `join`, `invite`, and `unlock`.
 
-**CLI render loop:** `ceremony_cli.rs` is a "dumb render loop" that drives any `CeremonyHost` — it sends requests, renders prompts (with color, box drawing, QR codes), collects terminal input, and repeats until completion. The CLI never contains domain logic; all branching, validation, and content decisions live in the rules function.
+**CLI render loop:** `ceremony_cli.rs` is a "dumb render loop" that drives any `CeremonyHost` - it sends requests, renders prompts (with color, box drawing, QR codes), collects terminal input, and repeats until completion. The CLI never contains domain logic; all branching, validation, and content decisions live in the rules function.
 
 This separation means the same ceremony can be consumed from HTTP (JSON round-trips) or CLI (terminal I/O) with identical business logic.
 
 ---
 
-## Envelope encryption — multi-method CA unlock
+## Envelope encryption - multi-method CA unlock
 
 CA private keys use **envelope encryption** (LUKS-inspired). A random 256-bit **master key** encrypts the CA private key. Each **unlock slot** independently wraps that master key. Any single slot can unlock the CA.
 
@@ -131,16 +132,17 @@ CA private keys use **envelope encryption** (LUKS-inspired). A random 256-bit **
 ```
 
 **Slot types:**
-- `Passphrase` — Argon2id key derivation → AES-256-GCM wrap of master key
-- `AutoUnlock` — marker slot; master key stored in a separate local file (for unattended boot on single-user profiles)
-- `Totp` — shared TOTP secret → HKDF → AES-256-GCM wrap of master key
-- `Fido2` — assertion-gated KEK → AES-256-GCM wrap of master key
+
+- `Passphrase` - Argon2id key derivation → AES-256-GCM wrap of master key
+- `AutoUnlock` - marker slot; master key stored in a separate local file (for unattended boot on single-user profiles)
+- `Totp` - shared TOTP secret → HKDF → AES-256-GCM wrap of master key
+- `Fido2` - assertion-gated KEK → AES-256-GCM wrap of master key
 
 **Files:** `ca-key.enc` (encrypted CA key), `unlock-slots.json` (slot table with per-slot wrapped master key). Legacy single-passphrase keys are auto-migrated on first load.
 
 ---
 
-## UUIDv7 — time-ordered identifiers
+## UUIDv7 - time-ordered identifiers
 
 All generated IDs use UUIDv7 (`Uuid::now_v7()`), which embeds a millisecond timestamp. This gives natural time-ordering for ceremony sessions, SSE event IDs, and correlation tokens. Short IDs (8 hex chars) are the first 8 characters of a UUIDv7.
 
@@ -171,7 +173,7 @@ pub struct ServiceRecord {
 }
 ```
 
-This type flows everywhere. The core produces it. Adapters serialize it. Events carry it. The only conversion boundary is between `mdns_sd::ServiceInfo` and `ServiceRecord` — and that conversion lives in exactly one place: `core/daemon.rs`.
+This type flows everywhere. The core produces it. Adapters serialize it. Events carry it. The only conversion boundary is between `mdns_sd::ServiceInfo` and `ServiceRecord` - and that conversion lives in exactly one place: `core/daemon.rs`.
 
 **Why this matters:** Every model conversion is a bug farm. Every `From<A> for B` impl is a place where a field gets dropped or renamed wrong. One model, used everywhere, tested once.
 
@@ -215,7 +217,7 @@ All three adapters deserialize into `Request`, call core, get back types that se
 
 ---
 
-## Pipeline properties — a response wrapper, not a model change
+## Pipeline properties - a response wrapper, not a model change
 
 Status, warning, and error are operational metadata that the pipeline attaches. They are **not** fields on `ServiceRecord` or `Response`. They wrap the response:
 
@@ -241,7 +243,7 @@ pub enum PipelineStatus {
 }
 ```
 
-`#[serde(flatten)]` on the body means the JSON output is flat — `{"found": {...}, "status": "ongoing"}` — not nested. The `skip_serializing_if` on status/warning means clean responses have no extra keys. Absence is the happy path. This is critical to the protocol design.
+`#[serde(flatten)]` on the body means the JSON output is flat - `{"found": {...}, "status": "ongoing"}` - not nested. The `skip_serializing_if` on status/warning means clean responses have no extra keys. Absence is the happy path. This is critical to the protocol design.
 
 ---
 
@@ -281,7 +283,7 @@ pub enum ServiceEvent {
 }
 ```
 
-This mirrors mdns-sd's `ServiceEvent` but uses our `ServiceRecord` — the conversion from mdns-sd's types happens once, in `daemon.rs`, at the boundary.
+This mirrors mdns-sd's `ServiceEvent` but uses our `ServiceRecord` - the conversion from mdns-sd's types happens once, in `daemon.rs`, at the boundary.
 
 ---
 
@@ -297,7 +299,7 @@ pub(crate) struct MdnsDaemon {
 }
 ```
 
-`pub(crate)` — visible to `core/` siblings, invisible to `adapters/`.
+`pub(crate)` - visible to `core/` siblings, invisible to `adapters/`.
 
 The conversion from `mdns_sd::ServiceInfo` to `ServiceRecord` lives here as a single function:
 
@@ -333,7 +335,7 @@ pub async fn start(core: Arc<MdnsCore>, path: PathBuf) -> Result<()>;
 pub async fn start(core: Arc<MdnsCore>) -> Result<()>;
 ```
 
-That's the interface. Each one runs until shutdown. They don't return meaningful values — they run event loops.
+That's the interface. Each one runs until shutdown. They don't return meaningful values - they run event loops.
 
 ### HTTP adapter notes
 
@@ -345,8 +347,8 @@ That's the interface. Each one runs until shutdown. They don't return meaningful
 
 ### Pipe adapter notes
 
-- Windows: `\\.\pipe\koi` — use `tokio::net::windows::named_pipe`.
-- Unix: `/var/run/koi.sock` — use `tokio::net::UnixListener`.
+- Windows: `\\.\pipe\koi` - use `tokio::net::windows::named_pipe`.
+- Unix: `/var/run/koi.sock` - use `tokio::net::UnixListener`.
 - Protocol: NDJSON (newline-delimited JSON). One JSON object per line.
 - Same request/response types as HTTP, just different framing.
 - Handle multiple concurrent connections.
@@ -384,13 +386,13 @@ pub enum KoiError {
 }
 ```
 
-Adapters convert `KoiError` into `Response::Error` for serialization. The core never formats JSON error messages — it returns `Result<T, KoiError>`. The adapter handles presentation.
+Adapters convert `KoiError` into `Response::Error` for serialization. The core never formats JSON error messages - it returns `Result<T, KoiError>`. The adapter handles presentation.
 
 Do not use `anyhow` in library code (core, protocol). Use it only in `main.rs` for top-level orchestration if needed. Typed errors everywhere else.
 
 ---
 
-## Startup and wiring — main.rs
+## Startup and wiring - main.rs
 
 `main.rs` is pure orchestration. No logic:
 
@@ -439,16 +441,18 @@ Clean, readable, no domain logic. If this file grows past 60 lines, something is
 
 ## Testing strategy
 
-**Core tests — the majority.** Test core logic directly. No HTTP, no sockets, no serialization. Create `MdnsCore`, call methods, assert results. Mock or stub the mdns-sd daemon if needed for unit tests, but prioritize integration tests that use a real daemon on loopback.
+**Core tests - the majority.** Test core logic directly. No HTTP, no sockets, no serialization. Create `MdnsCore`, call methods, assert results. Mock or stub the mdns-sd daemon if needed for unit tests, but prioritize integration tests that use a real daemon on loopback.
 
-**Protocol tests — serialization fidelity.** Verify that `Request` deserializes from the expected JSON shapes and `PipelineResponse` serializes to the expected flat JSON. These are your contract tests. If they break, every adapter breaks. Test the edge cases:
+**Protocol tests - serialization fidelity.** Verify that `Request` deserializes from the expected JSON shapes and `PipelineResponse` serializes to the expected flat JSON. These are your contract tests. If they break, every adapter breaks. Test the edge cases:
+
 - Absent pipeline properties produce clean JSON (no `"status": null`)
 - `#[serde(flatten)]` produces flat output, not nested
 - Top-level verb keys work: `{"browse": "_http._tcp"}` not `{"action": "browse"}`
 
-**Adapter tests — thin integration.** Verify transport plumbing only. Start the HTTP adapter, make a request, verify it reaches core and the response comes back. Don't test mDNS logic through HTTP — that's a core test.
+**Adapter tests - thin integration.** Verify transport plumbing only. Start the HTTP adapter, make a request, verify it reaches core and the response comes back. Don't test mDNS logic through HTTP - that's a core test.
 
-**CLI adapter — your development REPL.** Build this first. You can test the entire core without standing up a server:
+**CLI adapter - your development REPL.** Build this first. You can test the entire core without standing up a server:
+
 ```bash
 echo '{"browse":"_http._tcp"}' | cargo run
 echo '{"register":{"name":"test","type":"_http._tcp","port":8080}}' | cargo run
@@ -462,9 +466,9 @@ echo '{"register":{"name":"test","type":"_http._tcp","port":8080}}' | cargo run
 
 **Name things for what they are, not what they do.** `ServiceRecord`, not `ServiceDTO`. `Registry`, not `RegistrationManager`. `BrowseHandle`, not `BrowseStreamController`.
 
-**No `impl From<X> for Y` unless the conversion is lossless, obvious, and used in more than one place.** One-off conversions are just functions. The `From` trait implies a canonical, universally-correct conversion — if it's context-dependent, make it a named function.
+**No `impl From<X> for Y` unless the conversion is lossless, obvious, and used in more than one place.** One-off conversions are just functions. The `From` trait implies a canonical, universally-correct conversion - if it's context-dependent, make it a named function.
 
-**Use `pub(crate)` liberally in core.** Internal types that sibling modules need but adapters shouldn't see. This is how you enforce the layer boundary without a workspace. Rust's visibility *is* the architecture enforcement.
+**Use `pub(crate)` liberally in core.** Internal types that sibling modules need but adapters shouldn't see. This is how you enforce the layer boundary without a workspace. Rust's visibility _is_ the architecture enforcement.
 
 **Avoid stringly-typed interfaces inside core.** Service types should be validated once at the boundary (adapter or protocol deserialization) and then carried as validated types. If `_http._tcp` is the only valid shape, make a newtype:
 
@@ -484,25 +488,26 @@ Adapters pass strings in from the outside world. Core works with validated types
 
 ---
 
-## Dependencies — keep it tight
+## Dependencies - keep it tight
 
-| Crate | Purpose | Required |
-|---|---|---|
-| `mdns-sd` | mDNS engine | yes |
-| `axum` | HTTP server | yes (feature-gated if desired) |
-| `tokio` | async runtime (`features = ["full"]`) | yes |
-| `serde`, `serde_json` | serialization | yes |
-| `clap` (`features = ["derive"]`) | CLI args | yes |
-| `tracing`, `tracing-subscriber` | logging | yes |
-| `thiserror` | error types | yes |
-| `windows-service` | Windows SCM | Windows only |
+| Crate                            | Purpose                               | Required                       |
+| -------------------------------- | ------------------------------------- | ------------------------------ |
+| `mdns-sd`                        | mDNS engine                           | yes                            |
+| `axum`                           | HTTP server                           | yes (feature-gated if desired) |
+| `tokio`                          | async runtime (`features = ["full"]`) | yes                            |
+| `serde`, `serde_json`            | serialization                         | yes                            |
+| `clap` (`features = ["derive"]`) | CLI args                              | yes                            |
+| `tracing`, `tracing-subscriber`  | logging                               | yes                            |
+| `thiserror`                      | error types                           | yes                            |
+| `windows-service`                | Windows SCM                           | Windows only                   |
 
 Do not add:
+
 - `anyhow` in library code (only main.rs if at all)
-- `async-trait` (use `impl Future` or boxed futures if needed — Rust 1.75+ has RPITIT)
-- `tower` layers unless you genuinely need middleware — start without it
-- Any ORM, database, or persistence crate — Koi is in-memory only
-- `protobuf`, `tonic`, `prost` — gRPC is explicitly deferred
+- `async-trait` (use `impl Future` or boxed futures if needed - Rust 1.75+ has RPITIT)
+- `tower` layers unless you genuinely need middleware - start without it
+- Any ORM, database, or persistence crate - Koi is in-memory only
+- `protobuf`, `tonic`, `prost` - gRPC is explicitly deferred
 
 Every dependency is an audit surface and a compile time cost. Be miserly.
 
@@ -523,10 +528,11 @@ axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# ... etc — all versions managed at workspace level
+# ... etc - all versions managed at workspace level
 ```
 
 Each crate references workspace dependencies:
+
 ```toml
 # crates/koi/Cargo.toml
 [dependencies]
@@ -541,23 +547,23 @@ clap = { workspace = true, features = ["derive", "env"] }
 
 ---
 
-## Build order — what to implement first
+## Build order - what to implement first
 
-1. **`protocol/`** — Define `ServiceRecord`, `Request`, `Response`, `PipelineResponse`. Write serialization tests. This is your contract — everything else depends on it.
+1. **`protocol/`** - Define `ServiceRecord`, `Request`, `Response`, `PipelineResponse`. Write serialization tests. This is your contract - everything else depends on it.
 
-2. **`core/daemon.rs`** — Wrap `mdns-sd::ServiceDaemon`. Implement the `ServiceInfo` → `ServiceRecord` conversion. Get browse and register working against real multicast on your machine.
+2. **`core/daemon.rs`** - Wrap `mdns-sd::ServiceDaemon`. Implement the `ServiceInfo` → `ServiceRecord` conversion. Get browse and register working against real multicast on your machine.
 
-3. **`core/mod.rs` + `registry.rs` + `events.rs`** — The `MdnsCore` facade. Registration tracking. Broadcast fan-out. Test directly — no adapters yet.
+3. **`core/mod.rs` + `registry.rs` + `events.rs`** - The `MdnsCore` facade. Registration tracking. Broadcast fan-out. Test directly - no adapters yet.
 
-4. **`adapters/cli.rs`** — stdin/stdout JSON lines. This is your REPL. Use it to test everything interactively. Build it early, lean on it constantly.
+4. **`adapters/cli.rs`** - stdin/stdout JSON lines. This is your REPL. Use it to test everything interactively. Build it early, lean on it constantly.
 
-5. **`adapters/http.rs`** — Axum routes. SSE for browse/subscribe. JSON for register/unregister/resolve.
+5. **`adapters/http.rs`** - Axum routes. SSE for browse/subscribe. JSON for register/unregister/resolve.
 
-6. **`adapters/pipe.rs`** — Named pipe (Windows) or Unix socket. Same NDJSON protocol as CLI, different transport.
+6. **`adapters/pipe.rs`** - Named pipe (Windows) or Unix socket. Same NDJSON protocol as CLI, different transport.
 
-7. **`platform/`** — Windows Service and systemd integration. This is last because everything should work in foreground mode first.
+7. **`platform/`** - Windows Service and systemd integration. This is last because everything should work in foreground mode first.
 
-8. **`config.rs` + `main.rs`** — Wire it all together. CLI parsing, startup logic, shutdown handling.
+8. **`config.rs` + `main.rs`** - Wire it all together. CLI parsing, startup logic, shutdown handling.
 
 ---
 
@@ -572,7 +578,7 @@ On startup, Koi should check whether UDP 5353 (mDNS multicast) is reachable and 
 **Windows:** Check and create Windows Firewall rules automatically. Koi runs as a service with sufficient privileges. If it detects that UDP 5353 inbound is blocked, it should create a firewall rule (`netsh advfirewall firewall add rule name="Koi mDNS" ...`) and log that it did so. Same for its HTTP port. If creation fails (insufficient privileges in a non-service context), log a clear, actionable message:
 
 ```
-WARN  Koi cannot receive mDNS traffic — UDP 5353 is blocked by Windows Firewall.
+WARN  Koi cannot receive mDNS traffic - UDP 5353 is blocked by Windows Firewall.
 WARN  Run as administrator or execute:
 WARN    netsh advfirewall firewall add rule name="Koi mDNS (UDP)" dir=in action=allow protocol=UDP localport=5353
 WARN    netsh advfirewall firewall add rule name="Koi HTTP (TCP)" dir=in action=allow protocol=TCP localport=5641
@@ -586,7 +592,7 @@ WARN  Koi can coexist (multicast sockets share), but if you experience issues:
 WARN    sudo systemctl stop avahi-daemon
 ```
 
-For `ufw`/`iptables`, don't auto-modify — Linux users expect to manage their own firewall. Instead, detect and advise:
+For `ufw`/`iptables`, don't auto-modify - Linux users expect to manage their own firewall. Instead, detect and advise:
 
 ```
 WARN  UFW is active but UDP 5353 is not allowed. Run:
@@ -596,12 +602,14 @@ WARN    sudo ufw allow 5353/udp
 ### Network resilience
 
 **Interface changes.** WiFi drops, Ethernet unplugs, VPN connects/disconnects. The mdns-sd crate handles most of this, but Koi should detect network interface changes and:
+
 - Log when interfaces appear/disappear
 - Re-announce all registered services on new interfaces
 - Cleanly remove services from disappeared interfaces
 - Not crash. Ever. A network going away is normal, not exceptional.
 
 **Daemon recovery.** If the internal mdns-sd daemon thread panics or dies:
+
 - Catch it
 - Log the error at ERROR level with full context
 - Restart the daemon automatically
@@ -615,10 +623,10 @@ INFO  Re-registering 3 services...
 INFO  Daemon recovered successfully.
 ```
 
-**Stale registration cleanup.** If Koi shuts down uncleanly (SIGKILL, power loss, crash), registered services become stale in other devices' mDNS caches. On startup, Koi has no way to send goodbye packets for the previous instance's registrations. But it *can* detect name conflicts during re-registration (mdns-sd handles probing and conflict resolution per RFC 6762 §9). Log when this happens:
+**Stale registration cleanup.** If Koi shuts down uncleanly (SIGKILL, power loss, crash), registered services become stale in other devices' mDNS caches. On startup, Koi has no way to send goodbye packets for the previous instance's registrations. But it _can_ detect name conflicts during re-registration (mdns-sd handles probing and conflict resolution per RFC 6762 §9). Log when this happens:
 
 ```
-INFO  Registering "My App._http._tcp" — previous registration still cached on network
+INFO  Registering "My App._http._tcp" - previous registration still cached on network
 INFO  Probing... name accepted. Previous cache entries will expire within TTL (120s).
 ```
 
@@ -651,7 +659,7 @@ WARN  Firewall: UFW active, UDP 5353 not explicitly allowed (may work via existi
 INFO  Ready (with warnings).
 ```
 
-This is not optional polish — it's the difference between a tool that's debuggable in 5 seconds and one that wastes an hour of the user's time.
+This is not optional polish - it's the difference between a tool that's debuggable in 5 seconds and one that wastes an hour of the user's time.
 
 ### Service type normalization
 
@@ -667,57 +675,57 @@ Log the normalization at DEBUG level so it's traceable but not noisy:
 DEBUG Normalized service type: "http" → "_http._tcp.local."
 ```
 
-Be strict on output — always emit the canonical form in responses. Be liberal on input. Postel's Law.
+Be strict on output - always emit the canonical form in responses. Be liberal on input. Postel's Law.
 
 ### Health self-check
 
-Periodically verify the mDNS daemon is actually working — don't wait for a user to report "nothing is being discovered." On startup, register a temporary `_koi._tcp` service, browse for it, confirm it appears, then deregister. This validates the entire pipeline in under a second. If it fails, Koi knows multicast is broken before any real traffic hits.
+Periodically verify the mDNS daemon is actually working - don't wait for a user to report "nothing is being discovered." On startup, register a temporary `_koi._tcp` service, browse for it, confirm it appears, then deregister. This validates the entire pipeline in under a second. If it fails, Koi knows multicast is broken before any real traffic hits.
 
-At runtime, a background heartbeat can browse for Koi's own service registration periodically. If the daemon is hung (thread deadlock, socket error), Koi detects it internally and triggers recovery — not after a user files a bug.
+At runtime, a background heartbeat can browse for Koi's own service registration periodically. If the daemon is hung (thread deadlock, socket error), Koi detects it internally and triggers recovery - not after a user files a bug.
 
 ### Operational logging
 
 Log levels should be meaningful, not ceremonial:
 
-| Level | What goes here |
-|---|---|
-| `error` | Something broke that Koi couldn't auto-fix (daemon panic with max retries, port bind failure) |
-| `warn` | Something Koi worked around but the operator should know (firewall issue, interface down, re-announcement) |
-| `info` | Lifecycle events only: startup, shutdown, service registered/unregistered, interface changes |
-| `debug` | Request/response flow, input normalization, browse results |
-| `trace` | mDNS packet-level detail, daemon channel traffic |
+| Level   | What goes here                                                                                             |
+| ------- | ---------------------------------------------------------------------------------------------------------- |
+| `error` | Something broke that Koi couldn't auto-fix (daemon panic with max retries, port bind failure)              |
+| `warn`  | Something Koi worked around but the operator should know (firewall issue, interface down, re-announcement) |
+| `info`  | Lifecycle events only: startup, shutdown, service registered/unregistered, interface changes               |
+| `debug` | Request/response flow, input normalization, browse results                                                 |
+| `trace` | mDNS packet-level detail, daemon channel traffic                                                           |
 
 Default level: `info`. During normal healthy operation, Koi should be **silent**. If it's emitting logs constantly at info level, the levels are wrong.
 
 ### Automatic recovery summary
 
-| Failure | Koi's response |
-|---|---|
-| Network interface disappears | Log, continue, re-announce when it returns |
-| mdns-sd daemon crashes | Restart, re-register from registry, log |
-| Firewall blocks mDNS (Windows) | Auto-create rules if privileged, advise if not |
-| Firewall blocks mDNS (Linux) | Detect and advise, don't auto-modify |
-| Port already bound (TCP) | Fail with clear message naming the conflicting process |
-| Port shared (UDP multicast) | Coexist, log the other process |
-| Unclean prior shutdown | Re-register, let probing handle conflicts, log |
-| Service type malformed | Normalize, log the transformation |
-| Oversized TXT record | Warn, truncate or reject with explanation |
+| Failure                        | Koi's response                                         |
+| ------------------------------ | ------------------------------------------------------ |
+| Network interface disappears   | Log, continue, re-announce when it returns             |
+| mdns-sd daemon crashes         | Restart, re-register from registry, log                |
+| Firewall blocks mDNS (Windows) | Auto-create rules if privileged, advise if not         |
+| Firewall blocks mDNS (Linux)   | Detect and advise, don't auto-modify                   |
+| Port already bound (TCP)       | Fail with clear message naming the conflicting process |
+| Port shared (UDP multicast)    | Coexist, log the other process                         |
+| Unclean prior shutdown         | Re-register, let probing handle conflicts, log         |
+| Service type malformed         | Normalize, log the transformation                      |
+| Oversized TXT record           | Warn, truncate or reject with explanation              |
 
 ---
 
 ## Things that will bite you
 
-**mdns-sd's `ServiceDaemon` thread.** It spawns its own thread. You don't need to — and shouldn't — run it inside a tokio task. Create it on the main thread, communicate via the flume channels it gives you. Use `recv_async()` to bridge into tokio's async world.
+**mdns-sd's `ServiceDaemon` thread.** It spawns its own thread. You don't need to - and shouldn't - run it inside a tokio task. Create it on the main thread, communicate via the flume channels it gives you. Use `recv_async()` to bridge into tokio's async world.
 
-**Service type validation.** Covered thoroughly in the self-management section — Koi normalizes input automatically. But be aware that the `mdns-sd` crate may have its own validation that rejects inputs Koi hasn't normalized yet. Always normalize *before* passing to the crate.
+**Service type validation.** Covered thoroughly in the self-management section - Koi normalizes input automatically. But be aware that the `mdns-sd` crate may have its own validation that rejects inputs Koi hasn't normalized yet. Always normalize _before_ passing to the crate.
 
 **TXT record encoding.** mDNS TXT records are key=value pairs with a 255-byte-per-entry limit. The `mdns-sd` crate handles the wire encoding, but be aware that large TXT payloads will be silently truncated or rejected by the protocol. Validate or warn on oversized values.
 
-**Windows firewall.** Covered in the self-management section above — Koi should detect and diagnose this automatically, not leave it as a gotcha for the user.
+**Windows firewall.** Covered in the self-management section above - Koi should detect and diagnose this automatically, not leave it as a gotcha for the user.
 
 **Graceful shutdown ordering.** Shut down adapters first (stop accepting new requests), then tell core to unregister all services (sends goodbye packets), then stop the mdns-sd daemon. If you kill the daemon first, goodbye packets never send and stale services persist in other devices' caches for the TTL duration.
 
-**SSE connection lifecycle.** When a client disconnects from an SSE stream (browse or subscribe), clean up the associated browse handle in core. If you leak handles, you leak mdns-sd browse queries. Axum's SSE support with `tokio::sync::broadcast` handles this naturally if you set it up right — the receiver drops when the connection closes.
+**SSE connection lifecycle.** When a client disconnects from an SSE stream (browse or subscribe), clean up the associated browse handle in core. If you leak handles, you leak mdns-sd browse queries. Axum's SSE support with `tokio::sync::broadcast` handles this naturally if you set it up right - the receiver drops when the connection closes.
 
 **Multiple IPs.** A resolved service may have multiple IP addresses (IPv4 and IPv6, or multiple interfaces). The `ServiceRecord.ip` field is a single optional string for simplicity in v1. Pick the first IPv4 address. If there's no IPv4, pick the first IPv6. Log the others. Don't silently discard information without at least a trace-level log.
 
@@ -765,4 +773,4 @@ fn unregister_nonexistent_id_returns_not_found_error() { ... }
 
 Build something you'd want to use. Build something you'd enjoy reading six months from now.
 
-—Claude
+-Claude

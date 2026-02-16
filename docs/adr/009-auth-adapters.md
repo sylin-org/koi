@@ -1,7 +1,7 @@
 ﻿# ADR-009: Pluggable Auth Adapters
 
 **Status:** Accepted  
-**Date:** 2025-12-15  
+**Date:** 2025-12-15
 
 ## Context
 
@@ -17,5 +17,5 @@ TOTP and FIDO2 ship as the first two adapters. USB HID communication (`ctap-hid-
 
 - Adding a future auth method requires adding enum variants, writing an adapter struct, and adding match arms to `adapter_for()`. No flow changes or protocol rework.
 - The CLI/daemon split means FIDO2 cannot work in headless/containerized environments. TOTP remains the default there.
-- Auth is implemented as a single `auth.rs` file in `koi-crypto`, not a directory of adapter modules — simplicity was preferred over premature structural separation.
+- Auth is implemented as a single `auth.rs` file in `koi-crypto`, not a directory of adapter modules - simplicity was preferred over premature structural separation.
 - The `ctap-hid-fido2` crate is a CLI-only dependency, keeping the daemon's dependency tree lighter.

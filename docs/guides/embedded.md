@@ -1,6 +1,6 @@
 ﻿# Embedded Integration
 
-Use `koi-embedded` to run Koi in-process — no daemon, no IPC, no binary dependency. This is the right choice when your Rust application needs mDNS, DNS, health checks, or certmesh as a library rather than an external service.
+Use `koi-embedded` to run Koi in-process - no daemon, no IPC, no binary dependency. This is the right choice when your Rust application needs mDNS, DNS, health checks, or certmesh as a library rather than an external service.
 
 ---
 
@@ -30,6 +30,7 @@ let koi = Builder::new()
     .health(false)
     .certmesh(false)
     .proxy(false)
+    .udp(false)
     .build()?;
 ```
 
@@ -94,13 +95,25 @@ let _ = proxy.upsert(koi_proxy::ProxyEntry {
     allow_remote: false,
 })
 .await?;
+
+// UDP
+let udp = handle.udp()?;
+let binding = udp.bind(koi_udp::UdpBindRequest {
+    addr: "0.0.0.0:9999".to_string(),
+}).await?;
+let _ = udp.send(koi_udp::UdpSendRequest {
+    binding_id: binding.id.clone(),
+    payload: base64::engine::general_purpose::STANDARD.encode(b"hello"),
+    dest: "127.0.0.1:9998".to_string(),
+}).await?;
+udp.unbind(&binding.id).await?;
 ```
 
 ---
 
 ## Events
 
-Events are push-based via broadcast channels — no polling. You can register a handler or consume as a stream:
+Events are push-based via broadcast channels - no polling. You can register a handler or consume as a stream:
 
 ```rust
 let koi = Builder::new()
@@ -137,9 +150,9 @@ Certmesh create/destroy touches the trust store and may require elevated permiss
 ## Production tips
 
 - Set `data_dir` to isolate state per process or environment
-- Events are zero-latency broadcast channels — no file polling
+- Events are zero-latency broadcast channels - no file polling
 - Explicitly enable/disable capabilities to match your deployment
-- The facade contains zero domain logic — it composes existing crates
+- The facade contains zero domain logic - it composes existing crates
 
 ---
 
@@ -149,7 +162,7 @@ Certmesh create/destroy touches the trust store and may require elevated permiss
 
 - `KoiConfig`, `ServiceMode`, `DnsConfigBuilder` from `koi-config`
 - `KoiEvent` from `koi-embedded::events`
-- `KoiHandle`, `MdnsHandle`, `DnsHandle`, `HealthHandle`, `CertmeshHandle`, `ProxyHandle`
+- `KoiHandle`, `MdnsHandle`, `DnsHandle`, `HealthHandle`, `CertmeshHandle`, `ProxyHandle`, `UdpHandle`
 
 ---
 
@@ -160,6 +173,7 @@ Certmesh create/destroy touches the trust store and may require elevated permiss
 - [ ] DNS add/lookup/list/remove
 - [ ] Health add/remove checks + snapshot
 - [ ] Proxy upsert/list/remove
+- [ ] UDP bind/send/recv/heartbeat/unbind
 - [ ] Certmesh create/status/enrollment/policy/rotate/destroy
 - [ ] HTTP surface validation (including SSE)
 - [ ] IPC surface validation (Windows pipe)

@@ -1,8 +1,8 @@
-﻿# System — Daemon Lifecycle
+﻿# System - Daemon Lifecycle
 
-Koi is a single binary that wears two hats. When you type `koi mdns discover`, it's a short-lived CLI tool — it does its job and exits. But most of Koi's power comes from the **daemon**: a long-running process that holds mDNS registrations, serves the HTTP API, runs health checks, and keeps certificates alive. The system commands are how you manage that daemon's lifecycle.
+Koi is a single binary that wears two hats. When you type `koi mdns discover`, it's a short-lived CLI tool - it does its job and exits. But most of Koi's power comes from the **daemon**: a long-running process that holds mDNS registrations, serves the HTTP API, runs health checks, and keeps certificates alive. The system commands are how you manage that daemon's lifecycle.
 
-Understanding this duality matters. Some commands (like `koi version`) work anywhere — they don't need the daemon. Others (like `koi mdns admin ls`) only make sense when a daemon is running. The system module bridges the two worlds.
+Understanding this duality matters. Some commands (like `koi version`) work anywhere - they don't need the daemon. Others (like `koi mdns admin ls`) only make sense when a daemon is running. The system module bridges the two worlds.
 
 ---
 
@@ -25,8 +25,8 @@ The daemon listens on port 5641 by default and exposes both the HTTP API (for an
 **All five modules are enabled by default.** On a fresh install the daemon starts every module, even if you haven't configured it yet:
 
 - **mDNS** begins discovering peers immediately.
-- **DNS**, **Health**, and **Proxy** start in a *ready* state with zero entries/routes — they accept configuration at any time.
-- **CertMesh** reports *ready — run certmesh create* until you initialise a CA.
+- **DNS**, **Health**, and **Proxy** start in a _ready_ state with zero entries/routes - they accept configuration at any time.
+- **CertMesh** reports _ready - run certmesh create_ until you initialise a CA.
 
 This is by design. A freshly-installed Koi is healthy; unused modules carry no overhead and can be activated whenever you need them. Use `koi status` to see each module's current state.
 
@@ -36,7 +36,7 @@ If you just want to experiment without installing anything, run the daemon in th
 koi --daemon
 ```
 
-It behaves identically — same API, same IPC — but stops when you close the terminal.
+It behaves identically - same API, same IPC - but stops when you close the terminal.
 
 ---
 
@@ -52,10 +52,10 @@ koi status           # what all the subsystems are doing
 `status` is the more useful one. It gives you a single-glance dashboard. On a fresh install it looks like this:
 
 ```
-Koi v0.2.x — status
+Koi v0.2.x - status
 
   mDNS       running    0 registrations, 0 discovered
-  Certmesh   running    ready — run certmesh create
+  Certmesh   running    ready - run certmesh create
   DNS        running    0 static, 0 certmesh, 0 mdns
   Health     running    0 services up (0 total)
   Proxy      running    0 listeners
@@ -64,7 +64,7 @@ Koi v0.2.x — status
 Once you've been using Koi for a while, the numbers fill in:
 
 ```
-Koi v0.2.x — status
+Koi v0.2.x - status
 
   mDNS       running    3 registrations, 12 discovered
   Certmesh   running    CA active, 4 members, enrollment open
@@ -83,7 +83,7 @@ Both support `--json` for scripting and monitoring integrations.
 koi uninstall
 ```
 
-This is intentionally conservative. It stops the daemon, removes the service registration, and cleans up firewall rules — but it **preserves all your data**. Your CA keys, certificates, DNS records, and configuration files remain on disk. If you reinstall later, everything picks up where it left off.
+This is intentionally conservative. It stops the daemon, removes the service registration, and cleans up firewall rules - but it **preserves all your data**. Your CA keys, certificates, DNS records, and configuration files remain on disk. If you reinstall later, everything picks up where it left off.
 
 This design is deliberate. Uninstalling a service shouldn't destroy the state it managed. That's what factory reset is for.
 
@@ -108,7 +108,7 @@ This destroys the entire program data folder and recreates it from scratch, then
 
 Log files are preserved by default (they're useful for post-mortem diagnosis). Use `--include-logs` to remove those too.
 
-**This is irreversible.** If this node is the certmesh CA root, every certificate it issued becomes unverifiable — every member of the mesh loses trust. Koi will ask you to type `RESET` to confirm you understand.
+**This is irreversible.** If this node is the certmesh CA root, every certificate it issued becomes unverifiable - every member of the mesh loses trust. Koi will ask you to type `RESET` to confirm you understand.
 
 ---
 
@@ -116,13 +116,13 @@ Log files are preserved by default (they're useful for post-mortem diagnosis). U
 
 The daemon exposes a few system-level endpoints that aren't tied to any specific module:
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/healthz` | Liveness probe — returns 200 if the daemon is alive. Use this in load balancer health checks or container orchestrators. |
-| `GET` | `/v1/status` | Unified status of all capabilities, the same data as `koi status --json`. |
-| `POST` | `/v1/admin/shutdown` | Graceful shutdown — the daemon finishes in-flight requests, sends mDNS goodbye packets, and exits. |
+| Method | Path                 | Purpose                                                                                                                  |
+| ------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `GET`  | `/healthz`           | Liveness probe - returns 200 if the daemon is alive. Use this in load balancer health checks or container orchestrators. |
+| `GET`  | `/v1/status`         | Unified status of all capabilities, the same data as `koi status --json`.                                                |
+| `POST` | `/v1/admin/shutdown` | Graceful shutdown - the daemon finishes in-flight requests, sends mDNS goodbye packets, and exits.                       |
 
-The `/healthz` endpoint is intentionally minimal and cheap. It doesn't check subsystem health — it just confirms the process is responding. If you need deeper checks, use `/v1/status` or the health module.
+The `/healthz` endpoint is intentionally minimal and cheap. It doesn't check subsystem health - it just confirms the process is responding. If you need deeper checks, use `/v1/status` or the health module.
 
 ---
 
@@ -130,14 +130,14 @@ The `/healthz` endpoint is intentionally minimal and cheap. It doesn't check sub
 
 Koi is configured through flags and environment variables. The daemon reads these at startup:
 
-| Flag | Env var | Default | Description |
-|---|---|---|---|
-| `--port` | `KOI_PORT` | `5641` | HTTP API port |
-| `--daemon` | — | `false` | Run in foreground daemon mode |
-| `--log-file` | `KOI_LOG_FILE` | — | Write logs to file |
-| `--json` | — | `false` | JSON output for status/version |
+| Flag         | Env var        | Default | Description                    |
+| ------------ | -------------- | ------- | ------------------------------ |
+| `--port`     | `KOI_PORT`     | `5641`  | HTTP API port                  |
+| `--daemon`   | -              | `false` | Run in foreground daemon mode  |
+| `--log-file` | `KOI_LOG_FILE` | -       | Write logs to file             |
+| `--json`     | -              | `false` | JSON output for status/version |
 
-Each module has its own configuration documented in its respective guide. The system-level flags control the daemon itself — where it listens and how it logs.
+Each module has its own configuration documented in its respective guide. The system-level flags control the daemon itself - where it listens and how it logs.
 
 ---
 
@@ -148,14 +148,14 @@ Each module has its own configuration documented in its respective guide. The sy
 Check the platform-native logs first. The daemon writes structured logs that usually explain the failure:
 
 ```powershell
-# Windows — Event Viewer (Application log)
+# Windows - Event Viewer (Application log)
 Get-EventLog -LogName Application -Source koi -Newest 10
 
 # Linux
 journalctl -u koi --no-pager -n 20
 ```
 
-The most common cause is a port conflict — another process already holds port 5641. Override it:
+The most common cause is a port conflict - another process already holds port 5641. Override it:
 
 ```
 koi --port 5642 install
@@ -167,4 +167,4 @@ Koi writes a breadcrumb file when the daemon starts, telling the CLI where to co
 
 ### Something is deeply broken
 
-That's what `factory-reset` is for. It's the nuclear option — but sometimes nuclear is what you need.
+That's what `factory-reset` is for. It's the nuclear option - but sometimes nuclear is what you need.

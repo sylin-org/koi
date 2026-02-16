@@ -50,18 +50,18 @@ All three must pass. CI enforces clippy with `-D warnings`.
 
 ### Avoid
 
-- `unwrap()` and `expect()` in production code — use `?`, `unwrap_or_else`, or graceful fallbacks.
-- `unreachable!()` in match arms reachable through API evolution — use `anyhow::bail!`.
-- `async-trait` — use `impl Future` or RPITIT (Rust 1.75+).
-- Stringly-typed interfaces in core — validate at the boundary, carry newtypes internally.
+- `unwrap()` and `expect()` in production code - use `?`, `unwrap_or_else`, or graceful fallbacks.
+- `unreachable!()` in match arms reachable through API evolution - use `anyhow::bail!`.
+- `async-trait` - use `impl Future` or RPITIT (Rust 1.75+).
+- Stringly-typed interfaces in core - validate at the boundary, carry newtypes internally.
 - Traits with one implementor. `Builder` for a three-field struct.
-- `eprintln!` for diagnostics — use `tracing::*`.
+- `eprintln!` for diagnostics - use `tracing::*`.
 
 ### Dependencies
 
 Be miserly. Every dependency is audit surface and compile cost.
 
-- **No `anyhow` in library/domain crates** — `thiserror` with typed error enums. `anyhow` only in the binary crate's `main.rs`.
+- **No `anyhow` in library/domain crates** - `thiserror` with typed error enums. `anyhow` only in the binary crate's `main.rs`.
 - **No `tower` middleware, ORMs, or gRPC.** If you think you need one, open an issue first.
 - All dependency versions are pinned in the root `Cargo.toml` under `[workspace.dependencies]`. Crates reference them with `.workspace = true`.
 
@@ -71,7 +71,7 @@ Be miserly. Every dependency is audit surface and compile cost.
 
 ### Core tests (most tests live here)
 
-Test domain logic directly — no HTTP, no sockets, no serialization.
+Test domain logic directly - no HTTP, no sockets, no serialization.
 
 ```rust
 #[test]
@@ -88,7 +88,7 @@ Thin integration only. Verify transport plumbing reaches core and returns a resp
 
 ### Manual testing
 
-The CLI adapter doubles as a dev REPL — pipe JSON through `cargo run` for rapid manual testing:
+The CLI adapter doubles as a dev REPL - pipe JSON through `cargo run` for rapid manual testing:
 
 ```bash
 echo '{"browse": "_http._tcp"}' | cargo run
@@ -111,13 +111,13 @@ These are enforced in review. See [Architecture](docs/reference/architecture.md)
 
 ## Logging levels
 
-| Level | Use for |
-|-------|---------|
-| `error` | Unrecoverable failures |
-| `warn` | Worked around, but operator should know |
-| `info` | Lifecycle events only (start, stop, capability ready) |
-| `debug` | Request flow, normalization, mode detection |
-| `trace` | Packet-level detail |
+| Level   | Use for                                               |
+| ------- | ----------------------------------------------------- |
+| `error` | Unrecoverable failures                                |
+| `warn`  | Worked around, but operator should know               |
+| `info`  | Lifecycle events only (start, stop, capability ready) |
+| `debug` | Request flow, normalization, mode detection           |
+| `trace` | Packet-level detail                                   |
 
 **Default `info` should be silent during normal operation.** If it's noisy, levels are wrong.
 
@@ -127,11 +127,11 @@ These are enforced in review. See [Architecture](docs/reference/architecture.md)
 
 Documentation lives in three places with three voices:
 
-| Location | Voice | Purpose |
-|----------|-------|---------|
-| `docs/guides/` | Wise mentor | Walk beside the reader, anticipate confusion |
-| `docs/reference/` | Precise technician | Exact shapes, validated against code |
-| `docs/adr/` | Honest historian | Context, decision, consequences |
+| Location          | Voice              | Purpose                                      |
+| ----------------- | ------------------ | -------------------------------------------- |
+| `docs/guides/`    | Wise mentor        | Walk beside the reader, anticipate confusion |
+| `docs/reference/` | Precise technician | Exact shapes, validated against code         |
+| `docs/adr/`       | Honest historian   | Context, decision, consequences              |
 
 When changing behavior, update the relevant guide and reference doc. If adding a new capability, add an ADR explaining the design decision.
 

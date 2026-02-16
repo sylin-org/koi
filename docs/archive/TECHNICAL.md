@@ -54,13 +54,13 @@ Koi is a single binary with three layers: adapters, core, and the mDNS engine. A
 
 Key architectural principles:
 
-- **Single shared `ServiceDaemon`.** Multiple callers browsing the same service type don't each create their own multicast listeners. The core multiplexes browse subscriptions through one daemon — avoiding the "multiple mDNS stacks" problem that plagues systems where each application runs its own resolver.
+- **Single shared `ServiceDaemon`.** Multiple callers browsing the same service type don't each create their own multicast listeners. The core multiplexes browse subscriptions through one daemon - avoiding the "multiple mDNS stacks" problem that plagues systems where each application runs its own resolver.
 
 - **Adapters are pure translation.** An adapter maps a transport (HTTP, pipe, stdio) to core API calls. Each adapter is roughly 150 lines. They don't contain domain logic, validation, or state management.
 
 - **Core owns the registry.** All registered services, active browse handles, and subscription fan-out live in the core. If an adapter disconnects, the core cleans up its registrations.
 
-- **Rust visibility enforces boundaries.** `core::daemon` internals are `pub(crate)` — invisible to `adapters`. Adapters receive `Arc<MdnsCore>` and nothing else.
+- **Rust visibility enforces boundaries.** `core::daemon` internals are `pub(crate)` - invisible to `adapters`. Adapters receive `Arc<MdnsCore>` and nothing else.
 
 ---
 
@@ -153,11 +153,11 @@ pub enum EventKind {
 
 ## JSON Wire Protocol
 
-All three adapters share the same JSON protocol. The top-level key is the verb — no envelopes, no `{"action": "...", "params": {...}}` indirection. The JSON _is_ the intent.
+All three adapters share the same JSON protocol. The top-level key is the verb - no envelopes, no `{"action": "...", "params": {...}}` indirection. The JSON _is_ the intent.
 
 ### Browse
 
-Discover services of a given type. Browse is a stream — results arrive as they're discovered on the network. The stream stays open until the caller disconnects.
+Discover services of a given type. Browse is a stream - results arrive as they're discovered on the network. The stream stays open until the caller disconnects.
 
 ```json
 → { "browse": "_http._tcp" }
@@ -245,11 +245,11 @@ Stream all lifecycle events for a service type. Unlike browse, subscribe include
 
 Event names map to `mdns-sd`'s `ServiceEvent` variants:
 
-| Event | Meaning |
-|---|---|
-| `found` | Service instance discovered (may be partially resolved) |
-| `resolved` | Service fully resolved with IP, port, and TXT records |
-| `removed` | Service is no longer available (goodbye packet or TTL expiry) |
+| Event      | Meaning                                                       |
+| ---------- | ------------------------------------------------------------- |
+| `found`    | Service instance discovered (may be partially resolved)       |
+| `resolved` | Service fully resolved with IP, port, and TXT records         |
+| `removed`  | Service is no longer available (goodbye packet or TTL expiry) |
 
 ### Errors
 
@@ -265,22 +265,22 @@ Consistent shape across all operations:
 
 ## Pipeline Properties
 
-Pipeline properties are operational metadata attached to responses by the adapter pipeline. They are **not** part of the core domain objects — the core returns pure service records. The pipeline decorates with status, warnings, and errors only when there is something to communicate.
+Pipeline properties are operational metadata attached to responses by the adapter pipeline. They are **not** part of the core domain objects - the core returns pure service records. The pipeline decorates with status, warnings, and errors only when there is something to communicate.
 
 **Their absence is the happy path.** A response with no pipeline properties means everything succeeded cleanly.
 
 ### Properties
 
-| Property | Values | Meaning |
-|---|---|---|
-| `status` | `"ongoing"` / `"finished"` | Whether more data is expected for this result |
-| `warning` | Free-form string | Operation succeeded but something is noteworthy |
-| `error` | Error code string | Operation failed |
-| `message` | Free-form string | Human-readable description (accompanies `error`) |
+| Property  | Values                     | Meaning                                          |
+| --------- | -------------------------- | ------------------------------------------------ |
+| `status`  | `"ongoing"` / `"finished"` | Whether more data is expected for this result    |
+| `warning` | Free-form string           | Operation succeeded but something is noteworthy  |
+| `error`   | Error code string          | Operation failed                                 |
+| `message` | Free-form string           | Human-readable description (accompanies `error`) |
 
 ### Examples
 
-**Clean result — no pipeline properties needed:**
+**Clean result - no pipeline properties needed:**
 
 ```json
 ← { "found": { "name": "Server A", "type": "_http._tcp",
@@ -288,7 +288,7 @@ Pipeline properties are operational metadata attached to responses by the adapte
                "port": 8080, "txt": { "version": "2.1" }}}
 ```
 
-**Partially resolved — more data coming:**
+**Partially resolved - more data coming:**
 
 ```json
 ← { "found": { "name": "Server B", "type": "_http._tcp",
@@ -334,17 +334,17 @@ The HTTP adapter translates REST semantics to core API calls using Axum.
 
 ### Endpoints
 
-| Method | Path | Core operation | Response |
-|---|---|---|---|
-| `GET` | `/v1/mdns/discover?type=_http._tcp` | `browse()` | SSE stream of `found` events |
-| `POST` | `/v1/mdns/announce` | `register()` | JSON `registered` response |
-| `DELETE` | `/v1/mdns/unregister/{id}` | `unregister()` | JSON `unregistered` response |
-| `PUT` | `/v1/mdns/heartbeat/{id}` | `heartbeat()` | JSON `renewed` response |
-| `GET` | `/v1/mdns/resolve?name={instance}` | `resolve()` | JSON `resolved` response |
-| `GET` | `/v1/mdns/subscribe?type=_http._tcp` | `subscribe()` | SSE stream of lifecycle events |
-| `GET` | `/v1/status` | — | Unified capability status |
-| `POST` | `/v1/admin/shutdown` | — | Initiate graceful shutdown |
-| `GET` | `/healthz` | — | `"OK"` |
+| Method   | Path                                 | Core operation | Response                       |
+| -------- | ------------------------------------ | -------------- | ------------------------------ |
+| `GET`    | `/v1/mdns/discover?type=_http._tcp`  | `browse()`     | SSE stream of `found` events   |
+| `POST`   | `/v1/mdns/announce`                  | `register()`   | JSON `registered` response     |
+| `DELETE` | `/v1/mdns/unregister/{id}`           | `unregister()` | JSON `unregistered` response   |
+| `PUT`    | `/v1/mdns/heartbeat/{id}`            | `heartbeat()`  | JSON `renewed` response        |
+| `GET`    | `/v1/mdns/resolve?name={instance}`   | `resolve()`    | JSON `resolved` response       |
+| `GET`    | `/v1/mdns/subscribe?type=_http._tcp` | `subscribe()`  | SSE stream of lifecycle events |
+| `GET`    | `/v1/status`                         | -              | Unified capability status      |
+| `POST`   | `/v1/admin/shutdown`                 | -              | Initiate graceful shutdown     |
+| `GET`    | `/healthz`                           | -              | `"OK"`                         |
 
 ### SSE streaming
 
@@ -377,9 +377,9 @@ CORS is enabled by default for browser-based consumers.
 
 The IPC adapter provides zero-network-overhead local access using the platform's native IPC mechanism.
 
-| Platform | Transport | Path |
-|---|---|---|
-| Windows | Named Pipe | `\\.\pipe\koi` |
+| Platform      | Transport          | Path                                               |
+| ------------- | ------------------ | -------------------------------------------------- |
+| Windows       | Named Pipe         | `\\.\pipe\koi`                                     |
 | Linux / macOS | Unix Domain Socket | `/var/run/koi.sock` or `$XDG_RUNTIME_DIR/koi.sock` |
 
 ### Protocol
@@ -436,16 +436,16 @@ The canonical representation of a discovered or registered service:
 }
 ```
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `name` | string | yes | Human-readable instance name |
-| `type` | string | yes | DNS-SD service type (`_name._tcp` or `_name._udp`) |
-| `host` | string | no | Hostname (e.g. `server.local`). Present after discovery. |
-| `ip` | string | no | IPv4 or IPv6 address. May be absent if unresolved. |
-| `port` | integer | no | Service port number. May be absent in browse events. |
-| `txt` | object | yes | TXT record key-value pairs. Empty object `{}` if none. |
+| Field  | Type    | Required | Notes                                                    |
+| ------ | ------- | -------- | -------------------------------------------------------- |
+| `name` | string  | yes      | Human-readable instance name                             |
+| `type` | string  | yes      | DNS-SD service type (`_name._tcp` or `_name._udp`)       |
+| `host` | string  | no       | Hostname (e.g. `server.local`). Present after discovery. |
+| `ip`   | string  | no       | IPv4 or IPv6 address. May be absent if unresolved.       |
+| `port` | integer | no       | Service port number. May be absent in browse events.     |
+| `txt`  | object  | yes      | TXT record key-value pairs. Empty object `{}` if none.   |
 
-*`host` is typically present in browse/resolve responses but is not required in register requests (Koi uses the machine's hostname).
+\*`host` is typically present in browse/resolve responses but is not required in register requests (Koi uses the machine's hostname).
 
 ---
 
@@ -455,16 +455,16 @@ The primary deployment model for Koi is as a host service that containers reach 
 
 ### The problem
 
-Docker's default bridge network does not forward UDP multicast. Containers on `docker0` never see mDNS traffic from the physical LAN, and their multicast announcements never leave the bridge. This isn't a bug — Docker's bridge is a Layer 3 NAT construct, not a true Layer 2 bridge.
+Docker's default bridge network does not forward UDP multicast. Containers on `docker0` never see mDNS traffic from the physical LAN, and their multicast announcements never leave the bridge. This isn't a bug - Docker's bridge is a Layer 3 NAT construct, not a true Layer 2 bridge.
 
 Existing workarounds all sacrifice something:
 
-| Workaround | Sacrifice |
-|---|---|
-| `--network=host` | Loses container network isolation entirely |
-| `macvlan` | Linux-only, no host↔container connectivity, no Docker Desktop support |
-| mDNS reflectors | Fragile, require `--privileged`, add moving parts |
-| Avahi inside container | Heavy images, D-Bus socket mounting, per-container setup |
+| Workaround             | Sacrifice                                                             |
+| ---------------------- | --------------------------------------------------------------------- |
+| `--network=host`       | Loses container network isolation entirely                            |
+| `macvlan`              | Linux-only, no host↔container connectivity, no Docker Desktop support |
+| mDNS reflectors        | Fragile, require `--privileged`, add moving parts                     |
+| Avahi inside container | Heavy images, D-Bus socket mounting, per-container setup              |
 
 ### The Koi solution
 
@@ -494,33 +494,36 @@ Koi runs on the host as a system service. It participates in mDNS on the physica
 
 ### Container access methods
 
-| Docker environment | HTTP access | IPC access (zero network overhead) |
-|---|---|---|
-| Docker Desktop (Mac/Windows) | `host.docker.internal:5641` | Named pipe mount (Windows) |
-| Docker Engine (Linux) | `172.17.0.1:5641` (default gateway) | `-v /var/run/koi.sock:/var/run/koi.sock` |
-| Docker Compose | `host.docker.internal` with `extra_hosts` | Volume mount the socket |
-| Kubernetes (host network pods) | `localhost:5641` | `hostPath` volume |
+| Docker environment             | HTTP access                               | IPC access (zero network overhead)       |
+| ------------------------------ | ----------------------------------------- | ---------------------------------------- |
+| Docker Desktop (Mac/Windows)   | `host.docker.internal:5641`               | Named pipe mount (Windows)               |
+| Docker Engine (Linux)          | `172.17.0.1:5641` (default gateway)       | `-v /var/run/koi.sock:/var/run/koi.sock` |
+| Docker Compose                 | `host.docker.internal` with `extra_hosts` | Volume mount the socket                  |
+| Kubernetes (host network pods) | `localhost:5641`                          | `hostPath` volume                        |
 
-The socket mount option is significant — it gives containers mDNS access with zero TCP overhead and no exposed ports. The container writes JSON to the socket; Koi speaks multicast on the physical network. The container never needs network access to the host at all.
+The socket mount option is significant - it gives containers mDNS access with zero TCP overhead and no exposed ports. The container writes JSON to the socket; Koi speaks multicast on the physical network. The container never needs network access to the host at all.
 
 ### What containers can do through Koi
 
-**Browse** — Discover services on the physical LAN that the container cannot reach via multicast:
+**Browse** - Discover services on the physical LAN that the container cannot reach via multicast:
+
 ```bash
 # Inside a container: find all printers on the office network
 curl http://172.17.0.1:5641/v1/mdns/discover?type=_ipp._tcp
 ```
 
-**Register** — Advertise a containerized service on the LAN so non-container devices can find it:
+**Register** - Advertise a containerized service on the LAN so non-container devices can find it:
+
 ```bash
 # Inside a container: announce a web service to the LAN
 curl -X POST http://172.17.0.1:5641/v1/mdns/announce \
   -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
 ```
 
-This makes the containerized service visible to mDNS browsers on the physical network — phones, desktops, IoT devices — without any Docker networking workarounds.
+This makes the containerized service visible to mDNS browsers on the physical network - phones, desktops, IoT devices - without any Docker networking workarounds.
 
-**Subscribe** — Stream real-time service events for dynamic service mesh behavior:
+**Subscribe** - Stream real-time service events for dynamic service mesh behavior:
+
 ```bash
 # Inside a container: watch for new services appearing on the LAN
 curl http://172.17.0.1:5641/v1/mdns/subscribe?type=_http._tcp
@@ -529,6 +532,7 @@ curl http://172.17.0.1:5641/v1/mdns/subscribe?type=_http._tcp
 ### Docker Compose examples
 
 **Via HTTP (simplest):**
+
 ```yaml
 services:
   my-app:
@@ -540,6 +544,7 @@ services:
 ```
 
 **Via socket mount (zero network overhead):**
+
 ```yaml
 services:
   my-app:
@@ -595,23 +600,23 @@ WantedBy=multi-user.target
 
 Koi is configured via CLI flags and environment variables. CLI flags take precedence.
 
-| Setting | Flag | Env var | Default |
-|---|---|---|---|
-| HTTP port | `--port` | `KOI_PORT` | `5641` |
-| Pipe/socket path | `--pipe` | `KOI_PIPE` | Platform default |
-| Log level | `--log-level` | `KOI_LOG` | `info` |
-| Verbosity | `-v`, `-vv` | — | off |
-| Log file | `--log-file` | `KOI_LOG_FILE` | — |
-| Disable HTTP | `--no-http` | `KOI_NO_HTTP` | `false` |
-| Disable IPC | `--no-ipc` | `KOI_NO_IPC` | `false` |
-| Disable mDNS | `--no-mdns` | `KOI_NO_MDNS` | `false` |
-| Disable Certmesh | `--no-certmesh` | `KOI_NO_CERTMESH` | `false` |
-| Disable DNS | `--no-dns` | `KOI_NO_DNS` | `false` |
-| Disable Health | `--no-health` | `KOI_NO_HEALTH` | `false` |
-| Disable Proxy | `--no-proxy` | `KOI_NO_PROXY` | `false` |
-| DNS port | `--dns-port` | `KOI_DNS_PORT` | `53` |
-| DNS zone | `--dns-zone` | `KOI_DNS_ZONE` | `lan` |
-| DNS public | `--dns-public` | `KOI_DNS_PUBLIC` | `false` |
+| Setting          | Flag            | Env var           | Default          |
+| ---------------- | --------------- | ----------------- | ---------------- |
+| HTTP port        | `--port`        | `KOI_PORT`        | `5641`           |
+| Pipe/socket path | `--pipe`        | `KOI_PIPE`        | Platform default |
+| Log level        | `--log-level`   | `KOI_LOG`         | `info`           |
+| Verbosity        | `-v`, `-vv`     | -                 | off              |
+| Log file         | `--log-file`    | `KOI_LOG_FILE`    | -                |
+| Disable HTTP     | `--no-http`     | `KOI_NO_HTTP`     | `false`          |
+| Disable IPC      | `--no-ipc`      | `KOI_NO_IPC`      | `false`          |
+| Disable mDNS     | `--no-mdns`     | `KOI_NO_MDNS`     | `false`          |
+| Disable Certmesh | `--no-certmesh` | `KOI_NO_CERTMESH` | `false`          |
+| Disable DNS      | `--no-dns`      | `KOI_NO_DNS`      | `false`          |
+| Disable Health   | `--no-health`   | `KOI_NO_HEALTH`   | `false`          |
+| Disable Proxy    | `--no-proxy`    | `KOI_NO_PROXY`    | `false`          |
+| DNS port         | `--dns-port`    | `KOI_DNS_PORT`    | `53`             |
+| DNS zone         | `--dns-zone`    | `KOI_DNS_ZONE`    | `lan`            |
+| DNS public       | `--dns-public`  | `KOI_DNS_PUBLIC`  | `false`          |
 
 `config.toml` is created in the Koi data directory for proxy entries, but there is no global `--config` flag yet.
 
@@ -623,7 +628,7 @@ Koi v0.2 is a multi-crate Cargo workspace:
 
 ```
 crates/
-├── koi/                # Binary crate — CLI entry, wiring, adapters
+├── koi/                # Binary crate - CLI entry, wiring, adapters
 │   └── src/
 │       ├── main.rs           # Orchestrator: CLI parse, routing, daemon wiring, shutdown
 │       ├── cli.rs            # clap definitions (Cli, Command, Config)
@@ -649,12 +654,12 @@ crates/
 │           ├── unix.rs       # systemd, paths
 │           └── macos.rs      # launchd, paths
 ├── command-surface/    # Glyph-based command rendering traits
-├── koi-common/         # Shared kernel — types, errors, pipeline, id, ceremony engine
-├── koi-mdns/           # mDNS domain — core, daemon, registry, protocol, http
-├── koi-config/         # Config & state — breadcrumb discovery
-├── koi-certmesh/       # Certificate mesh — CA, enrollment, roster, pond ceremony
-├── koi-crypto/         # Cryptographic primitives — key gen, TOTP, FIDO2, auth adapters, unlock slots
-├── koi-truststore/     # Trust store — platform cert installation
+├── koi-common/         # Shared kernel - types, errors, pipeline, id, ceremony engine
+├── koi-mdns/           # mDNS domain - core, daemon, registry, protocol, http
+├── koi-config/         # Config & state - breadcrumb discovery
+├── koi-certmesh/       # Certificate mesh - CA, enrollment, roster, pond ceremony
+├── koi-crypto/         # Cryptographic primitives - key gen, TOTP, FIDO2, auth adapters, unlock slots
+├── koi-truststore/     # Trust store - platform cert installation
 ├── koi-dns/            # Local DNS resolver
 ├── koi-health/         # Machine & service health monitoring
 ├── koi-proxy/          # TLS-terminating reverse proxy
@@ -668,16 +673,16 @@ The `platform/` module is the only location with `#[cfg(target_os)]` conditional
 
 ## Dependencies
 
-| Crate | Purpose |
-|---|---|
-| `mdns-sd` | mDNS/DNS-SD engine (pure Rust, no OS dependencies) |
-| `axum` | HTTP server |
-| `tokio` | Async runtime |
-| `serde` / `serde_json` | JSON serialization |
-| `clap` | CLI argument parsing |
-| `tracing` | Structured logging |
-| `windows-service` | Windows SCM integration (Windows only) |
-| `flume` | Channels (transitive via mdns-sd) |
+| Crate                  | Purpose                                            |
+| ---------------------- | -------------------------------------------------- |
+| `mdns-sd`              | mDNS/DNS-SD engine (pure Rust, no OS dependencies) |
+| `axum`                 | HTTP server                                        |
+| `tokio`                | Async runtime                                      |
+| `serde` / `serde_json` | JSON serialization                                 |
+| `clap`                 | CLI argument parsing                               |
+| `tracing`              | Structured logging                                 |
+| `windows-service`      | Windows SCM integration (Windows only)             |
+| `flume`                | Channels (transitive via mdns-sd)                  |
 
 The total dependency footprint is deliberately minimal. No protobuf, no D-Bus, no OpenSSL.
 
@@ -687,25 +692,25 @@ The total dependency footprint is deliberately minimal. No protobuf, no D-Bus, n
 
 Koi delegates mDNS protocol handling to the `mdns-sd` crate, which implements:
 
-| Feature | RFC | Status |
-|---|---|---|
-| Multicast DNS | [RFC 6762](https://tools.ietf.org/html/rfc6762) | ✅ |
-| DNS-Based Service Discovery | [RFC 6763](https://tools.ietf.org/html/rfc6763) | ✅ |
-| DNS wire format | [RFC 1035](https://tools.ietf.org/html/rfc1035) | ✅ |
-| Known-Answer Suppression | RFC 6762 §7.1 | ✅ |
-| Probing and announcing | RFC 6762 §8.1 | ✅ |
-| Conflict resolution | RFC 6762 §9 | ✅ |
-| Goodbye packets | RFC 6762 §10.1 | ✅ |
-| Cache-flush bit | RFC 6762 §10.2 | ✅ |
-| Unicast responses | RFC 6762 §5.4 | ❌ Not supported |
+| Feature                     | RFC                                             | Status           |
+| --------------------------- | ----------------------------------------------- | ---------------- |
+| Multicast DNS               | [RFC 6762](https://tools.ietf.org/html/rfc6762) | ✅               |
+| DNS-Based Service Discovery | [RFC 6763](https://tools.ietf.org/html/rfc6763) | ✅               |
+| DNS wire format             | [RFC 1035](https://tools.ietf.org/html/rfc1035) | ✅               |
+| Known-Answer Suppression    | RFC 6762 §7.1                                   | ✅               |
+| Probing and announcing      | RFC 6762 §8.1                                   | ✅               |
+| Conflict resolution         | RFC 6762 §9                                     | ✅               |
+| Goodbye packets             | RFC 6762 §10.1                                  | ✅               |
+| Cache-flush bit             | RFC 6762 §10.2                                  | ✅               |
+| Unicast responses           | RFC 6762 §5.4                                   | ❌ Not supported |
 
-The unicast limitation is irrelevant for Koi's use case — all discovery is multicast-based.
+The unicast limitation is irrelevant for Koi's use case - all discovery is multicast-based.
 
 ---
 
 ## Ceremony Protocol
 
-Interactive multi-step operations use a **ceremony engine** — a generic server-driven dialogue framework. The design separates transport (CLI terminal I/O, HTTP JSON) from domain logic (what questions to ask, how to validate answers).
+Interactive multi-step operations use a **ceremony engine** - a generic server-driven dialogue framework. The design separates transport (CLI terminal I/O, HTTP JSON) from domain logic (what questions to ask, how to validate answers).
 
 ### Architecture
 
@@ -724,6 +729,7 @@ The core model is a **bag of key-value pairs** (session state). There is no stag
 ### Wire types
 
 **Request:**
+
 ```json
 {
   "session_id": "0195...",
@@ -733,6 +739,7 @@ The core model is a **bag of key-value pairs** (session state). There is no stag
 ```
 
 **Response:**
+
 ```json
 {
   "session_id": "0195...",
@@ -753,25 +760,25 @@ The core model is a **bag of key-value pairs** (session state). There is no stag
 
 ### Input types
 
-| Type | Purpose |
-|---|---|
-| `select_one` | Numbered list with default |
-| `select_many` | Multi-select list |
-| `text` | Free-form text |
-| `secret` | Masked input |
-| `secret_confirm` | Masked input with confirmation |
-| `code` | Short code (e.g., TOTP 6-digit) |
-| `entropy` | Raw keyboard mashing for entropy |
-| `fido2` | FIDO2 assertion |
+| Type             | Purpose                          |
+| ---------------- | -------------------------------- |
+| `select_one`     | Numbered list with default       |
+| `select_many`    | Multi-select list                |
+| `text`           | Free-form text                   |
+| `secret`         | Masked input                     |
+| `secret_confirm` | Masked input with confirmation   |
+| `code`           | Short code (e.g., TOTP 6-digit)  |
+| `entropy`        | Raw keyboard mashing for entropy |
+| `fido2`          | FIDO2 assertion                  |
 
 ### Message types
 
-| Kind | Purpose |
-|---|---|
-| `info` | Informational text |
+| Kind      | Purpose                                 |
+| --------- | --------------------------------------- |
+| `info`    | Informational text                      |
 | `qr_code` | QR code (UTF-8 art, PNG base64, or URI) |
-| `summary` | Styled summary box |
-| `error` | Error message |
+| `summary` | Styled summary box                      |
+| `error`   | Error message                           |
 
 ### Session management
 
@@ -781,12 +788,12 @@ Sessions use UUIDv7 IDs (time-ordered). Default TTL is 5 minutes. Expired sessio
 
 `PondCeremonyRules` (in `koi-certmesh/src/pond_ceremony.rs`) implements four ceremonies:
 
-| Ceremony | Purpose | Key steps |
-|---|---|---|
-| `init` | Create a new CA | Profile → operator → entropy → passphrase → unlock method → TOTP setup |
-| `join` | Enroll into existing mesh | Endpoint → auth code → certificate |
-| `invite` | Generate invitation | Passphrase → invite token |
-| `unlock` | Unlock a locked CA | Method selection → credential |
+| Ceremony | Purpose                   | Key steps                                                              |
+| -------- | ------------------------- | ---------------------------------------------------------------------- |
+| `init`   | Create a new CA           | Profile → operator → entropy → passphrase → unlock method → TOTP setup |
+| `join`   | Enroll into existing mesh | Endpoint → auth code → certificate                                     |
+| `invite` | Generate invitation       | Passphrase → invite token                                              |
+| `unlock` | Unlock a locked CA        | Method selection → credential                                          |
 
 The init ceremony supports four profiles (`just_me`, `my_team`, `my_organization`, `custom`) with per-profile defaults for enrollment openness, approval requirements, and unlock method. Custom mode exposes all sub-prompts.
 
@@ -807,12 +814,12 @@ CA private keys use envelope encryption, inspired by LUKS. A random 256-bit mast
 
 ### Slot types
 
-| Slot type | Key derivation | Use case |
-|---|---|---|
-| `Passphrase` | Argon2id → KEK → AES-256-GCM wrap | Primary unlock (always present) |
+| Slot type    | Key derivation                                  | Use case                                 |
+| ------------ | ----------------------------------------------- | ---------------------------------------- |
+| `Passphrase` | Argon2id → KEK → AES-256-GCM wrap               | Primary unlock (always present)          |
 | `AutoUnlock` | Master key in separate local file (marker slot) | Unattended boot for single-user profiles |
-| `Totp` | HKDF(shared_secret) → KEK | TOTP-based unlock (6-digit code) |
-| `Fido2` | Assertion-gated KEK | Hardware security key unlock |
+| `Totp`       | HKDF(shared_secret) → KEK                       | TOTP-based unlock (6-digit code)         |
+| `Fido2`      | Assertion-gated KEK                             | Hardware security key unlock             |
 
 ### Slot table schema
 
@@ -820,21 +827,32 @@ CA private keys use envelope encryption, inspired by LUKS. A random 256-bit mast
 {
   "version": 1,
   "slots": [
-    { "type": "passphrase", "wrapped_master_key": { "ciphertext": "...", "nonce": "...", "salt": "..." } },
+    {
+      "type": "passphrase",
+      "wrapped_master_key": {
+        "ciphertext": "...",
+        "nonce": "...",
+        "salt": "..."
+      }
+    },
     { "type": "auto_unlock" },
-    { "type": "totp", "shared_secret_hex": "...", "wrapped_master_key": { "ciphertext": "...", "nonce": "..." } }
+    {
+      "type": "totp",
+      "shared_secret_hex": "...",
+      "wrapped_master_key": { "ciphertext": "...", "nonce": "..." }
+    }
   ]
 }
 ```
 
 ### Operations
 
-- `new_with_passphrase(master_key, passphrase)` — bootstrap with slot 0
-- `unwrap_with_passphrase(passphrase)` — derive KEK, unwrap master key
-- `add_auto_unlock()` / `remove_auto_unlock()` — toggle unattended boot
-- `add_totp_slot(master_key, secret)` / `unwrap_with_totp(code)` — TOTP unlock
-- `add_fido2_slot(...)` / `unwrap_with_fido2(credential_id)` — FIDO2 unlock
-- `available_methods()` — list active slot types
+- `new_with_passphrase(master_key, passphrase)` - bootstrap with slot 0
+- `unwrap_with_passphrase(passphrase)` - derive KEK, unwrap master key
+- `add_auto_unlock()` / `remove_auto_unlock()` - toggle unattended boot
+- `add_totp_slot(master_key, secret)` / `unwrap_with_totp(code)` - TOTP unlock
+- `add_fido2_slot(...)` / `unwrap_with_fido2(credential_id)` - FIDO2 unlock
+- `available_methods()` - list active slot types
 
 ### Migration
 
@@ -846,11 +864,11 @@ Legacy single-passphrase keys (pre-envelope) are auto-migrated on first load via
 
 ### Host service as the container mDNS bridge
 
-Koi's primary deployment model is as a system service on the host. This is not incidental — it's the architectural answer to Docker's multicast blindness. Docker's bridge network is a Layer 3 NAT construct that doesn't forward UDP multicast. No amount of container-side configuration fixes this without sacrificing isolation. By running Koi on the host where multicast works natively, and exposing its capabilities over HTTP (TCP) and Unix domain sockets, containers gain full mDNS access through transports that Docker handles perfectly. The host service is the bridge between the multicast world of the LAN and the unicast world inside Docker's network namespace.
+Koi's primary deployment model is as a system service on the host. This is not incidental - it's the architectural answer to Docker's multicast blindness. Docker's bridge network is a Layer 3 NAT construct that doesn't forward UDP multicast. No amount of container-side configuration fixes this without sacrificing isolation. By running Koi on the host where multicast works natively, and exposing its capabilities over HTTP (TCP) and Unix domain sockets, containers gain full mDNS access through transports that Docker handles perfectly. The host service is the bridge between the multicast world of the LAN and the unicast world inside Docker's network namespace.
 
 ### Single shared daemon, not per-browse instances
 
-Multiple callers browsing `_http._tcp` share one multicast listener. This mirrors the architecture of Apple's `mDNSResponder` — a single system daemon that multiplexes for all applications — without requiring a system service. The core manages subscription fan-out internally.
+Multiple callers browsing `_http._tcp` share one multicast listener. This mirrors the architecture of Apple's `mDNSResponder` - a single system daemon that multiplexes for all applications - without requiring a system service. The core manages subscription fan-out internally.
 
 ### Verb-oriented JSON, not envelope-based
 
@@ -864,7 +882,7 @@ Status, warnings, and errors are operational concerns added by the pipeline, not
 
 The HTTP, IPC, and CLI adapters all speak the same JSON shapes but don't share adapter code. Each is a thin, independent module (~150 lines) that maps its transport to core API calls. This keeps each adapter simple enough to read in one sitting.
 
-### Port 5641 — "KOI" on a phone keypad
+### Port 5641 - "KOI" on a phone keypad
 
 Koi's HTTP adapter defaults to TCP port 5641 (K=5, O=6, I=4, plus a `1` suffix). The port is IANA-unassigned, sits comfortably in the registered range (1024–49151), and is easy to remember.
 
@@ -872,12 +890,12 @@ Koi's HTTP adapter defaults to TCP port 5641 (K=5, O=6, I=4, plus a `1` suffix).
 
 The following were considered and deliberately excluded from v1:
 
-- **gRPC** — Heavy dependency, target audience doesn't want stub generation for simple discovery
-- **WebSocket** — SSE already covers server-push; bidirectional not needed
-- **D-Bus** — Linux-only, the whole point is cross-platform simplicity
-- **mDNS reflection/proxying** — Scope creep; Koi translates mDNS to API, not mDNS to mDNS
-- **Wide Area Bonjour** — Unicast DNS integration deferred
-- **Plugin system** — Keep it razor-thin
+- **gRPC** - Heavy dependency, target audience doesn't want stub generation for simple discovery
+- **WebSocket** - SSE already covers server-push; bidirectional not needed
+- **D-Bus** - Linux-only, the whole point is cross-platform simplicity
+- **mDNS reflection/proxying** - Scope creep; Koi translates mDNS to API, not mDNS to mDNS
+- **Wide Area Bonjour** - Unicast DNS integration deferred
+- **Plugin system** - Keep it razor-thin
 
 ---
 

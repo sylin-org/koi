@@ -1,6 +1,6 @@
 ﻿# JSON Wire Protocol
 
-Koi uses the same JSON protocol across HTTP, IPC (Named Pipe / Unix Domain Socket), and stdin/stdout. The top-level key is the verb — the JSON *is* the intent.
+Koi uses the same JSON protocol across HTTP, IPC (Named Pipe / Unix Domain Socket), and stdin/stdout. The top-level key is the verb - the JSON _is_ the intent.
 
 ---
 
@@ -44,14 +44,14 @@ The top-level key determines the operation:
 
 The canonical representation of a discovered or registered service:
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `name` | string | yes | Human-readable instance name |
-| `type` | string | yes | DNS-SD service type (`_name._tcp` or `_name._udp`) |
-| `host` | string | no | Hostname (e.g., `server.local`). Present after discovery. |
-| `ip` | string | no | IPv4 or IPv6 address. May be absent if unresolved. |
-| `port` | integer | no | Service port. May be absent in early browse events. |
-| `txt` | object | yes | TXT record key-value pairs. Empty `{}` if none. |
+| Field  | Type    | Required | Notes                                                     |
+| ------ | ------- | -------- | --------------------------------------------------------- |
+| `name` | string  | yes      | Human-readable instance name                              |
+| `type` | string  | yes      | DNS-SD service type (`_name._tcp` or `_name._udp`)        |
+| `host` | string  | no       | Hostname (e.g., `server.local`). Present after discovery. |
+| `ip`   | string  | no       | IPv4 or IPv6 address. May be absent if unresolved.        |
+| `port` | integer | no       | Service port. May be absent in early browse events.       |
+| `txt`  | object  | yes      | TXT record key-value pairs. Empty `{}` if none.           |
 
 ---
 
@@ -59,10 +59,10 @@ The canonical representation of a discovered or registered service:
 
 Optional operational metadata attached as sibling keys via `#[serde(flatten)]`:
 
-| Property | Values | Meaning |
-|---|---|---|
-| `status` | `"ongoing"` / `"finished"` | Whether more data is expected |
-| `warning` | string | Operation succeeded with caveats |
+| Property  | Values                     | Meaning                          |
+| --------- | -------------------------- | -------------------------------- |
+| `status`  | `"ongoing"` / `"finished"` | Whether more data is expected    |
+| `warning` | string                     | Operation succeeded with caveats |
 
 Absence means clean success. Consumer logic:
 
@@ -79,24 +79,24 @@ if none      → clean result
 
 Lifecycle events from `subscribe`:
 
-| Event | Meaning |
-|---|---|
-| `found` | Service instance discovered (may be partially resolved) |
-| `resolved` | Fully resolved with IP, port, and TXT |
-| `removed` | Service gone (goodbye packet or TTL expiry) |
+| Event      | Meaning                                                 |
+| ---------- | ------------------------------------------------------- |
+| `found`    | Service instance discovered (may be partially resolved) |
+| `resolved` | Fully resolved with IP, port, and TXT                   |
+| `removed`  | Service gone (goodbye packet or TTL expiry)             |
 
 ---
 
 ## IPC transport
 
-| Platform | Transport | Default path |
-|---|---|---|
-| Windows | Named Pipe | `\\.\pipe\koi` |
+| Platform      | Transport          | Default path                                       |
+| ------------- | ------------------ | -------------------------------------------------- |
+| Windows       | Named Pipe         | `\\.\pipe\koi`                                     |
 | Linux / macOS | Unix Domain Socket | `$XDG_RUNTIME_DIR/koi.sock` or `/var/run/koi.sock` |
 
 Protocol: NDJSON (newline-delimited JSON). One JSON object per line. Streaming operations keep the connection open.
 
-IPC registrations use **session-based leases**. The OS connection lifecycle is the liveness signal — when the connection drops, Koi starts a grace period.
+IPC registrations use **session-based leases**. The OS connection lifecycle is the liveness signal - when the connection drops, Koi starts a grace period.
 
 ---
 
@@ -117,12 +117,12 @@ Activates when Koi detects stdin is a pipe (not a terminal).
 
 Koi normalizes input liberally and emits canonical output strictly:
 
-| Input | Normalized to |
-|---|---|
-| `http` | `_http._tcp` |
-| `_http` | `_http._tcp` |
-| `_http._tcp` | `_http._tcp` |
-| `_http._tcp.` | `_http._tcp` |
-| `_http._tcp.local.` | `_http._tcp` |
+| Input               | Normalized to |
+| ------------------- | ------------- |
+| `http`              | `_http._tcp`  |
+| `_http`             | `_http._tcp`  |
+| `_http._tcp`        | `_http._tcp`  |
+| `_http._tcp.`       | `_http._tcp`  |
+| `_http._tcp.local.` | `_http._tcp`  |
 
 Missing `_` prefix is added. Missing `._tcp` suffix is assumed. Trailing `.local.` is handled internally.

@@ -8,29 +8,29 @@
 
 Replace the hard-wired TOTP authentication in certmesh with a pluggable
 adapter system. One flow, N auth methods. TOTP and FIDO2 ship as the
-first two adapters. Adding a third method means writing a new adapter —
+first two adapters. Adding a third method means writing a new adapter -
 no flow changes, no protocol rework.
 
 ## Motivation
 
 - TOTP is the right default for most deployments (containers, VMs, cloud)
 - Hardware security keys (YubiKey, Titan, SoloKey) offer phishing-resistant
-  auth with better UX: "insert key, tap, done" — no phone, no codes
+  auth with better UX: "insert key, tap, done" - no phone, no codes
 - Operators should **choose** their auth method at CA creation time, and
   be able to **change** it on a live CA
 - The system should treat auth methods as configuration, not functional gates
 
 ## Design Principles
 
-1. **One flow, N configs** — The enrollment/promote/rotate flow is identical
+1. **One flow, N configs** - The enrollment/promote/rotate flow is identical
    regardless of auth method. Callers never branch on method.
-2. **Adapters, not conditionals** — Each auth method is a struct behind a
+2. **Adapters, not conditionals** - Each auth method is a struct behind a
    trait. The flow calls `adapter.verify()`. Period.
-3. **Default flag** — Each adapter declares `is_default()`. The CLI uses this
+3. **Default flag** - Each adapter declares `is_default()`. The CLI uses this
    to pre-select in the menu. TOTP is the default.
-4. **Method is mutable** — The operator can rotate the auth method on a live
+4. **Method is mutable** - The operator can rotate the auth method on a live
    CA via `koi certmesh auth rotate`. Already-enrolled nodes are unaffected.
-5. **USB stays in the CLI** — Only the CLI binary (`koi`) talks to physical
+5. **USB stays in the CLI** - Only the CLI binary (`koi`) talks to physical
    FIDO2 keys via `ctap-hid-fido2`. The daemon (`koi-certmesh`) does pure
    signature verification using `p256` (already a dependency).
 
@@ -91,11 +91,11 @@ rate_limiter.check_and_record(valid)?;
 
 ## Endpoints
 
-| Endpoint | Purpose |
-|---|---|
+| Endpoint              | Purpose                                                 |
+| --------------------- | ------------------------------------------------------- |
 | `GET /auth/challenge` | Returns `AuthChallenge` based on CA's configured method |
-| `GET /auth/methods` | Discovery: list available methods + default flag |
-| `POST /auth/rotate` | Swap auth method on live CA (passphrase required) |
+| `GET /auth/methods`   | Discovery: list available methods + default flag        |
+| `POST /auth/rotate`   | Swap auth method on live CA (passphrase required)       |
 
 Existing endpoints (`/join`, `/promote`) accept `AuthResponse` instead of
 a raw TOTP code.
@@ -103,16 +103,18 @@ a raw TOTP code.
 ## CLI UX
 
 ### Create
+
 ```
 $ koi certmesh create
   Passphrase: ••••••••
   Authentication method:
-  [1] TOTP — authenticator app  (default)
-  [2] FIDO2 — hardware security key
-  Press Enter for default, or choose: 
+  [1] TOTP - authenticator app  (default)
+  [2] FIDO2 - hardware security key
+  Press Enter for default, or choose:
 ```
 
 ### Join (auto-discovers method)
+
 ```
 $ koi certmesh join stone-01.local
   Contacting CA... auth method: FIDO2
@@ -121,13 +123,14 @@ $ koi certmesh join stone-01.local
 ```
 
 ### Rotate
+
 ```
 $ koi certmesh auth rotate
   Current method: TOTP
   Passphrase: ••••••••
   New method:
-  [1] TOTP — authenticator app  (default)
-  [2] FIDO2 — hardware security key
+  [1] TOTP - authenticator app  (default)
+  [2] FIDO2 - hardware security key
   > 2
   Insert your security key and tap now...
   ✓ Auth method changed to FIDO2.
@@ -135,10 +138,10 @@ $ koi certmesh auth rotate
 
 ## Dependency Impact
 
-| Crate | New Dep | Why |
-|---|---|---|
+| Crate        | New Dep                             | Why                                         |
+| ------------ | ----------------------------------- | ------------------------------------------- |
 | `koi-crypto` | None (uses existing `p256`, `sha2`) | FIDO2 verification is ECDSA signature check |
-| `koi` (CLI) | `ctap-hid-fido2` (MIT, 5K SLoC) | USB HID communication with physical keys |
+| `koi` (CLI)  | `ctap-hid-fido2` (MIT, 5K SLoC)     | USB HID communication with physical keys    |
 
 ## Adding a Future Method
 
@@ -157,14 +160,14 @@ No flow changes. No daemon changes. No protocol rework.
 
 ## Files Changed
 
-| File | Change |
-|---|---|
-| `koi-crypto/src/auth/` | New module: trait, enums, TOTP adapter, FIDO2 adapter |
-| `koi-crypto/src/totp.rs` | Unchanged — wrapped by TotpAdapter |
-| `koi-certmesh/src/protocol.rs` | `totp_code` → `auth: AuthResponse` |
-| `koi-certmesh/src/lib.rs` | `totp_secret` → `auth: Mutex<Option<AuthCredential>>` |
-| `koi-certmesh/src/http.rs` | challenge handler, rotate handler, existing handlers use adapter |
-| `koi-certmesh/src/enrollment.rs` | `verify_code()` → `adapter.verify()` |
-| `koi-certmesh/src/failover.rs` | Transfer `AuthCredential` instead of encrypted TOTP |
-| `koi-certmesh/src/backup.rs` | Serialize `AuthCredential` into bundle |
-| `koi/src/commands/certmesh.rs` | Auth menu, `resolve_auth()`, FIDO2 USB interaction |
+| File                             | Change                                                           |
+| -------------------------------- | ---------------------------------------------------------------- |
+| `koi-crypto/src/auth/`           | New module: trait, enums, TOTP adapter, FIDO2 adapter            |
+| `koi-crypto/src/totp.rs`         | Unchanged - wrapped by TotpAdapter                               |
+| `koi-certmesh/src/protocol.rs`   | `totp_code` → `auth: AuthResponse`                               |
+| `koi-certmesh/src/lib.rs`        | `totp_secret` → `auth: Mutex<Option<AuthCredential>>`            |
+| `koi-certmesh/src/http.rs`       | challenge handler, rotate handler, existing handlers use adapter |
+| `koi-certmesh/src/enrollment.rs` | `verify_code()` → `adapter.verify()`                             |
+| `koi-certmesh/src/failover.rs`   | Transfer `AuthCredential` instead of encrypted TOTP              |
+| `koi-certmesh/src/backup.rs`     | Serialize `AuthCredential` into bundle                           |
+| `koi/src/commands/certmesh.rs`   | Auth menu, `resolve_auth()`, FIDO2 USB interaction               |

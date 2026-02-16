@@ -20,7 +20,7 @@ koi dns add grafana 10.0.0.42
 koi status
 ```
 
-Or over HTTP — from any language, any container, any script:
+Or over HTTP - from any language, any container, any script:
 
 ```bash
 curl http://localhost:5641/v1/mdns/discover?type=_http._tcp
@@ -52,18 +52,18 @@ koi --daemon
 
 ## Why Koi exists
 
-mDNS is the invisible backbone of local networking. Printers, smart speakers, AirPlay, Chromecast, IoT devices — everything uses it. But **using** mDNS programmatically is surprisingly painful:
+mDNS is the invisible backbone of local networking. Printers, smart speakers, AirPlay, Chromecast, IoT devices - everything uses it. But **using** mDNS programmatically is surprisingly painful:
 
-- **Windows** has native mDNS since Windows 10, but the Win32 APIs are poorly documented, 64-bit only, and don't expose full DNS-SD. The alternative — Apple's Bonjour — has redistribution-prohibiting licensing and a 13-year-old installer.
+- **Windows** has native mDNS since Windows 10, but the Win32 APIs are poorly documented, 64-bit only, and don't expose full DNS-SD. The alternative - Apple's Bonjour - has redistribution-prohibiting licensing and a 13-year-old installer.
 - **Linux** has Avahi, which is excellent but Linux-only and deeply coupled to D-Bus and systemd.
 - **Containers** can't do mDNS at all. Docker's bridge network doesn't forward multicast traffic. Every workaround (`--network=host`, macvlan, mDNS reflectors) sacrifices isolation or adds fragility.
-- **Cross-platform** libraries exist, but they're libraries — you need to write code in a specific language to use them.
+- **Cross-platform** libraries exist, but they're libraries - you need to write code in a specific language to use them.
 
 Koi fills the gap: a single daemon that speaks mDNS on the network side and JSON over HTTP/IPC/stdio on the application side. Any language with an HTTP client or the ability to spawn a process can discover, name, and secure services on the local network.
 
 ## Containers
 
-When Koi runs on the host, every container gains LAN capabilities through plain HTTP — no `--network=host`, no macvlan, no mDNS reflectors.
+When Koi runs on the host, every container gains LAN capabilities through plain HTTP - no `--network=host`, no macvlan, no mDNS reflectors.
 
 ```bash
 # From inside any Docker container:
@@ -75,13 +75,14 @@ See [CONTAINERS.md](CONTAINERS.md) for Docker Compose examples, startup patterns
 
 ## Capabilities
 
-| Capability | What it does | CLI | Guide |
-| --- | --- | --- | --- |
-| **mDNS** | Service discovery (DNS-SD) | `koi mdns ...` | [mDNS guide](docs/guides/mdns.md) |
-| **DNS** | Local resolver for friendly names | `koi dns ...` | [DNS guide](docs/guides/dns.md) |
+| Capability   | What it does                        | CLI                | Guide                                     |
+| ------------ | ----------------------------------- | ------------------ | ----------------------------------------- |
+| **mDNS**     | Service discovery (DNS-SD)          | `koi mdns ...`     | [mDNS guide](docs/guides/mdns.md)         |
+| **DNS**      | Local resolver for friendly names   | `koi dns ...`      | [DNS guide](docs/guides/dns.md)           |
 | **Certmesh** | Private CA + enrollment for LAN TLS | `koi certmesh ...` | [Certmesh guide](docs/guides/certmesh.md) |
-| **Health** | Machine/service health monitoring | `koi health ...` | [Health guide](docs/guides/health.md) |
-| **Proxy** | TLS-terminating local reverse proxy | `koi proxy ...` | [Proxy guide](docs/guides/proxy.md) |
+| **Health**   | Machine/service health monitoring   | `koi health ...`   | [Health guide](docs/guides/health.md)     |
+| **Proxy**    | TLS-terminating local reverse proxy | `koi proxy ...`    | [Proxy guide](docs/guides/proxy.md)       |
+| **UDP**      | Datagram bridging for containers    | HTTP API           | [UDP guide](docs/guides/udp.md)           |
 
 ## Platform support
 
@@ -119,41 +120,42 @@ cargo install koi-net
 
 **Using Koi:**
 
-- [**User Guide**](GUIDE.md) — from first command to advanced usage
-- [**Container Guide**](CONTAINERS.md) — Docker Compose, startup patterns, Kubernetes
+- [**User Guide**](GUIDE.md) - from first command to advanced usage
+- [**Container Guide**](CONTAINERS.md) - Docker Compose, startup patterns, Kubernetes
 
 **Capability deep-dives:**
 
-- [mDNS — Service Discovery](docs/guides/mdns.md)
-- [Certmesh — Certificate Mesh](docs/guides/certmesh.md)
-- [DNS — Local Resolver](docs/guides/dns.md)
-- [Health — Endpoint Monitoring](docs/guides/health.md)
-- [Proxy — TLS Termination](docs/guides/proxy.md)
-- [System — Daemon Lifecycle](docs/guides/system.md)
-- [Embedded — Rust In-Process](docs/guides/embedded.md)
+- [mDNS - Service Discovery](docs/guides/mdns.md)
+- [Certmesh - Certificate Mesh](docs/guides/certmesh.md)
+- [DNS - Local Resolver](docs/guides/dns.md)
+- [Health - Endpoint Monitoring](docs/guides/health.md)
+- [Proxy - TLS Termination](docs/guides/proxy.md)
+- [UDP - Datagram Bridging](docs/guides/udp.md)
+- [System - Daemon Lifecycle](docs/guides/system.md)
+- [Embedded - Rust In-Process](docs/guides/embedded.md)
 
 **Reference:**
 
-- [Architecture](docs/reference/architecture.md) — crate structure, boundaries, design
-- [HTTP API](docs/reference/http-api.md) — all 43 endpoints
-- [CLI Reference](docs/reference/cli.md) — every command and flag
-- [Wire Protocol](docs/reference/wire-protocol.md) — JSON protocol spec
-- [Ceremony Protocol](docs/reference/ceremony-protocol.md) — interactive flow engine
-- [Envelope Encryption](docs/reference/envelope-encryption.md) — CA key protection
+- [Architecture](docs/reference/architecture.md) - crate structure, boundaries, design
+- [HTTP API](docs/reference/http-api.md) - all 49 endpoints
+- [CLI Reference](docs/reference/cli.md) - every command and flag
+- [Wire Protocol](docs/reference/wire-protocol.md) - JSON protocol spec
+- [Ceremony Protocol](docs/reference/ceremony-protocol.md) - interactive flow engine
+- [Envelope Encryption](docs/reference/envelope-encryption.md) - CA key protection
 
 **Decisions:**
 
-- [Architecture Decision Records](docs/adr/) — why things are the way they are
+- [Architecture Decision Records](docs/adr/) - why things are the way they are
 
 ## Name
 
-Koi (鯉) are the fish that live in garden ponds. They're visible — they surface, they announce themselves by simply existing. You look into the pond and see what's there. That's service discovery: the network is the pond, the services are the koi. You peer in and see what's swimming.
+Koi (鯉) are the fish that live in garden ponds. They're visible - they surface, they announce themselves by simply existing. You look into the pond and see what's there. That's service discovery: the network is the pond, the services are the koi. You peer in and see what's swimming.
 
 The binary is `koi`. The crates.io package is published as `koi-net` because `koi` was already taken.
 
 ## Acknowledgments
 
-Koi is an orchestration wrapper — the heavy lifting happens in [mdns-sd](https://github.com/keepsimple1/mdns-sd), a pure-Rust mDNS/DNS-SD implementation by [@keepsimple1](https://github.com/keepsimple1). Their library handles probing, conflict resolution, known-answer suppression, goodbye packets, cache flushing, and all the multicast plumbing that makes service discovery actually work. Koi just gives it a friendly front door.
+Koi is an orchestration wrapper - the heavy lifting happens in [mdns-sd](https://github.com/keepsimple1/mdns-sd), a pure-Rust mDNS/DNS-SD implementation by [@keepsimple1](https://github.com/keepsimple1). Their library handles probing, conflict resolution, known-answer suppression, goodbye packets, cache flushing, and all the multicast plumbing that makes service discovery actually work. Koi just gives it a friendly front door.
 
 ## License
 

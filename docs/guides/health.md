@@ -1,12 +1,12 @@
-﻿# Health — Endpoint Monitoring
+﻿# Health - Endpoint Monitoring
 
 Monitoring is observability's simplest form: is the service up, or not? Before you invest in metrics pipelines, distributed tracing, and log aggregation, you need to answer this one question for each service on your network. Koi's health capability gives you that answer with minimal setup.
 
-The design philosophy is intentionally narrow. Koi doesn't try to replace Prometheus or Datadog — it handles the "is it reachable?" layer so you can see at a glance which services are healthy without deploying a full observability stack. For a homelab or a small team environment, this is often all you need.
+The design philosophy is intentionally narrow. Koi doesn't try to replace Prometheus or Datadog - it handles the "is it reachable?" layer so you can see at a glance which services are healthy without deploying a full observability stack. For a homelab or a small team environment, this is often all you need.
 
-**When to use health checks**: You have services running on your LAN and you want to know immediately when one goes down. You want a live terminal dashboard showing service state. You want transition history — not just whether something is down *now*, but when it went down and when it came back.
+**When to use health checks**: You have services running on your LAN and you want to know immediately when one goes down. You want a live terminal dashboard showing service state. You want transition history - not just whether something is down _now_, but when it went down and when it came back.
 
-All CLI commands use the `koi health` prefix. All HTTP endpoints live under `/v1/health/`. Health commands require a running daemon — use `koi install` or `koi --daemon` first.
+All CLI commands use the `koi health` prefix. All HTTP endpoints live under `/v1/health/`. Health commands require a running daemon - use `koi install` or `koi --daemon` first.
 
 ---
 
@@ -14,14 +14,14 @@ All CLI commands use the `koi health` prefix. All HTTP endpoints live under `/v1
 
 Koi supports two kinds of health checks, each suited to a different situation:
 
-| Type | Flag | What it does | When to use |
-|---|---|---|---|
-| **HTTP** | `--http <url>` | Sends a `GET` request; healthy if the response is 2xx | Web services, APIs, anything with a health endpoint |
-| **TCP** | `--tcp <host:port>` | Opens a TCP connection; healthy if the connect succeeds | Databases, message queues, any service that accepts connections |
+| Type     | Flag                | What it does                                            | When to use                                                     |
+| -------- | ------------------- | ------------------------------------------------------- | --------------------------------------------------------------- |
+| **HTTP** | `--http <url>`      | Sends a `GET` request; healthy if the response is 2xx   | Web services, APIs, anything with a health endpoint             |
+| **TCP**  | `--tcp <host:port>` | Opens a TCP connection; healthy if the connect succeeds | Databases, message queues, any service that accepts connections |
 
-HTTP checks are the most common — most modern services expose a `/health` or `/healthz` endpoint. TCP checks are useful when the service doesn't speak HTTP but accepts connections (think PostgreSQL, Redis, MQTT brokers).
+HTTP checks are the most common - most modern services expose a `/health` or `/healthz` endpoint. TCP checks are useful when the service doesn't speak HTTP but accepts connections (think PostgreSQL, Redis, MQTT brokers).
 
-Both types run at the daemon's configured polling interval. Koi fires a state-transition event when the result changes — not on every poll. This means your event stream and audit log show meaningful transitions, not a noisy heartbeat.
+Both types run at the daemon's configured polling interval. Koi fires a state-transition event when the result changes - not on every poll. This means your event stream and audit log show meaningful transitions, not a noisy heartbeat.
 
 ---
 
@@ -46,7 +46,7 @@ That's it. Three lines to register, one to inspect. Koi starts polling immediate
 
 ## Live monitoring
 
-The real power is `health watch` — a live-updating terminal view that shows all checks and refreshes automatically:
+The real power is `health watch` - a live-updating terminal view that shows all checks and refreshes automatically:
 
 ```
 koi health watch
@@ -70,7 +70,7 @@ Press Ctrl+C to exit.
 
 ## Transition history
 
-Every time a check changes state — healthy to unhealthy, or back — Koi logs the transition:
+Every time a check changes state - healthy to unhealthy, or back - Koi logs the transition:
 
 ```
 koi health log
@@ -99,12 +99,12 @@ Adding a check with a duplicate name updates the existing check. This lets you c
 
 When the daemon is running, health endpoints live under `/v1/health/`:
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/v1/health/status` | Snapshot of all checks |
-| `GET` | `/v1/health/list` | List registered checks (config only) |
-| `POST` | `/v1/health/add` | Register a check |
-| `DELETE` | `/v1/health/remove/{name}` | Remove a check |
+| Method   | Path                       | Purpose                              |
+| -------- | -------------------------- | ------------------------------------ |
+| `GET`    | `/v1/health/status`        | Snapshot of all checks               |
+| `GET`    | `/v1/health/list`          | List registered checks (config only) |
+| `POST`   | `/v1/health/add`           | Register a check                     |
+| `DELETE` | `/v1/health/remove/{name}` | Remove a check                       |
 
 ### Add example
 
@@ -142,4 +142,4 @@ koi health add api --http https://localhost:3000/health --endpoint http://localh
 
 ### SSE events not arriving
 
-Health state transitions are pushed via SSE on the daemon's event stream. Make sure you're connected to the correct SSE endpoint and that the daemon is running. Transitions only fire when state *changes* — a service that stays healthy won't generate events.
+Health state transitions are pushed via SSE on the daemon's event stream. Make sure you're connected to the correct SSE endpoint and that the daemon is running. Transitions only fire when state _changes_ - a service that stays healthy won't generate events.

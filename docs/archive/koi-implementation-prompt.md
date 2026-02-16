@@ -1,7 +1,7 @@
 # Koi Implementation Prompt
 
 **For:** Claude (coding agent)
-**Project:** Koi — Local Network Toolkit
+**Project:** Koi - Local Network Toolkit
 **Spec:** See `koi-spec.md` (attached or in repository root)
 **Date:** February 2026
 
@@ -9,7 +9,7 @@
 
 ## Who You Are
 
-You are implementing Koi, a single-binary local network toolkit for LAN service discovery and certificate management. You are working from a detailed design specification (`koi-spec.md`) that has been through architecture review and ISO 27001 security evaluation. The spec is authoritative — follow it closely. If something in the spec is ambiguous, flag it and propose a resolution before proceeding.
+You are implementing Koi, a single-binary local network toolkit for LAN service discovery and certificate management. You are working from a detailed design specification (`koi-spec.md`) that has been through architecture review and ISO 27001 security evaluation. The spec is authoritative - follow it closely. If something in the spec is ambiguous, flag it and propose a resolution before proceeding.
 
 The developer is Leon, an Enterprise Architect who designed this system. He will review your work. He values clean architecture, clear separation of concerns, and code that reads like its intent. He does not value cleverness for its own sake.
 
@@ -35,7 +35,7 @@ The developer is Leon, an Enterprise Architect who designed this system. He will
 koi/
 ├── Cargo.toml                        # Workspace root
 ├── crates/
-│   ├── koi-cli/                      # Binary crate — CLI entry point
+│   ├── koi-cli/                      # Binary crate - CLI entry point
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── main.rs               # Entry point, CLI root
@@ -48,14 +48,14 @@ koi/
 │   │       │   ├── health.rs         # koi health <subcommands>
 │   │       │   └── proxy.rs          # koi proxy <subcommands>
 │   │       └── output.rs             # Formatting, color, --json support
-│   ├── koi-mdns/                     # Library crate — mDNS capability
+│   ├── koi-mdns/                     # Library crate - mDNS capability
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── discovery.rs          # Service discovery
 │   │       ├── announcer.rs          # Service advertising
 │   │       └── registry.rs           # Discovered service cache
-│   ├── koi-certmesh/                 # Library crate — certificate mesh capability
+│   ├── koi-certmesh/                 # Library crate - certificate mesh capability
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -71,7 +71,7 @@ koi/
 │   │       ├── profiles.rs           # Trust profile definitions and defaults
 │   │       ├── scope.rs              # Domain/subnet constraints for cert issuance
 │   │       └── backup.rs             # Export/restore encrypted backup
-│   ├── koi-dns/                      # Library crate — local DNS resolver
+│   ├── koi-dns/                      # Library crate - local DNS resolver
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -80,7 +80,7 @@ koi/
 │   │       ├── records.rs            # Record sources: static, certmesh SANs, mDNS registry
 │   │       ├── aliases.rs            # Service alias generation (grafana.lan from _grafana._tcp)
 │   │       └── safety.rs             # RFC 1918 enforcement, rate limiting, LAN-only binding
-│   ├── koi-health/                   # Library crate — network health
+│   ├── koi-health/                   # Library crate - network health
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -89,7 +89,7 @@ koi/
 │   │       ├── checker.rs            # Async check runner, interval management
 │   │       ├── state.rs              # State tracking, transition detection
 │   │       └── log.rs                # State transition log (append-only)
-│   ├── koi-proxy/                    # Library crate — TLS-terminating reverse proxy
+│   ├── koi-proxy/                    # Library crate - TLS-terminating reverse proxy
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -97,7 +97,7 @@ koi/
 │   │       ├── forwarder.rs          # HTTP forwarding to backend
 │   │       ├── config.rs             # Proxy entry management (add/remove/list)
 │   │       └── safety.rs             # Localhost-only default, remote backend guard
-│   ├── koi-truststore/               # Library crate — platform-specific trust store
+│   ├── koi-truststore/               # Library crate - platform-specific trust store
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs                # Trait definition
@@ -105,14 +105,14 @@ koi/
 │   │       ├── windows.rs            # certutil
 │   │       ├── darwin.rs             # Keychain
 │   │       └── nss.rs                # Firefox NSS (cross-platform)
-│   ├── koi-api/                      # Library crate — inter-node REST API
+│   ├── koi-api/                      # Library crate - inter-node REST API
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── server.rs             # HTTP(S) server setup
 │   │       ├── certmesh_handlers.rs  # /v1/certmesh/join, /renew, /roster, /health
 │   │       └── middleware.rs          # Cert chain validation, rate limiting
-│   ├── koi-crypto/                   # Library crate — cryptographic utilities
+│   ├── koi-crypto/                   # Library crate - cryptographic utilities
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
@@ -121,7 +121,7 @@ koi/
 │   │       ├── auth.rs               # AuthAdapter trait, FIDO2 adapter
 │   │       ├── pinning.rs            # Certificate fingerprint pinning
 │   │       └── tpm.rs                # TPM detection and sealing (best-effort)
-│   └── koi-config/                   # Library crate — config and state persistence
+│   └── koi-config/                   # Library crate - config and state persistence
 │       ├── Cargo.toml
 │       └── src/
 │           ├── lib.rs
@@ -144,38 +144,39 @@ The workspace structure with separate crates enables feature-gated compilation. 
 
 Use established, well-maintained crates. Do not reinvent what exists.
 
-| Purpose | Crate | Notes |
-|---------|-------|-------|
-| Async runtime | `tokio` | Multi-threaded runtime for all async operations |
-| CLI framework | `clap` (derive) | Subcommand structure matches moniker model perfectly |
-| mDNS | `mdns-sd` | Pure Rust mDNS/DNS-SD. Alternatively `zeroconf` for platform-native backends |
-| X.509 / CA | `rcgen` + `rustls` | `rcgen` for cert generation, `rustls` for TLS. Avoid OpenSSL dependency. |
-| ECDSA | `p256` (from RustCrypto) | ECDSA P-256 key generation and signing |
-| TOTP | `totp-rs` | Standard TOTP/HOTP implementation |
-| FIDO2 | `p256` (RustCrypto) | ECDSA P-256 for FIDO2 key verification |
-| QR code | `qrcode` + `image` | Generate QR code, render to terminal via Unicode blocks |
-| Encryption at rest | `aes-gcm` + `argon2` (RustCrypto) | Argon2id for key derivation from passphrase, AES-256-GCM for encryption |
-| HTTP server | `axum` | Tokio-native, composable middleware, TLS via `axum-server` + `rustls` |
-| HTTP client | `reqwest` (rustls) | Roster sync, cert renewal push, health HTTP checks |
-| Serialization | `serde` + `serde_json` | Roster, config, API payloads |
-| Terminal UI | `indicatif` | Progress bars for entropy collection |
-| Terminal input | `crossterm` | Raw keyboard input for entropy collection (cross-platform) |
-| TPM / Platform binding | `keyring` | Cross-platform credential store (Windows DPAPI, macOS Keychain, Linux keyutils). Machine-binds CA key material. |
-| Logging | `tracing` + `tracing-subscriber` | Structured logging. Audit log is separate (custom implementation). |
-| Color output | `owo-colors` or `colored` | Respect `NO_COLOR` env var |
-| IP/subnet | `ipnet` | CIDR parsing and containment checks for scope constraints |
-| Constant-time comparison | `subtle` (RustCrypto) | For auth verification — prevent timing attacks |
-| Memory zeroing | `zeroize` | Derive `Zeroize` + `ZeroizeOnDrop` on all key material structs |
-| Platform paths | `dirs` | Platform-appropriate config/data directories |
-| Error handling (lib) | `thiserror` | Typed error enums in library crates |
-| Error handling (bin) | `anyhow` | Contextual errors in CLI binary |
-| Async channels | `tokio::sync` | `mpsc` for enrollment approval flow, `watch` for state changes |
-| DNS server | `hickory-server` (formerly trust-dns-server) | Authoritative DNS for local zone |
-| DNS resolver | `hickory-resolver` (formerly trust-dns-resolver) | Upstream forwarding for non-local queries |
-| HTTP reverse proxy | `hyper` | Low-level HTTP client/server for proxy forwarding (axum is built on hyper) |
-| File watching | `notify` | Watch cert files for changes (hot-reload in proxy) |
+| Purpose                  | Crate                                            | Notes                                                                                                           |
+| ------------------------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| Async runtime            | `tokio`                                          | Multi-threaded runtime for all async operations                                                                 |
+| CLI framework            | `clap` (derive)                                  | Subcommand structure matches moniker model perfectly                                                            |
+| mDNS                     | `mdns-sd`                                        | Pure Rust mDNS/DNS-SD. Alternatively `zeroconf` for platform-native backends                                    |
+| X.509 / CA               | `rcgen` + `rustls`                               | `rcgen` for cert generation, `rustls` for TLS. Avoid OpenSSL dependency.                                        |
+| ECDSA                    | `p256` (from RustCrypto)                         | ECDSA P-256 key generation and signing                                                                          |
+| TOTP                     | `totp-rs`                                        | Standard TOTP/HOTP implementation                                                                               |
+| FIDO2                    | `p256` (RustCrypto)                              | ECDSA P-256 for FIDO2 key verification                                                                          |
+| QR code                  | `qrcode` + `image`                               | Generate QR code, render to terminal via Unicode blocks                                                         |
+| Encryption at rest       | `aes-gcm` + `argon2` (RustCrypto)                | Argon2id for key derivation from passphrase, AES-256-GCM for encryption                                         |
+| HTTP server              | `axum`                                           | Tokio-native, composable middleware, TLS via `axum-server` + `rustls`                                           |
+| HTTP client              | `reqwest` (rustls)                               | Roster sync, cert renewal push, health HTTP checks                                                              |
+| Serialization            | `serde` + `serde_json`                           | Roster, config, API payloads                                                                                    |
+| Terminal UI              | `indicatif`                                      | Progress bars for entropy collection                                                                            |
+| Terminal input           | `crossterm`                                      | Raw keyboard input for entropy collection (cross-platform)                                                      |
+| TPM / Platform binding   | `keyring`                                        | Cross-platform credential store (Windows DPAPI, macOS Keychain, Linux keyutils). Machine-binds CA key material. |
+| Logging                  | `tracing` + `tracing-subscriber`                 | Structured logging. Audit log is separate (custom implementation).                                              |
+| Color output             | `owo-colors` or `colored`                        | Respect `NO_COLOR` env var                                                                                      |
+| IP/subnet                | `ipnet`                                          | CIDR parsing and containment checks for scope constraints                                                       |
+| Constant-time comparison | `subtle` (RustCrypto)                            | For auth verification - prevent timing attacks                                                                  |
+| Memory zeroing           | `zeroize`                                        | Derive `Zeroize` + `ZeroizeOnDrop` on all key material structs                                                  |
+| Platform paths           | `dirs`                                           | Platform-appropriate config/data directories                                                                    |
+| Error handling (lib)     | `thiserror`                                      | Typed error enums in library crates                                                                             |
+| Error handling (bin)     | `anyhow`                                         | Contextual errors in CLI binary                                                                                 |
+| Async channels           | `tokio::sync`                                    | `mpsc` for enrollment approval flow, `watch` for state changes                                                  |
+| DNS server               | `hickory-server` (formerly trust-dns-server)     | Authoritative DNS for local zone                                                                                |
+| DNS resolver             | `hickory-resolver` (formerly trust-dns-resolver) | Upstream forwarding for non-local queries                                                                       |
+| HTTP reverse proxy       | `hyper`                                          | Low-level HTTP client/server for proxy forwarding (axum is built on hyper)                                      |
+| File watching            | `notify`                                         | Watch cert files for changes (hot-reload in proxy)                                                              |
 
 **Feature flags in workspace `Cargo.toml`:**
+
 ```toml
 [features]
 default = ["mdns", "certmesh", "dns", "health", "proxy"]
@@ -197,7 +198,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 **Goal:** Migrate the existing Koi mDNS codebase from its current flat structure into the capability moniker architecture. Zero behavioral changes. Every test that passed before must pass after.
 
-**Critical discipline:** Don't rewrite — relocate. Move first, refactor later. Inventory every CLI command, REST endpoint, and config path before moving anything. Nothing left behind.
+**Critical discipline:** Don't rewrite - relocate. Move first, refactor later. Inventory every CLI command, REST endpoint, and config path before moving anything. Nothing left behind.
 
 **Steps:**
 
@@ -213,7 +214,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - `koi discover` → `koi mdns discover`
    - `koi announce` → `koi mdns announce`
    - No backward-compatible aliases (greenfield, break-and-rebuild).
-   - Add `koi status` (unified dashboard — shows mDNS status for now)
+   - Add `koi status` (unified dashboard - shows mDNS status for now)
    - Add `koi version` (build info, git hash, feature flags)
    - Wire up `--json` flag on all commands (outputs JSON instead of human-readable)
 
@@ -236,15 +237,17 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 **Steps:**
 
 1. **Moniker framework.** Each capability registers with a trait:
+
    ```rust
    trait Capability {
        fn name(&self) -> &str;
        fn status(&self) -> CapabilityStatus;
    }
    ```
+
    `koi status` calls `.status()` on each registered capability and renders the unified dashboard.
 
-2. **`--json` everywhere.** Every command supports `--json` for machine-readable output. Human-readable is the default. JSON output is stable — breaking changes require version bumps.
+2. **`--json` everywhere.** Every command supports `--json` for machine-readable output. Human-readable is the default. JSON output is stable - breaking changes require version bumps.
 
 3. **mDNS enhancements.** Add features the later capabilities need:
    - Richer service metadata in TXT records (for certmesh to advertise CA info)
@@ -254,7 +257,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 4. **Config infrastructure.** Establish the machine-scoped data directory structure:
    ```
-/var/lib/koi/
+   /var/lib/koi/
      config.toml        # Global config
      certs/             # Certificate files (created by certmesh)
      state/             # Runtime state
@@ -268,7 +271,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 ### Phase 2: Certmesh Core (Local CA Mode)
 
-**Goal:** Implement the core certificate mesh — CA creation, authenticated enrollment, and cert file management.
+**Goal:** Implement the core certificate mesh - CA creation, authenticated enrollment, and cert file management.
 
 **Steps:**
 
@@ -299,10 +302,10 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - SAN auto-population from mDNS knowledge: hostname, FQDN, mDNS name, all LAN IPs
    - Sign service cert with root CA
    - Write cert files to standard path (`/var/lib/koi/certs/<hostname>/` on Linux, `%ProgramData%\koi\certs\<hostname>\` on Windows):
-     - `cert.pem` — service certificate
-     - `key.pem` — service private key
-     - `ca.pem` — root CA public certificate
-     - `fullchain.pem` — cert + CA concatenated
+     - `cert.pem` - service certificate
+     - `key.pem` - service private key
+     - `ca.pem` - root CA public certificate
+     - `fullchain.pem` - cert + CA concatenated
 
 6. **Trust store installation.** (koi-truststore/)
    - Platform detection
@@ -315,7 +318,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - Serialize/deserialize with serde
 
 8. **REST API for enrollment.** (koi-api/)
-   - `/v1/certmesh/join` — auth-verified enrollment endpoint
+   - `/v1/certmesh/join` - auth-verified enrollment endpoint
    - mDNS advertisement of `_certmesh._tcp`
    - CA discovery on join via mDNS
 
@@ -337,7 +340,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 **Steps:**
 
 1. **Promotion.** (koi-certmesh/failover.rs)
-   - `koi certmesh promote` — auth-verified CA key transfer
+   - `koi certmesh promote` - auth-verified CA key transfer
    - Encrypted transfer over the certmesh API
    - Standby receives full roster
    - Periodic roster sync (pull model with signed manifest)
@@ -356,7 +359,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - Execute reload hook if configured
 
 4. **Reload hooks.** (koi-certmesh/lifecycle.rs)
-   - `koi certmesh set-hook --reload "<command>"` — stored in roster
+   - `koi certmesh set-hook --reload "<command>"` - stored in roster
    - Execute after cert files are written
    - Log success/failure
    - Hook is per-machine
@@ -366,7 +369,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
    - Log failures as warnings
 
 6. **Unlock after reboot.**
-   - `koi certmesh unlock` — decrypt CA key with passphrase
+   - `koi certmesh unlock` - decrypt CA key with passphrase
    - CA cannot sign until unlocked
    - Clear UX: "CA is locked. Run `koi certmesh unlock` to resume signing."
 
@@ -391,10 +394,10 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 4. **Scope constraints.** Domain and subnet validation on cert issuance. Refuse and log requests outside scope.
 
-5. **Compliance summary.** `koi certmesh compliance` — adapts to trust profile. Simple health check for personal, full audit summary for organization.
+5. **Compliance summary.** `koi certmesh compliance` - adapts to trust profile. Simple health check for personal, full audit summary for organization.
    - **Plan to implement.**
 
-6. **Auth credential rotation.** `koi certmesh rotate-auth` — new credential, old invalidated, existing members unaffected.
+6. **Auth credential rotation.** `koi certmesh rotate-auth` - new credential, old invalidated, existing members unaffected.
    - **Plan to implement.**
 
 **Deliverable:** Full institutional workflow. Organization profile requires approval + operator + scope.
@@ -407,11 +410,11 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 **Steps:**
 
-1. **Backup.** `koi certmesh backup` — export CA key + auth credential + roster + audit log. Encrypted with user-provided passphrase. Scary confirmation prompt.
+1. **Backup.** `koi certmesh backup` - export CA key + auth credential + roster + audit log. Encrypted with user-provided passphrase. Scary confirmation prompt.
 
-2. **Restore.** `koi certmesh restore` — rebuild from backup. Prompt for backup passphrase, then new unlock passphrase.
+2. **Restore.** `koi certmesh restore` - rebuild from backup. Prompt for backup passphrase, then new unlock passphrase.
 
-3. **Revocation.** `koi certmesh revoke <host>` — add to revocation list, push with roster sync. Members check list on certmesh connections.
+3. **Revocation.** `koi certmesh revoke <host>` - add to revocation list, push with roster sync. Members check list on certmesh connections.
 
 4. **Platform credential binding.** (koi-crypto/tpm.rs) Uses `keyring` crate to seal CA key ciphertext in the OS credential store (Windows DPAPI, macOS Keychain, Linux keyutils). Graceful fallback to software-only if credential store is unavailable.
    - **Implemented.** Replaces original `tss-esapi` TPM stub.
@@ -473,7 +476,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 1. **Machine health.** (koi-health/machine.rs)
    - Synthesize from: mDNS last-seen, certmesh heartbeat, cert expiry, DNS resolution
-   - No new network traffic — purely consuming data other capabilities already produce
+   - No new network traffic - purely consuming data other capabilities already produce
    - Up/down threshold: configurable, default 60s since last seen
 
 2. **Service health.** (koi-health/service.rs)
@@ -490,9 +493,9 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 4. **State transition log.** (koi-health/log.rs)
    - Append-only flat file
    - Format: `timestamp | name | old_state → new_state | reason`
-   - Not a database — designed for human reading
+   - Not a database - designed for human reading
 
-5. **Live watch.** `koi health watch` — terminal UI that refreshes in place. Use `crossterm` for raw terminal control. Ctrl+C to exit cleanly.
+5. **Live watch.** `koi health watch` - terminal UI that refreshes in place. Use `crossterm` for raw terminal control. Ctrl+C to exit cleanly.
 
 **Deliverable:** `koi health status`, `koi health watch`, `koi health add/remove`, `koi health log`.
 
@@ -534,11 +537,12 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 ## Gap Closure Plan (Current Workspace)
 
-### Phase 3 — Failover Detection (Implemented)
+### Phase 3 - Failover Detection (Implemented)
 
 **Goal:** Trigger standby promotion based on `_certmesh._tcp` mDNS presence with the 60s grace + deterministic tiebreaker.
 
 **Tasks completed**
+
 1. Failover monitor loop added in the daemon near `spawn_certmesh_background_tasks`.
 2. `_certmesh._tcp` subscriptions track primary presence and TXT fingerprint match.
 3. Promotion gated by `should_promote()` and `tiebreaker_wins()`.
@@ -546,30 +550,34 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 5. Audit entries and structured logs emitted for state changes.
 
 **Acceptance**
+
 - Primary offline → standby promotes within 60s; primary return demotes to standby without conflict.
 
-### Phase 4 — Approval Workflow + Compliance (Planned)
+### Phase 4 - Approval Workflow + Compliance (Planned)
 
 **Goal:** Implement operator approval prompt and compliance summary output.
 
 **Status:** Enrollment windows exist, but approval prompts and compliance reporting are still missing.
 
 **Tasks**
+
 1. Add an approval channel between HTTP handler and a new CLI-side approval prompt task.
 2. Block enrollment until approval decision returns (approve/deny/timeout).
 3. Add a `koi certmesh compliance` command + `/v1/certmesh/compliance` endpoint.
 4. Build a policy summary from roster metadata + audit log counts.
 
 **Acceptance**
+
 - Organization profile requires approval + operator attribution; compliance output matches profile.
 
-### Phase 5 — Platform Credential Binding (Implemented)
+### Phase 5 - Platform Credential Binding (Implemented)
 
 **Goal:** Machine-bind CA key material so it can only be decrypted on the original host.
 
 **Status:** Implemented using `keyring` crate (replaces original `tss-esapi` TPM stub).
 
 **Design decisions**
+
 - `tss-esapi` was rejected: requires the `tpm2-tss` C library, Linux-only in practice, won't cross-compile to Windows.
 - `keyring` 3.x provides the same security goal via OS-native credential stores:
   - Windows: DPAPI (TPM-backed on modern hardware with vTPM/fTPM)
@@ -580,29 +588,32 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 - `certmesh destroy` cleans up sealed material.
 
 **Acceptance**
+
 - `encrypt_key()` seals ciphertext in platform credential store.
 - `decrypt_key()` warns on mismatch but proceeds (resilience over strictness).
 - `is_available()` probe detects whether the credential store is functional.
 - On unsupported environments (headless CI), graceful fallback to passphrase-only.
 
-### Phase 8 — Proxy Persistence + Remote Backend Warning (Implemented)
+### Phase 8 - Proxy Persistence + Remote Backend Warning (Implemented)
 
 **Goal:** Persist proxy entries in both config + roster, and warn on remote backends.
 
 **Tasks completed**
+
 1. Roster model includes per-host proxy entries.
 2. Add/remove writes through both config.toml and roster.
 3. Warning log emitted when `--backend-remote` is set (includes host).
 4. Health uses the proxy list to generate backend checks.
 
 **Acceptance**
+
 - Proxy entries survive restart and are visible via roster; remote backend use logs a warning.
 
 **Deliverable:** `koi proxy add grafana --listen 443 --backend http://localhost:3000` results in `https://grafana.lan` working in any browser on the network.
 
 **Test:** Start a plain HTTP server. Add proxy entry. Verify HTTPS access from another machine. Renew cert → verify proxy hot-reloads without dropping connections.
 
-### Phase 9 — Gap Closures (Implemented)
+### Phase 9 - Gap Closures (Implemented)
 
 **Closed in this pass (Feb 2026):**
 
@@ -612,9 +623,9 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 3. **Platform credential binding (keyring).** See Phase 5 above.
 
-4. **Hostname bug fix.** `JoinRequest` now carries the joining machine's `hostname` (+ optional extra `sans`). Previously, `enroll()` called `hostname::get()` which returned the CA server's hostname — issuing certs with the wrong subject. The client-side `koi certmesh join` now sends the local hostname.
+4. **Hostname bug fix.** `JoinRequest` now carries the joining machine's `hostname` (+ optional extra `sans`). Previously, `enroll()` called `hostname::get()` which returned the CA server's hostname - issuing certs with the wrong subject. The client-side `koi certmesh join` now sends the local hostname.
 
-5. **Dead code removal.** Deleted `CertmeshCore::create_ca()` — a never-called duplicate of `create_handler` that was missing self-enrollment, policy overrides, and in-memory state updates.
+5. **Dead code removal.** Deleted `CertmeshCore::create_ca()` - a never-called duplicate of `create_handler` that was missing self-enrollment, policy overrides, and in-memory state updates.
 
 ---
 
@@ -631,7 +642,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 - All key material structs derive `Zeroize` + `ZeroizeOnDrop`.
 - Auth comparison uses `subtle::ConstantTimeEq`.
-- No logging of auth secrets, private keys, or passphrases — even at trace level.
+- No logging of auth secrets, private keys, or passphrases - even at trace level.
 - Cert files written with restrictive permissions (0600 on Unix).
 - CA private key encrypted at rest, always. No "skip encryption for development" mode.
 
@@ -662,7 +673,7 @@ Build in this order. Each phase produces a working, testable binary. Do not star
 
 Preserved from architecture review for future reference:
 
-**Container port forwarding.** Rejected. Docker bridge NAT, WSL2, Podman rootless, Kubernetes CNI — each different, each changing. The real pain is solved by DNS naming + proxy TLS termination.
+**Container port forwarding.** Rejected. Docker bridge NAT, WSL2, Podman rootless, Kubernetes CNI - each different, each changing. The real pain is solved by DNS naming + proxy TLS termination.
 
 **General-purpose monitoring.** Health is present tense only. No time-series, no graphs, no alerting. Use Prometheus/Grafana for that.
 
@@ -670,7 +681,7 @@ Preserved from architecture review for future reference:
 
 **General-purpose reverse proxy.** No URL rewriting, no load balancing, no WAF. Koi Proxy is a cert-aware TLS pipe, nothing more.
 
-**Let's Encrypt Bridge Mode.** Specified in the design doc but intentionally deferred. Build Local CA Mode first, validate the architecture, then add ACME integration as a separate phase. The enrollment, failover, and lifecycle infrastructure is the same — only the cert source differs.
+**Let's Encrypt Bridge Mode.** Specified in the design doc but intentionally deferred. Build Local CA Mode first, validate the architecture, then add ACME integration as a separate phase. The enrollment, failover, and lifecycle infrastructure is the same - only the cert source differs.
 
 ---
 

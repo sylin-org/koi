@@ -1,4 +1,4 @@
-# Koi v0.2 — Leases & Admin
+# Koi v0.2 - Leases & Admin
 
 **Depends on:** v0.1 codebase (commit 9712692)
 **Scope:** Registration lifecycle, admin introspection, dual-mode binary
@@ -8,11 +8,11 @@
 
 ## What this solves
 
-**Ghost services.** v0.1 registrations are permanent. A process crashes, its service stays advertised on the network. With multiple Moss stones, ghosts accumulate fast. Leases make registrations mortal — the registrant must prove it's alive, or Koi reclaims the registration and sends goodbye packets.
+**Ghost services.** v0.1 registrations are permanent. A process crashes, its service stays advertised on the network. With multiple Moss stones, ghosts accumulate fast. Leases make registrations mortal - the registrant must prove it's alive, or Koi reclaims the registration and sends goodbye packets.
 
 **Blind operator.** No way to inspect the running daemon. Admin commands talk to the daemon over its own HTTP API: what's registered, what's draining, what happened and why.
 
-These intersect — the admin needs to see and manage lease state. One feature, not two.
+These intersect - the admin needs to see and manage lease state. One feature, not two.
 
 ---
 
@@ -22,22 +22,22 @@ These intersect — the admin needs to see and manage lease state. One feature, 
 
 Every registration has a lease mode that determines how it proves liveness.
 
-| Mode | Mechanism | Default for |
-|---|---|---|
-| **Session** | Connection open = alive. Drop = grace starts. | Pipe, UDS, CLI stdin |
-| **Heartbeat** | Client sends periodic PUT. Miss = grace starts. | HTTP API |
-| **Permanent** | Lives until explicit removal or shutdown. | `"lease": 0` from any transport |
+| Mode          | Mechanism                                       | Default for                     |
+| ------------- | ----------------------------------------------- | ------------------------------- |
+| **Session**   | Connection open = alive. Drop = grace starts.   | Pipe, UDS, CLI stdin            |
+| **Heartbeat** | Client sends periodic PUT. Miss = grace starts. | HTTP API                        |
+| **Permanent** | Lives until explicit removal or shutdown.       | `"lease": 0` from any transport |
 
 The **adapter picks the default**. This is the central design principle: pipe connections are inherently session-bound (the OS tells you when they drop), HTTP is stateless (heartbeats are the only liveness signal), and permanent is an explicit opt-in. The client can override with `"lease": N` in the register payload.
 
 ### Adapter defaults
 
-| Transport | Mode | Lease | Grace | Why |
-|---|---|---|---|---|
-| Pipe / UDS | session | — | 30s | Connection drop = instant signal. OS does the heartbeat. |
-| CLI stdin | session | — | 5s | stdin close = process died. Short grace — user action is explicit. |
-| HTTP POST | heartbeat | 90s | 30s | Stateless. No connection to monitor. |
-| Any, `"lease": 0` | permanent | ∞ | — | Explicit opt-in. Lives until DELETE or shutdown. |
+| Transport         | Mode      | Lease | Grace | Why                                                                |
+| ----------------- | --------- | ----- | ----- | ------------------------------------------------------------------ |
+| Pipe / UDS        | session   | -     | 30s   | Connection drop = instant signal. OS does the heartbeat.           |
+| CLI stdin         | session   | -     | 5s    | stdin close = process died. Short grace - user action is explicit. |
+| HTTP POST         | heartbeat | 90s   | 30s   | Stateless. No connection to monitor.                               |
+| Any, `"lease": 0` | permanent | ∞     | -     | Explicit opt-in. Lives until DELETE or shutdown.                   |
 
 ### Registration lifecycle
 
@@ -66,13 +66,13 @@ The **adapter picks the default**. This is the central design principle: pipe co
     └──────────┘
 ```
 
-**ALIVE** — Healthy. Heartbeats arriving or connection open. Advertised on network.
+**ALIVE** - Healthy. Heartbeats arriving or connection open. Advertised on network.
 
-**DRAINING** — Liveness signal lost. Grace timer running. If the registrant comes back within grace, returns to ALIVE with no network-visible interruption. This absorbs container restarts, rolling deploys, and transient disconnects.
+**DRAINING** - Liveness signal lost. Grace timer running. If the registrant comes back within grace, returns to ALIVE with no network-visible interruption. This absorbs container restarts, rolling deploys, and transient disconnects.
 
-**EXPIRED** — Grace elapsed. Reaper sends goodbye packets, removes from registry. Terminal.
+**EXPIRED** - Grace elapsed. Reaper sends goodbye packets, removes from registry. Terminal.
 
-**REMOVED** — Explicit unregister or admin force-remove. Goodbye sent immediately. Terminal.
+**REMOVED** - Explicit unregister or admin force-remove. Goodbye sent immediately. Terminal.
 
 Permanent registrations stay ALIVE until explicit removal or shutdown. The reaper ignores them.
 
@@ -80,12 +80,12 @@ Permanent registrations stay ALIVE until explicit removal or shutdown. The reape
 
 When a new registration arrives and a **DRAINING** entry matches by name + service type:
 
-1. The existing entry is **revived** — state → ALIVE, `last_seen` reset
+1. The existing entry is **revived** - state → ALIVE, `last_seen` reset
 2. The **new session** takes ownership
-3. The **new payload** wins — if port or TXT changed, Koi updates the mdns-sd daemon (unregister old, re-register new; same registry ID)
+3. The **new payload** wins - if port or TXT changed, Koi updates the mdns-sd daemon (unregister old, re-register new; same registry ID)
 4. The **old registration ID** is returned to the caller
 
-This prevents duplicate mDNS entries during container restarts within the grace period. The network sees continuity — the advertisement was never withdrawn.
+This prevents duplicate mDNS entries during container restarts within the grace period. The network sees continuity - the advertisement was never withdrawn.
 
 If the existing entry is ALIVE (not draining) and belongs to a different session, both registrations proceed independently. The mdns-sd daemon resolves the name conflict per RFC 6762 §9.
 
@@ -94,6 +94,7 @@ If the existing entry is ALIVE (not draining) and belongs to a different session
 A background task, spawned at `MdnsCore` construction. Ticks every 5 seconds.
 
 Each tick, single-pass sweep:
+
 1. Heartbeat entries past lease deadline → transition to DRAINING (grace starts now)
 2. Draining entries past grace deadline → collect for removal
 3. For each collected entry → send goodbye via daemon, remove from registry
@@ -106,13 +107,13 @@ The 5-second tick is appropriate: mDNS TTLs are 120s, so the reaper's granularit
 
 Every path that removes a registration logs a structured `reason` field:
 
-| Reason | Trigger |
-|---|---|
-| `explicit` | Client called unregister |
-| `session_expired` | Session grace elapsed |
-| `heartbeat_expired` | Heartbeat grace elapsed |
-| `admin_force` | Admin force-unregister |
-| `shutdown` | Daemon shutting down |
+| Reason              | Trigger                  |
+| ------------------- | ------------------------ |
+| `explicit`          | Client called unregister |
+| `session_expired`   | Session grace elapsed    |
+| `heartbeat_expired` | Heartbeat grace elapsed  |
+| `admin_force`       | Admin force-unregister   |
+| `shutdown`          | Daemon shutting down     |
 
 ```
 INFO  Service unregistered: name="stone-coral" id="d4e5f6a7" reason=session_expired session=pipe:a3c1
@@ -124,7 +125,7 @@ Trivial to add during implementation. Invaluable for "why did that service disap
 
 ## Architecture
 
-v0.2 extends v0.1's layered architecture. No new layers — the existing boundaries hold. The registry becomes a lifecycle engine, adapters gain session awareness, and two new application-layer modules handle client-mode commands and admin operations.
+v0.2 extends v0.1's layered architecture. No new layers - the existing boundaries hold. The registry becomes a lifecycle engine, adapters gain session awareness, and two new application-layer modules handle client-mode commands and admin operations.
 
 ```
 src/
@@ -162,15 +163,15 @@ src/
 
 ### What changes per layer
 
-| Layer | Changes |
-|---|---|
-| **Domain** | Registry rewrite (lifecycle engine). MdnsCore gains `register_with_policy()`, `heartbeat()`, `session_disconnected()`, admin queries. Reaper task spawned at construction. ID generation moves from daemon to core. |
-| **Protocol** | `LeaseMode` enum. `lease` field on RegisterPayload and RegistrationResult. `AdminRegistration` struct. `Heartbeat` request variant. `Renewed` response variant. Error codes extracted to `error.rs`. |
-| **Adapters** | HTTP: heartbeat endpoint, 6 admin endpoints, policy-based register. Pipe/CLI: session IDs, `session_disconnected()` on connection close, heartbeat handling. |
-| **Application** | `commands.rs` splits into `commands/standalone.rs` + `commands/client.rs`. New `admin.rs` for admin command handlers. |
-| **Infrastructure** | New `client.rs` (KoiClient via ureq). Breadcrumb file management in `main.rs`. |
+| Layer              | Changes                                                                                                                                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Domain**         | Registry rewrite (lifecycle engine). MdnsCore gains `register_with_policy()`, `heartbeat()`, `session_disconnected()`, admin queries. Reaper task spawned at construction. ID generation moves from daemon to core. |
+| **Protocol**       | `LeaseMode` enum. `lease` field on RegisterPayload and RegistrationResult. `AdminRegistration` struct. `Heartbeat` request variant. `Renewed` response variant. Error codes extracted to `error.rs`.                |
+| **Adapters**       | HTTP: heartbeat endpoint, 6 admin endpoints, policy-based register. Pipe/CLI: session IDs, `session_disconnected()` on connection close, heartbeat handling.                                                        |
+| **Application**    | `commands.rs` splits into `commands/standalone.rs` + `commands/client.rs`. New `admin.rs` for admin command handlers.                                                                                               |
+| **Infrastructure** | New `client.rs` (KoiClient via ureq). Breadcrumb file management in `main.rs`.                                                                                                                                      |
 
-**Unchanged:** `daemon.rs` (doesn't know about leases — it registers and unregisters), `events.rs` (network observations, orthogonal to registration lifecycle), `platform/`.
+**Unchanged:** `daemon.rs` (doesn't know about leases - it registers and unregisters), `events.rs` (network observations, orthogonal to registration lifecycle), `platform/`.
 
 ### Dependency changes
 
@@ -184,7 +185,7 @@ tokio-util = { version = "0.7", features = ["rt"] }  # CancellationToken for shu
 
 ## Registry rewrite
 
-`src/core/registry.rs` — from simple `Mutex<HashMap<String, RegisterPayload>>` to lifecycle engine. This is the heart of v0.2.
+`src/core/registry.rs` - from simple `Mutex<HashMap<String, RegisterPayload>>` to lifecycle engine. This is the heart of v0.2.
 
 ### Types
 
@@ -293,13 +294,13 @@ pub fn reap(&self) -> Vec<(String, RegisterPayload)> {
 
     registrations.retain(|id, reg| {
         match (&reg.state, &reg.policy) {
-            // Permanent — never expires
+            // Permanent - never expires
             (_, LeasePolicy::Permanent) => true,
 
-            // Session, alive — connection still open
+            // Session, alive - connection still open
             (RegistrationState::Alive, LeasePolicy::Session { .. }) => true,
 
-            // Draining — check grace (both session and heartbeat)
+            // Draining - check grace (both session and heartbeat)
             (RegistrationState::Draining { since }, LeasePolicy::Session { grace })
             | (RegistrationState::Draining { since }, LeasePolicy::Heartbeat { grace, .. }) => {
                 if now.duration_since(*since) >= *grace {
@@ -310,7 +311,7 @@ pub fn reap(&self) -> Vec<(String, RegisterPayload)> {
                 }
             }
 
-            // Heartbeat, alive — check if lease expired
+            // Heartbeat, alive - check if lease expired
             (RegistrationState::Alive, LeasePolicy::Heartbeat { lease, .. }) => {
                 if now.duration_since(reg.last_seen) >= *lease {
                     // Transition to draining; grace starts now
@@ -328,11 +329,12 @@ pub fn reap(&self) -> Vec<(String, RegisterPayload)> {
 ### `insert_or_reconnect` logic
 
 Under the lock:
+
 1. Scan for a DRAINING entry matching `payload.name` + `payload.service_type`
 2. If found: revive it (state → Alive, update payload/session/policy/last_seen), return `Reconnected` with the old payload
 3. If not found: insert new entry under `new_id`, return `New`
 
-The old payload is returned so the caller (MdnsCore) can decide whether to update the mdns-sd daemon — only needed if port or TXT changed.
+The old payload is returned so the caller (MdnsCore) can decide whether to update the mdns-sd daemon - only needed if port or TXT changed.
 
 ### `remaining_secs` computation (for admin snapshots)
 
@@ -370,23 +372,23 @@ pub struct MdnsCore {
 
 ### New methods
 
-| Method | Purpose |
-|---|---|
-| `register_with_policy(payload, policy, session_id)` | The single registration entry point. Every adapter calls this — no convenience wrapper. |
-| `heartbeat(id)` | Delegates to registry |
-| `session_disconnected(session_id)` | Drains all registrations for a session |
-| `admin_status()` | Version, uptime, registration counts |
-| `admin_registrations()` | Snapshot all |
-| `admin_inspect(id)` | Snapshot one (prefix match via registry) |
-| `admin_force_unregister(id)` | Remove + goodbye |
-| `admin_drain(id)` | Force-drain |
-| `admin_revive(id)` | Force-revive |
+| Method                                              | Purpose                                                                                 |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `register_with_policy(payload, policy, session_id)` | The single registration entry point. Every adapter calls this - no convenience wrapper. |
+| `heartbeat(id)`                                     | Delegates to registry                                                                   |
+| `session_disconnected(session_id)`                  | Drains all registrations for a session                                                  |
+| `admin_status()`                                    | Version, uptime, registration counts                                                    |
+| `admin_registrations()`                             | Snapshot all                                                                            |
+| `admin_inspect(id)`                                 | Snapshot one (prefix match via registry)                                                |
+| `admin_force_unregister(id)`                        | Remove + goodbye                                                                        |
+| `admin_drain(id)`                                   | Force-drain                                                                             |
+| `admin_revive(id)`                                  | Force-revive                                                                            |
 
 ### ID generation moves from daemon to core
 
-`daemon.register()` changes from `Result<String>` to `Result<()>`. It registers with mdns-sd and returns success/failure. The registration ID is a core concern — generated as the first 8 hex characters of a UUID v4 (`&Uuid::new_v4().to_string()[..8]`). No new dependency; `uuid` is already in Cargo.toml.
+`daemon.register()` changes from `Result<String>` to `Result<()>`. It registers with mdns-sd and returns success/failure. The registration ID is a core concern - generated as the first 8 hex characters of a UUID v4 (`&Uuid::new_v4().to_string()[..8]`). No new dependency; `uuid` is already in Cargo.toml.
 
-The daemon layer stays pure infrastructure — it doesn't know about IDs, leases, or lifecycle.
+The daemon layer stays pure infrastructure - it doesn't know about IDs, leases, or lifecycle.
 
 ### register_with_policy flow
 
@@ -472,7 +474,7 @@ koi browse/register   → Use daemon if available, else standalone
 koi admin ...         → Always talks to the daemon. Fails if none running.
 ```
 
-### Mode detection — breadcrumb first
+### Mode detection - breadcrumb first
 
 ```rust
 enum ExecutionMode {
@@ -499,14 +501,18 @@ Written on daemon startup, deleted on clean shutdown.
 - Linux: `/var/run/koi/daemon.json`
 
 ```json
-{"endpoint": "http://0.0.0.0:5641", "pid": 4821, "started_at": "2026-02-07T20:00:00Z"}
+{
+  "endpoint": "http://0.0.0.0:5641",
+  "pid": 4821,
+  "started_at": "2026-02-07T20:00:00Z"
+}
 ```
 
 ~15 lines. Stale files (dead PID) are detected and cleaned up during mode detection.
 
 ### KoiClient
 
-New module: `src/client.rs`. Pure infrastructure — HTTP calls only, no interactive behavior.
+New module: `src/client.rs`. Pure infrastructure - HTTP calls only, no interactive behavior.
 
 Uses `ureq` 3.x: blocking, no TLS needed (localhost), doesn't pull in tokio for the client path. The daemon path still uses tokio + axum. Clean separation.
 
@@ -519,22 +525,22 @@ pub struct KoiClient {
 
 Methods mirror the HTTP API surface:
 
-| Method | HTTP call |
-|---|---|
-| `health()` | GET /healthz (200ms timeout) |
-| `register(payload)` | POST /v1/mdns/services |
-| `unregister(id)` | DELETE /v1/mdns/services/{id} |
-| `heartbeat(id)` | PUT /v1/mdns/services/{id}/heartbeat |
-| `resolve(instance)` | GET /v1/mdns/resolve?name=... |
-| `browse_stream(type)` | GET /v1/mdns/browse?type=... (SSE) |
-| `admin_status()` | GET /v1/mdns/admin/status |
-| `admin_registrations()` | GET /v1/mdns/admin/registrations |
-| `admin_inspect(id)` | GET /v1/mdns/admin/registrations/{id} |
-| `admin_force_unregister(id)` | DELETE /v1/mdns/admin/registrations/{id} |
-| `admin_drain(id)` | POST /v1/mdns/admin/registrations/{id}/drain |
-| `admin_revive(id)` | POST /v1/mdns/admin/registrations/{id}/revive |
+| Method                       | HTTP call                                     |
+| ---------------------------- | --------------------------------------------- |
+| `health()`                   | GET /healthz (200ms timeout)                  |
+| `register(payload)`          | POST /v1/mdns/services                        |
+| `unregister(id)`             | DELETE /v1/mdns/services/{id}                 |
+| `heartbeat(id)`              | PUT /v1/mdns/services/{id}/heartbeat          |
+| `resolve(instance)`          | GET /v1/mdns/resolve?name=...                 |
+| `browse_stream(type)`        | GET /v1/mdns/browse?type=... (SSE)            |
+| `admin_status()`             | GET /v1/mdns/admin/status                     |
+| `admin_registrations()`      | GET /v1/mdns/admin/registrations              |
+| `admin_inspect(id)`          | GET /v1/mdns/admin/registrations/{id}         |
+| `admin_force_unregister(id)` | DELETE /v1/mdns/admin/registrations/{id}      |
+| `admin_drain(id)`            | POST /v1/mdns/admin/registrations/{id}/drain  |
+| `admin_revive(id)`           | POST /v1/mdns/admin/registrations/{id}/revive |
 
-SSE parsing: line-by-line BufReader, strip `data: ` prefix, parse JSON. Koi-specific — handles only our single-line data format.
+SSE parsing: line-by-line BufReader, strip `data: ` prefix, parse JSON. Koi-specific - handles only our single-line data format.
 
 ### Client-mode register
 
@@ -548,14 +554,14 @@ POST → heartbeat loop → Ctrl+C → DELETE:
 5. Exit
 ```
 
-The heartbeat thread stops on 404 (registration gone — admin force-removed, or daemon restarted). Prints a message and exits. Re-registration on daemon restart is out of scope for v0.2 — the client should be restarted.
+The heartbeat thread stops on 404 (registration gone - admin force-removed, or daemon restarted). Prints a message and exits. Re-registration on daemon restart is out of scope for v0.2 - the client should be restarted.
 
 ### CLI flags
 
-| Flag | Env | Default | Purpose |
-|---|---|---|---|
-| `--endpoint` | `KOI_ENDPOINT` | from breadcrumb | Daemon endpoint for client/admin mode |
-| `--standalone` | — | off | Force standalone (skip daemon detection) |
+| Flag           | Env            | Default         | Purpose                                  |
+| -------------- | -------------- | --------------- | ---------------------------------------- |
+| `--endpoint`   | `KOI_ENDPOINT` | from breadcrumb | Daemon endpoint for client/admin mode    |
+| `--standalone` | -              | off             | Force standalone (skip daemon detection) |
 
 ---
 
@@ -574,7 +580,7 @@ Start it with: koi --daemon
 **`koi admin status`**
 
 ```
-Koi v0.2.0 — running (pid 4821)
+Koi v0.2.0 - running (pid 4821)
 Uptime:        2h 14m
 HTTP:          0.0.0.0:5641
 IPC:           \\.\pipe\koi
@@ -586,13 +592,13 @@ Registrations: 3 alive, 1 draining, 0 permanent
 
 ```
 ID        NAME                    TYPE           PORT  MODE       STATE     REMAINING
-a1b2c3d4  stone-golden-summit     _moss._tcp     7185  session    alive     —
+a1b2c3d4  stone-golden-summit     _moss._tcp     7185  session    alive     -
 d4e5f6a7  stone-coral-prairie     _moss._tcp     7185  session    draining  18s
 g7h8i9b0  my-web-app              _http._tcp     8080  heartbeat  alive     72s
-j0k1l2c3  permanent-service       _http._tcp     9090  permanent  alive     —
+j0k1l2c3  permanent-service       _http._tcp     9090  permanent  alive     -
 ```
 
-**`koi admin inspect <id>`** — Detailed view. Supports prefix matching (the git pattern: `koi admin inspect a1b` works if unambiguous).
+**`koi admin inspect <id>`** - Detailed view. Supports prefix matching (the git pattern: `koi admin inspect a1b` works if unambiguous).
 
 ```
 Registration a1b2c3d4
@@ -610,27 +616,27 @@ Registration a1b2c3d4
     mac = 00:80:64:C7:66:51
 ```
 
-**`koi admin unregister <id>`** — Force-remove. Sends goodbye immediately regardless of state.
+**`koi admin unregister <id>`** - Force-remove. Sends goodbye immediately regardless of state.
 
-**`koi admin drain <id>`** — Force into DRAINING. Starts grace timer.
+**`koi admin drain <id>`** - Force into DRAINING. Starts grace timer.
 
-**`koi admin revive <id>`** — Cancel a drain. Back to ALIVE.
+**`koi admin revive <id>`** - Cancel a drain. Back to ALIVE.
 
 All admin commands support `--json` for machine-readable output.
 
 ### HTTP endpoints
 
-| Method | Path | Description |
-|---|---|---|
-| `PUT` | `/v1/mdns/services/{id}/heartbeat` | Renew lease |
-| `GET` | `/v1/mdns/admin/status` | Daemon overview |
-| `GET` | `/v1/mdns/admin/registrations` | List all with lease state |
-| `GET` | `/v1/mdns/admin/registrations/{id}` | Inspect (prefix match) |
-| `DELETE` | `/v1/mdns/admin/registrations/{id}` | Force-unregister |
-| `POST` | `/v1/mdns/admin/registrations/{id}/drain` | Force-drain |
-| `POST` | `/v1/mdns/admin/registrations/{id}/revive` | Revive |
+| Method   | Path                                       | Description               |
+| -------- | ------------------------------------------ | ------------------------- |
+| `PUT`    | `/v1/mdns/services/{id}/heartbeat`         | Renew lease               |
+| `GET`    | `/v1/mdns/admin/status`                    | Daemon overview           |
+| `GET`    | `/v1/mdns/admin/registrations`             | List all with lease state |
+| `GET`    | `/v1/mdns/admin/registrations/{id}`        | Inspect (prefix match)    |
+| `DELETE` | `/v1/mdns/admin/registrations/{id}`        | Force-unregister          |
+| `POST`   | `/v1/mdns/admin/registrations/{id}/drain`  | Force-drain               |
+| `POST`   | `/v1/mdns/admin/registrations/{id}/revive` | Revive                    |
 
-The `/v1/mdns/admin/` namespace is a boundary — future auth/ACL can gate it separately from `/v1/mdns/services/`.
+The `/v1/mdns/admin/` namespace is a boundary - future auth/ACL can gate it separately from `/v1/mdns/services/`.
 
 ### Config
 
@@ -661,27 +667,43 @@ pub enum AdminCommand {
 
 ## Wire protocol delta
 
-### Register request — new optional field
+### Register request - new optional field
 
 ```json
-{"register": {"name": "App", "type": "_http._tcp", "port": 8080, "lease": 120}}
+{
+  "register": {
+    "name": "App",
+    "type": "_http._tcp",
+    "port": 8080,
+    "lease": 120
+  }
+}
 ```
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
+| Field   | Type              | Default         | Meaning                                             |
+| ------- | ----------------- | --------------- | --------------------------------------------------- |
 | `lease` | integer, optional | adapter decides | Seconds. `0` = permanent. Absent = adapter default. |
 
 Backward compatible: v0.1 payloads without `lease` work unchanged.
 
-### Register response — new fields
+### Register response - new fields
 
 ```json
-{"registered": {"id": "a1b2c3d4", "name": "App", "type": "_http._tcp", "port": 8080, "lease": 90, "mode": "heartbeat"}}
+{
+  "registered": {
+    "id": "a1b2c3d4",
+    "name": "App",
+    "type": "_http._tcp",
+    "port": 8080,
+    "lease": 90,
+    "mode": "heartbeat"
+  }
+}
 ```
 
 New: `lease` (effective duration; 0 for session/permanent) and `mode` (`"session"` | `"heartbeat"` | `"permanent"`).
 
-### Heartbeat — new verb
+### Heartbeat - new verb
 
 ```json
 → {"heartbeat": "a1b2c3d4"}
@@ -689,6 +711,7 @@ New: `lease` (effective duration; 0 for session/permanent) and `mode` (`"session
 ```
 
 HTTP: `PUT /v1/mdns/services/{id}/heartbeat`
+
 - 200 → lease renewed, keep going
 - 404 → registration gone, stop heartbeating
 
@@ -697,18 +720,32 @@ HTTP: `PUT /v1/mdns/services/{id}/heartbeat`
 **Status:**
 
 ```json
-{"version": "0.2.0", "uptime_secs": 8040, "platform": "windows",
- "registrations": {"alive": 3, "draining": 1, "permanent": 0, "total": 4}}
+{
+  "version": "0.2.0",
+  "uptime_secs": 8040,
+  "platform": "windows",
+  "registrations": { "alive": 3, "draining": 1, "permanent": 0, "total": 4 }
+}
 ```
 
 **Admin registration:**
 
 ```json
-{"id": "a1b2c3d4", "name": "stone-golden-summit", "type": "_moss._tcp", "port": 7185,
- "mode": "session", "state": "alive", "lease_secs": null, "remaining_secs": null,
- "grace_secs": 30, "session_id": "pipe:f7e2",
- "registered_at": "2026-02-07T22:15:00Z", "last_seen": "2026-02-07T22:15:00Z",
- "txt": {"stone_id": "0ca30580-..."}}
+{
+  "id": "a1b2c3d4",
+  "name": "stone-golden-summit",
+  "type": "_moss._tcp",
+  "port": 7185,
+  "mode": "session",
+  "state": "alive",
+  "lease_secs": null,
+  "remaining_secs": null,
+  "grace_secs": 30,
+  "session_id": "pipe:f7e2",
+  "registered_at": "2026-02-07T22:15:00Z",
+  "last_seen": "2026-02-07T22:15:00Z",
+  "txt": { "stone_id": "0ca30580-..." }
+}
 ```
 
 ### Error format
@@ -717,15 +754,15 @@ Unchanged from v0.1: `{"error": "code", "message": "human text"}`.
 
 New error codes for v0.2:
 
-| Code | HTTP | When |
-|---|---|---|
-| `already_draining` | 409 | Admin drain on already-draining entry |
-| `not_draining` | 409 | Admin revive on non-draining entry |
-| `ambiguous_id` | 400 | ID prefix matches multiple registrations |
+| Code               | HTTP | When                                     |
+| ------------------ | ---- | ---------------------------------------- |
+| `already_draining` | 409  | Admin drain on already-draining entry    |
+| `not_draining`     | 409  | Admin revive on non-draining entry       |
+| `ambiguous_id`     | 400  | ID prefix matches multiple registrations |
 
 Existing codes unchanged: `invalid_type` (400), `not_found` (404), `resolve_timeout` (504), `daemon_error` (500), `io_error` (500).
 
-All error code strings and their HTTP status mappings move to `protocol/error.rs` — one source of truth, shared by all adapters. Define once before adding 6 admin endpoints, not after.
+All error code strings and their HTTP status mappings move to `protocol/error.rs` - one source of truth, shared by all adapters. Define once before adding 6 admin endpoints, not after.
 
 ### Protocol types
 
@@ -808,7 +845,7 @@ New routes:
 .route("/v1/admin/registrations/{id}/revive", post(admin_revive_handler))
 ```
 
-Admin handlers are thin wrappers — each is ~5 lines: extract params → call core → serialize.
+Admin handlers are thin wrappers - each is ~5 lines: extract params → call core → serialize.
 
 ### Pipe (`adapters/pipe.rs`)
 
@@ -841,7 +878,7 @@ Handle `Request::Heartbeat` in the request match.
 
 ### CLI (`adapters/cli.rs`)
 
-Same pattern as pipe. Session ID with `cli:` prefix. Shorter grace (5s — stdin close is an explicit user action).
+Same pattern as pipe. Session ID with `cli:` prefix. Shorter grace (5s - stdin close is an explicit user action).
 
 ---
 
@@ -849,9 +886,9 @@ Same pattern as pipe. Session ID with `cli:` prefix. Shorter grace (5s — stdin
 
 Upgrade from v0.1's abort-based shutdown to ordered shutdown with `CancellationToken`:
 
-1. **Cancel token** — stops reaper, signals HTTP server to stop accepting
-2. **Drain in-flight** — 500ms for requests to complete
-3. **Send goodbyes** — iterate ALL active registrations, call `daemon.unregister()` for each. Use a loop with error logging, not `try_for_each` — a partial goodbye is better than none.
+1. **Cancel token** - stops reaper, signals HTTP server to stop accepting
+2. **Drain in-flight** - 500ms for requests to complete
+3. **Send goodbyes** - iterate ALL active registrations, call `daemon.unregister()` for each. Use a loop with error logging, not `try_for_each` - a partial goodbye is better than none.
 4. **Delete breadcrumb file**
 5. **Shutdown mdns-sd daemon**
 
@@ -863,7 +900,7 @@ tokio::time::timeout(Duration::from_secs(20), shutdown_sequence).await;
 
 If the timeout fires, log a warning and exit. The OS cleans up sockets.
 
-v0.1's `BrowseHandle` Drop-based cleanup is already implemented — browse handles call `stop_browse` when dropped. This carries forward unchanged.
+v0.1's `BrowseHandle` Drop-based cleanup is already implemented - browse handles call `stop_browse` when dropped. This carries forward unchanged.
 
 ---
 
@@ -871,16 +908,16 @@ v0.1's `BrowseHandle` Drop-based cleanup is already implemented — browse handl
 
 Build in this sequence. Each step is independently testable.
 
-1. **Protocol layer** — `LeaseMode`, `lease` fields on RegisterPayload/RegistrationResult, `AdminRegistration`, `DaemonStatus`, `Heartbeat` request, `Renewed` response, `error.rs`
-2. **Registry rewrite** — Full lifecycle engine with unit tests (50ms+ durations, real `thread::sleep`, 2–3x margins)
-3. **Core** — `register_with_policy`, heartbeat, session lifecycle, reaper task, admin queries, `Arc<Registry>`, ID generation moved from daemon. `daemon.register()` → `Result<()>`
-4. **HTTP adapter** — Heartbeat endpoint, admin routes, policy-based register
-5. **Pipe/CLI adapters** — Session IDs, `session_disconnected`, heartbeat handling
-6. **KoiClient** — `src/client.rs` with ureq
-7. **Commands split** — `commands/standalone.rs` (existing logic) + `commands/client.rs` (new client-mode handlers)
-8. **Admin handlers** — `src/admin.rs`
-9. **Config + main** — `AdminCommand` subcommand group, `--endpoint`, `--standalone`, `detect_mode()`, breadcrumb file write/delete
-10. **Shutdown** — `CancellationToken`, ordered goodbye sequence, breadcrumb cleanup
+1. **Protocol layer** - `LeaseMode`, `lease` fields on RegisterPayload/RegistrationResult, `AdminRegistration`, `DaemonStatus`, `Heartbeat` request, `Renewed` response, `error.rs`
+2. **Registry rewrite** - Full lifecycle engine with unit tests (50ms+ durations, real `thread::sleep`, 2–3x margins)
+3. **Core** - `register_with_policy`, heartbeat, session lifecycle, reaper task, admin queries, `Arc<Registry>`, ID generation moved from daemon. `daemon.register()` → `Result<()>`
+4. **HTTP adapter** - Heartbeat endpoint, admin routes, policy-based register
+5. **Pipe/CLI adapters** - Session IDs, `session_disconnected`, heartbeat handling
+6. **KoiClient** - `src/client.rs` with ureq
+7. **Commands split** - `commands/standalone.rs` (existing logic) + `commands/client.rs` (new client-mode handlers)
+8. **Admin handlers** - `src/admin.rs`
+9. **Config + main** - `AdminCommand` subcommand group, `--endpoint`, `--standalone`, `detect_mode()`, breadcrumb file write/delete
+10. **Shutdown** - `CancellationToken`, ordered goodbye sequence, breadcrumb cleanup
 
 ---
 
@@ -916,6 +953,7 @@ Build in this sequence. Each step is independently testable.
 ## Checklist
 
 **Lease lifecycle:**
+
 - [ ] Pipe/UDS registrations cleaned on connection drop
 - [ ] HTTP registrations expire without heartbeats
 - [ ] `"lease": 0` creates permanent registrations
@@ -926,6 +964,7 @@ Build in this sequence. Each step is independently testable.
 - [ ] DRAINING entries revived by name+type match
 
 **Admin:**
+
 - [ ] `koi admin status`
 - [ ] `koi admin registrations`
 - [ ] `koi admin inspect <id>` (prefix matching)
@@ -934,6 +973,7 @@ Build in this sequence. Each step is independently testable.
 - [ ] `koi admin revive <id>`
 
 **Dual-mode:**
+
 - [ ] Discovery commands use daemon when available
 - [ ] Standalone fallback when no daemon
 - [ ] Admin fails fast when no daemon
@@ -941,6 +981,7 @@ Build in this sequence. Each step is independently testable.
 - [ ] Breadcrumb file on daemon start/stop
 
 **Infrastructure:**
+
 - [ ] Short IDs (8 hex chars) with prefix matching
 - [ ] Ordered shutdown with goodbyes + timeout
 - [ ] Unregister logs include `reason`
@@ -953,7 +994,7 @@ Build in this sequence. Each step is independently testable.
 ## Not included (v0.3+)
 
 - **Registry persistence / journal.** Grace periods handle most restart cases; Koi restarts are rare as a system service.
-- **Registration caps and rate limiting.** Trusted LAN tool — add when exposure widens.
+- **Registration caps and rate limiting.** Trusted LAN tool - add when exposure widens.
 - **TXT record validation.** Likely enforced by mdns-sd crate. Validate when someone reports a bug.
 - **Bind address separation / admin auth.** Document firewall rules for now. The `/v1/admin/` namespace makes `--admin-bind` a clean future addition.
 - **Health endpoint enrichment.** `daemon_healthy` field, 503 on daemon crash. Basic `/healthz` is sufficient for now.
@@ -961,4 +1002,4 @@ Build in this sequence. Each step is independently testable.
 - **Single-instance guard.** Breadcrumb file enables it cheaply; bind failure ("address already in use") is clear enough for now.
 - **SSE-bound sessions for HTTP.** Bind registrations to an SSE connection lifecycle.
 - **Per-registration grace period config.** Grace periods are adapter defaults for now.
-- **Container port mapping docs.** README section, not code — "pass the host port, not the container port."
+- **Container port mapping docs.** README section, not code - "pass the host port, not the container port."

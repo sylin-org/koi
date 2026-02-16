@@ -12,11 +12,11 @@
 
 This proposal adds two capabilities to `koi-embedded`:
 
-1. **HTTP self-hosting** — When `http_enabled` is true, koi-embedded spawns its own axum listener (default `:5641`) exposing the same HTTP API surface as standalone Koi. This activates an existing dead config field.
+1. **HTTP self-hosting** - When `http_enabled` is true, koi-embedded spawns its own axum listener (default `:5641`) exposing the same HTTP API surface as standalone Koi. This activates an existing dead config field.
 
-2. **UDP bridging** (`koi-udp`) — A new Koi domain crate that bridges host UDP sockets into HTTP/SSE, allowing containerized applications on Docker bridge networking to receive and send UDP datagrams through the host's network stack.
+2. **UDP bridging** (`koi-udp`) - A new Koi domain crate that bridges host UDP sockets into HTTP/SSE, allowing containerized applications on Docker bridge networking to receive and send UDP datagrams through the host's network stack.
 
-Together, these give containerized offerings access to the full host network control plane — DNS resolution, mDNS service discovery, TLS proxy management, and UDP mesh participation — without requiring `network_mode: host` or any Garden-specific API wrappers.
+Together, these give containerized offerings access to the full host network control plane - DNS resolution, mDNS service discovery, TLS proxy management, and UDP mesh participation - without requiring `network_mode: host` or any Garden-specific API wrappers.
 
 **Motivation:** The ORCH offering orchestration suite (ORCH-0001/0002/0003) in zen-garden requires containerized orchestrators to interact with the Garden mesh (UDP port 7184), register DNS names, announce mDNS services, and discover other offerings. None of this is currently possible from Docker bridge networking.
 
@@ -52,29 +52,29 @@ let koi = koi_embedded::Builder::new()
     .build()?;
 ```
 
-This provides programmatic access via `KoiHandle` sub-handles (`mdns()`, `dns()`, `certmesh()`, etc.), but **no HTTP surface**. The `http_enabled` config field exists in `KoiConfig` but is never read — it's a dead placeholder.
+This provides programmatic access via `KoiHandle` sub-handles (`mdns()`, `dns()`, `certmesh()`, etc.), but **no HTTP surface**. The `http_enabled` config field exists in `KoiConfig` but is never read - it's a dead placeholder.
 
 ### Container Isolation Problem
 
 Docker containers on default bridge networking have **zero path** back to the host:
 
-| What's missing | Impact |
-|---|---|
-| No `extra_hosts` | No `host.docker.internal` resolution |
-| No env var injection | Containers don't know where Moss or Koi are |
-| No custom DNS | Containers can't resolve `.lan` names |
-| No UDP access | Containers can't participate in Garden mesh (chirps, beacons) |
+| What's missing       | Impact                                                        |
+| -------------------- | ------------------------------------------------------------- |
+| No `extra_hosts`     | No `host.docker.internal` resolution                          |
+| No env var injection | Containers don't know where Moss or Koi are                   |
+| No custom DNS        | Containers can't resolve `.lan` names                         |
+| No UDP access        | Containers can't participate in Garden mesh (chirps, beacons) |
 
-The only bridge to host state is a bind-mounted topology directory — a stale snapshot, not a live connection.
+The only bridge to host state is a bind-mounted topology directory - a stale snapshot, not a live connection.
 
 ### Why This Blocks Orchestration
 
 The AI Capability Router (ORCH-0002) is a containerized offering that needs to:
 
-1. **Listen to Garden mesh** — `stone_chirp` and `tools_beacon` on UDP `:7184` reveal hardware capabilities, VRAM, model loading state, and offering health across all Stones
-2. **Register DNS** — The router takes over `ollama.lan` to become the single entry point
-3. **Discover instances** — mDNS browse for Ollama instances on the LAN
-4. **Get TLS** — Proxy with certmesh-issued certificates for HTTPS
+1. **Listen to Garden mesh** - `stone_chirp` and `tools_beacon` on UDP `:7184` reveal hardware capabilities, VRAM, model loading state, and offering health across all Stones
+2. **Register DNS** - The router takes over `ollama.lan` to become the single entry point
+3. **Discover instances** - mDNS browse for Ollama instances on the LAN
+4. **Get TLS** - Proxy with certmesh-issued certificates for HTTPS
 
 None of these are possible today.
 
@@ -90,13 +90,13 @@ Activate the existing `http_enabled` config field. When true, `KoiEmbedded::star
 
 Every Koi domain crate already exposes HTTP routes:
 
-| Crate | Function | Prefix |
-|-------|----------|--------|
-| `koi-mdns` | `koi_mdns::http::routes(core) -> Router` | `/v1/mdns` |
-| `koi-dns` | `koi_dns::http::routes(runtime) -> Router` | `/v1/dns` |
-| `koi-health` | `koi_health::http::routes(core) -> Router` | `/v1/health` |
-| `koi-certmesh` | `certmesh.http_routes() -> Router` | `/v1/certmesh` |
-| `koi-proxy` | `koi_proxy::http::routes(runtime) -> Router` | `/v1/proxy` |
+| Crate          | Function                                     | Prefix         |
+| -------------- | -------------------------------------------- | -------------- |
+| `koi-mdns`     | `koi_mdns::http::routes(core) -> Router`     | `/v1/mdns`     |
+| `koi-dns`      | `koi_dns::http::routes(runtime) -> Router`   | `/v1/dns`      |
+| `koi-health`   | `koi_health::http::routes(core) -> Router`   | `/v1/health`   |
+| `koi-certmesh` | `certmesh.http_routes() -> Router`           | `/v1/certmesh` |
+| `koi-proxy`    | `koi_proxy::http::routes(runtime) -> Router` | `/v1/proxy`    |
 
 The standalone Koi binary (`crates/koi/src/adapters/http.rs`) assembles these into a Router with CORS, `/healthz`, `/v1/status`, and disabled-capability fallbacks (503). This logic is ~150 lines.
 
@@ -186,13 +186,13 @@ The standalone binary's `daemon_mode()` can be simplified to use `koi-embedded` 
 
 When enabled, the HTTP listener on `:5641` serves the full Koi API:
 
-- `GET /healthz` — liveness probe
-- `GET /v1/status` — unified capability status
-- `/v1/mdns/*` — 12 endpoints (discover, announce, resolve, subscribe, admin)
-- `/v1/dns/*` — 8 endpoints (lookup, list, add, remove, serve, stop)
-- `/v1/certmesh/*` — 18 endpoints (join, status, renew, roster, etc.)
-- `/v1/health/*` — 4 endpoints (status, list, add, remove)
-- `/v1/proxy/*` — 4 endpoints (status, list, add, remove)
+- `GET /healthz` - liveness probe
+- `GET /v1/status` - unified capability status
+- `/v1/mdns/*` - 12 endpoints (discover, announce, resolve, subscribe, admin)
+- `/v1/dns/*` - 8 endpoints (lookup, list, add, remove, serve, stop)
+- `/v1/certmesh/*` - 18 endpoints (join, status, renew, roster, etc.)
+- `/v1/health/*` - 4 endpoints (status, list, add, remove)
+- `/v1/proxy/*` - 4 endpoints (status, list, add, remove)
 
 Disabled capabilities return `503 {"error":"capability_disabled"}`.
 
@@ -206,12 +206,12 @@ Docker bridge networking blocks UDP multicast and broadcast. Containers cannot r
 
 This is the same pattern Koi already applies to other host network primitives:
 
-| Capability | Host primitive | Bridge via HTTP |
-|---|---|---|
-| mDNS | Multicast 5353 | `/v1/mdns/*` |
-| DNS | UDP/TCP 53 | `/v1/dns/*` |
-| Proxy | TLS listeners | `/v1/proxy/*` |
-| **UDP** | **Raw datagrams** | **`/v1/udp/*`** |
+| Capability | Host primitive    | Bridge via HTTP |
+| ---------- | ----------------- | --------------- |
+| mDNS       | Multicast 5353    | `/v1/mdns/*`    |
+| DNS        | UDP/TCP 53        | `/v1/dns/*`     |
+| Proxy      | TLS listeners     | `/v1/proxy/*`   |
+| **UDP**    | **Raw datagrams** | **`/v1/udp/*`** |
 
 ### New Crate: `koi-udp`
 
@@ -251,14 +251,14 @@ pub struct UdpSendRequest {
 
 #### HTTP Routes
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/v1/udp/status` | List active bindings |
-| `POST` | `/v1/udp/bind` | Create binding (returns ID) |
-| `DELETE` | `/v1/udp/unbind/{id}` | Remove binding |
-| `PUT` | `/v1/udp/heartbeat/{id}` | Renew lease |
-| `GET` | `/v1/udp/recv/{id}` | SSE stream of incoming datagrams |
-| `POST` | `/v1/udp/send` | Send a datagram from host |
+| Method   | Path                     | Description                      |
+| -------- | ------------------------ | -------------------------------- |
+| `GET`    | `/v1/udp/status`         | List active bindings             |
+| `POST`   | `/v1/udp/bind`           | Create binding (returns ID)      |
+| `DELETE` | `/v1/udp/unbind/{id}`    | Remove binding                   |
+| `PUT`    | `/v1/udp/heartbeat/{id}` | Renew lease                      |
+| `GET`    | `/v1/udp/recv/{id}`      | SSE stream of incoming datagrams |
+| `POST`   | `/v1/udp/send`           | Send a datagram from host        |
 
 #### Bind Request
 
@@ -274,9 +274,9 @@ POST /v1/udp/bind
 → 201 {"id": "abc123", "port": 7184, "lease_secs": 90}
 ```
 
-- `share: true` — sets `SO_REUSEADDR` + `SO_REUSEPORT`, allowing coexistence with Moss's own listener on port 7184
-- `multicast` — if provided, joins the specified multicast group (for protocols like SSDP on `239.255.255.250`)
-- `lease_secs` — follows the same lease model as koi-mdns: `null` = 90s heartbeat, `0` = permanent, `N` = custom heartbeat interval
+- `share: true` - sets `SO_REUSEADDR` + `SO_REUSEPORT`, allowing coexistence with Moss's own listener on port 7184
+- `multicast` - if provided, joins the specified multicast group (for protocols like SSDP on `239.255.255.250`)
+- `lease_secs` - follows the same lease model as koi-mdns: `null` = 90s heartbeat, `0` = permanent, `N` = custom heartbeat interval
 
 #### Receive Stream (SSE)
 
@@ -288,7 +288,7 @@ data: {"src":"192.168.1.42","src_port":7184,"data":"eyJ0eXBlIjoic3RvbmVfY2hpcnAi
 data: {"src":"192.168.1.103","src_port":7184,"data":"eyJ0eXBlIjoidG9vbHNfYmVhY29u...","len":5210,"ts":1739750410000}
 ```
 
-Base64 encoding adds ~33% overhead. For control-plane datagrams (1-5 KB), this produces 1.3-6.7 KB SSE events — well within HTTP throughput.
+Base64 encoding adds ~33% overhead. For control-plane datagrams (1-5 KB), this produces 1.3-6.7 KB SSE events - well within HTTP throughput.
 
 #### Send Request
 
@@ -331,6 +331,7 @@ POST /v1/udp/send
 ```
 
 Each binding gets:
+
 - A `UdpSocket` with `bind(0.0.0.0:port)` (and `SO_REUSEADDR`/`SO_REUSEPORT` if `share: true`)
 - A tokio task running `socket.recv_from()` in a loop, forwarding datagrams into a `broadcast::Sender`
 - SSE clients subscribe to that broadcast channel
@@ -341,15 +342,15 @@ Lifecycle: when the binding is removed (explicit unbind or lease expiry), the ca
 
 UDP bridging is for **control-plane and discovery traffic**:
 
-| Use Case | Fits | Why |
-|---|---|---|
-| Garden chirps/beacons (`:7184`) | Yes | ~3 KB datagrams, 10-30s intervals |
-| SSDP/UPnP discovery | Yes | Small, infrequent |
-| Wake-on-LAN | Yes | Fire-and-forget sends |
-| CoAP (IoT) | Yes | Small datagrams |
-| Syslog (UDP) | Yes | Log forwarding |
-| Video/audio streaming | No | Too much throughput for SSE bridge |
-| Game servers | No | Latency-sensitive |
+| Use Case                        | Fits | Why                                |
+| ------------------------------- | ---- | ---------------------------------- |
+| Garden chirps/beacons (`:7184`) | Yes  | ~3 KB datagrams, 10-30s intervals  |
+| SSDP/UPnP discovery             | Yes  | Small, infrequent                  |
+| Wake-on-LAN                     | Yes  | Fire-and-forget sends              |
+| CoAP (IoT)                      | Yes  | Small datagrams                    |
+| Syslog (UDP)                    | Yes  | Log forwarding                     |
+| Video/audio streaming           | No   | Too much throughput for SSE bridge |
+| Game servers                    | No   | Latency-sensitive                  |
 
 ### Builder & Config Integration
 
@@ -399,11 +400,11 @@ env.push(format!("GARDEN_STONE_ENDPOINT=http://host.docker.internal:{}", moss_po
 env.push(format!("GARDEN_OFFERING_NAME={}", name));
 ```
 
-| Variable | Value | Purpose |
-|---|---|---|
-| `KOI_ENDPOINT` | `http://host.docker.internal:5641` | Koi API for DNS/mDNS/UDP/proxy |
-| `GARDEN_STONE_ENDPOINT` | `http://host.docker.internal:7185` | Moss API for tools/presence/election |
-| `GARDEN_OFFERING_NAME` | The offering name | Self-identification for scoped operations |
+| Variable                | Value                              | Purpose                                   |
+| ----------------------- | ---------------------------------- | ----------------------------------------- |
+| `KOI_ENDPOINT`          | `http://host.docker.internal:5641` | Koi API for DNS/mDNS/UDP/proxy            |
+| `GARDEN_STONE_ENDPOINT` | `http://host.docker.internal:7185` | Moss API for tools/presence/election      |
+| `GARDEN_OFFERING_NAME`  | The offering name                  | Self-identification for scoped operations |
 
 ### 3c. Enable DNS in Koi Builder
 
@@ -434,7 +435,7 @@ let host_config = HostConfig {
 };
 ```
 
-This means `curl http://ollama.lan:11434/api/generate` works from inside any container — resolved through Koi's DNS, no code changes.
+This means `curl http://ollama.lan:11434/api/generate` works from inside any container - resolved through Koi's DNS, no code changes.
 
 ---
 
@@ -442,24 +443,26 @@ This means `curl http://ollama.lan:11434/api/generate` works from inside any con
 
 ### Port 5641 Exposure
 
-Koi HTTP binds `0.0.0.0:5641`, accessible from LAN. This matches standalone Koi behavior and is intentional — Koi is a local network service. If tighter scoping is needed later, bind to `127.0.0.1` + Docker bridge subnet.
+Koi HTTP binds `0.0.0.0:5641`, accessible from LAN. This matches standalone Koi behavior and is intentional - Koi is a local network service. If tighter scoping is needed later, bind to `127.0.0.1` + Docker bridge subnet.
 
 ### Port 53 Conflict
 
 `systemd-resolved` typically holds port 53 on Linux. Mitigations:
+
 - Koi DNS port is configurable via `DnsConfig::port()`
 - Moss already has port remediation logic in `docker.rs` for conflict detection
 - Alternative: bind DNS to a non-standard port; Docker's `dns` config works with any port since it's set per-container
 
 ### UDP Binding Trust Model
 
-V1 trusts offerings — any container can bind any port. This matches the current trust model where containers get read-write access to topology files. Scoping (port allowlists, offering-level restrictions) can be added later.
+V1 trusts offerings - any container can bind any port. This matches the current trust model where containers get read-write access to topology files. Scoping (port allowlists, offering-level restrictions) can be added later.
 
 ### UDP `share` Mode
 
 `SO_REUSEPORT` has platform-specific behavior:
+
 - **Linux**: Multiple sockets receive copies of broadcasts/multicast; unicast is load-balanced (kernel 3.9+)
-- For Garden mesh (broadcast to `:7184`), all shared listeners receive all datagrams — correct behavior
+- For Garden mesh (broadcast to `:7184`), all shared listeners receive all datagrams - correct behavior
 
 ---
 
@@ -472,7 +475,7 @@ V1 trusts offerings — any container can bind any port. This matches the curren
 
 1. Add `http_port: u16` to `KoiConfig` (default 5641) and builder method
 2. Add `tower-http` dependency to `koi-embedded`
-3. Create `crates/koi-embedded/src/http.rs` — simplified adapter (~150 lines)
+3. Create `crates/koi-embedded/src/http.rs` - simplified adapter (~150 lines)
 4. Wire into `start()`: if `http_enabled`, spawn HTTP task
 5. Update standalone to optionally delegate to embedded HTTP (dedup, not blocking)
 6. Test: `Builder::new().http(true).mdns(true).build()` → `:5641` serves `/v1/mdns/admin/status`
@@ -500,7 +503,7 @@ V1 trusts offerings — any container can bind any port. This matches the curren
 2. `docker.rs` or `job_executors.rs`: Inject `KOI_ENDPOINT`, `GARDEN_STONE_ENDPOINT`, `GARDEN_OFFERING_NAME` env vars
 3. `run.rs`: Enable `dns_enabled(true)`, `dns_auto_start(true)`, `http(true)`, `udp(true)` in Koi builder
 4. `docker.rs`: Optionally add `dns` config pointing at Stone IP
-5. `tool.json`: Update Koi entry — `retired: false`, update description
+5. `tool.json`: Update Koi entry - `retired: false`, update description
 6. Test: deploy any container offering, verify env vars present, verify `curl http://host.docker.internal:5641/healthz` returns OK from inside container
 
 ---
@@ -509,12 +512,12 @@ V1 trusts offerings — any container can bind any port. This matches the curren
 
 ### Unit Tests (koi-udp)
 
-- `bind()` with `share: true` — verify `SO_REUSEADDR` set
-- `unbind()` — socket dropped, recv task cancelled
-- Lease expiry — binding auto-removed after timeout
-- Heartbeat — lease renewed
-- `send()` — datagram reaches destination
-- SSE encoding — base64 round-trip fidelity
+- `bind()` with `share: true` - verify `SO_REUSEADDR` set
+- `unbind()` - socket dropped, recv task cancelled
+- Lease expiry - binding auto-removed after timeout
+- Heartbeat - lease renewed
+- `send()` - datagram reaches destination
+- SSE encoding - base64 round-trip fidelity
 
 ### Integration Tests
 

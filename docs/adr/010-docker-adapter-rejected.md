@@ -1,7 +1,7 @@
 ﻿# ADR-010: Docker Adapter Kept Separate from Core
 
 **Status:** Accepted  
-**Date:** 2025-12-15  
+**Date:** 2025-12-15
 
 ## Context
 
@@ -17,5 +17,5 @@ Koi's current container story is explicit: operators pass the host port via envi
 
 - Koi core maintains zero coupling to any container runtime, preserving its role as a runtime-agnostic DNS-SD daemon.
 - Operators who don't use containers pay no complexity cost.
-- Container deployments require manual port configuration or a future sidecar adapter — an additional process to run.
+- Container deployments require manual port configuration or a future sidecar adapter - an additional process to run.
 - The adapter's language and repository placement remain open questions (Rust for consistency vs. Go for Docker ecosystem fit).

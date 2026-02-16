@@ -1,7 +1,7 @@
 ﻿# ADR-001: Host Service as the Container mDNS Bridge
 
 **Status:** Accepted  
-**Date:** 2025-01-15  
+**Date:** 2025-01-15
 
 ## Context
 
@@ -15,12 +15,12 @@ Koi runs on the host as a system service (Windows SCM, systemd, or launchd). It 
 
 An IPC path (Unix domain socket / Named Pipe) provides zero-network-overhead access for same-host containers via volume mount.
 
-This is not a library — it is infrastructure. The single shared daemon mirrors Apple's `mDNSResponder` architecture: one system process multiplexes mDNS for all applications.
+This is not a library - it is infrastructure. The single shared daemon mirrors Apple's `mDNSResponder` architecture: one system process multiplexes mDNS for all applications.
 
 ## Consequences
 
 - Containers gain full mDNS capability without special network modes, multicast forwarding, or language-specific libraries.
-- Container-side integration requires only an HTTP client — the most universally available abstraction.
+- Container-side integration requires only an HTTP client - the most universally available abstraction.
 - Koi must handle platform service lifecycle (install, uninstall, start, stop) across Windows, Linux, and macOS.
 - Operators must install Koi on the host before containers can use it. There is no in-container fallback for mDNS.
 - The socket mount option gives containers mDNS access with zero TCP overhead, but requires a volume mount in the container's orchestration config.

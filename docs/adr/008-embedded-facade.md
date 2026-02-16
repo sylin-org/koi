@@ -1,15 +1,15 @@
 ﻿# ADR-008: Embedded Facade (`koi-embedded`)
 
 **Status:** Accepted  
-**Date:** 2025-12-01  
+**Date:** 2025-12-01
 
 ## Context
 
-Integrating Koi capabilities into a Rust application required running the daemon out-of-process and communicating over HTTP or IPC, adding operational complexity for use cases where in-process embedding is natural. Integration testing relied on external PowerShell/Shell scripts that started the daemon, poked its API, and asserted responses — these were slow, platform-fragile, and couldn't test domain behaviors with deterministic event assertions. Domain logic was already properly separated into bounded-context crates, making an orchestration facade viable.
+Integrating Koi capabilities into a Rust application required running the daemon out-of-process and communicating over HTTP or IPC, adding operational complexity for use cases where in-process embedding is natural. Integration testing relied on external PowerShell/Shell scripts that started the daemon, poked its API, and asserted responses - these were slow, platform-fragile, and couldn't test domain behaviors with deterministic event assertions. Domain logic was already properly separated into bounded-context crates, making an orchestration facade viable.
 
 ## Decision
 
-A new `koi-embedded` crate provides a `Builder → KoiConfig → KoiHandle` API that orchestrates domain crates in-process. The facade contains zero domain logic — it composes existing crates and exposes async capability sub-handles (`handle.mdns()`, `handle.dns()`, etc.). An event bus delivers typed `KoiEvent` variants by subscribing to each domain's broadcast channel — zero-latency, no file-polling.
+A new `koi-embedded` crate provides a `Builder → KoiConfig → KoiHandle` API that orchestrates domain crates in-process. The facade contains zero domain logic - it composes existing crates and exposes async capability sub-handles (`handle.mdns()`, `handle.dns()`, etc.). An event bus delivers typed `KoiEvent` variants by subscribing to each domain's broadcast channel - zero-latency, no file-polling.
 
 ```rust
 let handle = Koi::builder()

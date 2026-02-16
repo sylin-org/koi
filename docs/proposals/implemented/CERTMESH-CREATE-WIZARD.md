@@ -1,4 +1,4 @@
-﻿# Certmesh Create Wizard — UX Proposal
+﻿# Certmesh Create Wizard - UX Proposal
 
 **Status:** Implemented  
 **Date:** 2026-02-13  
@@ -27,7 +27,7 @@ humans.
    they need it.
 
 3. **The fastest path produces the strongest result.** Enter-through defaults
-  yield a generated passphrase proposal that can be accepted or replaced.
+   yield a generated passphrase proposal that can be accepted or replaced.
 
 4. **Flags are the scripting bypass.** Pre-filled parameters skip their
    corresponding wizard step. All flags provided = review screen only.
@@ -43,15 +43,15 @@ humans.
 Color carries semantic meaning. Every use answers: "what would the user lose
 if this were monochrome?"
 
-| Treatment | Role | Used for |
-|---|---|---|
-| **Cyan** | Active trigger-effect pair | `Enter` + the thing Enter activates (e.g. `Just me`). Only one pair at a time. |
-| **Cyan bold** | Critical value to capture | The passphrase, the TOTP manual code (or FIDO2 registration) |
-| **Green** | Completed / success | `✓` checkmarks, "Certificate mesh created" title |
-| **Yellow** | Irreversible warning | "No recovery mechanism", "will not be shown again" |
-| **Red** | Error | `✗` wrong input, failed verification |
-| **Default (white)** | Always-available escape | `ESC` — findable when needed, doesn't compete with the action pair |
-| **Dim** | Supporting / secondary | Option descriptions, `Cancel`, `Navigate`, `Go back`, memorization hints |
+| Treatment           | Role                       | Used for                                                                       |
+| ------------------- | -------------------------- | ------------------------------------------------------------------------------ |
+| **Cyan**            | Active trigger-effect pair | `Enter` + the thing Enter activates (e.g. `Just me`). Only one pair at a time. |
+| **Cyan bold**       | Critical value to capture  | The passphrase, the TOTP manual code (or FIDO2 registration)                   |
+| **Green**           | Completed / success        | `✓` checkmarks, "Certificate mesh created" title                               |
+| **Yellow**          | Irreversible warning       | "No recovery mechanism", "will not be shown again"                             |
+| **Red**             | Error                      | `✗` wrong input, failed verification                                           |
+| **Default (white)** | Always-available escape    | `ESC` - findable when needed, doesn't compete with the action pair             |
+| **Dim**             | Supporting / secondary     | Option descriptions, `Cancel`, `Navigate`, `Go back`, memorization hints       |
 
 Accessibility: symbols (`✓`, `✗`, `⚠`, `›`, `●`, `○`) carry meaning
 independently. The design degrades to monochrome without information loss.
@@ -101,14 +101,14 @@ If a daemon isn't running, bail with guidance before the wizard starts.
 No "Press Enter to begin." Step 1 appears immediately below. The user's first
 interaction is a real choice, not a formality.
 
-`ESC` is **default (white)** — always available, never the primary action.
+`ESC` is **default (white)** - always available, never the primary action.
 
 ---
 
-### Step 1 of 2 — Profile
+### Step 1 of 2 - Profile
 
 ```
-  Step 1 of 2 — Who is this mesh for?
+  Step 1 of 2 - Who is this mesh for?
 
   › ● Just me            You control every machine on the network.
                           Anyone with the authenticator code can join.
@@ -117,7 +117,7 @@ interaction is a real choice, not a formality.
                           in the audit log for accountability.
 
     ○ My organization     Strict access control. Enrollment starts
-                          closed — each machine must be approved.
+                          closed - each machine must be approved.
 
     ○ Custom              Choose each policy individually.
 
@@ -125,17 +125,18 @@ interaction is a real choice, not a formality.
 ```
 
 Color:
-- `Just me` in the list is **cyan** — it's what you'll get.
-- `Enter` and `Just me` in the bottom bar are **cyan** — cause and effect.
+
+- `Just me` in the list is **cyan** - it's what you'll get.
+- `Enter` and `Just me` in the bottom bar are **cyan** - cause and effect.
 - The bottom bar label **changes with the selection**: arrow to "My team" and
   it reads `Enter My team`.
 - `↑↓` and `Navigate` are **dim**.
 - `ESC` is **default (white)**. `Cancel` is **dim**.
 - Option descriptions are **dim**.
 
-**Just me** — Enter advances immediately. No sub-prompts.
+**Just me** - Enter advances immediately. No sub-prompts.
 
-**My team** or **My organization** — operator sub-prompt:
+**My team** or **My organization** - operator sub-prompt:
 
 ```
   ✓ My team
@@ -149,7 +150,7 @@ Color:
 Enter on blank input accepts the default (system username). The operator field
 is part of step 1, not a separate step.
 
-**Custom** — policy sub-prompts within step 1:
+**Custom** - policy sub-prompts within step 1:
 
 ```
   ✓ Custom
@@ -194,7 +195,7 @@ After completion:
   ✓ Custom (Open enrollment, no approval)
 ```
 
-The `✓` is **green**. The label is default — settled fact.
+The `✓` is **green**. The label is default - settled fact.
 
 Backspace within the Custom sub-flow navigates up one level. Backspace at the
 top of the sub-flow returns to the profile picker. ESC always cancels the
@@ -202,10 +203,10 @@ entire wizard.
 
 ---
 
-### Step 2 of 2 — CA passphrase
+### Step 2 of 2 - CA passphrase
 
 ```
-  Step 2 of 2 — CA passphrase
+  Step 2 of 2 - CA passphrase
 
   This passphrase protects your CA's private key. You'll need
   it every time the daemon restarts.
@@ -218,7 +219,7 @@ entire wizard.
 
   › ● Let me mash the keyboard!   Fun & secure. (default)
 
-    ○ Generate one for me          Quick — just wait.
+    ○ Generate one for me          Quick - just wait.
 
     ○ I'll type my own             For password manager users.
 
@@ -245,7 +246,7 @@ lineage: "Security should feel empowering, not restrictive."
   ████████████████░░░░░░░░░░░░░░░░░░░░░░░░ 24/64
 ```
 
-- `GO!` is **cyan** — call to action.
+- `GO!` is **cyan** - call to action.
 - Filled bar portion is **cyan**. Unfilled is dim.
 - Minimum 64 keystrokes. Timing deltas between keypresses are mixed into
   the entropy pool alongside the key values and OS RNG samples.
@@ -264,13 +265,13 @@ After reaching 64:
 - `Enter` is **cyan**.
 
 The collected entropy (keystroke timing + key values + OS RNG) is hashed
-and used to seed the passphrase generator. The passphrase is derived *from*
-the mashing — it's the human-readable form of what the user just created.
+and used to seed the passphrase generator. The passphrase is derived _from_
+the mashing - it's the human-readable form of what the user just created.
 
 #### Generate path
 
 For users who want "just give me something secure" without interaction.
-Uses OS RNG only — no keystroke input.
+Uses OS RNG only - no keystroke input.
 
 ```
   Generating a secure passphrase...
@@ -302,16 +303,16 @@ been collected; now the user sees the passphrase it produced:
   ↑↓ Navigate  Enter Accept  ESC Cancel
 ```
 
-- The passphrase is **cyan bold** — the most important text on screen.
+- The passphrase is **cyan bold** - the most important text on screen.
 - The memorization hint is **dim**.
 - Same cause-effect pairing.
 
 The passphrase was generated from the entropy the user just provided (mashing
 or OS RNG). Accepting it means no further input. Switching to "I'll use my
-own" replaces the generated passphrase but preserves the entropy seed —
+own" replaces the generated passphrase but preserves the entropy seed -
 operator-provided passphrases still get mixed with the existing pool.
 
-**Accept** — confirm by typing the last word:
+**Accept** - confirm by typing the last word:
 
 ```
   Confirm by typing the last word: harvest
@@ -319,7 +320,7 @@ operator-provided passphrases still get mixed with the existing pool.
   > _
 ```
 
-- `harvest` is **cyan bold** — the exact thing to type.
+- `harvest` is **cyan bold** - the exact thing to type.
 
 Correct:
 
@@ -351,12 +352,12 @@ derived from the passphrase itself, mixed with OS RNG.
   Passphrase:         my-secret-phrase-here
   Confirm passphrase: my-secret-phrase-here
 
-  ✓ Passphrase set (entropy: 48 bits — strong)
+  ✓ Passphrase set (entropy: 48 bits - strong)
 ```
 
 - `strong` is **green**.
 
-Passphrase is shown in cleartext — not masked. The user is on their own
+Passphrase is shown in cleartext - not masked. The user is on their own
 terminal. The threat model for "Just me" and "My team" does not include
 shoulder-surfing.
 
@@ -365,7 +366,7 @@ If too weak:
 ```
   Passphrase:         abc123
 
-  ⚠ Entropy: 19 bits — too weak
+  ⚠ Entropy: 19 bits - too weak
      Minimum: 40 bits. Try a longer phrase,
      or accept a generated one.
 
@@ -397,10 +398,10 @@ If too weak:
   Enter Create  1-2 Go back  ESC Cancel
 ```
 
-- `Enter` and `Create` are **cyan** — the primary action pair.
-- The passphrase is **cyan bold** — last chance to see it.
+- `Enter` and `Create` are **cyan** - the primary action pair.
+- The passphrase is **cyan bold** - last chance to see it.
 - `(passphrase will not be shown again after creation)` is **yellow**.
-- `1-2` is **default (white)** — available but secondary.
+- `1-2` is **default (white)** - available but secondary.
 - `Go back` is **dim**.
 - `ESC` is **default (white)**. `Cancel` is **dim**.
 
@@ -461,13 +462,13 @@ until Enter is pressed here.
   Enter Continue  ESC Cancel
 ```
 
-- The manual code `JBSWY3DPEHPK3PXP` is **cyan bold** — critical value.
+- The manual code `JBSWY3DPEHPK3PXP` is **cyan bold** - critical value.
 - "will not be shown again" is **yellow**.
-- `Enter` and `Continue` are **cyan** — cause-effect pair.
+- `Enter` and `Continue` are **cyan** - cause-effect pair.
 
 The auth credential is generated server-side during the `POST /v1/certmesh/create` call.
 It's shown here as output, not as a wizard step. The user isn't making a
-decision — they're acknowledging and recording.
+decision - they're acknowledging and recording.
 
 The raw code is always displayed alongside the QR for headless/SSH terminals
 where the QR may not render.
@@ -509,7 +510,7 @@ where the QR may not render.
 ```
 
 - `Certificate mesh created` is **green**.
-- Commands in "What's next" are **cyan** — action targets.
+- Commands in "What's next" are **cyan** - action targets.
 
 ---
 
@@ -519,17 +520,17 @@ Any flag pre-fills its corresponding step. If all inputs for a step are
 provided, that step is skipped entirely. The wizard only asks what it doesn't
 already know.
 
-| Flags provided | Steps shown |
-|---|---|
-| none | 1 → 2 → Review |
-| `--profile just-me` | 2 → Review |
-| `--profile team --operator Alice` | 2 → Review |
-| `--passphrase "..."` | 1 → Review |
-| `--profile just-me --passphrase "..."` | Review only |
-| all flags + `--json` | No UI. Execute. JSON output. |
-| `--json` with missing flags | Immediate JSON error: `{"error": "missing_flags", "required": [...]}` |
+| Flags provided                         | Steps shown                                                           |
+| -------------------------------------- | --------------------------------------------------------------------- |
+| none                                   | 1 → 2 → Review                                                        |
+| `--profile just-me`                    | 2 → Review                                                            |
+| `--profile team --operator Alice`      | 2 → Review                                                            |
+| `--passphrase "..."`                   | 1 → Review                                                            |
+| `--profile just-me --passphrase "..."` | Review only                                                           |
+| all flags + `--json`                   | No UI. Execute. JSON output.                                          |
+| `--json` with missing flags            | Immediate JSON error: `{"error": "missing_flags", "required": [...]}` |
 
-The `--entropy` flag is removed from the HTTP API — keyboard mashing is a
+The `--entropy` flag is removed from the HTTP API - keyboard mashing is a
 CLI-only interactive concept that doesn't belong in a programmatic interface.
 In non-interactive mode (`--json`), `--passphrase "..."` implies
 user-provided passphrase. Entropy is always auto-generated and mixed with
@@ -557,8 +558,8 @@ All three paths produce an entropy seed mixed with OS RNG:
 
 The passphrase protects the key at rest (typed on daemon restart); the entropy
 seed determines the key itself. They are independent inputs to key generation.
-In the mashing and generate paths, the passphrase is *derived from* the
-entropy — it's the human-readable handle for the randomness the user created.
+In the mashing and generate paths, the passphrase is _derived from_ the
+entropy - it's the human-readable handle for the randomness the user created.
 
 ### Terminal compatibility
 
@@ -574,6 +575,7 @@ entropy — it's the human-readable handle for the randomness the user created.
 ### Crossterm dependency
 
 The wizard uses terminal rendering primitives for:
+
 - Interactive selection and prompts
 - Cursor positioning (dynamic bottom bar updates)
 - ANSI color output
@@ -584,15 +586,15 @@ This is already a dependency via the entropy module.
 
 ## Scope of changes
 
-| Component | Change |
-|---|---|
-| `crates/koi/src/commands/certmesh.rs` | Replace `create()` handler with wizard flow |
-| `crates/koi-certmesh/src/entropy.rs` | Keep `KeyboardMashing` mode for CLI; remove from HTTP API surface |
-| `crates/koi/src/cli.rs` | Remove `--entropy` flag. Keep `--profile`, `--operator`, `--passphrase` |
-| `crates/command-surface/src/lib.rs` | No changes (wizard is CLI-specific) |
-| `crates/koi/src/surface.rs` | Update `certmesh-create` CommandDef to reflect new flags |
-| New: `crates/koi/src/wizard/` | Reusable wizard primitives: selector, text input, progress bar, review screen |
-| `docs/guide-certmesh.md` | Update "Creating a certificate mesh" section |
+| Component                             | Change                                                                        |
+| ------------------------------------- | ----------------------------------------------------------------------------- |
+| `crates/koi/src/commands/certmesh.rs` | Replace `create()` handler with wizard flow                                   |
+| `crates/koi-certmesh/src/entropy.rs`  | Keep `KeyboardMashing` mode for CLI; remove from HTTP API surface             |
+| `crates/koi/src/cli.rs`               | Remove `--entropy` flag. Keep `--profile`, `--operator`, `--passphrase`       |
+| `crates/command-surface/src/lib.rs`   | No changes (wizard is CLI-specific)                                           |
+| `crates/koi/src/surface.rs`           | Update `certmesh-create` CommandDef to reflect new flags                      |
+| New: `crates/koi/src/wizard/`         | Reusable wizard primitives: selector, text input, progress bar, review screen |
+| `docs/guide-certmesh.md`              | Update "Creating a certificate mesh" section                                  |
 
 The wizard primitives (`wizard/`) should be generic enough to reuse for other
 interactive flows (e.g., `koi certmesh join`, `koi install`).

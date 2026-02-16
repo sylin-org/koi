@@ -1,14 +1,14 @@
 # Docker Adapter (koi-docker)
 
 **Status:** Idea
-**Scope:** Separate sidecar/companion — no changes to Koi core
+**Scope:** Separate sidecar/companion - no changes to Koi core
 
 ---
 
 ## Problem
 
 When a containerized application registers with Koi, it needs to
-advertise the **host-side** port — the one other devices on the LAN will
+advertise the **host-side** port - the one other devices on the LAN will
 connect to. But the application inside the container only knows its own
 listening port. The Docker port mapping (e.g. `8080:80`) lives in the
 orchestration layer, not inside the container.
@@ -26,7 +26,7 @@ HTTP, IPC, and stdin/stdout. Baking Docker awareness into Koi would:
 - Require container runtime detection heuristics (fragile across Docker,
   Podman, containerd, etc.)
 - Couple a network protocol daemon to a specific orchestration runtime
-- Expand the security surface — the Docker socket grants root-equivalent
+- Expand the security surface - the Docker socket grants root-equivalent
   access
 
 The information needed to resolve port mappings already exists at the
@@ -56,9 +56,9 @@ services:
       koi.enable: "true"
       koi.service.name: "My Web Server"
       koi.service.type: "_http._tcp"
-      koi.service.port: "80"           # container port — adapter resolves to host port
-      koi.service.ip: "192.168.1.50"   # optional — pin to specific host IP
-      koi.service.txt.path: "/api"     # optional — TXT record key=value
+      koi.service.port: "80" # container port - adapter resolves to host port
+      koi.service.ip: "192.168.1.50" # optional - pin to specific host IP
+      koi.service.txt.path: "/api" # optional - TXT record key=value
 ```
 
 The adapter sees `koi.service.port: 80`, queries Docker for the host
@@ -68,7 +68,7 @@ using port `8080`.
 ### Lifecycle
 
 | Docker event     | Adapter action                        |
-|------------------|---------------------------------------|
+| ---------------- | ------------------------------------- |
 | container start  | Register service(s) with Koi          |
 | container stop   | Unregister service(s)                 |
 | container die    | Unregister (or let lease expire)      |
@@ -102,9 +102,9 @@ koi-docker --koi-endpoint http://localhost:5641
 
 ## Prior art
 
-- **Traefik** — reads Docker labels for routing rules
-- **Registrator** — watches Docker events, registers with Consul/etcd
-- **Consul Connect** — sidecar proxies with service mesh integration
+- **Traefik** - reads Docker labels for routing rules
+- **Registrator** - watches Docker events, registers with Consul/etcd
+- **Consul Connect** - sidecar proxies with service mesh integration
 
 ## Open questions
 

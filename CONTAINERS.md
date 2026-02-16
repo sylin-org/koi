@@ -1,6 +1,6 @@
 # Koi Container Guide
 
-Docker containers can't do mDNS. The bridge network doesn't forward multicast traffic, and every workaround — `--network=host`, macvlan, mDNS reflectors — sacrifices isolation or adds fragility.
+Docker containers can't do mDNS. The bridge network doesn't forward multicast traffic, and every workaround - `--network=host`, macvlan, mDNS reflectors - sacrifices isolation or adds fragility.
 
 Koi solves this at the infrastructure level. It runs on the host, speaks multicast mDNS on the physical network, and exposes everything through a plain HTTP API. Containers make HTTP calls; Koi translates them into mDNS. No special network modes, no multicast forwarding, no libraries needed inside the container.
 
@@ -28,7 +28,7 @@ sudo koi install
 koi --daemon
 ```
 
-Either way, Koi binds to `0.0.0.0:5641` — every network interface, including the Docker bridge gateway. Containers can reach it without any extra configuration.
+Either way, Koi binds to `0.0.0.0:5641` - every network interface, including the Docker bridge gateway. Containers can reach it without any extra configuration.
 
 ### Test from a container
 
@@ -49,7 +49,7 @@ That's it. The container made a plain HTTP request to the host, and Koi responde
 
 Pick a usage profile based on what your container needs. Each profile maps to a small set of endpoints.
 
-### Profile A — Discovery only (mDNS)
+### Profile A - Discovery only (mDNS)
 
 Use this when the container only needs to discover LAN services.
 
@@ -61,7 +61,7 @@ curl -s "http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp"
 curl -s "http://$KOI_HOST:5641/v1/mdns/resolve?name=My%20NAS._http._tcp.local."
 ```
 
-### Profile B — Discovery + naming (mDNS + DNS)
+### Profile B - Discovery + naming (mDNS + DNS)
 
 Use this when containers need friendly names mapped to LAN IPs.
 
@@ -75,7 +75,7 @@ curl -s -X POST http://$KOI_HOST:5641/v1/dns/add \
   -d '{"name":"grafana","ip":"192.168.1.42"}'
 ```
 
-### Profile C — Discovery + naming + health
+### Profile C - Discovery + naming + health
 
 Use this when containers rely on shared health checks (HTTP/TCP).
 
@@ -89,7 +89,7 @@ curl -s -X POST http://$KOI_HOST:5641/v1/health/add \
 curl -s http://$KOI_HOST:5641/v1/health/status
 ```
 
-### Profile D — Full stack (mDNS + DNS + health + certmesh + proxy)
+### Profile D - Full stack (mDNS + DNS + health + certmesh + proxy)
 
 Use this when containers manage TLS endpoints or need certmesh policy controls.
 
@@ -105,12 +105,12 @@ curl -s http://$KOI_HOST:5641/v1/proxy/status
 
 How a container reaches the host depends on the platform:
 
-| Platform | Address | Notes |
-|----------|---------|-------|
-| Docker Desktop (Mac/Windows) | `host.docker.internal` | Built-in DNS name, works out of the box |
-| Linux (Docker 20.10+) | `host.docker.internal` | Requires `--add-host=host.docker.internal:host-gateway` or the `extra_hosts` Compose directive |
-| Linux (any version) | `172.17.0.1` | Default bridge gateway — works without any flags |
-| Custom Docker network | Gateway IP of that network | Find with `docker network inspect <name>` |
+| Platform                     | Address                    | Notes                                                                                          |
+| ---------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------- |
+| Docker Desktop (Mac/Windows) | `host.docker.internal`     | Built-in DNS name, works out of the box                                                        |
+| Linux (Docker 20.10+)        | `host.docker.internal`     | Requires `--add-host=host.docker.internal:host-gateway` or the `extra_hosts` Compose directive |
+| Linux (any version)          | `172.17.0.1`               | Default bridge gateway - works without any flags                                               |
+| Custom Docker network        | Gateway IP of that network | Find with `docker network inspect <name>`                                                      |
 
 For the rest of this guide, we'll use `$KOI_HOST` as a placeholder. Set it to whatever works for your environment:
 
@@ -123,7 +123,7 @@ export KOI_HOST=172.17.0.1             # Linux default bridge
 
 ## Discovering services
 
-A container that needs to find services on the local network — printers, NAS boxes, Home Assistant, Chromecast — can browse with a single HTTP call.
+A container that needs to find services on the local network - printers, NAS boxes, Home Assistant, Chromecast - can browse with a single HTTP call.
 
 ### Browse for a service type
 
@@ -139,7 +139,7 @@ data: {"found":{"name":"My NAS","type":"_http._tcp","host":"nas.local.","ip":"19
 data: {"found":{"name":"Pi-hole","type":"_http._tcp","host":"pihole.local.","ip":"192.168.1.10","port":80,"txt":{}}}
 ```
 
-The stream closes automatically after 5 seconds of quiet — once all known services have been reported. For long-lived watching, set `idle_for=0`:
+The stream closes automatically after 5 seconds of quiet - once all known services have been reported. For long-lived watching, set `idle_for=0`:
 
 ```bash
 curl -s "http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp&idle_for=0"
@@ -154,7 +154,16 @@ curl -s http://$KOI_HOST:5641/v1/mdns/resolve?name=My%20NAS._http._tcp.local.
 ```
 
 ```json
-{"resolved":{"name":"My NAS","type":"_http._tcp","host":"nas.local.","ip":"192.168.1.50","port":8080,"txt":{"version":"2.1"}}}
+{
+  "resolved": {
+    "name": "My NAS",
+    "type": "_http._tcp",
+    "host": "nas.local.",
+    "ip": "192.168.1.50",
+    "port": 8080,
+    "txt": { "version": "2.1" }
+  }
+}
 ```
 
 This returns the IP, port, and TXT metadata in one shot. Useful when a container needs to connect to a specific service at startup.
@@ -163,7 +172,7 @@ This returns the IP, port, and TXT metadata in one shot. Useful when a container
 
 ## Registering services from containers
 
-This is the part that's normally impossible. A container behind Docker's NAT bridge can't send mDNS multicast. But with Koi, it can register a service that appears on the physical LAN — other devices (phones, laptops, IoT) will see it as if it were running directly on the network.
+This is the part that's normally impossible. A container behind Docker's NAT bridge can't send mDNS multicast. But with Koi, it can register a service that appears on the physical LAN - other devices (phones, laptops, IoT) will see it as if it were running directly on the network.
 
 ### Register a service
 
@@ -174,14 +183,23 @@ curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
 ```
 
 ```json
-{"registered":{"id":"a1b2c3d4","name":"My Container App","type":"_http._tcp","port":8080,"mode":"heartbeat","lease_secs":90}}
+{
+  "registered": {
+    "id": "a1b2c3d4",
+    "name": "My Container App",
+    "type": "_http._tcp",
+    "port": 8080,
+    "mode": "heartbeat",
+    "lease_secs": 90
+  }
+}
 ```
 
 The service is now visible to every mDNS client on the network. The `mode: heartbeat` means you need to periodically tell Koi the service is still alive.
 
 ### Keep it alive with heartbeats
 
-HTTP registrations use a lease model. The default lease is 90 seconds — if Koi doesn't hear from you within that window, it starts a 30-second grace period, then removes the service from the network.
+HTTP registrations use a lease model. The default lease is 90 seconds - if Koi doesn't hear from you within that window, it starts a 30-second grace period, then removes the service from the network.
 
 Send a heartbeat at half the lease interval (every 45 seconds is a safe default):
 
@@ -190,7 +208,7 @@ curl -s -X PUT http://$KOI_HOST:5641/v1/mdns/heartbeat/a1b2c3d4
 ```
 
 ```json
-{"renewed":{"id":"a1b2c3d4","lease_secs":90}}
+{ "renewed": { "id": "a1b2c3d4", "lease_secs": 90 } }
 ```
 
 ### Register permanently
@@ -204,7 +222,15 @@ curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
 ```
 
 ```json
-{"registered":{"id":"a1b2c3d4","name":"My Container App","type":"_http._tcp","port":8080,"mode":"permanent"}}
+{
+  "registered": {
+    "id": "a1b2c3d4",
+    "name": "My Container App",
+    "type": "_http._tcp",
+    "port": 8080,
+    "mode": "permanent"
+  }
+}
 ```
 
 No heartbeats needed. The registration persists until you delete it or Koi shuts down. Good for infrastructure services that are always running.
@@ -216,7 +242,7 @@ curl -s -X DELETE http://$KOI_HOST:5641/v1/mdns/unregister/a1b2c3d4
 ```
 
 ```json
-{"unregistered":"a1b2c3d4"}
+{ "unregistered": "a1b2c3d4" }
 ```
 
 Koi sends mDNS goodbye packets so other devices remove the service from their caches immediately.
@@ -272,7 +298,7 @@ docker exec web curl -s -X POST http://host.docker.internal:5641/v1/mdns/announc
   -d '{"name": "Nginx", "type": "_http._tcp", "port": 8080, "lease_secs": 0}'
 ```
 
-Any mDNS client on the network — a phone, another laptop, a different server — will now discover "Nginx" as an HTTP service.
+Any mDNS client on the network - a phone, another laptop, a different server - will now discover "Nginx" as an HTTP service.
 
 ---
 
@@ -370,7 +396,7 @@ The difference: if the container crashes hard (OOM kill, kernel panic, host powe
 
 ## Discovering services at startup
 
-Some containers need to find another service before they can start — a database, an API gateway, a configuration server. Koi's resolve endpoint handles this.
+Some containers need to find another service before they can start - a database, an API gateway, a configuration server. Koi's resolve endpoint handles this.
 
 ```bash
 #!/bin/sh
@@ -414,7 +440,7 @@ The worker container waits until "Config Server" appears on the network, extract
 
 ## Subscribing to events
 
-For containers that need to react to services coming and going — load balancers, monitoring dashboards, mesh proxies — use the SSE events endpoint.
+For containers that need to react to services coming and going - load balancers, monitoring dashboards, mesh proxies - use the SSE events endpoint.
 
 ```bash
 curl -s -N http://$KOI_HOST:5641/v1/mdns/subscribe?type=_http._tcp
@@ -434,11 +460,11 @@ curl -s -N "http://$KOI_HOST:5641/v1/mdns/subscribe?type=_http._tcp&idle_for=0"
 
 Each event tells you what happened:
 
-| Event | Meaning |
-|-------|---------|
-| `found` | A new service appeared (we know its name) |
+| Event      | Meaning                                   |
+| ---------- | ----------------------------------------- |
+| `found`    | A new service appeared (we know its name) |
 | `resolved` | We now have its IP, port, and TXT records |
-| `removed` | The service is gone |
+| `removed`  | The service is gone                       |
 
 A Python container consuming this might look like:
 
@@ -476,7 +502,7 @@ curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
 ```
 
 ```json
-{"name":"grafana.lan.","ips":["192.168.1.42"],"source":"static"}
+{ "name": "grafana.lan.", "ips": ["192.168.1.42"], "source": "static" }
 ```
 
 ### List known names
@@ -603,20 +629,20 @@ echo '{"browse":"_http._tcp"}' | socat - UNIX-CONNECT:/var/run/koi.sock
 
 IPC registrations use session-based leases instead of heartbeats. As long as the socket connection is open, the registration stays alive. When the connection drops (container stops, crashes, is removed), Koi starts a 30-second grace period and then removes the service. No heartbeat loop needed.
 
-This is the lowest-latency option and has the cleanest lifecycle semantics — the OS tells Koi immediately when a container's connection drops.
+This is the lowest-latency option and has the cleanest lifecycle semantics - the OS tells Koi immediately when a container's connection drops.
 
 ---
 
 ## Port mapping considerations
 
-When a container registers a service with Koi, the port in the registration should be the **host-side** port — the one other devices on the network will connect to.
+When a container registers a service with Koi, the port in the registration should be the **host-side** port - the one other devices on the network will connect to.
 
 ```yaml
 services:
   web:
     image: nginx
     ports:
-      - "8080:80"  # host:container
+      - "8080:80" # host:container
 ```
 
 Register with port `8080`, not `80`:
@@ -746,6 +772,7 @@ docker run --rm curlimages/curl curl -s http://172.17.0.1:5641/healthz
 ```
 
 If this fails, check that:
+
 - Koi is running on the host (installed as a service, or `koi --daemon` in the foreground)
 - The firewall allows TCP port 5641 (on Windows, `koi install` configures this automatically)
 - The container can route to the host (try `ping 172.17.0.1` from inside the container)
@@ -755,6 +782,7 @@ On Linux with `host.docker.internal`, you need Docker 20.10+ and either `--add-h
 **Services aren't appearing on the network**
 
 Koi needs multicast access on the host's network interface. Check that:
+
 - The host's firewall allows UDP port 5353 (mDNS)
 - The host is on a network that supports multicast (most LANs do; some corporate networks block it)
 

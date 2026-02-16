@@ -4,27 +4,28 @@ Binary: `koi` (installed as `koi-net` from crates.io)
 
 Global flags work with any subcommand:
 
-| Flag | Env var | Default | Description |
-|---|---|---|---|
-| `--json` | — | off | JSON output (NDJSON for streaming) |
-| `--timeout SECS` | — | varies | Auto-exit (0 = run forever) |
-| `--endpoint URL` | — | auto-detect | Connect to specific daemon |
-| `--standalone` | — | off | Skip daemon detection |
-| `-v`, `-vv` | — | off | Increase verbosity (debug, trace) |
-| `--log-file PATH` | `KOI_LOG_FILE` | — | Write logs to file |
-| `--port PORT` | `KOI_PORT` | `5641` | HTTP API port |
-| `--pipe PATH` | `KOI_PIPE` | platform default | IPC socket/pipe path |
-| `--log-level` | `KOI_LOG` | `info` | Log level |
-| `--no-http` | `KOI_NO_HTTP` | false | Disable HTTP adapter |
-| `--no-ipc` | `KOI_NO_IPC` | false | Disable IPC adapter |
-| `--no-mdns` | `KOI_NO_MDNS` | false | Disable mDNS |
-| `--no-certmesh` | `KOI_NO_CERTMESH` | false | Disable certmesh |
-| `--no-dns` | `KOI_NO_DNS` | false | Disable DNS |
-| `--no-health` | `KOI_NO_HEALTH` | false | Disable health |
-| `--no-proxy` | `KOI_NO_PROXY` | false | Disable proxy |
-| `--dns-port` | `KOI_DNS_PORT` | `53` | DNS server port |
-| `--dns-zone` | `KOI_DNS_ZONE` | `lan` | Local DNS zone |
-| `--dns-public` | `KOI_DNS_PUBLIC` | false | Allow non-private DNS clients |
+| Flag              | Env var           | Default          | Description                        |
+| ----------------- | ----------------- | ---------------- | ---------------------------------- |
+| `--json`          | -                 | off              | JSON output (NDJSON for streaming) |
+| `--timeout SECS`  | -                 | varies           | Auto-exit (0 = run forever)        |
+| `--endpoint URL`  | -                 | auto-detect      | Connect to specific daemon         |
+| `--standalone`    | -                 | off              | Skip daemon detection              |
+| `-v`, `-vv`       | -                 | off              | Increase verbosity (debug, trace)  |
+| `--log-file PATH` | `KOI_LOG_FILE`    | -                | Write logs to file                 |
+| `--port PORT`     | `KOI_PORT`        | `5641`           | HTTP API port                      |
+| `--pipe PATH`     | `KOI_PIPE`        | platform default | IPC socket/pipe path               |
+| `--log-level`     | `KOI_LOG`         | `info`           | Log level                          |
+| `--no-http`       | `KOI_NO_HTTP`     | false            | Disable HTTP adapter               |
+| `--no-ipc`        | `KOI_NO_IPC`      | false            | Disable IPC adapter                |
+| `--no-mdns`       | `KOI_NO_MDNS`     | false            | Disable mDNS                       |
+| `--no-certmesh`   | `KOI_NO_CERTMESH` | false            | Disable certmesh                   |
+| `--no-dns`        | `KOI_NO_DNS`      | false            | Disable DNS                        |
+| `--no-health`     | `KOI_NO_HEALTH`   | false            | Disable health                     |
+| `--no-proxy`      | `KOI_NO_PROXY`    | false            | Disable proxy                      |
+| `--no-udp`        | `KOI_NO_UDP`      | false            | Disable UDP bridging               |
+| `--dns-port`      | `KOI_DNS_PORT`    | `53`             | DNS server port                    |
+| `--dns-zone`      | `KOI_DNS_ZONE`    | `lan`            | Local DNS zone                     |
+| `--dns-public`    | `KOI_DNS_PUBLIC`  | false            | Allow non-private DNS clients      |
 
 ---
 

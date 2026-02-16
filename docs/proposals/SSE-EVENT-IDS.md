@@ -1,7 +1,7 @@
 # SSE Event IDs
 
 **Status:** Implemented
-**Scope:** Koi HTTP adapter — SSE stream on `/v1/mdns/events`
+**Scope:** Koi HTTP adapter - SSE stream on `/v1/mdns/events`
 
 ---
 
@@ -26,10 +26,10 @@ the table.
 
 Each SSE event gets a UUIDv7 identifier. UUIDv7 is:
 
-- **Monotonic** — embeds a millisecond timestamp, so IDs sort
+- **Monotonic** - embeds a millisecond timestamp, so IDs sort
   chronologically without a shared counter
-- **Globally unique** — no coordination across restarts or instances
-- **Stateless** — no sequence file to persist or recover
+- **Globally unique** - no coordination across restarts or instances
+- **Stateless** - no sequence file to persist or recover
 
 The `uuid` crate (already a dependency with `v4` feature) supports v7
 via the `v7` feature flag.
@@ -50,7 +50,7 @@ data: {"type":"_http._tcp.local.","name":"My Server"}
 
 Phase 1 (this proposal): Emit `id:` fields only. Clients get dedup
 capability immediately. `Last-Event-ID` on reconnect tells the server
-"I last saw this" but the server does not attempt replay — it starts a
+"I last saw this" but the server does not attempt replay - it starts a
 fresh stream. This is still useful: the client knows it may have missed
 events and can issue a one-shot browse to reconcile.
 

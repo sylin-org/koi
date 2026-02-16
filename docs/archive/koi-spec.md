@@ -1,4 +1,4 @@
-# Koi — Local Network Toolkit
+# Koi - Local Network Toolkit
 
 **Version:** 2.0.0-draft
 **Date:** February 2026
@@ -12,15 +12,15 @@
 
 ### 1.1 What is Koi?
 
-Koi is a single-binary local network toolkit that makes LAN services discoverable, trustworthy, named, monitored, and reachable over HTTPS. It provides five capabilities — each under its own namespace — that solve specific pain points in local network operations:
+Koi is a single-binary local network toolkit that makes LAN services discoverable, trustworthy, named, monitored, and reachable over HTTPS. It provides five capabilities - each under its own namespace - that solve specific pain points in local network operations:
 
-1. **mDNS** — cross-platform service discovery. They find each other.
-2. **Certmesh** — certificate mesh with pluggable auth (TOTP/FIDO2). They trust each other.
-3. **DNS** — lightweight local resolver. They name each other.
-4. **Health** — present-tense network state. They watch each other.
-5. **Proxy** — TLS-terminating reverse proxy. They serve each other.
+1. **mDNS** - cross-platform service discovery. They find each other.
+2. **Certmesh** - certificate mesh with pluggable auth (TOTP/FIDO2). They trust each other.
+3. **DNS** - lightweight local resolver. They name each other.
+4. **Health** - present-tense network state. They watch each other.
+5. **Proxy** - TLS-terminating reverse proxy. They serve each other.
 
-Together, they close a fundamental loop: a container starts, Koi discovers it, secures it with TLS, gives it a friendly DNS name, monitors its health, and — if needed — terminates TLS on its behalf. The result is `https://grafana.lan` just works, on every device, no config.
+Together, they close a fundamental loop: a container starts, Koi discovers it, secures it with TLS, gives it a friendly DNS name, monitors its health, and - if needed - terminates TLS on its behalf. The result is `https://grafana.lan` just works, on every device, no config.
 
 ### 1.2 Design Philosophy
 
@@ -28,7 +28,7 @@ Koi occupies the gap between "works on my laptop" tools (mkcert, avahi-browse) a
 
 - Homelabs (5–15 machines, one operator)
 - Small businesses (shared office network, a few technical staff)
-- Institutions (schools, libraries, clinics — where there is a duty of care but not an IT department)
+- Institutions (schools, libraries, clinics - where there is a duty of care but not an IT department)
 
 The guiding principle: **the secure path is the easy path.** Every design decision optimizes for the user never being tempted to bypass security out of frustration.
 
@@ -72,7 +72,7 @@ koi status
 Calls across all active capabilities and returns a single-screen summary:
 
 ```
-koi v2.0.0 — local network toolkit
+koi v2.0.0 - local network toolkit
 
   mdns       3 services discovered, 0 stale
   certmesh   12 members, all certs valid (next renewal: 6d)
@@ -115,10 +115,10 @@ Koi advertises its own presence via mDNS service type `_koi._tcp`. This is how o
 
 The mDNS registry tracks discovered services with TTL/staleness and last-seen timestamps. This data feeds into:
 
-- **Certmesh** — CA discovery (`_certmesh._tcp`), SAN auto-population, failover detection
-- **DNS** — service alias generation (mDNS service types become friendly DNS names)
-- **Health** — machine presence detection (last-seen timestamps drive up/down status)
-- **Proxy** — backend discovery (proxy can auto-detect backend addresses)
+- **Certmesh** - CA discovery (`_certmesh._tcp`), SAN auto-population, failover detection
+- **DNS** - service alias generation (mDNS service types become friendly DNS names)
+- **Health** - machine presence detection (last-seen timestamps drive up/down status)
+- **Proxy** - backend discovery (proxy can auto-detect backend addresses)
 
 ---
 
@@ -126,7 +126,7 @@ The mDNS registry tracks discovered services with TTL/staleness and last-seen ti
 
 ### 4.1 Problem Statement
 
-**The mkcert ceiling.** mkcert solves localhost HTTPS on a single machine. It stops there. It has no concept of distributing trust across a network — every additional machine requires manual root CA installation.
+**The mkcert ceiling.** mkcert solves localhost HTTPS on a single machine. It stops there. It has no concept of distributing trust across a network - every additional machine requires manual root CA installation.
 
 **The Let's Encrypt floor.** Let's Encrypt DNS-01 challenge works for LAN services but requires: public domain ownership, Cloudflare API tokens (full zone access), manual Caddy/Traefik configuration, and complex renewal automation. It's a real solution, but the setup cost is disproportionate for a homelab.
 
@@ -134,11 +134,11 @@ The mDNS registry tracks discovered services with TTL/staleness and last-seen ti
 
 **The catalyst.** CA/Browser Forum Ballot SC-081v3 (approved April 2025) mandates shorter TLS certificate lifetimes:
 
-| Date | Maximum Lifetime |
-|------|-----------------|
-| March 2026 | 200 days |
-| March 2027 | 100 days |
-| March 2029 | 47 days |
+| Date       | Maximum Lifetime |
+| ---------- | ---------------- |
+| March 2026 | 200 days         |
+| March 2027 | 100 days         |
+| March 2029 | 47 days          |
 
 Manual certificate management becomes unsustainable. Homelab operators renewing every few weeks instead of annually need automation that doesn't require enterprise infrastructure.
 
@@ -180,52 +180,52 @@ Who's this network for?
 Choice [1]:
 ```
 
-This sets security defaults appropriate to the trust model. Every feature remains available regardless of profile — profiles set the posture, not the ceiling.
+This sets security defaults appropriate to the trust model. Every feature remains available regardless of profile - profiles set the posture, not the ceiling.
 
 #### Profile: Just Me
 
 **Trust model:** I trust myself. Protect me from accidents.
 
-| Setting | Value |
-|---------|-------|
-| Approval required | No |
-| Operator name | Not prompted |
-| Enrollment | Always open |
-| Scope constraint | None |
-| Auth credential rotation reminder | None |
-| Compliance summary | Simple health check |
-| Cert lifetime | 30 days, renew at day 20 |
-| Audit log | On (minimal) |
+| Setting                           | Value                    |
+| --------------------------------- | ------------------------ |
+| Approval required                 | No                       |
+| Operator name                     | Not prompted             |
+| Enrollment                        | Always open              |
+| Scope constraint                  | None                     |
+| Auth credential rotation reminder | None                     |
+| Compliance summary                | Simple health check      |
+| Cert lifetime                     | 30 days, renew at day 20 |
+| Audit log                         | On (minimal)             |
 
 #### Profile: My Team
 
 **Trust model:** I trust these people, but people come and go. Protect me from turnover.
 
-| Setting | Value |
-|---------|-------|
-| Approval required | Yes |
-| Operator name | Prompted |
-| Enrollment | Open by default, `close-enrollment` available |
-| Scope constraint | Inferred from current subnet |
-| Auth credential rotation reminder | Every 6 months |
-| Compliance summary | Standard |
-| Cert lifetime | 30 days, renew at day 20 |
-| Audit log | On (standard) |
+| Setting                           | Value                                         |
+| --------------------------------- | --------------------------------------------- |
+| Approval required                 | Yes                                           |
+| Operator name                     | Prompted                                      |
+| Enrollment                        | Open by default, `close-enrollment` available |
+| Scope constraint                  | Inferred from current subnet                  |
+| Auth credential rotation reminder | Every 6 months                                |
+| Compliance summary                | Standard                                      |
+| Cert lifetime                     | 30 days, renew at day 20                      |
+| Audit log                         | On (standard)                                 |
 
 #### Profile: My Organization
 
 **Trust model:** I answer to someone. Protect me from liability.
 
-| Setting | Value |
-|---------|-------|
-| Approval required | Yes |
-| Operator name | Required |
-| Enrollment | Closed by default (must explicitly open) |
-| Scope constraint | Required (prompted for domain and subnet) |
-| Auth credential rotation reminder | Every 6 months |
-| Compliance summary | Full (audit-ready) |
-| Cert lifetime | 30 days, renew at day 20 |
-| Audit log | On (full, with operator attribution) |
+| Setting                           | Value                                     |
+| --------------------------------- | ----------------------------------------- |
+| Approval required                 | Yes                                       |
+| Operator name                     | Required                                  |
+| Enrollment                        | Closed by default (must explicitly open)  |
+| Scope constraint                  | Required (prompted for domain and subnet) |
+| Auth credential rotation reminder | Every 6 months                            |
+| Compliance summary                | Full (audit-ready)                        |
+| Cert lifetime                     | 30 days, renew at day 20                  |
+| Audit log                         | On (full, with operator attribution)      |
 
 The selected profile is stored in roster metadata as `trust_profile: personal | team | organization`.
 
@@ -260,7 +260,7 @@ koi certmesh create \
 
 ### 4.5 Enrollment Flow
 
-#### Step 1 — Create the Mesh
+#### Step 1 - Create the Mesh
 
 Machine A: `koi certmesh create`
 
@@ -279,9 +279,10 @@ Mash your keyboard randomly... GO!
 ```
 
 Three options (inherited from Zen Garden's Keystone pattern):
-   - **Keyboard mashing** — the default. The operator's chaotic keystrokes seed the CA key directly. Fun and secure.
-   - **Auto-generated passphrase** — XKCD-style word sequence, displayed for the user to record.
-   - **Manual entry** — for operators who use a password manager.
+
+- **Keyboard mashing** - the default. The operator's chaotic keystrokes seed the CA key directly. Fun and secure.
+- **Auto-generated passphrase** - XKCD-style word sequence, displayed for the user to record.
+- **Manual entry** - for operators who use a password manager.
 
 The CA keypair is born from human entropy. On hardware with a TPM, the TPM's hardware RNG is mixed in as an additional source.
 
@@ -294,12 +295,12 @@ The CA keypair is born from human entropy. On hardware with a TPM, the TPM's har
 9. **Self-certification.** Machine A mints its own service certificate, signed by the new root CA. Cert files are written to the standard cert path (see §4.9).
 10. **Audit log.** First entry: `pond_initialized | operator=<name> | profile=<profile>`.
 
-#### Step 2 — Join the Mesh
+#### Step 2 - Join the Mesh
 
 Machine B: `koi certmesh join`
 
 1. **Discovery.** Koi discovers `_certmesh._tcp` via mDNS. Connects to the CA's certmesh API.
-2. **Auth challenge.** User is prompted to authenticate — enter a six-digit TOTP code from their authenticator app, or tap a FIDO2 security key.
+2. **Auth challenge.** User is prompted to authenticate - enter a six-digit TOTP code from their authenticator app, or tap a FIDO2 security key.
 3. **Rate limiting.** Three failed attempts trigger a 5-minute lockout.
 4. **Approval (if enabled).** On the CA node, the administrator sees:
 
@@ -312,7 +313,7 @@ Approve? [y/N]:
 Two-party authorization: the joiner provides the code, the administrator approves at the CA. (Disabled in "Just me" profile.)
 
 5. **Certificate issuance.** On successful enrollment:
-   - Machine B receives the root CA certificate (public only — the trust, not the power)
+   - Machine B receives the root CA certificate (public only - the trust, not the power)
    - The CA mints a service certificate for Machine B with auto-populated SANs: hostname, FQDN, mDNS name (e.g., `machine-b.local`), all LAN IP addresses known to Koi
    - Machine B receives its service certificate and private key
 
@@ -327,7 +328,7 @@ Two-party authorization: the joiner provides the code, the administrator approve
 9. **Registry update.** Machine A adds Machine B to the enrollment roster.
 10. **Audit log.** Entry: `stone_joined | host=stone-05 | approved_by=<operator>`.
 
-#### Step 3 — Ongoing Lifecycle
+#### Step 3 - Ongoing Lifecycle
 
 - Machine A tracks all enrolled members via Koi mDNS.
 - Before certs expire (default: renew at day 20 of a 30-day lifetime), Machine A mints fresh certificates and pushes them to members via Koi's REST API (`/certmesh/renew` endpoint, validated by existing cert chain).
@@ -341,11 +342,11 @@ Two-party authorization: the joiner provides the code, the administrator approve
 
 Machine B (already enrolled as a member) runs `koi certmesh promote`.
 
-1. Auth challenge — same UX as joining.
+1. Auth challenge - same UX as joining.
 2. The root CA private key is transferred, encrypted, over the auth-verified channel.
 3. Machine B receives the full enrollment roster.
 4. Machine B becomes the **standby** (warm secondary). Machine A remains the **primary** (active CA).
-5. The standby syncs the roster periodically from the primary — a pull model. The response is the full registry plus a signed manifest, so the standby can verify integrity.
+5. The standby syncs the roster periodically from the primary - a pull model. The response is the full registry plus a signed manifest, so the standby can verify integrity.
 
 #### The Failover Dance
 
@@ -360,14 +361,14 @@ Machine B (already enrolled as a member) runs `koi certmesh promote`.
 1. Machine A starts up, advertises mDNS.
 2. Before claiming primary, it looks for an existing `_certmesh._tcp` primary on the network.
 3. It finds Machine B. Instead of fighting for the crown, Machine A defers: "You're primary now. I'll be secondary."
-4. Machine A pulls the current roster from Machine B (which may have changed — new members joined, certs renewed during A's absence), syncs up, settles into standby.
+4. Machine A pulls the current roster from Machine B (which may have changed - new members joined, certs renewed during A's absence), syncs up, settles into standby.
 
 #### Design Principles
 
 - **One active CA at a time.** No parallel signing, no serial number conflicts, no racing renewals.
-- **No election protocol.** The rule: "If I wake up and someone I trust is already primary, I defer." Trust is verifiable — the primary's claim is signed by the same root CA key.
+- **No election protocol.** The rule: "If I wake up and someone I trust is already primary, I defer." Trust is verifiable - the primary's claim is signed by the same root CA key.
 - **Deterministic tiebreaker.** If both CAs come up simultaneously and both see no primary: lowest hostname alphabetically (or earliest enrollment timestamp) wins. Whoever loses checks again, sees the winner, defers.
-- **Graceful degradation.** If both CAs are down, members keep running with existing certs. Nothing breaks immediately — services stay up, HTTPS keeps working. Certs just aren't being renewed. When either CA returns, life resumes.
+- **Graceful degradation.** If both CAs are down, members keep running with existing certs. Nothing breaks immediately - services stay up, HTTPS keeps working. Certs just aren't being renewed. When either CA returns, life resumes.
 
 ### 4.7 Institutional Controls
 
@@ -379,7 +380,7 @@ These features are activated by the "My team" and "My organization" trust profil
 koi certmesh rotate-auth
 ```
 
-Generates a new auth credential (TOTP secret or FIDO2 registration), invalidates the old one. Existing enrolled machines are unaffected — they're already in the mesh. Only future enrollments use the new credential.
+Generates a new auth credential (TOTP secret or FIDO2 registration), invalidates the old one. Existing enrolled machines are unaffected - they're already in the mesh. Only future enrollments use the new credential.
 
 **Use case:** Run when someone with access leaves the organization.
 
@@ -419,14 +420,16 @@ koi certmesh compliance
 
 Adapts output to the trust profile:
 
-**"Just me"** — simple health check:
+**"Just me"** - simple health check:
+
 ```
 certmesh: healthy
   12 members, all certs valid
   Next renewal: 6 days
 ```
 
-**"My organization"** — full audit-ready summary:
+**"My organization"** - full audit-ready summary:
+
 ```
 Certmesh Security Summary
 ─────────────────────────
@@ -455,15 +458,15 @@ Health:           All members reachable
 
 #### Cryptographic Controls
 
-| Control | Implementation |
-|---------|---------------|
-| CA key at rest | Encrypted with operator passphrase. Requires `koi certmesh unlock` after reboot. Sealed in TPM when hardware supports it. |
-| Auth credential at rest | Encrypted alongside CA key, same protection. |
-| Certificate pinning | On first enrollment, members record CA cert fingerprint. Future connections verify chain AND fingerprint. |
-| Cert lifetime | 30-day default, auto-renew at day 20. Exercises renewal machinery constantly. |
-| Enrollment rate limiting | 3 failed auth attempts → 5-minute lockout. |
-| SAN auto-population | Hostname, FQDN, mDNS name, all LAN IPs from Koi discovery. Prevents "cert doesn't match" bypasses. |
-| Entropy collection | Active keyboard mashing (248+ bits), mixed with TPM hardware RNG when available. |
+| Control                  | Implementation                                                                                                            |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| CA key at rest           | Encrypted with operator passphrase. Requires `koi certmesh unlock` after reboot. Sealed in TPM when hardware supports it. |
+| Auth credential at rest  | Encrypted alongside CA key, same protection.                                                                              |
+| Certificate pinning      | On first enrollment, members record CA cert fingerprint. Future connections verify chain AND fingerprint.                 |
+| Cert lifetime            | 30-day default, auto-renew at day 20. Exercises renewal machinery constantly.                                             |
+| Enrollment rate limiting | 3 failed auth attempts → 5-minute lockout.                                                                                |
+| SAN auto-population      | Hostname, FQDN, mDNS name, all LAN IPs from Koi discovery. Prevents "cert doesn't match" bypasses.                        |
+| Entropy collection       | Active keyboard mashing (248+ bits), mixed with TPM hardware RNG when available.                                          |
 
 #### Revocation
 
@@ -494,7 +497,7 @@ Type EXPORT to continue:
 
 ### 4.9 Certificate File Management
 
-Certmesh mints certificates. But minting isn't enough — services need to *find* the cert and key files. This section specifies where certs live, how services consume them, and what happens on renewal.
+Certmesh mints certificates. But minting isn't enough - services need to _find_ the cert and key files. This section specifies where certs live, how services consume them, and what happens on renewal.
 
 #### Standard Cert Path
 
@@ -515,7 +518,7 @@ On Linux, the default path is `/var/lib/koi/certs/`. On macOS, `/Library/Applica
 
 #### Three Consumption Scenarios
 
-**Scenario A — Service speaks TLS natively.**
+**Scenario A - Service speaks TLS natively.**
 
 Most production services support TLS configuration: Grafana, Nginx, PostgreSQL, Redis 6+, Node.js, Go, Rust applications. Point the service at the cert path once:
 
@@ -529,7 +532,7 @@ cert_key  = /var/lib/koi/certs/stone-05/key.pem
 
 This is a one-time configuration. Some services hot-reload certs when files change (Nginx with `nginx -s reload`, Caddy automatically). For services that don't, Koi supports reload hooks.
 
-**Scenario B — Docker container.**
+**Scenario B - Docker container.**
 
 Volume-mount the cert directory into the container:
 
@@ -546,11 +549,11 @@ services:
       GF_SERVER_CERT_KEY: /etc/koi-certs/key.pem
 ```
 
-Docker volume mounts are live — when Koi renews certs on the host, the container sees the new files immediately without restart (assuming the service hot-reloads).
+Docker volume mounts are live - when Koi renews certs on the host, the container sees the new files immediately without restart (assuming the service hot-reloads).
 
-**Scenario C — Service doesn't speak TLS.**
+**Scenario C - Service doesn't speak TLS.**
 
-Some services only speak plain HTTP — legacy apps, simple tools, custom scripts. For these, `koi proxy` terminates TLS on their behalf (see §7).
+Some services only speak plain HTTP - legacy apps, simple tools, custom scripts. For these, `koi proxy` terminates TLS on their behalf (see §7).
 
 #### Reload Hooks
 
@@ -564,7 +567,7 @@ koi certmesh set-hook --reload "/usr/local/bin/restart-my-app.sh"
 
 The hook runs after cert files are written, before the renewal is marked complete. If the hook fails (nonzero exit), the renewal is logged as degraded but the new cert files remain in place.
 
-Hooks are per-machine, not per-service — they run on the machine that received the renewed cert. If you need per-service hooks, use a script that handles routing internally.
+Hooks are per-machine, not per-service - they run on the machine that received the renewed cert. If you need per-service hooks, use a script that handles routing internally.
 
 ### 4.10 Certmesh Health Monitoring
 
@@ -575,23 +578,23 @@ Every 5 minutes, each mesh member:
 3. Verifies the CA cert fingerprint matches the pinned value.
 4. Logs the result.
 
-Failures trigger local warnings. Catches: expired CA, clock drift, trust store corruption, reimaged machines that lost their trust store. This is a smoke detector — runs silently, costs nothing, screams when something's wrong.
+Failures trigger local warnings. Catches: expired CA, clock drift, trust store corruption, reimaged machines that lost their trust store. This is a smoke detector - runs silently, costs nothing, screams when something's wrong.
 
 ### 4.11 ISO 27001 Alignment
 
 Certmesh was reviewed against ISO 27001 Annex A controls for proportionality to its target use cases.
 
-| Control | Annex A Reference | Implementation |
-|---------|-------------------|----------------|
-| Authentication information | A.5.17 | Authenticated enrollment (TOTP/FIDO2) — human-in-the-loop authorization |
-| Records protection | A.5.33 | Single canonical CA, signed roster, deterministic failover |
-| Use of cryptography | A.8.24 | Encrypted key at rest, certificate pinning, active entropy collection, TPM when available |
-| Secure authentication | A.8.5 | Auth rate limiting (3 attempts / 5-minute lockout) |
-| Logging | A.8.15 | Append-only signed audit log with operator attribution |
-| Monitoring | A.8.16 | Health heartbeat with cert chain validation |
-| Security policies | A.5.1 | Trust profiles, compliance summary, security model documentation |
+| Control                    | Annex A Reference | Implementation                                                                            |
+| -------------------------- | ----------------- | ----------------------------------------------------------------------------------------- |
+| Authentication information | A.5.17            | Authenticated enrollment (TOTP/FIDO2) - human-in-the-loop authorization                   |
+| Records protection         | A.5.33            | Single canonical CA, signed roster, deterministic failover                                |
+| Use of cryptography        | A.8.24            | Encrypted key at rest, certificate pinning, active entropy collection, TPM when available |
+| Secure authentication      | A.8.5             | Auth rate limiting (3 attempts / 5-minute lockout)                                        |
+| Logging                    | A.8.15            | Append-only signed audit log with operator attribution                                    |
+| Monitoring                 | A.8.16            | Health heartbeat with cert chain validation                                               |
+| Security policies          | A.5.1             | Trust profiles, compliance summary, security model documentation                          |
 
-**Assessment:** For homelab through small institutional use (5–15 machines, technical operators), this model exceeds what most commercial products provide at comparable scale. The secure path is the easy path — users have no incentive to bypass security.
+**Assessment:** For homelab through small institutional use (5–15 machines, technical operators), this model exceeds what most commercial products provide at comparable scale. The secure path is the easy path - users have no incentive to bypass security.
 
 ---
 
@@ -599,7 +602,7 @@ Certmesh was reviewed against ISO 27001 Annex A controls for proportionality to 
 
 ### 5.1 Purpose
 
-The hosts file killer. Every homelab operator and small network administrator faces the same problem: services are running, discovery works, TLS works — and then someone types `192.168.1.47:8080` into a browser because there's no friendly name. The `.local` mDNS names work on some platforms, flake out on others, and completely fail inside container networks.
+The hosts file killer. Every homelab operator and small network administrator faces the same problem: services are running, discovery works, TLS works - and then someone types `192.168.1.47:8080` into a browser because there's no friendly name. The `.local` mDNS names work on some platforms, flake out on others, and completely fail inside container networks.
 
 Koi DNS is a lightweight local resolver that gives services friendly names by putting a DNS face on data Koi already owns. It is not a replacement for Pi-hole, CoreDNS, or any full-featured DNS server. It answers queries for a local zone using Koi's service registry, and forwards everything else upstream.
 
@@ -607,27 +610,27 @@ Koi DNS is a lightweight local resolver that gives services friendly names by pu
 
 Koi starts a DNS resolver that listens on a configurable port (default: 53). It answers authoritatively for a local zone (default: `.lan`, configurable) and forwards all other queries to an upstream resolver.
 
-**Record sources — in order of priority:**
+**Record sources - in order of priority:**
 
-1. **Manual static entries** — explicitly added via `koi dns add`. The hosts file replacement.
-2. **Certmesh SANs** — every SAN on every certmesh member's certificate becomes a resolvable name.
-3. **mDNS registry** — every service discovered by Koi gets a DNS name derived from its mDNS hostname and service type.
+1. **Manual static entries** - explicitly added via `koi dns add`. The hosts file replacement.
+2. **Certmesh SANs** - every SAN on every certmesh member's certificate becomes a resolvable name.
+3. **mDNS registry** - every service discovered by Koi gets a DNS name derived from its mDNS hostname and service type.
 
 **Record types served:**
 
-| Type | Source | Example |
-|------|--------|---------|
-| A | Machine IP from mDNS/certmesh | `stone-05.lan` → `192.168.1.15` |
-| AAAA | Machine IPv6 if available | `stone-05.lan` → `fe80::1` |
-| SRV | Service type + port from mDNS | `_grafana._tcp.lan` → `stone-05.lan:3000` |
-| A | Friendly service alias | `grafana.lan` → `192.168.1.15` |
+| Type | Source                        | Example                                   |
+| ---- | ----------------------------- | ----------------------------------------- |
+| A    | Machine IP from mDNS/certmesh | `stone-05.lan` → `192.168.1.15`           |
+| AAAA | Machine IPv6 if available     | `stone-05.lan` → `fe80::1`                |
+| SRV  | Service type + port from mDNS | `_grafana._tcp.lan` → `stone-05.lan:3000` |
+| A    | Friendly service alias        | `grafana.lan` → `192.168.1.15`            |
 
 **What Koi DNS does NOT do:**
 
-- No recursive resolution for the local zone — only answers from its own registry
+- No recursive resolution for the local zone - only answers from its own registry
 - No caching of upstream responses (leave that to the upstream resolver)
 - No DNSSEC (disproportionate for local networks)
-- No zone transfer (AXFR/IXFR) — Koi is not a primary DNS server for delegation
+- No zone transfer (AXFR/IXFR) - Koi is not a primary DNS server for delegation
 - Never resolves a local zone name to a non-private IP address (RFC 1918 enforcement)
 
 ### 5.3 CLI Surface
@@ -658,14 +661,17 @@ koi dns serve \
 When a service is discovered via mDNS or enrolled via certmesh, Koi DNS generates names automatically:
 
 **Machine names:**
+
 - mDNS hostname `stone-05` → `stone-05.lan`
 - Certmesh enrollment with scope `lincoln-elementary.local` → `stone-05.lincoln-elementary.local` also resolves
 
 **Service names (when `--service-aliases` is enabled):**
+
 - mDNS service `_grafana._tcp` on `stone-05` → `grafana.lan` resolves to `stone-05`'s IP
 - Multiple instances of the same service type → `grafana.lan` returns all IPs (round-robin), `grafana-stone-05.lan` and `grafana-stone-09.lan` for specific instances
 
 **Conflict resolution:**
+
 - Manual static entries always win
 - If two machines advertise the same service type, the friendly alias returns all IPs
 - If a static entry conflicts with an auto-generated name, the static entry takes precedence and a warning is logged
@@ -686,19 +692,19 @@ Koi does not modify any device's DNS configuration automatically. The user decid
 
 When certmesh is active, DNS gains two properties:
 
-**Authenticated resolution.** A certmesh member can verify that `grafana.lan` resolves to a machine that is part of the mesh — the IP maps to an enrolled member with a valid certificate. This is not DNSSEC, but it is a practical trust signal: if the name resolves to a certmesh member, the connection will have valid TLS.
+**Authenticated resolution.** A certmesh member can verify that `grafana.lan` resolves to a machine that is part of the mesh - the IP maps to an enrolled member with a valid certificate. This is not DNSSEC, but it is a practical trust signal: if the name resolves to a certmesh member, the connection will have valid TLS.
 
 **SAN feedback loop.** When DNS generates a name like `grafana.lan`, and certmesh mints a certificate for the machine hosting Grafana, the SAN list should include `grafana.lan`. DNS informs certmesh of generated aliases, certmesh includes them in the next cert renewal (within 10 days on a 30-day cycle). The first request after the alias is created may not have a perfect cert match; subsequent requests will. The cert then matches every name the user might type.
 
 ### 5.7 Security Constraints
 
-| Constraint | Rationale |
-|-----------|-----------|
-| Listen on LAN interfaces only by default | Prevent accidental exposure to the internet |
-| RFC 1918 enforcement on local zone responses | A `.lan` name must never resolve to a public IP |
-| Rate limiting on queries | Prevent Koi from being used as a DNS amplification vector |
-| No open recursion | Koi forwards upstream, it does not resolve recursively itself |
-| Log queries only at debug level | DNS query logs are privacy-sensitive; off by default |
+| Constraint                                   | Rationale                                                     |
+| -------------------------------------------- | ------------------------------------------------------------- |
+| Listen on LAN interfaces only by default     | Prevent accidental exposure to the internet                   |
+| RFC 1918 enforcement on local zone responses | A `.lan` name must never resolve to a public IP               |
+| Rate limiting on queries                     | Prevent Koi from being used as a DNS amplification vector     |
+| No open recursion                            | Koi forwards upstream, it does not resolve recursively itself |
+| Log queries only at debug level              | DNS query logs are privacy-sensitive; off by default          |
 
 ---
 
@@ -706,7 +712,7 @@ When certmesh is active, DNS gains two properties:
 
 ### 6.1 Purpose
 
-"Is the thing up?" Not monitoring — health. Not "show me the p99 latency over the last six hours" but "is everything working right now, and if not, when did it stop?"
+"Is the thing up?" Not monitoring - health. Not "show me the p99 latency over the last six hours" but "is everything working right now, and if not, when did it stop?"
 
 Koi already collects health data as a side effect of its other capabilities. The mDNS registry tracks last-seen timestamps. The certmesh heartbeat validates cert chains every five minutes. The DNS resolver knows which names should resolve. Health synthesizes what the other capabilities already know and presents it as a unified view.
 
@@ -716,24 +722,24 @@ Koi already collects health data as a side effect of its other capabilities. The
 
 Derived entirely from existing Koi data:
 
-| Signal | Source | Meaning |
-|--------|--------|---------|
-| mDNS presence | mDNS registry | Machine is on the network |
-| Last-seen timestamp | mDNS heartbeat | How recently the machine was observed |
-| Cert chain validity | Certmesh heartbeat | Trust relationship is intact |
-| Cert expiry | Certmesh roster | Days until certificate expires |
-| DNS resolution | DNS resolver | Machine's names resolve correctly |
+| Signal              | Source             | Meaning                               |
+| ------------------- | ------------------ | ------------------------------------- |
+| mDNS presence       | mDNS registry      | Machine is on the network             |
+| Last-seen timestamp | mDNS heartbeat     | How recently the machine was observed |
+| Cert chain validity | Certmesh heartbeat | Trust relationship is intact          |
+| Cert expiry         | Certmesh roster    | Days until certificate expires        |
+| DNS resolution      | DNS resolver       | Machine's names resolve correctly     |
 
-No new agents, no new collectors, no new protocols. Machine health is free — Koi already has the data.
+No new agents, no new collectors, no new protocols. Machine health is free - Koi already has the data.
 
 **Service health (opt-in, explicitly configured).**
 
 One layer deeper: does the service on that machine actually respond?
 
-| Check type | What it does | Use case |
-|-----------|-------------|----------|
-| HTTP | GET a URL, expect 2xx | Web apps, APIs, dashboards |
-| TCP | Connect to a port, expect open | Databases, caches, message queues |
+| Check type | What it does                   | Use case                          |
+| ---------- | ------------------------------ | --------------------------------- |
+| HTTP       | GET a URL, expect 2xx          | Web apps, APIs, dashboards        |
+| TCP        | Connect to a port, expect open | Databases, caches, message queues |
 
 Service checks are registered explicitly:
 
@@ -748,7 +754,7 @@ Default check interval: 30 seconds. Configurable per service.
 ### 6.3 CLI Surface
 
 ```
-koi health status                # Full health view — machines + services
+koi health status                # Full health view - machines + services
 koi health watch                 # Live terminal view, refreshes every 30s
 koi health add <n> --http <url>     # Add HTTP service check
 koi health add <n> --tcp <host:port> # Add TCP service check
@@ -782,7 +788,7 @@ Live terminal view. Same layout, refreshes in place. A machine goes down, the li
 
 ### 6.5 State Transition Log
 
-Health logs state changes — not every check, just transitions:
+Health logs state changes - not every check, just transitions:
 
 ```
 koi health log
@@ -797,22 +803,22 @@ Transitions only. Not every heartbeat. This keeps the log small and meaningful. 
 
 ### 6.6 Design Boundaries
 
-**Health is present tense only.** It answers "what is the state of my network right now?" If someone wants historical trends, graphs, dashboards, or alerting, they need a monitoring tool (Uptime Kuma, Prometheus, Grafana). Koi tells you *now*.
+**Health is present tense only.** It answers "what is the state of my network right now?" If someone wants historical trends, graphs, dashboards, or alerting, they need a monitoring tool (Uptime Kuma, Prometheus, Grafana). Koi tells you _now_.
 
 **No time-series storage.** The state transition log is a flat append-only file, not a database. It is not designed for querying "what was my uptime percentage last month." It is designed for "what changed since Tuesday."
 
 **No alerting.** No email, no SMS, no webhooks, no PagerDuty. If the operator is looking at `koi health watch`, they see it in real time. If they're not looking, they see it next time they check. For a homelab, this is appropriate. For 24/7 alerting, integrate with a real monitoring stack.
 
-**No agents.** Health checks are external probes from Koi's perspective, not self-assessment from the target machine. This answers "can I reach this service?" — the question the operator is actually asking.
+**No agents.** Health checks are external probes from Koi's perspective, not self-assessment from the target machine. This answers "can I reach this service?" - the question the operator is actually asking.
 
 ### 6.7 Integration with Other Capabilities
 
-| Capability | What health consumes | What health provides |
-|-----------|---------------------|---------------------|
-| mDNS | Last-seen timestamps, machine presence | Down detection for machines that stop advertising |
-| Certmesh | Cert expiry, heartbeat results | Warning when certs approach expiry or chain validation fails |
-| DNS | Name resolution status | Detection when a name stops resolving |
-| Proxy | Backend health (proxy already probes backends) | Status of proxied services |
+| Capability | What health consumes                           | What health provides                                         |
+| ---------- | ---------------------------------------------- | ------------------------------------------------------------ |
+| mDNS       | Last-seen timestamps, machine presence         | Down detection for machines that stop advertising            |
+| Certmesh   | Cert expiry, heartbeat results                 | Warning when certs approach expiry or chain validation fails |
+| DNS        | Name resolution status                         | Detection when a name stops resolving                        |
+| Proxy      | Backend health (proxy already probes backends) | Status of proxied services                                   |
 
 Health is purely a consumer of other capabilities' data for machine-level checks. Service-level checks (HTTP/TCP) are the only new network activity health introduces.
 
@@ -822,25 +828,27 @@ Health is purely a consumer of other capabilities' data for machine-level checks
 
 ### 7.1 Purpose
 
-Certmesh mints certificates. DNS creates names. But there's a last-mile problem: how does the service actually *serve* TLS?
+Certmesh mints certificates. DNS creates names. But there's a last-mile problem: how does the service actually _serve_ TLS?
 
-Services that speak TLS natively can point their config at the cert files (see §4.9). But many services — especially lightweight tools, legacy applications, and custom scripts — only speak plain HTTP. Without something to terminate TLS on their behalf, those services are unreachable over HTTPS. The operator either configures a standalone reverse proxy (Caddy, Nginx) and keeps it in sync with Koi's cert files and service registry, or gives up and uses HTTP.
+Services that speak TLS natively can point their config at the cert files (see §4.9). But many services - especially lightweight tools, legacy applications, and custom scripts - only speak plain HTTP. Without something to terminate TLS on their behalf, those services are unreachable over HTTPS. The operator either configures a standalone reverse proxy (Caddy, Nginx) and keeps it in sync with Koi's cert files and service registry, or gives up and uses HTTP.
 
-Koi Proxy is a cert-aware TLS-terminating reverse proxy. It listens on a port, presents certmesh certificates to clients, and forwards plain HTTP to the backend service. It is not a general-purpose reverse proxy — it is the last piece needed so that `https://grafana.lan` works end to end.
+Koi Proxy is a cert-aware TLS-terminating reverse proxy. It listens on a port, presents certmesh certificates to clients, and forwards plain HTTP to the backend service. It is not a general-purpose reverse proxy - it is the last piece needed so that `https://grafana.lan` works end to end.
 
 ### 7.2 What Proxy Is and Is Not
 
 **Proxy IS:**
+
 - A TLS terminator that uses certmesh certs automatically
 - A single-purpose pipe: TLS in, HTTP out
 - Aware of cert renewal (hot-reloads when certmesh overwrites cert files)
 - Localhost-safe by default (backend must be on the same machine unless explicitly overridden)
 
 **Proxy IS NOT:**
+
 - A load balancer (no round-robin, no health-weighted routing)
 - A URL rewriter (no path rewriting, no header injection)
 - A WAF (no request inspection, no rate limiting on application traffic)
-- A WebSocket upgrader (basic TCP proxying only — no protocol awareness)
+- A WebSocket upgrader (basic TCP proxying only - no protocol awareness)
 - A virtual host router (one proxy entry = one listen address + one backend)
 
 If someone needs Nginx features, they should use Nginx. Koi Proxy is the "I just need HTTPS on this one thing" tool.
@@ -886,32 +894,32 @@ When certmesh renews the cert, proxy hot-reloads the new files. No restart requi
 
 ### 7.5 Security Constraints
 
-| Constraint | Rationale |
-|-----------|-----------|
-| Backend defaults to localhost only | The unencrypted hop should be as short as possible |
+| Constraint                                         | Rationale                                                                  |
+| -------------------------------------------------- | -------------------------------------------------------------------------- |
+| Backend defaults to localhost only                 | The unencrypted hop should be as short as possible                         |
 | `--backend-remote` required for non-local backends | Explicit opt-in for cross-machine unencrypted traffic, logged with warning |
-| Uses certmesh certs exclusively | No self-signed certs, no manual cert management |
-| Listens on specified port only | No wildcard binding, no port scanning |
-| No request inspection | Proxy does not read, log, or modify HTTP payloads |
+| Uses certmesh certs exclusively                    | No self-signed certs, no manual cert management                            |
+| Listens on specified port only                     | No wildcard binding, no port scanning                                      |
+| No request inspection                              | Proxy does not read, log, or modify HTTP payloads                          |
 
 ### 7.6 When to Use Proxy vs. Native TLS
 
-| Scenario | Recommendation |
-|----------|---------------|
-| Service supports TLS natively (Grafana, Nginx, Postgres) | Configure service to use cert files directly (§4.9 Scenario A) |
-| Docker container with TLS support | Volume-mount certs, configure service (§4.9 Scenario B) |
-| Service only speaks HTTP | Use `koi proxy add` (this section) |
-| Multiple services on one machine, each needs HTTPS | One proxy entry per service, different listen ports |
-| Need URL rewriting, load balancing, WAF | Use Caddy/Nginx/Traefik instead — Koi Proxy is intentionally simple |
+| Scenario                                                 | Recommendation                                                      |
+| -------------------------------------------------------- | ------------------------------------------------------------------- |
+| Service supports TLS natively (Grafana, Nginx, Postgres) | Configure service to use cert files directly (§4.9 Scenario A)      |
+| Docker container with TLS support                        | Volume-mount certs, configure service (§4.9 Scenario B)             |
+| Service only speaks HTTP                                 | Use `koi proxy add` (this section)                                  |
+| Multiple services on one machine, each needs HTTPS       | One proxy entry per service, different listen ports                 |
+| Need URL rewriting, load balancing, WAF                  | Use Caddy/Nginx/Traefik instead - Koi Proxy is intentionally simple |
 
 ### 7.7 Integration with Other Capabilities
 
-| Capability | How proxy uses it |
-|-----------|-------------------|
-| mDNS | Can discover backend services by their mDNS service type |
-| Certmesh | Uses cert files from standard cert path. Hot-reloads on renewal. |
-| DNS | DNS alias `grafana.lan` resolves to machine IP → proxy terminates TLS on that IP |
-| Health | Proxy's backend check is a natural health signal — health can consume it |
+| Capability | How proxy uses it                                                                |
+| ---------- | -------------------------------------------------------------------------------- |
+| mDNS       | Can discover backend services by their mDNS service type                         |
+| Certmesh   | Uses cert files from standard cert path. Hot-reloads on renewal.                 |
+| DNS        | DNS alias `grafana.lan` resolves to machine IP → proxy terminates TLS on that IP |
+| Health     | Proxy's backend check is a natural health signal - health can consume it         |
 
 ---
 
@@ -938,7 +946,7 @@ Five capabilities. One installation. One binary. One `koi status`.
 A user sets up a new homelab. Here's what happens:
 
 1. Install Koi on each machine. Run `koi certmesh create` on the first one.
-2. Scan the QR code. Run `koi certmesh join` on each subsequent machine — authenticate (TOTP code or security key).
+2. Scan the QR code. Run `koi certmesh join` on each subsequent machine - authenticate (TOTP code or security key).
 3. Start services. Docker Compose, systemd, whatever.
 
 From this point forward, without any additional configuration:
@@ -953,40 +961,40 @@ The user types `https://grafana.lan` in their browser. It works. No browser warn
 
 ### 8.3 Communication Channels
 
-| Channel | Protocol | Purpose |
-|---------|----------|---------|
-| Service discovery | mDNS `_koi._tcp` | Koi instances finding each other |
-| CA discovery | mDNS `_certmesh._tcp` | Joining machines finding the CA |
-| DNS advertisement | mDNS `_dns._udp` | Advertising Koi as local resolver |
-| Cert enrollment | Koi REST API `/v1/certmesh/join` | Authenticated enrollment (TOTP/FIDO2) |
-| Cert renewal | Koi REST API `/v1/certmesh/renew` | Push renewals, validated by existing cert chain |
-| Roster sync | Koi REST API `/v1/certmesh/roster` | Standby pulls full registry + signed manifest |
-| Certmesh heartbeat | Koi REST API `/v1/certmesh/health` | Periodic cert chain validation |
-| DNS resolution | UDP/TCP port 53 | Local zone queries + upstream forwarding |
-| Service health checks | HTTP GET / TCP connect | External probes for opt-in service monitoring |
-| Proxy | HTTPS → HTTP | TLS termination for non-TLS backends |
+| Channel               | Protocol                           | Purpose                                         |
+| --------------------- | ---------------------------------- | ----------------------------------------------- |
+| Service discovery     | mDNS `_koi._tcp`                   | Koi instances finding each other                |
+| CA discovery          | mDNS `_certmesh._tcp`              | Joining machines finding the CA                 |
+| DNS advertisement     | mDNS `_dns._udp`                   | Advertising Koi as local resolver               |
+| Cert enrollment       | Koi REST API `/v1/certmesh/join`   | Authenticated enrollment (TOTP/FIDO2)           |
+| Cert renewal          | Koi REST API `/v1/certmesh/renew`  | Push renewals, validated by existing cert chain |
+| Roster sync           | Koi REST API `/v1/certmesh/roster` | Standby pulls full registry + signed manifest   |
+| Certmesh heartbeat    | Koi REST API `/v1/certmesh/health` | Periodic cert chain validation                  |
+| DNS resolution        | UDP/TCP port 53                    | Local zone queries + upstream forwarding        |
+| Service health checks | HTTP GET / TCP connect             | External probes for opt-in service monitoring   |
+| Proxy                 | HTTPS → HTTP                       | TLS termination for non-TLS backends            |
 
 ### 8.4 Trust Store Installation
 
 Platform-specific, vendored from mkcert's existing implementation:
 
-| Platform | Trust Store | Method |
-|----------|-------------|--------|
-| Linux | `/usr/local/share/ca-certificates/` | `update-ca-certificates` |
-| Windows | Certificate Manager | `certutil` |
-| macOS | Keychain | Security framework |
-| Firefox (NSS) | Detected separately | `certutil` (NSS variant) |
+| Platform      | Trust Store                         | Method                   |
+| ------------- | ----------------------------------- | ------------------------ |
+| Linux         | `/usr/local/share/ca-certificates/` | `update-ca-certificates` |
+| Windows       | Certificate Manager                 | `certutil`               |
+| macOS         | Keychain                            | Security framework       |
+| Firefox (NSS) | Detected separately                 | `certutil` (NSS variant) |
 
 ### 8.5 Mobile Device Trust
 
 Root CA cert can be distributed to mobile devices via:
 
-| Platform | Method |
-|----------|--------|
-| iOS | AirDrop the `.pem`, install in Settings > Profile Downloaded, enable full trust |
-| Android | Manual install, enable user roots in development builds |
+| Platform | Method                                                                          |
+| -------- | ------------------------------------------------------------------------------- |
+| iOS      | AirDrop the `.pem`, install in Settings > Profile Downloaded, enable full trust |
+| Android  | Manual install, enable user roots in development builds                         |
 
-Mobile enrollment is manual and documented, not automated. Mobile devices are not mesh members — they are trust consumers.
+Mobile enrollment is manual and documented, not automated. Mobile devices are not mesh members - they are trust consumers.
 
 ---
 
@@ -1049,15 +1057,15 @@ roster:
 
 These fields must exist in the roster from day one, even if optional and usually empty. Retrofitting them later is painful:
 
-- `trust_profile` — drives compliance summary output and default behaviors
-- `operator` — attribution for audit trail
-- `domain_scope`, `subnet_scope` — cert issuance constraints
-- `enrollment_state`, `enrollment_closes_at` — window management
-- `enrolled_by` — per-member attribution
-- `auth_rotated_at` — tracks credential rotation history
-- `cert_path` — where cert files live on each member
-- `reload_hook` — post-renewal command
-- `proxy_entries` — proxy configuration per machine
+- `trust_profile` - drives compliance summary output and default behaviors
+- `operator` - attribution for audit trail
+- `domain_scope`, `subnet_scope` - cert issuance constraints
+- `enrollment_state`, `enrollment_closes_at` - window management
+- `enrolled_by` - per-member attribution
+- `auth_rotated_at` - tracks credential rotation history
+- `cert_path` - where cert files live on each member
+- `reload_hook` - post-renewal command
+- `proxy_entries` - proxy configuration per machine
 
 ---
 
@@ -1071,13 +1079,14 @@ Per ISO 27001 A.5.1, certmesh includes a single-page security model document. Th
 
 **How enrollment works:** You scan a QR code into your authenticator app during setup (or register a FIDO2 security key). To add a new machine, type the six-digit code from your app or tap your security key. If approval mode is enabled, the administrator must also confirm at the CA machine.
 
-**Where keys are stored:** The CA's signing key is encrypted on disk and requires a passphrase to unlock after reboot. On hardware with a TPM, the key is additionally sealed in hardware. The signing key exists only on the primary CA and its standby — never on regular member machines. Each machine's own service cert and key are stored at a well-known path (`/var/lib/koi/certs/`) and are readable only by the owning user.
+**Where keys are stored:** The CA's signing key is encrypted on disk and requires a passphrase to unlock after reboot. On hardware with a TPM, the key is additionally sealed in hardware. The signing key exists only on the primary CA and its standby - never on regular member machines. Each machine's own service cert and key are stored at a well-known path (`/var/lib/koi/certs/`) and are readable only by the owning user.
 
-**How services use certificates:** Services that support TLS are configured once to point at the cert files. Services that don't support TLS can use `koi proxy` to terminate TLS on their behalf. Certificates renew automatically every 30 days — services either hot-reload the new files or are restarted by a reload hook.
+**How services use certificates:** Services that support TLS are configured once to point at the cert files. Services that don't support TLS can use `koi proxy` to terminate TLS on their behalf. Certificates renew automatically every 30 days - services either hot-reload the new files or are restarted by a reload hook.
 
-**What happens during failover:** If the primary CA goes offline, the standby automatically takes over. When the original primary returns, it becomes the standby. At no point are certificates invalid — existing certs continue working regardless of CA availability.
+**What happens during failover:** If the primary CA goes offline, the standby automatically takes over. When the original primary returns, it becomes the standby. At no point are certificates invalid - existing certs continue working regardless of CA availability.
 
 **What you're responsible for:**
+
 - Keep your authenticator app (it's how you authorize new machines)
 - Store your backup passphrase somewhere safe and offline
 - Run `koi certmesh rotate-auth` when someone with access leaves
@@ -1104,12 +1113,12 @@ cargo build                                             # full toolkit (default)
 
 ### 11.2 Supported Platforms
 
-| Platform | mDNS | Certmesh | DNS | Health | Proxy | Trust Store |
-|----------|------|----------|-----|--------|-------|-------------|
-| Linux (amd64, arm64) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Windows 10/11 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| macOS (Apple Silicon, Intel) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Raspberry Pi OS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Platform                     | mDNS | Certmesh | DNS | Health | Proxy | Trust Store |
+| ---------------------------- | ---- | -------- | --- | ------ | ----- | ----------- |
+| Linux (amd64, arm64)         | ✓    | ✓        | ✓   | ✓      | ✓     | ✓           |
+| Windows 10/11                | ✓    | ✓        | ✓   | ✓      | ✓     | ✓           |
+| macOS (Apple Silicon, Intel) | ✓    | ✓        | ✓   | ✓      | ✓     | ✓           |
+| Raspberry Pi OS              | ✓    | ✓        | ✓   | ✓      | ✓     | ✓           |
 
 ---
 
@@ -1117,7 +1126,7 @@ cargo build                                             # full toolkit (default)
 
 The moniker system is designed to grow. Potential future capabilities:
 
-- `koi vault` — secrets distribution across mesh members
+- `koi vault` - secrets distribution across mesh members
 
 **The boundary is the local network.** Everything that lives inside that boundary belongs in Koi. Anything that doesn't need LAN context is a different project.
 
@@ -1129,11 +1138,11 @@ Decisions about what Koi explicitly excludes, with rationale preserved.
 
 ### Container Port Forwarding (Rejected)
 
-**Assessment:** Trap. Docker bridge NAT, WSL2, Podman rootless, Kubernetes CNI — each different, each changing. Koi would race against container runtimes actively iterating on this problem. The real pain (reaching container services) is better solved by DNS naming + service visibility in `koi mdns status` + `koi proxy` for TLS termination.
+**Assessment:** Trap. Docker bridge NAT, WSL2, Podman rootless, Kubernetes CNI - each different, each changing. Koi would race against container runtimes actively iterating on this problem. The real pain (reaching container services) is better solved by DNS naming + service visibility in `koi mdns status` + `koi proxy` for TLS termination.
 
 ### General-Purpose Monitoring (Rejected)
 
-Koi health is present tense only. Time-series storage, historical graphs, alerting, webhooks, PagerDuty integration — all belong in purpose-built tools (Prometheus, Grafana, Uptime Kuma). Koi tells you *now*. If you need *then*, use a monitoring stack.
+Koi health is present tense only. Time-series storage, historical graphs, alerting, webhooks, PagerDuty integration - all belong in purpose-built tools (Prometheus, Grafana, Uptime Kuma). Koi tells you _now_. If you need _then_, use a monitoring stack.
 
 ### DNSSEC (Rejected)
 
@@ -1141,49 +1150,49 @@ Disproportionate for local networks. The complexity of key management, zone sign
 
 ### General-Purpose Reverse Proxy (Rejected)
 
-URL rewriting, load balancing, WebSocket protocol upgrade, virtual host routing, request inspection, WAF — all belong in Caddy, Nginx, or Traefik. Koi Proxy is a cert-aware TLS pipe. If you need more, use a real reverse proxy.
+URL rewriting, load balancing, WebSocket protocol upgrade, virtual host routing, request inspection, WAF - all belong in Caddy, Nginx, or Traefik. Koi Proxy is a cert-aware TLS pipe. If you need more, use a real reverse proxy.
 
 ---
 
 ## Appendix A: Glossary
 
-| Term | Definition |
-|------|-----------|
-| CA (Certificate Authority) | The machine running the certmesh primary that signs certificates for the mesh. |
-| Capability | A named functional module within Koi (mdns, certmesh, dns, health, proxy). |
-| Cert path | The filesystem location where Koi writes cert and key files (`/var/lib/koi/certs/<hostname>/`). |
-| Enrollment | The process of joining a new machine to the certmesh via TOTP or FIDO2 verification. |
-| Failover dance | The deterministic process by which a standby becomes primary when the primary is unavailable. |
-| Fullchain | The service certificate concatenated with the CA certificate (`fullchain.pem`). |
-| Health check | An HTTP GET or TCP connect probe that verifies service reachability. |
-| Hot-reload | A service detecting changed cert files and loading them without restart. |
-| Local zone | The DNS zone Koi answers authoritatively for (default: `.lan`). |
-| Machine health | Health status derived from mDNS, certmesh, and DNS signals — automatic, zero config. |
-| Member | A machine enrolled in the certmesh with a valid service certificate. |
-| Mesh | The set of all machines enrolled in certmesh that trust each other. |
-| Moniker | The root-level command namespace for a capability (e.g., `koi mdns`, `koi certmesh`). |
-| Operator | The human who manages the certmesh. Used for audit log attribution. |
-| Pond | The certmesh trust boundary — all enrolled machines sharing a root CA. |
-| Primary | The active CA that signs certificates and processes enrollments. |
-| Proxy entry | A configured TLS-terminating proxy mapping a listen port to a backend URL. |
-| Reload hook | A command executed after cert renewal to notify services of new cert files. |
-| RFC 1918 | Private IP address ranges (10.x, 172.16-31.x, 192.168.x). Koi DNS enforces local zone names resolve only to these. |
-| Roster | The CA's source of truth: all members, their certs, roles, and enrollment history. |
-| SAN (Subject Alternative Name) | The list of hostnames and IPs in a certificate that the cert is valid for. |
-| SAN feedback loop | DNS aliases are fed back to certmesh for inclusion in the next cert renewal. |
-| Service alias | A friendly DNS name generated from an mDNS service type (e.g., `grafana.lan` from `_grafana._tcp`). |
-| Service health | Health status from opt-in HTTP/TCP probes — requires explicit configuration. |
-| Standby | The warm secondary CA that takes over if the primary is unavailable. |
-| State transition | A change in health status (up→down, 200→502) that is logged. |
-| Trust profile | The security posture setting (personal, team, organization) chosen at mesh creation. |
-| Trust store | The OS-level certificate store where the root CA public cert is installed. |
-| Upstream resolver | The DNS server Koi forwards non-local queries to (default: system resolver). |
+| Term                           | Definition                                                                                                         |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| CA (Certificate Authority)     | The machine running the certmesh primary that signs certificates for the mesh.                                     |
+| Capability                     | A named functional module within Koi (mdns, certmesh, dns, health, proxy).                                         |
+| Cert path                      | The filesystem location where Koi writes cert and key files (`/var/lib/koi/certs/<hostname>/`).                    |
+| Enrollment                     | The process of joining a new machine to the certmesh via TOTP or FIDO2 verification.                               |
+| Failover dance                 | The deterministic process by which a standby becomes primary when the primary is unavailable.                      |
+| Fullchain                      | The service certificate concatenated with the CA certificate (`fullchain.pem`).                                    |
+| Health check                   | An HTTP GET or TCP connect probe that verifies service reachability.                                               |
+| Hot-reload                     | A service detecting changed cert files and loading them without restart.                                           |
+| Local zone                     | The DNS zone Koi answers authoritatively for (default: `.lan`).                                                    |
+| Machine health                 | Health status derived from mDNS, certmesh, and DNS signals - automatic, zero config.                               |
+| Member                         | A machine enrolled in the certmesh with a valid service certificate.                                               |
+| Mesh                           | The set of all machines enrolled in certmesh that trust each other.                                                |
+| Moniker                        | The root-level command namespace for a capability (e.g., `koi mdns`, `koi certmesh`).                              |
+| Operator                       | The human who manages the certmesh. Used for audit log attribution.                                                |
+| Pond                           | The certmesh trust boundary - all enrolled machines sharing a root CA.                                             |
+| Primary                        | The active CA that signs certificates and processes enrollments.                                                   |
+| Proxy entry                    | A configured TLS-terminating proxy mapping a listen port to a backend URL.                                         |
+| Reload hook                    | A command executed after cert renewal to notify services of new cert files.                                        |
+| RFC 1918                       | Private IP address ranges (10.x, 172.16-31.x, 192.168.x). Koi DNS enforces local zone names resolve only to these. |
+| Roster                         | The CA's source of truth: all members, their certs, roles, and enrollment history.                                 |
+| SAN (Subject Alternative Name) | The list of hostnames and IPs in a certificate that the cert is valid for.                                         |
+| SAN feedback loop              | DNS aliases are fed back to certmesh for inclusion in the next cert renewal.                                       |
+| Service alias                  | A friendly DNS name generated from an mDNS service type (e.g., `grafana.lan` from `_grafana._tcp`).                |
+| Service health                 | Health status from opt-in HTTP/TCP probes - requires explicit configuration.                                       |
+| Standby                        | The warm secondary CA that takes over if the primary is unavailable.                                               |
+| State transition               | A change in health status (up→down, 200→502) that is logged.                                                       |
+| Trust profile                  | The security posture setting (personal, team, organization) chosen at mesh creation.                               |
+| Trust store                    | The OS-level certificate store where the root CA public cert is installed.                                         |
+| Upstream resolver              | The DNS server Koi forwards non-local queries to (default: system resolver).                                       |
 
 ---
 
 ## Appendix B: Example Sessions
 
-### Homelab — "Just Me"
+### Homelab - "Just Me"
 
 ```bash
 # Machine 1: Create the mesh
@@ -1220,7 +1229,7 @@ $ koi dns list
   stone-01.lan     A    192.168.1.10   (certmesh)
   stone-05.lan     A    192.168.1.15   (certmesh)
 
-# Grafana doesn't speak TLS — proxy it
+# Grafana doesn't speak TLS - proxy it
 $ koi proxy add grafana --listen 443 --backend http://localhost:3000
   ✓ Proxying https://*:443 → http://localhost:3000
   ✓ Using cert: /var/lib/koi/certs/stone-05/cert.pem
@@ -1229,7 +1238,7 @@ $ koi proxy add grafana --listen 443 --backend http://localhost:3000
 #   https://grafana.lan → works, green lock, no warnings.
 
 $ koi status
-  koi v2.0.0 — local network toolkit
+  koi v2.0.0 - local network toolkit
 
     mdns       2 services discovered, 0 stale
     certmesh   2 members, all certs valid (next renewal: 20d)
@@ -1238,7 +1247,7 @@ $ koi status
     proxy      1 service proxied, 0 errors
 ```
 
-### School — "My Organization"
+### School - "My Organization"
 
 ```bash
 # IT person creates mesh on lab server
