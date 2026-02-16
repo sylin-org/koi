@@ -85,21 +85,16 @@ pub struct RenderHints {
 }
 
 /// QR code rendering format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QrFormat {
     /// Unicode block characters for terminal display.
+    #[default]
     Utf8,
     /// Base64-encoded PNG for `<img src="data:image/png;base64,...">`.
     PngBase64,
     /// Raw URI only — no visual rendering.
     UriOnly,
-}
-
-impl Default for QrFormat {
-    fn default() -> Self {
-        Self::Utf8
-    }
 }
 
 // ── Protocol types (wire format) ────────────────────────────────────
@@ -810,7 +805,7 @@ mod tests {
                         messages: vec![Message::info("Welcome", "Please introduce yourself.")],
                     }
                 }
-                Some(name) if name.is_empty() => {
+                Some("") => {
                     // Empty name — validation error
                     bag.remove("name");
                     EvalResult::ValidationError {

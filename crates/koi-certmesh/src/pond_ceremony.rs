@@ -825,7 +825,7 @@ fn eval_init(
     EvalResult::Complete {
         messages: vec![Message::summary(
             "Pond initialization ready",
-            &summary_lines.join("\n"),
+            summary_lines.join("\n"),
         )],
     }
 }

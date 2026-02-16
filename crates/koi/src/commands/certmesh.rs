@@ -62,16 +62,6 @@ mod color {
         }
     }
 
-    /// Cyan — active trigger-effect pair.
-    pub fn cyan(text: &str) -> String {
-        wrap("36", text)
-    }
-
-    /// Cyan bold — critical value to capture (passphrase, TOTP code).
-    pub fn cyan_bold(text: &str) -> String {
-        wrap("1;36", text)
-    }
-
     /// Green — completed / success.
     pub fn green(text: &str) -> String {
         wrap("32", text)
@@ -298,7 +288,6 @@ pub fn create(
             ),
             String::new(),
         ],
-        BoxStyle::Rounded,
     );
     println!();
     println!("  What's next:");
@@ -367,24 +356,14 @@ fn pad_visible(s: &str, target: usize) -> String {
     }
 }
 
-/// Box style: `╭╮╰╯│─` (rounded) or `┌┐└┘│─` (square).
-#[derive(Clone, Copy)]
-enum BoxStyle {
-    Rounded,
-    Square,
-}
-
-/// Print a box with auto-aligned right border.
+/// Print a box with auto-aligned right border using rounded corners (`╭╮╰╯│─`).
 ///
 /// `indent` is the leading whitespace (e.g. `"  "`).
 /// `title` if `Some`, is embedded in the top border: `╭── Title ──…╮`.
 /// `lines` are the content lines (may contain ANSI color codes).
 /// The inner width is derived from the widest visible line + 2 padding.
-fn print_box(indent: &str, title: Option<&str>, lines: &[String], style: BoxStyle) {
-    let (tl, tr, bl, br, h, v) = match style {
-        BoxStyle::Rounded => ('╭', '╮', '╰', '╯', '─', '│'),
-        BoxStyle::Square => ('┌', '┐', '└', '┘', '─', '│'),
-    };
+fn print_box(indent: &str, title: Option<&str>, lines: &[String]) {
+    let (tl, tr, bl, br, h, v) = ('╭', '╮', '╰', '╯', '─', '│');
 
     // Determine inner width: max visible width + 2 spaces (left + right padding)
     let max_content = lines.iter().map(|l| visible_width(l)).max().unwrap_or(0);
@@ -483,16 +462,6 @@ fn prompt_line(prompt: &str) -> anyhow::Result<String> {
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
     Ok(line.trim_end().to_string())
-}
-
-fn extract_totp_secret_base32_from_uri(uri: &str) -> Option<String> {
-    let query = uri.split('?').nth(1)?;
-    for param in query.split('&') {
-        if let Some(val) = param.strip_prefix("secret=") {
-            return Some(val.to_string());
-        }
-    }
-    None
 }
 
 /// Extract the TOTP secret from an otpauth:// URI and reconstruct a TotpSecret.
