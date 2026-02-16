@@ -1,10 +1,10 @@
 //! CLI command handlers, organized by domain.
 //!
-//! - `mdns` — mDNS commands (discover, announce, unregister, resolve, subscribe).
-//! - `certmesh` — Certificate mesh commands (create, join, status, log, compliance, unlock, set-hook).
-//! - `dns` — DNS commands (serve, lookup, add/remove/list).
-//! - `health` — Health commands (status, watch, add/remove, log).
-//! - `proxy` — Proxy commands (add/remove/list/status).
+//! - `mdns` - mDNS commands (discover, announce, unregister, resolve, subscribe).
+//! - `certmesh` - Certificate mesh commands (create, join, status, log, compliance, unlock, set-hook).
+//! - `dns` - DNS commands (serve, lookup, add/remove/list).
+//! - `health` - Health commands (status, watch, add/remove, log).
+//! - `proxy` - Proxy commands (add/remove/list/status).
 //!
 //! Shared infrastructure (mode detection, payload builders, formatting) lives here.
 
@@ -15,6 +15,7 @@ pub mod health;
 pub mod mdns;
 pub mod proxy;
 pub mod status;
+pub mod udp;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -47,7 +48,7 @@ pub(crate) fn detect_mode(cli: &Cli) -> Mode {
             endpoint: endpoint.clone(),
         };
     }
-    // Check breadcrumb — if a daemon is advertising its endpoint, use client mode
+    // Check breadcrumb - if a daemon is advertising its endpoint, use client mode
     if let Some(endpoint) = koi_config::breadcrumb::read_breadcrumb() {
         let c = KoiClient::new(&endpoint);
         if c.health().is_ok() {

@@ -9,8 +9,8 @@
 //! 5. Returns the final `result_data` bag when the ceremony completes.
 //!
 //! This is the **golden example** of how to consume the ceremony protocol
-//! from a terminal client. Every aspect of the user experience — messages,
-//! options, validation errors — is driven by the ceremony response.
+//! from a terminal client. Every aspect of the user experience - messages,
+//! options, validation errors - is driven by the ceremony response.
 
 use koi_common::ceremony::{
     CeremonyHost, CeremonyRequest, CeremonyResponse, CeremonyRules, InputType, Message,
@@ -136,7 +136,7 @@ fn prompt_line(prompt: &str) -> anyhow::Result<String> {
 /// Run a ceremony to completion via an in-process [`CeremonyHost`].
 ///
 /// This is the golden-example CLI render loop. The host drives all
-/// branching, validation, and content — this function just renders
+/// branching, validation, and content - this function just renders
 /// and collects.
 ///
 /// Returns the final bag contents on successful completion.
@@ -149,7 +149,7 @@ pub fn run_ceremony<R: CeremonyRules>(
         qr: Some(QrFormat::Utf8),
     };
 
-    // First request — start the ceremony
+    // First request - start the ceremony
     let request = CeremonyRequest {
         session_id: None,
         ceremony: Some(ceremony.into()),
@@ -223,13 +223,13 @@ fn render_message(msg: &Message) {
             println!("  {}\n", msg.title);
             // QR content is pre-rendered UTF-8 art or base64 PNG
             if msg.content.contains('█') || msg.content.contains('▄') {
-                // UTF-8 QR art — print as-is
+                // UTF-8 QR art - print as-is
                 println!("{}", msg.content);
             } else if msg.content.starts_with("otpauth://") {
-                // URI-only mode — show the raw URI
+                // URI-only mode - show the raw URI
                 println!("  {}\n", color::cyan_bold(&msg.content));
             } else {
-                // Base64 PNG — show as data URI hint
+                // Base64 PNG - show as data URI hint
                 println!("  {}", color::dim("(QR image available as base64 PNG)"));
             }
         }
@@ -419,7 +419,7 @@ fn collect_entropy(prompt: &Prompt) -> anyhow::Result<String> {
     );
     let entropy = prompt_line("  > ")?;
     if entropy.trim().is_empty() {
-        // Even empty input is valid — we have server entropy.
+        // Even empty input is valid - we have server entropy.
         // But let's encourage participation.
         println!("  {} Using server entropy only.", color::dim("→"));
         return Ok("_server_only".to_string());

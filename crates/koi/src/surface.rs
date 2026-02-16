@@ -221,6 +221,7 @@ fn category_cli_name(category: KoiCategory) -> &'static str {
         KoiCategory::Dns => "dns",
         KoiCategory::Health => "health",
         KoiCategory::Proxy => "proxy",
+        KoiCategory::Udp => "udp",
     }
 }
 
@@ -232,6 +233,7 @@ pub enum KoiCategory {
     Dns,
     Health,
     Proxy,
+    Udp,
 }
 
 impl Category for KoiCategory {
@@ -243,6 +245,7 @@ impl Category for KoiCategory {
             Self::Dns => "DNS",
             Self::Health => "Health",
             Self::Proxy => "Proxy",
+            Self::Udp => "UDP",
         }
     }
 
@@ -254,6 +257,7 @@ impl Category for KoiCategory {
             Self::Dns => 3,
             Self::Health => 4,
             Self::Proxy => 5,
+            Self::Udp => 6,
         }
     }
 
@@ -265,6 +269,7 @@ impl Category for KoiCategory {
             Self::Dns => "dns ",
             Self::Health => "health ",
             Self::Proxy => "proxy ",
+            Self::Udp => "udp ",
         }
     }
 
@@ -276,6 +281,7 @@ impl Category for KoiCategory {
             Self::Dns => "dns",
             Self::Health => "health",
             Self::Proxy => "proxy",
+            Self::Udp => "udp",
         }
     }
 
@@ -287,6 +293,7 @@ impl Category for KoiCategory {
             Self::Dns => "Local DNS resolver with static records",
             Self::Health => "Service health checks and monitoring",
             Self::Proxy => "TLS-terminating reverse proxy",
+            Self::Udp => "UDP datagram bridging for containers",
         }
     }
 }
@@ -300,6 +307,7 @@ impl Glyph for KoiCategory {
             Self::Dns => &[Presentation::Emoji("🌐"), Presentation::Ascii("[dns]")],
             Self::Health => &[Presentation::Emoji("💓"), Presentation::Ascii("[health]")],
             Self::Proxy => &[Presentation::Emoji("🔀"), Presentation::Ascii("[proxy]")],
+            Self::Udp => &[Presentation::Emoji("📡"), Presentation::Ascii("[udp]")],
         }
     }
 
@@ -510,6 +518,20 @@ fn curated_examples(category: KoiCategory) -> &'static [Example] {
                 description: "List all proxy entries",
             },
         ],
+        KoiCategory::Udp => &[
+            Example {
+                command: "koi udp bind --port 5353",
+                description: "Bind a host UDP port",
+            },
+            Example {
+                command: "koi udp status",
+                description: "Show active bindings",
+            },
+            Example {
+                command: "koi udp send <id> --dest 10.0.0.5:5353 'hello'",
+                description: "Send a datagram",
+            },
+        ],
     }
 }
 
@@ -548,7 +570,7 @@ Requires elevated privileges (Administrator / sudo).",
 Removes the Koi system service registration. The daemon will be stopped
 if it is currently running, and the service entry will be deleted.
 
-State and configuration files are NOT removed — only the service
+State and configuration files are NOT removed - only the service
 registration itself. You can re-install later with 'koi install'.
 
 Requires elevated privileges (Administrator / sudo).",
@@ -646,7 +668,7 @@ Performs a multicast DNS browse on the local network and streams discovered
 services to the terminal. By default it browses for all service types.
 Provide a service type to filter (e.g. _http._tcp).
 
-The command runs as a streaming operation — it will keep discovering
+The command runs as a streaming operation - it will keep discovering
 services until you press Ctrl+C or the --timeout expires.",
         category: KoiCategory::Discovery,
         tags: &[KoiTag::Streaming, KoiTag::ReadOnly],
@@ -1004,9 +1026,9 @@ This generates the root keypair, self-signed certificate, and local
 configuration.
 
 Profiles control enrollment defaults and approval policy:
-    just-me       — open enrollment, no operator requirement
-    team          — open enrollment, operator required
-    organization  — closed enrollment by default, operator required
+    just-me       - open enrollment, no operator requirement
+    team          - open enrollment, operator required
+    organization  - closed enrollment by default, operator required
 
 Without flags, this command runs an interactive wizard that guides
 profile selection and CA passphrase setup.
@@ -1330,7 +1352,7 @@ until enrollment is re-opened. Existing members are unaffected.",
         summary: "Set enrollment scope constraints",
         long_description: "\
 Restricts which nodes can enroll based on domain name, IP range, or
-other criteria. Policies are checked at enrollment time — existing
+other criteria. Policies are checked at enrollment time - existing
 members are not retroactively affected.
 
 Use --domain to restrict enrollment to a specific domain suffix.
@@ -1397,7 +1419,7 @@ keypair, issued certificates, enrollment configuration, and audit log.
 
 The backup file (.koi) is encrypted with a passphrase and can be
 restored on any node with 'certmesh restore'. Regular backups are
-critical for disaster recovery — if the CA key is lost and no backup
+critical for disaster recovery - if the CA key is lost and no backup
 exists, the entire mesh must be recreated.",
         category: KoiCategory::Trust,
         tags: &[KoiTag::Mutating],
@@ -2018,6 +2040,149 @@ and backend URLs. Use 'proxy status' for runtime details.",
             summary: "List configured proxy entries",
             request_body: None,
             response_body: Some("ProxyEntriesResponse"),
+            query_params: &[],
+            content_type: None,
+        }],
+        confirmation: None,
+    })
+    // ── UDP ───────────────────────────────────────────────────────────
+    .add(CommandDef {
+        name: "udp bind",
+        summary: "Bind a host UDP port",
+        long_description: "\
+Creates a new UDP socket on the host and returns a binding ID. The
+binding is lease-based: it expires after `--lease` seconds unless
+renewed with 'udp heartbeat'.
+
+Containers cannot bind host UDP ports directly, so this command
+provides a bridge: bind via Koi, then send/receive datagrams
+through the binding ID.",
+        category: KoiCategory::Udp,
+        tags: &[KoiTag::Mutating],
+        scope: KoiScope::Public,
+        examples: &[
+            Example {
+                command: "koi udp bind --port 5353",
+                description: "Bind port 5353",
+            },
+            Example {
+                command: "koi udp bind --port 0 --lease 600",
+                description: "OS-assigned port, 10 min lease",
+            },
+        ],
+        see_also: &["udp unbind", "udp status", "udp heartbeat"],
+        api: &[ApiEndpoint {
+            method: "POST",
+            path: koi_udp::http::paths::BIND,
+            tag: "udp",
+            summary: "Bind a host UDP port",
+            request_body: Some("UdpBindRequest"),
+            response_body: Some("BindingInfo"),
+            query_params: &[],
+            content_type: None,
+        }],
+        confirmation: None,
+    })
+    .add(CommandDef {
+        name: "udp unbind",
+        summary: "Unbind (close) a UDP binding",
+        long_description: "\
+Closes a previously bound UDP socket and releases the port. Any
+in-progress recv streams are terminated.",
+        category: KoiCategory::Udp,
+        tags: &[KoiTag::Mutating],
+        scope: KoiScope::Public,
+        examples: &[Example {
+            command: "koi udp unbind <id>",
+            description: "Close a binding",
+        }],
+        see_also: &["udp bind", "udp status"],
+        api: &[ApiEndpoint {
+            method: "DELETE",
+            path: koi_udp::http::paths::UNBIND,
+            tag: "udp",
+            summary: "Unbind (close) a UDP socket",
+            request_body: None,
+            response_body: Some("StatusOk"),
+            query_params: &[],
+            content_type: None,
+        }],
+        confirmation: None,
+    })
+    .add(CommandDef {
+        name: "udp send",
+        summary: "Send a datagram through a binding",
+        long_description: "\
+Sends a UDP datagram through an existing binding. The payload is
+provided as a string on the CLI (base64-encoded in the HTTP API).
+The destination is a host:port pair.",
+        category: KoiCategory::Udp,
+        tags: &[KoiTag::Mutating],
+        scope: KoiScope::Public,
+        examples: &[Example {
+            command: "koi udp send <id> --dest 10.0.0.5:5353 'hello'",
+            description: "Send a datagram",
+        }],
+        see_also: &["udp bind"],
+        api: &[ApiEndpoint {
+            method: "POST",
+            path: koi_udp::http::paths::SEND,
+            tag: "udp",
+            summary: "Send a datagram through a bound socket",
+            request_body: Some("UdpSendRequest"),
+            response_body: Some("SendResult"),
+            query_params: &[],
+            content_type: None,
+        }],
+        confirmation: None,
+    })
+    .add(CommandDef {
+        name: "udp status",
+        summary: "Show active UDP bindings",
+        long_description: "\
+Lists all active UDP bindings with their IDs, local addresses, and
+remaining lease times.",
+        category: KoiCategory::Udp,
+        tags: &[KoiTag::ReadOnly],
+        scope: KoiScope::Public,
+        examples: &[Example {
+            command: "koi udp status",
+            description: "List bindings",
+        }],
+        see_also: &["udp bind", "udp unbind"],
+        api: &[ApiEndpoint {
+            method: "GET",
+            path: koi_udp::http::paths::STATUS,
+            tag: "udp",
+            summary: "List active UDP bindings",
+            request_body: None,
+            response_body: Some("UdpStatusResponse"),
+            query_params: &[],
+            content_type: None,
+        }],
+        confirmation: None,
+    })
+    .add(CommandDef {
+        name: "udp heartbeat",
+        summary: "Renew a binding's lease",
+        long_description: "\
+Extends the lease of an active UDP binding, preventing it from
+expiring. The lease is reset to its original duration.",
+        category: KoiCategory::Udp,
+        tags: &[KoiTag::Mutating],
+        scope: KoiScope::Public,
+        examples: &[Example {
+            command: "koi udp heartbeat <id>",
+            description: "Renew lease",
+        }],
+        see_also: &["udp bind", "udp status"],
+        api: &[ApiEndpoint {
+            method: "PUT",
+            path: koi_udp::http::paths::HEARTBEAT,
+            tag: "udp",
+            summary: "Renew a binding's lease",
+            request_body: None,
+            response_body: Some("StatusOk"),
             query_params: &[],
             content_type: None,
         }],

@@ -344,7 +344,7 @@ pub fn uninstall() -> anyhow::Result<()> {
     // Daemon discovery file
     koi_config::breadcrumb::delete_breadcrumb();
 
-    // Log directory — remove only if empty, otherwise inform the user
+    // Log directory - remove only if empty, otherwise inform the user
     let log_dir = service_log_dir();
     match std::fs::remove_dir(&log_dir) {
         Ok(()) => {}
@@ -352,9 +352,9 @@ pub fn uninstall() -> anyhow::Result<()> {
         Err(_) => println!("  Logs preserved at: {}", log_dir.display()),
     }
 
-    // Parent data directory — remove only if empty
+    // Parent data directory - remove only if empty
     let data_dir = service_data_dir();
-    let _ = std::fs::remove_dir(&data_dir); // silent — either empty or has logs
+    let _ = std::fs::remove_dir(&data_dir); // silent - either empty or has logs
 
     println!();
     println!("Koi service uninstalled.");
@@ -390,7 +390,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let shutdown_tx = std::sync::Mutex::new(Some(shutdown_tx));
 
-    // Register SCM handler — report StartPending while we spin up
+    // Register SCM handler - report StartPending while we spin up
     let status_handle =
         service_control_handler::register(
             SERVICE_NAME,
@@ -512,12 +512,20 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             None
         };
 
+        let udp_runtime = if !config.no_udp {
+            Some(std::sync::Arc::new(koi_udp::UdpRuntime::new(cancel.clone())))
+        } else {
+            tracing::info!("UDP capability disabled");
+            None
+        };
+
         let cores = crate::DaemonCores {
             mdns: mdns_core,
             certmesh: certmesh_core,
             dns: dns_runtime.clone(),
             health: health_runtime.clone(),
             proxy: proxy_runtime.clone(),
+            udp: udp_runtime.clone(),
         };
 
         // Ensure data directory exists
@@ -541,7 +549,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             }));
         }
 
-        // IPC adapter (mDNS only — skip if mDNS disabled)
+        // IPC adapter (mDNS only - skip if mDNS disabled)
         if !config.no_ipc {
             if let Some(ref mdns) = cores.mdns {
                 let c = mdns.clone();
@@ -612,6 +620,9 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             if let Some(proxy) = proxy_runtime {
                 let _ = proxy.stop_all().await;
             }
+            if let Some(udp) = udp_runtime {
+                udp.shutdown().await;
+            }
         };
 
         if tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown)
@@ -619,7 +630,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             .is_err()
         {
             tracing::warn!(
-                "Shutdown timed out after {:?} — forcing exit",
+                "Shutdown timed out after {:?} - forcing exit",
                 SHUTDOWN_TIMEOUT
             );
         }
@@ -646,7 +657,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
 fn create_firewall_rule(name: &str, protocol: &str, port: u16, exe_path: &std::path::Path) -> bool {
     use std::process::Command;
 
-    // Delete first for idempotency (ignore errors — rule may not exist)
+    // Delete first for idempotency (ignore errors - rule may not exist)
     let _ = Command::new("netsh")
         .args(["advfirewall", "firewall", "delete", "rule"])
         .arg(format!("name={name}"))

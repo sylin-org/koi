@@ -1,7 +1,7 @@
 //! Certmesh command handlers.
 //!
 //! All certmesh commands delegate to the running service via HTTP.
-//! The CLI never performs direct file I/O for certmesh operations —
+//! The CLI never performs direct file I/O for certmesh operations -
 //! the service has the elevated permissions needed for cert store,
 //! file writes, etc.
 
@@ -22,13 +22,13 @@ const CA_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 // ── Color helpers ────────────────────────────────────────────────────
 //
 // Semantic color system per CERTMESH-CREATE-WIZARD.md:
-//   Cyan       — active trigger-effect pair (Enter + what it activates)
-//   Cyan bold  — critical value to capture (passphrase, TOTP manual code)
-//   Green      — completed / success (✓ checkmarks)
-//   Yellow     — irreversible warning (⚠, "no recovery mechanism")
-//   Red        — error (✗ wrong input, failed verification)
-//   Dim        — supporting / secondary (descriptions, hints, Cancel)
-//   Default    — neutral / settled text, box chrome
+//   Cyan       - active trigger-effect pair (Enter + what it activates)
+//   Cyan bold  - critical value to capture (passphrase, TOTP manual code)
+//   Green      - completed / success (✓ checkmarks)
+//   Yellow     - irreversible warning (⚠, "no recovery mechanism")
+//   Red        - error (✗ wrong input, failed verification)
+//   Dim        - supporting / secondary (descriptions, hints, Cancel)
+//   Default    - neutral / settled text, box chrome
 //
 // Degrades gracefully: respects NO_COLOR, TERM=dumb, non-interactive stdout.
 
@@ -62,22 +62,22 @@ mod color {
         }
     }
 
-    /// Green — completed / success.
+    /// Green - completed / success.
     pub fn green(text: &str) -> String {
         wrap("32", text)
     }
 
-    /// Yellow — irreversible warning.
+    /// Yellow - irreversible warning.
     pub fn yellow(text: &str) -> String {
         wrap("33", text)
     }
 
-    /// Red — error.
+    /// Red - error.
     pub fn red(text: &str) -> String {
         wrap("31", text)
     }
 
-    /// Dim — supporting / secondary text.
+    /// Dim - supporting / secondary text.
     pub fn dim(text: &str) -> String {
         wrap("2", text)
     }
@@ -524,7 +524,7 @@ pub fn status(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
                     println!("  Enrollment: {:?}", s.enrollment_state);
                     println!("  Members:    {}", s.member_count);
                     for m in &s.members {
-                        println!("    {} ({}) — {}", m.hostname, m.role, m.status);
+                        println!("    {} ({}) - {}", m.hostname, m.role, m.status);
                     }
                 }
                 Err(_) => {
@@ -1033,7 +1033,7 @@ pub fn revoke(
 pub fn destroy(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
     let client = require_daemon(endpoint)?;
 
-    // Interactive confirmation gate — skip in --json (scripting) mode
+    // Interactive confirmation gate - skip in --json (scripting) mode
     if !json {
         println!();
         println!(
@@ -1113,7 +1113,7 @@ fn confirm_action(message: &str, token: &str) -> anyhow::Result<()> {
 
 // ── Deadline Parsing ────────────────────────────────────────────────
 
-/// Parse a deadline string — supports RFC 3339 timestamps or durations.
+/// Parse a deadline string - supports RFC 3339 timestamps or durations.
 ///
 /// Duration formats: "30m", "2h", "1d", "12h30m"
 fn parse_deadline(s: &str) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
@@ -1313,7 +1313,7 @@ mod tests {
 
     #[test]
     fn require_daemon_fails_without_endpoint() {
-        // No breadcrumb file, no endpoint — should fail
+        // No breadcrumb file, no endpoint - should fail
         let result = require_daemon(None);
         // This may succeed if there IS a breadcrumb; if not, it fails.
         // We just verify it doesn't panic.

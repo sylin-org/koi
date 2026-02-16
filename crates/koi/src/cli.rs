@@ -1,7 +1,7 @@
 use clap::{ArgAction, Args, Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Default HTTP API port — "KOI" on a phone keypad (K=5, O=6, I=4).
+/// Default HTTP API port - "KOI" on a phone keypad (K=5, O=6, I=4).
 pub const DEFAULT_HTTP_PORT: u16 = 5641;
 
 /// Windows Named Pipe name for IPC.
@@ -71,6 +71,10 @@ pub struct Cli {
     #[arg(long, env = "KOI_NO_PROXY")]
     pub no_proxy: bool,
 
+    /// Disable the UDP bridging capability
+    #[arg(long, env = "KOI_NO_UDP")]
+    pub no_udp: bool,
+
     /// DNS port for the local resolver
     #[arg(long, env = "KOI_DNS_PORT", default_value = "53")]
     pub dns_port: u16,
@@ -123,6 +127,8 @@ pub enum Command {
     Health(HealthCommand),
     /// TLS-terminating reverse proxy
     Proxy(ProxyCommand),
+    /// UDP datagram bridging
+    Udp(UdpCommand),
 }
 
 #[derive(Args, Debug)]
@@ -229,6 +235,50 @@ pub struct HealthCommand {
 pub struct ProxyCommand {
     #[command(subcommand)]
     pub command: Option<ProxySubcommand>,
+}
+
+#[derive(Args, Debug)]
+pub struct UdpCommand {
+    #[command(subcommand)]
+    pub command: Option<UdpSubcommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum UdpSubcommand {
+    /// Bind a host UDP port
+    Bind {
+        /// Port to bind (0 = OS-assigned)
+        #[arg(long, default_value = "0")]
+        port: u16,
+        /// Bind address
+        #[arg(long, default_value = "0.0.0.0")]
+        addr: String,
+        /// Lease duration in seconds
+        #[arg(long, default_value = "300")]
+        lease: u64,
+    },
+    /// Unbind (close) a UDP binding
+    Unbind {
+        /// Binding ID returned by bind
+        id: String,
+    },
+    /// Send a datagram through a binding
+    Send {
+        /// Binding ID
+        id: String,
+        /// Destination address (host:port)
+        #[arg(long)]
+        dest: String,
+        /// Payload (will be base64 encoded)
+        payload: String,
+    },
+    /// Show active bindings
+    Status,
+    /// Renew a binding's lease
+    Heartbeat {
+        /// Binding ID
+        id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -373,7 +423,7 @@ pub enum CertmeshSubcommand {
         /// CA endpoint (e.g. "http://ca-host:5641"). Omit to discover via mDNS.
         endpoint: Option<String>,
     },
-    // Phase 4 — Enrollment Policy
+    // Phase 4 - Enrollment Policy
     /// Open the enrollment window
     OpenEnrollment {
         /// Auto-close deadline (RFC 3339 or duration like "2h", "1d")
@@ -429,6 +479,7 @@ pub struct Config {
     pub no_dns: bool,
     pub no_health: bool,
     pub no_proxy: bool,
+    pub no_udp: bool,
     pub dns_port: u16,
     pub dns_zone: String,
     pub dns_public: bool,
@@ -447,6 +498,7 @@ impl Config {
             no_dns: cli.no_dns,
             no_health: cli.no_health,
             no_proxy: cli.no_proxy,
+            no_udp: cli.no_udp,
             dns_port: cli.dns_port,
             dns_zone: cli.dns_zone.clone(),
             dns_public: cli.dns_public,
@@ -461,6 +513,7 @@ impl Config {
             "dns" => self.no_dns,
             "health" => self.no_health,
             "proxy" => self.no_proxy,
+            "udp" => self.no_udp,
             _ => false,
         };
         if disabled {
@@ -531,6 +584,11 @@ impl Config {
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let no_udp = std::env::var("KOI_NO_UDP")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
         let dns_port = std::env::var("KOI_DNS_PORT")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -553,6 +611,7 @@ impl Config {
             no_dns,
             no_health,
             no_proxy,
+            no_udp,
             dns_port,
             dns_zone,
             dns_public,
@@ -572,6 +631,7 @@ impl Default for Config {
             no_dns: false,
             no_health: false,
             no_proxy: false,
+            no_udp: false,
             dns_port: 53,
             dns_zone: "lan".to_string(),
             dns_public: false,
@@ -1155,7 +1215,7 @@ mod tests {
         );
     }
 
-    // ── Phase 4 — Enrollment policy CLI parsing ─────────────────────
+    // ── Phase 4 - Enrollment policy CLI parsing ─────────────────────
 
     #[test]
     fn parse_certmesh_open_enrollment() {

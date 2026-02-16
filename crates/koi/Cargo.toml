@@ -20,6 +20,7 @@ koi-config.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true
 koi-proxy.workspace = true
+koi-udp.workspace = true
 koi-client.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -46,6 +47,7 @@ utoipa.workspace = true
 utoipa-scalar = { workspace = true }
 once_cell.workspace = true
 rand.workspace = true
+base64.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

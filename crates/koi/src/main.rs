@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use cli::{
     CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, HealthSubcommand, MdnsSubcommand,
-    ProxySubcommand,
+    ProxySubcommand, UdpSubcommand,
 };
 use commands::status::try_daemon_status;
 use koi_common::types::ServiceRecord;
@@ -31,7 +31,7 @@ pub(crate) const SHUTDOWN_DRAIN: Duration = Duration::from_millis(500);
 
 fn main() -> anyhow::Result<()> {
     // ── Windows Service dispatch ────────────────────────────────────
-    // Must happen before anything else — the SCM expects the service
+    // Must happen before anything else - the SCM expects the service
     // process to connect to the dispatcher almost immediately.
     #[cfg(windows)]
     {
@@ -372,6 +372,29 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     Some(ProxySubcommand::List) => commands::proxy::list(mode, cli.json).await,
                 }
             }
+            Command::Udp(udp_cmd) => {
+                config.require_capability("udp")?;
+                let mode = commands::detect_mode(&cli);
+                match &udp_cmd.command {
+                    None => {
+                        surface::print_category_catalog(surface::KoiCategory::Udp, None)?;
+                        Ok(())
+                    }
+                    Some(UdpSubcommand::Bind { port, addr, lease }) => {
+                        commands::udp::bind(*port, addr, *lease, mode, cli.json).await
+                    }
+                    Some(UdpSubcommand::Unbind { id }) => {
+                        commands::udp::unbind(id, mode, cli.json).await
+                    }
+                    Some(UdpSubcommand::Send { id, dest, payload }) => {
+                        commands::udp::send(id, dest, payload, mode, cli.json).await
+                    }
+                    Some(UdpSubcommand::Status) => commands::udp::status(mode, cli.json).await,
+                    Some(UdpSubcommand::Heartbeat { id }) => {
+                        commands::udp::heartbeat(id, mode, cli.json).await
+                    }
+                }
+            }
             // Install, Uninstall, Version handled before runtime
             Command::Install | Command::Uninstall | Command::Version => Ok(()),
         };
@@ -513,12 +536,20 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         None
     };
 
+    let udp_runtime = if !config.no_udp {
+        Some(Arc::new(koi_udp::UdpRuntime::new(cancel.clone())))
+    } else {
+        tracing::info!("UDP capability: disabled");
+        None
+    };
+
     let cores = DaemonCores {
         mdns: mdns_core.clone(),
         certmesh: certmesh_core,
         dns: dns_runtime.clone(),
         health: health_runtime.clone(),
         proxy: proxy_runtime.clone(),
+        udp: udp_runtime.clone(),
     };
 
     // ── HTTP adapter ──
@@ -533,7 +564,7 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         }));
     }
 
-    // ── IPC adapter (only if mDNS is enabled — IPC speaks mDNS NDJSON protocol) ──
+    // ── IPC adapter (only if mDNS is enabled - IPC speaks mDNS NDJSON protocol) ──
     if !config.no_ipc {
         if let Some(ref mdns) = mdns_core {
             let c = mdns.clone();
@@ -592,13 +623,16 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         if let Some(proxy) = proxy_runtime {
             proxy.stop_all().await;
         }
+        if let Some(ref udp) = udp_runtime {
+            udp.shutdown().await;
+        }
     };
     if tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown)
         .await
         .is_err()
     {
         tracing::warn!(
-            "Shutdown timed out after {:?} — forcing exit",
+            "Shutdown timed out after {:?} - forcing exit",
             SHUTDOWN_TIMEOUT
         );
     }
@@ -619,6 +653,7 @@ pub(crate) struct DaemonCores {
     pub(crate) dns: Option<Arc<koi_dns::DnsRuntime>>,
     pub(crate) health: Option<Arc<koi_health::HealthRuntime>>,
     pub(crate) proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
+    pub(crate) udp: Option<Arc<koi_udp::UdpRuntime>>,
 }
 
 /// Initialize the certmesh core for daemon mode.
@@ -628,7 +663,7 @@ pub(crate) struct DaemonCores {
 /// If not initialized, creates an uninitialized core (routes are reachable for `/create`).
 pub(crate) fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
     if !koi_certmesh::ca::is_ca_initialized() {
-        tracing::info!("Certmesh: CA not initialized — routes mounted for /create");
+        tracing::info!("Certmesh: CA not initialized - routes mounted for /create");
         return Some(Arc::new(koi_certmesh::CertmeshCore::uninitialized()));
     }
 
@@ -636,7 +671,7 @@ pub(crate) fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
     let roster = match koi_certmesh::roster::load_roster(&roster_path) {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!(error = %e, "Failed to load certmesh roster — using uninitialized state");
+            tracing::warn!(error = %e, "Failed to load certmesh roster - using uninitialized state");
             return Some(Arc::new(koi_certmesh::CertmeshCore::uninitialized()));
         }
     };
@@ -722,7 +757,7 @@ fn spawn_certmesh_background_tasks(
                         }
                     };
 
-                    // KoiClient is blocking (ureq) — run in a blocking task
+                    // KoiClient is blocking (ureq) - run in a blocking task
                     let manifest_json = tokio::task::spawn_blocking(move || {
                         let client = client::KoiClient::new(&endpoint);
                         client.get_roster_manifest()
@@ -803,7 +838,7 @@ fn spawn_certmesh_background_tasks(
                         "pinned_ca_fingerprint": pinned_fp,
                     });
 
-                    // KoiClient is blocking (ureq) — run in a blocking task
+                    // KoiClient is blocking (ureq) - run in a blocking task
                     let result = tokio::task::spawn_blocking(move || {
                         let c = client::KoiClient::new(&endpoint);
                         c.health_heartbeat(&request)

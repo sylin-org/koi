@@ -1,6 +1,6 @@
 //! HTTP client for communicating with a running Koi daemon.
 //!
-//! Uses blocking `ureq` — no async runtime dependency on the client path.
+//! Uses blocking `ureq` - no async runtime dependency on the client path.
 //! All paths use `/v1/mdns/` prefix for mDNS domain routes.
 
 use std::io::{BufRead, BufReader, Read};
@@ -267,6 +267,52 @@ impl KoiClient {
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
+    // ── UDP operations ─────────────────────────────────────────────
+
+    pub fn udp_status(&self) -> Result<serde_json::Value> {
+        self.get_json("/v1/udp/status")
+    }
+
+    pub fn udp_bind(
+        &self,
+        port: u16,
+        addr: &str,
+        lease_secs: u64,
+    ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({
+            "port": port,
+            "addr": addr,
+            "lease_secs": lease_secs,
+        });
+        self.post_json("/v1/udp/bind", &body)
+    }
+
+    pub fn udp_unbind(&self, id: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/v1/udp/bind/{}", self.endpoint, id);
+        let resp = self.agent.delete(&url).call().map_err(map_error)?;
+        resp.into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub fn udp_send(
+        &self,
+        id: &str,
+        dest: &str,
+        payload_b64: &str,
+    ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({
+            "dest": dest,
+            "payload": payload_b64,
+        });
+        let path = format!("/v1/udp/send/{id}");
+        self.post_json(&path, &body)
+    }
+
+    pub fn udp_heartbeat(&self, id: &str) -> Result<serde_json::Value> {
+        let path = format!("/v1/udp/heartbeat/{id}");
+        self.put_json(&path, &serde_json::json!({}))
+    }
+
     // ── Generic operations ─────────────────────────────────────────
 
     /// POST JSON to an arbitrary path and return the response as a JSON value.
@@ -353,7 +399,7 @@ impl KoiClient {
 
     // ── Certmesh operations (Phase 3) ──────────────────────────────
 
-    /// GET /v1/certmesh/roster — fetch signed roster manifest.
+    /// GET /v1/certmesh/roster - fetch signed roster manifest.
     pub fn get_roster_manifest(&self) -> Result<serde_json::Value> {
         let url = format!("{}/v1/certmesh/roster", self.endpoint);
         let resp = self.agent.get(&url).call().map_err(map_error)?;
@@ -361,7 +407,7 @@ impl KoiClient {
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
-    /// POST /v1/certmesh/renew — push renewed cert to a member.
+    /// POST /v1/certmesh/renew - push renewed cert to a member.
     ///
     /// `member_endpoint` is the member's HTTP endpoint, not the CA's.
     /// Used when the primary pushes renewals to remote members.
@@ -381,7 +427,7 @@ impl KoiClient {
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
-    /// POST /v1/certmesh/health — send health heartbeat.
+    /// POST /v1/certmesh/health - send health heartbeat.
     pub fn health_heartbeat(&self, request: &serde_json::Value) -> Result<serde_json::Value> {
         let url = format!("{}/v1/certmesh/health", self.endpoint);
         let resp = self

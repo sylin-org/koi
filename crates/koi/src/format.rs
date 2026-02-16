@@ -1,7 +1,7 @@
 //! Human-readable CLI output formatting.
 //!
 //! This is the **single presentation layer** for all CLI output.
-//! JSON output bypasses this module entirely — it goes through
+//! JSON output bypasses this module entirely - it goes through
 //! `PipelineResponse` serialization in the protocol layer.
 //!
 //! All functions return `String` so callers can `print!` the result

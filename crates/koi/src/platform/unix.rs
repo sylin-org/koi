@@ -25,7 +25,7 @@ pub fn install_bin_path() -> PathBuf {
     PathBuf::from("/usr/local/bin/koi")
 }
 
-// ── Install / Uninstall (Linux only — systemd) ──────────────────────
+// ── Install / Uninstall (Linux only - systemd) ──────────────────────
 
 #[cfg(target_os = "linux")]
 const SERVICE_NAME: &str = "koi";

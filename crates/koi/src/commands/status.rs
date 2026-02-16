@@ -1,6 +1,6 @@
 //! Unified status command handler.
 //!
-//! Shows the status of all capabilities — connecting to a running daemon
+//! Shows the status of all capabilities - connecting to a running daemon
 //! if available, otherwise reporting offline status.
 
 use koi_common::capability::CapabilityStatus;
@@ -19,7 +19,7 @@ pub fn status(cli: &Cli, config: &Config) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // No daemon — report offline status
+    // No daemon - report offline status
     let capabilities = offline_capabilities(config);
 
     let status = LocalStatus {
@@ -155,6 +155,20 @@ fn offline_capabilities(config: &Config) -> Vec<CapabilityStatus> {
         });
     }
 
+    if config.no_udp {
+        caps.push(CapabilityStatus {
+            name: "udp".to_string(),
+            summary: "disabled".to_string(),
+            healthy: false,
+        });
+    } else {
+        caps.push(CapabilityStatus {
+            name: "udp".to_string(),
+            summary: "not running".to_string(),
+            healthy: false,
+        });
+    }
+
     caps
 }
 
@@ -181,6 +195,8 @@ mod tests {
         assert!(!caps[3].healthy);
         assert_eq!(caps[4].name, "proxy");
         assert!(!caps[4].healthy);
+        assert_eq!(caps[5].name, "udp");
+        assert!(!caps[5].healthy);
     }
 
     #[test]
@@ -239,6 +255,17 @@ mod tests {
     }
 
     #[test]
+    fn offline_udp_disabled() {
+        let config = Config {
+            no_udp: true,
+            ..Config::default()
+        };
+        let caps = offline_capabilities(&config);
+        assert_eq!(caps[5].name, "udp");
+        assert_eq!(caps[5].summary, "disabled");
+    }
+
+    #[test]
     fn offline_both_disabled() {
         let config = Config {
             no_mdns: true,
@@ -251,9 +278,9 @@ mod tests {
     }
 
     #[test]
-    fn offline_returns_five_capabilities() {
+    fn offline_returns_six_capabilities() {
         let config = Config::default();
         let caps = offline_capabilities(&config);
-        assert_eq!(caps.len(), 5);
+        assert_eq!(caps.len(), 6);
     }
 }

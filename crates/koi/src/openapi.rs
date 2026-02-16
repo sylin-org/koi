@@ -1,7 +1,7 @@
 //! Manifest-driven OpenAPI spec builder.
 //!
 //! Reads the command manifest at startup and builds the full `/openapi.json`
-//! spec dynamically.  No `#[utoipa::path]` annotations required on handlers —
+//! spec dynamically.  No `#[utoipa::path]` annotations required on handlers -
 //! the [`ApiEndpoint`] entries in `surface.rs` are the single source of truth
 //! for path, method, request/response schemas, query params, and content type.
 
@@ -30,7 +30,7 @@ pub fn build_openapi(schema_docs: OpenApi) -> OpenApi {
 
     for def in MANIFEST.all_sorted() {
         for ep in def.api {
-            // Deduplicate — the same endpoint may appear in several CommandDefs
+            // Deduplicate - the same endpoint may appear in several CommandDefs
             // (e.g. "version" and "status" both map to GET /v1/status).
             if !seen.insert((ep.method, ep.path)) {
                 continue;
@@ -59,14 +59,14 @@ pub fn build_openapi(schema_docs: OpenApi) -> OpenApi {
     let mut openapi = OpenApi::new(info, paths);
     openapi.merge(schema_docs);
 
-    // Tag definitions — appear in the order listed here in the Scalar UI.
+    // Tag definitions - appear in the order listed here in the Scalar UI.
     // Each tag gets a description and a link to its GitHub documentation.
     let base = "https://github.com/sylin-org/koi/blob/main/docs";
     openapi.tags = Some(vec![
         TagBuilder::new()
             .name("system")
             .description(Some(
-                "Core daemon lifecycle — status, version, health probes, \
+                "Core daemon lifecycle - status, version, health probes, \
                  and graceful shutdown.",
             ))
             .external_docs(Some(ExternalDocs::new(format!("{base}/guide-system.md"))))
@@ -74,7 +74,7 @@ pub fn build_openapi(schema_docs: OpenApi) -> OpenApi {
         TagBuilder::new()
             .name("mdns")
             .description(Some(
-                "Multicast DNS service discovery — announce, discover, \
+                "Multicast DNS service discovery - announce, discover, \
                  and manage services on the local network. Includes \
                  admin operations for inspecting and controlling \
                  individual registrations.",
@@ -84,7 +84,7 @@ pub fn build_openapi(schema_docs: OpenApi) -> OpenApi {
         TagBuilder::new()
             .name("certmesh")
             .description(Some(
-                "Zero-config TLS certificate mesh — automatic CA \
+                "Zero-config TLS certificate mesh - automatic CA \
                  bootstrapping, certificate enrollment, renewal, \
                  revocation, and cluster-wide trust distribution.",
             ))
@@ -93,7 +93,7 @@ pub fn build_openapi(schema_docs: OpenApi) -> OpenApi {
         TagBuilder::new()
             .name("dns")
             .description(Some(
-                "Local DNS server — custom record management, \
+                "Local DNS server - custom record management, \
                  upstream forwarding, and split-horizon resolution \
                  for development environments.",
             ))
@@ -102,7 +102,7 @@ pub fn build_openapi(schema_docs: OpenApi) -> OpenApi {
         TagBuilder::new()
             .name("health")
             .description(Some(
-                "Endpoint health monitoring — configure checks, \
+                "Endpoint health monitoring - configure checks, \
                  view live status, and receive real-time health \
                  change events via SSE.",
             ))
@@ -111,7 +111,7 @@ pub fn build_openapi(schema_docs: OpenApi) -> OpenApi {
         TagBuilder::new()
             .name("proxy")
             .description(Some(
-                "TLS-terminating reverse proxy — route traffic \
+                "TLS-terminating reverse proxy - route traffic \
                  to local services with automatic certificate \
                  provisioning from the certmesh CA.",
             ))
