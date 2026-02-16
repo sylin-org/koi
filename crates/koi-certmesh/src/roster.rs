@@ -59,6 +59,8 @@ pub enum MemberRole {
     Primary,
     Standby,
     Member,
+    /// Non-Moss client (e.g. Rake on a workstation)
+    Client,
 }
 
 /// Active/revoked status of a member.

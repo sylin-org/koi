@@ -350,6 +350,7 @@ impl CertmeshCore {
         txt.insert("fingerprint".to_string(), ca::ca_fingerprint(ca));
         let profile = self.state.profile.lock().await;
         txt.insert("profile".to_string(), profile.to_string());
+        txt.insert("auth".to_string(), "totp".to_string());
 
         Some(protocol::CaAnnouncement {
             name: format!("koi-ca-{}", primary.hostname),
@@ -370,6 +371,25 @@ impl CertmeshCore {
         roster::save_roster(&roster, &roster_path)?;
 
         tracing::info!(hostname, hook, "Reload hook set");
+        Ok(())
+    }
+
+    /// Set the role of a member in the roster.
+    pub async fn set_member_role(
+        &self,
+        hostname: &str,
+        role: roster::MemberRole,
+    ) -> Result<(), CertmeshError> {
+        let mut roster = self.state.roster.lock().await;
+        let member = roster
+            .find_member_mut(hostname)
+            .ok_or_else(|| CertmeshError::Internal(format!("member not found: {hostname}")))?;
+        member.role = role.clone();
+
+        let roster_path = ca::roster_path();
+        roster::save_roster(&roster, &roster_path)?;
+
+        tracing::info!(hostname, role = ?role, "Member role updated");
         Ok(())
     }
 
