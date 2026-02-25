@@ -39,6 +39,7 @@ axum.workspace = true
 tower-http.workspace = true
 uuid.workspace = true
 hostname = "0.4"
+if-addrs.workspace = true
 hickory-proto.workspace = true
 crossterm.workspace = true
 url.workspace = true

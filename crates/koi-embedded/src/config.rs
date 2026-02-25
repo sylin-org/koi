@@ -1,6 +1,7 @@
 ﻿use std::net::IpAddr;
 use std::path::PathBuf;
 
+use koi_common::firewall::{FirewallPort, FirewallProtocol};
 use koi_dns::DnsConfig;
 
 #[derive(Debug, Clone)]
@@ -20,6 +21,34 @@ pub struct KoiConfig {
     pub dns_auto_start: bool,
     pub health_auto_start: bool,
     pub proxy_auto_start: bool,
+}
+
+impl KoiConfig {
+    /// Collect firewall ports required by the currently-enabled capabilities.
+    ///
+    /// This mirrors the logic in the standalone Koi daemon's
+    /// `firewall_ports_for_config`, but derives from the embedded config.
+    pub fn firewall_ports(&self) -> Vec<FirewallPort> {
+        use std::collections::HashSet;
+
+        let mut ports = Vec::new();
+        if self.mdns_enabled {
+            ports.extend(koi_mdns::firewall_ports());
+        }
+        if self.http_enabled {
+            ports.push(FirewallPort::new("HTTP", FirewallProtocol::Tcp, self.http_port));
+        }
+        if self.dns_enabled {
+            ports.extend(koi_dns::firewall_ports(&self.dns_config));
+        }
+
+        // Deduplicate by (protocol, port)
+        let mut seen = HashSet::new();
+        ports
+            .into_iter()
+            .filter(|p| seen.insert((p.protocol, p.port)))
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

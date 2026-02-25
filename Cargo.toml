@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.202602161546"
+version = "0.2.202602211302"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/sylin-org/koi"
@@ -58,6 +58,7 @@ async-stream = "0.3"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 hostname = "0.4"
+if-addrs = "0.15"
 image = { version = "0.25", default-features = false, features = ["png"] }
 futures-util = "0.3"
 hickory-server = "0.25"

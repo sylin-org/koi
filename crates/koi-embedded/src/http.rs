@@ -8,7 +8,8 @@
 use std::sync::Arc;
 
 use axum::routing::get;
-use axum::Router;
+use axum::{Json, Router};
+use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 
@@ -30,7 +31,9 @@ pub(crate) async fn serve(
     udp: Option<Arc<koi_udp::UdpRuntime>>,
     cancel: CancellationToken,
 ) {
-    let mut app = Router::new().route("/healthz", get(healthz));
+    let mut app = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/v1/host", get(host_handler));
 
     // ── Domain routes ───────────────────────────────────────────
 
@@ -117,6 +120,66 @@ pub(crate) async fn serve(
 /// Liveness probe - matches standalone `/healthz`.
 async fn healthz() -> &'static str {
     "OK"
+}
+
+// ── Host identity (mirrors standalone /v1/host) ─────────────────
+
+#[derive(Debug, Serialize)]
+struct HostInfoResponse {
+    hostname: String,
+    hostname_fqdn: String,
+    os: String,
+    arch: String,
+    interfaces: HostInterfaces,
+}
+
+#[derive(Debug, Serialize)]
+struct HostInterfaces {
+    lan: Vec<NetworkInterface>,
+}
+
+#[derive(Debug, Serialize)]
+struct NetworkInterface {
+    name: String,
+    ip: String,
+}
+
+/// Return host identity and LAN-facing network interfaces.
+async fn host_handler() -> Json<HostInfoResponse> {
+    let raw = hostname::get()
+        .ok()
+        .and_then(|os| os.into_string().ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    let fqdn = format!("{}.local", raw);
+
+    let lan: Vec<NetworkInterface> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|iface| {
+            if iface.is_loopback() {
+                return false;
+            }
+            match iface.addr.ip() {
+                std::net::IpAddr::V4(v4) => !v4.is_link_local(),
+                std::net::IpAddr::V6(v6) => {
+                    let segments = v6.segments();
+                    (segments[0] & 0xffc0) != 0xfe80
+                }
+            }
+        })
+        .map(|iface| NetworkInterface {
+            name: iface.name,
+            ip: iface.addr.ip().to_string(),
+        })
+        .collect();
+
+    Json(HostInfoResponse {
+        hostname: raw,
+        hostname_fqdn: fqdn,
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        interfaces: HostInterfaces { lan },
+    })
 }
 
 /// 503 fallback for disabled capabilities.

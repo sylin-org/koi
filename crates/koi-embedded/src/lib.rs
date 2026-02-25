@@ -16,6 +16,7 @@ pub use events::KoiEvent;
 pub use handle::{CertmeshHandle, DnsHandle, HealthHandle, KoiHandle, MdnsHandle, ProxyHandle};
 
 // Re-export types needed by downstream consumers (registration, discovery, DNS, proxy, health)
+pub use koi_common::firewall::{FirewallPort, FirewallProtocol};
 pub use koi_common::types::ServiceRecord;
 pub use koi_config::state::DnsEntry;
 pub use koi_health::{HealthCheck, HealthSnapshot, ServiceCheckKind};
@@ -48,6 +49,7 @@ pub enum KoiError {
 pub struct Builder {
     config: KoiConfig,
     event_handler: Option<Arc<dyn Fn(KoiEvent) + Send + Sync>>,
+    extra_firewall_ports: Vec<koi_common::firewall::FirewallPort>,
 }
 
 impl Builder {
@@ -55,6 +57,7 @@ impl Builder {
         Self {
             config: KoiConfig::default(),
             event_handler: None,
+            extra_firewall_ports: Vec::new(),
         }
     }
 
@@ -142,6 +145,36 @@ impl Builder {
         F: Fn(KoiEvent) + Send + Sync + 'static,
     {
         self.event_handler = Some(Arc::new(handler));
+        self
+    }
+
+    /// Register additional firewall ports that the host application needs
+    /// opened (e.g. Moss discovery UDP, HTTP API).  These are merged with
+    /// the ports from enabled Koi capabilities when `ensure_firewall_rules`
+    /// is called.
+    pub fn extra_firewall_ports(mut self, ports: Vec<koi_common::firewall::FirewallPort>) -> Self {
+        self.extra_firewall_ports = ports;
+        self
+    }
+
+    /// Best-effort ensure that Windows Firewall inbound-allow rules exist
+    /// for every port required by the enabled capabilities **plus** any
+    /// extra ports registered by the host application.
+    ///
+    /// * Idempotent — safe to call on every startup.
+    /// * Non-fatal  — logs warnings but never fails the build.
+    /// * No-op on non-Windows platforms.
+    ///
+    /// `prefix` is used in the firewall rule display-names
+    /// (e.g. `"Zen Garden"` → `"Zen Garden mDNS (UDP 5353)"`).
+    pub fn ensure_firewall_rules(self, prefix: &str) -> Self {
+        let mut all_ports = self.config.firewall_ports();
+        all_ports.extend(self.extra_firewall_ports.iter().cloned());
+
+        let count = koi_common::firewall::ensure_firewall_rules(prefix, &all_ports);
+        if count > 0 {
+            tracing::info!(count, "Firewall rules ensured");
+        }
         self
     }
 
