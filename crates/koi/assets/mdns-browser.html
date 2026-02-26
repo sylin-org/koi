@@ -1,0 +1,720 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Koi · mDNS Browser</title>
+<style>
+/* ── Lantern / Vellum Design Tokens ─────────────────────────────── */
+:root {
+  --bg-base: #f4f2ee;
+  --bg-surface: #eae7e1;
+  --text-primary: #2d2d2d;
+  --text-secondary: #6b6b6b;
+  --text-muted: #999;
+  --accent-sage: #84a59d;
+  --accent-clay: #d4a373;
+  --accent-hopeful: #c4b060;
+  --accent-red: #c45050;
+  --accent-blue: #6b8cae;
+  --vellum-white: rgba(255,255,255,0.45);
+  --glass-blur: blur(14px);
+  --border-subtle: rgba(0,0,0,0.06);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --mono: 'Cascadia Code', 'IBM Plex Mono', 'Fira Code', monospace;
+  --sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --grain: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-base: #1a1a1a;
+    --bg-surface: #232323;
+    --text-primary: #e8e6e1;
+    --text-secondary: #a0a0a0;
+    --text-muted: #666;
+    --vellum-white: rgba(255,255,255,0.07);
+    --border-subtle: rgba(255,255,255,0.06);
+  }
+}
+
+/* ── Reset & Base ────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 15px; }
+body {
+  font-family: var(--sans);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background: var(--grain);
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ── Nav Bar ─────────────────────────────────────────────────────── */
+.nav {
+  display: flex; align-items: center; gap: 1.2rem;
+  padding: 0.6rem 1.5rem;
+  background: var(--vellum-white);
+  backdrop-filter: var(--glass-blur);
+  border-bottom: 1px solid var(--border-subtle);
+  position: sticky; top: 0; z-index: 100;
+  font-family: var(--mono); font-size: 0.8rem;
+}
+.nav-logo { font-weight: 700; color: var(--accent-sage); letter-spacing: 0.1em; text-transform: uppercase; }
+.nav a { color: var(--text-secondary); text-decoration: none; padding: 0.2rem 0.5rem; border-radius: 4px; transition: color 0.15s; }
+.nav a:hover { color: var(--text-primary); }
+.nav a.active { color: var(--accent-sage); background: rgba(132,165,157,0.1); }
+.nav-sep { color: var(--text-muted); }
+
+/* ── Container / Layout ──────────────────────────────────────────── */
+.container { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+
+/* ── Hero ────────────────────────────────────────────────────────── */
+.hero {
+  background: var(--vellum-white);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border-subtle);
+  border-left: 4px solid var(--accent-sage);
+  border-radius: var(--radius);
+  padding: 1.2rem 2rem;
+  margin-bottom: 1.5rem;
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.8rem;
+}
+.hero-left h1 { font-size: 1.3rem; font-weight: 600; }
+.hero-label {
+  font-family: var(--mono); font-size: 0.65rem; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.15em; color: var(--text-secondary);
+}
+.hero-stat {
+  font-family: var(--mono); font-size: 2rem; font-weight: 700;
+  color: var(--accent-sage); line-height: 1;
+}
+.hero-stat-label { font-family: var(--mono); font-size: 0.6rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.15em; }
+
+/* ── Section Header ──────────────────────────────────────────────── */
+.section-label {
+  font-family: var(--mono); font-size: 0.65rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.2em;
+  color: var(--text-muted); margin-bottom: 0.8rem;
+}
+
+/* ── Filter Bar ──────────────────────────────────────────────────── */
+.filter-bar {
+  display: flex; gap: 0.6rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap;
+}
+.filter-input {
+  flex: 1; min-width: 180px;
+  font-family: var(--mono); font-size: 0.8rem;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--vellum-white);
+  backdrop-filter: var(--glass-blur);
+  color: var(--text-primary);
+  outline: none;
+}
+.filter-input:focus { border-color: var(--accent-sage); }
+.filter-input::placeholder { color: var(--text-muted); }
+.filter-tags { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+.filter-tag {
+  font-family: var(--mono); font-size: 0.65rem;
+  padding: 0.2rem 0.5rem; border-radius: 4px;
+  background: var(--bg-surface); color: var(--text-secondary);
+  cursor: pointer; border: 1px solid transparent;
+  transition: all 0.15s; user-select: none;
+}
+.filter-tag:hover { color: var(--text-primary); }
+.filter-tag.active { background: rgba(132,165,157,0.15); color: var(--accent-sage); border-color: var(--accent-sage); }
+
+/* ── Histogram ───────────────────────────────────────────────────── */
+.histogram {
+  background: var(--vellum-white);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 1rem 1.2rem;
+  margin-bottom: 1rem;
+}
+.hist-row {
+  display: flex; align-items: center; gap: 0.6rem;
+  font-family: var(--mono); font-size: 0.75rem;
+  margin-bottom: 0.3rem; cursor: pointer;
+}
+.hist-row:hover { opacity: 0.8; }
+.hist-label { min-width: 180px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hist-bar-wrap { flex: 1; height: 14px; background: var(--bg-surface); border-radius: 3px; overflow: hidden; }
+.hist-bar { height: 100%; border-radius: 3px; transition: width 0.3s; }
+.hist-count { min-width: 2rem; text-align: right; color: var(--text-muted); font-size: 0.7rem; }
+
+/* Type-colour palette (cycling) */
+.type-0 { background: var(--accent-sage); }
+.type-1 { background: var(--accent-clay); }
+.type-2 { background: var(--accent-hopeful); }
+.type-3 { background: var(--accent-blue); }
+.type-4 { background: var(--accent-red); }
+
+/* ── Service Table ───────────────────────────────────────────────── */
+.panel {
+  background: var(--vellum-white);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 0;
+  margin-bottom: 1rem;
+  overflow: hidden;
+}
+.panel-title {
+  font-family: var(--mono); font-size: 0.65rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.2em;
+  color: var(--text-muted); padding: 0.8rem 1.2rem 0;
+}
+.svc-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.svc-table th {
+  font-family: var(--mono); font-size: 0.65rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted);
+  text-align: left; padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer; user-select: none; white-space: nowrap;
+}
+.svc-table th:hover { color: var(--text-primary); }
+.svc-table th .sort-arrow { font-size: 0.55rem; margin-left: 0.2rem; }
+.svc-table td { padding: 0.5rem 0.8rem; border-bottom: 1px solid var(--border-subtle); vertical-align: middle; }
+.svc-table tr.svc-row { cursor: pointer; transition: background 0.1s; }
+.svc-table tr.svc-row:hover { background: rgba(132,165,157,0.04); }
+.svc-table tr.svc-detail { display: none; }
+.svc-table tr.svc-detail.open { display: table-row; }
+.svc-table tr.svc-detail td { padding: 0.6rem 1.2rem 0.8rem; background: var(--bg-surface); }
+.resolved-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 0.3rem; vertical-align: middle; }
+.resolved-dot.yes { background: var(--accent-sage); }
+.resolved-dot.no { background: var(--text-muted); }
+.removed-tag {
+  font-family: var(--mono); font-size: 0.6rem; color: var(--accent-red);
+  background: rgba(196,80,80,0.1); padding: 0.1rem 0.4rem; border-radius: 3px; margin-left: 0.3rem;
+}
+.ip-cell { font-family: var(--mono); font-size: 0.75rem; }
+.port-cell { font-family: var(--mono); font-size: 0.75rem; }
+
+/* ── TXT detail pane ─────────────────────────────────────────────── */
+.detail-grid { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+.detail-section { min-width: 200px; }
+.detail-section h4 {
+  font-family: var(--mono); font-size: 0.6rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.15em; color: var(--text-muted); margin-bottom: 0.3rem;
+}
+.txt-table { font-size: 0.78rem; border-collapse: collapse; }
+.txt-table td { padding: 0.15rem 0.6rem 0.15rem 0; font-family: var(--mono); font-size: 0.72rem; }
+.txt-key { color: var(--accent-sage); }
+.txt-val { color: var(--text-secondary); word-break: break-all; }
+.detail-meta { font-family: var(--mono); font-size: 0.72rem; color: var(--text-secondary); }
+.detail-meta span { display: block; margin-bottom: 0.15rem; }
+
+/* ── Launch Button ───────────────────────────────────────────────── */
+.launch-btn {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  font-family: var(--mono); font-size: 0.7rem; font-weight: 500;
+  color: var(--accent-sage); background: rgba(132,165,157,0.12);
+  border: 1px solid rgba(132,165,157,0.25);
+  padding: 0.25rem 0.6rem; border-radius: 4px;
+  text-decoration: none; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.launch-btn:hover { background: rgba(132,165,157,0.22); border-color: var(--accent-sage); }
+.launch-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
+.launch-inline {
+  display: inline-flex; align-items: center;
+  color: var(--accent-sage); text-decoration: none; cursor: pointer;
+  font-family: var(--mono); font-size: 0.72rem;
+}
+.launch-inline:hover { text-decoration: underline; }
+.launch-inline svg { width: 11px; height: 11px; margin-left: 0.2rem; flex-shrink: 0; }
+
+/* ── Discovery Log ───────────────────────────────────────────────── */
+.activity-log { max-height: 250px; overflow-y: auto; padding: 0.6rem 1.2rem; }
+.log-entry {
+  display: flex; gap: 0.8rem; padding: 0.25rem 0; font-size: 0.78rem;
+  font-family: var(--mono); border-bottom: 1px solid var(--border-subtle);
+}
+.log-time { color: var(--text-muted); white-space: nowrap; min-width: 5rem; }
+.log-type { min-width: 5rem; }
+.log-type.found { color: var(--accent-sage); }
+.log-type.resolved { color: var(--accent-clay); }
+.log-type.removed { color: var(--accent-red); }
+.log-msg { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.panel-empty { color: var(--text-muted); font-style: italic; font-size: 0.85rem; padding: 1rem 1.2rem; }
+
+/* ── Disconnected ────────────────────────────────────────────────── */
+.disconnected {
+  position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
+  background: var(--accent-red); color: #fff;
+  font-family: var(--mono); font-size: 0.75rem;
+  padding: 0.4rem 1.2rem; border-radius: 20px;
+  display: none; z-index: 200;
+}
+.disconnected.show { display: block; }
+
+/* ── Responsive ──────────────────────────────────────────────────── */
+@media (max-width: 700px) {
+  .hist-label { min-width: 120px; }
+  .svc-table th:nth-child(5), .svc-table td:nth-child(5) { display: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- Nav -->
+<div class="nav">
+  <span class="nav-logo">koi</span>
+  <a href="/">Dashboard</a>
+  <span class="nav-sep">·</span>
+  <a href="/mdns-browser" class="active">Browser</a>
+  <span class="nav-sep">·</span>
+  <a href="/docs">API Docs</a>
+</div>
+
+<!-- Main -->
+<div class="container">
+
+  <!-- Hero -->
+  <div class="hero">
+    <div class="hero-left">
+      <h1>mDNS Browser</h1>
+      <div class="hero-label">LIVE NETWORK SERVICE DISCOVERY</div>
+    </div>
+    <div style="text-align:center">
+      <div class="hero-stat" id="hero-count">0</div>
+      <div class="hero-stat-label">instances</div>
+    </div>
+    <div style="text-align:center">
+      <div class="hero-stat" id="hero-types">0</div>
+      <div class="hero-stat-label">types</div>
+    </div>
+  </div>
+
+  <!-- Filter Bar -->
+  <div class="filter-bar">
+    <input class="filter-input" id="filter-input" type="text" placeholder="Filter services…" autocomplete="off">
+    <div class="filter-tags" id="filter-tags"></div>
+  </div>
+
+  <!-- Type Histogram -->
+  <div class="section-label">SERVICE TYPES</div>
+  <div class="histogram" id="histogram">
+    <div class="panel-empty">Discovering…</div>
+  </div>
+
+  <!-- Service Table -->
+  <div class="section-label">SERVICES</div>
+  <div class="panel">
+    <table class="svc-table">
+      <thead><tr>
+        <th data-sort="name">Name <span class="sort-arrow"></span></th>
+        <th data-sort="service_type">Type <span class="sort-arrow"></span></th>
+        <th data-sort="host">Host <span class="sort-arrow"></span></th>
+        <th data-sort="ip">IP <span class="sort-arrow"></span></th>
+        <th data-sort="port">Port <span class="sort-arrow"></span></th>
+        <th style="width:3rem"></th>
+      </tr></thead>
+      <tbody id="svc-body"></tbody>
+    </table>
+    <div class="panel-empty" id="svc-empty" style="display:none">No services discovered yet</div>
+  </div>
+
+  <!-- Discovery Log -->
+  <div class="section-label">DISCOVERY LOG</div>
+  <div class="panel">
+    <div class="activity-log" id="discovery-log">
+      <div class="panel-empty" id="log-empty">Waiting for events…</div>
+    </div>
+  </div>
+
+</div>
+
+<div class="disconnected" id="disconnected">Connection lost — reconnecting…</div>
+
+<!-- Inline SVG icon for external link / launch -->
+<template id="tmpl-launch-icon">
+  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 3H3v10h10v-3"/>
+    <path d="M9 2h5v5"/>
+    <path d="M14 2 7 9"/>
+  </svg>
+</template>
+
+<script>
+(function() {
+  'use strict';
+
+  const POLL_INTERVAL = 5000;
+  const MAX_LOG = 30;
+
+  // ── State ─────────────────────────────────────────────────────
+  let snapshot = null;
+  let logEntries = [];
+  let sortKey = 'name';
+  let sortAsc = true;
+  let filterText = '';
+  let activeTypes = new Set(); // empty = show all
+  let expandedRows = new Set();
+  let pollTimer = null;
+  let eventSource = null;
+
+  // ── Helpers ───────────────────────────────────────────────────
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  function timeStr() { return new Date().toLocaleTimeString('en-GB', { hour12: false }); }
+  function launchIcon() { return $('tmpl-launch-icon').innerHTML; }
+
+  function relTime(iso) {
+    if (!iso) return '—';
+    const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+    if (diff < 5) return 'just now';
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    return Math.floor(diff / 3600) + 'h ago';
+  }
+
+  // ── HTTP / launchable endpoint detection ──────────────────────
+  //
+  // Detects services that expose HTTP endpoints based on:
+  // 1. Service type matching (_http._tcp, _https._tcp, _webapp._tcp, etc.)
+  // 2. Well-known HTTP ports (80, 443, 8080, 8443, …)
+  // 3. TXT record hints (path=, url=, etc.)
+  //
+  // Returns { url, label } or null.
+
+  const HTTP_TYPES = new Set([
+    '_http._tcp', '_https._tcp', '_webapp._tcp',
+    '_http._tcp.local.', '_https._tcp.local.',
+    '_webapp._tcp.local.',
+  ]);
+  const HTTPS_TYPES = new Set([
+    '_https._tcp', '_https._tcp.local.',
+  ]);
+  const HTTPS_PORTS = new Set([443, 8443, 9443]);
+  const HTTP_PORTS = new Set([80, 8080, 8000, 8888, 3000, 3001, 5000, 5001, 9090]);
+
+  function normalizeType(t) {
+    return t.replace(/\.local\.?$/, '');
+  }
+
+  function inferEndpoint(svc) {
+    if (!svc.ip && !svc.host) return null;
+    if (!svc.port) return null;
+
+    const normType = normalizeType(svc.service_type);
+    const isExplicitHttp = HTTP_TYPES.has(normType) || HTTP_TYPES.has(svc.service_type);
+    const isExplicitHttps = HTTPS_TYPES.has(normType) || HTTPS_TYPES.has(svc.service_type);
+    const isHttpPort = HTTP_PORTS.has(svc.port);
+    const isHttpsPort = HTTPS_PORTS.has(svc.port);
+
+    // Check TXT records for explicit URL
+    const txt = svc.txt || {};
+    const txtUrl = txt['url'] || txt['URL'] || txt['Url'];
+    if (txtUrl) {
+      try {
+        new URL(txtUrl); // validate
+        return { url: txtUrl, label: txtUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') };
+      } catch (_) {}
+    }
+
+    // Must be an HTTP-like type or HTTP-ish port
+    if (!isExplicitHttp && !isExplicitHttps && !isHttpPort && !isHttpsPort) return null;
+
+    const host = svc.ip || svc.host.replace(/\.$/, '');
+    const useHttps = isExplicitHttps || isHttpsPort;
+    const scheme = useHttps ? 'https' : 'http';
+
+    // Path from TXT 'path' key
+    let path = txt['path'] || txt['Path'] || txt['PATH'] || '/';
+    if (!path.startsWith('/')) path = '/' + path;
+
+    // Omit default port in label
+    const defaultPort = useHttps ? 443 : 80;
+    const portStr = (svc.port === defaultPort) ? '' : ':' + svc.port;
+    const url = scheme + '://' + host + portStr + path;
+    const label = host + portStr + path;
+
+    return { url, label };
+  }
+
+  function isLaunchable(svc) {
+    return inferEndpoint(svc) !== null;
+  }
+
+  // ── Render ────────────────────────────────────────────────────
+
+  function render() {
+    if (!snapshot) return;
+    const s = snapshot;
+
+    // Hero
+    $('hero-count').textContent = s.total_instances;
+    $('hero-types').textContent = s.total_types;
+
+    // Filter tags
+    renderFilterTags(s.service_types);
+
+    // Histogram
+    renderHistogram(s.service_types);
+
+    // Service table
+    renderServiceTable(s.instances);
+  }
+
+  function renderFilterTags(types) {
+    const container = $('filter-tags');
+    let html = '';
+    for (const t of types) {
+      const norm = normalizeType(t.service_type);
+      const cls = activeTypes.has(norm) ? ' active' : '';
+      html += '<span class="filter-tag' + cls + '" data-type="' + esc(norm) + '">' + esc(norm) + '</span>';
+    }
+    container.innerHTML = html;
+    container.querySelectorAll('.filter-tag').forEach(function(tag) {
+      tag.addEventListener('click', function() {
+        const t = this.dataset.type;
+        if (activeTypes.has(t)) activeTypes.delete(t); else activeTypes.add(t);
+        render();
+      });
+    });
+  }
+
+  function renderHistogram(types) {
+    if (types.length === 0) {
+      $('histogram').innerHTML = '<div class="panel-empty">Discovering…</div>';
+      return;
+    }
+    const max = Math.max(1, types[0].count);
+    let html = '';
+    types.forEach(function(t, i) {
+      const pct = Math.max(4, (t.count / max) * 100);
+      const colorClass = 'type-' + (i % 5);
+      const norm = normalizeType(t.service_type);
+      html += '<div class="hist-row" data-type="' + esc(norm) + '">'
+        + '<span class="hist-label">' + esc(norm) + '</span>'
+        + '<span class="hist-bar-wrap"><span class="hist-bar ' + colorClass + '" style="width:' + pct + '%"></span></span>'
+        + '<span class="hist-count">' + t.count + '</span></div>';
+    });
+    $('histogram').innerHTML = html;
+    $('histogram').querySelectorAll('.hist-row').forEach(function(row) {
+      row.addEventListener('click', function() {
+        const t = this.dataset.type;
+        if (activeTypes.has(t)) activeTypes.delete(t); else { activeTypes.clear(); activeTypes.add(t); }
+        render();
+      });
+    });
+  }
+
+  function renderServiceTable(services) {
+    // Filter
+    let filtered = services.filter(function(svc) {
+      if (svc.removed_at) return false; // hide purged
+      if (filterText) {
+        const q = filterText.toLowerCase();
+        const haystack = (svc.name + ' ' + svc.instance_name + ' ' + svc.service_type + ' ' + svc.host + ' ' + svc.ip).toLowerCase();
+        if (haystack.indexOf(q) === -1) return false;
+      }
+      if (activeTypes.size > 0) {
+        if (!activeTypes.has(normalizeType(svc.service_type))) return false;
+      }
+      return true;
+    });
+
+    // Sort
+    filtered.sort(function(a, b) {
+      let av = a[sortKey] || '', bv = b[sortKey] || '';
+      if (sortKey === 'port') { av = a.port || 0; bv = b.port || 0; return sortAsc ? av - bv : bv - av; }
+      if (typeof av === 'string') av = av.toLowerCase();
+      if (typeof bv === 'string') bv = bv.toLowerCase();
+      if (av < bv) return sortAsc ? -1 : 1;
+      if (av > bv) return sortAsc ? 1 : -1;
+      return 0;
+    });
+
+    if (filtered.length === 0) {
+      $('svc-body').innerHTML = '';
+      $('svc-empty').style.display = '';
+      return;
+    }
+    $('svc-empty').style.display = 'none';
+
+    let html = '';
+    for (const svc of filtered) {
+      const key = svc.instance_name;
+      const resDot = svc.resolved ? 'yes' : 'no';
+      const removed = svc.removed_at ? '<span class="removed-tag">removed</span>' : '';
+      const endpoint = inferEndpoint(svc);
+
+      // Launch column — show button inline if launchable
+      let launchCell = '';
+      if (endpoint) {
+        launchCell = '<a class="launch-btn" href="' + esc(endpoint.url) + '" target="_blank" rel="noopener" '
+          + 'title="Open ' + esc(endpoint.label) + '" onclick="event.stopPropagation()">'
+          + launchIcon() + '</a>';
+      }
+
+      html += '<tr class="svc-row" data-key="' + esc(key) + '">'
+        + '<td><span class="resolved-dot ' + resDot + '"></span>' + esc(svc.name) + removed + '</td>'
+        + '<td><span style="font-family:var(--mono);font-size:0.72rem">' + esc(normalizeType(svc.service_type)) + '</span></td>'
+        + '<td>' + esc(svc.host ? svc.host.replace(/\.$/, '') : '—') + '</td>'
+        + '<td class="ip-cell">' + esc(svc.ip || '—') + '</td>'
+        + '<td class="port-cell">' + (svc.port || '—') + '</td>'
+        + '<td>' + launchCell + '</td>'
+        + '</tr>';
+
+      // Detail row (expandable)
+      const open = expandedRows.has(key) ? ' open' : '';
+      html += '<tr class="svc-detail' + open + '" data-detail="' + esc(key) + '"><td colspan="6">';
+      html += '<div class="detail-grid">';
+
+      // Endpoint link (prominent in detail pane)
+      if (endpoint) {
+        html += '<div class="detail-section">'
+          + '<h4>Endpoint</h4>'
+          + '<a class="launch-inline" href="' + esc(endpoint.url) + '" target="_blank" rel="noopener">'
+          + esc(endpoint.label) + launchIcon() + '</a>'
+          + '</div>';
+      }
+
+      // TXT Records
+      const txtKeys = Object.keys(svc.txt || {});
+      if (txtKeys.length > 0) {
+        html += '<div class="detail-section"><h4>TXT Records</h4><table class="txt-table">';
+        for (const k of txtKeys.sort()) {
+          html += '<tr><td class="txt-key">' + esc(k) + '</td><td class="txt-val">' + esc(svc.txt[k]) + '</td></tr>';
+        }
+        html += '</table></div>';
+      }
+
+      // Metadata
+      html += '<div class="detail-section"><h4>Discovery</h4><div class="detail-meta">'
+        + '<span>Instance: ' + esc(svc.instance_name) + '</span>'
+        + '<span>First seen: ' + relTime(svc.first_seen) + '</span>'
+        + '<span>Last seen: ' + relTime(svc.last_seen) + '</span>'
+        + '<span>Resolved: ' + (svc.resolved ? 'yes' : 'no') + '</span>'
+        + '</div></div>';
+
+      html += '</div></td></tr>';
+    }
+
+    $('svc-body').innerHTML = html;
+
+    // Attach row click handlers
+    $('svc-body').querySelectorAll('.svc-row').forEach(function(row) {
+      row.addEventListener('click', function() {
+        const key = this.dataset.key;
+        if (expandedRows.has(key)) expandedRows.delete(key); else expandedRows.add(key);
+        const detail = document.querySelector('[data-detail="' + CSS.escape(key) + '"]');
+        if (detail) detail.classList.toggle('open');
+      });
+    });
+
+    // Update sort arrows
+    document.querySelectorAll('.svc-table th[data-sort]').forEach(function(th) {
+      const arrow = th.querySelector('.sort-arrow');
+      if (th.dataset.sort === sortKey) {
+        arrow.textContent = sortAsc ? ' ▲' : ' ▼';
+      } else {
+        arrow.textContent = '';
+      }
+    });
+  }
+
+  // ── Sort handler ──────────────────────────────────────────────
+  document.querySelectorAll('.svc-table th[data-sort]').forEach(function(th) {
+    th.addEventListener('click', function() {
+      const key = this.dataset.sort;
+      if (sortKey === key) { sortAsc = !sortAsc; } else { sortKey = key; sortAsc = true; }
+      render();
+    });
+  });
+
+  // ── Filter handler ────────────────────────────────────────────
+  $('filter-input').addEventListener('input', function() {
+    filterText = this.value;
+    render();
+  });
+
+  // ── Discovery Log ─────────────────────────────────────────────
+  function addLog(type, msg) {
+    logEntries.unshift({ time: timeStr(), type: type, msg: msg });
+    if (logEntries.length > MAX_LOG) logEntries.pop();
+    renderLog();
+  }
+
+  function renderLog() {
+    if (logEntries.length === 0) { $('log-empty').style.display = ''; return; }
+    $('log-empty').style.display = 'none';
+    let html = '';
+    for (const e of logEntries) {
+      html += '<div class="log-entry">'
+        + '<span class="log-time">' + esc(e.time) + '</span>'
+        + '<span class="log-type ' + esc(e.type) + '">' + esc(e.type) + '</span>'
+        + '<span class="log-msg">' + esc(e.msg) + '</span></div>';
+    }
+    $('discovery-log').innerHTML = html;
+  }
+
+  // ── Polling ───────────────────────────────────────────────────
+  async function poll() {
+    try {
+      const resp = await fetch('/v1/mdns/browser/snapshot');
+      if (resp.ok) {
+        snapshot = await resp.json();
+        render();
+        $('disconnected').classList.remove('show');
+      }
+    } catch (e) {
+      $('disconnected').classList.add('show');
+    }
+  }
+
+  function startPolling() {
+    poll();
+    pollTimer = setInterval(poll, POLL_INTERVAL);
+  }
+
+  // ── SSE ───────────────────────────────────────────────────────
+  function connectSSE() {
+    if (eventSource) eventSource.close();
+    eventSource = new EventSource('/v1/mdns/browser/events');
+
+    eventSource.addEventListener('type_found', function(e) {
+      const d = JSON.parse(e.data);
+      addLog('found', d.service_type || '?');
+    });
+    eventSource.addEventListener('resolved', function(e) {
+      const d = JSON.parse(e.data);
+      const ip = d.ip || '';
+      const port = d.port || '';
+      addLog('resolved', (d.name || '?') + (ip ? ' → ' + ip : '') + (port ? ':' + port : ''));
+    });
+    eventSource.addEventListener('removed', function(e) {
+      const d = JSON.parse(e.data);
+      addLog('removed', (d.name || '?'));
+    });
+
+    eventSource.onerror = function() {
+      $('disconnected').classList.add('show');
+      eventSource.close();
+      setTimeout(connectSSE, 5000);
+    };
+    eventSource.onopen = function() {
+      $('disconnected').classList.remove('show');
+    };
+  }
+
+  // ── Boot ──────────────────────────────────────────────────────
+  startPolling();
+  connectSSE();
+})();
+</script>
+</body>
+</html>

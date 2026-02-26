@@ -115,6 +115,8 @@ pub enum Command {
     Uninstall,
     /// Show version information
     Version,
+    /// Open the dashboard in a web browser
+    Launch,
     /// Show status of all capabilities
     Status,
     /// mDNS service discovery

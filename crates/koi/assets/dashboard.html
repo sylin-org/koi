@@ -1,0 +1,584 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Koi Dashboard</title>
+<style>
+/* ── Lantern / Vellum Design Tokens ─────────────────────────────── */
+:root {
+  --bg-base: #f4f2ee;
+  --bg-surface: #eae7e1;
+  --text-primary: #2d2d2d;
+  --text-secondary: #6b6b6b;
+  --text-muted: #999;
+  --accent-sage: #84a59d;
+  --accent-clay: #d4a373;
+  --accent-hopeful: #c4b060;
+  --accent-red: #c45050;
+  --vellum-white: rgba(255,255,255,0.45);
+  --glass-blur: blur(14px);
+  --border-subtle: rgba(0,0,0,0.06);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --mono: 'Cascadia Code', 'IBM Plex Mono', 'Fira Code', monospace;
+  --sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --grain: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-base: #1a1a1a;
+    --bg-surface: #232323;
+    --text-primary: #e8e6e1;
+    --text-secondary: #a0a0a0;
+    --text-muted: #666;
+    --vellum-white: rgba(255,255,255,0.07);
+    --border-subtle: rgba(255,255,255,0.06);
+  }
+}
+
+/* ── Reset & Base ────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 15px; }
+body {
+  font-family: var(--sans);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background: var(--grain);
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ── Nav Bar ─────────────────────────────────────────────────────── */
+.nav {
+  display: flex; align-items: center; gap: 1.2rem;
+  padding: 0.6rem 1.5rem;
+  background: var(--vellum-white);
+  backdrop-filter: var(--glass-blur);
+  border-bottom: 1px solid var(--border-subtle);
+  position: sticky; top: 0; z-index: 100;
+  font-family: var(--mono); font-size: 0.8rem;
+}
+.nav-logo { font-weight: 700; color: var(--accent-sage); letter-spacing: 0.1em; text-transform: uppercase; }
+.nav a { color: var(--text-secondary); text-decoration: none; padding: 0.2rem 0.5rem; border-radius: 4px; transition: color 0.15s; }
+.nav a:hover { color: var(--text-primary); }
+.nav a.active { color: var(--accent-sage); background: rgba(132,165,157,0.1); }
+.nav-sep { color: var(--text-muted); }
+
+/* ── Container ───────────────────────────────────────────────────── */
+.container { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+
+/* ── Hero / Identity ─────────────────────────────────────────────── */
+.hero {
+  background: var(--vellum-white);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border-subtle);
+  border-left: 4px solid var(--accent-sage);
+  border-radius: var(--radius);
+  padding: 1.5rem 2rem;
+  margin-bottom: 1.5rem;
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;
+}
+.hero-left h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 0.15rem; }
+.hero-label {
+  font-family: var(--mono); font-size: 0.65rem; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.15em; color: var(--text-secondary);
+}
+.hero-meta {
+  font-family: var(--mono); font-size: 0.75rem; color: var(--text-secondary);
+  display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.4rem;
+}
+.hero-meta span::after { content: '·'; margin-left: 0.5rem; color: var(--text-muted); }
+.hero-meta span:last-child::after { content: ''; }
+.hero-right { display: flex; align-items: center; gap: 0.6rem; }
+.mode-badge {
+  font-family: var(--mono); font-size: 0.65rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  background: rgba(132,165,157,0.15); color: var(--accent-sage);
+  padding: 0.2rem 0.6rem; border-radius: 4px;
+}
+.health-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.health-dot.healthy { background: var(--accent-sage); box-shadow: 0 0 6px var(--accent-sage); animation: pulse 2s infinite; }
+.health-dot.degraded { background: var(--accent-clay); }
+.health-dot.unhealthy { background: var(--accent-red); }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+/* ── Section Label ───────────────────────────────────────────────── */
+.section-label {
+  font-family: var(--mono); font-size: 0.65rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.2em;
+  color: var(--text-muted); margin-bottom: 0.8rem;
+}
+
+/* ── Capability Cards Grid ───────────────────────────────────────── */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.8rem; margin-bottom: 1.5rem; }
+.card {
+  background: var(--vellum-white);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 1rem 1.2rem;
+  transition: opacity 0.2s, transform 0.15s;
+}
+.card:hover { transform: translateY(-1px); }
+.card.disabled { opacity: 0.45; }
+.card-name {
+  font-family: var(--mono); font-size: 0.7rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-secondary); margin-bottom: 0.3rem;
+}
+.card-status { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; }
+.card-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.card-dot.healthy { background: var(--accent-sage); }
+.card-dot.unhealthy { background: var(--accent-red); }
+.card-dot.disabled { background: var(--text-muted); }
+.card-badge {
+  font-family: var(--mono); font-size: 0.6rem;
+  color: var(--text-muted); background: var(--bg-surface);
+  padding: 0.1rem 0.4rem; border-radius: 3px; margin-left: auto;
+}
+.card-link {
+  display: block; margin-top: 0.5rem;
+  font-family: var(--mono); font-size: 0.7rem;
+  color: var(--accent-sage); text-decoration: none;
+}
+.card-link:hover { text-decoration: underline; }
+
+/* ── Detail Panel ────────────────────────────────────────────────── */
+.panel {
+  background: var(--vellum-white);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 1.2rem 1.5rem;
+  margin-bottom: 1rem;
+}
+.panel-title {
+  font-family: var(--mono); font-size: 0.65rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.2em;
+  color: var(--text-muted); margin-bottom: 0.8rem;
+}
+.panel table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.panel th {
+  font-family: var(--mono); font-size: 0.65rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted);
+  text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid var(--border-subtle);
+}
+.panel td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border-subtle); vertical-align: top; }
+.panel td:last-child { border-bottom-color: transparent; }
+.dot-row { display: flex; gap: 3px; margin-bottom: 0.3rem; }
+.dot-row .dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot-row .dot.up { background: var(--accent-sage); }
+.dot-row .dot.down { background: var(--accent-red); }
+.dot-row .dot.unknown { background: var(--text-muted); }
+.status-up { color: var(--accent-sage); }
+.status-down { color: var(--accent-red); }
+.status-unknown { color: var(--text-muted); }
+.panel-empty { color: var(--text-muted); font-style: italic; font-size: 0.85rem; }
+
+/* ── Activity Log ────────────────────────────────────────────────── */
+.activity-log { max-height: 300px; overflow-y: auto; }
+.log-entry {
+  display: flex; gap: 0.8rem; padding: 0.3rem 0; font-size: 0.8rem;
+  font-family: var(--mono); border-bottom: 1px solid var(--border-subtle);
+}
+.log-time { color: var(--text-muted); white-space: nowrap; min-width: 5rem; }
+.log-type { min-width: 9rem; }
+.log-type.health { color: var(--accent-sage); }
+.log-type.dns { color: var(--accent-clay); }
+.log-type.certmesh { color: var(--accent-hopeful); }
+.log-type.proxy { color: var(--accent-sage); }
+.log-type.mdns { color: var(--accent-sage); }
+.log-msg { color: var(--text-secondary); }
+
+/* ── Disconnected Banner ─────────────────────────────────────────── */
+.disconnected {
+  position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
+  background: var(--accent-red); color: #fff;
+  font-family: var(--mono); font-size: 0.75rem;
+  padding: 0.4rem 1.2rem; border-radius: 20px;
+  display: none; z-index: 200;
+}
+.disconnected.show { display: block; }
+</style>
+</head>
+<body>
+
+<!-- Nav -->
+<div class="nav">
+  <span class="nav-logo">koi</span>
+  <a href="/" class="active">Dashboard</a>
+  <span class="nav-sep" id="nav-sep-browser" style="display:none">·</span>
+  <a href="/mdns-browser" id="nav-browser" style="display:none">Browser</a>
+  <span class="nav-sep">·</span>
+  <a href="/docs">API Docs</a>
+</div>
+
+<!-- Main -->
+<div class="container">
+
+  <!-- Hero -->
+  <div class="hero" id="hero">
+    <div class="hero-left">
+      <h1 id="hero-title">Koi</h1>
+      <div class="hero-label">NETWORK SERVICES DAEMON</div>
+      <div class="hero-meta">
+        <span id="hero-hostname">—</span>
+        <span id="hero-platform">—</span>
+        <span id="hero-uptime">—</span>
+        <span id="hero-caps">—</span>
+      </div>
+    </div>
+    <div class="hero-right">
+      <span class="mode-badge" id="hero-mode">DAEMON</span>
+      <span class="health-dot healthy" id="hero-dot"></span>
+    </div>
+  </div>
+
+  <!-- Capability Cards -->
+  <div class="section-label">CAPABILITIES</div>
+  <div class="cards" id="cards"></div>
+
+  <!-- Health Panel -->
+  <div class="panel" id="health-panel" style="display:none">
+    <div class="panel-title">HEALTH</div>
+    <div id="health-summary"></div>
+    <table id="health-table"><thead><tr>
+      <th>Service</th><th>Kind</th><th>Target</th><th>Status</th><th>Last OK</th>
+    </tr></thead><tbody id="health-body"></tbody></table>
+  </div>
+
+  <!-- DNS Panel -->
+  <div class="panel" id="dns-panel" style="display:none">
+    <div class="panel-title">DNS RESOLVER</div>
+    <div id="dns-content"></div>
+  </div>
+
+  <!-- Certmesh Panel -->
+  <div class="panel" id="certmesh-panel" style="display:none">
+    <div class="panel-title">CERTIFICATE MESH</div>
+    <div id="certmesh-content"></div>
+  </div>
+
+  <!-- Proxy Panel -->
+  <div class="panel" id="proxy-panel" style="display:none">
+    <div class="panel-title">REVERSE PROXY</div>
+    <div id="proxy-content"></div>
+  </div>
+
+  <!-- UDP Panel -->
+  <div class="panel" id="udp-panel" style="display:none">
+    <div class="panel-title">UDP RELAY</div>
+    <div id="udp-content"></div>
+  </div>
+
+  <!-- Activity Log -->
+  <div class="section-label">ACTIVITY</div>
+  <div class="panel">
+    <div class="activity-log" id="activity-log">
+      <div class="panel-empty" id="log-empty">Waiting for events…</div>
+    </div>
+  </div>
+
+</div>
+
+<div class="disconnected" id="disconnected">Connection lost — reconnecting…</div>
+
+<script>
+(function() {
+  'use strict';
+
+  const POLL_INTERVAL = 3000;
+  const MAX_LOG_ENTRIES = 50;
+  const logEntries = [];
+  let pollTimer = null;
+  let eventSource = null;
+
+  // ── Helpers ───────────────────────────────────────────────────
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+  function formatUptime(secs) {
+    if (secs < 60) return secs + 's';
+    if (secs < 3600) return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    return h + 'h ' + m + 'm';
+  }
+
+  function timeStr() {
+    return new Date().toLocaleTimeString('en-GB', { hour12: false });
+  }
+
+  function statusClass(status) {
+    if (status === 'up' || status === 'Up') return 'status-up';
+    if (status === 'down' || status === 'Down') return 'status-down';
+    return 'status-unknown';
+  }
+
+  function dotClass(status) {
+    if (status === 'up' || status === 'Up') return 'up';
+    if (status === 'down' || status === 'Down') return 'down';
+    return 'unknown';
+  }
+
+  function relTime(iso) {
+    if (!iso) return '—';
+    const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+    if (diff < 5) return 'just now';
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    return Math.floor(diff / 3600) + 'h ago';
+  }
+
+  // ── Render ────────────────────────────────────────────────────
+  function render(snap) {
+    // Hero
+    $('hero-title').textContent = 'Koi';
+    $('hero-hostname').textContent = snap.hostname_fqdn || snap.hostname;
+    $('hero-platform').textContent = snap.platform;
+    $('hero-uptime').textContent = formatUptime(snap.uptime_secs);
+    const enabledCount = snap.capabilities.filter(c => c.enabled).length;
+    $('hero-caps').textContent = enabledCount + ' capabilities';
+    $('hero-mode').textContent = (snap.mode || 'daemon').toUpperCase();
+
+    const allHealthy = snap.capabilities.filter(c => c.enabled).every(c => c.healthy);
+    const dot = $('hero-dot');
+    dot.className = 'health-dot ' + (allHealthy ? 'healthy' : 'degraded');
+
+    // Hero border color
+    const hero = $('hero');
+    hero.style.borderLeftColor = allHealthy ? 'var(--accent-sage)' : 'var(--accent-clay)';
+
+    // Conditional browser link
+    const mdnsCap = snap.capabilities.find(c => c.name === 'mdns');
+    const mdnsEnabled = mdnsCap && mdnsCap.enabled;
+    $('nav-browser').style.display = mdnsEnabled ? '' : 'none';
+    $('nav-sep-browser').style.display = mdnsEnabled ? '' : 'none';
+
+    // Capability cards
+    let cardsHtml = '';
+    for (const cap of snap.capabilities) {
+      const cls = cap.enabled ? '' : ' disabled';
+      const dotCls = !cap.enabled ? 'disabled' : (cap.healthy ? 'healthy' : 'unhealthy');
+      const badge = cap.enabled ? '' : '<span class="card-badge">disabled</span>';
+      const link = (cap.name === 'mdns' && cap.enabled)
+        ? '<a class="card-link" href="/mdns-browser">Browse network →</a>' : '';
+      cardsHtml += '<div class="card' + cls + '">'
+        + '<div class="card-name">' + esc(cap.name) + '</div>'
+        + '<div class="card-status"><span class="card-dot ' + dotCls + '"></span>'
+        + esc(cap.summary) + badge + '</div>'
+        + link + '</div>';
+    }
+    $('cards').innerHTML = cardsHtml;
+
+    // Health panel
+    if (snap.health) {
+      $('health-panel').style.display = '';
+      const h = snap.health;
+      const upCount = h.services.filter(s => s.status === 'up' || s.status === 'Up').length;
+      const totalS = h.services.length;
+      let dots = h.services.map(s => '<span class="dot ' + dotClass(s.status) + '"></span>').join('');
+      $('health-summary').innerHTML = '<div class="dot-row">' + dots + '</div>'
+        + '<span style="font-size:0.8rem;color:var(--text-secondary)">' + upCount + ' up / ' + (totalS - upCount) + ' issues</span>';
+
+      let tbody = '';
+      for (const s of h.services) {
+        tbody += '<tr>'
+          + '<td><span class="card-dot ' + dotClass(s.status) + '" style="display:inline-block;margin-right:0.3rem"></span>' + esc(s.name) + '</td>'
+          + '<td>' + esc(s.kind) + '</td>'
+          + '<td style="font-family:var(--mono);font-size:0.75rem">' + esc(s.target) + '</td>'
+          + '<td class="' + statusClass(s.status) + '">' + esc(s.status) + '</td>'
+          + '<td>' + relTime(s.last_ok) + '</td>'
+          + '</tr>';
+        if (s.message) {
+          tbody += '<tr><td colspan="5" style="padding-left:1.5rem;color:var(--text-muted);font-size:0.78rem">└─ ' + esc(s.message) + '</td></tr>';
+        }
+      }
+      $('health-body').innerHTML = tbody;
+      if (!totalS) $('health-summary').innerHTML = '<div class="panel-empty">No health checks configured</div>';
+    } else {
+      $('health-panel').style.display = 'none';
+    }
+
+    // DNS panel
+    if (snap.dns) {
+      $('dns-panel').style.display = '';
+      const d = snap.dns;
+      $('dns-content').innerHTML = '<table style="font-size:0.82rem">'
+        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Status</td><td>' + (d.running ? '<span class="status-up">running</span>' : '<span class="status-down">stopped</span>') + '</td></tr>'
+        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Zone</td><td style="font-family:var(--mono)">' + esc(d.zone) + '</td></tr>'
+        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Port</td><td>' + d.port + '</td></tr>'
+        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Records</td><td>' + d.static_count + ' static, ' + d.certmesh_count + ' certmesh, ' + d.mdns_count + ' mdns</td></tr>'
+        + '</table>';
+    } else {
+      $('dns-panel').style.display = 'none';
+    }
+
+    // Certmesh panel
+    if (snap.certmesh) {
+      $('certmesh-panel').style.display = '';
+      const c = snap.certmesh;
+      $('certmesh-content').innerHTML = '<table style="font-size:0.82rem">'
+        + '<tr><td style="color:var(--text-muted);padding-right:1rem">CA</td><td>' + (c.ca_initialized ? (c.ca_locked ? '🔒 locked' : '🔓 unlocked') : 'not initialized') + '</td></tr>'
+        + (c.auth_method ? '<tr><td style="color:var(--text-muted);padding-right:1rem">Auth</td><td>' + esc(c.auth_method) + '</td></tr>' : '')
+        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Profile</td><td>' + esc(c.profile) + '</td></tr>'
+        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Members</td><td>' + c.member_count + '</td></tr>'
+        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Enrollment</td><td>' + esc(c.enrollment_state) + '</td></tr>'
+        + '</table>';
+    } else {
+      $('certmesh-panel').style.display = 'none';
+    }
+
+    // Proxy panel
+    if (snap.proxy) {
+      $('proxy-panel').style.display = '';
+      const p = snap.proxy;
+      if (p.entries.length === 0) {
+        $('proxy-content').innerHTML = '<div class="panel-empty">No proxy entries configured</div>';
+      } else {
+        let html = '<table style="font-size:0.82rem"><thead><tr><th>Name</th><th>Listen</th><th>Backend</th><th>Status</th></tr></thead><tbody>';
+        for (const e of p.entries) {
+          const listener = p.listeners.find(l => l.name === e.name);
+          const running = listener ? listener.running : false;
+          html += '<tr><td>' + esc(e.name) + '</td><td>:' + e.listen_port + '</td><td style="font-family:var(--mono);font-size:0.75rem">' + esc(e.backend) + '</td>'
+            + '<td class="' + (running ? 'status-up' : 'status-down') + '">' + (running ? 'running' : 'stopped') + '</td></tr>';
+        }
+        html += '</tbody></table>';
+        $('proxy-content').innerHTML = html;
+      }
+    } else {
+      $('proxy-panel').style.display = 'none';
+    }
+
+    // UDP panel
+    if (snap.udp) {
+      $('udp-panel').style.display = '';
+      const u = snap.udp;
+      if (u.bindings.length === 0) {
+        $('udp-content').innerHTML = '<div class="panel-empty">No active UDP bindings</div>';
+      } else {
+        let html = '<table style="font-size:0.82rem"><thead><tr><th>ID</th><th>Address</th></tr></thead><tbody>';
+        for (const b of u.bindings) {
+          html += '<tr><td style="font-family:var(--mono);font-size:0.75rem">' + esc(b.id) + '</td><td>' + esc(b.local_addr) + '</td></tr>';
+        }
+        html += '</tbody></table>';
+        $('udp-content').innerHTML = html;
+      }
+    } else {
+      $('udp-panel').style.display = 'none';
+    }
+  }
+
+  // ── Activity Log ──────────────────────────────────────────────
+  function addLogEntry(type, domain, msg) {
+    logEntries.unshift({ time: timeStr(), type: type, domain: domain, msg: msg });
+    if (logEntries.length > MAX_LOG_ENTRIES) logEntries.pop();
+    renderLog();
+  }
+
+  function renderLog() {
+    if (logEntries.length === 0) {
+      $('log-empty').style.display = '';
+      return;
+    }
+    $('log-empty').style.display = 'none';
+    const log = $('activity-log');
+    let html = '';
+    for (const e of logEntries) {
+      html += '<div class="log-entry">'
+        + '<span class="log-time">' + esc(e.time) + '</span>'
+        + '<span class="log-type ' + esc(e.domain) + '">' + esc(e.type) + '</span>'
+        + '<span class="log-msg">' + esc(e.msg) + '</span></div>';
+    }
+    log.innerHTML = html;
+  }
+
+  // ── Polling ───────────────────────────────────────────────────
+  async function poll() {
+    try {
+      const resp = await fetch('/v1/dashboard/snapshot');
+      if (resp.ok) {
+        const snap = await resp.json();
+        render(snap);
+        $('disconnected').classList.remove('show');
+      }
+    } catch (e) {
+      $('disconnected').classList.add('show');
+    }
+  }
+
+  function startPolling() {
+    poll();
+    pollTimer = setInterval(poll, POLL_INTERVAL);
+  }
+
+  // ── SSE ───────────────────────────────────────────────────────
+  function connectSSE() {
+    if (eventSource) eventSource.close();
+    eventSource = new EventSource('/v1/dashboard/events');
+
+    eventSource.addEventListener('health.changed', function(e) {
+      const d = JSON.parse(e.data);
+      addLogEntry('health.changed', 'health', d.name + ': ' + (d.status || '?'));
+    });
+    eventSource.addEventListener('dns.updated', function(e) {
+      const d = JSON.parse(e.data);
+      addLogEntry('dns.updated', 'dns', d.name + ' → ' + d.ip);
+    });
+    eventSource.addEventListener('dns.removed', function(e) {
+      const d = JSON.parse(e.data);
+      addLogEntry('dns.removed', 'dns', d.name + ' removed');
+    });
+    eventSource.addEventListener('certmesh.joined', function(e) {
+      const d = JSON.parse(e.data);
+      addLogEntry('certmesh.joined', 'certmesh', d.hostname + ' joined');
+    });
+    eventSource.addEventListener('certmesh.revoked', function(e) {
+      const d = JSON.parse(e.data);
+      addLogEntry('certmesh.revoked', 'certmesh', d.hostname + ' revoked');
+    });
+    eventSource.addEventListener('proxy.updated', function(e) {
+      const d = JSON.parse(e.data);
+      addLogEntry('proxy.updated', 'proxy', (d.name || '?') + ' → :' + (d.listen_port || '?'));
+    });
+    eventSource.addEventListener('proxy.removed', function(e) {
+      const d = JSON.parse(e.data);
+      addLogEntry('proxy.removed', 'proxy', (d.name || '?') + ' removed');
+    });
+    eventSource.addEventListener('mdns.found', function(e) {
+      const d = JSON.parse(e.data);
+      addLogEntry('mdns.found', 'mdns', d.name);
+    });
+    eventSource.addEventListener('mdns.resolved', function(e) {
+      const d = JSON.parse(e.data);
+      addLogEntry('mdns.resolved', 'mdns', d.name + (d.ip ? ' → ' + d.ip : ''));
+    });
+    eventSource.addEventListener('mdns.removed', function(e) {
+      const d = JSON.parse(e.data);
+      addLogEntry('mdns.removed', 'mdns', (d.name || '?') + ' removed');
+    });
+
+    eventSource.onerror = function() {
+      $('disconnected').classList.add('show');
+      eventSource.close();
+      setTimeout(connectSSE, 5000);
+    };
+
+    eventSource.onopen = function() {
+      $('disconnected').classList.remove('show');
+    };
+  }
+
+  // ── Boot ──────────────────────────────────────────────────────
+  startPolling();
+  connectSSE();
+})();
+</script>
+</body>
+</html>

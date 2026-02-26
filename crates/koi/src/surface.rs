@@ -428,6 +428,10 @@ fn curated_examples(category: KoiCategory) -> &'static [Example] {
     match category {
         KoiCategory::Core => &[
             Example {
+                command: "koi launch",
+                description: "Open the dashboard",
+            },
+            Example {
                 command: "koi status",
                 description: "Quick look at all capabilities",
             },
@@ -620,6 +624,35 @@ output.",
             query_params: &[],
             content_type: None,
         }],
+        confirmation: None,
+    })
+    .add(CommandDef {
+        name: "launch",
+        summary: "Open the dashboard in a web browser",
+        long_description: "\
+Opens the Koi dashboard in the default web browser. The dashboard shows
+a live overview of all capabilities, health checks, DNS records, certmesh
+status, proxy entries, and an activity feed.
+
+By default opens http://localhost:5641. If you are using a custom port
+(--port or KOI_PORT), that port is used instead.
+
+The daemon must be running for the dashboard to load.",
+        category: KoiCategory::Core,
+        tags: &[KoiTag::ReadOnly, KoiTag::CliOnly],
+        scope: KoiScope::Public,
+        examples: &[
+            Example {
+                command: "koi launch",
+                description: "Open dashboard in the default browser",
+            },
+            Example {
+                command: "koi launch --port 8080",
+                description: "Open dashboard on a custom port",
+            },
+        ],
+        see_also: &["status"],
+        api: &[],
         confirmation: None,
     })
     .add(CommandDef {

@@ -468,7 +468,7 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "command-surface"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "console",
  "is-terminal",
@@ -1464,6 +1464,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "is-docker"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "928bae27f42bc99b60d9ac7334e3a21d10ad8f1835a4e12ec3ec0464765ed1b3"
+dependencies = [
+ "once_cell",
+]
+
+[[package]]
 name = "is-terminal"
 version = "0.4.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1472,6 +1481,16 @@ dependencies = [
  "hermit-abi",
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "is-wsl"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "173609498df190136aa7dea1a91db051746d339e18476eed5ca40521f02d7aa5"
+dependencies = [
+ "is-docker",
+ "once_cell",
 ]
 
 [[package]]
@@ -1529,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "koi-certmesh"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "axum",
  "chrono",
@@ -1556,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "koi-client"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "hickory-proto",
  "koi-common",
@@ -1570,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "koi-common"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "axum",
  "serde",
@@ -1583,7 +1602,7 @@ dependencies = [
 
 [[package]]
 name = "koi-config"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "koi-common",
  "serde",
@@ -1595,7 +1614,7 @@ dependencies = [
 
 [[package]]
 name = "koi-crypto"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1620,7 +1639,7 @@ dependencies = [
 
 [[package]]
 name = "koi-dns"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "axum",
  "hickory-proto",
@@ -1641,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "koi-embedded"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "axum",
  "base64",
@@ -1672,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "koi-health"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "axum",
  "chrono",
@@ -1694,11 +1713,12 @@ dependencies = [
 
 [[package]]
 name = "koi-mdns"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "async-stream",
  "axum",
  "hostname",
+ "if-addrs 0.15.0",
  "koi-common",
  "mdns-sd",
  "serde",
@@ -1715,7 +1735,7 @@ dependencies = [
 
 [[package]]
 name = "koi-net"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1740,6 +1760,7 @@ dependencies = [
  "koi-truststore",
  "koi-udp",
  "once_cell",
+ "open",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -1761,7 +1782,7 @@ dependencies = [
 
 [[package]]
 name = "koi-proxy"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "axum",
  "axum-server",
@@ -1789,7 +1810,7 @@ dependencies = [
 
 [[package]]
 name = "koi-truststore"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "koi-common",
  "thiserror",
@@ -1798,7 +1819,7 @@ dependencies = [
 
 [[package]]
 name = "koi-udp"
-version = "0.2.202602211302"
+version = "0.2.202602251514"
 dependencies = [
  "async-stream",
  "axum",
@@ -2084,6 +2105,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
+name = "open"
+version = "5.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43bb73a7fa3799b198970490a51174027ba0d4ec504b03cd08caf513d40024bc"
+dependencies = [
+ "is-wsl",
+ "libc",
+ "pathdiff",
+]
+
+[[package]]
 name = "p256"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2128,6 +2160,12 @@ dependencies = [
  "rand_core 0.6.4",
  "subtle",
 ]
+
+[[package]]
+name = "pathdiff"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 
 [[package]]
 name = "pem"

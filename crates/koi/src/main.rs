@@ -131,6 +131,16 @@ fn main() -> anyhow::Result<()> {
                 }
                 return Ok(());
             }
+            Command::Launch => {
+                let port = cli.port;
+                let url = format!("http://localhost:{port}");
+                println!("Opening dashboard at {url}");
+                if let Err(e) = open::that(&url) {
+                    eprintln!("Failed to open browser: {e}");
+                    eprintln!("Open manually: {url}");
+                }
+                return Ok(());
+            }
             _ => {} // All other commands go through the runtime
         }
     }
@@ -395,8 +405,8 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     }
                 }
             }
-            // Install, Uninstall, Version handled before runtime
-            Command::Install | Command::Uninstall | Command::Version => Ok(()),
+            // Install, Uninstall, Version, Launch handled before runtime
+            Command::Install | Command::Uninstall | Command::Version | Command::Launch => Ok(()),
         };
     }
 
@@ -552,13 +562,28 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         udp: udp_runtime.clone(),
     };
 
+    // ── mDNS browser worker (conditional on mDNS being enabled) ──
+    let browser_cache = if let Some(ref mdns) = mdns_core {
+        let cache = adapters::mdns_browser::BrowserCache::new();
+        let c = mdns.clone();
+        let bc = cache.clone();
+        let token = cancel.clone();
+        tasks.push(tokio::spawn(async move {
+            adapters::mdns_browser::worker(c, bc, token).await;
+        }));
+        Some(cache)
+    } else {
+        None
+    };
+
     // ── HTTP adapter ──
     if !config.no_http {
         let c = cores.clone();
         let port = config.http_port;
         let token = cancel.clone();
+        let bc = browser_cache.clone();
         tasks.push(tokio::spawn(async move {
-            if let Err(e) = adapters::http::start(c, port, token, started_at).await {
+            if let Err(e) = adapters::http::start(c, port, token, started_at, bc).await {
                 tracing::error!(error = %e, "HTTP adapter failed");
             }
         }));

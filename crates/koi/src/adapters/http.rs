@@ -17,6 +17,8 @@ use utoipa::OpenApi;
 use utoipa::ToSchema;
 use utoipa_scalar::{Scalar, Servable};
 
+use crate::adapters::dashboard::DashboardState;
+use crate::adapters::mdns_browser;
 use crate::DaemonCores;
 
 // ── System-level route path constants ───────────────────────────────
@@ -50,6 +52,7 @@ pub async fn start(
     port: u16,
     cancel: CancellationToken,
     started_at: std::time::Instant,
+    browser_cache: Option<mdns_browser::BrowserCache>,
 ) -> anyhow::Result<()> {
     let app_state = AppState {
         mdns: cores.mdns.clone(),
@@ -62,11 +65,41 @@ pub async fn start(
         cancel: cancel.clone(),
     };
 
+    // ── Dashboard (always mounted) ──
+    let dashboard_state = DashboardState {
+        mdns: cores.mdns.clone(),
+        certmesh: cores.certmesh.clone(),
+        dns: cores.dns.clone(),
+        health: cores.health.clone(),
+        proxy: cores.proxy.clone(),
+        udp: cores.udp.clone(),
+        started_at,
+    };
+
     let mut app = Router::new()
         .route(paths::HEALTHZ, get(health))
         .route(paths::UNIFIED_STATUS, get(unified_status_handler))
         .route(paths::SHUTDOWN, post(shutdown_handler))
-        .route(paths::HOST, get(host_handler));
+        .route(paths::HOST, get(host_handler))
+        .route("/", get(super::dashboard::get_dashboard))
+        .route("/v1/dashboard/snapshot", get(super::dashboard::get_snapshot))
+        .route("/v1/dashboard/events", get(super::dashboard::get_events));
+
+    // ── mDNS browser (conditional on mDNS being enabled) ──
+    if let (Some(ref mdns_core), Some(cache)) = (&cores.mdns, browser_cache) {
+        let browser_state = mdns_browser::BrowserState {
+            mdns_core: mdns_core.clone(),
+            cache,
+        };
+        app = app
+            .route("/mdns-browser", get(super::mdns_browser::get_page))
+            .nest("/v1/mdns/browser", mdns_browser::routes(browser_state));
+    } else {
+        app = app.nest(
+            "/v1/mdns/browser",
+            disabled_fallback_router("mdns-browser"),
+        );
+    }
 
     // Mount domain routes or fallback routers
     if let Some(ref mdns_core) = cores.mdns {
@@ -168,6 +201,7 @@ pub async fn start(
     );
 
     app = app.layer(Extension(app_state));
+    app = app.layer(Extension(dashboard_state));
     app = app.layer(CorsLayer::permissive());
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;

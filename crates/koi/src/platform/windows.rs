@@ -539,13 +539,28 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         let mut tasks = Vec::new();
         let started_at = std::time::Instant::now();
 
+        // mDNS browser worker (conditional on mDNS being enabled)
+        let browser_cache = if let Some(ref mdns) = cores.mdns {
+            let cache = crate::adapters::mdns_browser::BrowserCache::new();
+            let c = mdns.clone();
+            let bc = cache.clone();
+            let token = cancel.clone();
+            tasks.push(tokio::spawn(async move {
+                crate::adapters::mdns_browser::worker(c, bc, token).await;
+            }));
+            Some(cache)
+        } else {
+            None
+        };
+
         // HTTP adapter
         if !config.no_http {
             let c = cores.clone();
             let port = config.http_port;
             let token = cancel.clone();
+            let bc = browser_cache.clone();
             tasks.push(tokio::spawn(async move {
-                if let Err(e) = crate::adapters::http::start(c, port, token, started_at).await {
+                if let Err(e) = crate::adapters::http::start(c, port, token, started_at, bc).await {
                     tracing::error!(error = %e, "HTTP adapter failed");
                 }
             }));
