@@ -111,11 +111,17 @@ impl MdnsDaemon {
                 .map_err(|e| MdnsError::Daemon(e.to_string()))?;
 
         // Only auto-detect addresses when no explicit IP was provided.
-        let service_info = if ip.is_none() {
+        let mut service_info = if ip.is_none() {
             service_info.enable_addr_auto()
         } else {
             service_info
         };
+
+        // Skip mDNS probing — the hostname is ours, so we claim the name
+        // directly. This prevents stale records from a previous process
+        // (which didn't cleanly unregister) from triggering RFC 6762 conflict
+        // resolution and renaming our service to "name (2)".
+        service_info.set_requires_probe(false);
 
         let fullname = service_info.get_fullname().to_string();
         tracing::debug!(fullname, ?ip, "Queued mDNS register");
@@ -258,7 +264,18 @@ pub(crate) fn resolved_to_record(resolved: &ResolvedService) -> ServiceRecord {
         .iter()
         .find(|a| a.is_ipv4())
         .or_else(|| addresses.iter().next())
-        .map(|a| a.to_ip_addr().to_string());
+        .map(|a| a.to_ip_addr());
+
+    // If the resolved IP is loopback (127.0.0.1 / ::1), the service is local
+    // and mdns-sd returned the loopback address. Replace with the machine's
+    // actual LAN IP so consumers (e.g. containers) get a routable address.
+    let ip = ip.map(|addr| {
+        if addr.is_loopback() {
+            lan_ip().unwrap_or(addr).to_string()
+        } else {
+            addr.to_string()
+        }
+    });
 
     if addresses.len() > 1 {
         tracing::trace!(
@@ -283,4 +300,17 @@ pub(crate) fn resolved_to_record(resolved: &ResolvedService) -> ServiceRecord {
         port: Some(resolved.get_port()),
         txt,
     }
+}
+
+/// Return the first non-loopback, non-link-local IPv4 address on this machine.
+fn lan_ip() -> Option<std::net::IpAddr> {
+    if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|iface| !iface.is_loopback())
+        .filter_map(|iface| match iface.addr.ip() {
+            std::net::IpAddr::V4(v4) if !v4.is_link_local() => Some(std::net::IpAddr::V4(v4)),
+            _ => None,
+        })
+        .next()
 }

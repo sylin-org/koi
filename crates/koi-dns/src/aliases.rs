@@ -62,15 +62,23 @@ pub fn build_aliases(zone: &DnsZone, records: &[ServiceRecord]) -> AliasResult {
 
             let instance = sanitize_label(&record.name);
             if !instance.is_empty() {
-                let alias = format!("{service_name}-{instance}.{}", zone.zone());
+                let alias = format!("{instance}.{}", zone.zone());
                 if let Some(alias) = zone.normalize_name(&alias) {
                     aliases.entry(alias).or_default().push(ip);
                 }
             }
 
+            // Also generate an alias from the mDNS hostname (e.g.
+            // "stone-azure-pool.local." → "stone-azure-pool.zengarden.").
+            // The hostname is stable — unlike the instance name it never
+            // gets an mDNS conflict suffix like "(2)".
             if let Some(host) = record.host.as_deref() {
                 let hostname = host.trim_end_matches('.').trim_end_matches(".local");
                 if !hostname.is_empty() {
+                    let host_alias = format!("{hostname}.{}", zone.zone());
+                    if let Some(host_alias) = zone.normalize_name(&host_alias) {
+                        aliases.entry(host_alias).or_default().push(ip);
+                    }
                     feedback.push(AliasFeedback {
                         hostname: hostname.to_string(),
                         alias: base.clone(),
