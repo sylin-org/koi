@@ -1,6 +1,6 @@
 ﻿# KOI-0001: Embedded HTTP Self-Hosting & UDP Bridging
 
-**Status:** Draft  
+**Status:** Implemented
 **Date:** 2026-02-16  
 **Authors:** Leo Botinelly, Claude  
 **Depends On:** Koi Embedded Integration (approved)  

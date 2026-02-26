@@ -113,9 +113,12 @@ crates/koi/src/
 │   ├── dns.rs       # DNS commands
 │   ├── health.rs    # Health commands
 │   ├── proxy.rs     # Proxy commands
+│   ├── udp.rs       # UDP commands
 │   └── status.rs    # Unified status command
 ├── adapters/
-│   ├── http.rs      # HTTP server (Axum router, health, status)
+│   ├── http.rs      # HTTP server (Axum router, domain nesting, OpenAPI)
+│   ├── dashboard.rs # Web dashboard (HTML, snapshot, SSE events)
+│   ├── mdns_browser.rs  # mDNS network browser (HTML, cache, SSE)
 │   ├── pipe.rs      # Named Pipe (Windows) / UDS (Unix)
 │   ├── cli.rs       # stdin/stdout NDJSON
 │   └── dispatch.rs  # Shared NDJSON dispatch logic

@@ -1,6 +1,6 @@
 ﻿# Proposal: Auth Adapter Architecture
 
-**Status:** In Progress  
+**Status:** Implemented
 **Date:** 2026-02-13  
 **Author:** Design collaboration (operator + AI)
 

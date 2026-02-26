@@ -38,7 +38,7 @@ That's mDNS discovery - no configuration, no server. Just devices talking to eac
 To advertise a service:
 
 ```
-koi mdns announce "My App" http 8080
+koi mdns announce "My App" _http._tcp 8080
 ```
 
 Other devices running any mDNS browser will see it. Press Ctrl+C to stop.
@@ -57,8 +57,12 @@ koi status
 Koi v0.2.x
   Platform:  windows
   Daemon:    running
-  [+] mdns:      mdns-sd (3 registrations)
+  [+] mdns:      3 registrations
   [+] certmesh:  Just Me (1 member)
+  [+] dns:       8 local names
+  [+] health:    5 checks (4 healthy, 1 unhealthy)
+  [+] proxy:     2 listeners
+  [+] udp:       1 binding
 ```
 
 ---
@@ -74,7 +78,15 @@ koi
 The daemon exposes:
 
 - **HTTP API** on port 5641 (all interfaces)
+- **Web dashboard** at `http://localhost:5641/` with system overview and mDNS browser
+- **Interactive API docs** at `/docs` (OpenAPI/Scalar)
 - **IPC** via Named Pipe (`\\.\pipe\koi` on Windows) or Unix socket (`$XDG_RUNTIME_DIR/koi.sock`)
+
+Open the dashboard in your browser:
+
+```
+koi launch
+```
 
 All CLI commands automatically detect a running daemon and delegate to it. When no daemon is running, commands like `koi mdns discover` spin up a temporary mDNS engine and run standalone.
 
@@ -239,6 +251,6 @@ koi dns stop --endpoint http://localhost:5641
 ## What's next
 
 - **[CLI Reference](docs/reference/cli.md)** - complete list of every command, flag, and environment variable
-- **[HTTP API Reference](docs/reference/http-api.md)** - all 43 HTTP endpoints with request/response shapes
+- **[HTTP API Reference](docs/reference/http-api.md)** - all 60+ HTTP endpoints with request/response shapes
 - **[Architecture](docs/reference/architecture.md)** - how the crates fit together
 - **[Architecture Decision Records](docs/adr/)** - why Koi is built the way it is

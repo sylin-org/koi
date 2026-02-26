@@ -22,13 +22,13 @@ This is a one-time setup. On each platform, Koi registers itself with the native
 
 The daemon listens on port 5641 by default and exposes both the HTTP API (for any language) and the IPC pipe (for the CLI). Once installed, every other Koi command can talk to the daemon automatically.
 
-**All five modules are enabled by default.** On a fresh install the daemon starts every module, even if you haven't configured it yet:
+**All six domain modules are enabled by default.** On a fresh install the daemon starts every module, even if you haven't configured it yet:
 
 - **mDNS** begins discovering peers immediately.
-- **DNS**, **Health**, and **Proxy** start in a _ready_ state with zero entries/routes - they accept configuration at any time.
+- **DNS**, **Health**, **Proxy**, and **UDP** start in a _ready_ state with zero entries/routes - they accept configuration at any time.
 - **CertMesh** reports _ready - run certmesh create_ until you initialise a CA.
 
-This is by design. A freshly-installed Koi is healthy; unused modules carry no overhead and can be activated whenever you need them. Use `koi status` to see each module's current state.
+This is by design. A freshly-installed Koi is healthy; unused modules carry no overhead and can be activated whenever you need them. Use `koi status` to see each module's current state. Disable any capability with `--no-<name>` (e.g., `--no-udp`, `--no-proxy`).
 
 If you just want to experiment without installing anything, run the daemon in the foreground instead:
 
@@ -42,14 +42,15 @@ It behaves identically - same API, same IPC - but stops when you close the termi
 
 ## Checking on things
 
-Two commands tell you what's happening:
+Three commands tell you what's happening:
 
 ```
 koi version          # what binary is running
 koi status           # what all the subsystems are doing
+koi launch           # open the web dashboard in your browser
 ```
 
-`status` is the more useful one. It gives you a single-glance dashboard. On a fresh install it looks like this:
+`status` gives you a single-glance dashboard. On a fresh install it looks like this:
 
 ```
 Koi v0.2.x - status
@@ -59,6 +60,7 @@ Koi v0.2.x - status
   DNS        running    0 static, 0 certmesh, 0 mdns
   Health     running    0 services up (0 total)
   Proxy      running    0 listeners
+  UDP        running    0 bindings
 ```
 
 Once you've been using Koi for a while, the numbers fill in:
@@ -68,12 +70,15 @@ Koi v0.2.x - status
 
   mDNS       running    3 registrations, 12 discovered
   Certmesh   running    CA active, 4 members, enrollment open
-  DNS        running    8 local names, upstream 8.8.8.8
+  DNS        running    8 local names
   Health     running    5 checks (4 healthy, 1 unhealthy)
   Proxy      running    2 listeners
+  UDP        running    1 binding
 ```
 
 Both support `--json` for scripting and monitoring integrations.
+
+The web dashboard at `http://localhost:5641/` provides a live system overview. An mDNS network browser is available at `/mdns-browser`. Interactive API docs are at `/docs`.
 
 ---
 
@@ -89,38 +94,40 @@ This design is deliberate. Uninstalling a service shouldn't destroy the state it
 
 ---
 
-## Factory reset
+## Factory reset (planned)
 
-Sometimes you need a clean slate. A corrupted roster, a CA key you've lost the passphrase for, or just a test environment you want to wipe and start over.
+> **Note:** `koi factory-reset` is planned but not yet implemented. For now, use `koi certmesh destroy` to wipe certmesh state, or manually remove the data directory.
 
-```
-koi factory-reset
-```
-
-This destroys the entire program data folder and recreates it from scratch, then restarts the service. Everything is gone:
+The intent is a single command that destroys the entire program data folder and recreates it from scratch:
 
 - mDNS registrations
 - CA private keys and every certificate ever issued
 - DNS records
 - Health-check configurations
 - Proxy routes
-- config.toml
 
-Log files are preserved by default (they're useful for post-mortem diagnosis). Use `--include-logs` to remove those too.
-
-**This is irreversible.** If this node is the certmesh CA root, every certificate it issued becomes unverifiable - every member of the mesh loses trust. Koi will ask you to type `RESET` to confirm you understand.
+**This will be irreversible.** If this node is the certmesh CA root, every certificate it issued becomes unverifiable.
 
 ---
 
 ## HTTP API
 
-The daemon exposes a few system-level endpoints that aren't tied to any specific module:
+The daemon exposes system-level endpoints that aren't tied to any specific module:
 
-| Method | Path                 | Purpose                                                                                                                  |
-| ------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `GET`  | `/healthz`           | Liveness probe - returns 200 if the daemon is alive. Use this in load balancer health checks or container orchestrators. |
-| `GET`  | `/v1/status`         | Unified status of all capabilities, the same data as `koi status --json`.                                                |
-| `POST` | `/v1/admin/shutdown` | Graceful shutdown - the daemon finishes in-flight requests, sends mDNS goodbye packets, and exits.                       |
+| Method | Path                        | Purpose                                                                                                                  |
+| ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `GET`  | `/healthz`                  | Liveness probe - returns 200 if the daemon is alive. Use this in load balancer health checks or container orchestrators. |
+| `GET`  | `/v1/status`                | Unified status of all capabilities, the same data as `koi status --json`.                                                |
+| `GET`  | `/v1/host`                  | Host identity - hostname, FQDN, OS, architecture, LAN interfaces.                                                        |
+| `POST` | `/v1/admin/shutdown`        | Graceful shutdown - the daemon finishes in-flight requests, sends mDNS goodbye packets, and exits.                       |
+| `GET`  | `/`                         | Web dashboard - system overview with live status.                                                                         |
+| `GET`  | `/v1/dashboard/snapshot`    | Dashboard JSON snapshot (all capabilities).                                                                               |
+| `GET`  | `/v1/dashboard/events`      | Unified SSE activity feed.                                                                                                |
+| `GET`  | `/mdns-browser`             | mDNS network browser UI.                                                                                                  |
+| `GET`  | `/v1/mdns/browser/snapshot` | Network cache snapshot.                                                                                                   |
+| `GET`  | `/v1/mdns/browser/events`   | Service discovery SSE feed.                                                                                               |
+| `GET`  | `/docs`                     | Interactive API documentation (OpenAPI/Scalar).                                                                           |
+| `GET`  | `/openapi.json`             | OpenAPI 3.0 specification.                                                                                                |
 
 The `/healthz` endpoint is intentionally minimal and cheap. It doesn't check subsystem health - it just confirms the process is responding. If you need deeper checks, use `/v1/status` or the health module.
 
@@ -130,14 +137,23 @@ The `/healthz` endpoint is intentionally minimal and cheap. It doesn't check sub
 
 Koi is configured through flags and environment variables. The daemon reads these at startup:
 
-| Flag         | Env var        | Default | Description                    |
-| ------------ | -------------- | ------- | ------------------------------ |
-| `--port`     | `KOI_PORT`     | `5641`  | HTTP API port                  |
-| `--daemon`   | -              | `false` | Run in foreground daemon mode  |
-| `--log-file` | `KOI_LOG_FILE` | -       | Write logs to file             |
-| `--json`     | -              | `false` | JSON output for status/version |
+| Flag             | Env var            | Default | Description                    |
+| ---------------- | ------------------ | ------- | ------------------------------ |
+| `--port`         | `KOI_PORT`         | `5641`  | HTTP API port                  |
+| `--daemon`       | -                  | `false` | Run in foreground daemon mode  |
+| `--log-file`     | `KOI_LOG_FILE`     | -       | Write logs to file             |
+| `--log-level`    | `KOI_LOG`          | `info`  | Log level                      |
+| `--json`         | -                  | `false` | JSON output for status/version |
+| `--no-mdns`      | `KOI_NO_MDNS`     | `false` | Disable mDNS capability        |
+| `--no-certmesh`  | `KOI_NO_CERTMESH` | `false` | Disable certmesh capability    |
+| `--no-dns`       | `KOI_NO_DNS`      | `false` | Disable DNS capability         |
+| `--no-health`    | `KOI_NO_HEALTH`   | `false` | Disable health capability      |
+| `--no-proxy`     | `KOI_NO_PROXY`    | `false` | Disable proxy capability       |
+| `--no-udp`       | `KOI_NO_UDP`      | `false` | Disable UDP capability         |
+| `--no-http`      | `KOI_NO_HTTP`     | `false` | Disable HTTP adapter           |
+| `--no-ipc`       | `KOI_NO_IPC`      | `false` | Disable IPC adapter            |
 
-Each module has its own configuration documented in its respective guide. The system-level flags control the daemon itself - where it listens and how it logs.
+Each module has its own configuration documented in its respective guide. The system-level flags control the daemon itself - where it listens and how it logs. For the full configuration table (all flags, env vars, and defaults), see the [CLI Reference](../reference/cli.md).
 
 ---
 
@@ -149,7 +165,7 @@ Check the platform-native logs first. The daemon writes structured logs that usu
 
 ```powershell
 # Windows - Event Viewer (Application log)
-Get-EventLog -LogName Application -Source koi -Newest 10
+Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='koi'} -MaxEvents 10
 
 # Linux
 journalctl -u koi --no-pager -n 20

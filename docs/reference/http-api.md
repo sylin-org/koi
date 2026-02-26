@@ -15,8 +15,38 @@ CORS is enabled by default. Interactive API docs are available at `GET /docs` (S
 | GET    | `/healthz`           | Health check - returns `"OK"` (plain text) |
 | GET    | `/v1/status`         | Unified capability status                  |
 | POST   | `/v1/admin/shutdown` | Initiate graceful shutdown                 |
+| GET    | `/v1/host`           | Host identity and network interfaces       |
 | GET    | `/openapi.json`      | OpenAPI specification                      |
 | GET    | `/docs`              | Interactive API documentation              |
+
+### Dashboard & Browser
+
+| Method | Path                        | Description                                |
+| ------ | --------------------------- | ------------------------------------------ |
+| GET    | `/`                         | Embedded HTML dashboard (Lantern/Vellum)   |
+| GET    | `/v1/dashboard/snapshot`    | System-level JSON snapshot (all capabilities) |
+| GET    | `/v1/dashboard/events`      | Unified SSE activity feed                  |
+| GET    | `/mdns-browser`             | mDNS network browser HTML page             |
+| GET    | `/v1/mdns/browser/snapshot` | Network cache snapshot                     |
+| GET    | `/v1/mdns/browser/events`   | Service discovery SSE feed                 |
+
+### GET /v1/host
+
+```json
+{
+  "hostname": "stone-azure-pool",
+  "hostname_fqdn": "stone-azure-pool.local",
+  "os": "windows",
+  "arch": "x86_64",
+  "interfaces": {
+    "lan": [
+      { "name": "Ethernet", "ip": "192.168.1.42" }
+    ]
+  }
+}
+```
+
+LAN interfaces exclude loopback and link-local addresses.
 
 ### GET /v1/status
 

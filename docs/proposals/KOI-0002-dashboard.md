@@ -1,6 +1,6 @@
 ﻿# KOI-0002: Koi Dashboard & mDNS Browser
 
-> **Status:** Proposal  
+> **Status:** Implemented (commit 7223913)
 > **Authors:** —  
 > **Date:** 2026-02-25
 

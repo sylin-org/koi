@@ -18,6 +18,9 @@ koi dns add grafana 10.0.0.42
 
 # Check unified status
 koi status
+
+# Open the web dashboard
+koi launch
 ```
 
 Or over HTTP - from any language, any container, any script:
@@ -84,6 +87,8 @@ See [CONTAINERS.md](CONTAINERS.md) for Docker Compose examples, startup patterns
 | **Proxy**    | TLS-terminating local reverse proxy | `koi proxy ...`    | [Proxy guide](docs/guides/proxy.md)       |
 | **UDP**      | Datagram bridging for containers    | HTTP API           | [UDP guide](docs/guides/udp.md)           |
 
+The daemon also serves a **web dashboard** at `http://localhost:5641/` with a system overview and an **mDNS network browser** at `/mdns-browser`. Interactive API docs are at `/docs` (OpenAPI/Scalar).
+
 ## Platform support
 
 | Platform | mDNS engine                   | Service integration   |
@@ -137,7 +142,7 @@ cargo install koi-net
 **Reference:**
 
 - [Architecture](docs/reference/architecture.md) - crate structure, boundaries, design
-- [HTTP API](docs/reference/http-api.md) - all 49 endpoints
+- [HTTP API](docs/reference/http-api.md) - all 60+ endpoints
 - [CLI Reference](docs/reference/cli.md) - every command and flag
 - [Wire Protocol](docs/reference/wire-protocol.md) - JSON protocol spec
 - [Ceremony Protocol](docs/reference/ceremony-protocol.md) - interactive flow engine
