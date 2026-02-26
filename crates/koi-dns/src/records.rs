@@ -83,7 +83,7 @@ fn certmesh_entries(
     map
 }
 
-fn mdns_host_ips(records: &[ServiceRecord]) -> HashMap<String, IpAddr> {
+pub(crate) fn mdns_host_ips(records: &[ServiceRecord]) -> HashMap<String, IpAddr> {
     let mut map = HashMap::new();
     for record in records {
         let Some(host) = record.host.as_deref() else {

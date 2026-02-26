@@ -69,6 +69,12 @@ pub struct DnsConfig {
     pub local_ttl: u32,
     pub allow_public_clients: bool,
     pub max_qps: u32,
+    /// Serve `.local` zone from mDNS hostname cache.
+    ///
+    /// When enabled, queries for `<hostname>.local` are answered directly
+    /// from the mDNS browse cache before falling through to upstream DNS.
+    /// This provides platform-agnostic `.local` resolution for containers.
+    pub local_zone: bool,
 }
 
 impl Default for DnsConfig {
@@ -80,6 +86,7 @@ impl Default for DnsConfig {
             local_ttl: DEFAULT_LOCAL_TTL,
             allow_public_clients: false,
             max_qps: DEFAULT_MAX_QPS,
+            local_zone: true,
         }
     }
 }
@@ -94,6 +101,8 @@ pub struct DnsLookupResult {
 pub struct DnsCore {
     config: DnsConfig,
     zone: DnsZone,
+    /// Optional `.local` zone — serves hostname→IP from mDNS cache.
+    local_zone: Option<DnsZone>,
     state: StateCache,
     mdns_cache: Option<MdnsCache>,
     certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
@@ -112,6 +121,14 @@ impl DnsCore {
     ) -> Result<Self, DnsError> {
         let max_qps = config.max_qps;
         let zone = DnsZone::new(&config.zone)?;
+
+        // Enable .local zone when configured and mDNS is available.
+        let local_zone = if config.local_zone && mdns.is_some() {
+            Some(DnsZone::new("local")?)
+        } else {
+            None
+        };
+
         let state = StateCache::new();
         let mdns_cache = match mdns {
             Some(core) => Some(MdnsCache::spawn(core).await),
@@ -136,6 +153,7 @@ impl DnsCore {
         Ok(Self {
             config,
             zone,
+            local_zone,
             state,
             mdns_cache,
             certmesh,
@@ -223,8 +241,54 @@ impl DnsCore {
         })
     }
 
+    /// Resolve a `.local` hostname directly from the mDNS cache.
+    ///
+    /// Extracts the hostname (e.g. `stone-azure-pool` from `stone-azure-pool.local.`),
+    /// looks it up in the mDNS hostname→IP map, and returns matching records.
+    /// Returns `None` if the hostname is not in the mDNS cache.
+    pub fn resolve_mdns_local(
+        &self,
+        name: &str,
+        record_type: RecordType,
+    ) -> Option<DnsLookupResult> {
+        let local_zone = self.local_zone.as_ref()?;
+        let normalized = local_zone.normalize_name(name)?;
+
+        // Extract bare hostname: "stone-azure-pool.local." → "stone-azure-pool"
+        let hostname = normalized
+            .trim_end_matches('.')
+            .trim_end_matches(".local");
+        if hostname.is_empty() {
+            return None;
+        }
+
+        let mdns_records = self
+            .mdns_cache
+            .as_ref()
+            .map(|c| c.snapshot())
+            .unwrap_or_default();
+        let host_ips = crate::records::mdns_host_ips(&mdns_records);
+
+        let ip = host_ips.get(hostname)?;
+        let filtered = filter_ips(vec![*ip], record_type);
+        if filtered.is_empty() {
+            return None;
+        }
+
+        Some(DnsLookupResult {
+            name: normalized,
+            ips: filtered,
+            source: "mdns-local".to_string(),
+        })
+    }
+
     pub async fn lookup(&self, name: &str, record_type: RecordType) -> Option<DnsLookupResult> {
         if let Some(result) = self.resolve_local(name, record_type) {
+            return Some(result);
+        }
+
+        // Check .local zone (mDNS cache) before upstream
+        if let Some(result) = self.resolve_mdns_local(name, record_type) {
             return Some(result);
         }
 
@@ -321,6 +385,10 @@ impl Clone for DnsCore {
         Self {
             config: self.config.clone(),
             zone: DnsZone::new(self.zone.zone()).unwrap(),
+            local_zone: self
+                .local_zone
+                .as_ref()
+                .map(|z| DnsZone::new(z.zone()).unwrap()),
             state: self.state.clone(),
             mdns_cache: self.mdns_cache.clone(),
             certmesh: self.certmesh.clone(),
@@ -592,6 +660,7 @@ impl RequestHandler for DnsHandler {
             let mut authoritative = false;
 
             if self.core.zone.is_local_name(&query_str) {
+                // Primary zone (.zengarden / .lan): static + certmesh + mDNS aliases
                 authoritative = true;
                 match self.core.resolve_local(&query_str, query_type) {
                     Some(result) => {
@@ -614,6 +683,62 @@ impl RequestHandler for DnsHandler {
                         } else {
                             ResponseCode::NotImp
                         };
+                    }
+                }
+            } else if self
+                .core
+                .local_zone
+                .as_ref()
+                .is_some_and(|z| z.is_local_name(&query_str))
+            {
+                // .local zone: direct hostname→IP from mDNS cache
+                match self.core.resolve_mdns_local(&query_str, query_type) {
+                    Some(result) => {
+                        authoritative = true;
+                        let name = Name::from(query_name);
+                        for ip in result.ips {
+                            let record = Record::from_rdata(
+                                name.clone(),
+                                self.core.config.local_ttl,
+                                RData::from(ip),
+                            );
+                            answers.push(record);
+                        }
+                    }
+                    None => {
+                        // Not in mDNS cache — fall through to upstream.
+                        // Don't claim authoritative; the name may exist on
+                        // the network but hasn't been discovered yet.
+                    }
+                }
+                // If answers is still empty after .local lookup, fall through
+                // to upstream resolver below (no early return).
+                if answers.is_empty() && response_code == ResponseCode::NoError {
+                    if let Some(resolver) = &self.core.upstream {
+                        let lookup =
+                            resolver.lookup(Name::from(query_name), query_type).await;
+                        match lookup {
+                            Ok(result) => {
+                                answers.extend(
+                                    result
+                                        .record_iter()
+                                        .filter(|r| match query_type {
+                                            RecordType::ANY => {
+                                                matches!(
+                                                    r.record_type(),
+                                                    RecordType::A | RecordType::AAAA
+                                                )
+                                            }
+                                            _ => r.record_type() == query_type,
+                                        })
+                                        .cloned(),
+                                );
+                            }
+                            Err(_) => {
+                                // Upstream also failed — NXDOMAIN since we tried both
+                                response_code = ResponseCode::NXDomain;
+                            }
+                        }
                     }
                 }
             } else if let Some(resolver) = &self.core.upstream {

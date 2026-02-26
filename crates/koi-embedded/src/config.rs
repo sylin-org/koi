@@ -119,6 +119,11 @@ impl DnsConfigBuilder {
         self
     }
 
+    pub fn local_zone(mut self, enabled: bool) -> Self {
+        self.config.local_zone = enabled;
+        self
+    }
+
     pub fn build(self) -> DnsConfig {
         self.config
     }
