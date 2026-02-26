@@ -205,6 +205,99 @@ No other module should contain `println!`-based presentation functions.
 
 ---
 
+## DNS Domain Types (`koi-dns`)
+
+### `koi_dns` (re-exports from `lib.rs`)
+
+| Type               | Purpose                                                          |
+| ------------------ | ---------------------------------------------------------------- |
+| `DnsCore`          | Main domain facade (zone management, lookup, events)             |
+| `DnsConfig`        | Configuration (port, zone, local_ttl, allow_public, max_qps)    |
+| `DnsError`         | Domain error enum (InvalidZone, Bind, Upstream, Io)              |
+| `DnsEvent`         | Domain event enum (EntryUpdated, EntryRemoved)                   |
+| `DnsLookupResult`  | Lookup result (name, ips, source)                                |
+| `DnsRuntime`       | Runtime controller for DNS server (start/stop)                   |
+| `DnsRuntimeStatus` | Status snapshot (running: bool)                                  |
+| `DnsZone`          | Zone validation and name normalization                           |
+
+### `koi_dns::http` (response types)
+
+| Type              | Purpose                                        |
+| ----------------- | ---------------------------------------------- |
+| `LookupResponse`  | DNS lookup result (name, ips, source)          |
+| `StatusResponse`  | DNS server status (running, zone, port, records) |
+| `RecordSummary`   | Record counts (static, certmesh, mdns)         |
+| `EntriesResponse` | List of static DNS entries                     |
+| `NamesResponse`   | List of all known DNS names                    |
+| `EntryRequest`    | Request to add/update entry (name, ip, ttl)    |
+
+---
+
+## Health Domain Types (`koi-health`)
+
+### `koi_health` (re-exports from `lib.rs`)
+
+| Type                 | Purpose                                                    |
+| -------------------- | ---------------------------------------------------------- |
+| `HealthCore`         | Main domain facade (check management, snapshot, events)    |
+| `HealthError`        | Domain error enum (InvalidCheck, NotFound, Io)             |
+| `HealthEvent`        | Domain event enum (StatusChanged)                          |
+| `HealthSnapshot`     | Complete health status (machines, services)                |
+| `ServiceHealth`      | Service health summary with status and timestamps          |
+| `MachineHealth`      | Machine health info (hostname, status, cert_expires, warnings) |
+| `ServiceCheckKind`   | Check type enum (Http, Tcp)                                |
+| `ServiceStatus`      | Status enum (Up, Down, Unknown)                            |
+| `HealthCheck`        | Type alias for `HealthCheckConfig`                         |
+| `HealthRuntime`      | Runtime controller for background checks (start/stop)      |
+| `HealthRuntimeStatus`| Status snapshot (running: bool)                            |
+
+### `koi_health::http` (request/response types)
+
+| Type                | Purpose                                                |
+| ------------------- | ------------------------------------------------------ |
+| `AddCheckRequest`   | Request to add a check (name, kind, target, interval, timeout) |
+| `ChecksListResponse`| List of configured checks                             |
+
+---
+
+## Proxy Domain Types (`koi-proxy`)
+
+### `koi_proxy` (re-exports from `lib.rs`)
+
+| Type           | Purpose                                                    |
+| -------------- | ---------------------------------------------------------- |
+| `ProxyCore`    | Main domain facade (entry management, reload, events)      |
+| `ProxyError`   | Domain error enum (Config, Io, InvalidConfig, Forward, NotFound) |
+| `ProxyEvent`   | Domain event enum (EntryUpdated, EntryRemoved)             |
+| `ProxyEntry`   | Proxy entry config (name, listen_port, backend, allow_remote) |
+| `ProxyStatus`  | Runtime status (name, listen_port, backend, running)       |
+| `ProxyRuntime` | Runtime controller for proxy listeners                     |
+
+### `koi_proxy::http` (request/response types)
+
+| Type                  | Purpose                             |
+| --------------------- | ----------------------------------- |
+| `AddProxyRequest`     | Request to add/update proxy entry   |
+| `ProxyStatusResponse` | List of running proxy statuses      |
+| `ProxyEntriesResponse`| List of proxy entries               |
+
+---
+
+## UDP Domain Types (`koi-udp`)
+
+### `koi_udp` (re-exports from `lib.rs`)
+
+| Type             | Purpose                                                    |
+| ---------------- | ---------------------------------------------------------- |
+| `UdpRuntime`     | Main runtime (bind, send, recv, subscribe, heartbeat)      |
+| `UdpError`       | Domain error enum (NotFound, Io, InvalidAddr, Base64)      |
+| `UdpDatagram`    | Incoming datagram (binding_id, src, payload base64, timestamp) |
+| `UdpSendRequest` | Send request (dest, payload base64)                        |
+| `UdpBindRequest` | Bind request (port, addr, lease_secs)                      |
+| `BindingInfo`    | Binding metadata (id, local_addr, created_at, lease_secs)  |
+
+---
+
 ## Certmesh Domain Types (`koi-certmesh`)
 
 ### `koi_certmesh` (re-exports from `lib.rs`)
@@ -243,17 +336,23 @@ No other module should contain `println!`-based presentation functions.
 
 ## Binary Crate Types (`koi`)
 
-| Type                 | Location          | Purpose                                             |
-| -------------------- | ----------------- | --------------------------------------------------- |
-| `Cli`                | `cli.rs`          | Top-level clap parser                               |
-| `Command`            | `cli.rs`          | Subcommand enum (Mdns, Certmesh, Install, etc.)     |
-| `MdnsSubcommand`     | `cli.rs`          | mDNS subcommands (Discover, Announce, etc.)         |
-| `CertmeshSubcommand` | `cli.rs`          | Certmesh subcommands (Create, Join, etc.)           |
-| `AdminSubcommand`    | `cli.rs`          | Admin subcommands (Status, List, etc.)              |
-| `Config`             | `cli.rs`          | Daemon runtime configuration                        |
-| `DaemonCores`        | `main.rs`         | Runtime state: `Option<Arc<Core>>` per domain       |
-| `KoiClient`          | `client.rs`       | Blocking HTTP client (ureq) for client mode & admin |
-| `Mode`               | `commands/mod.rs` | Execution mode enum (Standalone, Client)            |
+| Type                 | Location            | Purpose                                             |
+| -------------------- | ------------------- | --------------------------------------------------- |
+| `Cli`                | `cli.rs`            | Top-level clap parser                               |
+| `Command`            | `cli.rs`            | Subcommand enum (Mdns, Certmesh, Dns, Health, Proxy, Udp, etc.) |
+| `MdnsSubcommand`     | `cli.rs`            | mDNS subcommands (Discover, Announce, etc.)         |
+| `CertmeshSubcommand` | `cli.rs`            | Certmesh subcommands (Create, Join, etc.)           |
+| `DnsSubcommand`      | `cli.rs`            | DNS subcommands (Serve, Stop, Lookup, etc.)         |
+| `HealthSubcommand`   | `cli.rs`            | Health subcommands (Status, Watch, Add, etc.)       |
+| `ProxySubcommand`    | `cli.rs`            | Proxy subcommands (Add, Remove, Status, etc.)       |
+| `UdpSubcommand`      | `cli.rs`            | UDP subcommands (Bind, Unbind, Send, etc.)          |
+| `AdminSubcommand`    | `cli.rs`            | mDNS admin subcommands (Status, List, etc.)         |
+| `Config`             | `cli.rs`            | Daemon runtime configuration                        |
+| `DaemonCores`        | `main.rs`           | Runtime state: `Option<Arc<Core>>` per domain       |
+| `KoiClient`          | `koi-client`        | Blocking HTTP client (ureq) for client mode & admin |
+| `Mode`               | `commands/mod.rs`   | Execution mode enum (Standalone, Client)            |
+| `DashboardState`     | `adapters/dashboard.rs`    | Dashboard SSE state (all domain core refs)   |
+| `BrowserState`       | `adapters/mdns_browser.rs` | mDNS browser state (core + cache)            |
 
 ---
 
@@ -312,22 +411,28 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 
 ## Dependencies (Workspace-managed)
 
-| Crate                  | Version         | Used By                   | Purpose                                  |
-| ---------------------- | --------------- | ------------------------- | ---------------------------------------- |
-| `mdns-sd`              | 0.17            | koi-mdns                  | mDNS/DNS-SD engine                       |
-| `axum`                 | 0.8             | koi-mdns, koi             | HTTP framework                           |
-| `tokio`                | 1 (full)        | all                       | Async runtime                            |
-| `serde` / `serde_json` | 1               | all                       | Serialization                            |
-| `clap`                 | 4 (derive, env) | koi                       | CLI parsing                              |
-| `tracing`              | 0.1             | all                       | Structured logging                       |
-| `tower-http`           | 0.6             | koi                       | CORS middleware                          |
-| `thiserror`            | 2               | koi-common, koi-mdns, koi | Error derive macros                      |
-| `ureq`                 | 2               | koi                       | Blocking HTTP client                     |
-| `uuid`                 | 1 (v4)          | koi-common, koi           | ID generation                            |
-| `tokio-util`           | 0.7             | koi-mdns, koi             | CancellationToken                        |
-| `windows-service`      | 0.8             | koi (Windows)             | Windows SCM                              |
-| `ring`                 | 0.17            | koi-crypto                | Cryptographic primitives                 |
-| `rcgen`                | 0.13            | koi-crypto                | X.509 certificate generation             |
-| `totp-rs`              | 5               | koi-crypto                | TOTP enrollment codes                    |
-| `p256`                 | 0.13            | koi-crypto                | FIDO2 ECDSA P-256 signature verification |
-| `chrono`               | 0.4             | koi-certmesh              | Timestamp handling                       |
+| Crate                  | Version         | Used By                                       | Purpose                                  |
+| ---------------------- | --------------- | --------------------------------------------- | ---------------------------------------- |
+| `mdns-sd`              | 0.17            | koi-mdns                                      | mDNS/DNS-SD engine                       |
+| `axum`                 | 0.8             | koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi | HTTP framework |
+| `tokio`                | 1 (full)        | all                                           | Async runtime                            |
+| `serde` / `serde_json` | 1               | all                                           | Serialization                            |
+| `clap`                 | 4 (derive, env) | koi                                           | CLI parsing                              |
+| `tracing`              | 0.1             | all                                           | Structured logging                       |
+| `tower-http`           | 0.6             | koi, koi-embedded                             | CORS middleware                          |
+| `thiserror`            | 2               | koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp | Error derive macros |
+| `ureq`                 | 2               | koi-client                                    | Blocking HTTP client                     |
+| `uuid`                 | 1 (v4)          | koi-common, koi                               | ID generation                            |
+| `tokio-util`           | 0.7             | koi-mdns, koi-dns, koi-health, koi-proxy, koi-udp, koi | CancellationToken               |
+| `utoipa`               | 5               | koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp | OpenAPI schema generation |
+| `utoipa-scalar`        | 0.3             | koi                                           | Interactive API docs UI                  |
+| `windows-service`      | 0.8             | koi (Windows)                                 | Windows SCM                              |
+| `ring`                 | 0.17            | koi-crypto                                    | Cryptographic primitives                 |
+| `rcgen`                | 0.13            | koi-crypto                                    | X.509 certificate generation             |
+| `totp-rs`              | 5               | koi-crypto                                    | TOTP enrollment codes                    |
+| `p256`                 | 0.13            | koi-crypto                                    | FIDO2 ECDSA P-256 signature verification |
+| `chrono`               | 0.4             | koi-certmesh, koi-udp                         | Timestamp handling                       |
+| `hickory-server`       | latest           | koi-dns                                      | DNS server implementation                |
+| `hickory-resolver`     | latest           | koi-dns                                      | DNS upstream resolution                  |
+| `reqwest`              | latest           | koi-proxy, koi-embedded                       | HTTP forwarding                          |
+| `base64`               | latest           | koi-udp                                       | Datagram payload encoding                |

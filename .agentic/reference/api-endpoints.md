@@ -1,40 +1,64 @@
 # Koi - API & Protocol Reference
 
 Quick reference for all endpoints and wire protocol. For rules and patterns, see `.agentic/`.
+For full request/response schemas, see `docs/reference/http-api.md`.
 
 ---
 
 ## HTTP Endpoints
 
-All mDNS endpoints are mounted at `/v1/mdns/` by the binary crate.
-Route handlers are defined in `crates/koi-mdns/src/http.rs`.
+Each domain crate owns its routes; the binary crate mounts them at `/v1/<domain>/`.
+Interactive API docs: `GET /docs` (Scalar UI). OpenAPI spec: `GET /openapi.json`.
 
-### Service Operations
+### System
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/v1/mdns/browse?type=_http._tcp&idle_for=5` | Browse for services (SSE stream) |
-| POST | `/v1/mdns/services` | Register a service |
-| DELETE | `/v1/mdns/services/{id}` | Unregister a service |
-| PUT | `/v1/mdns/services/{id}/heartbeat` | Renew heartbeat lease |
-| GET | `/v1/mdns/resolve?name=My+Service` | Resolve a service name |
-| GET | `/v1/mdns/events?type=_http._tcp&idle_for=0` | Subscribe to lifecycle events (SSE) |
+| GET | `/healthz` | Health check (200 "OK") |
+| GET | `/v1/status` | Unified capability status (version, uptime, capabilities) |
+| POST | `/v1/admin/shutdown` | Initiate graceful shutdown |
+| GET | `/v1/host` | Host identity (hostname, FQDN, OS, arch, network interfaces) |
+| GET | `/openapi.json` | OpenAPI specification |
+| GET | `/docs` | Interactive API documentation (Scalar UI) |
 
-### Admin Operations
+### Dashboard & Browser
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/` | Embedded HTML dashboard |
+| GET | `/v1/dashboard/snapshot` | System-level JSON snapshot for dashboard |
+| GET | `/v1/dashboard/events` | Unified SSE activity feed |
+| GET | `/mdns-browser` | mDNS network browser HTML page |
+| GET | `/v1/mdns/browser/snapshot` | Network cache snapshot |
+| GET | `/v1/mdns/browser/events` | Service discovery SSE feed |
+
+### mDNS Service Operations (`/v1/mdns`)
+
+Route handlers: `crates/koi-mdns/src/http.rs`
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/v1/mdns/discover` | Browse for services (SSE stream) |
+| POST | `/v1/mdns/announce` | Register a service |
+| DELETE | `/v1/mdns/unregister/{id}` | Unregister a service |
+| PUT | `/v1/mdns/heartbeat/{id}` | Renew heartbeat lease |
+| GET | `/v1/mdns/resolve` | Resolve a service name |
+| GET | `/v1/mdns/subscribe` | Subscribe to lifecycle events (SSE) |
+
+### mDNS Admin Operations (`/v1/mdns/admin`)
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | GET | `/v1/mdns/admin/status` | Daemon status overview |
-| GET | `/v1/mdns/admin/registrations` | List all registrations |
-| GET | `/v1/mdns/admin/registrations/{id}` | Inspect single registration |
-| DELETE | `/v1/mdns/admin/registrations/{id}` | Force-remove registration |
-| POST | `/v1/mdns/admin/registrations/{id}/drain` | Begin grace period |
-| POST | `/v1/mdns/admin/registrations/{id}/revive` | Cancel draining |
+| GET | `/v1/mdns/admin/ls` | List all registrations |
+| GET | `/v1/mdns/admin/inspect/{id}` | Inspect single registration |
+| DELETE | `/v1/mdns/admin/unregister/{id}` | Force-remove registration |
+| POST | `/v1/mdns/admin/drain/{id}` | Begin grace period |
+| POST | `/v1/mdns/admin/revive/{id}` | Cancel draining |
 
-### Certmesh Operations
+### Certmesh Operations (`/v1/certmesh`)
 
-All certmesh endpoints are mounted at `/v1/certmesh/` by the binary crate.
-Route handlers are defined in `crates/koi-certmesh/src/http.rs`.
+Route handlers: `crates/koi-certmesh/src/http.rs`
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
@@ -42,32 +66,78 @@ Route handlers are defined in `crates/koi-certmesh/src/http.rs`.
 | POST | `/v1/certmesh/join` | Join the certificate mesh (auth-verified enrollment) |
 | GET | `/v1/certmesh/status` | Mesh status overview |
 | POST | `/v1/certmesh/unlock` | Decrypt CA key with passphrase |
-| PUT | `/v1/certmesh/hook` | Set reload hook for a member |
+| PUT | `/v1/certmesh/set-hook` | Set reload hook for a member |
 | POST | `/v1/certmesh/promote` | Promote standby (CA key transfer) |
 | POST | `/v1/certmesh/renew` | Trigger certificate renewal |
+| POST | `/v1/certmesh/revoke` | Revoke a member's certificate |
 | GET | `/v1/certmesh/roster` | Get signed roster manifest |
-| POST | `/v1/certmesh/health` | Member health heartbeat |
+| POST | `/v1/certmesh/health` | Member health heartbeat (pinned CA fingerprint) |
 | POST | `/v1/certmesh/rotate-auth` | Rotate enrollment auth credential |
 | GET | `/v1/certmesh/log` | Read audit log entries |
-| POST | `/v1/certmesh/enrollment/open` | Open enrollment window |
-| POST | `/v1/certmesh/enrollment/close` | Close enrollment window |
-| PUT | `/v1/certmesh/policy` | Set enrollment scope constraints |
+| GET | `/v1/certmesh/compliance` | Compliance summary |
+| POST | `/v1/certmesh/open-enrollment` | Open enrollment window |
+| POST | `/v1/certmesh/close-enrollment` | Close enrollment window |
+| PUT | `/v1/certmesh/set-policy` | Set enrollment scope constraints |
+| POST | `/v1/certmesh/backup` | Create encrypted backup |
+| POST | `/v1/certmesh/restore` | Restore from backup |
 | POST | `/v1/certmesh/destroy` | Destroy all certmesh state (CA, certs, audit log) |
 
-### System
+### DNS Operations (`/v1/dns`)
+
+Route handlers: `crates/koi-dns/src/http.rs`
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/v1/status` | Unified capability status (version, uptime, capabilities) |
-| POST | `/v1/admin/shutdown` | Initiate graceful shutdown |
-| GET | `/healthz` | Health check (200 "OK") |
+| GET | `/v1/dns/status` | Resolver status (running, zone, port, record counts) |
+| GET | `/v1/dns/lookup?name=grafana&type=A` | Resolve a local name |
+| GET | `/v1/dns/list` | List all resolvable names |
+| GET | `/v1/dns/entries` | List static entries with details |
+| POST | `/v1/dns/add` | Add static entry (name, ip, optional ttl) |
+| DELETE | `/v1/dns/remove/{name}` | Remove static entry |
+| POST | `/v1/dns/serve` | Start the DNS resolver |
+| POST | `/v1/dns/stop` | Stop the DNS resolver |
+
+### Health Operations (`/v1/health`)
+
+Route handlers: `crates/koi-health/src/http.rs`
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/v1/health/status` | Snapshot of all checks with current state |
+| GET | `/v1/health/list` | List registered check configurations |
+| POST | `/v1/health/add` | Register a check (name, kind, target, interval, timeout) |
+| DELETE | `/v1/health/remove/{name}` | Remove a check |
+
+### Proxy Operations (`/v1/proxy`)
+
+Route handlers: `crates/koi-proxy/src/http.rs`
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/v1/proxy/status` | Active proxy status |
+| GET | `/v1/proxy/list` | List proxy entries |
+| POST | `/v1/proxy/add` | Add a proxy entry (name, listen_port, backend, allow_remote) |
+| DELETE | `/v1/proxy/remove/{name}` | Remove a proxy entry |
+
+### UDP Operations (`/v1/udp`)
+
+Route handlers: `crates/koi-udp/src/http.rs`
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| POST | `/v1/udp/bind` | Bind a host UDP socket |
+| DELETE | `/v1/udp/bind/{id}` | Unbind (close) a binding |
+| GET | `/v1/udp/recv/{id}` | Subscribe to incoming datagrams (SSE stream) |
+| POST | `/v1/udp/send/{id}` | Send a datagram through a binding |
+| GET | `/v1/udp/status` | List all active bindings |
+| PUT | `/v1/udp/heartbeat/{id}` | Renew a binding's lease |
 
 ---
 
 ## Query Parameters
 
-**Browse / Events** (`/v1/mdns/browse`, `/v1/mdns/events`):
-- `type` -- Service type (required), e.g. `_http._tcp`
+**Discover / Subscribe** (`/v1/mdns/discover`, `/v1/mdns/subscribe`):
+- `type` -- Service type (required for subscribe, optional for discover), e.g. `_http._tcp`
 - `idle_for` -- SSE idle timeout in seconds:
   - Absent -> 5s default
   - `0` -> infinite (never auto-close)
@@ -75,6 +145,10 @@ Route handlers are defined in `crates/koi-certmesh/src/http.rs`.
 
 **Resolve** (`/v1/mdns/resolve`):
 - `name` -- Service instance name to resolve (required)
+
+**DNS Lookup** (`/v1/dns/lookup`):
+- `name` -- Name to resolve (required)
+- `type` -- Record type: `A`, `AAAA`, or `ANY` (default `A`)
 
 ---
 
@@ -166,14 +240,40 @@ Streaming responses include a `status` field:
 | `koi certmesh status` | Client | Show mesh status |
 | `koi certmesh unlock` | Client | Decrypt CA key |
 | `koi certmesh log` | Client | Show audit log |
+| `koi certmesh compliance` | Client | Show compliance summary |
 | `koi certmesh set-hook --reload CMD` | Client | Set reload hook |
 | `koi certmesh promote [endpoint]` | Client | Promote standby CA |
 | `koi certmesh open-enrollment` | Client | Open enrollment window |
 | `koi certmesh close-enrollment` | Client | Close enrollment window |
 | `koi certmesh set-policy` | Client | Set enrollment scope constraints |
 | `koi certmesh rotate-auth` | Client | Rotate enrollment auth credential |
+| `koi certmesh backup <path>` | Client | Create encrypted backup |
+| `koi certmesh restore <path>` | Client | Restore from backup |
+| `koi certmesh revoke <hostname>` | Client | Revoke a member |
 | `koi certmesh destroy` | Client | Destroy all certmesh state |
+| `koi dns serve` | Client | Start DNS resolver |
+| `koi dns stop` | Client | Stop DNS resolver |
+| `koi dns status` | Client | DNS resolver status |
+| `koi dns lookup <name>` | Client | Resolve a local name |
+| `koi dns add <name> <ip>` | Client | Add static DNS entry |
+| `koi dns remove <name>` | Client | Remove static DNS entry |
+| `koi dns list` | Client | List all resolvable names |
+| `koi health status` | Client | Show health status |
+| `koi health watch` | Client | Live terminal watch |
+| `koi health add <name>` | Client | Add a health check |
+| `koi health remove <name>` | Client | Remove a health check |
+| `koi health log` | Client | Health transition log |
+| `koi proxy add <name>` | Client | Add/update a proxy entry |
+| `koi proxy remove <name>` | Client | Remove a proxy entry |
+| `koi proxy status` | Client | Proxy status |
+| `koi proxy list` | Client | List configured proxies |
+| `koi udp bind` | Client | Bind a host UDP port |
+| `koi udp unbind <id>` | Client | Close a UDP binding |
+| `koi udp send <id>` | Client | Send a datagram |
+| `koi udp status` | Client | Show active bindings |
+| `koi udp heartbeat <id>` | Client | Renew binding lease |
 | `koi status` | Standalone/Client | Unified capability status |
+| `koi launch` | - | Open dashboard in browser |
 | `koi install` | - | Install as OS service |
 | `koi uninstall` | - | Uninstall OS service |
 | `koi version` | - | Show version info |

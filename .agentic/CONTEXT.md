@@ -9,7 +9,7 @@
 **Check reference docs**: `docs/reference/`
 
 - [architecture.md](../docs/reference/architecture.md) - crate inventory, boundaries, dependency graph
-- [http-api.md](../docs/reference/http-api.md) - all 43 HTTP endpoints with request/response shapes
+- [http-api.md](../docs/reference/http-api.md) - all HTTP endpoints with request/response shapes
 - [wire-protocol.md](../docs/reference/wire-protocol.md) - JSON protocol, serde patterns, service records
 - [cli.md](../docs/reference/cli.md) - every command, flag, and environment variable
 - [ceremony-protocol.md](../docs/reference/ceremony-protocol.md) - ceremony engine, input types, session flow
@@ -30,7 +30,7 @@ Koi v0.2 is a multi-crate Cargo workspace. Each domain has its own crate.
 ```
 crates/
 ├── koi/              # Binary crate - CLI entry, wiring, adapters
-├── koi-common/       # Shared kernel - types, errors, pipeline, id, paths
+├── koi-common/       # Shared kernel - types, errors, pipeline, id, paths, ceremony
 ├── koi-mdns/         # mDNS domain - core, daemon, registry, protocol, http routes
 ├── koi-config/       # Config & state - breadcrumb discovery
 ├── koi-certmesh/     # Certificate mesh domain - CA, enrollment, roster
@@ -39,6 +39,7 @@ crates/
 ├── koi-dns/          # Local DNS resolver - zone management, resolution, rate limiting
 ├── koi-health/       # Machine & service health monitoring - HTTP/TCP checks, transitions
 ├── koi-proxy/        # TLS-terminating reverse proxy - cert reload, forwarding
+├── koi-udp/          # UDP datagram bridging - HTTP/SSE tunneling, binding lifecycle
 ├── koi-client/       # HTTP client for daemon communication (blocking ureq)
 ├── koi-embedded/     # Embed Koi in Rust applications - builder, handles, events
 └── command-surface/  # Glyph-based command rendering - semantic metadata, profiles
@@ -65,17 +66,18 @@ Each domain crate exposes three faces:
 ### 3. Crate Dependency Graph
 
 ```
-koi (bin) → koi-common, koi-mdns, koi-certmesh, koi-crypto, koi-truststore, koi-config, koi-dns, koi-health, koi-proxy, koi-client, koi-embedded, command-surface
-koi-mdns      → koi-common, mdns-sd, axum, tokio
-koi-certmesh  → koi-common, koi-crypto, koi-truststore, axum, tokio
+koi (bin) → koi-common, koi-mdns, koi-certmesh, koi-crypto, koi-truststore, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-client, koi-embedded, command-surface
+koi-mdns      → koi-common, mdns-sd, axum, utoipa, tokio
+koi-certmesh  → koi-common, koi-crypto, koi-truststore, axum, utoipa, tokio
 koi-crypto    → (standalone: ring/rcgen/totp-rs/p256)
 koi-truststore → (standalone: platform cert APIs)
 koi-config    → koi-common
-koi-dns       → koi-common, koi-config, hickory-server, hickory-resolver, axum, tokio
-koi-health    → koi-common, koi-config, axum, tokio
-koi-proxy     → koi-common, koi-config, axum-server, rustls, reqwest, tokio
+koi-dns       → koi-common, koi-config, hickory-server, hickory-resolver, axum, utoipa, tokio
+koi-health    → koi-common, koi-config, axum, utoipa, tokio
+koi-proxy     → koi-common, koi-config, axum-server, rustls, reqwest, utoipa, tokio
+koi-udp       → koi-common, axum, utoipa, tokio
 koi-client    → koi-common, ureq (blocking)
-koi-embedded  → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-config, tokio
+koi-embedded  → koi-common, koi-crypto, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-config, koi-client, tokio
 command-surface → (standalone: crossterm)
 ```
 
@@ -135,13 +137,16 @@ ErrorCode::NotFound → StatusCode::NOT_FOUND
 
 All domain capabilities are compiled into a **single binary**. Enable/disable at runtime:
 
-| Flag            | Env Var             | Effect                      |
-| --------------- | ------------------- | --------------------------- |
-| `--no-mdns`     | `KOI_NO_MDNS=1`     | Disable mDNS capability     |
-| `--no-certmesh` | `KOI_NO_CERTMESH=1` | Disable certmesh capability |
-| `--no-dns`      | `KOI_NO_DNS=1`      | Disable DNS capability      |
-| `--no-health`   | `KOI_NO_HEALTH=1`   | Disable health capability   |
-| `--no-proxy`    | `KOI_NO_PROXY=1`    | Disable proxy capability    |
+| Flag            | Env Var             | Effect                       |
+| --------------- | ------------------- | ---------------------------- |
+| `--no-mdns`     | `KOI_NO_MDNS=1`     | Disable mDNS capability      |
+| `--no-certmesh` | `KOI_NO_CERTMESH=1` | Disable certmesh capability  |
+| `--no-dns`      | `KOI_NO_DNS=1`      | Disable DNS capability       |
+| `--no-health`   | `KOI_NO_HEALTH=1`   | Disable health capability    |
+| `--no-proxy`    | `KOI_NO_PROXY=1`    | Disable proxy capability     |
+| `--no-udp`      | `KOI_NO_UDP=1`      | Disable UDP bridging         |
+| `--no-http`     | `KOI_NO_HTTP=1`     | Disable the HTTP adapter     |
+| `--no-ipc`      | `KOI_NO_IPC=1`      | Disable the IPC adapter      |
 
 All capabilities are **enabled by default**.
 
@@ -173,12 +178,14 @@ cargo clippy -- -D warnings
 
 Koi operates in four modes - understand which one your change affects:
 
-| Mode           | Detection                         | Core Owner        | Transport           |
-| -------------- | --------------------------------- | ----------------- | ------------------- |
-| **Daemon**     | No subcommand                     | MdnsCore (shared) | HTTP + Pipe/UDS     |
-| **Standalone** | `koi mdns <cmd>` + no daemon      | MdnsCore (local)  | Direct              |
-| **Client**     | `koi mdns <cmd>` + daemon running | KoiClient → HTTP  | HTTP to daemon      |
-| **Piped**      | stdin is piped                    | MdnsCore (local)  | NDJSON stdin/stdout |
+| Mode           | Detection                            | Core Owner          | Transport           |
+| -------------- | ------------------------------------ | ------------------- | ------------------- |
+| **Daemon**     | No subcommand                        | All cores (shared)  | HTTP + Pipe/UDS     |
+| **Standalone** | `koi mdns <cmd>` + no daemon         | MdnsCore (local)    | Direct              |
+| **Client**     | `koi <domain> <cmd>` + daemon running | KoiClient → HTTP   | HTTP to daemon      |
+| **Piped**      | stdin is piped                       | MdnsCore (local)    | NDJSON stdin/stdout |
+
+Daemon mode also serves an embedded dashboard (`GET /`) and mDNS browser (`GET /mdns-browser`).
 
 ---
 
@@ -187,22 +194,54 @@ Koi operates in four modes - understand which one your change affects:
 v0.2 uses domain monikers: `koi <domain> <command>`
 
 ```
-koi mdns discover [type]     # Browse for services
-koi mdns announce <args>     # Register a service
-koi mdns unregister <id>     # Remove a service
-koi mdns resolve <name>      # Resolve service
-koi mdns subscribe <type>    # Watch lifecycle events
-koi mdns admin <cmd>         # Admin operations
-koi certmesh create          # Initialize private CA
-koi certmesh join [endpoint] # Join existing mesh
-koi certmesh status          # Mesh status
-koi certmesh unlock          # Decrypt CA key
-koi certmesh log             # Audit log
-koi certmesh set-hook        # Set reload hook
-koi status                   # Unified capability status
-koi install                  # Install as OS service
-koi uninstall                # Uninstall OS service
-koi version                  # Show version
+koi mdns discover [type]         # Browse for services
+koi mdns announce <args>         # Register a service
+koi mdns unregister <id>         # Remove a service
+koi mdns resolve <name>          # Resolve service
+koi mdns subscribe <type>        # Watch lifecycle events
+koi mdns admin <cmd>             # Admin operations (status, ls, inspect, drain, revive)
+koi certmesh create              # Initialize private CA
+koi certmesh join [endpoint]     # Join existing mesh
+koi certmesh status              # Mesh status
+koi certmesh unlock              # Decrypt CA key
+koi certmesh log                 # Audit log
+koi certmesh compliance          # Compliance summary
+koi certmesh set-hook            # Set reload hook
+koi certmesh promote [endpoint]  # Promote standby CA
+koi certmesh open-enrollment     # Open enrollment window
+koi certmesh close-enrollment    # Close enrollment window
+koi certmesh set-policy          # Set scope constraints
+koi certmesh rotate-auth         # Rotate enrollment auth
+koi certmesh backup <path>       # Create encrypted backup
+koi certmesh restore <path>      # Restore from backup
+koi certmesh revoke <hostname>   # Revoke a member
+koi certmesh destroy             # Destroy all certmesh state
+koi dns serve                    # Start the DNS resolver
+koi dns stop                     # Stop the DNS resolver
+koi dns status                   # DNS resolver status
+koi dns lookup <name>            # Resolve a local name
+koi dns add <name> <ip>          # Add static DNS entry
+koi dns remove <name>            # Remove static DNS entry
+koi dns list                     # List all resolvable names
+koi health status                # Show health status
+koi health watch                 # Live terminal watch
+koi health add <name>            # Add a health check
+koi health remove <name>         # Remove a health check
+koi health log                   # Health transition log
+koi proxy add <name>             # Add/update a proxy entry
+koi proxy remove <name>          # Remove a proxy entry
+koi proxy status                 # Proxy status
+koi proxy list                   # List configured proxies
+koi udp bind                     # Bind a host UDP port
+koi udp unbind <id>              # Close a UDP binding
+koi udp send <id>                # Send a datagram
+koi udp status                   # Show active bindings
+koi udp heartbeat <id>           # Renew binding lease
+koi status                       # Unified capability status
+koi launch                       # Open dashboard in browser
+koi install                      # Install as OS service
+koi uninstall                    # Uninstall OS service
+koi version                      # Show version
 ```
 
 ---
@@ -279,27 +318,36 @@ Each adapter only keeps its own session grace period and transport setup.
 The binary crate (`crates/koi/src/`) is organized by responsibility:
 
 ```
-main.rs          - Pure orchestrator: CLI parse, routing, daemon wiring, shutdown
-cli.rs           - clap definitions (Cli, Command, Config)
-client.rs        - KoiClient (ureq HTTP client for client mode)
-format.rs        - ALL human-readable CLI output (single source of truth)
-admin.rs         - Admin command execution (delegates to KoiClient)
+main.rs            - Pure orchestrator: CLI parse, routing, daemon wiring, shutdown
+cli.rs             - clap definitions (Cli, Command, Config)
+client.rs          - Re-exports koi-client (HTTP client for client mode)
+format.rs          - ALL human-readable CLI output (single source of truth)
+admin.rs           - Admin command execution (delegates to KoiClient)
+openapi.rs         - Manifest-driven OpenAPI spec builder (utoipa)
+surface.rs         - Command manifest and API endpoint definitions (command-surface)
 commands/
-  mod.rs         - Shared helpers (detect_mode, run_streaming, print_json, etc.)
-  mdns.rs        - mDNS commands + admin routing (discover, announce, etc.)
-  certmesh.rs    - Certmesh commands (create, join, status, etc.)
-  status.rs      - Unified status command
+  mod.rs           - Shared helpers (detect_mode, run_streaming, print_json, etc.)
+  mdns.rs          - mDNS commands + admin routing (discover, announce, etc.)
+  certmesh.rs      - Certmesh commands (create, join, status, etc.)
+  dns.rs           - DNS commands (serve, stop, lookup, add, remove, list)
+  health.rs        - Health commands (status, watch, add, remove, log)
+  proxy.rs         - Proxy commands (add, remove, status, list)
+  udp.rs           - UDP commands (bind, unbind, send, status, heartbeat)
+  ceremony_cli.rs  - Ceremony protocol CLI handling
+  status.rs        - Unified status command
 adapters/
   mod.rs
-  http.rs        - HTTP server (AppState, routes, health, status handler)
-  pipe.rs        - Named Pipe / UDS adapter
-  cli.rs         - Piped stdin/stdout adapter
-  dispatch.rs    - Shared NDJSON dispatch logic
+  http.rs          - HTTP server (AppState, routes, health, status, OpenAPI/Scalar)
+  pipe.rs          - Named Pipe / UDS adapter
+  cli.rs           - Piped stdin/stdout adapter
+  dispatch.rs      - Shared NDJSON dispatch logic
+  dashboard.rs     - Embedded HTML dashboard (GET /, /v1/dashboard/*)
+  mdns_browser.rs  - mDNS network browser (GET /mdns-browser, /v1/mdns/browser/*)
 platform/
-  mod.rs         - Platform abstraction
-  windows.rs     - SCM, firewall, service paths
-  unix.rs        - systemd, service paths
-  macos.rs       - launchd, service paths
+  mod.rs           - Platform abstraction
+  windows.rs       - SCM, firewall, service paths
+  unix.rs          - systemd, service paths
+  macos.rs         - launchd, service paths
 ```
 
 Key design rules:
@@ -307,7 +355,8 @@ Key design rules:
 - `main.rs` contains zero business logic - only routing and wiring
 - `format.rs` is the only file with `println!`-based presentation
 - Platform paths live in their respective `platform/` modules, not in `cli.rs`
-- Commands are organized by domain (`commands/mdns.rs`, `commands/certmesh.rs`)
+- Commands are organized by domain (`commands/mdns.rs`, `commands/certmesh.rs`, `commands/dns.rs`, etc.)
+- Dashboard and browser are presentation adapters in the binary crate, not domain crates
 
 ### Serialization Safety
 
