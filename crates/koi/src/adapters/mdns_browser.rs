@@ -448,7 +448,7 @@ fn browser_event_stream(
                                 Event::default()
                                     .event("type_found")
                                     .id(uuid::Uuid::now_v7().to_string())
-                                    .json_data(&serde_json::json!({
+                                    .json_data(serde_json::json!({
                                         "service_type": record.name,
                                     })).ok()
                             } else {
@@ -465,7 +465,7 @@ fn browser_event_stream(
                             Event::default()
                                 .event("removed")
                                 .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(&serde_json::json!({
+                                .json_data(serde_json::json!({
                                     "name": name,
                                     "service_type": service_type
                                 })).ok()
@@ -477,12 +477,12 @@ fn browser_event_stream(
                 },
                 _ = heartbeat.tick() => {
                     let snap = cache.snapshot().await;
-                    if let Some(ev) = Event::default()
+                    if let Ok(ev) = Event::default()
                         .event("heartbeat")
-                        .json_data(&serde_json::json!({
+                        .json_data(serde_json::json!({
                             "total_types": snap.total_types,
                             "total_instances": snap.total_instances
-                        })).ok()
+                        }))
                     {
                         yield Ok(ev);
                     }

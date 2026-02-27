@@ -384,19 +384,19 @@ fn dashboard_event_stream(
                             Event::default()
                                 .event("mdns.found")
                                 .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(&record).ok()
+                                .json_data(record).ok()
                         }
                         koi_mdns::MdnsEvent::Resolved(record) => {
                             Event::default()
                                 .event("mdns.resolved")
                                 .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(&record).ok()
+                                .json_data(record).ok()
                         }
                         koi_mdns::MdnsEvent::Removed { name, service_type } => {
                             Event::default()
                                 .event("mdns.removed")
                                 .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(&serde_json::json!({ "name": name, "service_type": service_type })).ok()
+                                .json_data(serde_json::json!({ "name": name, "service_type": service_type })).ok()
                         }
                     }
                 },
@@ -406,7 +406,7 @@ fn dashboard_event_stream(
                             Event::default()
                                 .event("health.changed")
                                 .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(&serde_json::json!({ "name": name, "status": status })).ok()
+                                .json_data(serde_json::json!({ "name": name, "status": status })).ok()
                         }
                     }
                 },
@@ -416,13 +416,13 @@ fn dashboard_event_stream(
                             Event::default()
                                 .event("dns.updated")
                                 .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(&serde_json::json!({ "name": name, "ip": ip })).ok()
+                                .json_data(serde_json::json!({ "name": name, "ip": ip })).ok()
                         }
                         koi_dns::DnsEvent::EntryRemoved { name } => {
                             Event::default()
                                 .event("dns.removed")
                                 .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(&serde_json::json!({ "name": name })).ok()
+                                .json_data(serde_json::json!({ "name": name })).ok()
                         }
                     }
                 },
@@ -432,19 +432,19 @@ fn dashboard_event_stream(
                             Event::default()
                                 .event("certmesh.joined")
                                 .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(&serde_json::json!({ "hostname": hostname, "fingerprint": fingerprint })).ok()
+                                .json_data(serde_json::json!({ "hostname": hostname, "fingerprint": fingerprint })).ok()
                         }
                         koi_certmesh::CertmeshEvent::MemberRevoked { hostname } => {
                             Event::default()
                                 .event("certmesh.revoked")
                                 .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(&serde_json::json!({ "hostname": hostname })).ok()
+                                .json_data(serde_json::json!({ "hostname": hostname })).ok()
                         }
                         koi_certmesh::CertmeshEvent::Destroyed => {
                             Event::default()
                                 .event("certmesh.destroyed")
                                 .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(&serde_json::json!({})).ok()
+                                .json_data(serde_json::json!({})).ok()
                         }
                     }
                 },
@@ -454,20 +454,20 @@ fn dashboard_event_stream(
                             Event::default()
                                 .event("proxy.updated")
                                 .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(&entry).ok()
+                                .json_data(entry).ok()
                         }
                         koi_proxy::ProxyEvent::EntryRemoved { name } => {
                             Event::default()
                                 .event("proxy.removed")
                                 .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(&serde_json::json!({ "name": name })).ok()
+                                .json_data(serde_json::json!({ "name": name })).ok()
                         }
                     }
                 },
                 _ = heartbeat.tick() => {
                     Event::default()
                         .event("heartbeat")
-                        .json_data(&serde_json::json!({
+                        .json_data(serde_json::json!({
                             "uptime_secs": state.started_at.elapsed().as_secs()
                         })).ok()
                 },
