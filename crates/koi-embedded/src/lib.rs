@@ -246,8 +246,14 @@ impl KoiEmbedded {
         };
 
         let dns = if self.config.dns_enabled {
+            let mut dns_config = self.config.dns_config.clone();
+            // Pin the state path to the data dir captured at construction time
+            // so it is immune to KOI_DATA_DIR env var races in parallel tests.
+            if let Some(dir) = &self.config.data_dir {
+                dns_config.state_path = Some(dir.join("state").join("dns.json"));
+            }
             let core = koi_dns::DnsCore::new(
-                self.config.dns_config.clone(),
+                dns_config,
                 mdns.clone(),
                 certmesh.clone(),
             )

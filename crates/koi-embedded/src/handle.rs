@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use koi_client::KoiClient;
 use koi_common::capability::Capability;
 use koi_common::types::{EventKind, ServiceRecord};
-use koi_config::state::{load_dns_state, save_dns_state, DnsEntry};
+use koi_config::state::DnsEntry;
 use koi_dns::{DnsLookupResult, DnsRuntime};
 use koi_health::{HealthCheck, HealthRuntime};
 use koi_mdns::protocol::{RegisterPayload, RegistrationResult};
@@ -446,20 +446,7 @@ impl DnsHandle {
 
     pub fn add_entry(&self, entry: DnsEntry) -> Result<Vec<DnsEntry>, KoiError> {
         match &self.backend {
-            DnsBackend::Embedded { runtime } => {
-                let mut state = load_dns_state().unwrap_or_default();
-                if let Some(existing) = state.entries.iter_mut().find(|e| e.name == entry.name) {
-                    *existing = entry.clone();
-                } else {
-                    state.entries.push(entry.clone());
-                }
-                save_dns_state(&state)?;
-                runtime.core().emit(koi_dns::DnsEvent::EntryUpdated {
-                    name: entry.name,
-                    ip: entry.ip,
-                });
-                Ok(state.entries)
-            }
+            DnsBackend::Embedded { runtime } => Ok(runtime.core().add_entry(entry)?),
             DnsBackend::Remote { client } => {
                 let json = client.dns_add(&entry.name, &entry.ip, entry.ttl)?;
                 parse_dns_entries(json)
@@ -470,13 +457,7 @@ impl DnsHandle {
     pub fn remove_entry(&self, name: &str) -> Result<Vec<DnsEntry>, KoiError> {
         match &self.backend {
             DnsBackend::Embedded { runtime } => {
-                let mut state = load_dns_state().unwrap_or_default();
-                state.entries.retain(|entry| entry.name != name);
-                save_dns_state(&state)?;
-                runtime.core().emit(koi_dns::DnsEvent::EntryRemoved {
-                    name: name.to_string(),
-                });
-                Ok(state.entries)
+                Ok(runtime.core().remove_entry(name)?.unwrap_or_default())
             }
             DnsBackend::Remote { client } => {
                 let json = client.dns_remove(name)?;

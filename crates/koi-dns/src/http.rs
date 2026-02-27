@@ -9,9 +9,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use koi_common::error::ErrorCode;
-use koi_config::state::{load_dns_state, save_dns_state, DnsEntry, DnsState};
+use koi_config::state::DnsEntry;
 
-use crate::resolver::DnsEvent;
 use crate::runtime::DnsRuntime;
 use crate::zone::DnsZone;
 
@@ -159,19 +158,10 @@ async fn list_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl In
 }
 
 /// List static DNS entries.
-async fn entries_handler(_runtime: Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
-    match load_dns_state() {
-        Ok(state) => Json(EntriesResponse {
-            entries: state.entries,
-        })
-        .into_response(),
-        Err(e) => error_response(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ErrorCode::IoError,
-            &e.to_string(),
-        )
-        .into_response(),
-    }
+async fn entries_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
+    Json(EntriesResponse {
+        entries: runtime.core().list_entries(),
+    })
 }
 
 /// Add or update a static DNS entry.
@@ -212,34 +202,21 @@ async fn add_entry_handler(
         .into_response();
     }
 
-    let mut state = load_dns_state().unwrap_or_default();
-    upsert_entry(
-        &mut state,
-        DnsEntry {
-            name: name.clone(),
-            ip: payload.ip.clone(),
-            ttl: payload.ttl,
-        },
-    );
+    let entry = DnsEntry {
+        name,
+        ip: payload.ip,
+        ttl: payload.ttl,
+    };
 
-    if let Err(e) = save_dns_state(&state) {
-        return error_response(
+    match runtime.core().add_entry(entry) {
+        Ok(entries) => Json(EntriesResponse { entries }).into_response(),
+        Err(e) => error_response(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             ErrorCode::IoError,
             &e.to_string(),
         )
-        .into_response();
+        .into_response(),
     }
-
-    runtime.core().emit(DnsEvent::EntryUpdated {
-        name,
-        ip: payload.ip,
-    });
-
-    Json(EntriesResponse {
-        entries: state.entries,
-    })
-    .into_response()
 }
 
 /// Remove a static DNS entry by name.
@@ -271,44 +248,21 @@ async fn remove_entry_handler(
         }
     };
 
-    let mut state = match load_dns_state() {
-        Ok(state) => state,
-        Err(e) => {
-            return error_response(
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                ErrorCode::IoError,
-                &e.to_string(),
-            )
-            .into_response();
-        }
-    };
-
-    let before = state.entries.len();
-    state.entries.retain(|entry| entry.name != name);
-    if state.entries.len() == before {
-        return error_response(
+    match runtime.core().remove_entry(&name) {
+        Ok(Some(entries)) => Json(EntriesResponse { entries }).into_response(),
+        Ok(None) => error_response(
             axum::http::StatusCode::NOT_FOUND,
             ErrorCode::NotFound,
             "entry_not_found",
         )
-        .into_response();
-    }
-
-    if let Err(e) = save_dns_state(&state) {
-        return error_response(
+        .into_response(),
+        Err(e) => error_response(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             ErrorCode::IoError,
             &e.to_string(),
         )
-        .into_response();
+        .into_response(),
     }
-
-    runtime.core().emit(DnsEvent::EntryRemoved { name });
-
-    Json(EntriesResponse {
-        entries: state.entries,
-    })
-    .into_response()
 }
 
 /// Start the DNS server.
@@ -344,14 +298,6 @@ fn parse_record_type(input: Option<&str>) -> Result<RecordType, impl IntoRespons
         }
     };
     Ok(record_type)
-}
-
-fn upsert_entry(state: &mut DnsState, entry: DnsEntry) {
-    if let Some(existing) = state.entries.iter_mut().find(|e| e.name == entry.name) {
-        *existing = entry;
-    } else {
-        state.entries.push(entry);
-    }
 }
 
 fn error_response(

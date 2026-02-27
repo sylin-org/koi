@@ -14,7 +14,8 @@ use hickory_server::server::{
 use koi_certmesh::roster::Roster;
 use koi_common::capability::{Capability, CapabilityStatus};
 use koi_common::types::{ServiceRecord, META_QUERY};
-use koi_config::state::{load_dns_state, DnsState};
+use koi_common::persist;
+use koi_config::state::{DnsEntry, DnsState};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -75,6 +76,9 @@ pub struct DnsConfig {
     /// from the mDNS browse cache before falling through to upstream DNS.
     /// This provides platform-agnostic `.local` resolution for containers.
     pub local_zone: bool,
+    /// Override the state file path (for testing / embedded use).
+    /// When `None`, defaults to `koi_config::state::dns_state_path()`.
+    pub state_path: Option<PathBuf>,
 }
 
 impl Default for DnsConfig {
@@ -87,6 +91,7 @@ impl Default for DnsConfig {
             allow_public_clients: false,
             max_qps: DEFAULT_MAX_QPS,
             local_zone: true,
+            state_path: None,
         }
     }
 }
@@ -129,7 +134,7 @@ impl DnsCore {
             None
         };
 
-        let state = StateCache::new();
+        let state = StateCache::new(config.state_path.clone());
         let mdns_cache = match mdns {
             Some(core) => Some(MdnsCache::spawn(core).await),
             None => None,
@@ -174,9 +179,46 @@ impl DnsCore {
         self.event_tx.subscribe()
     }
 
-    /// Emit a DNS event (used by HTTP handlers after state changes).
-    pub fn emit(&self, event: DnsEvent) {
+    /// Emit a DNS event.
+    fn emit(&self, event: DnsEvent) {
         let _ = self.event_tx.send(event);
+    }
+
+    /// Add or update a static DNS entry. Persists to disk and emits an event.
+    pub fn add_entry(&self, entry: DnsEntry) -> Result<Vec<DnsEntry>, DnsError> {
+        let mut state = self.state.load();
+        if let Some(existing) = state.entries.iter_mut().find(|e| e.name == entry.name) {
+            *existing = entry.clone();
+        } else {
+            state.entries.push(entry.clone());
+        }
+        self.state.save(&state)?;
+        self.emit(DnsEvent::EntryUpdated {
+            name: entry.name,
+            ip: entry.ip,
+        });
+        Ok(state.entries)
+    }
+
+    /// Remove a static DNS entry by name. Persists to disk and emits an event.
+    /// Returns `None` if the entry was not found.
+    pub fn remove_entry(&self, name: &str) -> Result<Option<Vec<DnsEntry>>, DnsError> {
+        let mut state = self.state.load();
+        let before = state.entries.len();
+        state.entries.retain(|entry| entry.name != name);
+        if state.entries.len() == before {
+            return Ok(None);
+        }
+        self.state.save(&state)?;
+        self.emit(DnsEvent::EntryRemoved {
+            name: name.to_string(),
+        });
+        Ok(Some(state.entries))
+    }
+
+    /// List static DNS entries from the persisted state.
+    pub fn list_entries(&self) -> Vec<DnsEntry> {
+        self.state.load().entries
     }
 
     pub fn snapshot(&self) -> RecordsSnapshot {
@@ -408,9 +450,9 @@ struct StateCache {
 }
 
 impl StateCache {
-    fn new() -> Self {
+    fn new(override_path: Option<PathBuf>) -> Self {
         Self {
-            path: koi_config::state::dns_state_path(),
+            path: override_path.unwrap_or_else(koi_config::state::dns_state_path),
             state: Arc::new(RwLock::new(DnsState::default())),
             mtime: Arc::new(RwLock::new(None)),
         }
@@ -424,7 +466,7 @@ impl StateCache {
         if *mtime_guard == new_mtime {
             return self.state.read().unwrap().clone();
         }
-        match load_dns_state() {
+        match persist::read_json_or_default::<DnsState>(&self.path) {
             Ok(state) => {
                 *self.state.write().unwrap() = state.clone();
                 *mtime_guard = new_mtime;
@@ -432,6 +474,16 @@ impl StateCache {
             }
             Err(_) => self.state.read().unwrap().clone(),
         }
+    }
+
+    fn save(&self, state: &DnsState) -> Result<(), std::io::Error> {
+        persist::write_json_pretty(&self.path, state)?;
+        // Invalidate mtime cache so the next load() picks up the change.
+        *self.mtime.write().unwrap() = std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok();
+        *self.state.write().unwrap() = state.clone();
+        Ok(())
     }
 }
 
