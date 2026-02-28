@@ -1,6 +1,8 @@
 pub mod api;
+pub mod browser;
 pub mod capability;
 pub mod ceremony;
+pub mod dashboard;
 pub mod encoding;
 pub mod error;
 pub mod firewall;

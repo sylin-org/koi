@@ -1,23 +1,32 @@
 //! Embedded HTTP adapter - lightweight axum server for koi-embedded.
 //!
-//! When `http_enabled` is set on the builder, this module spins up a minimal
-//! HTTP server that mounts the same domain routes as the standalone daemon,
-//! minus OpenAPI docs and admin shutdown. This lets containers (and other
-//! local consumers) reach Koi services over HTTP without a separate process.
+//! When `http_enabled` is set on the builder, this module spins up a
+//! HTTP server that mounts domain routes, with optional dashboard and
+//! mDNS browser.  OpenAPI docs and admin shutdown are not included.
 
 use std::sync::Arc;
 
+use axum::extract::Extension;
 use axum::routing::get;
-use axum::{Json, Router};
-use serde::Serialize;
+use axum::Router;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
+
+use koi_common::browser::BrowserState;
+use koi_common::dashboard::DashboardState;
 
 /// Start the embedded HTTP server.
 ///
 /// Mounts `/healthz` plus each enabled domain's routes at their standard
 /// prefix (e.g., `/v1/mdns`, `/v1/dns`, `/v1/health`, `/v1/proxy`,
 /// `/v1/certmesh`).  Disabled capabilities get a 503 fallback router.
+///
+/// When `dashboard_state` is `Some`, the dashboard SPA and its
+/// snapshot/events endpoints are mounted at `/` and `/v1/dashboard/`.
+///
+/// When `browser_state` is `Some`, the mDNS browser SPA and its
+/// snapshot/events endpoints are mounted at `/mdns-browser` and
+/// `/v1/mdns/browser/`.
 ///
 /// The server shuts down when `cancel` is cancelled.
 #[allow(clippy::too_many_arguments)]
@@ -29,13 +38,31 @@ pub(crate) async fn serve(
     certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
     proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
     udp: Option<Arc<koi_udp::UdpRuntime>>,
+    dashboard_state: Option<DashboardState>,
+    browser_state: Option<BrowserState>,
     cancel: CancellationToken,
 ) {
-    let mut app = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/v1/host", get(host_handler));
+    let mut app = Router::new().route("/healthz", get(healthz));
 
-    // ── Domain routes ───────────────────────────────────────────
+    // ── Dashboard (opt-in) ───────────────────────────────────────
+
+    if let Some(ref ds) = dashboard_state {
+        app = app
+            .route("/", get(koi_common::dashboard::get_dashboard))
+            .route("/v1/dashboard/snapshot", get(koi_common::dashboard::get_snapshot))
+            .route("/v1/dashboard/events", get(koi_common::dashboard::get_events))
+            .layer(Extension(ds.clone()));
+    }
+
+    // ── mDNS browser (opt-in) ────────────────────────────────────
+
+    if let Some(bs) = browser_state {
+        app = app
+            .route("/mdns-browser", get(koi_common::browser::get_page))
+            .nest("/v1/mdns/browser", koi_common::browser::routes(bs));
+    }
+
+    // ── Domain routes ────────────────────────────────────────────
 
     if let Some(ref core) = mdns {
         app = app.nest(
@@ -93,7 +120,7 @@ pub(crate) async fn serve(
 
     app = app.layer(CorsLayer::permissive());
 
-    // ── Bind & serve ────────────────────────────────────────────
+    // ── Bind & serve ─────────────────────────────────────────────
 
     let listener = match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
         Ok(l) => l,
@@ -120,66 +147,6 @@ pub(crate) async fn serve(
 /// Liveness probe - matches standalone `/healthz`.
 async fn healthz() -> &'static str {
     "OK"
-}
-
-// ── Host identity (mirrors standalone /v1/host) ─────────────────
-
-#[derive(Debug, Serialize)]
-struct HostInfoResponse {
-    hostname: String,
-    hostname_fqdn: String,
-    os: String,
-    arch: String,
-    interfaces: HostInterfaces,
-}
-
-#[derive(Debug, Serialize)]
-struct HostInterfaces {
-    lan: Vec<NetworkInterface>,
-}
-
-#[derive(Debug, Serialize)]
-struct NetworkInterface {
-    name: String,
-    ip: String,
-}
-
-/// Return host identity and LAN-facing network interfaces.
-async fn host_handler() -> Json<HostInfoResponse> {
-    let raw = hostname::get()
-        .ok()
-        .and_then(|os| os.into_string().ok())
-        .unwrap_or_else(|| "unknown".to_string());
-    let fqdn = format!("{}.local", raw);
-
-    let lan: Vec<NetworkInterface> = if_addrs::get_if_addrs()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|iface| {
-            if iface.is_loopback() {
-                return false;
-            }
-            match iface.addr.ip() {
-                std::net::IpAddr::V4(v4) => !v4.is_link_local(),
-                std::net::IpAddr::V6(v6) => {
-                    let segments = v6.segments();
-                    (segments[0] & 0xffc0) != 0xfe80
-                }
-            }
-        })
-        .map(|iface| NetworkInterface {
-            name: iface.name,
-            ip: iface.addr.ip().to_string(),
-        })
-        .collect();
-
-    Json(HostInfoResponse {
-        hostname: raw,
-        hostname_fqdn: fqdn,
-        os: std::env::consts::OS.to_string(),
-        arch: std::env::consts::ARCH.to_string(),
-        interfaces: HostInterfaces { lan },
-    })
 }
 
 /// 503 fallback for disabled capabilities.

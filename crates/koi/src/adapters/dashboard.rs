@@ -1,46 +1,23 @@
-﻿//! Dashboard adapter — system-level operational overview.
+//! Dashboard wiring — connects domain cores to the shared dashboard
+//! infrastructure in `koi_common::dashboard`.
 //!
-//! Assembles a unified JSON snapshot from all domain cores,
-//! serves a single-page HTML dashboard, and provides an SSE
-//! event stream merging all domain broadcast channels.
-//!
-//! This is a **presentation adapter** — it owns zero domain logic.
-//! All data comes from existing `Capability::status()` calls,
-//! domain query methods, and broadcast channels.
+//! This module provides:
+//! - A snapshot closure that queries all domain cores
+//! - An event forwarding loop that maps domain events → `DashboardSseEvent`
+//! - A builder that produces the `DashboardState` consumed by koi-common
 
-use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::Extension;
-use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{Html, Json};
-use serde::Serialize;
-use tokio_stream::Stream;
+use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 use koi_common::capability::Capability;
+use koi_common::dashboard::{DashboardIdentity, DashboardSseEvent, DashboardState};
 
-// ── HTML asset ──────────────────────────────────────────────────────
+// ── Snapshot detail types (private — serialized into opaque JSON) ────
 
-const DASHBOARD_HTML: &str = include_str!("../../assets/dashboard.html");
-
-// ── Snapshot types ──────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub(crate) struct DashboardSnapshot {
-    version: String,
-    platform: String,
-    hostname: String,
-    hostname_fqdn: String,
-    uptime_secs: u64,
-    mode: &'static str,
-    capabilities: Vec<CapabilityCard>,
-    health: Option<HealthDetail>,
-    dns: Option<DnsDetail>,
-    certmesh: Option<CertmeshDetail>,
-    proxy: Option<ProxyDetail>,
-    udp: Option<UdpDetail>,
-}
+use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 struct CapabilityCard {
@@ -107,32 +84,25 @@ struct UdpBindingDetail {
     local_addr: String,
 }
 
-// ── Shared state (injected via Extension) ────────────────────────────
+// ── Domain core references (cloned into the snapshot closure) ────────
 
 #[derive(Clone)]
-pub(crate) struct DashboardState {
-    pub(crate) mdns: Option<Arc<koi_mdns::MdnsCore>>,
-    pub(crate) certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
-    pub(crate) dns: Option<Arc<koi_dns::DnsRuntime>>,
-    pub(crate) health: Option<Arc<koi_health::HealthRuntime>>,
-    pub(crate) proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
-    pub(crate) udp: Option<Arc<koi_udp::UdpRuntime>>,
-    pub(crate) started_at: Instant,
+struct DomainCores {
+    mdns: Option<Arc<koi_mdns::MdnsCore>>,
+    certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
+    dns: Option<Arc<koi_dns::DnsRuntime>>,
+    health: Option<Arc<koi_health::HealthRuntime>>,
+    proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
+    udp: Option<Arc<koi_udp::UdpRuntime>>,
 }
 
-// ── Snapshot builder ─────────────────────────────────────────────────
+// ── Build snapshot (domain-specific) ────────────────────────────────
 
-async fn build_snapshot(state: &DashboardState) -> DashboardSnapshot {
-    let hostname = hostname::get()
-        .ok()
-        .and_then(|os| os.into_string().ok())
-        .unwrap_or_else(|| "unknown".to_string());
-    let hostname_fqdn = format!("{hostname}.local");
-
+async fn build_snapshot_value(cores: &DomainCores) -> serde_json::Value {
     let mut capabilities = Vec::with_capacity(6);
 
     // mDNS
-    if let Some(ref core) = state.mdns {
+    if let Some(ref core) = cores.mdns {
         let s = core.status();
         capabilities.push(CapabilityCard {
             name: s.name,
@@ -150,7 +120,7 @@ async fn build_snapshot(state: &DashboardState) -> DashboardSnapshot {
     }
 
     // Certmesh
-    if let Some(ref core) = state.certmesh {
+    if let Some(ref core) = cores.certmesh {
         let s = core.status();
         capabilities.push(CapabilityCard {
             name: s.name,
@@ -168,7 +138,7 @@ async fn build_snapshot(state: &DashboardState) -> DashboardSnapshot {
     }
 
     // DNS
-    if let Some(ref runtime) = state.dns {
+    if let Some(ref runtime) = cores.dns {
         let running = runtime.status().await.running;
         if running {
             let s = runtime.core().status();
@@ -196,7 +166,7 @@ async fn build_snapshot(state: &DashboardState) -> DashboardSnapshot {
     }
 
     // Health
-    if let Some(ref runtime) = state.health {
+    if let Some(ref runtime) = cores.health {
         let running = runtime.status().await.running;
         if running {
             let s = runtime.core().status();
@@ -224,7 +194,7 @@ async fn build_snapshot(state: &DashboardState) -> DashboardSnapshot {
     }
 
     // Proxy
-    if let Some(ref runtime) = state.proxy {
+    if let Some(ref runtime) = cores.proxy {
         let status = runtime.status().await;
         capabilities.push(CapabilityCard {
             name: "proxy".to_string(),
@@ -246,7 +216,7 @@ async fn build_snapshot(state: &DashboardState) -> DashboardSnapshot {
     }
 
     // UDP
-    if let Some(ref runtime) = state.udp {
+    if let Some(ref runtime) = cores.udp {
         let s = Capability::status(runtime.as_ref());
         capabilities.push(CapabilityCard {
             name: s.name,
@@ -263,8 +233,8 @@ async fn build_snapshot(state: &DashboardState) -> DashboardSnapshot {
         });
     }
 
-    // ── Domain details ──
-    let health = if let Some(ref runtime) = state.health {
+    // Domain details
+    let health = if let Some(ref runtime) = cores.health {
         let snap = runtime.core().snapshot().await;
         Some(HealthDetail {
             machines: snap.machines,
@@ -274,7 +244,7 @@ async fn build_snapshot(state: &DashboardState) -> DashboardSnapshot {
         None
     };
 
-    let dns = if let Some(ref runtime) = state.dns {
+    let dns = if let Some(ref runtime) = cores.dns {
         let core = runtime.core();
         let snap = core.snapshot();
         let cfg = core.config();
@@ -290,7 +260,7 @@ async fn build_snapshot(state: &DashboardState) -> DashboardSnapshot {
         None
     };
 
-    let certmesh = if let Some(ref core) = state.certmesh {
+    let certmesh = if let Some(ref core) = cores.certmesh {
         let status = core.certmesh_status().await;
         Some(CertmeshDetail {
             ca_initialized: status.ca_initialized,
@@ -304,7 +274,7 @@ async fn build_snapshot(state: &DashboardState) -> DashboardSnapshot {
         None
     };
 
-    let proxy = if let Some(ref runtime) = state.proxy {
+    let proxy = if let Some(ref runtime) = cores.proxy {
         let entries = runtime.core().entries().await;
         let status = runtime.status().await;
         Some(ProxyDetail {
@@ -329,7 +299,7 @@ async fn build_snapshot(state: &DashboardState) -> DashboardSnapshot {
         None
     };
 
-    let udp = if let Some(ref runtime) = state.udp {
+    let udp = if let Some(ref runtime) = cores.udp {
         let bindings = runtime.status().await;
         Some(UdpDetail {
             bindings: bindings
@@ -344,159 +314,154 @@ async fn build_snapshot(state: &DashboardState) -> DashboardSnapshot {
         None
     };
 
-    DashboardSnapshot {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        platform: std::env::consts::OS.to_string(),
-        hostname,
-        hostname_fqdn,
-        uptime_secs: state.started_at.elapsed().as_secs(),
-        mode: "daemon",
-        capabilities,
-        health,
-        dns,
-        certmesh,
-        proxy,
-        udp,
-    }
+    serde_json::json!({
+        "capabilities": capabilities,
+        "health": health,
+        "dns": dns,
+        "certmesh": certmesh,
+        "proxy": proxy,
+        "udp": udp,
+    })
 }
 
-// ── SSE stream builder ───────────────────────────────────────────────
+// ── Event forwarding ────────────────────────────────────────────────
 
-fn dashboard_event_stream(
-    state: DashboardState,
-) -> impl Stream<Item = Result<Event, Infallible>> {
-    async_stream::stream! {
-        // Subscribe to all available domain channels
-        let mut mdns_rx = state.mdns.as_ref().map(|c| c.subscribe());
-        let mut health_rx = state.health.as_ref().map(|r| r.core().subscribe());
-        let mut dns_rx = state.dns.as_ref().map(|r| r.core().subscribe());
-        let mut certmesh_rx = state.certmesh.as_ref().map(|c| c.subscribe());
-        let mut proxy_rx = state.proxy.as_ref().map(|r| r.core().subscribe());
-
-        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
-        heartbeat.tick().await; // skip immediate tick
+/// Spawn a task that subscribes to all domain broadcast channels and
+/// forwards events into the unified `DashboardSseEvent` channel.
+pub(crate) fn spawn_event_forwarder(
+    mdns: Option<Arc<koi_mdns::MdnsCore>>,
+    certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
+    dns: Option<Arc<koi_dns::DnsRuntime>>,
+    health: Option<Arc<koi_health::HealthRuntime>>,
+    proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
+    event_tx: broadcast::Sender<DashboardSseEvent>,
+    cancel: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut mdns_rx = mdns.as_ref().map(|c| c.subscribe());
+        let mut health_rx = health.as_ref().map(|r| r.core().subscribe());
+        let mut dns_rx = dns.as_ref().map(|r| r.core().subscribe());
+        let mut certmesh_rx = certmesh.as_ref().map(|c| c.subscribe());
+        let mut proxy_rx = proxy.as_ref().map(|r| r.core().subscribe());
 
         loop {
-            let event = tokio::select! {
+            let sse_event: Option<DashboardSseEvent> = tokio::select! {
+                _ = cancel.cancelled() => break,
+
                 Some(Ok(ev)) = async { match mdns_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
+                    let id = uuid::Uuid::now_v7().to_string();
                     match ev {
-                        koi_mdns::MdnsEvent::Found(record) => {
-                            Event::default()
-                                .event("mdns.found")
-                                .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(record).ok()
-                        }
-                        koi_mdns::MdnsEvent::Resolved(record) => {
-                            Event::default()
-                                .event("mdns.resolved")
-                                .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(record).ok()
-                        }
-                        koi_mdns::MdnsEvent::Removed { name, service_type } => {
-                            Event::default()
-                                .event("mdns.removed")
-                                .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(serde_json::json!({ "name": name, "service_type": service_type })).ok()
-                        }
+                        koi_mdns::MdnsEvent::Found(record) => Some(DashboardSseEvent {
+                            event_type: "mdns.found".to_string(), id,
+                            data: serde_json::to_value(record).unwrap_or_default(),
+                        }),
+                        koi_mdns::MdnsEvent::Resolved(record) => Some(DashboardSseEvent {
+                            event_type: "mdns.resolved".to_string(), id,
+                            data: serde_json::to_value(record).unwrap_or_default(),
+                        }),
+                        koi_mdns::MdnsEvent::Removed { name, service_type } => Some(DashboardSseEvent {
+                            event_type: "mdns.removed".to_string(), id,
+                            data: serde_json::json!({ "name": name, "service_type": service_type }),
+                        }),
                     }
                 },
+
                 Some(Ok(ev)) = async { match health_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
+                    let id = uuid::Uuid::now_v7().to_string();
                     match ev {
-                        koi_health::HealthEvent::StatusChanged { name, status } => {
-                            Event::default()
-                                .event("health.changed")
-                                .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(serde_json::json!({ "name": name, "status": status })).ok()
-                        }
+                        koi_health::HealthEvent::StatusChanged { name, status } => Some(DashboardSseEvent {
+                            event_type: "health.changed".to_string(), id,
+                            data: serde_json::json!({ "name": name, "status": status }),
+                        }),
                     }
                 },
+
                 Some(Ok(ev)) = async { match dns_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
+                    let id = uuid::Uuid::now_v7().to_string();
                     match ev {
-                        koi_dns::DnsEvent::EntryUpdated { name, ip } => {
-                            Event::default()
-                                .event("dns.updated")
-                                .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(serde_json::json!({ "name": name, "ip": ip })).ok()
-                        }
-                        koi_dns::DnsEvent::EntryRemoved { name } => {
-                            Event::default()
-                                .event("dns.removed")
-                                .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(serde_json::json!({ "name": name })).ok()
-                        }
+                        koi_dns::DnsEvent::EntryUpdated { name, ip } => Some(DashboardSseEvent {
+                            event_type: "dns.updated".to_string(), id,
+                            data: serde_json::json!({ "name": name, "ip": ip }),
+                        }),
+                        koi_dns::DnsEvent::EntryRemoved { name } => Some(DashboardSseEvent {
+                            event_type: "dns.removed".to_string(), id,
+                            data: serde_json::json!({ "name": name }),
+                        }),
                     }
                 },
+
                 Some(Ok(ev)) = async { match certmesh_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
+                    let id = uuid::Uuid::now_v7().to_string();
                     match ev {
-                        koi_certmesh::CertmeshEvent::MemberJoined { hostname, fingerprint } => {
-                            Event::default()
-                                .event("certmesh.joined")
-                                .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(serde_json::json!({ "hostname": hostname, "fingerprint": fingerprint })).ok()
-                        }
-                        koi_certmesh::CertmeshEvent::MemberRevoked { hostname } => {
-                            Event::default()
-                                .event("certmesh.revoked")
-                                .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(serde_json::json!({ "hostname": hostname })).ok()
-                        }
-                        koi_certmesh::CertmeshEvent::Destroyed => {
-                            Event::default()
-                                .event("certmesh.destroyed")
-                                .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(serde_json::json!({})).ok()
-                        }
+                        koi_certmesh::CertmeshEvent::MemberJoined { hostname, fingerprint } => Some(DashboardSseEvent {
+                            event_type: "certmesh.joined".to_string(), id,
+                            data: serde_json::json!({ "hostname": hostname, "fingerprint": fingerprint }),
+                        }),
+                        koi_certmesh::CertmeshEvent::MemberRevoked { hostname } => Some(DashboardSseEvent {
+                            event_type: "certmesh.revoked".to_string(), id,
+                            data: serde_json::json!({ "hostname": hostname }),
+                        }),
+                        koi_certmesh::CertmeshEvent::Destroyed => Some(DashboardSseEvent {
+                            event_type: "certmesh.destroyed".to_string(), id,
+                            data: serde_json::json!({}),
+                        }),
                     }
                 },
+
                 Some(Ok(ev)) = async { match proxy_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
+                    let id = uuid::Uuid::now_v7().to_string();
                     match ev {
-                        koi_proxy::ProxyEvent::EntryUpdated { entry } => {
-                            Event::default()
-                                .event("proxy.updated")
-                                .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(entry).ok()
-                        }
-                        koi_proxy::ProxyEvent::EntryRemoved { name } => {
-                            Event::default()
-                                .event("proxy.removed")
-                                .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(serde_json::json!({ "name": name })).ok()
-                        }
+                        koi_proxy::ProxyEvent::EntryUpdated { entry } => Some(DashboardSseEvent {
+                            event_type: "proxy.updated".to_string(), id,
+                            data: serde_json::to_value(entry).unwrap_or_default(),
+                        }),
+                        koi_proxy::ProxyEvent::EntryRemoved { name } => Some(DashboardSseEvent {
+                            event_type: "proxy.removed".to_string(), id,
+                            data: serde_json::json!({ "name": name }),
+                        }),
                     }
-                },
-                _ = heartbeat.tick() => {
-                    Event::default()
-                        .event("heartbeat")
-                        .json_data(serde_json::json!({
-                            "uptime_secs": state.started_at.elapsed().as_secs()
-                        })).ok()
                 },
             };
 
-            if let Some(ev) = event {
-                yield Ok(ev);
+            if let Some(ev) = sse_event {
+                let _ = event_tx.send(ev);
             }
         }
+    })
+}
+
+// ── Build dashboard state ───────────────────────────────────────────
+
+/// Construct the `DashboardState` for the daemon.
+pub(crate) fn build_dashboard_state(
+    cores: &crate::DaemonCores,
+    started_at: Instant,
+    mode: &'static str,
+) -> DashboardState {
+    let domain = DomainCores {
+        mdns: cores.mdns.clone(),
+        certmesh: cores.certmesh.clone(),
+        dns: cores.dns.clone(),
+        health: cores.health.clone(),
+        proxy: cores.proxy.clone(),
+        udp: cores.udp.clone(),
+    };
+
+    let snapshot_fn: koi_common::dashboard::SnapshotFn = Arc::new(move || {
+        let d = domain.clone();
+        Box::pin(async move { build_snapshot_value(&d).await })
+    });
+
+    let (event_tx, _) = broadcast::channel(256);
+
+    DashboardState {
+        identity: DashboardIdentity {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            platform: std::env::consts::OS.to_string(),
+        },
+        mode,
+        snapshot_fn,
+        event_tx,
+        started_at,
     }
-}
-
-// ── Handlers ─────────────────────────────────────────────────────────
-
-/// `GET /` — Serve the dashboard SPA.
-pub(crate) async fn get_dashboard() -> Html<&'static str> {
-    Html(DASHBOARD_HTML)
-}
-
-/// `GET /v1/dashboard/snapshot` — System-level JSON snapshot.
-pub(crate) async fn get_snapshot(
-    Extension(state): Extension<DashboardState>,
-) -> Json<DashboardSnapshot> {
-    Json(build_snapshot(&state).await)
-}
-
-/// `GET /v1/dashboard/events` — Unified SSE event stream.
-pub(crate) async fn get_events(
-    Extension(state): Extension<DashboardState>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    Sse::new(dashboard_event_stream(state)).keep_alive(KeepAlive::default())
 }

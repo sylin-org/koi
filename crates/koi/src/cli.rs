@@ -87,6 +87,10 @@ pub struct Cli {
     #[arg(long, env = "KOI_DNS_PUBLIC")]
     pub dns_public: bool,
 
+    /// Announce the HTTP server on the local network via mDNS (_http._tcp)
+    #[arg(long, env = "KOI_ANNOUNCE_HTTP")]
+    pub announce_http: bool,
+
     /// Output JSON instead of human-readable text
     #[arg(long, global = true)]
     pub json: bool,
@@ -482,6 +486,7 @@ pub struct Config {
     pub no_health: bool,
     pub no_proxy: bool,
     pub no_udp: bool,
+    pub announce_http: bool,
     pub dns_port: u16,
     pub dns_zone: String,
     pub dns_public: bool,
@@ -501,6 +506,7 @@ impl Config {
             no_health: cli.no_health,
             no_proxy: cli.no_proxy,
             no_udp: cli.no_udp,
+            announce_http: cli.announce_http,
             dns_port: cli.dns_port,
             dns_zone: cli.dns_zone.clone(),
             dns_public: cli.dns_public,
@@ -591,6 +597,11 @@ impl Config {
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let announce_http = std::env::var("KOI_ANNOUNCE_HTTP")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
         let dns_port = std::env::var("KOI_DNS_PORT")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -614,6 +625,7 @@ impl Config {
             no_health,
             no_proxy,
             no_udp,
+            announce_http,
             dns_port,
             dns_zone,
             dns_public,
@@ -634,6 +646,7 @@ impl Default for Config {
             no_health: false,
             no_proxy: false,
             no_udp: false,
+            announce_http: false,
             dns_port: 53,
             dns_zone: "lan".to_string(),
             dns_public: false,

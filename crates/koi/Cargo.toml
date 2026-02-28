@@ -46,6 +46,7 @@ url.workspace = true
 command-surface = { path = "../command-surface", version = "0.2", features = ["render"] }
 utoipa.workspace = true
 utoipa-scalar = { workspace = true }
+netdev.workspace = true
 once_cell.workspace = true
 open.workspace = true
 rand.workspace = true

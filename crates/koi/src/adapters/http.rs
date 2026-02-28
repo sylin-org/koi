@@ -17,8 +17,8 @@ use utoipa::OpenApi;
 use utoipa::ToSchema;
 use utoipa_scalar::{Scalar, Servable};
 
-use crate::adapters::dashboard::DashboardState;
-use crate::adapters::mdns_browser;
+use koi_common::browser::BrowserState;
+use koi_common::dashboard::DashboardState;
 use crate::DaemonCores;
 
 // ── System-level route path constants ───────────────────────────────
@@ -52,7 +52,8 @@ pub async fn start(
     port: u16,
     cancel: CancellationToken,
     started_at: std::time::Instant,
-    browser_cache: Option<mdns_browser::BrowserCache>,
+    dashboard_state: DashboardState,
+    browser_state: Option<BrowserState>,
 ) -> anyhow::Result<()> {
     let app_state = AppState {
         mdns: cores.mdns.clone(),
@@ -66,34 +67,20 @@ pub async fn start(
     };
 
     // ── Dashboard (always mounted) ──
-    let dashboard_state = DashboardState {
-        mdns: cores.mdns.clone(),
-        certmesh: cores.certmesh.clone(),
-        dns: cores.dns.clone(),
-        health: cores.health.clone(),
-        proxy: cores.proxy.clone(),
-        udp: cores.udp.clone(),
-        started_at,
-    };
-
     let mut app = Router::new()
         .route(paths::HEALTHZ, get(health))
         .route(paths::UNIFIED_STATUS, get(unified_status_handler))
         .route(paths::SHUTDOWN, post(shutdown_handler))
         .route(paths::HOST, get(host_handler))
-        .route("/", get(super::dashboard::get_dashboard))
-        .route("/v1/dashboard/snapshot", get(super::dashboard::get_snapshot))
-        .route("/v1/dashboard/events", get(super::dashboard::get_events));
+        .route("/", get(koi_common::dashboard::get_dashboard))
+        .route("/v1/dashboard/snapshot", get(koi_common::dashboard::get_snapshot))
+        .route("/v1/dashboard/events", get(koi_common::dashboard::get_events));
 
     // ── mDNS browser (conditional on mDNS being enabled) ──
-    if let (Some(ref mdns_core), Some(cache)) = (&cores.mdns, browser_cache) {
-        let browser_state = mdns_browser::BrowserState {
-            mdns_core: mdns_core.clone(),
-            cache,
-        };
+    if let Some(bs) = browser_state {
         app = app
-            .route("/mdns-browser", get(super::mdns_browser::get_page))
-            .nest("/v1/mdns/browser", mdns_browser::routes(browser_state));
+            .route("/mdns-browser", get(koi_common::browser::get_page))
+            .nest("/v1/mdns/browser", koi_common::browser::routes(bs));
     } else {
         app = app.nest(
             "/v1/mdns/browser",
@@ -399,7 +386,13 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
 /// Return host identity and LAN-facing network interfaces.
 ///
 /// Provides the machine's hostname, mDNS FQDN, OS/arch, and a list of
-/// non-loopback, non-link-local network interfaces with their IPs.
+/// LAN-facing network interfaces with their IPs.
+///
+/// The `lan` array contains only the interface that holds the default
+/// route — the adapter actually connected to the LAN. This is
+/// deterministic (no heuristics or name matching) and works correctly
+/// on Windows with Hyper-V/WSL/Docker virtual switches, which lack a
+/// default gateway and are therefore excluded.
 async fn host_handler() -> Json<HostInfoResponse> {
     let raw = hostname::get()
         .ok()
@@ -407,27 +400,43 @@ async fn host_handler() -> Json<HostInfoResponse> {
         .unwrap_or_else(|| "unknown".to_string());
     let fqdn = format!("{}.local", raw);
 
-    let lan: Vec<NetworkInterface> = if_addrs::get_if_addrs()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|iface| {
-            if iface.is_loopback() {
-                return false;
+    // Use netdev to find the interface with the default route.
+    // This is the only deterministic way to identify the real LAN adapter
+    // on Windows where virtual switches (vEthernet) report the same
+    // IfType as physical Ethernet.
+    let lan: Vec<NetworkInterface> = match netdev::get_default_interface() {
+        Ok(default_iface) => {
+            let mut interfaces = Vec::new();
+            for addr in &default_iface.ipv4 {
+                interfaces.push(NetworkInterface {
+                    name: default_iface.name.clone(),
+                    ip: addr.addr().to_string(),
+                });
             }
-            match iface.addr.ip() {
-                std::net::IpAddr::V4(v4) => !v4.is_link_local(),
-                std::net::IpAddr::V6(v6) => {
-                    // Exclude link-local (fe80::/10)
-                    let segments = v6.segments();
-                    (segments[0] & 0xffc0) != 0xfe80
-                }
-            }
-        })
-        .map(|iface| NetworkInterface {
-            name: iface.name,
-            ip: iface.addr.ip().to_string(),
-        })
-        .collect();
+            interfaces
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "netdev default interface detection failed, falling back to if_addrs");
+            // Fallback: enumerate all non-loopback, non-link-local IPv4 interfaces
+            if_addrs::get_if_addrs()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|iface| {
+                    if iface.is_loopback() {
+                        return false;
+                    }
+                    match iface.addr.ip() {
+                        std::net::IpAddr::V4(v4) => !v4.is_link_local(),
+                        std::net::IpAddr::V6(_) => false, // IPv4 only in fallback
+                    }
+                })
+                .map(|iface| NetworkInterface {
+                    name: iface.name,
+                    ip: iface.addr.ip().to_string(),
+                })
+                .collect()
+        }
+    };
 
     Json(HostInfoResponse {
         hostname: raw,
@@ -511,5 +520,34 @@ mod tests {
         let req = Request::post("/join").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn host_handler_returns_default_interface_only() {
+        let Json(resp) = host_handler().await;
+        assert!(!resp.hostname.is_empty(), "hostname should not be empty");
+        assert!(
+            resp.hostname_fqdn.ends_with(".local"),
+            "FQDN should end with .local: {}",
+            resp.hostname_fqdn
+        );
+        // The LAN list should contain exactly the default-route interface
+        // (not virtual switches, Docker bridges, etc.)
+        assert!(
+            !resp.interfaces.lan.is_empty(),
+            "lan interfaces should not be empty on a machine with network"
+        );
+        for iface in &resp.interfaces.lan {
+            let ip: std::net::IpAddr = iface.ip.parse().expect("should be a valid IP");
+            assert!(!ip.is_loopback(), "LAN should not contain loopback");
+        }
+        // On a machine with a single physical NIC, expect exactly 1 entry
+        println!(
+            "host_handler returned {} LAN interface(s):",
+            resp.interfaces.lan.len()
+        );
+        for iface in &resp.interfaces.lan {
+            println!("  {} -> {}", iface.name, iface.ip);
+        }
     }
 }

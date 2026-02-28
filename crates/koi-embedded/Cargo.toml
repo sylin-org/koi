@@ -32,6 +32,7 @@ serde_json.workspace = true
 futures-util.workspace = true
 hostname.workspace = true
 if-addrs.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 base64.workspace = true

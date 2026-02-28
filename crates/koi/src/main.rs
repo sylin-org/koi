@@ -562,16 +562,35 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         udp: udp_runtime.clone(),
     };
 
+    // ── Dashboard state ──
+    let dashboard_state = adapters::dashboard::build_dashboard_state(&cores, started_at, "daemon");
+    tasks.push(adapters::dashboard::spawn_event_forwarder(
+        cores.mdns.clone(),
+        cores.certmesh.clone(),
+        cores.dns.clone(),
+        cores.health.clone(),
+        cores.proxy.clone(),
+        dashboard_state.event_tx.clone(),
+        cancel.clone(),
+    ));
+
     // ── mDNS browser worker (conditional on mDNS being enabled) ──
-    let browser_cache = if let Some(ref mdns) = mdns_core {
-        let cache = adapters::mdns_browser::BrowserCache::new();
-        let c = mdns.clone();
+    let browser_state = if let Some(ref mdns) = mdns_core {
+        let adapter = adapters::mdns_browser::MdnsBrowseAdapter::new(
+            mdns.clone(),
+            cancel.clone(),
+        );
+        let cache = koi_common::browser::BrowserCache::new();
+        let source = adapter.clone() as std::sync::Arc<dyn koi_common::browser::BrowseSource>;
         let bc = cache.clone();
         let token = cancel.clone();
         tasks.push(tokio::spawn(async move {
-            adapters::mdns_browser::worker(c, bc, token).await;
+            koi_common::browser::worker(source, bc, token).await;
         }));
-        Some(cache)
+        Some(koi_common::browser::BrowserState {
+            source: adapter,
+            cache,
+        })
     } else {
         None
     };
@@ -581,9 +600,10 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         let c = cores.clone();
         let port = config.http_port;
         let token = cancel.clone();
-        let bc = browser_cache.clone();
+        let ds = dashboard_state.clone();
+        let bs = browser_state.clone();
         tasks.push(tokio::spawn(async move {
-            if let Err(e) = adapters::http::start(c, port, token, started_at, bc).await {
+            if let Err(e) = adapters::http::start(c, port, token, started_at, ds, bs).await {
                 tracing::error!(error = %e, "HTTP adapter failed");
             }
         }));
@@ -602,6 +622,50 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             }));
         } else {
             tracing::info!("IPC adapter: skipped (mDNS disabled)");
+        }
+    }
+
+    // ── HTTP mDNS announcement (opt-in) ──
+    let mut http_announce_id: Option<String> = None;
+    if config.announce_http && !config.no_http {
+        if let Some(ref mdns) = mdns_core {
+            let hostname = hostname::get()
+                .ok()
+                .and_then(|os| os.into_string().ok())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let mut txt = std::collections::HashMap::new();
+            txt.insert("path".to_string(), "/".to_string());
+            txt.insert(
+                "version".to_string(),
+                env!("CARGO_PKG_VERSION").to_string(),
+            );
+            txt.insert("api".to_string(), "v1".to_string());
+            txt.insert("dashboard".to_string(), "true".to_string());
+
+            let payload = koi_mdns::protocol::RegisterPayload {
+                name: format!("Koi ({hostname})"),
+                service_type: "_http._tcp".to_string(),
+                port: config.http_port,
+                ip: None,
+                lease_secs: None,
+                txt,
+            };
+            match mdns.register(payload) {
+                Ok(result) => {
+                    tracing::info!(
+                        id = %result.id,
+                        port = config.http_port,
+                        "HTTP server announced via mDNS"
+                    );
+                    http_announce_id = Some(result.id);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to announce HTTP server via mDNS");
+                }
+            }
+        } else {
+            tracing::debug!("--announce-http set but mDNS is disabled — skipping");
         }
     }
 
@@ -633,6 +697,13 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         tokio::time::sleep(SHUTDOWN_DRAIN).await;
         for task in tasks {
             let _ = task.await;
+        }
+        if let Some(ref id) = http_announce_id {
+            if let Some(ref core) = mdns_core {
+                if let Err(e) = core.unregister(id) {
+                    tracing::warn!(error = %e, "Failed to withdraw HTTP mDNS announcement");
+                }
+            }
         }
         if let Some(ref core) = mdns_core {
             if let Err(e) = core.shutdown().await {

@@ -37,6 +37,7 @@ pub struct KoiHandle {
     events: broadcast::Sender<KoiEvent>,
     cancel: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
+    http_announce_id: Option<String>,
 }
 
 impl KoiHandle {
@@ -51,6 +52,7 @@ impl KoiHandle {
         events: broadcast::Sender<KoiEvent>,
         cancel: CancellationToken,
         tasks: Vec<JoinHandle<()>>,
+        http_announce_id: Option<String>,
     ) -> Self {
         Self {
             backend: HandleBackend::Embedded {
@@ -64,6 +66,7 @@ impl KoiHandle {
             events,
             cancel,
             tasks,
+            http_announce_id,
         }
     }
 
@@ -78,6 +81,7 @@ impl KoiHandle {
             events,
             cancel,
             tasks,
+            http_announce_id: None,
         }
     }
 
@@ -187,6 +191,13 @@ impl KoiHandle {
             }
             if let Some(runtime) = dns {
                 let _ = runtime.stop().await;
+            }
+            if let Some(id) = &self.http_announce_id {
+                if let Some(core) = mdns {
+                    if let Err(e) = core.unregister(id) {
+                        tracing::warn!(error = %e, "Failed to withdraw HTTP mDNS announcement");
+                    }
+                }
             }
             if let Some(core) = mdns {
                 core.shutdown().await?;

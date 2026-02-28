@@ -2,6 +2,7 @@ mod config;
 mod events;
 mod handle;
 pub(crate) mod http;
+mod mdns_browse_adapter;
 
 use std::sync::Arc;
 
@@ -137,6 +138,21 @@ impl Builder {
 
     pub fn http_port(mut self, port: u16) -> Self {
         self.config.http_port = port;
+        self
+    }
+
+    pub fn dashboard(mut self, enabled: bool) -> Self {
+        self.config.dashboard_enabled = enabled;
+        self
+    }
+
+    pub fn mdns_browser(mut self, enabled: bool) -> Self {
+        self.config.mdns_browser_enabled = enabled;
+        self
+    }
+
+    pub fn announce_http(mut self, enabled: bool) -> Self {
+        self.config.announce_http = enabled;
         self
     }
 
@@ -301,6 +317,161 @@ impl KoiEmbedded {
             None
         };
 
+        // Build dashboard state if enabled
+        let dashboard_state = if self.config.dashboard_enabled && self.config.http_enabled {
+            let started_at = std::time::Instant::now();
+            let snap_mdns = mdns.clone();
+            let snap_certmesh = certmesh.clone();
+            let snap_dns = dns.clone();
+            let snap_health = health.clone();
+            let snap_proxy = proxy.clone();
+            let snap_udp = udp.clone();
+
+            let snapshot_fn: koi_common::dashboard::SnapshotFn = Arc::new(move || {
+                let m = snap_mdns.clone();
+                let cm = snap_certmesh.clone();
+                let d = snap_dns.clone();
+                let h = snap_health.clone();
+                let p = snap_proxy.clone();
+                let u = snap_udp.clone();
+                Box::pin(async move {
+                    build_embedded_snapshot(m, cm, d, h, p, u).await
+                })
+            });
+
+            let (dash_event_tx, _) = broadcast::channel(256);
+            let ds = koi_common::dashboard::DashboardState {
+                identity: koi_common::dashboard::DashboardIdentity {
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    platform: std::env::consts::OS.to_string(),
+                },
+                mode: "embedded",
+                snapshot_fn,
+                event_tx: dash_event_tx.clone(),
+                started_at,
+            };
+
+            // Spawn event forwarder for dashboard SSE
+            {
+                let mut mdns_rx = mdns.as_ref().map(|c| c.subscribe());
+                let mut health_rx = health.as_ref().map(|r| r.core().subscribe());
+                let mut dns_rx = dns.as_ref().map(|r| r.core().subscribe());
+                let mut certmesh_rx = certmesh.as_ref().map(|c| c.subscribe());
+                let mut proxy_rx = proxy.as_ref().map(|r| r.core().subscribe());
+                let tx = dash_event_tx;
+                let token = cancel.clone();
+                tasks.push(tokio::spawn(async move {
+                    loop {
+                        let sse_event: Option<koi_common::dashboard::DashboardSseEvent> = tokio::select! {
+                            _ = token.cancelled() => break,
+                            Some(Ok(ev)) = async { match mdns_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
+                                let id = uuid::Uuid::now_v7().to_string();
+                                match ev {
+                                    koi_mdns::MdnsEvent::Found(record) => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "mdns.found".to_string(), id,
+                                        data: serde_json::to_value(record).unwrap_or_default(),
+                                    }),
+                                    koi_mdns::MdnsEvent::Resolved(record) => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "mdns.resolved".to_string(), id,
+                                        data: serde_json::to_value(record).unwrap_or_default(),
+                                    }),
+                                    koi_mdns::MdnsEvent::Removed { name, service_type } => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "mdns.removed".to_string(), id,
+                                        data: serde_json::json!({ "name": name, "service_type": service_type }),
+                                    }),
+                                }
+                            },
+                            Some(Ok(ev)) = async { match health_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
+                                let id = uuid::Uuid::now_v7().to_string();
+                                match ev {
+                                    koi_health::HealthEvent::StatusChanged { name, status } => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "health.changed".to_string(), id,
+                                        data: serde_json::json!({ "name": name, "status": status }),
+                                    }),
+                                }
+                            },
+                            Some(Ok(ev)) = async { match dns_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
+                                let id = uuid::Uuid::now_v7().to_string();
+                                match ev {
+                                    koi_dns::DnsEvent::EntryUpdated { name, ip } => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "dns.updated".to_string(), id,
+                                        data: serde_json::json!({ "name": name, "ip": ip }),
+                                    }),
+                                    koi_dns::DnsEvent::EntryRemoved { name } => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "dns.removed".to_string(), id,
+                                        data: serde_json::json!({ "name": name }),
+                                    }),
+                                }
+                            },
+                            Some(Ok(ev)) = async { match certmesh_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
+                                let id = uuid::Uuid::now_v7().to_string();
+                                match ev {
+                                    koi_certmesh::CertmeshEvent::MemberJoined { hostname, fingerprint } => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "certmesh.joined".to_string(), id,
+                                        data: serde_json::json!({ "hostname": hostname, "fingerprint": fingerprint }),
+                                    }),
+                                    koi_certmesh::CertmeshEvent::MemberRevoked { hostname } => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "certmesh.revoked".to_string(), id,
+                                        data: serde_json::json!({ "hostname": hostname }),
+                                    }),
+                                    koi_certmesh::CertmeshEvent::Destroyed => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "certmesh.destroyed".to_string(), id,
+                                        data: serde_json::json!({}),
+                                    }),
+                                }
+                            },
+                            Some(Ok(ev)) = async { match proxy_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
+                                let id = uuid::Uuid::now_v7().to_string();
+                                match ev {
+                                    koi_proxy::ProxyEvent::EntryUpdated { entry } => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "proxy.updated".to_string(), id,
+                                        data: serde_json::to_value(entry).unwrap_or_default(),
+                                    }),
+                                    koi_proxy::ProxyEvent::EntryRemoved { name } => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "proxy.removed".to_string(), id,
+                                        data: serde_json::json!({ "name": name }),
+                                    }),
+                                }
+                            },
+                        };
+                        if let Some(ev) = sse_event {
+                            let _ = tx.send(ev);
+                        }
+                    }
+                }));
+            }
+
+            Some(ds)
+        } else {
+            None
+        };
+
+        // Build browser state if enabled (requires mDNS)
+        let browser_state = if self.config.mdns_browser_enabled && self.config.http_enabled {
+            if let Some(ref mdns_core) = mdns {
+                let adapter = mdns_browse_adapter::MdnsBrowseAdapter::new(
+                    mdns_core.clone(),
+                    cancel.clone(),
+                );
+                let cache = koi_common::browser::BrowserCache::new();
+                let source = adapter.clone() as Arc<dyn koi_common::browser::BrowseSource>;
+                let bc = cache.clone();
+                let token = cancel.clone();
+                tasks.push(tokio::spawn(async move {
+                    koi_common::browser::worker(source, bc, token).await;
+                }));
+                Some(koi_common::browser::BrowserState {
+                    source: adapter,
+                    cache,
+                })
+            } else {
+                tracing::warn!("mdns_browser enabled but mDNS is disabled — skipping browser");
+                None
+            }
+        } else {
+            None
+        };
+
         // Spawn embedded HTTP adapter if enabled
         if self.config.http_enabled {
             let http_port = self.config.http_port;
@@ -320,11 +491,65 @@ impl KoiEmbedded {
                     http_certmesh,
                     http_proxy,
                     http_udp,
+                    dashboard_state,
+                    browser_state,
                     http_cancel,
                 )
                 .await;
             }));
         }
+
+        // ── HTTP mDNS announcement (opt-in) ──
+        let http_announce_id = if self.config.announce_http
+            && self.config.http_enabled
+            && self.config.mdns_enabled
+        {
+            if let Some(ref mdns_core) = mdns {
+                let hostname = hostname::get()
+                    .ok()
+                    .and_then(|os| os.into_string().ok())
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                let mut txt = std::collections::HashMap::new();
+                txt.insert("path".to_string(), "/".to_string());
+                txt.insert(
+                    "version".to_string(),
+                    env!("CARGO_PKG_VERSION").to_string(),
+                );
+                txt.insert("api".to_string(), "v1".to_string());
+                txt.insert(
+                    "dashboard".to_string(),
+                    self.config.dashboard_enabled.to_string(),
+                );
+
+                let payload = koi_mdns::protocol::RegisterPayload {
+                    name: format!("Koi ({hostname})"),
+                    service_type: "_http._tcp".to_string(),
+                    port: self.config.http_port,
+                    ip: None,
+                    lease_secs: None,
+                    txt,
+                };
+                match mdns_core.register(payload) {
+                    Ok(result) => {
+                        tracing::info!(
+                            id = %result.id,
+                            port = self.config.http_port,
+                            "HTTP server announced via mDNS"
+                        );
+                        Some(result.id)
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to announce HTTP server via mDNS");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         if let Some(core) = &mdns {
             let mut rx = core.subscribe();
@@ -433,6 +658,7 @@ impl KoiEmbedded {
 
         Ok(KoiHandle::new_embedded(
             mdns, dns, health, certmesh, proxy, udp, event_tx, cancel, tasks,
+            http_announce_id,
         ))
     }
 }
@@ -560,4 +786,101 @@ fn emit_event(
 
 pub(crate) fn map_join_error(err: tokio::task::JoinError) -> KoiError {
     KoiError::Io(std::io::Error::other(err.to_string()))
+}
+
+/// Build a dashboard snapshot from the embedded domain cores.
+async fn build_embedded_snapshot(
+    mdns: Option<Arc<koi_mdns::MdnsCore>>,
+    certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
+    dns: Option<Arc<koi_dns::DnsRuntime>>,
+    health: Option<Arc<koi_health::HealthRuntime>>,
+    proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
+    udp: Option<Arc<koi_udp::UdpRuntime>>,
+) -> serde_json::Value {
+    use koi_common::capability::Capability;
+
+    let mut capabilities = Vec::new();
+
+    if let Some(ref core) = mdns {
+        let s = core.status();
+        capabilities.push(serde_json::json!({
+            "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
+        }));
+    } else {
+        capabilities.push(serde_json::json!({
+            "name": "mdns", "enabled": false, "healthy": false, "summary": "disabled",
+        }));
+    }
+
+    if let Some(ref core) = certmesh {
+        let s = core.status();
+        capabilities.push(serde_json::json!({
+            "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
+        }));
+    } else {
+        capabilities.push(serde_json::json!({
+            "name": "certmesh", "enabled": false, "healthy": false, "summary": "disabled",
+        }));
+    }
+
+    if let Some(ref runtime) = dns {
+        let running = runtime.status().await.running;
+        if running {
+            let s = runtime.core().status();
+            capabilities.push(serde_json::json!({
+                "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
+            }));
+        } else {
+            capabilities.push(serde_json::json!({
+                "name": "dns", "enabled": true, "healthy": false, "summary": "stopped",
+            }));
+        }
+    } else {
+        capabilities.push(serde_json::json!({
+            "name": "dns", "enabled": false, "healthy": false, "summary": "disabled",
+        }));
+    }
+
+    if let Some(ref runtime) = health {
+        let running = runtime.status().await.running;
+        if running {
+            let s = runtime.core().status();
+            capabilities.push(serde_json::json!({
+                "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
+            }));
+        } else {
+            capabilities.push(serde_json::json!({
+                "name": "health", "enabled": true, "healthy": false, "summary": "stopped",
+            }));
+        }
+    } else {
+        capabilities.push(serde_json::json!({
+            "name": "health", "enabled": false, "healthy": false, "summary": "disabled",
+        }));
+    }
+
+    if let Some(ref runtime) = proxy {
+        let status = runtime.status().await;
+        capabilities.push(serde_json::json!({
+            "name": "proxy", "enabled": true, "healthy": true,
+            "summary": if status.is_empty() { "no listeners".to_string() } else { format!("{} listeners", status.len()) },
+        }));
+    } else {
+        capabilities.push(serde_json::json!({
+            "name": "proxy", "enabled": false, "healthy": false, "summary": "disabled",
+        }));
+    }
+
+    if let Some(ref runtime) = udp {
+        let s = Capability::status(runtime.as_ref());
+        capabilities.push(serde_json::json!({
+            "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
+        }));
+    } else {
+        capabilities.push(serde_json::json!({
+            "name": "udp", "enabled": false, "healthy": false, "summary": "disabled",
+        }));
+    }
+
+    serde_json::json!({ "capabilities": capabilities })
 }

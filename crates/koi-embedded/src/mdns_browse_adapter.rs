@@ -1,8 +1,5 @@
-//! mDNS browser wiring — adapts `MdnsCore` to the shared browser
-//! infrastructure in `koi_common::browser`.
-//!
-//! Provides `MdnsBrowseAdapter`, an implementation of `BrowseSource`
-//! that wraps `MdnsCore` and converts `MdnsEvent` → `BrowserEvent`.
+//! Adapts `MdnsCore` to `koi_common::browser::BrowseSource` for
+//! the embedded runtime.
 
 use std::sync::Arc;
 
@@ -11,18 +8,12 @@ use tokio::sync::{broadcast, mpsc};
 use koi_common::browser::{BrowserEvent, BrowseError, BrowseHandle, BrowseSource};
 use koi_mdns::{MdnsCore, MdnsEvent};
 
-/// Adapts `MdnsCore` to the `BrowseSource` trait.
 pub(crate) struct MdnsBrowseAdapter {
     core: Arc<MdnsCore>,
-    /// Relay sender for the global subscribe channel.
     event_tx: broadcast::Sender<BrowserEvent>,
 }
 
 impl MdnsBrowseAdapter {
-    /// Create a new adapter wrapping the given `MdnsCore`.
-    ///
-    /// Spawns a background relay task that converts `MdnsEvent` →
-    /// `BrowserEvent` on the global broadcast channel.
     pub(crate) fn new(
         core: Arc<MdnsCore>,
         cancel: tokio_util::sync::CancellationToken,
@@ -33,7 +24,6 @@ impl MdnsBrowseAdapter {
             event_tx: event_tx.clone(),
         });
 
-        // Relay MdnsCore's broadcast → BrowserEvent broadcast
         let mut rx = adapter.core.subscribe();
         tokio::spawn(async move {
             loop {
@@ -73,8 +63,6 @@ impl BrowseSource for MdnsBrowseAdapter {
 
             let (tx, rx) = mpsc::channel(128);
 
-            // Relay events from the koi-mdns BrowseHandle into the
-            // koi-common BrowseHandle's mpsc channel.
             tokio::spawn(async move {
                 while let Some(mdns_event) = mdns_handle.recv().await {
                     if let Some(browser_event) = map_mdns_event(&mdns_event) {
@@ -83,7 +71,6 @@ impl BrowseSource for MdnsBrowseAdapter {
                         }
                     }
                 }
-                // mdns_handle is dropped here, stopping the browse
             });
 
             Ok(BrowseHandle::new(rx))
@@ -95,7 +82,6 @@ impl BrowseSource for MdnsBrowseAdapter {
     }
 }
 
-/// Convert an `MdnsEvent` to a `BrowserEvent`.
 fn map_mdns_event(event: &MdnsEvent) -> Option<BrowserEvent> {
     match event {
         MdnsEvent::Found(record) => Some(BrowserEvent::Found {

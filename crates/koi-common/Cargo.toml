@@ -14,3 +14,9 @@ uuid.workspace = true
 tracing.workspace = true
 axum.workspace = true
 utoipa.workspace = true
+tokio.workspace = true
+tokio-stream = { workspace = true, features = ["sync"] }
+tokio-util.workspace = true
+async-stream.workspace = true
+chrono.workspace = true
+hostname.workspace = true
