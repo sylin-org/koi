@@ -70,39 +70,15 @@ impl Confirmation {
     }
 }
 
-/// A query parameter for an HTTP API endpoint.
-#[derive(Clone, Copy, Debug)]
-pub struct QueryParam {
-    pub name: &'static str,
-    /// OpenAPI type: `"string"`, `"integer"`, or `"boolean"`.
-    pub param_type: &'static str,
-    pub required: bool,
-    pub description: &'static str,
-}
-
-/// An HTTP API endpoint - single source of truth for path, method,
-/// request/response schemas, query parameters, and content type.
+/// An HTTP API endpoint reference for CLI help display.
 ///
-/// The manifest-driven OpenAPI generator reads these at startup to
-/// produce the entire `/openapi.json` spec dynamically, so there is
-/// never a second declaration of the same route.
+/// Shows the HTTP equivalent of a CLI command (e.g. `GET /v1/mdns/discover`).
+/// Full OpenAPI metadata (summaries, schemas, query params) is owned by the
+/// domain crates via `#[utoipa::path]` annotations on their handlers.
 #[derive(Clone, Copy, Debug)]
 pub struct ApiEndpoint {
     pub method: &'static str,
     pub path: &'static str,
-    /// OpenAPI tag for grouping (e.g. `"mdns"`, `"certmesh"`).
-    pub tag: &'static str,
-    /// One-line HTTP-specific summary for the OpenAPI operation.
-    pub summary: &'static str,
-    /// Schema name of the JSON request body, if any (e.g. `"JoinRequest"`).
-    pub request_body: Option<&'static str>,
-    /// Schema name of the JSON response body, if any (e.g. `"JoinResponse"`).
-    pub response_body: Option<&'static str>,
-    /// Query parameters for the endpoint (&[] if none).
-    pub query_params: &'static [QueryParam],
-    /// Override the default `application/json` content type
-    /// (e.g. `Some("text/event-stream")` for SSE endpoints).
-    pub content_type: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug)]
