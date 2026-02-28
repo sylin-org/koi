@@ -41,7 +41,7 @@ pub mod paths {
 const DEFAULT_SSE_IDLE: Option<Duration> = None;
 
 /// Query parameters for the recv SSE endpoint.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 pub struct RecvParams {
     /// Seconds of silence before the SSE stream closes.
     /// - absent → keep open indefinitely (default for UDP)
@@ -65,7 +65,10 @@ fn idle_duration(idle_for: Option<u64>) -> Option<Duration> {
 // ── OpenAPI schema ──────────────────────────────────────────────────
 
 #[derive(utoipa::OpenApi)]
-#[openapi(components(schemas(BindingInfo, UdpBindRequest, UdpSendRequest, UdpDatagram)))]
+#[openapi(
+    paths(bind_handler, unbind_handler, recv_handler, send_handler, status_handler, heartbeat_handler),
+    components(schemas(BindingInfo, UdpBindRequest, UdpSendRequest, UdpDatagram)),
+)]
 pub struct UdpApiDoc;
 
 // ── Router constructor ──────────────────────────────────────────────
@@ -96,7 +99,10 @@ fn map_error(e: crate::UdpError) -> axum::response::Response {
 
 // ── Handlers ────────────────────────────────────────────────────────
 
-/// POST /v1/udp/bind - create a new UDP binding.
+#[utoipa::path(post, path = "/bind", tag = "udp",
+    summary = "Bind a host UDP socket",
+    request_body = UdpBindRequest,
+    responses((status = 201, body = BindingInfo)))]
 async fn bind_handler(
     Extension(runtime): Extension<Arc<UdpRuntime>>,
     Json(req): Json<UdpBindRequest>,
@@ -107,7 +113,10 @@ async fn bind_handler(
     }
 }
 
-/// DELETE /v1/udp/bind/{id} - remove a binding and close the socket.
+#[utoipa::path(delete, path = "/bind/{id}", tag = "udp",
+    summary = "Close a UDP binding",
+    params(("id" = String, Path, description = "Binding ID")),
+    responses((status = 200)))]
 async fn unbind_handler(
     Extension(runtime): Extension<Arc<UdpRuntime>>,
     Path(id): Path<String>,
@@ -118,7 +127,10 @@ async fn unbind_handler(
     }
 }
 
-/// GET /v1/udp/recv/{id}?idle_for=N - SSE stream of incoming datagrams.
+#[utoipa::path(get, path = "/recv/{id}", tag = "udp",
+    summary = "Subscribe to incoming datagrams (SSE stream)",
+    params(("id" = String, Path, description = "Binding ID"), RecvParams),
+    responses((status = 200, description = "SSE stream", content_type = "text/event-stream")))]
 async fn recv_handler(
     Extension(runtime): Extension<Arc<UdpRuntime>>,
     Path(id): Path<String>,
@@ -159,7 +171,11 @@ async fn recv_handler(
         .into_response()
 }
 
-/// POST /v1/udp/send/{id} - send a datagram through a binding.
+#[utoipa::path(post, path = "/send/{id}", tag = "udp",
+    summary = "Send a datagram through a binding",
+    params(("id" = String, Path, description = "Binding ID")),
+    request_body = UdpSendRequest,
+    responses((status = 200)))]
 async fn send_handler(
     Extension(runtime): Extension<Arc<UdpRuntime>>,
     Path(id): Path<String>,
@@ -171,13 +187,18 @@ async fn send_handler(
     }
 }
 
-/// GET /v1/udp/status - list all active bindings.
+#[utoipa::path(get, path = "/status", tag = "udp",
+    summary = "List all active bindings",
+    responses((status = 200)))]
 async fn status_handler(Extension(runtime): Extension<Arc<UdpRuntime>>) -> Json<serde_json::Value> {
     let bindings = runtime.status().await;
     Json(serde_json::json!({ "bindings": bindings }))
 }
 
-/// PUT /v1/udp/heartbeat/{id} - extend a binding's lease.
+#[utoipa::path(put, path = "/heartbeat/{id}", tag = "udp",
+    summary = "Renew a binding lease",
+    params(("id" = String, Path, description = "Binding ID")),
+    responses((status = 200)))]
 async fn heartbeat_handler(
     Extension(runtime): Extension<Arc<UdpRuntime>>,
     Path(id): Path<String>,

@@ -104,7 +104,10 @@ pub fn routes(core: Arc<MdnsCore>) -> Router {
         .layer(Extension(core))
 }
 
-/// Browse for mDNS services (SSE stream).
+#[utoipa::path(get, path = "/discover", tag = "mdns",
+    summary = "Browse for mDNS services (SSE stream)",
+    params(BrowseParams),
+    responses((status = 200, description = "SSE stream", content_type = "text/event-stream")))]
 async fn browse_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Query(params): Query<BrowseParams>,
@@ -144,7 +147,10 @@ async fn browse_handler(
     Sse::new(stream).into_response()
 }
 
-/// Register a new mDNS service.
+#[utoipa::path(post, path = "/announce", tag = "mdns",
+    summary = "Register a new mDNS service",
+    request_body = RegisterPayload,
+    responses((status = 201, body = RegistrationResult)))]
 async fn register_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Json(payload): Json<RegisterPayload>,
@@ -159,7 +165,10 @@ async fn register_handler(
     }
 }
 
-/// Unregister an mDNS service.
+#[utoipa::path(delete, path = "/unregister/{id}", tag = "mdns",
+    summary = "Unregister a service",
+    params(("id" = String, Path, description = "Registration ID")),
+    responses((status = 200)))]
 async fn unregister_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
@@ -173,7 +182,10 @@ async fn unregister_handler(
     }
 }
 
-/// Resolve an mDNS service by name.
+#[utoipa::path(get, path = "/resolve", tag = "mdns",
+    summary = "Resolve a service by name",
+    params(ResolveParams),
+    responses((status = 200)))]
 async fn resolve_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Query(params): Query<ResolveParams>,
@@ -187,7 +199,10 @@ async fn resolve_handler(
     }
 }
 
-/// Subscribe to mDNS events (SSE stream).
+#[utoipa::path(get, path = "/subscribe", tag = "mdns",
+    summary = "Subscribe to mDNS lifecycle events (SSE stream)",
+    params(EventsParams),
+    responses((status = 200, description = "SSE stream", content_type = "text/event-stream")))]
 async fn events_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Query(params): Query<EventsParams>,
@@ -223,7 +238,10 @@ async fn events_handler(
     Sse::new(stream).into_response()
 }
 
-/// Renew a service lease (heartbeat).
+#[utoipa::path(put, path = "/heartbeat/{id}", tag = "mdns",
+    summary = "Renew a service heartbeat lease",
+    params(("id" = String, Path, description = "Registration ID")),
+    responses((status = 200, body = RenewalResult)))]
 async fn heartbeat_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
@@ -238,12 +256,16 @@ async fn heartbeat_handler(
 }
 
 // ── Admin ─────────────────────────────────────────────────────────────
-/// Daemon status overview.
+#[utoipa::path(get, path = "/admin/status", tag = "mdns",
+    summary = "Daemon status overview",
+    responses((status = 200, body = DaemonStatus)))]
 async fn admin_status_handler(Extension(core): Extension<Arc<MdnsCore>>) -> impl IntoResponse {
     Json(core.admin_status())
 }
 
-/// List all registrations.
+#[utoipa::path(get, path = "/admin/ls", tag = "mdns",
+    summary = "List all registrations",
+    responses((status = 200, body = Vec<AdminRegistration>)))]
 async fn admin_registrations_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
 ) -> impl IntoResponse {
@@ -255,7 +277,10 @@ async fn admin_registrations_handler(
     Json(entries)
 }
 
-/// Inspect a single registration.
+#[utoipa::path(get, path = "/admin/inspect/{id}", tag = "mdns",
+    summary = "Inspect a single registration",
+    params(("id" = String, Path, description = "Registration ID")),
+    responses((status = 200, body = AdminRegistration)))]
 async fn admin_inspect_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
@@ -266,7 +291,10 @@ async fn admin_inspect_handler(
     }
 }
 
-/// Force-unregister a service.
+#[utoipa::path(delete, path = "/admin/unregister/{id}", tag = "mdns",
+    summary = "Force-unregister a service",
+    params(("id" = String, Path, description = "Registration ID")),
+    responses((status = 200)))]
 async fn admin_unregister_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
@@ -280,7 +308,10 @@ async fn admin_unregister_handler(
     }
 }
 
-/// Drain a registration (mark for removal).
+#[utoipa::path(post, path = "/admin/drain/{id}", tag = "mdns",
+    summary = "Begin grace period for a registration",
+    params(("id" = String, Path, description = "Registration ID")),
+    responses((status = 200)))]
 async fn admin_drain_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
@@ -291,7 +322,10 @@ async fn admin_drain_handler(
     }
 }
 
-/// Revive a draining registration.
+#[utoipa::path(post, path = "/admin/revive/{id}", tag = "mdns",
+    summary = "Cancel draining and revive a registration",
+    params(("id" = String, Path, description = "Registration ID")),
+    responses((status = 200)))]
 async fn admin_revive_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
@@ -339,16 +373,24 @@ fn policy_from_lease_secs(lease_secs: Option<u64>) -> LeasePolicy {
 
 /// OpenAPI documentation for the mDNS domain.
 #[derive(utoipa::OpenApi)]
-#[openapi(components(schemas(
-    RegisterPayload,
-    RegistrationResult,
-    RenewalResult,
-    AdminRegistration,
-    DaemonStatus,
-    RegistrationCounts,
-    crate::protocol::LeaseMode,
-    crate::protocol::LeaseState,
-)))]
+#[openapi(
+    paths(
+        browse_handler, register_handler, unregister_handler, resolve_handler,
+        events_handler, heartbeat_handler,
+        admin_status_handler, admin_registrations_handler, admin_inspect_handler,
+        admin_unregister_handler, admin_drain_handler, admin_revive_handler,
+    ),
+    components(schemas(
+        RegisterPayload,
+        RegistrationResult,
+        RenewalResult,
+        AdminRegistration,
+        DaemonStatus,
+        RegistrationCounts,
+        crate::protocol::LeaseMode,
+        crate::protocol::LeaseState,
+    ))
+)]
 pub struct MdnsApiDoc;
 
 #[cfg(test)]

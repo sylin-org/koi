@@ -62,19 +62,26 @@ pub fn routes(runtime: Arc<ProxyRuntime>) -> Router {
         .layer(Extension(runtime))
 }
 
-/// Proxy runtime status.
+#[utoipa::path(get, path = "/status", tag = "proxy",
+    summary = "Active proxy status",
+    responses((status = 200, body = ProxyStatusResponse)))]
 async fn status_handler(Extension(runtime): Extension<Arc<ProxyRuntime>>) -> impl IntoResponse {
     let status = runtime.status().await;
     Json(serde_json::json!({ "proxies": status }))
 }
 
-/// List proxy entries.
+#[utoipa::path(get, path = "/list", tag = "proxy",
+    summary = "List proxy entries",
+    responses((status = 200, body = ProxyEntriesResponse)))]
 async fn entries_handler(Extension(runtime): Extension<Arc<ProxyRuntime>>) -> impl IntoResponse {
     let entries = runtime.core().entries().await;
     Json(serde_json::json!({ "entries": entries }))
 }
 
-/// Add or update a proxy entry.
+#[utoipa::path(post, path = "/add", tag = "proxy",
+    summary = "Add or update a proxy entry",
+    request_body = AddProxyRequest,
+    responses((status = 200, body = StatusOk)))]
 async fn add_entry_handler(
     Extension(runtime): Extension<Arc<ProxyRuntime>>,
     Json(payload): Json<AddProxyRequest>,
@@ -116,7 +123,10 @@ async fn add_entry_handler(
     }
 }
 
-/// Remove a proxy entry by name.
+#[utoipa::path(delete, path = "/remove/{name}", tag = "proxy",
+    summary = "Remove a proxy entry",
+    params(("name" = String, Path, description = "Proxy entry name")),
+    responses((status = 200, body = StatusOk)))]
 async fn remove_entry_handler(
     Extension(runtime): Extension<Arc<ProxyRuntime>>,
     Path(name): Path<String>,
@@ -146,11 +156,14 @@ fn map_error(err: ProxyError) -> impl IntoResponse {
 
 /// OpenAPI documentation for the proxy domain.
 #[derive(utoipa::OpenApi)]
-#[openapi(components(schemas(
-    AddProxyRequest,
-    ProxyEntry,
-    ProxyStatusResponse,
-    ProxyEntriesResponse,
-    StatusOk
-)))]
+#[openapi(
+    paths(status_handler, entries_handler, add_entry_handler, remove_entry_handler),
+    components(schemas(
+        AddProxyRequest,
+        ProxyEntry,
+        ProxyStatusResponse,
+        ProxyEntriesResponse,
+        StatusOk,
+    ))
+)]
 pub struct ProxyApiDoc;

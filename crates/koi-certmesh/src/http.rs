@@ -16,10 +16,12 @@ use crate::{CertmeshCore, CertmeshState};
 use koi_common::encoding::{hex_decode, hex_encode};
 
 use crate::protocol::{
-    BackupRequest, BackupResponse, ComplianceResponse, CreateCaRequest, CreateCaResponse,
-    HealthRequest, HealthResponse, JoinRequest, PolicyRequest, PolicySummary, PromoteRequest,
-    RenewRequest, RenewResponse, RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse,
-    RotateAuthRequest, RotateAuthResponse, SetHookRequest, UnlockRequest, UnlockResponse,
+    AuditLogResponse, BackupRequest, BackupResponse, CertmeshStatus, ComplianceResponse,
+    CreateCaRequest, CreateCaResponse, DestroyResponse, HealthRequest, HealthResponse, JoinRequest,
+    JoinResponse, PolicyRequest, PolicySummary, PromoteRequest, PromoteResponse, RenewRequest,
+    RenewResponse, RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse,
+    RosterManifest, RotateAuthRequest, RotateAuthResponse, SetHookRequest, SetHookResponse,
+    UnlockRequest, UnlockResponse,
 };
 
 /// Route path constants - single source of truth for axum routing AND the command manifest.
@@ -83,6 +85,10 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
 }
 
 /// POST /join - Enroll a new member in the mesh.
+#[utoipa::path(post, path = "/join", tag = "certmesh",
+    summary = "Enroll a new member in the certificate mesh",
+    request_body = JoinRequest,
+    responses((status = 200, body = JoinResponse)))]
 async fn join_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<JoinRequest>,
@@ -107,6 +113,9 @@ async fn join_handler(
 }
 
 /// GET /status - Certmesh status overview.
+#[utoipa::path(get, path = "/status", tag = "certmesh",
+    summary = "Certificate mesh status overview",
+    responses((status = 200, body = CertmeshStatus)))]
 async fn status_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     let ca_guard = state.ca.lock().await;
     let roster = state.roster.lock().await;
@@ -118,6 +127,10 @@ async fn status_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl
 }
 
 /// PUT /hook - Set a post-renewal reload hook for a member.
+#[utoipa::path(put, path = "/set-hook", tag = "certmesh",
+    summary = "Set reload hook for a member",
+    request_body = SetHookRequest,
+    responses((status = 200, body = SetHookResponse)))]
 async fn set_hook_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<SetHookRequest>,
@@ -159,6 +172,10 @@ async fn set_hook_handler(
 // ── Service delegation handlers ─────────────────────────────────────
 
 /// POST /create - Initialize a new CA via the running service.
+#[utoipa::path(post, path = "/create", tag = "certmesh",
+    summary = "Initialize private CA",
+    request_body = CreateCaRequest,
+    responses((status = 200, body = CreateCaResponse)))]
 async fn create_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<CreateCaRequest>,
@@ -342,6 +359,10 @@ async fn create_handler(
 }
 
 /// POST /unlock - Decrypt the CA key.
+#[utoipa::path(post, path = "/unlock", tag = "certmesh",
+    summary = "Decrypt CA key with passphrase",
+    request_body = UnlockRequest,
+    responses((status = 200, body = UnlockResponse)))]
 async fn unlock_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<UnlockRequest>,
@@ -387,6 +408,10 @@ async fn unlock_handler(
 }
 
 /// POST /rotate-auth - Rotate the enrollment auth credential.
+#[utoipa::path(post, path = "/rotate-auth", tag = "certmesh",
+    summary = "Rotate enrollment auth credential",
+    request_body = RotateAuthRequest,
+    responses((status = 200, body = RotateAuthResponse)))]
 async fn rotate_auth_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<RotateAuthRequest>,
@@ -416,6 +441,9 @@ async fn rotate_auth_handler(
 }
 
 /// GET /log - Return audit log entries.
+#[utoipa::path(get, path = "/log", tag = "certmesh",
+    summary = "Read audit log entries",
+    responses((status = 200, body = AuditLogResponse)))]
 async fn log_handler(Extension(_state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     match crate::audit::read_log() {
         Ok(entries) => {
@@ -433,6 +461,9 @@ async fn log_handler(Extension(_state): Extension<Arc<CertmeshState>>) -> impl I
 }
 
 /// POST /destroy - Remove all certmesh state (CA, certs, roster, audit log).
+#[utoipa::path(post, path = "/destroy", tag = "certmesh",
+    summary = "Destroy all certmesh state",
+    responses((status = 200, body = DestroyResponse)))]
 async fn destroy_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     if let Err(e) = state.destroy().await {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e);
@@ -451,6 +482,10 @@ async fn destroy_handler(Extension(state): Extension<Arc<CertmeshState>>) -> imp
 // ── Phase 5 handlers ───────────────────────────────────────────────
 
 /// POST /backup - Create an encrypted certmesh backup bundle.
+#[utoipa::path(post, path = "/backup", tag = "certmesh",
+    summary = "Create encrypted backup",
+    request_body = BackupRequest,
+    responses((status = 200, body = BackupResponse)))]
 async fn backup_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<BackupRequest>,
@@ -484,6 +519,10 @@ async fn backup_handler(
 }
 
 /// POST /restore - Restore certmesh state from a backup bundle.
+#[utoipa::path(post, path = "/restore", tag = "certmesh",
+    summary = "Restore from backup",
+    request_body = RestoreRequest,
+    responses((status = 200, body = RestoreResponse)))]
 async fn restore_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<RestoreRequest>,
@@ -522,6 +561,10 @@ async fn restore_handler(
 }
 
 /// POST /revoke - Revoke a member.
+#[utoipa::path(post, path = "/revoke", tag = "certmesh",
+    summary = "Revoke a member certificate",
+    request_body = RevokeRequest,
+    responses((status = 200, body = RevokeResponse)))]
 async fn revoke_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<RevokeRequest>,
@@ -557,6 +600,9 @@ async fn revoke_handler(
 // ── Phase 4 handlers ────────────────────────────────────────────────
 
 /// POST /enrollment/open - Open the enrollment window.
+#[utoipa::path(post, path = "/open-enrollment", tag = "certmesh",
+    summary = "Open enrollment window",
+    responses((status = 200, body = PolicySummary)))]
 async fn open_enrollment_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     body: Option<Json<serde_json::Value>>,
@@ -595,6 +641,9 @@ async fn open_enrollment_handler(
 }
 
 /// POST /enrollment/close - Close the enrollment window.
+#[utoipa::path(post, path = "/close-enrollment", tag = "certmesh",
+    summary = "Close enrollment window",
+    responses((status = 200, body = PolicySummary)))]
 async fn close_enrollment_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
 ) -> impl IntoResponse {
@@ -616,6 +665,10 @@ async fn close_enrollment_handler(
 }
 
 /// PUT /policy - Set enrollment scope constraints.
+#[utoipa::path(put, path = "/set-policy", tag = "certmesh",
+    summary = "Set enrollment scope constraints",
+    request_body = PolicyRequest,
+    responses((status = 200, body = PolicySummary)))]
 async fn set_policy_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<PolicyRequest>,
@@ -661,6 +714,9 @@ async fn set_policy_handler(
 }
 
 /// GET /compliance - Return policy summary and audit log counts.
+#[utoipa::path(get, path = "/compliance", tag = "certmesh",
+    summary = "Compliance summary",
+    responses((status = 200, body = ComplianceResponse)))]
 async fn compliance_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     let roster = state.roster.lock().await;
     let profile = roster.metadata.trust_profile;
@@ -698,6 +754,10 @@ async fn compliance_handler(Extension(state): Extension<Arc<CertmeshState>>) -> 
 /// The requesting standby provides an auth response. If valid, the handler
 /// returns the encrypted CA key, auth data, roster, and CA cert.
 /// The passphrase for decryption is handled out-of-band (CLI prompt).
+#[utoipa::path(post, path = "/promote", tag = "certmesh",
+    summary = "Promote standby CA (key transfer)",
+    request_body = PromoteRequest,
+    responses((status = 200, body = PromoteResponse)))]
 async fn promote_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<PromoteRequest>,
@@ -776,6 +836,10 @@ async fn promote_handler(
 ///
 /// The CA pushes renewed cert material to members. The member writes
 /// the files and optionally executes its reload hook.
+#[utoipa::path(post, path = "/renew", tag = "certmesh",
+    summary = "Trigger certificate renewal",
+    request_body = RenewRequest,
+    responses((status = 200, body = RenewResponse)))]
 async fn renew_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<RenewRequest>,
@@ -832,6 +896,9 @@ async fn renew_handler(
 }
 
 /// GET /roster - Return a signed roster manifest for standby sync.
+#[utoipa::path(get, path = "/roster", tag = "certmesh",
+    summary = "Get signed roster manifest",
+    responses((status = 200, body = RosterManifest)))]
 async fn roster_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     let ca_guard = state.ca.lock().await;
     let ca = match ca_guard.as_ref() {
@@ -868,6 +935,10 @@ async fn roster_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl
 }
 
 /// POST /health - Member heartbeat with pinned CA fingerprint validation.
+#[utoipa::path(post, path = "/health", tag = "certmesh",
+    summary = "Member health heartbeat",
+    request_body = HealthRequest,
+    responses((status = 200, body = HealthResponse)))]
 async fn health_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<HealthRequest>,
@@ -933,7 +1004,15 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
 
 /// OpenAPI documentation for the certmesh domain.
 #[derive(utoipa::OpenApi)]
-#[openapi(components(schemas(
+#[openapi(
+    paths(
+        join_handler, status_handler, set_hook_handler, promote_handler,
+        renew_handler, roster_handler, health_handler, create_handler,
+        unlock_handler, rotate_auth_handler, log_handler, destroy_handler,
+        backup_handler, restore_handler, revoke_handler, compliance_handler,
+        open_enrollment_handler, close_enrollment_handler, set_policy_handler,
+    ),
+    components(schemas(
     crate::protocol::JoinRequest,
     crate::protocol::JoinResponse,
     crate::protocol::CertmeshStatus,

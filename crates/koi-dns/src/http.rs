@@ -104,7 +104,9 @@ pub fn routes(runtime: Arc<DnsRuntime>) -> Router {
         .layer(Extension(runtime))
 }
 
-/// DNS server status overview.
+#[utoipa::path(get, path = "/status", tag = "dns",
+    summary = "DNS resolver status",
+    responses((status = 200, body = StatusResponse)))]
 async fn status_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     let runtime_status = runtime.status().await;
     let core = runtime.core();
@@ -121,7 +123,10 @@ async fn status_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl 
     })
 }
 
-/// Look up a DNS record.
+#[utoipa::path(get, path = "/lookup", tag = "dns",
+    summary = "Resolve a local name",
+    params(LookupParams),
+    responses((status = 200, body = LookupResponse)))]
 async fn lookup_handler(
     Extension(runtime): Extension<Arc<DnsRuntime>>,
     Query(params): Query<LookupParams>,
@@ -150,21 +155,28 @@ async fn lookup_handler(
     .into_response()
 }
 
-/// List all known DNS names.
+#[utoipa::path(get, path = "/list", tag = "dns",
+    summary = "List all resolvable names",
+    responses((status = 200, body = NamesResponse)))]
 async fn list_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     let core = runtime.core();
     let names = core.list_names();
     Json(NamesResponse { names })
 }
 
-/// List static DNS entries.
+#[utoipa::path(get, path = "/entries", tag = "dns",
+    summary = "List static entries with details",
+    responses((status = 200, body = EntriesResponse)))]
 async fn entries_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     Json(EntriesResponse {
         entries: runtime.core().list_entries(),
     })
 }
 
-/// Add or update a static DNS entry.
+#[utoipa::path(post, path = "/add", tag = "dns",
+    summary = "Add static DNS entry",
+    request_body = EntryRequest,
+    responses((status = 200, body = EntriesResponse)))]
 async fn add_entry_handler(
     Extension(runtime): Extension<Arc<DnsRuntime>>,
     Json(payload): Json<EntryRequest>,
@@ -219,7 +231,10 @@ async fn add_entry_handler(
     }
 }
 
-/// Remove a static DNS entry by name.
+#[utoipa::path(delete, path = "/remove/{name}", tag = "dns",
+    summary = "Remove static DNS entry",
+    params(("name" = String, Path, description = "DNS entry name")),
+    responses((status = 200, body = EntriesResponse)))]
 async fn remove_entry_handler(
     Extension(runtime): Extension<Arc<DnsRuntime>>,
     Path(name): Path<String>,
@@ -265,7 +280,9 @@ async fn remove_entry_handler(
     }
 }
 
-/// Start the DNS server.
+#[utoipa::path(post, path = "/serve", tag = "dns",
+    summary = "Start the DNS resolver",
+    responses((status = 200, body = StartedResponse)))]
 async fn start_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     match runtime.start().await {
         Ok(started) => Json(serde_json::json!({ "started": started })).into_response(),
@@ -278,7 +295,9 @@ async fn start_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl I
     }
 }
 
-/// Stop the DNS server.
+#[utoipa::path(post, path = "/stop", tag = "dns",
+    summary = "Stop the DNS resolver",
+    responses((status = 200, body = StoppedResponse)))]
 async fn stop_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     let stopped = runtime.stop().await;
     Json(serde_json::json!({ "stopped": stopped }))
@@ -314,15 +333,21 @@ fn error_response(
 
 /// OpenAPI documentation for the DNS domain.
 #[derive(utoipa::OpenApi)]
-#[openapi(components(schemas(
-    StatusResponse,
-    LookupResponse,
-    NamesResponse,
-    EntriesResponse,
-    EntryRequest,
-    RecordSummary,
-    StartedResponse,
-    StoppedResponse,
-    koi_config::state::DnsEntry,
-)))]
+#[openapi(
+    paths(
+        status_handler, lookup_handler, list_handler, entries_handler,
+        add_entry_handler, remove_entry_handler, start_handler, stop_handler,
+    ),
+    components(schemas(
+        StatusResponse,
+        LookupResponse,
+        NamesResponse,
+        EntriesResponse,
+        EntryRequest,
+        RecordSummary,
+        StartedResponse,
+        StoppedResponse,
+        koi_config::state::DnsEntry,
+    ))
+)]
 pub struct DnsApiDoc;

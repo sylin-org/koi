@@ -58,19 +58,26 @@ pub fn routes(core: Arc<HealthCore>) -> Router {
         .layer(Extension(core))
 }
 
-/// Health snapshot with machine and service status.
+#[utoipa::path(get, path = "/status", tag = "health",
+    summary = "Snapshot of all checks with current state",
+    responses((status = 200, body = HealthSnapshot)))]
 async fn status_handler(Extension(core): Extension<Arc<HealthCore>>) -> impl IntoResponse {
     let snapshot: HealthSnapshot = core.snapshot().await;
     Json(snapshot)
 }
 
-/// List configured health checks.
+#[utoipa::path(get, path = "/list", tag = "health",
+    summary = "List registered check configurations",
+    responses((status = 200, body = ChecksListResponse)))]
 async fn list_checks_handler(Extension(core): Extension<Arc<HealthCore>>) -> impl IntoResponse {
     let checks = core.list_checks().await;
     Json(serde_json::json!({ "checks": checks }))
 }
 
-/// Add a health check.
+#[utoipa::path(post, path = "/add", tag = "health",
+    summary = "Register a health check",
+    request_body = AddCheckRequest,
+    responses((status = 200, body = StatusOk)))]
 async fn add_check_handler(
     Extension(core): Extension<Arc<HealthCore>>,
     Json(payload): Json<AddCheckRequest>,
@@ -100,7 +107,10 @@ async fn add_check_handler(
     }
 }
 
-/// Remove a health check by name.
+#[utoipa::path(delete, path = "/remove/{name}", tag = "health",
+    summary = "Remove a health check",
+    params(("name" = String, Path, description = "Check name")),
+    responses((status = 200, body = StatusOk)))]
 async fn remove_check_handler(
     Extension(core): Extension<Arc<HealthCore>>,
     Path(name): Path<String>,
@@ -131,15 +141,18 @@ fn map_error(err: HealthError) -> axum::response::Response {
 
 /// OpenAPI documentation for the health domain.
 #[derive(utoipa::OpenApi)]
-#[openapi(components(schemas(
-    HealthSnapshot,
-    AddCheckRequest,
-    ChecksListResponse,
-    StatusOk,
-    HealthCheckConfig,
-    crate::ServiceHealth,
-    crate::MachineHealth,
-    crate::ServiceCheckKind,
-    crate::ServiceStatus,
-)))]
+#[openapi(
+    paths(status_handler, list_checks_handler, add_check_handler, remove_check_handler),
+    components(schemas(
+        HealthSnapshot,
+        AddCheckRequest,
+        ChecksListResponse,
+        StatusOk,
+        HealthCheckConfig,
+        crate::ServiceHealth,
+        crate::MachineHealth,
+        crate::ServiceCheckKind,
+        crate::ServiceStatus,
+    ))
+)]
 pub struct HealthApiDoc;
