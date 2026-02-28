@@ -29,9 +29,12 @@ axum.workspace = true
 tower-http = { workspace = true, features = ["cors"] }
 reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
+utoipa.workspace = true
+utoipa-scalar.workspace = true
 futures-util.workspace = true
 hostname.workspace = true
 if-addrs.workspace = true
+netdev.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

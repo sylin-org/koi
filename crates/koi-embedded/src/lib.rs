@@ -146,6 +146,11 @@ impl Builder {
         self
     }
 
+    pub fn api_docs(mut self, enabled: bool) -> Self {
+        self.config.api_docs_enabled = enabled;
+        self
+    }
+
     pub fn mdns_browser(mut self, enabled: bool) -> Self {
         self.config.mdns_browser_enabled = enabled;
         self
@@ -482,6 +487,7 @@ impl KoiEmbedded {
             let http_certmesh = certmesh.clone();
             let http_proxy = proxy.clone();
             let http_udp = udp.clone();
+            let http_api_docs = self.config.api_docs_enabled;
             tasks.push(tokio::spawn(async move {
                 http::serve(
                     http_port,
@@ -493,6 +499,7 @@ impl KoiEmbedded {
                     http_udp,
                     dashboard_state,
                     browser_state,
+                    http_api_docs,
                     http_cancel,
                 )
                 .await;
