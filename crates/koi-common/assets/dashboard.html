@@ -196,6 +196,43 @@ body::before {
 .log-type.mdns { color: var(--accent-sage); }
 .log-msg { color: var(--text-secondary); }
 
+/* ── API Reference ──────────────────────────────────────────────── */
+.api-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr)); gap: 0.8rem; }
+@media (max-width: 600px) { .api-grid { grid-template-columns: 1fr; } }
+.api-group {
+  background: var(--vellum-white);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 1rem 1.2rem;
+}
+.api-group-header {
+  font-family: var(--mono); font-size: 0.65rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.15em;
+  color: var(--text-muted); margin-bottom: 0.6rem;
+  display: flex; align-items: center; gap: 0.4rem;
+}
+.api-group-header .port-badge {
+  font-size: 0.6rem; font-weight: 400; letter-spacing: 0;
+  color: var(--accent-sage); text-transform: none;
+}
+.api-row {
+  display: flex; align-items: baseline; gap: 0.5rem;
+  padding: 0.2rem 0; font-family: var(--mono); font-size: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.api-row:last-child { border-bottom: none; }
+.api-method {
+  min-width: 3.2rem; font-weight: 600; font-size: 0.65rem;
+  text-transform: uppercase; flex-shrink: 0;
+}
+.api-method.get { color: var(--accent-sage); }
+.api-method.post { color: var(--accent-clay); }
+.api-method.put { color: var(--accent-hopeful); }
+.api-method.delete { color: var(--accent-red); }
+.api-path { color: var(--text-primary); white-space: nowrap; }
+.api-summary { color: var(--text-muted); margin-left: auto; text-align: right; font-size: 0.7rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* ── Disconnected Banner ─────────────────────────────────────────── */
 .disconnected {
   position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
@@ -276,6 +313,13 @@ body::before {
     <div class="panel-title">UDP RELAY</div>
     <div id="udp-content"></div>
   </div>
+
+  <!-- API Reference -->
+  <div class="section-label">API REFERENCE</div>
+  <div class="api-grid" id="api-grid">
+    <div class="panel-empty" style="grid-column:1/-1">Loading API surface…</div>
+  </div>
+  <div style="margin-bottom:1.5rem"></div>
 
   <!-- Activity Log -->
   <div class="section-label">ACTIVITY</div>
@@ -575,9 +619,79 @@ body::before {
     };
   }
 
+  // ── API Reference ────────────────────────────────────────────
+  // Tag display order and labels (matches KoiCategory::order())
+  var TAG_ORDER = ['system', 'mdns', 'certmesh', 'dns', 'health', 'proxy', 'udp'];
+  var TAG_LABELS = {
+    system: 'System',
+    mdns: 'Discovery (mDNS)',
+    certmesh: 'Trust (Certmesh)',
+    dns: 'DNS Resolver',
+    health: 'Health',
+    proxy: 'Reverse Proxy',
+    udp: 'UDP Relay'
+  };
+
+  function renderApiReference(spec) {
+    // Group paths by tag
+    var groups = {};
+    TAG_ORDER.forEach(function(t) { groups[t] = []; });
+
+    var paths = spec.paths || {};
+    for (var path in paths) {
+      var methods = paths[path];
+      for (var method in methods) {
+        if (method === 'parameters' || method === 'servers') continue;
+        var op = methods[method];
+        var tags = op.tags || ['system'];
+        var tag = tags[0] || 'system';
+        if (!groups[tag]) groups[tag] = [];
+        groups[tag].push({
+          method: method.toUpperCase(),
+          path: path,
+          summary: op.summary || ''
+        });
+      }
+    }
+
+    var html = '';
+    TAG_ORDER.forEach(function(tag) {
+      var endpoints = groups[tag];
+      if (!endpoints || endpoints.length === 0) return;
+      html += '<div class="api-group">';
+      html += '<div class="api-group-header">'
+        + esc(TAG_LABELS[tag] || tag)
+        + '</div>';
+      for (var i = 0; i < endpoints.length; i++) {
+        var ep = endpoints[i];
+        html += '<div class="api-row">'
+          + '<span class="api-method ' + ep.method.toLowerCase() + '">' + esc(ep.method) + '</span>'
+          + '<span class="api-path">' + esc(ep.path) + '</span>'
+          + '<span class="api-summary">' + esc(ep.summary) + '</span>'
+          + '</div>';
+      }
+      html += '</div>';
+    });
+
+    $('api-grid').innerHTML = html || '<div class="panel-empty" style="grid-column:1/-1">No endpoints found</div>';
+  }
+
+  async function loadApiReference() {
+    try {
+      var resp = await fetch('/openapi.json');
+      if (resp.ok) {
+        var spec = await resp.json();
+        renderApiReference(spec);
+      }
+    } catch (e) {
+      // Silently ignore — the panel will keep its placeholder
+    }
+  }
+
   // ── Boot ──────────────────────────────────────────────────────
   startPolling();
   connectSSE();
+  loadApiReference();
 })();
 </script>
 </body>
