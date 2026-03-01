@@ -2,6 +2,10 @@
 
 **Local network toolkit.**
 
+<p align="center">
+  <img src="res/koi.gif" alt="Koi dashboard" />
+</p>
+
 Koi is a cross-platform local network toolkit. It bundles service discovery (mDNS/DNS-SD), a local DNS resolver for friendly names, and a private certificate mesh for LAN TLS. It ships as a single binary with HTTP, IPC, and CLI interfaces, so any language or container can use it.
 
 Think of it as **the missing LAN toolbox**: discover services, name them, and secure them without installing a stack of OS-specific daemons.
