@@ -26,3 +26,12 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 keyring.workspace = true
+x25519-dalek.workspace = true
+hkdf.workspace = true
+
+[features]
+default = []
+# Gate FIDO2 unlock slot behind a feature flag. The current implementation
+# derives the storage key from credential_id which is not secret — this is
+# a software gate only. Enable when the authenticator integration is hardened.
+fido2-unlock = []

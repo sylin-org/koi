@@ -56,7 +56,10 @@ impl AuthState {
     pub fn to_backup_bytes(&self) -> Vec<u8> {
         match self {
             AuthState::Totp(secret) => secret.as_bytes().to_vec(),
-            AuthState::Fido2(cred) => serde_json::to_vec(cred).unwrap_or_default(),
+            AuthState::Fido2(cred) => serde_json::to_vec(cred).unwrap_or_else(|e| {
+                tracing::error!(error = %e, "failed to serialize FIDO2 credential for backup");
+                Vec::new()
+            }),
         }
     }
 
@@ -101,7 +104,7 @@ pub struct Fido2Credential {
 /// For TOTP, the secret is encrypted with the CA passphrase (same as
 /// the CA key). For FIDO2, the credential is stored as-is since it
 /// contains only the public key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "method")]
 pub enum StoredAuth {
     #[serde(rename = "totp")]
@@ -514,6 +517,7 @@ mod tests {
                 ciphertext: vec![1, 2, 3],
                 salt: vec![4, 5, 6],
                 nonce: vec![7, 8, 9],
+                kdf_params: Default::default(),
             },
         };
         let json = serde_json::to_string(&stored).unwrap();

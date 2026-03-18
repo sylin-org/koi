@@ -149,17 +149,24 @@ pub fn verify_code(secret: &TotpSecret, code: &str) -> bool {
         .as_secs();
 
     let step = 30u64;
+    // Accumulate matches across all time windows without short-circuiting
+    // to avoid leaking timing information about which window (if any) matched.
+    let mut any_match = subtle::Choice::from(0);
     for offset in [0i64, -1, 1] {
         let time = (now as i64 + offset * step as i64) as u64;
         let expected = totp.generate(time);
-        let code_bytes = code.as_bytes();
-        let expected_bytes = expected.as_bytes();
 
-        if code_bytes.len() == expected_bytes.len() && code_bytes.ct_eq(expected_bytes).into() {
-            return true;
-        }
+        // Constant-time length + content comparison: never short-circuit on length.
+        let len_ok: subtle::Choice =
+            (code.len() as u8).ct_eq(&(expected.len() as u8));
+        let content_ok: subtle::Choice = if code.len() == expected.len() {
+            code.as_bytes().ct_eq(expected.as_bytes())
+        } else {
+            subtle::Choice::from(0)
+        };
+        any_match |= len_ok & content_ok;
     }
-    false
+    bool::from(any_match)
 }
 
 /// Encrypt a TOTP secret for storage at rest.
@@ -287,13 +294,11 @@ pub fn build_totp_uri(secret: &TotpSecret, issuer: &str, account: &str) -> Strin
 fn build_totp(secret: &TotpSecret) -> Result<totp_rs::TOTP, totp_rs::TotpUrlError> {
     use totp_rs::{Algorithm, Secret, TOTP};
 
-    TOTP::new(
-        Algorithm::SHA1,
-        6,
-        1,
-        30,
-        Secret::Raw(secret.secret.clone()).to_bytes().unwrap(),
-    )
+    let bytes = Secret::Raw(secret.secret.clone())
+        .to_bytes()
+        .map_err(|_| totp_rs::TotpUrlError::Secret("failed to convert TOTP secret".into()))?;
+
+    TOTP::new(Algorithm::SHA1, 6, 1, 30, bytes)
 }
 
 #[cfg(test)]

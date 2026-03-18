@@ -4,11 +4,12 @@
 //! before writing to disk. The operator's passphrase is required to
 //! decrypt after each daemon restart.
 
+use std::fmt;
 use std::path::Path;
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-use argon2::Argon2;
+use argon2::{Argon2, Params};
 use p256::ecdsa::SigningKey;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rand::rngs::OsRng;
@@ -17,19 +18,81 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
+use crate::secret::{SecretBytes, SecretString};
+
 /// Salt length for Argon2id key derivation.
 const SALT_LEN: usize = 16;
 
 /// Nonce length for AES-256-GCM.
 const NONCE_LEN: usize = 12;
 
+// ── KDF Parameters ──────────────────────────────────────────────────
+
+/// Explicit KDF parameters stored alongside encrypted material.
+///
+/// Defaults to Argon2id with OWASP-recommended parameters for
+/// credential storage (65 MiB memory, 3 iterations, 4 lanes).
+#[derive(Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct KdfParams {
+    /// Algorithm identifier (always "argon2id" for now).
+    pub algorithm: String,
+    /// Memory cost in KiB (default: 65536 = 64 MiB).
+    pub m_cost: u32,
+    /// Time cost / iterations (default: 3).
+    pub t_cost: u32,
+    /// Parallelism / lanes (default: 4).
+    pub p_cost: u32,
+}
+
+impl Default for KdfParams {
+    fn default() -> Self {
+        Self {
+            algorithm: "argon2id".to_string(),
+            m_cost: 65536,
+            t_cost: 3,
+            p_cost: 4,
+        }
+    }
+}
+
+impl fmt::Debug for KdfParams {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KdfParams")
+            .field("algorithm", &self.algorithm)
+            .field("m_cost", &self.m_cost)
+            .field("t_cost", &self.t_cost)
+            .field("p_cost", &self.p_cost)
+            .finish()
+    }
+}
+
+// ── Encrypted Key ───────────────────────────────────────────────────
+
 /// Encrypted key material stored on disk.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Serialize, Deserialize, utoipa::ToSchema)]
 pub struct EncryptedKey {
     pub ciphertext: Vec<u8>,
     pub salt: Vec<u8>,
     pub nonce: Vec<u8>,
+    /// KDF parameters used to derive the encryption key.
+    /// Defaults to standard Argon2id params for backward compatibility
+    /// with files that don't include this field.
+    #[serde(default)]
+    pub kdf_params: KdfParams,
 }
+
+impl fmt::Debug for EncryptedKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EncryptedKey")
+            .field("ciphertext", &"[REDACTED]")
+            .field("salt_len", &self.salt.len())
+            .field("nonce_len", &self.nonce.len())
+            .field("kdf_params", &self.kdf_params)
+            .finish()
+    }
+}
+
+// ── CA Key Pair ─────────────────────────────────────────────────────
 
 /// ECDSA P-256 signing key with zeroize-on-drop.
 pub struct CaKeyPair {
@@ -43,20 +106,22 @@ impl CaKeyPair {
     }
 
     /// Export the public key in PEM format.
-    pub fn public_key_pem(&self) -> String {
+    pub fn public_key_pem(&self) -> Result<String, CryptoError> {
         use p256::pkcs8::EncodePublicKey;
         self.signing_key
             .verifying_key()
             .to_public_key_pem(p256::pkcs8::LineEnding::LF)
-            .expect("public key PEM encoding should not fail")
+            .map_err(|e| CryptoError::KeyEncoding(e.to_string()))
     }
 
     /// Export the private key in PKCS#8 PEM format.
-    /// Caller is responsible for zeroizing the returned string.
-    pub fn private_key_pem(&self) -> zeroize::Zeroizing<String> {
-        self.signing_key
+    /// The returned `SecretString` is zeroized on drop.
+    pub fn private_key_pem(&self) -> Result<SecretString, CryptoError> {
+        let zeroizing = self
+            .signing_key
             .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
-            .expect("private key PEM encoding should not fail")
+            .map_err(|e| CryptoError::KeyEncoding(e.to_string()))?;
+        Ok(SecretString::new(zeroizing.to_string()))
     }
 }
 
@@ -73,7 +138,7 @@ impl Drop for CaKeyPair {
 /// `entropy_seed` is additional entropy collected from the operator
 /// (keyboard mashing, passphrase hash, etc.). It is mixed with the
 /// OS CSPRNG to produce the final key - never used alone.
-pub fn generate_ca_keypair(entropy_seed: &[u8]) -> CaKeyPair {
+pub fn generate_ca_keypair(entropy_seed: &[u8]) -> Result<CaKeyPair, CryptoError> {
     // Mix operator entropy with OS RNG by hashing both together
     // to produce a seed that benefits from both sources.
     let mut hasher = Sha256::new();
@@ -88,11 +153,11 @@ pub fn generate_ca_keypair(entropy_seed: &[u8]) -> CaKeyPair {
     // Use the mixed seed to derive an ECDSA key.
     // p256's from_bytes performs modular reduction if needed.
     let signing_key = SigningKey::from_bytes((&*mixed_seed).into())
-        .expect("SHA-256 output is always 32 bytes, valid for P-256 scalar");
+        .map_err(|e| CryptoError::KeyEncoding(format!("P-256 scalar from seed: {e}")))?;
 
     os_random.zeroize();
 
-    CaKeyPair { signing_key }
+    Ok(CaKeyPair { signing_key })
 }
 
 /// Encrypt a CA keypair for storage at rest.
@@ -183,15 +248,46 @@ pub fn ca_keypair_to_der(key: &CaKeyPair) -> Result<Vec<u8>, CryptoError> {
     Ok(der.as_bytes().to_vec())
 }
 
+// ── File I/O ────────────────────────────────────────────────────────
+
+/// Write secret material to a file with restricted permissions.
+///
+/// On Unix, sets file mode to 0o600 (owner read/write only).
+/// On non-Unix platforms, uses standard file write.
+pub fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), CryptoError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(data)?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, data)?;
+    }
+
+    Ok(())
+}
+
 /// Save an encrypted key to a JSON file.
 pub fn save_encrypted_key(path: &Path, encrypted: &EncryptedKey) -> Result<(), CryptoError> {
     let json = serde_json::to_string_pretty(encrypted)
         .map_err(|e| CryptoError::Serialization(e.to_string()))?;
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, json)?;
+    write_secret_file(path, json.as_bytes())?;
 
     tracing::debug!(path = %path.display(), "Encrypted key saved");
     Ok(())
@@ -205,6 +301,8 @@ pub fn load_encrypted_key(path: &Path) -> Result<EncryptedKey, CryptoError> {
     Ok(encrypted)
 }
 
+// ── Encryption / Decryption ─────────────────────────────────────────
+
 /// Encrypt arbitrary bytes with passphrase-derived AES-256-GCM.
 pub fn encrypt_bytes(plaintext: &[u8], passphrase: &str) -> Result<EncryptedKey, CryptoError> {
     let mut salt = vec![0u8; SALT_LEN];
@@ -213,12 +311,13 @@ pub fn encrypt_bytes(plaintext: &[u8], passphrase: &str) -> Result<EncryptedKey,
     let mut nonce_bytes = vec![0u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce_bytes);
 
-    let aes_key = derive_aes_key(passphrase, &salt)?;
-    let cipher =
-        Aes256Gcm::new_from_slice(&aes_key).map_err(|e| CryptoError::Encryption(e.to_string()))?;
+    let kdf_params = KdfParams::default();
+    let aes_key = derive_aes_key(passphrase, &salt, &kdf_params)?;
+    let cipher = Aes256Gcm::new_from_slice(&aes_key)
+        .map_err(|e| CryptoError::Encryption(e.to_string()))?;
 
     let nonce_arr: [u8; NONCE_LEN] = nonce_bytes
-        .clone()
+        .as_slice()
         .try_into()
         .expect("nonce is always NONCE_LEN bytes");
     let nonce = Nonce::from(nonce_arr);
@@ -230,18 +329,19 @@ pub fn encrypt_bytes(plaintext: &[u8], passphrase: &str) -> Result<EncryptedKey,
         ciphertext,
         salt,
         nonce: nonce_bytes,
+        kdf_params,
     })
 }
 
 /// Decrypt bytes encrypted with `encrypt_bytes`.
 pub fn decrypt_bytes(encrypted: &EncryptedKey, passphrase: &str) -> Result<Vec<u8>, CryptoError> {
-    let aes_key = derive_aes_key(passphrase, &encrypted.salt)?;
-    let cipher =
-        Aes256Gcm::new_from_slice(&aes_key).map_err(|e| CryptoError::Decryption(e.to_string()))?;
+    let aes_key = derive_aes_key(passphrase, &encrypted.salt, &encrypted.kdf_params)?;
+    let cipher = Aes256Gcm::new_from_slice(&aes_key)
+        .map_err(|e| CryptoError::Decryption(e.to_string()))?;
 
     let nonce_arr: [u8; NONCE_LEN] = encrypted
         .nonce
-        .clone()
+        .as_slice()
         .try_into()
         .map_err(|_| CryptoError::Decryption("invalid nonce length".into()))?;
     let nonce = Nonce::from(nonce_arr);
@@ -252,13 +352,20 @@ pub fn decrypt_bytes(encrypted: &EncryptedKey, passphrase: &str) -> Result<Vec<u
     Ok(plaintext)
 }
 
-/// Derive a 256-bit AES key from a passphrase using Argon2id.
-fn derive_aes_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32], CryptoError> {
-    let mut key = [0u8; 32];
-    Argon2::default()
+/// Derive a 256-bit AES key from a passphrase using Argon2id with explicit params.
+fn derive_aes_key(
+    passphrase: &str,
+    salt: &[u8],
+    kdf_params: &KdfParams,
+) -> Result<SecretBytes, CryptoError> {
+    let mut key = vec![0u8; 32];
+    let params = Params::new(kdf_params.m_cost, kdf_params.t_cost, kdf_params.p_cost, Some(32))
+        .map_err(|e| CryptoError::KeyDerivation(format!("invalid KDF params: {e}")))?;
+    let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+    argon2
         .hash_password_into(passphrase.as_bytes(), salt, &mut key)
         .map_err(|e| CryptoError::KeyDerivation(e.to_string()))?;
-    Ok(key)
+    Ok(SecretBytes::new(key))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -284,28 +391,31 @@ mod tests {
     #[test]
     fn generate_keypair_produces_valid_key() {
         let seed = b"test entropy seed material here!";
-        let kp = generate_ca_keypair(seed);
+        let kp = generate_ca_keypair(seed).unwrap();
         // Should produce a valid PEM
-        let pem = kp.public_key_pem();
+        let pem = kp.public_key_pem().unwrap();
         assert!(pem.contains("BEGIN PUBLIC KEY"));
     }
 
     #[test]
     fn encrypt_decrypt_round_trip() {
         let seed = b"round trip test seed 1234567890!";
-        let kp = generate_ca_keypair(seed);
+        let kp = generate_ca_keypair(seed).unwrap();
         let passphrase = "test-passphrase-123";
 
         let encrypted = encrypt_key(&kp, passphrase).unwrap();
         let decrypted = decrypt_key(&encrypted, passphrase).unwrap();
 
-        assert_eq!(kp.public_key_pem(), decrypted.public_key_pem());
+        assert_eq!(
+            kp.public_key_pem().unwrap(),
+            decrypted.public_key_pem().unwrap()
+        );
     }
 
     #[test]
     fn wrong_passphrase_fails() {
         let seed = b"wrong passphrase test seed 12345";
-        let kp = generate_ca_keypair(seed);
+        let kp = generate_ca_keypair(seed).unwrap();
 
         let encrypted = encrypt_key(&kp, "correct").unwrap();
         let result = decrypt_key(&encrypted, "wrong");
@@ -315,23 +425,29 @@ mod tests {
 
     #[test]
     fn different_entropy_produces_different_keys() {
-        let kp1 = generate_ca_keypair(b"entropy seed one________________");
-        let kp2 = generate_ca_keypair(b"entropy seed two________________");
+        let kp1 = generate_ca_keypair(b"entropy seed one________________").unwrap();
+        let kp2 = generate_ca_keypair(b"entropy seed two________________").unwrap();
 
-        assert_ne!(kp1.public_key_pem(), kp2.public_key_pem());
+        assert_ne!(
+            kp1.public_key_pem().unwrap(),
+            kp2.public_key_pem().unwrap()
+        );
     }
 
     #[test]
     fn encrypted_key_serialization_round_trip() {
         let seed = b"serialization test seed 12345678";
-        let kp = generate_ca_keypair(seed);
+        let kp = generate_ca_keypair(seed).unwrap();
         let encrypted = encrypt_key(&kp, "test").unwrap();
 
         let json = serde_json::to_string(&encrypted).unwrap();
         let deserialized: EncryptedKey = serde_json::from_str(&json).unwrap();
 
         let decrypted = decrypt_key(&deserialized, "test").unwrap();
-        assert_eq!(kp.public_key_pem(), decrypted.public_key_pem());
+        assert_eq!(
+            kp.public_key_pem().unwrap(),
+            decrypted.public_key_pem().unwrap()
+        );
     }
 
     #[test]
@@ -342,14 +458,17 @@ mod tests {
         let path = dir.join("test-key.enc");
 
         let seed = b"save load test seed material!!!!";
-        let kp = generate_ca_keypair(seed);
+        let kp = generate_ca_keypair(seed).unwrap();
         let encrypted = encrypt_key(&kp, "save-test").unwrap();
 
         save_encrypted_key(&path, &encrypted).unwrap();
         let loaded = load_encrypted_key(&path).unwrap();
         let decrypted = decrypt_key(&loaded, "save-test").unwrap();
 
-        assert_eq!(kp.public_key_pem(), decrypted.public_key_pem());
+        assert_eq!(
+            kp.public_key_pem().unwrap(),
+            decrypted.public_key_pem().unwrap()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -357,8 +476,8 @@ mod tests {
     #[test]
     fn private_key_pem_is_valid() {
         let seed = b"private key pem test seed 123456";
-        let kp = generate_ca_keypair(seed);
-        let pem = kp.private_key_pem();
+        let kp = generate_ca_keypair(seed).unwrap();
+        let pem = kp.private_key_pem().unwrap();
         assert!(pem.contains("BEGIN PRIVATE KEY"));
     }
 
@@ -425,5 +544,30 @@ mod tests {
         let result = load_encrypted_key(&path);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), CryptoError::Io(_)));
+    }
+
+    #[test]
+    fn kdf_params_default_values() {
+        let params = KdfParams::default();
+        assert_eq!(params.algorithm, "argon2id");
+        assert_eq!(params.m_cost, 65536);
+        assert_eq!(params.t_cost, 3);
+        assert_eq!(params.p_cost, 4);
+    }
+
+    #[test]
+    fn encrypted_key_debug_redacts_ciphertext() {
+        let encrypted = encrypt_bytes(b"secret data", "pass").unwrap();
+        let debug = format!("{encrypted:?}");
+        assert!(debug.contains("REDACTED"));
+    }
+
+    #[test]
+    fn encrypted_key_backward_compat_without_kdf_params() {
+        // Simulate a legacy JSON without kdf_params field
+        let json = r#"{"ciphertext":[1,2,3],"salt":[4,5,6],"nonce":[7,8,9]}"#;
+        let ek: EncryptedKey = serde_json::from_str(json).unwrap();
+        assert_eq!(ek.kdf_params.algorithm, "argon2id");
+        assert_eq!(ek.kdf_params.m_cost, 65536);
     }
 }

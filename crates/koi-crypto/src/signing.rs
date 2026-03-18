@@ -42,35 +42,35 @@ mod tests {
 
     #[test]
     fn sign_verify_round_trip() {
-        let key = generate_ca_keypair(b"signing test entropy seed 123456");
+        let key = generate_ca_keypair(b"signing test entropy seed 123456").unwrap();
         let data = b"roster manifest content here";
 
         let signature = sign_bytes(&key, data);
-        let public_pem = key.public_key_pem();
+        let public_pem = key.public_key_pem().unwrap();
 
         assert!(verify_signature(&public_pem, data, &signature));
     }
 
     #[test]
     fn wrong_key_fails_verification() {
-        let key1 = generate_ca_keypair(b"signing test key one ___________");
-        let key2 = generate_ca_keypair(b"signing test key two ___________");
+        let key1 = generate_ca_keypair(b"signing test key one ___________").unwrap();
+        let key2 = generate_ca_keypair(b"signing test key two ___________").unwrap();
         let data = b"data signed by key1";
 
         let signature = sign_bytes(&key1, data);
-        let wrong_public = key2.public_key_pem();
+        let wrong_public = key2.public_key_pem().unwrap();
 
         assert!(!verify_signature(&wrong_public, data, &signature));
     }
 
     #[test]
     fn tampered_data_fails_verification() {
-        let key = generate_ca_keypair(b"tamper test entropy seed 1234567");
+        let key = generate_ca_keypair(b"tamper test entropy seed 1234567").unwrap();
         let data = b"original data";
         let tampered = b"tampered data";
 
         let signature = sign_bytes(&key, data);
-        let public_pem = key.public_key_pem();
+        let public_pem = key.public_key_pem().unwrap();
 
         assert!(!verify_signature(&public_pem, tampered, &signature));
     }
@@ -85,16 +85,16 @@ mod tests {
 
     #[test]
     fn invalid_signature_bytes_returns_false() {
-        let key = generate_ca_keypair(b"invalid sig test entropy 12345!!");
+        let key = generate_ca_keypair(b"invalid sig test entropy 12345!!").unwrap();
         let data = b"test data";
-        let public_pem = key.public_key_pem();
+        let public_pem = key.public_key_pem().unwrap();
 
         assert!(!verify_signature(&public_pem, data, &[0u8; 10]));
     }
 
     #[test]
     fn signature_is_deterministic_length() {
-        let key = generate_ca_keypair(b"length test entropy seed 1234567");
+        let key = generate_ca_keypair(b"length test entropy seed 1234567").unwrap();
         let data = b"test data for length check";
 
         let sig = sign_bytes(&key, data);
@@ -108,41 +108,41 @@ mod tests {
 
     #[test]
     fn sign_empty_data() {
-        let key = generate_ca_keypair(b"empty data signing test seed!@#$");
+        let key = generate_ca_keypair(b"empty data signing test seed!@#$").unwrap();
         let data = b"";
 
         let signature = sign_bytes(&key, data);
-        let public_pem = key.public_key_pem();
+        let public_pem = key.public_key_pem().unwrap();
         assert!(verify_signature(&public_pem, data, &signature));
     }
 
     #[test]
     fn sign_large_data() {
-        let key = generate_ca_keypair(b"large data signing test seed_xyz");
+        let key = generate_ca_keypair(b"large data signing test seed_xyz").unwrap();
         let data: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
 
         let signature = sign_bytes(&key, &data);
-        let public_pem = key.public_key_pem();
+        let public_pem = key.public_key_pem().unwrap();
         assert!(verify_signature(&public_pem, &data, &signature));
     }
 
     #[test]
     fn sign_binary_data_with_null_bytes() {
-        let key = generate_ca_keypair(b"null byte test entropy seed_____");
+        let key = generate_ca_keypair(b"null byte test entropy seed_____").unwrap();
         let data = b"\x00\x00\xff\xff\x00\x01\x02\x03";
 
         let signature = sign_bytes(&key, data);
-        let public_pem = key.public_key_pem();
+        let public_pem = key.public_key_pem().unwrap();
         assert!(verify_signature(&public_pem, data, &signature));
     }
 
     #[test]
     fn signature_with_truncated_bytes_fails() {
-        let key = generate_ca_keypair(b"truncated sig test entropy!12345");
+        let key = generate_ca_keypair(b"truncated sig test entropy!12345").unwrap();
         let data = b"data to sign";
 
         let signature = sign_bytes(&key, data);
-        let public_pem = key.public_key_pem();
+        let public_pem = key.public_key_pem().unwrap();
 
         // Truncate signature to half
         let truncated = &signature[..signature.len() / 2];
@@ -151,11 +151,11 @@ mod tests {
 
     #[test]
     fn signature_with_extra_bytes_appended_fails() {
-        let key = generate_ca_keypair(b"extra bytes test entropy_1234567");
+        let key = generate_ca_keypair(b"extra bytes test entropy_1234567").unwrap();
         let data = b"data to sign";
 
         let mut signature = sign_bytes(&key, data);
-        let public_pem = key.public_key_pem();
+        let public_pem = key.public_key_pem().unwrap();
 
         signature.push(0xFF);
         assert!(!verify_signature(&public_pem, data, &signature));
@@ -163,9 +163,9 @@ mod tests {
 
     #[test]
     fn verify_empty_signature_returns_false() {
-        let key = generate_ca_keypair(b"empty sig test entropy seed 1234");
+        let key = generate_ca_keypair(b"empty sig test entropy seed 1234").unwrap();
         let data = b"test data";
-        let public_pem = key.public_key_pem();
+        let public_pem = key.public_key_pem().unwrap();
 
         assert!(!verify_signature(&public_pem, data, &[]));
     }

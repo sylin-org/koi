@@ -43,7 +43,7 @@ const TOTP_SLOT_HKDF_INFO: &[u8] = b"pond-unlock-slot-totp-v1";
 // ── Slot Table ──────────────────────────────────────────────────────
 
 /// Persistent slot table stored as `unlock-slots.json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SlotTable {
     /// Version tag for future migrations.
     pub version: u32,
@@ -52,7 +52,7 @@ pub struct SlotTable {
 }
 
 /// A single unlock slot that wraps the master key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum UnlockSlot {
     /// Passphrase-based slot (always present, slot 0).
@@ -78,6 +78,9 @@ pub enum UnlockSlot {
         wrapped_master_key: EncryptedKey,
     },
 
+    // TODO(ADR-011): FIDO2 unlock slot is experimental — credential_id-derived
+    // storage key is insecure. Gate behind `fido2-unlock` feature when the
+    // authenticator integration is hardened.
     /// FIDO2-based unlock slot.
     /// The slot_kek is stored encrypted, released only after assertion verification.
     #[serde(rename = "fido2")]
@@ -300,9 +303,23 @@ impl SlotTable {
                 ..
             } = slot
             {
+                let cred_bytes = match b64.decode(credential_id) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "FIDO2 credential_id base64 decode failed");
+                        return None;
+                    }
+                };
+                let pk_bytes = match b64.decode(public_key) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "FIDO2 public_key base64 decode failed");
+                        return None;
+                    }
+                };
                 return Some(Fido2SlotInfo {
-                    credential_id: b64.decode(credential_id).unwrap_or_default(),
-                    public_key: b64.decode(public_key).unwrap_or_default(),
+                    credential_id: cred_bytes,
+                    public_key: pk_bytes,
                     rp_id: rp_id.clone(),
                     sign_count: *sign_count,
                 });
@@ -410,6 +427,9 @@ fn derive_totp_slot_kek(shared_secret: &[u8]) -> [u8; 32] {
 /// Derive a storage key from a FIDO2 credential ID for encrypting
 /// the slot_kek at rest. This is a software gate - the real security
 /// comes from assertion verification.
+// TODO(ADR-011): credential_id is not secret material — deriving a storage
+// key from it provides no real confidentiality. Replace with a proper
+// key agreement when the FIDO2 integration is hardened.
 fn derive_fido2_storage_key(credential_id: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"pond-fido2-storage-key-v1");

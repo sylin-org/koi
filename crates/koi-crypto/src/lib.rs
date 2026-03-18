@@ -5,8 +5,10 @@
 //! fingerprinting, and ECDSA signing/verification.
 
 pub mod auth;
+pub mod key_agreement;
 pub mod keys;
 pub mod pinning;
+pub mod secret;
 pub mod signing;
 pub mod totp;
 pub mod tpm;
