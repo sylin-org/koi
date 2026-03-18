@@ -277,6 +277,8 @@ pub fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), CryptoError> {
     #[cfg(not(unix))]
     {
         std::fs::write(path, data)?;
+        #[cfg(windows)]
+        restrict_windows_acl(path);
     }
 
     Ok(())
@@ -393,6 +395,36 @@ pub enum CryptoError {
     Serialization(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// Best-effort ACL restriction on Windows using icacls.
+///
+/// Strips inherited permissions and grants full control to SYSTEM,
+/// the built-in Administrators group, and the current process user.
+#[cfg(windows)]
+pub(crate) fn restrict_windows_acl(path: &std::path::Path) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let path_str = path.display().to_string();
+    let mut args = vec![
+        path_str.clone(),
+        "/inheritance:r".to_string(),
+        "/grant:r".to_string(),
+        "SYSTEM:F".to_string(),
+        "/grant:r".to_string(),
+        "BUILTIN\\Administrators:F".to_string(),
+    ];
+    if let Ok(user) = std::env::var("USERNAME") {
+        if !user.eq_ignore_ascii_case("SYSTEM") {
+            args.push("/grant:r".to_string());
+            args.push(format!("{user}:F"));
+        }
+    }
+    let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let _ = std::process::Command::new("icacls")
+        .args(&args_ref)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
 }
 
 #[cfg(test)]
