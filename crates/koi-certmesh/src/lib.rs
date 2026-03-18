@@ -373,9 +373,24 @@ impl CertmeshCore {
                 .map(|m| std::path::PathBuf::from(&m.cert_path))
         };
         if let Some(cert_dir) = existing_cert_dir {
+            // Validate cert_path is under the expected certs directory
+            let expected_prefix = koi_common::paths::koi_certs_dir();
+            if !cert_dir.starts_with(&expected_prefix) {
+                return Err(CertmeshError::Internal(format!(
+                    "cert_path '{}' is outside expected directory '{}'",
+                    cert_dir.display(),
+                    expected_prefix.display(),
+                )));
+            }
             tracing::debug!(hostname = %hostname, "already self-enrolled, reading existing cert");
             let ca_guard = self.state.ca.lock().await;
-            let ca = ca_guard.as_ref().ok_or(CertmeshError::CaLocked)?;
+            let ca = ca_guard.as_ref().ok_or_else(|| {
+                if ca::is_ca_initialized() {
+                    CertmeshError::CaLocked
+                } else {
+                    CertmeshError::CaNotInitialized
+                }
+            })?;
             let ca_cert_pem = ca.cert_pem.clone();
             drop(ca_guard);
             let cert_pem = std::fs::read_to_string(cert_dir.join("cert.pem"))
@@ -404,9 +419,19 @@ impl CertmeshCore {
         // Write cert files to the standard path
         let cert_dir = certfiles::write_cert_files(&hostname, &issued)?;
 
-        // Add self to roster as primary member
+        // Add self to roster as primary member.
+        // Re-check roster under the lock to prevent duplicate entries from
+        // concurrent self_enroll calls racing past the initial check.
         drop(ca_guard);
         let mut roster = self.state.roster.lock().await;
+        if roster.members.iter().any(|m| m.hostname == hostname) {
+            tracing::debug!(hostname = %hostname, "concurrent self-enroll resolved, skipping duplicate");
+            return Ok(SelfEnrollment {
+                cert_pem: issued.cert_pem,
+                key_pem: issued.key_pem,
+                ca_cert_pem,
+            });
+        }
         roster.members.push(roster::RosterMember {
             hostname: hostname.clone(),
             role: roster::MemberRole::Primary,
