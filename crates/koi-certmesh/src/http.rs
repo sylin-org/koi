@@ -63,7 +63,6 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::JOIN), post(join_handler))
         .route(rel(paths::STATUS), get(status_handler))
         .route(rel(paths::SET_HOOK), put(set_hook_handler))
-        .route(rel(paths::PROMOTE), post(promote_handler))
         .route(rel(paths::RENEW), post(renew_handler))
         .route(rel(paths::ROSTER), get(roster_handler))
         .route(rel(paths::HEALTH), post(health_handler))
@@ -81,6 +80,17 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::OPEN_ENROLLMENT), post(open_enrollment_handler))
         .route(rel(paths::CLOSE_ENROLLMENT), post(close_enrollment_handler))
         .route(rel(paths::SET_POLICY), put(set_policy_handler))
+        .layer(Extension(state))
+}
+
+/// Build the inter-node router for sensitive operations (promote).
+///
+/// These routes MUST NOT be mounted on the public HTTP port. They are
+/// intended for mTLS-protected inter-node communication only.
+pub(crate) fn inter_node_routes(state: Arc<CertmeshState>) -> Router {
+    use paths::rel;
+    Router::new()
+        .route(rel(paths::PROMOTE), post(promote_handler))
         .layer(Extension(state))
 }
 
@@ -135,6 +145,22 @@ async fn set_hook_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<SetHookRequest>,
 ) -> impl IntoResponse {
+    // Validate reload hook is an absolute path
+    #[cfg(unix)]
+    if !request.reload.starts_with('/') {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &CertmeshError::Internal("reload hook must be an absolute path".into()),
+        );
+    }
+    #[cfg(windows)]
+    if !(request.reload.len() >= 3 && request.reload.as_bytes()[1] == b':') {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &CertmeshError::Internal("reload hook must be an absolute path".into()),
+        );
+    }
+
     // Verify the member exists
     let mut roster = state.roster.lock().await;
     match roster.find_member_mut(&request.hostname) {
@@ -1132,7 +1158,7 @@ mod tests {
 
     #[tokio::test]
     async fn promote_without_ca_returns_503() {
-        let app = routes(test_extension());
+        let app = inter_node_routes(test_extension());
         let req = Request::post("/promote")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"auth":{"method":"totp","code":"654321"}}"#))
@@ -1165,11 +1191,15 @@ mod tests {
     #[tokio::test]
     async fn set_hook_unknown_member_returns_404() {
         let app = routes(test_extension());
+        let reload = if cfg!(unix) {
+            "/usr/bin/systemctl restart nginx"
+        } else {
+            "C:\\Windows\\System32\\cmd.exe /c restart"
+        };
+        let body = serde_json::json!({"hostname": "nobody", "reload": reload}).to_string();
         let req = Request::put("/set-hook")
             .header("content-type", "application/json")
-            .body(Body::from(
-                r#"{"hostname":"nobody","reload":"systemctl restart nginx"}"#,
-            ))
+            .body(Body::from(body))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -1230,7 +1260,7 @@ mod tests {
 
     #[tokio::test]
     async fn promote_without_ca_body_has_error_code() {
-        let app = routes(test_extension());
+        let app = inter_node_routes(test_extension());
         let req = Request::post("/promote")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"auth":{"method":"totp","code":"654321"}}"#))
@@ -1298,11 +1328,15 @@ mod tests {
     #[tokio::test]
     async fn set_hook_not_found_body_has_error() {
         let app = routes(test_extension());
+        let reload = if cfg!(unix) {
+            "/usr/bin/systemctl restart nginx"
+        } else {
+            "C:\\Windows\\System32\\cmd.exe /c restart"
+        };
+        let body = serde_json::json!({"hostname": "nobody", "reload": reload}).to_string();
         let req = Request::put("/set-hook")
             .header("content-type", "application/json")
-            .body(Body::from(
-                r#"{"hostname":"nobody","reload":"systemctl restart nginx"}"#,
-            ))
+            .body(Body::from(body))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -1315,6 +1349,19 @@ mod tests {
             msg.contains("nobody"),
             "message should contain hostname: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn set_hook_relative_path_returns_400() {
+        let app = routes(test_extension());
+        let req = Request::put("/set-hook")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"hostname":"stone-01","reload":"systemctl restart nginx"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     // ── Phase 4 - Enrollment policy endpoint tests ──────────────────

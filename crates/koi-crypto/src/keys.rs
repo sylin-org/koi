@@ -220,7 +220,7 @@ pub fn encrypt_bytes(plaintext: &[u8], passphrase: &str) -> Result<EncryptedKey,
     let nonce_arr: [u8; NONCE_LEN] = nonce_bytes
         .clone()
         .try_into()
-        .expect("nonce is always NONCE_LEN bytes");
+        .map_err(|_| CryptoError::Encryption("nonce length mismatch".into()))?;
     let nonce = Nonce::from(nonce_arr);
     let ciphertext = cipher
         .encrypt(&nonce, plaintext)

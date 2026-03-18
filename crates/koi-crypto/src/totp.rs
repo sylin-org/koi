@@ -155,7 +155,11 @@ pub fn verify_code(secret: &TotpSecret, code: &str) -> bool {
         let code_bytes = code.as_bytes();
         let expected_bytes = expected.as_bytes();
 
-        if code_bytes.len() == expected_bytes.len() && code_bytes.ct_eq(expected_bytes).into() {
+        let len_ok: bool = (code_bytes.len() as u64)
+            .to_le_bytes()
+            .ct_eq(&(expected_bytes.len() as u64).to_le_bytes())
+            .into();
+        if len_ok && code_bytes.ct_eq(expected_bytes).into() {
             return true;
         }
     }

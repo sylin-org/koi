@@ -214,6 +214,14 @@ impl CertmeshCore {
         http::routes(Arc::clone(&self.state))
     }
 
+    /// Build the inter-node router for sensitive operations (promote).
+    ///
+    /// These routes MUST NOT be mounted on the public HTTP port. They are
+    /// intended for mTLS-protected inter-node communication only.
+    pub fn inter_node_routes(&self) -> Router {
+        http::inter_node_routes(Arc::clone(&self.state))
+    }
+
     /// Set the approval channel used for enrollment approvals.
     pub async fn set_approval_channel(&self, tx: mpsc::Sender<ApprovalRequest>) {
         *self.state.approval_tx.lock().await = Some(tx);
@@ -495,12 +503,28 @@ impl CertmeshCore {
     /// parent directory's ACL (acceptable for a daemon data directory).
     pub fn save_auto_unlock_key(passphrase: &str) -> Result<(), CertmeshError> {
         let path = Self::auto_unlock_key_path();
-        std::fs::write(&path, passphrase.as_bytes())?;
 
+        // Atomic write: create temp file with restricted permissions, then rename.
+        // This prevents a window where the file exists with default permissions.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let tmp_path = path.with_extension("tmp");
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp_path)?;
+            file.write_all(passphrase.as_bytes())?;
+            file.sync_all()?;
+            std::fs::rename(&tmp_path, &path)?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&path, passphrase.as_bytes())?;
         }
 
         tracing::info!("Auto-unlock key saved - pond will unlock automatically on reboot");
