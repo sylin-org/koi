@@ -40,6 +40,9 @@ const MASTER_KEY_LEN: usize = 32;
 /// HKDF info string for TOTP-based slot key derivation.
 const TOTP_SLOT_HKDF_INFO: &[u8] = b"pond-unlock-slot-totp-v1";
 
+/// Platform credential store label for the sealed TOTP shared secret.
+const TOTP_CREDENTIAL_LABEL: &str = "koi-certmesh-unlock-totp";
+
 // ── Slot Table ──────────────────────────────────────────────────────
 
 /// Persistent slot table stored as `unlock-slots.json`.
@@ -69,11 +72,22 @@ pub enum UnlockSlot {
     AutoUnlock,
 
     /// TOTP-based unlock slot.
+    ///
+    /// The TOTP shared secret is protected at rest: sealed in the platform
+    /// credential store when available, or encrypted with a machine-derived
+    /// key as a fallback.
     #[serde(rename = "totp")]
     Totp {
-        /// TOTP shared secret (raw bytes, hex-encoded for JSON).
-        /// Stored here so the stone can verify codes at unlock time.
-        shared_secret_hex: String,
+        /// Whether the TOTP secret is sealed in the platform credential store.
+        #[serde(default)]
+        sealed: bool,
+        /// Legacy: hex-encoded TOTP secret (plaintext). Kept for backward
+        /// compatibility with existing slot tables. New slots leave this `None`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        shared_secret_hex: Option<String>,
+        /// Encrypted TOTP secret (fallback when platform store unavailable).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        encrypted_secret: Option<EncryptedKey>,
         /// Master key wrapped with HKDF(shared_secret, TOTP_SLOT_HKDF_INFO).
         wrapped_master_key: EncryptedKey,
     },
@@ -152,8 +166,9 @@ impl SlotTable {
             .any(|s| matches!(s, UnlockSlot::AutoUnlock))
     }
 
-    /// Add a TOTP unlock slot. The shared_secret is stored so the stone
-    /// can verify codes at unlock time.
+    /// Add a TOTP unlock slot. The shared secret is sealed in the platform
+    /// credential store when available, or encrypted with a machine-derived
+    /// key as a fallback. The plaintext secret is never stored in JSON.
     pub fn add_totp_slot(
         &mut self,
         master_key: &[u8; MASTER_KEY_LEN],
@@ -166,8 +181,29 @@ impl SlotTable {
         let slot_kek_hex = hex_encode(&slot_kek);
         let wrapped = encrypt_bytes(master_key, &slot_kek_hex)?;
 
+        // Try platform credential store first, fall back to machine-key encryption
+        let (sealed, encrypted_secret) =
+            match crate::tpm::seal_key_material(TOTP_CREDENTIAL_LABEL, shared_secret) {
+                Ok(()) => {
+                    tracing::info!("TOTP shared secret sealed in platform credential store");
+                    (true, None)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Platform credential store unavailable; encrypting TOTP secret with machine key"
+                    );
+                    let machine_key = derive_machine_key();
+                    let machine_key_hex = hex_encode(&machine_key);
+                    let enc = encrypt_bytes(shared_secret, &machine_key_hex)?;
+                    (false, Some(enc))
+                }
+            };
+
         self.slots.push(UnlockSlot::Totp {
-            shared_secret_hex: hex_encode(shared_secret),
+            sealed,
+            shared_secret_hex: None,
+            encrypted_secret,
             wrapped_master_key: wrapped,
         });
 
@@ -176,19 +212,47 @@ impl SlotTable {
 
     /// Unwrap the master key using a TOTP code.
     ///
-    /// Verifies the code against the stored shared_secret, then derives
-    /// the slot_kek and unwraps the master key.
+    /// Recovers the shared secret from the platform credential store,
+    /// encrypted fallback, or legacy plaintext field, then verifies the
+    /// code and unwraps the master key.
     pub fn unwrap_with_totp(&self, code: &str) -> Result<[u8; MASTER_KEY_LEN], CryptoError> {
         for slot in &self.slots {
             if let UnlockSlot::Totp {
+                sealed,
                 shared_secret_hex,
+                encrypted_secret,
                 wrapped_master_key,
             } = slot
             {
-                // Decode shared secret
-                let secret_bytes = hex_decode(shared_secret_hex).map_err(|e| {
-                    CryptoError::Decryption(format!("invalid TOTP secret hex: {e}"))
-                })?;
+                // Recover the TOTP shared secret from the best available source:
+                // 1. Platform credential store (sealed == true)
+                // 2. Machine-key encrypted fallback
+                // 3. Legacy plaintext hex (backward compat)
+                let secret_bytes = if *sealed {
+                    crate::tpm::unseal_key_material(TOTP_CREDENTIAL_LABEL).map_err(|e| {
+                        CryptoError::Decryption(format!(
+                            "failed to unseal TOTP secret from platform store: {e}"
+                        ))
+                    })?
+                } else if let Some(enc) = encrypted_secret {
+                    let machine_key = derive_machine_key();
+                    let machine_key_hex = hex_encode(&machine_key);
+                    decrypt_bytes(enc, &machine_key_hex).map_err(|e| {
+                        CryptoError::Decryption(format!(
+                            "failed to decrypt TOTP secret with machine key: {e}"
+                        ))
+                    })?
+                } else if let Some(hex) = shared_secret_hex {
+                    // Legacy plaintext path (pre-encryption slot tables)
+                    hex_decode(hex).map_err(|e| {
+                        CryptoError::Decryption(format!("invalid TOTP secret hex: {e}"))
+                    })?
+                } else {
+                    return Err(CryptoError::Decryption(
+                        "TOTP slot has no recoverable secret".into(),
+                    ));
+                };
+
                 let secret = crate::totp::TotpSecret::from_bytes(secret_bytes.clone());
 
                 // Verify TOTP code
@@ -422,6 +486,22 @@ fn derive_totp_slot_kek(shared_secret: &[u8]) -> [u8; 32] {
     let mut kek = [0u8; 32];
     kek.copy_from_slice(&result);
     kek
+}
+
+/// Derive a machine-bound key for encrypting the TOTP shared secret
+/// when the platform credential store is unavailable.
+fn derive_machine_key() -> [u8; 32] {
+    let hostname = hostname::get()
+        .ok()
+        .and_then(|os| os.into_string().ok())
+        .unwrap_or_else(|| "unknown-host".to_string());
+    let mut hasher = Sha256::new();
+    hasher.update(b"koi-totp-slot-machine-key-v1");
+    hasher.update(hostname.as_bytes());
+    let result = hasher.finalize();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&result);
+    key
 }
 
 /// Derive a storage key from a FIDO2 credential ID for encrypting

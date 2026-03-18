@@ -28,6 +28,7 @@ tracing.workspace = true
 keyring.workspace = true
 x25519-dalek.workspace = true
 hkdf.workspace = true
+hostname.workspace = true
 
 [features]
 default = []
