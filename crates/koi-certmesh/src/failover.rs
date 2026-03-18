@@ -45,7 +45,8 @@ pub fn prepare_promotion(
 ) -> Result<PromoteResponse, CertmeshError> {
     let server_kp = EphemeralKeyPair::generate();
     let server_pub = server_kp.public_key_bytes();
-    let mut shared_key = server_kp.derive_shared_key(client_public_key);
+    let mut shared_key = server_kp.derive_shared_key(client_public_key)
+        .map_err(|e| CertmeshError::PromotionFailed(format!("key derivation: {e}")))?;
     let shared_key_hex = koi_crypto::secret::SecretString::new(
         koi_common::encoding::hex_encode(&shared_key),
     );
@@ -93,7 +94,8 @@ pub fn accept_promotion(
     let server_pub = response.ephemeral_public.as_ref().ok_or_else(|| {
         CertmeshError::PromotionFailed("server did not provide ephemeral public key".into())
     })?;
-    let mut shared_key = our_keypair.derive_shared_key(server_pub);
+    let mut shared_key = our_keypair.derive_shared_key(server_pub)
+        .map_err(|e| CertmeshError::PromotionFailed(format!("key derivation: {e}")))?;
     let shared_key_hex = koi_crypto::secret::SecretString::new(
         koi_common::encoding::hex_encode(&shared_key),
     );

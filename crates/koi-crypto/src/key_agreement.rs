@@ -9,6 +9,8 @@ use rand::rngs::OsRng;
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
+use crate::keys::CryptoError;
+
 /// HKDF info string binding the derived key to the promote-v1 protocol.
 const PROMOTE_INFO: &[u8] = b"koi-promote-v1";
 
@@ -38,19 +40,15 @@ impl EphemeralKeyPair {
     /// peer's public key using X25519 + HKDF-SHA256.
     ///
     /// The returned bytes are suitable as an AES-256-GCM key.
-    pub fn derive_shared_key(self, their_public: &[u8; 32]) -> [u8; 32] {
+    pub fn derive_shared_key(self, their_public: &[u8; 32]) -> Result<[u8; 32], CryptoError> {
         let their_key = PublicKey::from(*their_public);
         let shared_secret = self.secret.diffie_hellman(&their_key);
 
         let hk = Hkdf::<Sha256>::new(None, shared_secret.as_bytes());
         let mut okm = [0u8; 32];
-        // 32 bytes is always a valid output length for HKDF-SHA256 (max = 255 * 32 = 8160).
-        // This cannot fail, but we handle it defensively to avoid panics in production.
-        if hk.expand(PROMOTE_INFO, &mut okm).is_err() {
-            // Unreachable for 32-byte output, but return zeros rather than panic
-            tracing::error!("HKDF expand failed unexpectedly");
-        }
-        okm
+        hk.expand(PROMOTE_INFO, &mut okm)
+            .map_err(|_| CryptoError::KeyDerivation("HKDF-SHA256 expand failed".into()))?;
+        Ok(okm)
     }
 }
 
@@ -66,8 +64,8 @@ mod tests {
         let alice_pub = alice.public_key_bytes();
         let bob_pub = bob.public_key_bytes();
 
-        let alice_shared = alice.derive_shared_key(&bob_pub);
-        let bob_shared = bob.derive_shared_key(&alice_pub);
+        let alice_shared = alice.derive_shared_key(&bob_pub).unwrap();
+        let bob_shared = bob.derive_shared_key(&alice_pub).unwrap();
 
         assert_eq!(alice_shared, bob_shared);
         // Verify the shared key is non-zero
@@ -83,8 +81,8 @@ mod tests {
         let bob_pub = bob.public_key_bytes();
         let charlie_pub = charlie.public_key_bytes();
 
-        let alice_bob = alice.derive_shared_key(&bob_pub);
-        let charlie_bob = charlie.derive_shared_key(&bob_pub);
+        let alice_bob = alice.derive_shared_key(&bob_pub).unwrap();
+        let charlie_bob = charlie.derive_shared_key(&bob_pub).unwrap();
 
         // Unless alice and charlie happen to generate the same secret
         // (astronomically unlikely), the shared keys should differ.

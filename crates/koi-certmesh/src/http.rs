@@ -173,8 +173,12 @@ async fn set_hook_handler(
         }
     }
 
-    // Validate reload hook: absolute path + no shell metacharacters
-    const HOOK_FORBIDDEN: &[char] = &[';', '|', '&', '$', '`', '>', '<', '(', ')', '\n', '\r', '\0'];
+    // Validate reload hook: absolute path + no shell metacharacters.
+    // Defense-in-depth: domain facade (CertmeshCore::set_reload_hook) also validates.
+    const HOOK_FORBIDDEN: &[char] = &[
+        ';', '|', '&', '$', '`', '>', '<', '(', ')', '\n', '\r', '\0',
+        '*', '?', '[', ']', '{', '}', '~', '%', '!',
+    ];
     if request.reload.contains(HOOK_FORBIDDEN) {
         return error_response(
             StatusCode::BAD_REQUEST,

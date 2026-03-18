@@ -274,9 +274,13 @@ impl CertmeshCore {
         request: &protocol::JoinRequest,
     ) -> Result<protocol::JoinResponse, CertmeshError> {
         let hostname = &request.hostname;
-        if hostname.is_empty() {
+        if hostname.is_empty()
+            || hostname.len() > 253
+            || hostname.contains('\0')
+            || hostname.contains(' ')
+        {
             return Err(CertmeshError::Internal(
-                "join request must include the joining machine's hostname".to_string(),
+                "invalid hostname for certificate SAN".to_string(),
             ));
         }
         // Default SANs: hostname + hostname.local, plus any extras the joiner sent
@@ -513,12 +517,24 @@ impl CertmeshCore {
         })
     }
 
+    /// Forbidden characters in reload hooks — validated at domain boundary.
+    const HOOK_FORBIDDEN: &'static [char] = &[
+        ';', '|', '&', '$', '`', '>', '<', '(', ')', '\n', '\r', '\0',
+        '*', '?', '[', ']', '{', '}', '~', '%', '!',
+    ];
+
     /// Set the post-renewal reload hook for a member.
     pub async fn set_reload_hook(&self, hostname: &str, hook: &str) -> Result<(), CertmeshError> {
+        // Validate at domain boundary — all callers (HTTP, embedded, CLI) are protected.
+        if hook.contains(Self::HOOK_FORBIDDEN) {
+            return Err(CertmeshError::Internal(
+                "reload hook contains forbidden characters".into(),
+            ));
+        }
         let mut roster = self.state.roster.lock().await;
         let member = roster
             .find_member_mut(hostname)
-            .ok_or_else(|| CertmeshError::Internal(format!("member not found: {hostname}")))?;
+            .ok_or_else(|| CertmeshError::Internal("member not found".into()))?;
         member.reload_hook = Some(hook.to_string());
 
         let roster_path = ca::roster_path();
