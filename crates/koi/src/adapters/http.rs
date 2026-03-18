@@ -437,9 +437,13 @@ async fn dat_auth_middleware(
     next: Next,
     expected_token: Arc<String>,
 ) -> Response {
-    // GET and OPTIONS are exempt from auth
+    // GET, HEAD, and OPTIONS are exempt from auth.
+    // HEAD is auto-matched to GET handlers by axum, so it must follow the same policy.
     let method = req.method().clone();
-    if method == axum::http::Method::GET || method == axum::http::Method::OPTIONS {
+    if method == axum::http::Method::GET
+        || method == axum::http::Method::HEAD
+        || method == axum::http::Method::OPTIONS
+    {
         return next.run(req).await;
     }
 

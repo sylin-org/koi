@@ -354,6 +354,17 @@ impl CertmeshCore {
             .and_then(|os| os.into_string().ok())
             .unwrap_or_else(|| "unknown".to_string());
 
+        // Validate hostname before using as certificate SAN
+        if hostname.len() > 253
+            || hostname.contains('\0')
+            || hostname.contains(' ')
+        {
+            return Err(CertmeshError::Internal(format!(
+                "hostname '{}' is not valid for use in certificate SANs",
+                &hostname[..hostname.len().min(64)],
+            )));
+        }
+
         let sans = vec![
             hostname.clone(),
             format!("{hostname}.local"),

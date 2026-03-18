@@ -173,7 +173,14 @@ async fn set_hook_handler(
         }
     }
 
-    // Validate reload hook is an absolute path
+    // Validate reload hook: absolute path + no shell metacharacters
+    const HOOK_FORBIDDEN: &[char] = &[';', '|', '&', '$', '`', '>', '<', '(', ')', '\n', '\r', '\0'];
+    if request.reload.contains(HOOK_FORBIDDEN) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &CertmeshError::Internal("reload hook contains forbidden characters".into()),
+        );
+    }
     #[cfg(unix)]
     if !request.reload.starts_with('/') {
         return error_response(
@@ -218,7 +225,7 @@ async fn set_hook_handler(
         }
         None => error_response(
             StatusCode::NOT_FOUND,
-            &CertmeshError::Internal(format!("member not found: {}", request.hostname)),
+            &CertmeshError::Internal("member not found".into()),
         ),
     }
 }
@@ -1436,8 +1443,8 @@ mod tests {
         assert!(json.get("error").is_some(), "missing error field");
         let msg = json.get("message").unwrap().as_str().unwrap();
         assert!(
-            msg.contains("nobody"),
-            "message should contain hostname: {msg}"
+            msg.contains("not found"),
+            "message should indicate not found: {msg}"
         );
     }
 

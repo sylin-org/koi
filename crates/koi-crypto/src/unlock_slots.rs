@@ -369,14 +369,14 @@ impl SlotTable {
         methods
     }
 
-    /// Save the slot table to a JSON file.
+    /// Save the slot table to a JSON file with restricted permissions.
     pub fn save(&self, path: &std::path::Path) -> Result<(), CryptoError> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| CryptoError::Serialization(e.to_string()))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, json)?;
+        crate::keys::write_secret_file(path, json.as_bytes())?;
         tracing::debug!(path = %path.display(), "Slot table saved");
         Ok(())
     }

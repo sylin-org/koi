@@ -44,9 +44,12 @@ impl EphemeralKeyPair {
 
         let hk = Hkdf::<Sha256>::new(None, shared_secret.as_bytes());
         let mut okm = [0u8; 32];
-        // 32 bytes is always valid output length for HKDF-SHA256
-        hk.expand(PROMOTE_INFO, &mut okm)
-            .expect("32 bytes is valid for HKDF-SHA256");
+        // 32 bytes is always a valid output length for HKDF-SHA256 (max = 255 * 32 = 8160).
+        // This cannot fail, but we handle it defensively to avoid panics in production.
+        if hk.expand(PROMOTE_INFO, &mut okm).is_err() {
+            // Unreachable for 32-byte output, but return zeros rather than panic
+            tracing::error!("HKDF expand failed unexpectedly");
+        }
         okm
     }
 }

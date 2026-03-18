@@ -150,20 +150,18 @@ pub fn verify_code(secret: &TotpSecret, code: &str) -> bool {
 
     let step = 30u64;
     let code_bytes = code.as_bytes();
+    // Accumulate match across all time steps without early return
+    // to avoid leaking which step matched via timing.
+    let mut matched = false;
     for offset in [0i64, -1, 1] {
         let time = (now as i64 + offset * step as i64) as u64;
         let expected = totp.generate(time);
         let expected_bytes = expected.as_bytes();
 
-        let len_ok: bool = (code_bytes.len() as u64)
-            .to_le_bytes()
-            .ct_eq(&(expected_bytes.len() as u64).to_le_bytes())
-            .into();
-        if len_ok && code_bytes.ct_eq(expected_bytes).into() {
-            return true;
-        }
+        let step_ok: bool = bool::from(code_bytes.ct_eq(expected_bytes));
+        matched |= step_ok;
     }
-    false
+    matched
 }
 
 /// Encrypt a TOTP secret for storage at rest.

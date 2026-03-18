@@ -353,11 +353,22 @@ pub fn decrypt_bytes(encrypted: &EncryptedKey, passphrase: &str) -> Result<Vec<u
 }
 
 /// Derive a 256-bit AES key from a passphrase using Argon2id with explicit params.
+/// Minimum Argon2id parameters to prevent downgrade from tampered key files.
+const MIN_M_COST: u32 = 8192;  // 8 MiB
+const MIN_T_COST: u32 = 1;
+const MIN_P_COST: u32 = 1;
+
 fn derive_aes_key(
     passphrase: &str,
     salt: &[u8],
     kdf_params: &KdfParams,
 ) -> Result<SecretBytes, CryptoError> {
+    if kdf_params.m_cost < MIN_M_COST || kdf_params.t_cost < MIN_T_COST || kdf_params.p_cost < MIN_P_COST {
+        return Err(CryptoError::KeyDerivation(format!(
+            "KDF params below minimum: m_cost={} (min {}), t_cost={} (min {}), p_cost={} (min {})",
+            kdf_params.m_cost, MIN_M_COST, kdf_params.t_cost, MIN_T_COST, kdf_params.p_cost, MIN_P_COST,
+        )));
+    }
     let mut key = vec![0u8; 32];
     let params = Params::new(kdf_params.m_cost, kdf_params.t_cost, kdf_params.p_cost, Some(32))
         .map_err(|e| CryptoError::KeyDerivation(format!("invalid KDF params: {e}")))?;

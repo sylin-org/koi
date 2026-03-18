@@ -54,13 +54,12 @@ pub fn prepare_promotion(
 
     // Serialize auth state for transfer.
     //
-    // Auth data is encrypted with an empty passphrase for the wire
-    // response. The standby calls `stored.unlock("")` to recover the
-    // auth state, then re-encrypts with its local passphrase when
-    // persisting to disk.
+    // Auth data is encrypted with the DH-derived shared key (same key
+    // that protects the CA key). The standby derives the same shared key
+    // from the DH exchange and decrypts both CA key and auth state.
     let auth_data = match auth_state {
         AuthState::Totp(secret) => {
-            let encrypted_totp = koi_crypto::totp::encrypt_secret(secret, "")?;
+            let encrypted_totp = koi_crypto::totp::encrypt_secret(secret, shared_key_hex.as_ref())?;
             serde_json::to_value(&koi_crypto::auth::StoredAuth::Totp {
                 encrypted_secret: encrypted_totp,
             })
@@ -102,13 +101,13 @@ pub fn accept_promotion(
     let ca_key = keys::decrypt_key(&response.encrypted_ca_key, shared_key_hex.as_ref())
         .map_err(|e| CertmeshError::PromotionFailed(format!("CA key DH decryption: {e}")))?;
 
-    // Auth data is encrypted with empty passphrase for wire transfer
+    // Auth data is encrypted with the same DH-derived shared key
     let stored: koi_crypto::auth::StoredAuth = serde_json::from_value(response.auth_data.clone())
         .map_err(|e| {
         CertmeshError::PromotionFailed(format!("auth data deserialization: {e}"))
     })?;
     let auth_state = stored
-        .unlock("")
+        .unlock(shared_key_hex.as_ref())
         .map_err(|e| CertmeshError::PromotionFailed(format!("auth unlock: {e}")))?;
 
     let roster: Roster = serde_json::from_str(&response.roster_json)

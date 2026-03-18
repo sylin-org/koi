@@ -38,7 +38,7 @@ pub async fn start(
     let tls_config = build_tls_config(cert_pem, key_pem, ca_cert_pem)?;
     let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
-    let app = Router::new().nest("/v1/certmesh", certmesh_core.routes());
+    let app = Router::new().nest("/v1/certmesh", certmesh_core.inter_node_routes());
 
     let listener = TcpListener::bind(("0.0.0.0", port)).await?;
     tracing::info!(port, "mTLS adapter listening");
