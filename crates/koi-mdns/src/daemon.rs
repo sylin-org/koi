@@ -44,13 +44,13 @@ enum MdnsOp {
 /// enqueue and return immediately. Operations that need a result
 /// (browse, shutdown) await a oneshot reply from the worker.
 pub(crate) struct MdnsDaemon {
-    op_tx: Mutex<std::sync::mpsc::Sender<MdnsOp>>,
+    op_tx: Mutex<std::sync::mpsc::SyncSender<MdnsOp>>,
 }
 
 impl MdnsDaemon {
     pub fn new() -> Result<Self> {
         let daemon = ServiceDaemon::new().map_err(|e| MdnsError::Daemon(e.to_string()))?;
-        let (op_tx, op_rx) = std::sync::mpsc::channel();
+        let (op_tx, op_rx) = std::sync::mpsc::sync_channel(256);
 
         std::thread::Builder::new()
             .name("koi-mdns-ops".into())
@@ -66,7 +66,7 @@ impl MdnsDaemon {
     fn send(&self, op: MdnsOp) -> Result<()> {
         self.op_tx
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .send(op)
             .map_err(|_| MdnsError::Daemon("mDNS worker stopped".into()))
     }
@@ -162,7 +162,10 @@ impl MdnsDaemon {
                             }
                         }
                         Ok(_) => continue,
-                        Err(_) => break,
+                        Err(_) => {
+                            let _ = self.stop_browse(service_type);
+                            break;
+                        }
                     }
                 }
                 _ = tokio::time::sleep_until(deadline) => {

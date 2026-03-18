@@ -94,7 +94,7 @@ impl Registry {
     /// Remove a registration (explicit unregister). Returns its payload
     /// so the caller can send goodbye packets.
     pub fn remove(&self, id: &str) -> Result<RegisterPayload> {
-        let mut regs = self.registrations.lock().unwrap();
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
         regs.remove(id)
             .map(|r| r.payload)
             .ok_or_else(|| MdnsError::RegistrationNotFound(id.to_string()))
@@ -118,7 +118,7 @@ impl Registry {
 
     /// Admin: force-revive a DRAINING registration.
     pub fn force_revive(&self, id: &str) -> Result<()> {
-        let mut regs = self.registrations.lock().unwrap();
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
         let reg = regs
             .get_mut(id)
             .ok_or_else(|| MdnsError::RegistrationNotFound(id.to_string()))?;
@@ -143,7 +143,7 @@ impl Registry {
 
     /// Resolve a partial ID to a full ID. Errors if ambiguous or not found.
     pub fn resolve_prefix(&self, prefix: &str) -> Result<String> {
-        let regs = self.registrations.lock().unwrap();
+        let regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
         let matches: Vec<&String> = regs.keys().filter(|id| id.starts_with(prefix)).collect();
         match matches.len() {
             0 => Err(MdnsError::RegistrationNotFound(prefix.to_string())),
@@ -155,7 +155,7 @@ impl Registry {
     /// Snapshot all registrations for admin display.
     pub fn snapshot(&self) -> Vec<(String, AdminRegistration)> {
         let now = Instant::now();
-        let regs = self.registrations.lock().unwrap();
+        let regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
         regs.iter()
             .map(|(id, reg)| (id.clone(), to_admin_registration(id, reg, now)))
             .collect()
@@ -164,7 +164,7 @@ impl Registry {
     /// Snapshot one registration for admin display.
     pub fn snapshot_one(&self, id: &str) -> Result<AdminRegistration> {
         let now = Instant::now();
-        let regs = self.registrations.lock().unwrap();
+        let regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
         regs.get(id)
             .map(|reg| to_admin_registration(id, reg, now))
             .ok_or_else(|| MdnsError::RegistrationNotFound(id.to_string()))
@@ -172,7 +172,7 @@ impl Registry {
 
     /// Counts by state (for admin status).
     pub fn counts(&self) -> RegistrationCounts {
-        let regs = self.registrations.lock().unwrap();
+        let regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
         let mut alive = 0;
         let mut draining = 0;
         let mut permanent = 0;
@@ -195,7 +195,7 @@ impl Registry {
 
     /// Get all registration IDs (for shutdown).
     pub fn all_ids(&self) -> Vec<String> {
-        let regs = self.registrations.lock().unwrap();
+        let regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
         regs.keys().cloned().collect()
     }
 
@@ -209,7 +209,7 @@ impl Registry {
         session_id: Option<SessionId>,
         now: Instant,
     ) -> InsertOutcome {
-        let mut regs = self.registrations.lock().unwrap();
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
 
         // Look for a DRAINING entry matching name + service type
         let reconnect_id = regs
@@ -254,7 +254,7 @@ impl Registry {
     }
 
     pub(crate) fn heartbeat_at(&self, id: &str, now: Instant) -> Result<u64> {
-        let mut regs = self.registrations.lock().unwrap();
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
         let reg = regs
             .get_mut(id)
             .ok_or_else(|| MdnsError::RegistrationNotFound(id.to_string()))?;
@@ -271,7 +271,7 @@ impl Registry {
     }
 
     pub(crate) fn drain_session_at(&self, session_id: &SessionId, now: Instant) -> Vec<String> {
-        let mut regs = self.registrations.lock().unwrap();
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
         let mut drained = Vec::new();
         for (id, reg) in regs.iter_mut() {
             if reg.session_id.as_ref() == Some(session_id)
@@ -286,7 +286,7 @@ impl Registry {
     }
 
     pub(crate) fn force_drain_at(&self, id: &str, now: Instant) -> Result<()> {
-        let mut regs = self.registrations.lock().unwrap();
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
         let reg = regs
             .get_mut(id)
             .ok_or_else(|| MdnsError::RegistrationNotFound(id.to_string()))?;
@@ -301,7 +301,7 @@ impl Registry {
 
     pub(crate) fn reap_at(&self, now: Instant) -> Vec<(String, RegisterPayload)> {
         let mut expired = Vec::new();
-        let mut regs = self.registrations.lock().unwrap();
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
 
         regs.retain(|id, reg| {
             match (&reg.state, &reg.policy) {
@@ -363,7 +363,7 @@ fn to_admin_registration(id: &str, reg: &Registration, now: Instant) -> AdminReg
         lease_secs,
         remaining_secs: remaining_secs_for(reg, now),
         grace_secs,
-        session_id: reg.session_id.as_ref().map(|s| s.0.clone()),
+        session_id: reg.session_id.as_ref().map(|s| s.as_str().to_string()),
         registered_at: format_epoch(reg.registered_at_wall),
         last_seen: format_epoch(reg.last_seen_wall),
         txt: reg.payload.txt.clone(),
@@ -409,7 +409,7 @@ mod tests {
     }
 
     fn session(id: &str) -> Option<SessionId> {
-        Some(SessionId(id.to_string()))
+        Some(SessionId::new(id.to_string()))
     }
 
     fn session_policy(grace_ms: u64) -> LeasePolicy {
@@ -453,7 +453,7 @@ mod tests {
             now,
         );
 
-        reg.drain_session_at(&SessionId("s1".into()), now);
+        reg.drain_session_at(&SessionId::new("s1".into()), now);
 
         // New registration with same name+type reconnects
         let outcome = reg.insert_or_reconnect_at(
@@ -501,7 +501,7 @@ mod tests {
         let mut old = payload("Svc", "_http._tcp");
         old.port = 8080;
         reg.insert_or_reconnect_at("abc".into(), old, session_policy(1000), session("s1"), now);
-        reg.drain_session_at(&SessionId("s1".into()), now);
+        reg.drain_session_at(&SessionId::new("s1".into()), now);
 
         let mut new = payload("Svc", "_http._tcp");
         new.port = 9090;
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn drain_session_transitions_matching() {
         let reg = Registry::new();
-        let sid = SessionId("s1".into());
+        let sid = SessionId::new("s1".into());
 
         reg.insert_or_reconnect(
             "a".into(),
@@ -636,7 +636,7 @@ mod tests {
             session("s2"),
         );
 
-        let drained = reg.drain_session(&SessionId("s1".into()));
+        let drained = reg.drain_session(&SessionId::new("s1".into()));
         assert_eq!(drained.len(), 1);
         assert_eq!(reg.counts().alive, 1);
         assert_eq!(reg.counts().draining, 1);
@@ -645,7 +645,7 @@ mod tests {
     #[test]
     fn drain_session_ignores_permanent() {
         let reg = Registry::new();
-        let sid = SessionId("s1".into());
+        let sid = SessionId::new("s1".into());
 
         reg.insert_or_reconnect(
             "a".into(),
@@ -735,7 +735,7 @@ mod tests {
             session("s1"),
             start,
         );
-        reg.drain_session_at(&SessionId("s1".into()), start);
+        reg.drain_session_at(&SessionId::new("s1".into()), start);
 
         // Before grace: nothing to reap
         let expired = reg.reap_at(start + Duration::from_millis(50));

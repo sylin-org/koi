@@ -228,7 +228,7 @@ impl MdnsCore {
         for id in &drained {
             tracing::info!(
                 id,
-                session = %session_id.0,
+                session = %session_id.as_str(),
                 "Session disconnected, registration draining"
             );
         }

@@ -62,7 +62,8 @@ pub async fn forward_request(
     let stream = TryStreamExt::map_err(response.bytes_stream(), |e| {
         std::io::Error::other(format!("Body stream error: {e}"))
     });
-    Ok(out.body(Body::from_stream(stream)).unwrap())
+    out.body(Body::from_stream(stream))
+        .map_err(|e| ProxyError::Forward(format!("Response body construction failed: {e}")))
 }
 
 fn copy_headers(builder: reqwest::RequestBuilder, headers: &HeaderMap) -> reqwest::RequestBuilder {

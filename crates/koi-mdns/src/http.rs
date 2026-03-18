@@ -135,9 +135,16 @@ async fn browse_handler(
             match next {
                 Some(event) => {
                     let resp = crate::protocol::browse_event_to_pipeline(event);
-                    let data = serde_json::to_string(&resp).unwrap();
-                    let id = uuid::Uuid::now_v7().to_string();
-                    yield Ok::<_, std::convert::Infallible>(Event::default().id(id).data(data));
+                    match serde_json::to_string(&resp) {
+                        Ok(data) => {
+                            let id = uuid::Uuid::now_v7().to_string();
+                            yield Ok::<_, std::convert::Infallible>(Event::default().id(id).data(data));
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "SSE browse event serialization failed");
+                            break;
+                        }
+                    }
                 }
                 None => break,
             }
@@ -155,6 +162,13 @@ async fn register_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Json(payload): Json<RegisterPayload>,
 ) -> impl IntoResponse {
+    if payload.lease_secs == Some(0) {
+        let body = serde_json::json!({
+            "error": "invalid_payload",
+            "message": "lease_secs=0 (permanent lease) is not allowed via HTTP; use a positive value or omit for default"
+        });
+        return (axum::http::StatusCode::BAD_REQUEST, Json(body)).into_response();
+    }
     let policy = policy_from_lease_secs(payload.lease_secs);
     match core.register_with_policy(payload, policy, None) {
         Ok(result) => {
@@ -226,9 +240,16 @@ async fn events_handler(
             match next {
                 Some(event) => {
                     let resp = crate::protocol::subscribe_event_to_pipeline(event);
-                    let data = serde_json::to_string(&resp).unwrap();
-                    let id = uuid::Uuid::now_v7().to_string();
-                    yield Ok::<_, std::convert::Infallible>(Event::default().id(id).data(data));
+                    match serde_json::to_string(&resp) {
+                        Ok(data) => {
+                            let id = uuid::Uuid::now_v7().to_string();
+                            yield Ok::<_, std::convert::Infallible>(Event::default().id(id).data(data));
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "SSE subscribe event serialization failed");
+                            break;
+                        }
+                    }
                 }
                 None => break,
             }
@@ -286,7 +307,7 @@ async fn admin_inspect_handler(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     match core.admin_inspect(&id) {
-        Ok(admin) => Json(serde_json::to_value(admin).unwrap()).into_response(),
+        Ok(admin) => Json(admin).into_response(),
         Err(e) => error_json(e).into_response(),
     }
 }
@@ -348,7 +369,8 @@ fn error_json(e: MdnsError) -> impl IntoResponse {
 fn error_event_stream(
     e: MdnsError,
 ) -> impl Stream<Item = std::result::Result<Event, std::convert::Infallible>> {
-    let data = serde_json::to_string(&crate::protocol::error_to_pipeline(&e)).unwrap();
+    let data = serde_json::to_string(&crate::protocol::error_to_pipeline(&e))
+        .unwrap_or_else(|_| format!(r#"{{"error":"serialization_failed","message":"{}"}}"#, e));
     async_stream::stream! {
         let id = uuid::Uuid::now_v7().to_string();
         yield Ok(Event::default().id(id).data(data));
@@ -375,10 +397,18 @@ fn policy_from_lease_secs(lease_secs: Option<u64>) -> LeasePolicy {
 #[derive(utoipa::OpenApi)]
 #[openapi(
     paths(
-        browse_handler, register_handler, unregister_handler, resolve_handler,
-        events_handler, heartbeat_handler,
-        admin_status_handler, admin_registrations_handler, admin_inspect_handler,
-        admin_unregister_handler, admin_drain_handler, admin_revive_handler,
+        browse_handler,
+        register_handler,
+        unregister_handler,
+        resolve_handler,
+        events_handler,
+        heartbeat_handler,
+        admin_status_handler,
+        admin_registrations_handler,
+        admin_inspect_handler,
+        admin_unregister_handler,
+        admin_drain_handler,
+        admin_revive_handler,
     ),
     components(schemas(
         RegisterPayload,

@@ -25,7 +25,7 @@ impl RateLimiter {
     }
 
     pub fn allow(&self) -> bool {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         if now.duration_since(state.window_start) >= Duration::from_secs(1) {
             state.window_start = now;

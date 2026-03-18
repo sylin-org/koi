@@ -335,8 +335,14 @@ fn error_response(
 #[derive(utoipa::OpenApi)]
 #[openapi(
     paths(
-        status_handler, lookup_handler, list_handler, entries_handler,
-        add_entry_handler, remove_entry_handler, start_handler, stop_handler,
+        status_handler,
+        lookup_handler,
+        list_handler,
+        entries_handler,
+        add_entry_handler,
+        remove_entry_handler,
+        start_handler,
+        stop_handler,
     ),
     components(schemas(
         StatusResponse,

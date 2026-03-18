@@ -157,7 +157,12 @@ fn map_error(err: ProxyError) -> impl IntoResponse {
 /// OpenAPI documentation for the proxy domain.
 #[derive(utoipa::OpenApi)]
 #[openapi(
-    paths(status_handler, entries_handler, add_entry_handler, remove_entry_handler),
+    paths(
+        status_handler,
+        entries_handler,
+        add_entry_handler,
+        remove_entry_handler
+    ),
     components(schemas(
         AddProxyRequest,
         ProxyEntry,

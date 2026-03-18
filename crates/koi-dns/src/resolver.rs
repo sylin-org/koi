@@ -11,9 +11,8 @@ use hickory_server::authority::MessageResponseBuilder;
 use hickory_server::server::{
     Request, RequestHandler, ResponseHandler, ResponseInfo, ServerFuture,
 };
-use koi_certmesh::roster::Roster;
 use koi_common::capability::{Capability, CapabilityStatus};
-use koi_common::types::{ServiceRecord, META_QUERY};
+use koi_common::integration::{AliasFeedback as AliasFeedbackTrait, CertmeshSnapshot, MdnsSnapshot};
 use koi_common::persist;
 use koi_config::state::{DnsEntry, DnsState};
 use tokio::net::{TcpListener, UdpSocket};
@@ -109,8 +108,9 @@ pub struct DnsCore {
     /// Optional `.local` zone — serves hostname→IP from mDNS cache.
     local_zone: Option<DnsZone>,
     state: StateCache,
-    mdns_cache: Option<MdnsCache>,
-    certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
+    mdns: Option<Arc<dyn MdnsSnapshot>>,
+    certmesh: Option<Arc<dyn CertmeshSnapshot>>,
+    alias_feedback: Option<Arc<dyn AliasFeedbackTrait>>,
     upstream: Option<TokioResolver>,
     alias_tx: Option<mpsc::Sender<AliasFeedback>>,
     started_at: std::time::Instant,
@@ -121,8 +121,9 @@ pub struct DnsCore {
 impl DnsCore {
     pub async fn new(
         config: DnsConfig,
-        mdns: Option<Arc<koi_mdns::MdnsCore>>,
-        certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
+        mdns: Option<Arc<dyn MdnsSnapshot>>,
+        certmesh: Option<Arc<dyn CertmeshSnapshot>>,
+        alias_feedback: Option<Arc<dyn AliasFeedbackTrait>>,
     ) -> Result<Self, DnsError> {
         let max_qps = config.max_qps;
         let zone = DnsZone::new(&config.zone)?;
@@ -135,20 +136,16 @@ impl DnsCore {
         };
 
         let state = StateCache::new(config.state_path.clone());
-        let mdns_cache = match mdns {
-            Some(core) => Some(MdnsCache::spawn(core).await),
-            None => None,
-        };
         let upstream = Resolver::builder_tokio()
             .map(|builder| builder.build())
             .ok();
 
-        let alias_tx = if certmesh.is_some() {
+        let alias_tx = if alias_feedback.is_some() {
             let (tx, rx) = mpsc::channel(128);
-            let cm = certmesh.clone().unwrap();
+            let af = alias_feedback.clone().unwrap();
             let zone_clone = zone.zone().to_string();
             tokio::spawn(async move {
-                alias_feedback_loop(cm, zone_clone, rx).await;
+                alias_feedback_loop(af, zone_clone, rx).await;
             });
             Some(tx)
         } else {
@@ -160,8 +157,9 @@ impl DnsCore {
             zone,
             local_zone,
             state,
-            mdns_cache,
+            mdns,
             certmesh,
+            alias_feedback,
             upstream,
             alias_tx,
             started_at: std::time::Instant::now(),
@@ -223,13 +221,12 @@ impl DnsCore {
 
     pub fn snapshot(&self) -> RecordsSnapshot {
         let state = self.state.load();
-        let roster = load_roster();
-        let mdns_records = self
-            .mdns_cache
-            .as_ref()
-            .map(|c| c.snapshot())
-            .unwrap_or_default();
-        build_snapshot(&self.zone, &state, roster.as_ref(), &mdns_records)
+        build_snapshot(
+            &self.zone,
+            &state,
+            self.certmesh.as_deref(),
+            self.mdns.as_deref(),
+        )
     }
 
     pub fn list_names(&self) -> Vec<String> {
@@ -284,10 +281,6 @@ impl DnsCore {
     }
 
     /// Resolve a `.local` hostname directly from the mDNS cache.
-    ///
-    /// Extracts the hostname (e.g. `stone-azure-pool` from `stone-azure-pool.local.`),
-    /// looks it up in the mDNS hostname→IP map, and returns matching records.
-    /// Returns `None` if the hostname is not in the mDNS cache.
     pub fn resolve_mdns_local(
         &self,
         name: &str,
@@ -297,19 +290,12 @@ impl DnsCore {
         let normalized = local_zone.normalize_name(name)?;
 
         // Extract bare hostname: "stone-azure-pool.local." → "stone-azure-pool"
-        let hostname = normalized
-            .trim_end_matches('.')
-            .trim_end_matches(".local");
+        let hostname = normalized.trim_end_matches('.').trim_end_matches(".local");
         if hostname.is_empty() {
             return None;
         }
 
-        let mdns_records = self
-            .mdns_cache
-            .as_ref()
-            .map(|c| c.snapshot())
-            .unwrap_or_default();
-        let host_ips = crate::records::mdns_host_ips(&mdns_records);
+        let host_ips = self.mdns.as_ref()?.host_ips();
 
         let ip = host_ips.get(hostname)?;
         let filtered = filter_ips(vec![*ip], record_type);
@@ -432,8 +418,9 @@ impl Clone for DnsCore {
                 .as_ref()
                 .map(|z| DnsZone::new(z.zone()).unwrap()),
             state: self.state.clone(),
-            mdns_cache: self.mdns_cache.clone(),
+            mdns: self.mdns.clone(),
             certmesh: self.certmesh.clone(),
+            alias_feedback: self.alias_feedback.clone(),
             upstream: self.upstream.clone(),
             alias_tx: self.alias_tx.clone(),
             started_at: self.started_at,
@@ -462,27 +449,27 @@ impl StateCache {
         let new_mtime = std::fs::metadata(&self.path)
             .and_then(|m| m.modified())
             .ok();
-        let mut mtime_guard = self.mtime.write().unwrap();
+        let mut mtime_guard = self.mtime.write().unwrap_or_else(|e| e.into_inner());
         if *mtime_guard == new_mtime {
-            return self.state.read().unwrap().clone();
+            return self.state.read().unwrap_or_else(|e| e.into_inner()).clone();
         }
         match persist::read_json_or_default::<DnsState>(&self.path) {
             Ok(state) => {
-                *self.state.write().unwrap() = state.clone();
+                *self.state.write().unwrap_or_else(|e| e.into_inner()) = state.clone();
                 *mtime_guard = new_mtime;
                 state
             }
-            Err(_) => self.state.read().unwrap().clone(),
+            Err(_) => self.state.read().unwrap_or_else(|e| e.into_inner()).clone(),
         }
     }
 
     fn save(&self, state: &DnsState) -> Result<(), std::io::Error> {
         persist::write_json_pretty(&self.path, state)?;
         // Invalidate mtime cache so the next load() picks up the change.
-        *self.mtime.write().unwrap() = std::fs::metadata(&self.path)
+        *self.mtime.write().unwrap_or_else(|e| e.into_inner()) = std::fs::metadata(&self.path)
             .and_then(|m| m.modified())
             .ok();
-        *self.state.write().unwrap() = state.clone();
+        *self.state.write().unwrap_or_else(|e| e.into_inner()) = state.clone();
         Ok(())
     }
 }
@@ -495,135 +482,6 @@ impl Clone for StateCache {
             mtime: Arc::clone(&self.mtime),
         }
     }
-}
-
-#[derive(Clone)]
-struct MdnsCache {
-    records: Arc<RwLock<HashMap<String, HashMap<String, ServiceRecord>>>>,
-    cancel: CancellationToken,
-}
-
-impl MdnsCache {
-    async fn spawn(core: Arc<koi_mdns::MdnsCore>) -> Self {
-        let records = Arc::new(RwLock::new(HashMap::new()));
-        let cancel = CancellationToken::new();
-
-        let meta_core = Arc::clone(&core);
-        let meta_records = Arc::clone(&records);
-        let meta_cancel = cancel.clone();
-        tokio::spawn(async move {
-            if let Ok(handle) = meta_core.browse(META_QUERY).await {
-                run_meta_browse(meta_core, handle, meta_records, meta_cancel).await;
-            }
-        });
-
-        Self { records, cancel }
-    }
-
-    fn snapshot(&self) -> Vec<ServiceRecord> {
-        let guard = self.records.read().unwrap();
-        guard
-            .values()
-            .flat_map(|map| map.values().cloned())
-            .collect()
-    }
-}
-
-impl Drop for MdnsCache {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-    }
-}
-
-async fn run_meta_browse(
-    core: Arc<koi_mdns::MdnsCore>,
-    handle: koi_mdns::BrowseHandle,
-    records: Arc<RwLock<HashMap<String, HashMap<String, ServiceRecord>>>>,
-    cancel: CancellationToken,
-) {
-    let active = Arc::new(tokio::sync::Mutex::new(HashSet::<String>::new()));
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            event = handle.recv() => {
-                let Some(event) = event else { break; };
-                if let koi_mdns::events::MdnsEvent::Found(record) = event {
-                    let service_type = record.name;
-                    let mut guard = active.lock().await;
-                    if guard.insert(service_type.clone()) {
-                        let c = Arc::clone(&core);
-                        let r = Arc::clone(&records);
-                        let t = service_type.clone();
-                        let cancel_child = cancel.clone();
-                        tokio::spawn(async move {
-                            if let Ok(handle) = c.browse(&t).await {
-                                run_type_browse(handle, r, cancel_child).await;
-                            }
-                        });
-                    }
-                }
-            }
-        }
-    }
-}
-
-async fn run_type_browse(
-    handle: koi_mdns::BrowseHandle,
-    records: Arc<RwLock<HashMap<String, HashMap<String, ServiceRecord>>>>,
-    cancel: CancellationToken,
-) {
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            event = handle.recv() => {
-                let Some(event) = event else { break; };
-                match event {
-                    koi_mdns::events::MdnsEvent::Resolved(record) => {
-                        let mut guard = records.write().unwrap();
-                        let entry = guard.entry(record.service_type.clone()).or_default();
-                        entry.insert(record.name.clone(), record);
-                    }
-                    koi_mdns::events::MdnsEvent::Removed { name, service_type } => {
-                        let mut guard = records.write().unwrap();
-                        let service_type = if service_type.is_empty() {
-                            extract_service_type(&name)
-                        } else {
-                            Some(service_type)
-                        };
-                        if let Some(st) = service_type {
-                            if let Some(map) = guard.get_mut(&st) {
-                                let instance = extract_instance_name(&name);
-                                if let Some(instance) = instance {
-                                    map.remove(&instance);
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-}
-
-fn extract_service_type(fullname: &str) -> Option<String> {
-    let idx = fullname.find("._")?;
-    let rest = &fullname[idx + 1..];
-    let trimmed = rest.trim_end_matches('.').trim_end_matches(".local");
-    Some(trimmed.to_string())
-}
-
-fn extract_instance_name(fullname: &str) -> Option<String> {
-    let idx = fullname.find("._")?;
-    Some(fullname[..idx].to_string())
-}
-
-fn load_roster() -> Option<Roster> {
-    let path = koi_certmesh::ca::roster_path();
-    if !path.exists() {
-        return None;
-    }
-    koi_certmesh::roster::load_roster(&path).ok()
 }
 
 fn filter_ips(mut ips: Vec<IpAddr>, record_type: RecordType) -> Vec<IpAddr> {
@@ -759,16 +617,13 @@ impl RequestHandler for DnsHandler {
                     }
                     None => {
                         // Not in mDNS cache — fall through to upstream.
-                        // Don't claim authoritative; the name may exist on
-                        // the network but hasn't been discovered yet.
                     }
                 }
                 // If answers is still empty after .local lookup, fall through
                 // to upstream resolver below (no early return).
                 if answers.is_empty() && response_code == ResponseCode::NoError {
                     if let Some(resolver) = &self.core.upstream {
-                        let lookup =
-                            resolver.lookup(Name::from(query_name), query_type).await;
+                        let lookup = resolver.lookup(Name::from(query_name), query_type).await;
                         match lookup {
                             Ok(result) => {
                                 answers.extend(
@@ -854,7 +709,7 @@ fn rdata_ip_addr(data: &RData) -> Option<IpAddr> {
 }
 
 async fn alias_feedback_loop(
-    certmesh: Arc<koi_certmesh::CertmeshCore>,
+    feedback: Arc<dyn AliasFeedbackTrait>,
     zone: String,
     mut rx: mpsc::Receiver<AliasFeedback>,
 ) {
@@ -869,9 +724,9 @@ async fn alias_feedback_loop(
                 let mut drained = HashMap::new();
                 std::mem::swap(&mut drained, &mut pending);
                 for (hostname, aliases) in drained {
-                    let mut sans: Vec<String> = aliases.into_iter().collect();
-                    sans.sort();
-                    let _ = certmesh.add_alias_sans(&hostname, &sans).await;
+                    for alias in &aliases {
+                        feedback.record_alias(&hostname, alias);
+                    }
                 }
             }
             msg = rx.recv() => {
