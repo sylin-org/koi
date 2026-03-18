@@ -8,9 +8,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::log::append_transition;
 use crate::service::{run_check, ServiceStatus};
-use crate::state::{HealthCheckConfig, DEFAULT_INTERVAL_SECS, DEFAULT_TIMEOUT_SECS};
+use crate::state::HealthCheckConfig;
 use crate::HealthCore;
-use koi_proxy::config as proxy_config;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ServiceCheckState {
@@ -48,7 +47,7 @@ pub async fn run_checks_once(
     states: &Arc<RwLock<HashMap<String, ServiceCheckState>>>,
 ) {
     let mut checks = core.list_checks().await;
-    checks.extend(proxy_checks());
+    checks.extend(core.proxy_checks());
     if checks.is_empty() {
         return;
     }
@@ -58,7 +57,7 @@ pub async fn run_checks_once(
             continue;
         }
 
-        let outcome = run_check(&check).await;
+        let outcome = run_check(&check, core.http_client()).await;
         let now = Utc::now();
 
         let previous = {
@@ -91,22 +90,6 @@ pub async fn run_checks_once(
         let mut guard = states.write().await;
         guard.insert(check.name.clone(), next);
     }
-}
-
-fn proxy_checks() -> Vec<HealthCheckConfig> {
-    let Ok(entries) = proxy_config::load_entries() else {
-        return Vec::new();
-    };
-    entries
-        .into_iter()
-        .map(|entry| HealthCheckConfig {
-            name: format!("proxy:{}", entry.name),
-            kind: crate::service::ServiceCheckKind::Http,
-            target: entry.backend,
-            interval_secs: DEFAULT_INTERVAL_SECS,
-            timeout_secs: DEFAULT_TIMEOUT_SECS,
-        })
-        .collect()
 }
 
 async fn is_due(

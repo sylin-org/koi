@@ -8,6 +8,7 @@ pub mod error;
 pub mod firewall;
 pub mod http;
 pub mod id;
+pub mod integration;
 pub mod net;
 pub mod paths;
 pub mod persist;

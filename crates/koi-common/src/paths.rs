@@ -1,5 +1,15 @@
 use std::path::PathBuf;
 
+/// Resolve the data directory with an explicit override, falling back to
+/// the env-var / platform default.  Use this in contexts where
+/// `std::env::set_var` would be unsound (e.g. multi-threaded embedded).
+pub fn koi_data_dir_with_override(override_dir: Option<&std::path::Path>) -> PathBuf {
+    if let Some(dir) = override_dir {
+        return dir.to_path_buf();
+    }
+    koi_data_dir()
+}
+
 /// Root data directory for Koi.
 ///
 /// All Koi data is machine-scoped (CA keys, roster, certs, logs, state).

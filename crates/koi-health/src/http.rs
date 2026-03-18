@@ -142,7 +142,12 @@ fn map_error(err: HealthError) -> axum::response::Response {
 /// OpenAPI documentation for the health domain.
 #[derive(utoipa::OpenApi)]
 #[openapi(
-    paths(status_handler, list_checks_handler, add_check_handler, remove_check_handler),
+    paths(
+        status_handler,
+        list_checks_handler,
+        add_check_handler,
+        remove_check_handler
+    ),
     components(schemas(
         HealthSnapshot,
         AddCheckRequest,

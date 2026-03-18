@@ -1,8 +1,7 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 use std::net::IpAddr;
 
-use koi_certmesh::roster::{MemberStatus, Roster};
-use koi_common::types::ServiceRecord;
+use koi_common::integration::{CertmeshSnapshot, MdnsSnapshot};
 use koi_config::state::DnsState;
 
 use crate::aliases::{build_aliases, AliasFeedback};
@@ -20,15 +19,20 @@ pub struct RecordsSnapshot {
 pub fn build_snapshot(
     zone: &DnsZone,
     state: &DnsState,
-    roster: Option<&Roster>,
-    mdns_records: &[ServiceRecord],
+    certmesh: Option<&dyn CertmeshSnapshot>,
+    mdns: Option<&dyn MdnsSnapshot>,
 ) -> RecordsSnapshot {
     let static_entries = static_entries(zone, state);
-    let host_ips = mdns_host_ips(mdns_records);
-    let certmesh_entries = roster
-        .map(|r| certmesh_entries(zone, r, &host_ips))
+    let mdns_records = mdns
+        .map(|m| m.cached_records())
         .unwrap_or_default();
-    let aliases = build_aliases(zone, mdns_records);
+    let host_ips = mdns
+        .map(|m| m.host_ips())
+        .unwrap_or_default();
+    let certmesh_entries = certmesh
+        .map(|cm| certmesh_entries(zone, &cm.active_members(), &host_ips))
+        .unwrap_or_default();
+    let aliases = build_aliases(zone, &mdns_records);
 
     RecordsSnapshot {
         static_entries,
@@ -58,12 +62,12 @@ fn static_entries(zone: &DnsZone, state: &DnsState) -> HashMap<String, Vec<IpAdd
 
 fn certmesh_entries(
     zone: &DnsZone,
-    roster: &Roster,
+    members: &[koi_common::integration::MemberSummary],
     host_ips: &HashMap<String, IpAddr>,
 ) -> HashMap<String, Vec<IpAddr>> {
     let mut map: HashMap<String, Vec<IpAddr>> = HashMap::new();
-    for member in &roster.members {
-        if member.status != MemberStatus::Active {
+    for member in members {
+        if member.status != "active" {
             continue;
         }
         let ip = match host_ips.get(&member.hostname) {
@@ -73,28 +77,11 @@ fn certmesh_entries(
         if !is_private_ip(&ip) {
             continue;
         }
-        for san in &member.cert_sans {
+        for san in &member.sans {
             let Some(name) = zone.normalize_name(san) else {
                 continue;
             };
             map.entry(name).or_default().push(ip);
-        }
-    }
-    map
-}
-
-pub(crate) fn mdns_host_ips(records: &[ServiceRecord]) -> HashMap<String, IpAddr> {
-    let mut map = HashMap::new();
-    for record in records {
-        let Some(host) = record.host.as_deref() else {
-            continue;
-        };
-        let Some(ip) = record.ip.as_deref().and_then(|ip| ip.parse().ok()) else {
-            continue;
-        };
-        let hostname = host.trim_end_matches('.').trim_end_matches(".local");
-        if !hostname.is_empty() {
-            map.insert(hostname.to_string(), ip);
         }
     }
     map

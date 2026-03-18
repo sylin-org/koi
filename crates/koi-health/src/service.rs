@@ -62,26 +62,23 @@ pub fn validate_check(check: &HealthCheckConfig) -> Result<(), String> {
     }
 }
 
-pub async fn run_check(check: &HealthCheckConfig) -> ServiceCheckOutcome {
+pub async fn run_check(
+    check: &HealthCheckConfig,
+    client: &reqwest::Client,
+) -> ServiceCheckOutcome {
     match check.kind {
-        ServiceCheckKind::Http => run_http_check(check).await,
+        ServiceCheckKind::Http => run_http_check(check, client).await,
         ServiceCheckKind::Tcp => run_tcp_check(check).await,
     }
 }
 
-async fn run_http_check(check: &HealthCheckConfig) -> ServiceCheckOutcome {
+async fn run_http_check(
+    check: &HealthCheckConfig,
+    client: &reqwest::Client,
+) -> ServiceCheckOutcome {
     let timeout = Duration::from_secs(check.timeout_secs);
-    let client = match reqwest::Client::builder().timeout(timeout).build() {
-        Ok(client) => client,
-        Err(e) => {
-            return ServiceCheckOutcome {
-                status: ServiceStatus::Down,
-                message: Some(format!("client_error: {e}")),
-            };
-        }
-    };
 
-    match client.get(&check.target).send().await {
+    match client.get(&check.target).timeout(timeout).send().await {
         Ok(resp) => {
             if resp.status().is_success() {
                 ServiceCheckOutcome {

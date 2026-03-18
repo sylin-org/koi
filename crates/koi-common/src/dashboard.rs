@@ -83,9 +83,7 @@ struct DashboardSnapshot {
 
 // ── SSE stream ──────────────────────────────────────────────────────
 
-fn dashboard_event_stream(
-    state: DashboardState,
-) -> impl Stream<Item = Result<Event, Infallible>> {
+fn dashboard_event_stream(state: DashboardState) -> impl Stream<Item = Result<Event, Infallible>> {
     async_stream::stream! {
         let mut rx = state.event_tx.subscribe();
         let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
@@ -93,12 +91,21 @@ fn dashboard_event_stream(
 
         loop {
             let event = tokio::select! {
-                Ok(ev) = rx.recv() => {
-                    Event::default()
-                        .event(&ev.event_type)
-                        .id(ev.id)
-                        .json_data(ev.data)
-                        .ok()
+                result = rx.recv() => {
+                    match result {
+                        Ok(ev) => {
+                            Event::default()
+                                .event(&ev.event_type)
+                                .id(ev.id)
+                                .json_data(ev.data)
+                                .ok()
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(dropped = n, "Dashboard SSE stream lagged");
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
                 },
                 _ = heartbeat.tick() => {
                     Event::default()
@@ -124,9 +131,7 @@ pub async fn get_dashboard() -> Html<&'static str> {
 }
 
 /// `GET /v1/dashboard/snapshot` — System-level JSON snapshot.
-pub async fn get_snapshot(
-    Extension(state): Extension<DashboardState>,
-) -> impl IntoResponse {
+pub async fn get_snapshot(Extension(state): Extension<DashboardState>) -> impl IntoResponse {
     let hostname = hostname::get()
         .ok()
         .and_then(|os| os.into_string().ok())

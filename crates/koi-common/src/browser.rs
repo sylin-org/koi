@@ -51,15 +51,9 @@ pub struct ResolvedService {
 /// Domain-agnostic browser event.
 #[derive(Clone, Debug)]
 pub enum BrowserEvent {
-    Found {
-        name: String,
-        service_type: String,
-    },
+    Found { name: String, service_type: String },
     Resolved(ResolvedService),
-    Removed {
-        name: String,
-        service_type: String,
-    },
+    Removed { name: String, service_type: String },
 }
 
 impl From<&crate::types::ServiceRecord> for ResolvedService {
@@ -107,7 +101,9 @@ pub trait BrowseSource: Send + Sync {
     fn browse(
         &self,
         service_type: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<BrowseHandle, BrowseError>> + Send + '_>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<BrowseHandle, BrowseError>> + Send + '_>,
+    >;
 
     /// Subscribe to the global event broadcast channel.
     fn subscribe(&self) -> broadcast::Receiver<BrowserEvent>;
@@ -307,10 +303,7 @@ fn normalize_type(t: &str) -> String {
 
 fn short_name(full_name: &str, service_type: &str) -> String {
     let clean = full_name.trim_end_matches('.');
-    for suffix in &[
-        format!(".{service_type}.local"),
-        format!(".{service_type}"),
-    ] {
+    for suffix in &[format!(".{service_type}.local"), format!(".{service_type}")] {
         if let Some(prefix) = clean.strip_suffix(suffix.as_str()) {
             let name = prefix.trim_end_matches('.');
             if !name.is_empty() {
@@ -366,11 +359,7 @@ struct TypeSummary {
 /// Spawns the browser worker that populates the [`BrowserCache`].
 ///
 /// The caller is responsible for spawning this as a tokio task.
-pub async fn worker(
-    source: Arc<dyn BrowseSource>,
-    cache: BrowserCache,
-    cancel: CancellationToken,
-) {
+pub async fn worker(source: Arc<dyn BrowseSource>, cache: BrowserCache, cancel: CancellationToken) {
     tracing::info!("mDNS browser worker starting");
 
     let mut meta_handle = match source.browse(META_QUERY).await {
@@ -435,6 +424,7 @@ pub async fn worker(
                                     }
                                 });
                                 pump_tasks.push(task);
+                                pump_tasks.retain(|h| !h.is_finished());
                             }
                             Err(e) => {
                                 tracing::debug!(error = %e, browse_type, "Failed to browse type");
@@ -470,38 +460,47 @@ fn browser_event_stream(
 
         loop {
             tokio::select! {
-                Ok(event) = rx.recv() => {
-                    let sse = match &event {
-                        BrowserEvent::Found { name, service_type } => {
-                            if service_type.is_empty() {
-                                Event::default()
-                                    .event("type_found")
-                                    .id(uuid::Uuid::now_v7().to_string())
-                                    .json_data(serde_json::json!({
-                                        "service_type": name,
-                                    })).ok()
-                            } else {
-                                None
+                result = rx.recv() => {
+                    match result {
+                        Ok(event) => {
+                            let sse = match &event {
+                                BrowserEvent::Found { name, service_type } => {
+                                    if service_type.is_empty() {
+                                        Event::default()
+                                            .event("type_found")
+                                            .id(uuid::Uuid::now_v7().to_string())
+                                            .json_data(serde_json::json!({
+                                                "service_type": name,
+                                            })).ok()
+                                    } else {
+                                        None
+                                    }
+                                }
+                                BrowserEvent::Resolved(record) => {
+                                    Event::default()
+                                        .event("resolved")
+                                        .id(uuid::Uuid::now_v7().to_string())
+                                        .json_data(record).ok()
+                                }
+                                BrowserEvent::Removed { name, service_type } => {
+                                    Event::default()
+                                        .event("removed")
+                                        .id(uuid::Uuid::now_v7().to_string())
+                                        .json_data(serde_json::json!({
+                                            "name": name,
+                                            "service_type": service_type
+                                        })).ok()
+                                }
+                            };
+                            if let Some(ev) = sse {
+                                yield Ok(ev);
                             }
                         }
-                        BrowserEvent::Resolved(record) => {
-                            Event::default()
-                                .event("resolved")
-                                .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(record).ok()
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(dropped = n, "Browser SSE stream lagged");
+                            continue;
                         }
-                        BrowserEvent::Removed { name, service_type } => {
-                            Event::default()
-                                .event("removed")
-                                .id(uuid::Uuid::now_v7().to_string())
-                                .json_data(serde_json::json!({
-                                    "name": name,
-                                    "service_type": service_type
-                                })).ok()
-                        }
-                    };
-                    if let Some(ev) = sse {
-                        yield Ok(ev);
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 },
                 _ = heartbeat.tick() => {
@@ -548,9 +547,7 @@ pub async fn get_page() -> Html<&'static str> {
 }
 
 /// `GET /v1/mdns/browser/snapshot` — Full browser cache as JSON.
-async fn get_snapshot(
-    Extension(state): Extension<BrowserState>,
-) -> Json<BrowserSnapshot> {
+async fn get_snapshot(Extension(state): Extension<BrowserState>) -> Json<BrowserSnapshot> {
     Json(state.cache.snapshot().await)
 }
 
@@ -558,6 +555,9 @@ async fn get_snapshot(
 async fn get_events(
     Extension(state): Extension<BrowserState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    Sse::new(browser_event_stream(state.source.clone(), state.cache.clone()))
-        .keep_alive(KeepAlive::default())
+    Sse::new(browser_event_stream(
+        state.source.clone(),
+        state.cache.clone(),
+    ))
+    .keep_alive(KeepAlive::default())
 }

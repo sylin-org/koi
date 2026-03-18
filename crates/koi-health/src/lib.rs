@@ -16,12 +16,12 @@ use tokio::sync::{broadcast, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use koi_common::capability::{Capability, CapabilityStatus};
+use koi_common::integration::{CertmeshSnapshot, DnsProbe, MdnsSnapshot, ProxySnapshot};
 
 use crate::checker::{run_checks_loop, run_checks_once, ServiceCheckState};
 use crate::machine::{collect_machine_health, MdnsTracker};
 use crate::state::{load_health_state, save_health_state, HealthCheckConfig, HealthChecksState};
 use crate::state::{DEFAULT_INTERVAL_SECS, DEFAULT_TIMEOUT_SECS};
-use koi_proxy::config as proxy_config;
 
 pub use machine::MachineHealth;
 pub use service::ServiceCheckKind;
@@ -76,41 +76,57 @@ pub enum HealthError {
     Io(String),
 }
 
+/// Default timeout for the shared HTTP client used by health checks.
+const HTTP_CLIENT_TIMEOUT_SECS: u64 = 10;
+
 /// Core health facade.
 pub struct HealthCore {
     mdns_tracker: Option<MdnsTracker>,
-    dns: Option<Arc<koi_dns::DnsRuntime>>,
+    dns: Option<Arc<dyn DnsProbe>>,
+    certmesh: Option<Arc<dyn CertmeshSnapshot>>,
+    proxy: Option<Arc<dyn ProxySnapshot>>,
     checks: Arc<RwLock<Vec<HealthCheckConfig>>>,
     service_states: Arc<RwLock<HashMap<String, ServiceCheckState>>>,
     machine_threshold: Duration,
     started_at: Instant,
     event_tx: broadcast::Sender<HealthEvent>,
+    http_client: reqwest::Client,
 }
 
 impl HealthCore {
     pub async fn new(
-        mdns: Option<Arc<koi_mdns::MdnsCore>>,
-        dns: Option<Arc<koi_dns::DnsRuntime>>,
+        mdns: Option<Arc<dyn MdnsSnapshot>>,
+        dns: Option<Arc<dyn DnsProbe>>,
+        certmesh: Option<Arc<dyn CertmeshSnapshot>>,
+        proxy: Option<Arc<dyn ProxySnapshot>>,
     ) -> Self {
         let checks = load_health_state()
             .map(|state| state.checks)
             .unwrap_or_default();
 
         let mdns_tracker = match mdns {
-            Some(core) => Some(MdnsTracker::spawn(core).await),
+            Some(snapshot) => Some(MdnsTracker::spawn(snapshot).await),
             None => None,
         };
 
         let (event_tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
 
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(HTTP_CLIENT_TIMEOUT_SECS))
+            .build()
+            .unwrap_or_default();
+
         Self {
             mdns_tracker,
             dns,
+            certmesh,
+            proxy,
             checks: Arc::new(RwLock::new(checks)),
             service_states: Arc::new(RwLock::new(HashMap::new())),
             machine_threshold: Duration::from_secs(DEFAULT_MACHINE_THRESHOLD_SECS),
             started_at: Instant::now(),
             event_tx,
+            http_client,
         }
     }
 
@@ -118,8 +134,9 @@ impl HealthCore {
         self.started_at
     }
 
-    pub fn dns_runtime(&self) -> Option<Arc<koi_dns::DnsRuntime>> {
-        self.dns.clone()
+    /// Shared HTTP client for health checks.
+    pub(crate) fn http_client(&self) -> &reqwest::Client {
+        &self.http_client
     }
 
     pub async fn snapshot(&self) -> HealthSnapshot {
@@ -131,12 +148,13 @@ impl HealthCore {
 
         let machines = collect_machine_health(
             &mdns_snapshot,
-            self.dns.as_ref().map(Arc::clone),
+            self.dns.as_ref(),
+            self.certmesh.as_ref(),
             self.machine_threshold,
         );
 
         let mut checks = self.checks.read().await.clone();
-        checks.extend(proxy_checks());
+        checks.extend(self.proxy_checks());
         let states = self.service_states.read().await.clone();
         let services = checks
             .into_iter()
@@ -212,22 +230,24 @@ impl HealthCore {
     pub(crate) fn emit(&self, event: HealthEvent) {
         let _ = self.event_tx.send(event);
     }
-}
 
-fn proxy_checks() -> Vec<HealthCheckConfig> {
-    let Ok(entries) = proxy_config::load_entries() else {
-        return Vec::new();
-    };
-    entries
-        .into_iter()
-        .map(|entry| HealthCheckConfig {
-            name: format!("proxy:{}", entry.name),
-            kind: ServiceCheckKind::Http,
-            target: entry.backend,
-            interval_secs: DEFAULT_INTERVAL_SECS,
-            timeout_secs: DEFAULT_TIMEOUT_SECS,
-        })
-        .collect()
+    /// Generate health checks from proxy entries.
+    pub(crate) fn proxy_checks(&self) -> Vec<HealthCheckConfig> {
+        let Some(proxy) = &self.proxy else {
+            return Vec::new();
+        };
+        proxy
+            .entries()
+            .into_iter()
+            .map(|entry| HealthCheckConfig {
+                name: format!("proxy:{}", entry.name),
+                kind: ServiceCheckKind::Http,
+                target: entry.backend,
+                interval_secs: DEFAULT_INTERVAL_SECS,
+                timeout_secs: DEFAULT_TIMEOUT_SECS,
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

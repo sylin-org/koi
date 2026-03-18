@@ -30,7 +30,19 @@ pub enum EventKind {
 
 /// Unique identifier for a connection/session.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SessionId(pub String);
+pub struct SessionId(String);
+
+impl SessionId {
+    /// Create a new session identifier.
+    pub fn new(id: String) -> Self {
+        Self(id)
+    }
+
+    /// Borrow the inner string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// DNS-SD meta-query type for discovering all service types on the network.
 pub const META_QUERY: &str = "_services._dns-sd._udp.local.";

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use koi_certmesh::roster::ProxyConfigEntry;
+use koi_common::integration::CertmeshSnapshot;
 use koi_common::paths;
 
 use crate::ProxyError;
@@ -25,14 +25,34 @@ pub fn config_path() -> std::path::PathBuf {
 }
 
 pub fn load_entries() -> Result<Vec<ProxyEntry>, ProxyError> {
+    load_entries_from_config()
+}
+
+/// Load entries from config file and merge with roster entries from certmesh.
+pub fn load_entries_with_certmesh(
+    certmesh: Option<&dyn CertmeshSnapshot>,
+) -> Result<Vec<ProxyEntry>, ProxyError> {
     let mut entries = load_entries_from_config()?;
 
-    match load_entries_from_roster() {
-        Ok(roster_entries) => {
+    if let Some(cm) = certmesh {
+        let hostname = hostname::get()
+            .map_err(|e| ProxyError::Io(e.to_string()))?
+            .to_string_lossy()
+            .to_string();
+
+        let members = cm.active_members();
+        if let Some(member) = members.iter().find(|m| m.hostname == hostname) {
+            let roster_entries: Vec<ProxyEntry> = member
+                .proxy_entries
+                .iter()
+                .map(|entry| ProxyEntry {
+                    name: entry.name.clone(),
+                    listen_port: entry.listen_port,
+                    backend: entry.backend.clone(),
+                    allow_remote: entry.allow_remote,
+                })
+                .collect();
             merge_entries(&mut entries, roster_entries);
-        }
-        Err(e) => {
-            tracing::debug!(error = %e, "Failed to load proxy entries from roster");
         }
     }
 
@@ -57,35 +77,6 @@ fn load_entries_from_config() -> Result<Vec<ProxyEntry>, ProxyError> {
         .try_into()
         .map_err(|e| ProxyError::Config(format!("Invalid proxy section: {e}")))?;
     Ok(proxy.entries)
-}
-
-fn load_entries_from_roster() -> Result<Vec<ProxyEntry>, ProxyError> {
-    let roster_path = koi_certmesh::ca::roster_path();
-    if !roster_path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let roster = koi_certmesh::roster::load_roster(&roster_path)
-        .map_err(|e| ProxyError::Io(e.to_string()))?;
-    let hostname = hostname::get()
-        .map_err(|e| ProxyError::Io(e.to_string()))?
-        .to_string_lossy()
-        .to_string();
-
-    let Some(member) = roster.find_member(&hostname) else {
-        return Ok(Vec::new());
-    };
-
-    Ok(member
-        .proxy_entries
-        .iter()
-        .map(|entry| ProxyEntry {
-            name: entry.name.clone(),
-            listen_port: entry.listen_port,
-            backend: entry.backend.clone(),
-            allow_remote: entry.allow_remote,
-        })
-        .collect())
 }
 
 pub fn save_entries(entries: &[ProxyEntry]) -> Result<(), ProxyError> {
@@ -127,7 +118,6 @@ pub fn upsert_entry(entry: ProxyEntry) -> Result<Vec<ProxyEntry>, ProxyError> {
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     save_entries(&entries)?;
-    sync_roster(&entries)?;
     Ok(entries)
 }
 
@@ -139,40 +129,7 @@ pub fn remove_entry(name: &str) -> Result<Vec<ProxyEntry>, ProxyError> {
         return Err(ProxyError::NotFound(name.to_string()));
     }
     save_entries(&entries)?;
-    sync_roster(&entries)?;
     Ok(entries)
-}
-
-fn sync_roster(entries: &[ProxyEntry]) -> Result<(), ProxyError> {
-    let roster_path = koi_certmesh::ca::roster_path();
-    if !roster_path.exists() {
-        return Ok(());
-    }
-
-    let mut roster = koi_certmesh::roster::load_roster(&roster_path)
-        .map_err(|e| ProxyError::Io(e.to_string()))?;
-    let hostname = hostname::get()
-        .map_err(|e| ProxyError::Io(e.to_string()))?
-        .to_string_lossy()
-        .to_string();
-
-    let Some(member) = roster.find_member_mut(&hostname) else {
-        return Ok(());
-    };
-
-    member.proxy_entries = entries
-        .iter()
-        .map(|entry| ProxyConfigEntry {
-            name: entry.name.clone(),
-            listen_port: entry.listen_port,
-            backend: entry.backend.clone(),
-            allow_remote: entry.allow_remote,
-        })
-        .collect();
-
-    koi_certmesh::roster::save_roster(&roster, &roster_path)
-        .map_err(|e| ProxyError::Io(e.to_string()))?;
-    Ok(())
 }
 
 fn merge_entries(entries: &mut Vec<ProxyEntry>, roster_entries: Vec<ProxyEntry>) {
