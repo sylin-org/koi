@@ -93,13 +93,13 @@ fn require_daemon(endpoint: Option<&str>) -> anyhow::Result<KoiClient> {
         let token = bc.map(|b| b.token).unwrap_or_default();
         return Ok(KoiClient::with_token(ep, &token));
     }
-    let bc = bc.ok_or_else(|| {
+    let info = bc.ok_or_else(|| {
         anyhow::anyhow!(
             "No running Koi service found.\n\
              Install and start the service first: koi install"
         )
     })?;
-    Ok(KoiClient::with_token(&bc.endpoint, &bc.token))
+    Ok(KoiClient::with_token(&info.endpoint, &info.token))
 }
 
 // ── Create ──────────────────────────────────────────────────────────

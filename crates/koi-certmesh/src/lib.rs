@@ -372,22 +372,27 @@ impl CertmeshCore {
 
         let ca_cert_pem = ca.cert_pem.clone();
 
-        // Idempotency: if already enrolled, read existing cert from disk
-        {
+        // Idempotency: if already enrolled, read existing cert from disk.
+        // Extract the cert path under the lock, then drop it before blocking I/O.
+        let existing_cert_dir = {
             let roster = self.state.roster.lock().await;
-            if let Some(member) = roster.members.iter().find(|m| m.hostname == hostname) {
-                tracing::debug!(hostname = %hostname, "already self-enrolled, reading existing cert");
-                let cert_dir = std::path::PathBuf::from(&member.cert_path);
-                let cert_pem = std::fs::read_to_string(cert_dir.join("cert.pem"))
-                    .map_err(|e| CertmeshError::Internal(format!("read existing cert: {e}")))?;
-                let key_pem = std::fs::read_to_string(cert_dir.join("key.pem"))
-                    .map_err(|e| CertmeshError::Internal(format!("read existing key: {e}")))?;
-                return Ok(SelfEnrollment {
-                    cert_pem,
-                    key_pem,
-                    ca_cert_pem,
-                });
-            }
+            roster
+                .members
+                .iter()
+                .find(|m| m.hostname == hostname)
+                .map(|m| std::path::PathBuf::from(&m.cert_path))
+        };
+        if let Some(cert_dir) = existing_cert_dir {
+            tracing::debug!(hostname = %hostname, "already self-enrolled, reading existing cert");
+            let cert_pem = std::fs::read_to_string(cert_dir.join("cert.pem"))
+                .map_err(|e| CertmeshError::Internal(format!("read existing cert: {e}")))?;
+            let key_pem = std::fs::read_to_string(cert_dir.join("key.pem"))
+                .map_err(|e| CertmeshError::Internal(format!("read existing key: {e}")))?;
+            return Ok(SelfEnrollment {
+                cert_pem,
+                key_pem,
+                ca_cert_pem,
+            });
         }
 
         let issued = ca::issue_certificate(ca, &hostname, &sans)?;

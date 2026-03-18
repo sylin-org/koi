@@ -444,8 +444,8 @@ async fn dat_auth_middleware(
     }
 
     // Check x-koi-token header with constant-time comparison.
-    // ct_eq on unequal-length slices returns Choice(0) without short-circuiting,
-    // so no separate length check is needed (which would leak token length via timing).
+    // The subtle crate guarantees constant-time execution regardless of length
+    // difference, so no separate length check is needed.
     let authenticated = req
         .headers()
         .get(DAT_HEADER)

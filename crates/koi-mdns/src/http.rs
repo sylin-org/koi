@@ -367,12 +367,8 @@ fn error_event_stream(
 ) -> impl Stream<Item = std::result::Result<Event, std::convert::Infallible>> {
     let data = serde_json::to_string(&crate::protocol::error_to_pipeline(&e))
         .unwrap_or_else(|_| {
-            let msg = e.to_string()
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"")
-                .replace('\n', "\\n")
-                .replace('\r', "\\r");
-            format!(r#"{{"error":"serialization_failed","message":"{msg}"}}"#)
+            let msg = serde_json::Value::String(e.to_string());
+            format!(r#"{{"error":"serialization_failed","message":{msg}}}"#)
         });
     async_stream::stream! {
         let id = uuid::Uuid::now_v7().to_string();
