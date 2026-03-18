@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use axum::extract::Extension;
+use axum::http::{header, HeaderValue, Method};
 use axum::response::Json;
 use axum::routing::get;
 use axum::Router;
@@ -81,8 +82,14 @@ pub(crate) async fn serve(
     if let Some(ref ds) = dashboard_state {
         app = app
             .route("/", get(koi_common::dashboard::get_dashboard))
-            .route("/v1/dashboard/snapshot", get(koi_common::dashboard::get_snapshot))
-            .route("/v1/dashboard/events", get(koi_common::dashboard::get_events))
+            .route(
+                "/v1/dashboard/snapshot",
+                get(koi_common::dashboard::get_snapshot),
+            )
+            .route(
+                "/v1/dashboard/events",
+                get(koi_common::dashboard::get_events),
+            )
             .layer(Extension(ds.clone()));
     }
 
@@ -155,9 +162,13 @@ pub(crate) async fn serve(
     if api_docs_enabled {
         let openapi = build_embedded_openapi(&mdns, &dns, &health, &certmesh, &proxy, &udp);
         app = app.merge(Scalar::with_url("/docs", openapi.clone()));
-        let spec_json = openapi
-            .to_pretty_json()
-            .expect("OpenAPI JSON serialization");
+        let spec_json = match openapi.to_pretty_json() {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::error!(error = %e, "OpenAPI JSON serialization failed");
+                String::from(r#"{"error":"OpenAPI serialization failed"}"#)
+            }
+        };
         app = app.route(
             "/openapi.json",
             get(move || {
@@ -173,7 +184,14 @@ pub(crate) async fn serve(
     }
 
     app = app.layer(Extension(embedded_state));
-    app = app.layer(CorsLayer::permissive());
+    let cors = CorsLayer::new()
+        .allow_origin([
+            "http://localhost".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1".parse::<HeaderValue>().unwrap(),
+        ])
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers([header::CONTENT_TYPE]);
+    app = app.layer(cors);
 
     // ── Bind & serve ─────────────────────────────────────────────
 

@@ -1,4 +1,4 @@
-﻿use std::net::IpAddr;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use koi_common::firewall::{FirewallPort, FirewallProtocol};
@@ -40,7 +40,11 @@ impl KoiConfig {
             ports.extend(koi_mdns::firewall_ports());
         }
         if self.http_enabled {
-            ports.push(FirewallPort::new("HTTP", FirewallProtocol::Tcp, self.http_port));
+            ports.push(FirewallPort::new(
+                "HTTP",
+                FirewallProtocol::Tcp,
+                self.http_port,
+            ));
         }
         if self.dns_enabled {
             ports.extend(koi_dns::firewall_ports(&self.dns_config));

@@ -24,8 +24,41 @@ pub enum TrustStoreError {
     CommandFailed(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("invalid certificate name: {0}")]
+    InvalidName(String),
     #[error("platform not supported")]
     Unsupported,
+}
+
+/// Validate that a certificate name is safe for use in file paths.
+///
+/// Rejects path separators, null bytes, control characters, `..`, and
+/// names that are empty or excessively long.
+fn validate_name(name: &str) -> Result<(), TrustStoreError> {
+    if name.is_empty() {
+        return Err(TrustStoreError::InvalidName("name is empty".to_string()));
+    }
+    if name.len() > 255 {
+        return Err(TrustStoreError::InvalidName("name too long".to_string()));
+    }
+    if name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+        || name.contains("..")
+    {
+        return Err(TrustStoreError::InvalidName(format!(
+            "name contains forbidden characters: {name}"
+        )));
+    }
+    if name
+        .chars()
+        .any(|c| c.is_ascii_control())
+    {
+        return Err(TrustStoreError::InvalidName(format!(
+            "name contains control characters: {name}"
+        )));
+    }
+    Ok(())
 }
 
 /// Install a PEM-encoded CA certificate into the OS trust store.
@@ -37,6 +70,8 @@ pub enum TrustStoreError {
 /// This operation typically requires elevated privileges.
 /// Errors are returned but are non-fatal - callers should warn and continue.
 pub fn install_ca_cert(cert_pem: &str, name: &str) -> Result<(), TrustStoreError> {
+    validate_name(name)?;
+
     #[cfg(target_os = "linux")]
     {
         linux::install(cert_pem, name)
@@ -63,6 +98,10 @@ pub fn install_ca_cert(cert_pem: &str, name: &str) -> Result<(), TrustStoreError
 ///
 /// Returns `false` if the check fails or the platform is unsupported.
 pub fn is_ca_installed(name: &str) -> bool {
+    if validate_name(name).is_err() {
+        return false;
+    }
+
     #[cfg(target_os = "linux")]
     {
         linux::is_installed(name)

@@ -66,8 +66,15 @@ fn idle_duration(idle_for: Option<u64>) -> Option<Duration> {
 
 #[derive(utoipa::OpenApi)]
 #[openapi(
-    paths(bind_handler, unbind_handler, recv_handler, send_handler, status_handler, heartbeat_handler),
-    components(schemas(BindingInfo, UdpBindRequest, UdpSendRequest, UdpDatagram)),
+    paths(
+        bind_handler,
+        unbind_handler,
+        recv_handler,
+        send_handler,
+        status_handler,
+        heartbeat_handler
+    ),
+    components(schemas(BindingInfo, UdpBindRequest, UdpSendRequest, UdpDatagram))
 )]
 pub struct UdpApiDoc;
 

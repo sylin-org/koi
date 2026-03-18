@@ -70,6 +70,9 @@ fn default_lease() -> u64 {
     300
 }
 
+/// Maximum lease duration (24 hours) to prevent unbounded resource retention.
+const MAX_LEASE_SECS: u64 = 86400;
+
 /// Metadata for a live binding (returned by status endpoint).
 #[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
 pub struct BindingInfo {
@@ -133,12 +136,14 @@ impl UdpRuntime {
         let id = Uuid::now_v7().to_string();
         let now = Utc::now();
 
+        let lease_secs = req.lease_secs.min(MAX_LEASE_SECS);
+
         let active = ActiveBinding::new(
             id.clone(),
             socket,
             local_addr,
             now,
-            req.lease_secs,
+            lease_secs,
             self.cancel.clone(),
         );
 
@@ -147,7 +152,7 @@ impl UdpRuntime {
             local_addr: local_addr.to_string(),
             created_at: now,
             last_heartbeat: now,
-            lease_secs: req.lease_secs,
+            lease_secs,
         };
 
         self.bindings.write().await.insert(id, active);

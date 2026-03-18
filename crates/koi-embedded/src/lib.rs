@@ -220,10 +220,6 @@ pub struct KoiEmbedded {
 
 impl KoiEmbedded {
     pub async fn start(self) -> Result<KoiHandle> {
-        if let Some(dir) = &self.config.data_dir {
-            std::env::set_var("KOI_DATA_DIR", dir);
-        }
-
         let cancel = CancellationToken::new();
         let (event_tx, _) = broadcast::channel(256);
         let mut tasks: Vec<JoinHandle<()>> = Vec::new();
@@ -261,10 +257,30 @@ impl KoiEmbedded {
         };
 
         let certmesh = if self.config.certmesh_enabled {
-            init_certmesh_core()
+            init_certmesh_core(self.config.data_dir.as_deref())
         } else {
             None
         };
+
+        // Integration bridges for cross-domain communication
+        let mdns_bridge: Option<Arc<dyn koi_common::integration::MdnsSnapshot>> =
+            if let Some(ref core) = mdns {
+                Some(MdnsBridgeEmbedded::spawn(core.clone()).await)
+            } else {
+                None
+            };
+
+        let certmesh_bridge: Option<Arc<dyn koi_common::integration::CertmeshSnapshot>> =
+            certmesh.as_ref().map(|core| {
+                CertmeshBridgeEmbedded::new(core.clone())
+                    as Arc<dyn koi_common::integration::CertmeshSnapshot>
+            });
+
+        let alias_feedback: Option<Arc<dyn koi_common::integration::AliasFeedback>> =
+            certmesh.as_ref().map(|core| {
+                AliasFeedbackBridgeEmbedded::new(core.clone())
+                    as Arc<dyn koi_common::integration::AliasFeedback>
+            });
 
         let dns = if self.config.dns_enabled {
             let mut dns_config = self.config.dns_config.clone();
@@ -275,8 +291,9 @@ impl KoiEmbedded {
             }
             let core = koi_dns::DnsCore::new(
                 dns_config,
-                mdns.clone(),
-                certmesh.clone(),
+                mdns_bridge.clone(),
+                certmesh_bridge.clone(),
+                alias_feedback,
             )
             .await?;
             Some(Arc::new(koi_dns::DnsRuntime::new(core)))
@@ -284,16 +301,34 @@ impl KoiEmbedded {
             None
         };
 
-        let health = if self.config.health_enabled {
-            let core = koi_health::HealthCore::new(mdns.clone(), dns.clone()).await;
-            Some(Arc::new(koi_health::HealthRuntime::new(Arc::new(core))))
+        let proxy = if self.config.proxy_enabled {
+            let core = Arc::new(koi_proxy::ProxyCore::new()?);
+            Some(Arc::new(koi_proxy::ProxyRuntime::new(core)))
         } else {
             None
         };
 
-        let proxy = if self.config.proxy_enabled {
-            let core = Arc::new(koi_proxy::ProxyCore::new()?);
-            Some(Arc::new(koi_proxy::ProxyRuntime::new(core)))
+        let dns_bridge: Option<Arc<dyn koi_common::integration::DnsProbe>> =
+            dns.as_ref().map(|rt| {
+                DnsBridgeEmbedded::new(rt.clone())
+                    as Arc<dyn koi_common::integration::DnsProbe>
+            });
+
+        let proxy_bridge: Option<Arc<dyn koi_common::integration::ProxySnapshot>> =
+            proxy.as_ref().map(|rt| {
+                ProxyBridgeEmbedded::new(rt.core())
+                    as Arc<dyn koi_common::integration::ProxySnapshot>
+            });
+
+        let health = if self.config.health_enabled {
+            let core = koi_health::HealthCore::new(
+                mdns_bridge.clone(),
+                dns_bridge,
+                certmesh_bridge,
+                proxy_bridge,
+            )
+            .await;
+            Some(Arc::new(koi_health::HealthRuntime::new(Arc::new(core))))
         } else {
             None
         };
@@ -339,9 +374,7 @@ impl KoiEmbedded {
                 let h = snap_health.clone();
                 let p = snap_proxy.clone();
                 let u = snap_udp.clone();
-                Box::pin(async move {
-                    build_embedded_snapshot(m, cm, d, h, p, u).await
-                })
+                Box::pin(async move { build_embedded_snapshot(m, cm, d, h, p, u).await })
             });
 
             let (dash_event_tx, _) = broadcast::channel(256);
@@ -454,10 +487,8 @@ impl KoiEmbedded {
         // Build browser state if enabled (requires mDNS)
         let browser_state = if self.config.mdns_browser_enabled && self.config.http_enabled {
             if let Some(ref mdns_core) = mdns {
-                let adapter = mdns_browse_adapter::MdnsBrowseAdapter::new(
-                    mdns_core.clone(),
-                    cancel.clone(),
-                );
+                let adapter =
+                    mdns_browse_adapter::MdnsBrowseAdapter::new(mdns_core.clone(), cancel.clone());
                 let cache = koi_common::browser::BrowserCache::new();
                 let source = adapter.clone() as Arc<dyn koi_common::browser::BrowseSource>;
                 let bc = cache.clone();
@@ -507,56 +538,51 @@ impl KoiEmbedded {
         }
 
         // ── HTTP mDNS announcement (opt-in) ──
-        let http_announce_id = if self.config.announce_http
-            && self.config.http_enabled
-            && self.config.mdns_enabled
-        {
-            if let Some(ref mdns_core) = mdns {
-                let hostname = hostname::get()
-                    .ok()
-                    .and_then(|os| os.into_string().ok())
-                    .unwrap_or_else(|| "unknown".to_string());
+        let http_announce_id =
+            if self.config.announce_http && self.config.http_enabled && self.config.mdns_enabled {
+                if let Some(ref mdns_core) = mdns {
+                    let hostname = hostname::get()
+                        .ok()
+                        .and_then(|os| os.into_string().ok())
+                        .unwrap_or_else(|| "unknown".to_string());
 
-                let mut txt = std::collections::HashMap::new();
-                txt.insert("path".to_string(), "/".to_string());
-                txt.insert(
-                    "version".to_string(),
-                    env!("CARGO_PKG_VERSION").to_string(),
-                );
-                txt.insert("api".to_string(), "v1".to_string());
-                txt.insert(
-                    "dashboard".to_string(),
-                    self.config.dashboard_enabled.to_string(),
-                );
+                    let mut txt = std::collections::HashMap::new();
+                    txt.insert("path".to_string(), "/".to_string());
+                    txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
+                    txt.insert("api".to_string(), "v1".to_string());
+                    txt.insert(
+                        "dashboard".to_string(),
+                        self.config.dashboard_enabled.to_string(),
+                    );
 
-                let payload = koi_mdns::protocol::RegisterPayload {
-                    name: format!("Koi ({hostname})"),
-                    service_type: "_http._tcp".to_string(),
-                    port: self.config.http_port,
-                    ip: None,
-                    lease_secs: None,
-                    txt,
-                };
-                match mdns_core.register(payload) {
-                    Ok(result) => {
-                        tracing::info!(
-                            id = %result.id,
-                            port = self.config.http_port,
-                            "HTTP server announced via mDNS"
-                        );
-                        Some(result.id)
+                    let payload = koi_mdns::protocol::RegisterPayload {
+                        name: format!("Koi ({hostname})"),
+                        service_type: "_http._tcp".to_string(),
+                        port: self.config.http_port,
+                        ip: None,
+                        lease_secs: None,
+                        txt,
+                    };
+                    match mdns_core.register(payload) {
+                        Ok(result) => {
+                            tracing::info!(
+                                id = %result.id,
+                                port = self.config.http_port,
+                                "HTTP server announced via mDNS"
+                            );
+                            Some(result.id)
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to announce HTTP server via mDNS");
+                            None
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to announce HTTP server via mDNS");
-                        None
-                    }
+                } else {
+                    None
                 }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
 
         if let Some(core) = &mdns {
             let mut rx = core.subscribe();
@@ -664,13 +690,23 @@ impl KoiEmbedded {
         }
 
         Ok(KoiHandle::new_embedded(
-            mdns, dns, health, certmesh, proxy, udp, event_tx, cancel, tasks,
+            mdns,
+            dns,
+            health,
+            certmesh,
+            proxy,
+            udp,
+            event_tx,
+            cancel,
+            tasks,
             http_announce_id,
         ))
     }
 }
 
-fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
+fn init_certmesh_core(
+    data_dir: Option<&std::path::Path>,
+) -> Option<Arc<koi_certmesh::CertmeshCore>> {
     if !koi_certmesh::ca::is_ca_initialized() {
         return Some(Arc::new(koi_certmesh::CertmeshCore::uninitialized()));
     }
@@ -687,9 +723,10 @@ fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
 
     // ── Auto-unlock at init: single source of truth ─────────────
     // If the auto-unlock key file exists, boot the core already
-    // unlocked.  This collapses the "create locked → read key →
+    // unlocked.  This collapses the "create locked -> read key ->
     // unlock" three-step into a single atomic construction.
-    let auto_key_path = koi_common::paths::koi_data_dir().join("auto-unlock-key");
+    let resolved_data_dir = koi_common::paths::koi_data_dir_with_override(data_dir);
+    let auto_key_path = resolved_data_dir.join("auto-unlock-key");
     if let Ok(pp) = std::fs::read_to_string(&auto_key_path) {
         if !pp.is_empty() {
             match koi_certmesh::ca::load_ca(&pp) {
@@ -890,4 +927,236 @@ async fn build_embedded_snapshot(
     }
 
     serde_json::json!({ "capabilities": capabilities })
+}
+
+// ── Embedded integration bridges ───────────────────────────────────
+// Duplicated from the binary crate's integrations.rs because koi-embedded
+// is a separate crate that directly imports all domain crates.
+
+struct CertmeshBridgeEmbedded(#[allow(dead_code)] Arc<koi_certmesh::CertmeshCore>);
+
+impl CertmeshBridgeEmbedded {
+    fn new(core: Arc<koi_certmesh::CertmeshCore>) -> Arc<Self> {
+        Arc::new(Self(core))
+    }
+}
+
+impl koi_common::integration::CertmeshSnapshot for CertmeshBridgeEmbedded {
+    fn active_members(&self) -> Vec<koi_common::integration::MemberSummary> {
+        let roster_path = koi_certmesh::ca::roster_path();
+        let Ok(roster) = koi_certmesh::roster::load_roster(&roster_path) else {
+            return Vec::new();
+        };
+        roster
+            .members
+            .into_iter()
+            .filter(|m| m.status == koi_certmesh::roster::MemberStatus::Active)
+            .map(|m| koi_common::integration::MemberSummary {
+                hostname: m.hostname,
+                sans: m.cert_sans,
+                cert_expires: Some(m.cert_expires),
+                last_seen: m.last_seen,
+                status: "active".to_string(),
+                proxy_entries: m
+                    .proxy_entries
+                    .into_iter()
+                    .map(|p| koi_common::integration::ProxyConfigSummary {
+                        name: p.name,
+                        listen_port: p.listen_port,
+                        backend: p.backend,
+                        allow_remote: p.allow_remote,
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+}
+
+struct MdnsBridgeEmbedded {
+    records: Arc<std::sync::RwLock<std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>>>,
+    cancel: CancellationToken,
+}
+
+impl MdnsBridgeEmbedded {
+    async fn spawn(core: Arc<koi_mdns::MdnsCore>) -> Arc<Self> {
+        use koi_common::types::META_QUERY;
+        let records = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+        let cancel = CancellationToken::new();
+
+        let meta_core = Arc::clone(&core);
+        let meta_records = Arc::clone(&records);
+        let meta_cancel = cancel.clone();
+        tokio::spawn(async move {
+            if let Ok(handle) = meta_core.browse(META_QUERY).await {
+                run_meta_browse_embedded(meta_core, handle, meta_records, meta_cancel).await;
+            }
+        });
+
+        Arc::new(Self { records, cancel })
+    }
+}
+
+impl Drop for MdnsBridgeEmbedded {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+impl koi_common::integration::MdnsSnapshot for MdnsBridgeEmbedded {
+    fn host_ips(&self) -> std::collections::HashMap<String, std::net::IpAddr> {
+        let guard = self.records.read().unwrap();
+        let mut map = std::collections::HashMap::new();
+        for type_map in guard.values() {
+            for record in type_map.values() {
+                let Some(host) = record.host.as_deref() else { continue; };
+                let Some(ip) = record.ip.as_deref().and_then(|ip| ip.parse().ok()) else { continue; };
+                let hostname = host.trim_end_matches('.').trim_end_matches(".local");
+                if !hostname.is_empty() {
+                    map.insert(hostname.to_string(), ip);
+                }
+            }
+        }
+        map
+    }
+
+    fn cached_records(&self) -> Vec<ServiceRecord> {
+        let guard = self.records.read().unwrap();
+        guard.values().flat_map(|m| m.values().cloned()).collect()
+    }
+}
+
+struct DnsBridgeEmbedded(Arc<koi_dns::DnsRuntime>);
+
+impl DnsBridgeEmbedded {
+    fn new(runtime: Arc<koi_dns::DnsRuntime>) -> Arc<Self> {
+        Arc::new(Self(runtime))
+    }
+}
+
+impl koi_common::integration::DnsProbe for DnsBridgeEmbedded {
+    fn resolve_local(&self, name: &str) -> Option<Vec<std::net::IpAddr>> {
+        use hickory_proto::rr::RecordType;
+        let core = self.0.core();
+        let result = core
+            .resolve_local(name, RecordType::A)
+            .or_else(|| core.resolve_local(name, RecordType::AAAA));
+        result.map(|r| r.ips)
+    }
+}
+
+struct ProxyBridgeEmbedded(#[allow(dead_code)] Arc<koi_proxy::ProxyCore>);
+
+impl ProxyBridgeEmbedded {
+    fn new(core: Arc<koi_proxy::ProxyCore>) -> Arc<Self> {
+        Arc::new(Self(core))
+    }
+}
+
+impl koi_common::integration::ProxySnapshot for ProxyBridgeEmbedded {
+    fn entries(&self) -> Vec<koi_common::integration::ProxyEntrySummary> {
+        let Ok(entries) = koi_proxy::config::load_entries() else {
+            return Vec::new();
+        };
+        entries
+            .into_iter()
+            .map(|e| koi_common::integration::ProxyEntrySummary {
+                name: e.name,
+                listen_port: e.listen_port,
+                backend: e.backend,
+            })
+            .collect()
+    }
+}
+
+struct AliasFeedbackBridgeEmbedded(Arc<koi_certmesh::CertmeshCore>);
+
+impl AliasFeedbackBridgeEmbedded {
+    fn new(core: Arc<koi_certmesh::CertmeshCore>) -> Arc<Self> {
+        Arc::new(Self(core))
+    }
+}
+
+impl koi_common::integration::AliasFeedback for AliasFeedbackBridgeEmbedded {
+    fn record_alias(&self, hostname: &str, alias: &str) {
+        let core = Arc::clone(&self.0);
+        let hostname = hostname.to_string();
+        let alias = alias.to_string();
+        tokio::spawn(async move {
+            let _ = core.add_alias_sans(&hostname, &[alias]).await;
+        });
+    }
+}
+
+async fn run_meta_browse_embedded(
+    core: Arc<koi_mdns::MdnsCore>,
+    handle: koi_mdns::BrowseHandle,
+    records: Arc<std::sync::RwLock<std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>>>,
+    cancel: CancellationToken,
+) {
+    let active = Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::<String>::new()));
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            event = handle.recv() => {
+                let Some(event) = event else { break; };
+                if let koi_mdns::events::MdnsEvent::Found(record) = event {
+                    let service_type = record.name;
+                    let mut guard = active.lock().await;
+                    if guard.insert(service_type.clone()) {
+                        let c = Arc::clone(&core);
+                        let r = Arc::clone(&records);
+                        let t = service_type.clone();
+                        let cancel_child = cancel.clone();
+                        tokio::spawn(async move {
+                            if let Ok(handle) = c.browse(&t).await {
+                                run_type_browse_embedded(handle, r, cancel_child).await;
+                            }
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn run_type_browse_embedded(
+    handle: koi_mdns::BrowseHandle,
+    records: Arc<std::sync::RwLock<std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>>>,
+    cancel: CancellationToken,
+) {
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            event = handle.recv() => {
+                let Some(event) = event else { break; };
+                match event {
+                    koi_mdns::events::MdnsEvent::Resolved(record) => {
+                        let mut guard = records.write().unwrap();
+                        let entry = guard.entry(record.service_type.clone()).or_default();
+                        entry.insert(record.name.clone(), record);
+                    }
+                    koi_mdns::events::MdnsEvent::Removed { name, service_type } => {
+                        let mut guard = records.write().unwrap();
+                        let st = if service_type.is_empty() {
+                            name.find("._").map(|idx| {
+                                let rest = &name[idx + 1..];
+                                rest.trim_end_matches('.').trim_end_matches(".local").to_string()
+                            })
+                        } else {
+                            Some(service_type)
+                        };
+                        if let Some(st) = st {
+                            if let Some(map) = guard.get_mut(&st) {
+                                let instance = name.find("._").map(|idx| name[..idx].to_string());
+                                if let Some(instance) = instance {
+                                    map.remove(&instance);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 }
