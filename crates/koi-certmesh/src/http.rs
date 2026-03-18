@@ -72,7 +72,6 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::JOIN), post(join_handler))
         .route(rel(paths::STATUS), get(status_handler))
         .route(rel(paths::SET_HOOK), put(set_hook_handler))
-        .route(rel(paths::PROMOTE), post(promote_handler))
         .route(rel(paths::RENEW), post(renew_handler))
         .route(rel(paths::ROSTER), get(roster_handler))
         .route(rel(paths::HEALTH), post(health_handler))
@@ -151,9 +150,6 @@ async fn status_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl
     Json(status)
 }
 
-/// Characters forbidden in reload hook commands (shell metacharacters).
-const HOOK_FORBIDDEN_CHARS: &[char] = &['|', ';', '&', '$', '`', '>', '<', '\n', '\r'];
-
 /// PUT /hook - Set a post-renewal reload hook for a member.
 #[utoipa::path(put, path = "/set-hook", tag = "certmesh",
     summary = "Set reload hook for a member",
@@ -177,13 +173,19 @@ async fn set_hook_handler(
         }
     }
 
-    // Reject shell metacharacters in the reload command
-    if request.reload.contains(HOOK_FORBIDDEN_CHARS) {
+    // Validate reload hook is an absolute path
+    #[cfg(unix)]
+    if !request.reload.starts_with('/') {
         return error_response(
             StatusCode::BAD_REQUEST,
-            &CertmeshError::Internal(
-                "reload hook contains forbidden shell metacharacters (|;&$`><\\n\\r)".to_string(),
-            ),
+            &CertmeshError::Internal("reload hook must be an absolute path".into()),
+        );
+    }
+    #[cfg(windows)]
+    if !(request.reload.len() >= 3 && request.reload.as_bytes()[1] == b':') {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &CertmeshError::Internal("reload hook must be an absolute path".into()),
         );
     }
 
@@ -1239,7 +1241,7 @@ mod tests {
 
     #[tokio::test]
     async fn promote_without_ca_returns_503() {
-        let app = routes(test_extension());
+        let app = inter_node_routes(test_extension());
         let req = Request::post("/promote")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"auth":{"method":"totp","code":"654321"}}"#))
@@ -1272,11 +1274,15 @@ mod tests {
     #[tokio::test]
     async fn set_hook_unknown_member_returns_404() {
         let app = routes(test_extension());
+        let reload = if cfg!(unix) {
+            "/usr/bin/systemctl restart nginx"
+        } else {
+            "C:\\Windows\\System32\\cmd.exe /c restart"
+        };
+        let body = serde_json::json!({"hostname": "nobody", "reload": reload}).to_string();
         let req = Request::put("/set-hook")
             .header("content-type", "application/json")
-            .body(Body::from(
-                r#"{"hostname":"nobody","reload":"systemctl restart nginx"}"#,
-            ))
+            .body(Body::from(body))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -1337,7 +1343,7 @@ mod tests {
 
     #[tokio::test]
     async fn promote_without_ca_body_has_error_code() {
-        let app = routes(test_extension());
+        let app = inter_node_routes(test_extension());
         let req = Request::post("/promote")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"auth":{"method":"totp","code":"654321"}}"#))
@@ -1405,11 +1411,15 @@ mod tests {
     #[tokio::test]
     async fn set_hook_not_found_body_has_error() {
         let app = routes(test_extension());
+        let reload = if cfg!(unix) {
+            "/usr/bin/systemctl restart nginx"
+        } else {
+            "C:\\Windows\\System32\\cmd.exe /c restart"
+        };
+        let body = serde_json::json!({"hostname": "nobody", "reload": reload}).to_string();
         let req = Request::put("/set-hook")
             .header("content-type", "application/json")
-            .body(Body::from(
-                r#"{"hostname":"nobody","reload":"systemctl restart nginx"}"#,
-            ))
+            .body(Body::from(body))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
@@ -1422,6 +1432,19 @@ mod tests {
             msg.contains("nobody"),
             "message should contain hostname: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn set_hook_relative_path_returns_400() {
+        let app = routes(test_extension());
+        let req = Request::put("/set-hook")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"hostname":"stone-01","reload":"systemctl restart nginx"}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     // ── Phase 4 - Enrollment policy endpoint tests ──────────────────

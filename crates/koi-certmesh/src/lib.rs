@@ -605,12 +605,28 @@ impl CertmeshCore {
 
         // Fallback: write to file with restricted permissions
         let path = Self::auto_unlock_key_path();
-        std::fs::write(&path, passphrase.as_bytes())?;
 
+        // Atomic write: create temp file with restricted permissions, then rename.
+        // This prevents a window where the file exists with default permissions.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let tmp_path = path.with_extension("tmp");
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp_path)?;
+            file.write_all(passphrase.as_bytes())?;
+            file.sync_all()?;
+            std::fs::rename(&tmp_path, &path)?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&path, passphrase.as_bytes())?;
         }
 
         tracing::info!("Auto-unlock key saved to file");

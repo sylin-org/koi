@@ -149,24 +149,21 @@ pub fn verify_code(secret: &TotpSecret, code: &str) -> bool {
         .as_secs();
 
     let step = 30u64;
-    // Accumulate matches across all time windows without short-circuiting
-    // to avoid leaking timing information about which window (if any) matched.
-    let mut any_match = subtle::Choice::from(0);
+    let code_bytes = code.as_bytes();
     for offset in [0i64, -1, 1] {
         let time = (now as i64 + offset * step as i64) as u64;
         let expected = totp.generate(time);
+        let expected_bytes = expected.as_bytes();
 
-        // Constant-time length + content comparison: never short-circuit on length.
-        let len_ok: subtle::Choice =
-            (code.len() as u8).ct_eq(&(expected.len() as u8));
-        let content_ok: subtle::Choice = if code.len() == expected.len() {
-            code.as_bytes().ct_eq(expected.as_bytes())
-        } else {
-            subtle::Choice::from(0)
-        };
-        any_match |= len_ok & content_ok;
+        let len_ok: bool = (code_bytes.len() as u64)
+            .to_le_bytes()
+            .ct_eq(&(expected_bytes.len() as u64).to_le_bytes())
+            .into();
+        if len_ok && code_bytes.ct_eq(expected_bytes).into() {
+            return true;
+        }
     }
-    bool::from(any_match)
+    false
 }
 
 /// Encrypt a TOTP secret for storage at rest.
