@@ -167,8 +167,8 @@ impl SlotTable {
     }
 
     /// Add a TOTP unlock slot. The shared secret is sealed in the platform
-    /// credential store when available, or encrypted with a machine-derived
-    /// key as a fallback. The plaintext secret is never stored in JSON.
+    /// credential store when available, or encrypted with a random key also
+    /// sealed in the credential store. The plaintext secret is never stored in JSON.
     pub fn add_totp_slot(
         &mut self,
         master_key: &[u8; MASTER_KEY_LEN],
@@ -268,9 +268,9 @@ impl SlotTable {
                     return Err(CryptoError::Decryption("invalid TOTP code".into()));
                 }
 
-                // Derive slot_kek and unwrap, then zeroize secret material
+                // Derive slot_kek and unwrap
                 let slot_kek = derive_totp_slot_kek(&secret_bytes);
-                drop(secret_bytes); // Vec dropped, TotpSecret holds its own copy
+                drop(secret_bytes); // Free the Vec (allocator may reuse; not a secure zeroize)
                 let slot_kek_hex = hex_encode(&slot_kek);
                 let bytes = decrypt_bytes(wrapped_master_key, &slot_kek_hex)?;
                 return bytes_to_master_key(&bytes);
@@ -514,14 +514,26 @@ fn get_or_create_fallback_key() -> Result<[u8; 32], CryptoError> {
             return Ok(key);
         }
     }
-    // Generate and seal a new random key
+    // Generate and seal a new random key, then re-read to confirm
+    // (handles concurrent initialization where the second writer wins).
     let mut key = [0u8; 32];
     OsRng.fill_bytes(&mut key);
     crate::tpm::seal_key_material(TOTP_FALLBACK_KEY_LABEL, &key)
         .map_err(|e| CryptoError::Encryption(format!(
             "cannot seal TOTP fallback key in platform credential store: {e}"
         )))?;
-    Ok(key)
+    // Re-read the authoritative value (another process may have written concurrently)
+    let confirmed = crate::tpm::unseal_key_material(TOTP_FALLBACK_KEY_LABEL)
+        .map_err(|e| CryptoError::Encryption(format!(
+            "cannot confirm TOTP fallback key: {e}"
+        )))?;
+    if confirmed.len() == 32 {
+        let mut k = [0u8; 32];
+        k.copy_from_slice(&confirmed);
+        Ok(k)
+    } else {
+        Ok(key)
+    }
 }
 
 /// Derive a storage key from a FIDO2 credential ID for encrypting
