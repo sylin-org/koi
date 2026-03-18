@@ -276,9 +276,13 @@ pub fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), CryptoError> {
 
     #[cfg(not(unix))]
     {
-        std::fs::write(path, data)?;
+        // Write to a .tmp file, apply ACL, then rename atomically
+        // to avoid a TOCTOU window where the file is world-readable.
+        let tmp_path = path.with_extension("tmp");
+        std::fs::write(&tmp_path, data)?;
         #[cfg(windows)]
-        restrict_windows_acl(path);
+        restrict_windows_acl(&tmp_path);
+        std::fs::rename(&tmp_path, path)?;
     }
 
     Ok(())
@@ -405,9 +409,10 @@ pub enum CryptoError {
 pub(crate) fn restrict_windows_acl(path: &std::path::Path) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let path_str = path.display().to_string();
+    // Quote the path for icacls (handles spaces in ProgramData paths)
+    let path_str = format!("\"{}\"", path.display());
     let mut args = vec![
-        path_str.clone(),
+        path_str,
         "/inheritance:r".to_string(),
         "/grant:r".to_string(),
         "SYSTEM:F".to_string(),
@@ -417,7 +422,7 @@ pub(crate) fn restrict_windows_acl(path: &std::path::Path) {
     if let Ok(user) = std::env::var("USERNAME") {
         if !user.eq_ignore_ascii_case("SYSTEM") {
             args.push("/grant:r".to_string());
-            args.push(format!("{user}:F"));
+            args.push(format!("\"{user}\":F"));
         }
     }
     let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();

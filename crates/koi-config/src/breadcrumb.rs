@@ -85,38 +85,45 @@ pub fn write_breadcrumb(endpoint: &str, token: &str) {
 
     #[cfg(not(unix))]
     {
-        match std::fs::write(&path, &content) {
+        // Write to .tmp, apply ACL, then rename to avoid TOCTOU window.
+        let tmp_path = path.with_extension("tmp");
+        match std::fs::write(&tmp_path, &content) {
             Ok(()) => {
-                tracing::debug!(path = %path.display(), "Breadcrumb written");
                 #[cfg(windows)]
-                {
-                    use std::os::windows::process::CommandExt;
-                    const CREATE_NO_WINDOW: u32 = 0x08000000;
-                    let path_str = path.display().to_string();
-                    let mut args = vec![
-                        path_str.clone(),
-                        "/inheritance:r".to_string(),
-                        "/grant:r".to_string(),
-                        "SYSTEM:F".to_string(),
-                        "/grant:r".to_string(),
-                        "BUILTIN\\Administrators:F".to_string(),
-                    ];
-                    if let Ok(user) = std::env::var("USERNAME") {
-                        if !user.eq_ignore_ascii_case("SYSTEM") {
-                            args.push("/grant:r".to_string());
-                            args.push(format!("{user}:F"));
-                        }
-                    }
-                    let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-                    let _ = std::process::Command::new("icacls")
-                        .args(&args_ref)
-                        .creation_flags(CREATE_NO_WINDOW)
-                        .output();
+                restrict_breadcrumb_acl(&tmp_path);
+                match std::fs::rename(&tmp_path, &path) {
+                    Ok(()) => tracing::debug!(path = %path.display(), "Breadcrumb written"),
+                    Err(e) => tracing::warn!(error = %e, path = %path.display(), "Failed to rename breadcrumb"),
                 }
             }
             Err(e) => tracing::warn!(error = %e, path = %path.display(), "Failed to write breadcrumb"),
         }
     }
+}
+
+/// Best-effort ACL restriction on Windows using icacls.
+#[cfg(windows)]
+fn restrict_breadcrumb_acl(path: &std::path::Path) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let path_str = format!("\"{}\"", path.display());
+    let mut args = vec![
+        path_str,
+        "/inheritance:r".to_string(),
+        "/grant:r".to_string(), "SYSTEM:F".to_string(),
+        "/grant:r".to_string(), "BUILTIN\\Administrators:F".to_string(),
+    ];
+    if let Ok(user) = std::env::var("USERNAME") {
+        if !user.eq_ignore_ascii_case("SYSTEM") {
+            args.push("/grant:r".to_string());
+            args.push(format!("\"{user}\":F"));
+        }
+    }
+    let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let _ = std::process::Command::new("icacls")
+        .args(&args_ref)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
 }
 
 /// Delete the breadcrumb file.

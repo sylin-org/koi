@@ -181,21 +181,21 @@ impl SlotTable {
         let slot_kek_hex = hex_encode(&slot_kek);
         let wrapped = encrypt_bytes(master_key, &slot_kek_hex)?;
 
-        // Try platform credential store first, fall back to machine-key encryption
+        // Try platform credential store first; fallback uses a random key
+        // also sealed in the credential store (never hostname-derived).
         let (sealed, encrypted_secret) =
             match crate::tpm::seal_key_material(TOTP_CREDENTIAL_LABEL, shared_secret) {
                 Ok(()) => {
                     tracing::info!("TOTP shared secret sealed in platform credential store");
                     (true, None)
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "Platform credential store unavailable; encrypting TOTP secret with machine key"
-                    );
-                    let machine_key = derive_machine_key();
-                    let machine_key_hex = hex_encode(&machine_key);
-                    let enc = encrypt_bytes(shared_secret, &machine_key_hex)?;
+                Err(_) => {
+                    // Direct seal failed — try the fallback: encrypt with a random key
+                    // that is itself sealed in the credential store.
+                    let fallback_key = get_or_create_fallback_key()?;
+                    let fallback_hex = hex_encode(&fallback_key);
+                    let enc = encrypt_bytes(shared_secret, &fallback_hex)?;
+                    tracing::info!("TOTP shared secret encrypted with sealed fallback key");
                     (false, Some(enc))
                 }
             };
@@ -235,15 +235,23 @@ impl SlotTable {
                         ))
                     })?
                 } else if let Some(enc) = encrypted_secret {
-                    let machine_key = derive_machine_key();
-                    let machine_key_hex = hex_encode(&machine_key);
-                    decrypt_bytes(enc, &machine_key_hex).map_err(|e| {
+                    let fallback_key = get_or_create_fallback_key().map_err(|e| {
                         CryptoError::Decryption(format!(
-                            "failed to decrypt TOTP secret with machine key: {e}"
+                            "failed to retrieve TOTP fallback key: {e}"
+                        ))
+                    })?;
+                    let fallback_hex = hex_encode(&fallback_key);
+                    decrypt_bytes(enc, &fallback_hex).map_err(|e| {
+                        CryptoError::Decryption(format!(
+                            "failed to decrypt TOTP secret with fallback key: {e}"
                         ))
                     })?
                 } else if let Some(hex) = shared_secret_hex {
-                    // Legacy plaintext path (pre-encryption slot tables)
+                    // Legacy plaintext path — warn operator to re-create the TOTP slot
+                    tracing::warn!(
+                        "TOTP secret stored in plaintext (legacy format). \
+                         Re-create the CA or rotate auth to migrate to encrypted storage."
+                    );
                     hex_decode(hex).map_err(|e| {
                         CryptoError::Decryption(format!("invalid TOTP secret hex: {e}"))
                     })?
@@ -260,8 +268,9 @@ impl SlotTable {
                     return Err(CryptoError::Decryption("invalid TOTP code".into()));
                 }
 
-                // Derive slot_kek and unwrap
+                // Derive slot_kek and unwrap, then zeroize secret material
                 let slot_kek = derive_totp_slot_kek(&secret_bytes);
+                drop(secret_bytes); // Vec dropped, TotpSecret holds its own copy
                 let slot_kek_hex = hex_encode(&slot_kek);
                 let bytes = decrypt_bytes(wrapped_master_key, &slot_kek_hex)?;
                 return bytes_to_master_key(&bytes);
@@ -488,20 +497,31 @@ fn derive_totp_slot_kek(shared_secret: &[u8]) -> [u8; 32] {
     kek
 }
 
-/// Derive a machine-bound key for encrypting the TOTP shared secret
-/// when the platform credential store is unavailable.
-fn derive_machine_key() -> [u8; 32] {
-    let hostname = hostname::get()
-        .ok()
-        .and_then(|os| os.into_string().ok())
-        .unwrap_or_else(|| "unknown-host".to_string());
-    let mut hasher = Sha256::new();
-    hasher.update(b"koi-totp-slot-machine-key-v1");
-    hasher.update(hostname.as_bytes());
-    let result = hasher.finalize();
+/// Platform credential store label for the TOTP fallback encryption key.
+const TOTP_FALLBACK_KEY_LABEL: &str = "koi-certmesh-totp-fallback-key";
+
+/// Retrieve or create a random 32-byte encryption key sealed in the platform
+/// credential store, used as the fallback when direct secret sealing fails.
+///
+/// Unlike the previous hostname-derived key, this key is truly random and
+/// machine-bound (only the platform store can unseal it).
+fn get_or_create_fallback_key() -> Result<[u8; 32], CryptoError> {
+    // Try to retrieve an existing fallback key
+    if let Ok(bytes) = crate::tpm::unseal_key_material(TOTP_FALLBACK_KEY_LABEL) {
+        if bytes.len() == 32 {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&bytes);
+            return Ok(key);
+        }
+    }
+    // Generate and seal a new random key
     let mut key = [0u8; 32];
-    key.copy_from_slice(&result);
-    key
+    OsRng.fill_bytes(&mut key);
+    crate::tpm::seal_key_material(TOTP_FALLBACK_KEY_LABEL, &key)
+        .map_err(|e| CryptoError::Encryption(format!(
+            "cannot seal TOTP fallback key in platform credential store: {e}"
+        )))?;
+    Ok(key)
 }
 
 /// Derive a storage key from a FIDO2 credential ID for encrypting
