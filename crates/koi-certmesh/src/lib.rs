@@ -376,9 +376,18 @@ impl CertmeshCore {
         // Write cert files to the standard path
         let cert_dir = certfiles::write_cert_files(&hostname, &issued)?;
 
-        // Add self to roster as primary member
+        // Add self to roster as primary member (idempotent — skip if already enrolled)
         drop(ca_guard);
         let mut roster = self.state.roster.lock().await;
+        if roster.members.iter().any(|m| m.hostname == hostname) {
+            tracing::debug!(hostname = %hostname, "already self-enrolled, skipping");
+            drop(roster);
+            return Ok(SelfEnrollment {
+                cert_pem: issued.cert_pem,
+                key_pem: issued.key_pem,
+                ca_cert_pem,
+            });
+        }
         roster.members.push(roster::RosterMember {
             hostname: hostname.clone(),
             role: roster::MemberRole::Primary,
@@ -626,7 +635,7 @@ impl CertmeshCore {
 
         #[cfg(not(unix))]
         {
-            std::fs::write(&path, passphrase.as_bytes())?;
+            koi_crypto::keys::write_secret_file(&path, passphrase.as_bytes())?;
         }
 
         tracing::info!("Auto-unlock key saved to file");
@@ -1256,11 +1265,10 @@ impl CertmeshCore {
     /// Prepare promotion material for a standby.
     ///
     /// Called on the primary when a standby requests promotion.
-    /// When `client_public_key` is provided, uses DH key agreement
-    /// to encrypt the CA key for wire transfer.
+    /// Uses DH key agreement to encrypt the CA key for wire transfer.
     pub async fn promote(
         &self,
-        client_public_key: Option<&[u8; 32]>,
+        client_public_key: &[u8; 32],
     ) -> Result<protocol::PromoteResponse, CertmeshError> {
         let ca_guard = self.state.ca.lock().await;
         let ca = ca_guard.as_ref().ok_or_else(|| {
@@ -1704,7 +1712,8 @@ mod tests {
     async fn promote_returns_error_when_ca_locked() {
         let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
         let core = make_locked_core(roster);
-        let result = core.promote(None).await;
+        let dummy_pk = [0u8; 32];
+        let result = core.promote(&dummy_pk).await;
         assert!(matches!(result, Err(CertmeshError::CaLocked)));
     }
 
@@ -1717,7 +1726,7 @@ mod tests {
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
         let client_pub = client_kp.public_key_bytes();
 
-        let response = core.promote(Some(&client_pub)).await.unwrap();
+        let response = core.promote(&client_pub).await.unwrap();
         assert!(!response.encrypted_ca_key.ciphertext.is_empty());
         assert!(!response.auth_data.is_null());
         assert!(!response.roster_json.is_empty());
@@ -1734,12 +1743,12 @@ mod tests {
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
         let client_pub = client_kp.public_key_bytes();
 
-        let response = core.promote(Some(&client_pub)).await.unwrap();
+        let response = core.promote(&client_pub).await.unwrap();
         assert!(response.ephemeral_public.is_some());
 
         // Accept the promotion on the standby side using DH
         let (ca_key, accepted_auth, accepted_roster) =
-            failover::accept_promotion(&response, "", Some(client_kp)).unwrap();
+            failover::accept_promotion(&response, client_kp).unwrap();
         assert!(!ca_key.public_key_pem().unwrap().is_empty());
         assert_eq!(accepted_auth.method_name(), "totp");
         assert_eq!(accepted_roster.members.len(), 1);
@@ -2054,7 +2063,8 @@ mod tests {
     #[tokio::test]
     async fn uninitialized_core_promote_returns_error() {
         let core = CertmeshCore::uninitialized();
-        let result = core.promote(None).await;
+        let dummy_pk = [0u8; 32];
+        let result = core.promote(&dummy_pk).await;
         assert!(result.is_err());
     }
 

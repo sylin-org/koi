@@ -733,7 +733,7 @@ pub async fn promote(
     // Decrypt and install the CA key, auth credential, and roster locally
     // using DH key agreement (the passphrase is NOT sent over the wire)
     let (ca_key, auth_state, roster) =
-        koi_certmesh::failover::accept_promotion(&promote_response, &passphrase, Some(client_kp))?;
+        koi_certmesh::failover::accept_promotion(&promote_response, client_kp)?;
 
     // Save to local disk
     let ca_dir = koi_certmesh::ca::ca_dir();

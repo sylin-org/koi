@@ -34,33 +34,21 @@ pub const ROSTER_SYNC_INTERVAL_SECS: u64 = 300; // 5 minutes
 /// derive the same shared key locally -- the passphrase never crosses
 /// the wire.
 ///
-/// When `client_public_key` is `None`, falls back to passphrase-based
-/// encryption for backward compatibility.
+/// The `client_public_key` is required — promotion without DH key
+/// agreement is not supported.
 pub fn prepare_promotion(
     ca: &CaState,
     auth_state: &AuthState,
     roster: &Roster,
-    client_public_key: Option<&[u8; 32]>,
+    client_public_key: &[u8; 32],
 ) -> Result<PromoteResponse, CertmeshError> {
-    let (encrypted_ca_key, server_ephemeral_public) = match client_public_key {
-        Some(client_pk) => {
-            // DH key agreement path
-            let server_kp = EphemeralKeyPair::generate();
-            let server_pub = server_kp.public_key_bytes();
-            let shared_key = server_kp.derive_shared_key(client_pk);
-            let shared_key_hex = koi_common::encoding::hex_encode(&shared_key);
-            let encrypted = keys::encrypt_key(&ca.key, &shared_key_hex)?;
-            (encrypted, Some(server_pub))
-        }
-        None => {
-            tracing::warn!(
-                "Promote request without ephemeral public key; \
-                 falling back to empty-passphrase encryption"
-            );
-            let encrypted = keys::encrypt_key(&ca.key, "")?;
-            (encrypted, None)
-        }
-    };
+    let server_kp = EphemeralKeyPair::generate();
+    let server_pub = server_kp.public_key_bytes();
+    let shared_key = server_kp.derive_shared_key(client_public_key);
+    let shared_key_hex = koi_crypto::secret::SecretString::new(
+        koi_common::encoding::hex_encode(&shared_key),
+    );
+    let encrypted_ca_key = keys::encrypt_key(&ca.key, shared_key_hex.as_ref())?;
 
     // Serialize auth state for transfer.
     //
@@ -88,37 +76,28 @@ pub fn prepare_promotion(
         auth_data,
         roster_json,
         ca_cert_pem: ca.cert_pem.clone(),
-        ephemeral_public: server_ephemeral_public,
+        ephemeral_public: Some(server_pub),
     })
 }
 
 /// Accept a promotion response and decrypt the CA key and auth credential.
 ///
-/// When DH key agreement was used (`our_keypair` is `Some`), the CA key
-/// is decrypted using the DH-derived shared key. Otherwise falls back
-/// to passphrase-based decryption (legacy path).
-///
-/// Auth data is always decrypted with an empty passphrase (the server
-/// encrypts it that way for wire transfer).
+/// The CA key is decrypted using the DH-derived shared key from the
+/// ephemeral key pair exchange. Auth data is decrypted with an empty
+/// passphrase (the server encrypts it that way for wire transfer).
 pub fn accept_promotion(
     response: &PromoteResponse,
-    passphrase: &str,
-    our_keypair: Option<EphemeralKeyPair>,
+    our_keypair: EphemeralKeyPair,
 ) -> Result<(CaKeyPair, AuthState, Roster), CertmeshError> {
-    let ca_key = match (our_keypair, response.ephemeral_public.as_ref()) {
-        (Some(kp), Some(server_pub)) => {
-            // DH key agreement path
-            let shared_key = kp.derive_shared_key(server_pub);
-            let shared_key_hex = koi_common::encoding::hex_encode(&shared_key);
-            keys::decrypt_key(&response.encrypted_ca_key, &shared_key_hex)
-                .map_err(|e| CertmeshError::PromotionFailed(format!("CA key DH decryption: {e}")))?
-        }
-        _ => {
-            // Legacy passphrase path
-            keys::decrypt_key(&response.encrypted_ca_key, passphrase)
-                .map_err(|e| CertmeshError::PromotionFailed(format!("CA key decryption: {e}")))?
-        }
-    };
+    let server_pub = response.ephemeral_public.as_ref().ok_or_else(|| {
+        CertmeshError::PromotionFailed("server did not provide ephemeral public key".into())
+    })?;
+    let shared_key = our_keypair.derive_shared_key(server_pub);
+    let shared_key_hex = koi_crypto::secret::SecretString::new(
+        koi_common::encoding::hex_encode(&shared_key),
+    );
+    let ca_key = keys::decrypt_key(&response.encrypted_ca_key, shared_key_hex.as_ref())
+        .map_err(|e| CertmeshError::PromotionFailed(format!("CA key DH decryption: {e}")))?;
 
     // Auth data is encrypted with empty passphrase for wire transfer
     let stored: koi_crypto::auth::StoredAuth = serde_json::from_value(response.auth_data.clone())
@@ -271,7 +250,7 @@ mod tests {
         let client_pub = client_kp.public_key_bytes();
 
         let response =
-            prepare_promotion(&ca, &auth_state, &roster, Some(&client_pub)).unwrap();
+            prepare_promotion(&ca, &auth_state, &roster, &client_pub).unwrap();
 
         // Verify encrypted material is non-empty
         assert!(!response.encrypted_ca_key.ciphertext.is_empty());
@@ -282,7 +261,7 @@ mod tests {
 
         // Accept on the standby side using DH
         let (ca_key, accepted_auth, accepted_roster) =
-            accept_promotion(&response, "", Some(client_kp)).unwrap();
+            accept_promotion(&response, client_kp).unwrap();
 
         // Verify the decrypted key produces the same public key
         assert_eq!(ca_key.public_key_pem().unwrap(), ca.key.public_key_pem().unwrap());
@@ -294,23 +273,20 @@ mod tests {
     }
 
     #[test]
-    fn promotion_round_trip_legacy_fallback() {
+    fn promotion_missing_server_ephemeral_key_fails() {
         let ca = make_test_ca();
         let totp = koi_crypto::totp::generate_secret();
         let auth_state = AuthState::Totp(totp);
         let roster = make_test_roster();
 
-        // No client public key -- legacy fallback
-        let response = prepare_promotion(&ca, &auth_state, &roster, None).unwrap();
-        assert!(response.ephemeral_public.is_none());
+        let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
+        let client_pub = client_kp.public_key_bytes();
+        let mut response = prepare_promotion(&ca, &auth_state, &roster, &client_pub).unwrap();
 
-        // Accept with empty passphrase (legacy path uses empty string)
-        let (ca_key, accepted_auth, accepted_roster) =
-            accept_promotion(&response, "", None).unwrap();
-
-        assert_eq!(ca_key.public_key_pem().unwrap(), ca.key.public_key_pem().unwrap());
-        assert_eq!(accepted_auth.method_name(), "totp");
-        assert_eq!(accepted_roster.members.len(), 1);
+        // Remove the server's ephemeral key — acceptance must fail
+        response.ephemeral_public = None;
+        let result = accept_promotion(&response, client_kp);
+        assert!(matches!(result, Err(CertmeshError::PromotionFailed(_))));
     }
 
     #[test]
@@ -324,11 +300,11 @@ mod tests {
         let client_pub = client_kp.public_key_bytes();
 
         let response =
-            prepare_promotion(&ca, &auth_state, &roster, Some(&client_pub)).unwrap();
+            prepare_promotion(&ca, &auth_state, &roster, &client_pub).unwrap();
 
         // Try to accept with a DIFFERENT keypair -- should fail
         let wrong_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
-        let result = accept_promotion(&response, "", Some(wrong_kp));
+        let result = accept_promotion(&response, wrong_kp);
         assert!(matches!(result, Err(CertmeshError::PromotionFailed(_))));
     }
 
@@ -464,8 +440,8 @@ mod tests {
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
         let client_pub = client_kp.public_key_bytes();
 
-        let response = prepare_promotion(&ca, &auth, &roster, Some(&client_pub)).unwrap();
-        let (_, _, accepted_roster) = accept_promotion(&response, "", Some(client_kp)).unwrap();
+        let response = prepare_promotion(&ca, &auth, &roster, &client_pub).unwrap();
+        let (_, _, accepted_roster) = accept_promotion(&response, client_kp).unwrap();
         assert_eq!(
             accepted_roster.metadata.operator.as_deref(),
             Some("ops-team")
@@ -487,8 +463,8 @@ mod tests {
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
         let client_pub = client_kp.public_key_bytes();
 
-        let response = prepare_promotion(&ca, &auth, &roster, Some(&client_pub)).unwrap();
-        let (_, _, accepted_roster) = accept_promotion(&response, "", Some(client_kp)).unwrap();
+        let response = prepare_promotion(&ca, &auth, &roster, &client_pub).unwrap();
+        let (_, _, accepted_roster) = accept_promotion(&response, client_kp).unwrap();
         assert!(accepted_roster.members.is_empty());
     }
 

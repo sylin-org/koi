@@ -871,7 +871,14 @@ async fn promote_handler(
 
     let roster = state.roster.lock().await;
 
-    match crate::failover::prepare_promotion(ca, auth_state, &roster, request.ephemeral_public.as_ref()) {
+    let Some(client_pk) = request.ephemeral_public.as_ref() else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &CertmeshError::Internal("ephemeral_public is required for promotion".into()),
+        );
+    };
+
+    match crate::failover::prepare_promotion(ca, auth_state, &roster, client_pk) {
         Ok(response) => match serde_json::to_value(&response) {
             Ok(val) => {
                 let _ = crate::audit::append_entry("promotion_prepared", &[]);
