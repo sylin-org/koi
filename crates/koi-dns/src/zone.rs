@@ -1,6 +1,7 @@
 use crate::resolver::DnsError;
 
 /// Local DNS zone configuration and normalization helpers.
+#[derive(Clone)]
 pub struct DnsZone {
     zone: String,
     fqdn_suffix: String,

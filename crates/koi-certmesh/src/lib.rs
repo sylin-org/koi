@@ -370,24 +370,34 @@ impl CertmeshCore {
             }
         })?;
 
-        let issued = ca::issue_certificate(ca, &hostname, &sans)?;
         let ca_cert_pem = ca.cert_pem.clone();
+
+        // Idempotency: if already enrolled, read existing cert from disk
+        {
+            let roster = self.state.roster.lock().await;
+            if let Some(member) = roster.members.iter().find(|m| m.hostname == hostname) {
+                tracing::debug!(hostname = %hostname, "already self-enrolled, reading existing cert");
+                let cert_dir = std::path::PathBuf::from(&member.cert_path);
+                let cert_pem = std::fs::read_to_string(cert_dir.join("cert.pem"))
+                    .map_err(|e| CertmeshError::Internal(format!("read existing cert: {e}")))?;
+                let key_pem = std::fs::read_to_string(cert_dir.join("key.pem"))
+                    .map_err(|e| CertmeshError::Internal(format!("read existing key: {e}")))?;
+                return Ok(SelfEnrollment {
+                    cert_pem,
+                    key_pem,
+                    ca_cert_pem,
+                });
+            }
+        }
+
+        let issued = ca::issue_certificate(ca, &hostname, &sans)?;
 
         // Write cert files to the standard path
         let cert_dir = certfiles::write_cert_files(&hostname, &issued)?;
 
-        // Add self to roster as primary member (idempotent — skip if already enrolled)
+        // Add self to roster as primary member
         drop(ca_guard);
         let mut roster = self.state.roster.lock().await;
-        if roster.members.iter().any(|m| m.hostname == hostname) {
-            tracing::debug!(hostname = %hostname, "already self-enrolled, skipping");
-            drop(roster);
-            return Ok(SelfEnrollment {
-                cert_pem: issued.cert_pem,
-                key_pem: issued.key_pem,
-                ca_cert_pem,
-            });
-        }
         roster.members.push(roster::RosterMember {
             hostname: hostname.clone(),
             role: roster::MemberRole::Primary,

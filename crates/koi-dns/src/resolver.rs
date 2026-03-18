@@ -411,12 +411,8 @@ impl Clone for DnsCore {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
-            zone: DnsZone::new(self.zone.zone())
-                .expect("zone was valid at construction"),
-            local_zone: self
-                .local_zone
-                .as_ref()
-                .map(|z| DnsZone::new(z.zone()).expect("zone was valid at construction")),
+            zone: self.zone.clone(),
+            local_zone: self.local_zone.clone(),
             state: self.state.clone(),
             mdns: self.mdns.clone(),
             certmesh: self.certmesh.clone(),

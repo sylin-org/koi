@@ -87,10 +87,13 @@ mod color {
 
 /// Resolve the daemon endpoint or bail with a clear message.
 fn require_daemon(endpoint: Option<&str>) -> anyhow::Result<KoiClient> {
+    let bc = koi_config::breadcrumb::read_breadcrumb();
     if let Some(ep) = endpoint {
-        return Ok(KoiClient::new(ep));
+        // Explicit endpoint: use breadcrumb token if available, otherwise tokenless
+        let token = bc.map(|b| b.token).unwrap_or_default();
+        return Ok(KoiClient::with_token(ep, &token));
     }
-    let bc = koi_config::breadcrumb::read_breadcrumb().ok_or_else(|| {
+    let bc = bc.ok_or_else(|| {
         anyhow::anyhow!(
             "No running Koi service found.\n\
              Install and start the service first: koi install"

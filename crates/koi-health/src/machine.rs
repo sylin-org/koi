@@ -154,7 +154,9 @@ async fn run_mdns_poll(
                 let mut guard = hosts.write().await;
                 guard.retain(|h, _| host_ips.contains_key(h));
                 for hostname in host_ips.keys() {
-                    guard.entry(hostname.clone()).or_insert(MdnsHostState { last_seen: now });
+                    guard.entry(hostname.clone())
+                        .and_modify(|s| s.last_seen = now)
+                        .or_insert(MdnsHostState { last_seen: now });
                 }
             }
         }

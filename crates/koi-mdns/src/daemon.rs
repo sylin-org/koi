@@ -68,7 +68,12 @@ impl MdnsDaemon {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .try_send(op)
-            .map_err(|_| MdnsError::Daemon("mDNS worker queue full".into()))
+            .map_err(|e| match e {
+                std::sync::mpsc::TrySendError::Full(_) =>
+                    MdnsError::Daemon("mDNS worker queue full".into()),
+                std::sync::mpsc::TrySendError::Disconnected(_) =>
+                    MdnsError::Daemon("mDNS worker stopped".into()),
+            })
     }
 
     /// Start browsing for a service type. Returns a receiver for events.
