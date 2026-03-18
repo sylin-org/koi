@@ -361,19 +361,9 @@ impl CertmeshCore {
             "127.0.0.1".to_string(),
         ];
 
-        let ca_guard = self.state.ca.lock().await;
-        let ca = ca_guard.as_ref().ok_or_else(|| {
-            if ca::is_ca_initialized() {
-                CertmeshError::CaLocked
-            } else {
-                CertmeshError::CaNotInitialized
-            }
-        })?;
-
-        let ca_cert_pem = ca.cert_pem.clone();
-
         // Idempotency: if already enrolled, read existing cert from disk.
-        // Extract the cert path under the lock, then drop it before blocking I/O.
+        // Check roster first (before acquiring CA lock) so the early-return
+        // path never holds the CA lock during blocking file I/O.
         let existing_cert_dir = {
             let roster = self.state.roster.lock().await;
             roster
@@ -384,6 +374,10 @@ impl CertmeshCore {
         };
         if let Some(cert_dir) = existing_cert_dir {
             tracing::debug!(hostname = %hostname, "already self-enrolled, reading existing cert");
+            let ca_guard = self.state.ca.lock().await;
+            let ca = ca_guard.as_ref().ok_or(CertmeshError::CaLocked)?;
+            let ca_cert_pem = ca.cert_pem.clone();
+            drop(ca_guard);
             let cert_pem = std::fs::read_to_string(cert_dir.join("cert.pem"))
                 .map_err(|e| CertmeshError::Internal(format!("read existing cert: {e}")))?;
             let key_pem = std::fs::read_to_string(cert_dir.join("key.pem"))
@@ -395,7 +389,17 @@ impl CertmeshCore {
             });
         }
 
+        let ca_guard = self.state.ca.lock().await;
+        let ca = ca_guard.as_ref().ok_or_else(|| {
+            if ca::is_ca_initialized() {
+                CertmeshError::CaLocked
+            } else {
+                CertmeshError::CaNotInitialized
+            }
+        })?;
+
         let issued = ca::issue_certificate(ca, &hostname, &sans)?;
+        let ca_cert_pem = ca.cert_pem.clone();
 
         // Write cert files to the standard path
         let cert_dir = certfiles::write_cert_files(&hostname, &issued)?;
