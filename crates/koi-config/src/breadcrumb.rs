@@ -19,7 +19,7 @@ const DAT_PREFIX: &str = "dat:";
 pub struct BreadcrumbInfo {
     /// The HTTP endpoint URL of the daemon (e.g. "http://localhost:5641").
     pub endpoint: String,
-    /// Daemon Access Token (base64-encoded). Empty string for legacy breadcrumbs.
+    /// Daemon Access Token (base64-encoded).
     pub token: String,
 }
 
@@ -104,9 +104,13 @@ pub fn delete_breadcrumb() {
 
 /// Read the daemon endpoint and token from the breadcrumb file.
 ///
-/// Supports both new format (two lines: endpoint + dat:token) and legacy
-/// format (single line: endpoint only). Legacy breadcrumbs return an empty
-/// token string.
+/// Expected format (two lines):
+/// ```text
+/// http://localhost:5641
+/// dat:base64_encoded_token
+/// ```
+///
+/// Returns `None` if the file is missing, malformed, or lacks a token line.
 pub fn read_breadcrumb() -> Option<BreadcrumbInfo> {
     let content = std::fs::read_to_string(breadcrumb_path()).ok()?;
     let mut lines = content.lines();
@@ -116,14 +120,14 @@ pub fn read_breadcrumb() -> Option<BreadcrumbInfo> {
         return None;
     }
 
-    // Second line is optional (backward compat with old single-line format)
+    // Token line is required — reject breadcrumbs without a DAT token.
     let token = lines
         .next()
         .and_then(|line| {
             let trimmed = line.trim();
             trimmed.strip_prefix(DAT_PREFIX).map(|t| t.to_string())
         })
-        .unwrap_or_default();
+        .filter(|t| !t.is_empty())?;
 
     Some(BreadcrumbInfo { endpoint, token })
 }
@@ -183,11 +187,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_legacy_format_without_token() {
-        let dir = std::env::temp_dir().join(format!("koi-bc-legacy-{}", std::process::id()));
+    fn parse_without_token_returns_none() {
+        let dir = std::env::temp_dir().join(format!("koi-bc-notoken-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let file = dir.join("test.endpoint");
 
+        // Breadcrumb without a token line is rejected (no legacy support)
         std::fs::write(&file, "http://localhost:5641\n").unwrap();
 
         let content = std::fs::read_to_string(&file).unwrap();
@@ -196,10 +201,10 @@ mod tests {
         let token = lines
             .next()
             .and_then(|line| line.trim().strip_prefix(DAT_PREFIX).map(|t| t.to_string()))
-            .unwrap_or_default();
+            .filter(|t| !t.is_empty());
 
         assert_eq!(endpoint, "http://localhost:5641");
-        assert_eq!(token, "");
+        assert!(token.is_none(), "missing token should return None");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

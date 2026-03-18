@@ -1005,6 +1005,7 @@ fn spawn_certmesh_background_tasks(
                         }
                     };
                     let endpoint = bc.endpoint;
+                    let token = bc.token;
 
                     let request = serde_json::json!({
                         "hostname": hostname,
@@ -1013,7 +1014,7 @@ fn spawn_certmesh_background_tasks(
 
                     // KoiClient is blocking (ureq) - run in a blocking task
                     let result = tokio::task::spawn_blocking(move || {
-                        let c = client::KoiClient::new(&endpoint);
+                        let c = client::KoiClient::with_token(&endpoint, &token);
                         c.health_heartbeat(&request)
                     })
                     .await;

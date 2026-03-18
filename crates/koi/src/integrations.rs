@@ -84,7 +84,7 @@ impl MdnsBridge {
     }
 
     fn snapshot_records(&self) -> Vec<ServiceRecord> {
-        let guard = self.records.read().unwrap();
+        let guard = self.records.read().unwrap_or_else(|e| e.into_inner());
         guard
             .values()
             .flat_map(|map| map.values().cloned())
@@ -244,12 +244,12 @@ async fn run_type_browse(
                 let Some(event) = event else { break; };
                 match event {
                     koi_mdns::events::MdnsEvent::Resolved(record) => {
-                        let mut guard = records.write().unwrap();
+                        let mut guard = records.write().unwrap_or_else(|e| e.into_inner());
                         let entry = guard.entry(record.service_type.clone()).or_default();
                         entry.insert(record.name.clone(), record);
                     }
                     koi_mdns::events::MdnsEvent::Removed { name, service_type } => {
-                        let mut guard = records.write().unwrap();
+                        let mut guard = records.write().unwrap_or_else(|e| e.into_inner());
                         let service_type = if service_type.is_empty() {
                             extract_service_type(&name)
                         } else {

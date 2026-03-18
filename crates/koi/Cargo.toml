@@ -51,6 +51,7 @@ once_cell.workspace = true
 open.workspace = true
 rand.workspace = true
 base64.workspace = true
+subtle.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
 tokio-rustls.workspace = true

@@ -5,14 +5,16 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Extension, Request, State};
-use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::body::Body;
+use axum::extract::Extension;
+use axum::http::{header, HeaderName, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use koi_common::capability::Capability;
 use serde::Serialize;
+use subtle::ConstantTimeEq;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 use utoipa::OpenApi;
@@ -194,24 +196,36 @@ pub async fn start(
 
     app = app.layer(Extension(app_state));
     app = app.layer(Extension(dashboard_state));
+
+    // DAT auth middleware: mutation requests (non-GET/OPTIONS) require X-Koi-Token header.
+    // Applied BEFORE CORS so it only sees real requests (CORS handles OPTIONS preflight).
+    let shared_token = Arc::new(dat_token);
+    app = app.layer(middleware::from_fn(move |req, next| {
+        let token = Arc::clone(&shared_token);
+        dat_auth_middleware(req, next, token)
+    }));
+
+    // CORS must be the LAST .layer() call (outermost) so OPTIONS preflight
+    // is handled before auth middleware strips unauthenticated requests.
     let cors = CorsLayer::new()
-        .allow_origin([
-            "http://localhost".parse::<HeaderValue>().unwrap(),
-            "http://127.0.0.1".parse::<HeaderValue>().unwrap(),
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::DELETE,
+            axum::http::Method::OPTIONS,
         ])
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers([header::CONTENT_TYPE]);
+        .allow_headers([header::CONTENT_TYPE, HeaderName::from_static("x-koi-token")])
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(|origin, _| {
+            let s = origin.to_str().unwrap_or("");
+            s.starts_with("http://localhost") || s.starts_with("http://127.0.0.1")
+        }));
     app = app.layer(cors);
 
-    // DAT auth middleware: mutation requests (non-GET) require X-Koi-Token header
-    let token_state = Arc::new(dat_token);
-    app = app.layer(middleware::from_fn_with_state(
-        token_state,
-        dat_auth_middleware,
-    ));
-
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
-    tracing::info!("HTTP adapter listening on port {}", port);
+    // Bind to loopback only — the HTTP adapter serves localhost clients.
+    // The mTLS adapter (if enabled) binds 0.0.0.0 for LAN inter-node traffic.
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    tracing::info!("HTTP adapter listening on 127.0.0.1:{}", port);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -413,47 +427,48 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
 
 // ── DAT auth middleware ──────────────────────────────────────────────
 
-/// Daemon Access Token authentication middleware.
+/// Daemon Access Token (DAT) authentication middleware.
 ///
-/// GET requests pass through unconditionally (read-only).
-/// All other methods require a valid `X-Koi-Token` header or `?token=` query
-/// parameter matching the daemon's generated token.
+/// GET and OPTIONS requests are exempt (read-only, CORS preflight).
+/// All other methods require a valid `x-koi-token` header.
+/// Uses constant-time comparison to prevent timing attacks.
 async fn dat_auth_middleware(
-    State(expected_token): State<Arc<String>>,
-    request: Request,
+    req: Request<Body>,
     next: Next,
+    expected_token: Arc<String>,
 ) -> Response {
-    // Allow all GET requests (read-only endpoints are public)
-    if request.method() == Method::GET {
-        return next.run(request).await;
+    // GET and OPTIONS are exempt from auth
+    let method = req.method().clone();
+    if method == axum::http::Method::GET || method == axum::http::Method::OPTIONS {
+        return next.run(req).await;
     }
 
-    // Check X-Koi-Token header (case-insensitive header lookup by axum)
-    if let Some(val) = request.headers().get(DAT_HEADER) {
-        if val.as_bytes() == expected_token.as_bytes() {
-            return next.run(request).await;
-        }
+    // Check x-koi-token header with constant-time comparison
+    let authenticated = req
+        .headers()
+        .get(DAT_HEADER)
+        .and_then(|val| val.to_str().ok())
+        .map(|val| {
+            val.len() == expected_token.len()
+                && val
+                    .as_bytes()
+                    .ct_eq(expected_token.as_bytes())
+                    .into()
+        })
+        .unwrap_or(false);
+
+    if !authenticated {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({
+                "error": "unauthorized",
+                "message": "Missing or invalid x-koi-token header"
+            })),
+        )
+            .into_response();
     }
 
-    // Fallback: check ?token= query parameter (for browser/SSE clients)
-    if let Some(query) = request.uri().query() {
-        for pair in query.split('&') {
-            if let Some(val) = pair.strip_prefix("token=") {
-                if val == expected_token.as_str() {
-                    return next.run(request).await;
-                }
-            }
-        }
-    }
-
-    (
-        StatusCode::UNAUTHORIZED,
-        axum::Json(serde_json::json!({
-            "error": "unauthorized",
-            "message": "Missing or invalid X-Koi-Token header"
-        })),
-    )
-        .into_response()
+    next.run(req).await
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
