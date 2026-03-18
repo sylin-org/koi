@@ -140,9 +140,8 @@ impl DnsCore {
             .map(|builder| builder.build())
             .ok();
 
-        let alias_tx = if alias_feedback.is_some() {
+        let alias_tx = if let Some(af) = alias_feedback.clone() {
             let (tx, rx) = mpsc::channel(128);
-            let af = alias_feedback.clone().unwrap();
             let zone_clone = zone.zone().to_string();
             tokio::spawn(async move {
                 alias_feedback_loop(af, zone_clone, rx).await;
@@ -412,11 +411,12 @@ impl Clone for DnsCore {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
-            zone: DnsZone::new(self.zone.zone()).unwrap(),
+            zone: DnsZone::new(self.zone.zone())
+                .expect("zone was valid at construction"),
             local_zone: self
                 .local_zone
                 .as_ref()
-                .map(|z| DnsZone::new(z.zone()).unwrap()),
+                .map(|z| DnsZone::new(z.zone()).expect("zone was valid at construction")),
             state: self.state.clone(),
             mdns: self.mdns.clone(),
             certmesh: self.certmesh.clone(),

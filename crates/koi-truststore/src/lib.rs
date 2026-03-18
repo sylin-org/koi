@@ -45,6 +45,9 @@ fn validate_name(name: &str) -> Result<(), TrustStoreError> {
         || name.contains('\\')
         || name.contains('\0')
         || name.contains("..")
+        || name.contains(':')
+        || name.contains('*')
+        || name.contains('?')
     {
         return Err(TrustStoreError::InvalidName(format!(
             "name contains forbidden characters: {name}"

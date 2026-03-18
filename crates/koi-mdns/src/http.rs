@@ -162,14 +162,10 @@ async fn register_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Json(payload): Json<RegisterPayload>,
 ) -> impl IntoResponse {
-    if payload.lease_secs == Some(0) {
-        let body = serde_json::json!({
-            "error": "invalid_payload",
-            "message": "lease_secs=0 (permanent lease) is not allowed via HTTP; use a positive value or omit for default"
-        });
-        return (axum::http::StatusCode::BAD_REQUEST, Json(body)).into_response();
-    }
-    let policy = policy_from_lease_secs(payload.lease_secs);
+    let policy = match policy_from_lease_secs(payload.lease_secs) {
+        Ok(p) => p,
+        Err(e) => return error_json(e).into_response(),
+    };
     match core.register_with_policy(payload, policy, None) {
         Ok(result) => {
             let resp = PipelineResponse::clean(Response::Registered(result));
@@ -370,7 +366,10 @@ fn error_event_stream(
     e: MdnsError,
 ) -> impl Stream<Item = std::result::Result<Event, std::convert::Infallible>> {
     let data = serde_json::to_string(&crate::protocol::error_to_pipeline(&e))
-        .unwrap_or_else(|_| format!(r#"{{"error":"serialization_failed","message":"{}"}}"#, e));
+        .unwrap_or_else(|_| {
+            let msg = e.to_string().replace('\\', "\\\\").replace('"', "\\\"");
+            format!(r#"{{"error":"serialization_failed","message":"{msg}"}}"#)
+        });
     async_stream::stream! {
         let id = uuid::Uuid::now_v7().to_string();
         yield Ok(Event::default().id(id).data(data));
@@ -379,17 +378,19 @@ fn error_event_stream(
 
 /// Determine lease policy from the optional `lease_secs` field in the register payload.
 /// HTTP default: heartbeat with 90s lease, 30s grace.
-fn policy_from_lease_secs(lease_secs: Option<u64>) -> LeasePolicy {
+fn policy_from_lease_secs(lease_secs: Option<u64>) -> Result<LeasePolicy, MdnsError> {
     match lease_secs {
-        Some(0) => LeasePolicy::Permanent,
-        Some(secs) => LeasePolicy::Heartbeat {
+        Some(0) => Err(MdnsError::InvalidPayload(
+            "lease_secs=0 is not allowed via HTTP".into(),
+        )),
+        Some(secs) => Ok(LeasePolicy::Heartbeat {
             lease: Duration::from_secs(secs),
             grace: DEFAULT_HEARTBEAT_GRACE,
-        },
-        None => LeasePolicy::Heartbeat {
+        }),
+        None => Ok(LeasePolicy::Heartbeat {
             lease: DEFAULT_HEARTBEAT_LEASE,
             grace: DEFAULT_HEARTBEAT_GRACE,
-        },
+        }),
     }
 }
 
@@ -457,7 +458,7 @@ mod tests {
 
     #[test]
     fn policy_from_none_returns_default_heartbeat() {
-        let policy = policy_from_lease_secs(None);
+        let policy = policy_from_lease_secs(None).unwrap();
         assert!(matches!(
             policy,
             LeasePolicy::Heartbeat { lease, grace }
@@ -466,14 +467,14 @@ mod tests {
     }
 
     #[test]
-    fn policy_from_zero_returns_permanent() {
-        let policy = policy_from_lease_secs(Some(0));
-        assert!(matches!(policy, LeasePolicy::Permanent));
+    fn policy_from_zero_returns_error() {
+        let result = policy_from_lease_secs(Some(0));
+        assert!(result.is_err(), "lease_secs=0 should be rejected via HTTP");
     }
 
     #[test]
     fn policy_from_custom_returns_heartbeat_with_custom_lease() {
-        let policy = policy_from_lease_secs(Some(300));
+        let policy = policy_from_lease_secs(Some(300)).unwrap();
         assert!(matches!(
             policy,
             LeasePolicy::Heartbeat { lease, grace }
@@ -576,7 +577,7 @@ mod tests {
 
     #[test]
     fn policy_from_one_second_returns_heartbeat() {
-        let policy = policy_from_lease_secs(Some(1));
+        let policy = policy_from_lease_secs(Some(1)).unwrap();
         assert!(matches!(
             policy,
             LeasePolicy::Heartbeat { lease, .. }
@@ -586,7 +587,7 @@ mod tests {
 
     #[test]
     fn policy_from_u64_max_returns_heartbeat() {
-        let policy = policy_from_lease_secs(Some(u64::MAX));
+        let policy = policy_from_lease_secs(Some(u64::MAX)).unwrap();
         assert!(matches!(policy, LeasePolicy::Heartbeat { .. }));
     }
 

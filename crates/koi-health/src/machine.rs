@@ -152,8 +152,9 @@ async fn run_mdns_poll(
                 let host_ips = mdns.host_ips();
                 let now = Instant::now();
                 let mut guard = hosts.write().await;
+                guard.retain(|h, _| host_ips.contains_key(h));
                 for hostname in host_ips.keys() {
-                    guard.insert(hostname.clone(), MdnsHostState { last_seen: now });
+                    guard.entry(hostname.clone()).or_insert(MdnsHostState { last_seen: now });
                 }
             }
         }

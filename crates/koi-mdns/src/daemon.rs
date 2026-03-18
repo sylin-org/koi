@@ -67,8 +67,8 @@ impl MdnsDaemon {
         self.op_tx
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .send(op)
-            .map_err(|_| MdnsError::Daemon("mDNS worker stopped".into()))
+            .try_send(op)
+            .map_err(|_| MdnsError::Daemon("mDNS worker queue full".into()))
     }
 
     /// Start browsing for a service type. Returns a receiver for events.

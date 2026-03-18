@@ -27,6 +27,9 @@ pub enum MdnsError {
 
     #[error("Ambiguous ID prefix: {0}")]
     AmbiguousId(String),
+
+    #[error("Invalid payload: {0}")]
+    InvalidPayload(String),
 }
 
 pub type Result<T> = std::result::Result<T, MdnsError>;
@@ -48,6 +51,7 @@ impl From<&MdnsError> for ErrorCode {
             MdnsError::AlreadyDraining(_) => Self::AlreadyDraining,
             MdnsError::NotDraining(_) => Self::NotDraining,
             MdnsError::AmbiguousId(_) => Self::AmbiguousId,
+            MdnsError::InvalidPayload(_) => Self::InvalidPayload,
         }
     }
 }
@@ -100,6 +104,11 @@ mod tests {
             (
                 MdnsError::AmbiguousId("a1".into()),
                 ErrorCode::AmbiguousId,
+                400,
+            ),
+            (
+                MdnsError::InvalidPayload("bad value".into()),
+                ErrorCode::InvalidPayload,
                 400,
             ),
         ];
