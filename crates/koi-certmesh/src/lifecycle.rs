@@ -51,14 +51,21 @@ pub fn write_renewed_cert_files(
 
 /// Execute a reload hook command after cert renewal.
 ///
-/// Runs the command via the platform shell, captures stdout+stderr,
-/// and returns a structured result. Never panics - failure is reported
+/// Splits the command on whitespace and executes directly without a
+/// shell intermediary.  Shell metacharacters are rejected at the HTTP
+/// layer (`set_hook_handler`), so this is safe.
+///
+/// Returns a structured result. Never panics - failure is reported
 /// in the `HookResult`.
 pub fn execute_reload_hook(hook: &str) -> HookResult {
-    let result = if cfg!(windows) {
-        Command::new("cmd").args(["/C", hook]).output()
+    let parts: Vec<&str> = hook.split_whitespace().collect();
+    let result = if parts.is_empty() {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty hook command",
+        ))
     } else {
-        Command::new("sh").args(["-c", hook]).output()
+        Command::new(parts[0]).args(&parts[1..]).output()
     };
 
     match result {

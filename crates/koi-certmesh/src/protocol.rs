@@ -280,13 +280,25 @@ pub struct ComplianceResponse {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PromoteRequest {
     pub auth: koi_crypto::auth::AuthResponse,
+    /// Client's ephemeral X25519 public key for DH key agreement.
+    /// When present, the server encrypts the CA key with the DH-derived
+    /// shared key instead of a passphrase, so the passphrase never
+    /// traverses the wire.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_byte_array"
+    )]
+    pub ephemeral_public: Option<[u8; 32]>,
 }
 
 /// POST /promote response - encrypted CA key, auth credential, and roster.
 ///
-/// The standby decrypts the CA key with the passphrase provided during
-/// the `koi certmesh promote` flow. The passphrase is never sent over
-/// the wire - only the already-encrypted material is transferred.
+/// When DH key agreement is used (`ephemeral_public` is present), the
+/// CA key material is encrypted with the DH-derived shared key. The
+/// standby combines its own ephemeral secret with `ephemeral_public`
+/// to derive the same key and decrypt. The passphrase is never sent
+/// over the wire.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PromoteResponse {
     pub encrypted_ca_key: koi_crypto::keys::EncryptedKey,
@@ -294,6 +306,14 @@ pub struct PromoteResponse {
     pub auth_data: serde_json::Value,
     pub roster_json: String,
     pub ca_cert_pem: String,
+    /// Server's ephemeral X25519 public key for DH key agreement.
+    /// Present only when the client sent an `ephemeral_public` in the request.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_byte_array"
+    )]
+    pub ephemeral_public: Option<[u8; 32]>,
 }
 
 /// POST /renew request - CA pushes renewed cert to a member.
@@ -346,6 +366,47 @@ pub struct HealthRequest {
 pub struct HealthResponse {
     pub valid: bool,
     pub ca_fingerprint: String,
+}
+
+/// Serde helper for `Option<[u8; 32]>` — serializes as a hex string.
+mod optional_byte_array {
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &Option<[u8; 32]>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(bytes) => {
+                let hex = koi_common::encoding::hex_encode(bytes);
+                serializer.serialize_str(&hex)
+            }
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<[u8; 32]>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: Option<String> = Option::deserialize(deserializer)?;
+        match opt {
+            Some(hex) => {
+                let bytes = koi_common::encoding::hex_decode(&hex)
+                    .map_err(serde::de::Error::custom)?;
+                if bytes.len() != 32 {
+                    return Err(serde::de::Error::custom(format!(
+                        "expected 32 bytes, got {}",
+                        bytes.len()
+                    )));
+                }
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Ok(Some(arr))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -444,12 +505,29 @@ mod tests {
             auth: koi_crypto::auth::AuthResponse::Totp {
                 code: "654321".to_string(),
             },
+            ephemeral_public: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: PromoteRequest = serde_json::from_str(&json).unwrap();
         assert!(
             matches!(parsed.auth, koi_crypto::auth::AuthResponse::Totp { ref code } if code == "654321")
         );
+        assert!(parsed.ephemeral_public.is_none());
+    }
+
+    #[test]
+    fn promote_request_with_ephemeral_public_round_trip() {
+        let pub_key = [42u8; 32];
+        let req = PromoteRequest {
+            auth: koi_crypto::auth::AuthResponse::Totp {
+                code: "654321".to_string(),
+            },
+            ephemeral_public: Some(pub_key),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("ephemeral_public"));
+        let parsed: PromoteRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.ephemeral_public, Some(pub_key));
     }
 
     #[test]
@@ -459,15 +537,38 @@ mod tests {
                 ciphertext: vec![1, 2, 3],
                 salt: vec![4, 5, 6],
                 nonce: vec![7, 8, 9],
+                kdf_params: Default::default(),
             },
             auth_data: serde_json::json!({"method": "totp", "encrypted_secret": {"ciphertext": [10], "salt": [11], "nonce": [12]}}),
             roster_json: r#"{"metadata":{}}"#.to_string(),
             ca_cert_pem: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n".to_string(),
+            ephemeral_public: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: PromoteResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.encrypted_ca_key.ciphertext, vec![1, 2, 3]);
         assert_eq!(parsed.ca_cert_pem.len(), resp.ca_cert_pem.len());
+        assert!(parsed.ephemeral_public.is_none());
+    }
+
+    #[test]
+    fn promote_response_with_ephemeral_public_round_trip() {
+        let server_pub = [99u8; 32];
+        let resp = PromoteResponse {
+            encrypted_ca_key: koi_crypto::keys::EncryptedKey {
+                ciphertext: vec![1, 2, 3],
+                salt: vec![4, 5, 6],
+                nonce: vec![7, 8, 9],
+                kdf_params: Default::default(),
+            },
+            auth_data: serde_json::json!({"method": "totp"}),
+            roster_json: "{}".to_string(),
+            ca_cert_pem: "cert".to_string(),
+            ephemeral_public: Some(server_pub),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: PromoteResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.ephemeral_public, Some(server_pub));
     }
 
     #[test]

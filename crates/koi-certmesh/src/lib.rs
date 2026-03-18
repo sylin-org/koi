@@ -87,6 +87,18 @@ pub enum ApprovalDecision {
 
 const APPROVAL_TIMEOUT_SECS: u64 = 300;
 
+/// Result of daemon self-enrollment for the mTLS listener.
+///
+/// Contains all PEM material needed to configure TLS with client cert verification.
+pub struct SelfEnrollment {
+    /// The daemon's certificate (signed by the CA).
+    pub cert_pem: String,
+    /// The daemon's private key.
+    pub key_pem: String,
+    /// The CA certificate (for client verification).
+    pub ca_cert_pem: String,
+}
+
 impl CertmeshState {
     /// Destroy all certmesh state - shared by CertmeshCore::destroy() and the HTTP handler.
     pub(crate) async fn destroy(&self) -> Result<(), CertmeshError> {
@@ -214,6 +226,14 @@ impl CertmeshCore {
         http::routes(Arc::clone(&self.state))
     }
 
+    /// Build the inter-node router for the mTLS listener.
+    ///
+    /// Contains only routes that require mutual TLS between mesh members:
+    /// promote, health, renew, roster, set-hook.
+    pub fn inter_node_routes(&self) -> Router {
+        http::inter_node_routes(Arc::clone(&self.state))
+    }
+
     /// Set the approval channel used for enrollment approvals.
     pub async fn set_approval_channel(&self, tx: mpsc::Sender<ApprovalRequest>) {
         *self.state.approval_tx.lock().await = Some(tx);
@@ -322,6 +342,76 @@ impl CertmeshCore {
         });
 
         Ok(response)
+    }
+
+    /// Self-enroll the daemon as a certmesh member.
+    ///
+    /// Called automatically after CA creation to get a server cert for the mTLS listener.
+    /// This bypasses the normal authentication flow since the daemon owns the CA.
+    pub async fn self_enroll(&self) -> Result<SelfEnrollment, CertmeshError> {
+        let hostname = hostname::get()
+            .ok()
+            .and_then(|os| os.into_string().ok())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let sans = vec![
+            hostname.clone(),
+            format!("{hostname}.local"),
+            "localhost".to_string(),
+            "127.0.0.1".to_string(),
+        ];
+
+        let ca_guard = self.state.ca.lock().await;
+        let ca = ca_guard.as_ref().ok_or_else(|| {
+            if ca::is_ca_initialized() {
+                CertmeshError::CaLocked
+            } else {
+                CertmeshError::CaNotInitialized
+            }
+        })?;
+
+        let issued = ca::issue_certificate(ca, &hostname, &sans)?;
+        let ca_cert_pem = ca.cert_pem.clone();
+
+        // Write cert files to the standard path
+        let cert_dir = certfiles::write_cert_files(&hostname, &issued)?;
+
+        // Add self to roster as primary member
+        drop(ca_guard);
+        let mut roster = self.state.roster.lock().await;
+        roster.members.push(roster::RosterMember {
+            hostname: hostname.clone(),
+            role: roster::MemberRole::Primary,
+            enrolled_at: chrono::Utc::now(),
+            enrolled_by: Some("self-enrollment".to_string()),
+            cert_fingerprint: issued.fingerprint.clone(),
+            cert_expires: issued.expires,
+            cert_sans: sans,
+            cert_path: cert_dir.display().to_string(),
+            status: roster::MemberStatus::Active,
+            reload_hook: None,
+            last_seen: Some(chrono::Utc::now()),
+            pinned_ca_fingerprint: None,
+            proxy_entries: Vec::new(),
+        });
+        let roster_path = ca::roster_path();
+        if let Err(e) = roster::save_roster(&roster, &roster_path) {
+            tracing::warn!(error = %e, "Failed to save roster after self-enrollment");
+        }
+        drop(roster);
+
+        tracing::info!(hostname = %hostname, "Daemon self-enrolled as certmesh member");
+
+        let _ = self.state.event_tx.send(CertmeshEvent::MemberJoined {
+            hostname,
+            fingerprint: issued.fingerprint,
+        });
+
+        Ok(SelfEnrollment {
+            cert_pem: issued.cert_pem,
+            key_pem: issued.key_pem,
+            ca_cert_pem,
+        })
     }
 
     /// Get the current certmesh status.
@@ -489,11 +579,31 @@ impl CertmeshCore {
         koi_common::paths::koi_data_dir().join("auto-unlock-key")
     }
 
+    /// Platform credential store label for auto-unlock.
+    const AUTO_UNLOCK_LABEL: &'static str = "koi-auto-unlock";
+
     /// Save a passphrase for automatic unlock on reboot.
     ///
-    /// On Unix the file gets `chmod 0600`.  On Windows it inherits the
-    /// parent directory's ACL (acceptable for a daemon data directory).
+    /// Tries the platform credential store first (Windows Credential Manager,
+    /// macOS Keychain, Linux Secret Service). Falls back to a file with
+    /// restricted permissions if the credential store is unavailable.
     pub fn save_auto_unlock_key(passphrase: &str) -> Result<(), CertmeshError> {
+        match koi_crypto::tpm::seal_key_material(Self::AUTO_UNLOCK_LABEL, passphrase.as_bytes()) {
+            Ok(()) => {
+                tracing::info!("Auto-unlock key sealed in platform credential store");
+                // Remove any legacy file if it exists
+                let _ = std::fs::remove_file(Self::auto_unlock_key_path());
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Platform credential store unavailable; falling back to file"
+                );
+            }
+        }
+
+        // Fallback: write to file with restricted permissions
         let path = Self::auto_unlock_key_path();
         std::fs::write(&path, passphrase.as_bytes())?;
 
@@ -503,29 +613,43 @@ impl CertmeshCore {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         }
 
-        tracing::info!("Auto-unlock key saved - pond will unlock automatically on reboot");
+        tracing::info!("Auto-unlock key saved to file");
         Ok(())
     }
 
-    /// Delete the auto-unlock key file (idempotent).
+    /// Delete the auto-unlock key from all stores (idempotent).
     pub fn delete_auto_unlock_key() {
+        // Remove from platform credential store
+        let _ = koi_crypto::tpm::delete_key_material(Self::AUTO_UNLOCK_LABEL);
+        // Remove legacy file
         let path = Self::auto_unlock_key_path();
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Try to auto-unlock the CA from a saved key file.
+    /// Try to auto-unlock the CA from platform credential store or saved file.
     ///
-    /// Returns `Ok(true)` if the CA was unlocked, `Ok(false)` if there
-    /// is no key file, and `Err` if the key file exists but decryption
+    /// Returns `Ok(true)` if the CA was unlocked, `Ok(false)` if no
+    /// stored key exists, and `Err` if the key exists but decryption
     /// failed (corrupt key, changed passphrase, etc.).
     pub async fn try_auto_unlock(&self) -> Result<bool, CertmeshError> {
+        // Try platform credential store first
+        if let Ok(bytes) = koi_crypto::tpm::unseal_key_material(Self::AUTO_UNLOCK_LABEL) {
+            let passphrase = String::from_utf8_lossy(&bytes).to_string();
+            if !passphrase.is_empty() {
+                self.unlock(&passphrase).await?;
+                tracing::info!("Pond auto-unlocked via platform credential store");
+                return Ok(true);
+            }
+        }
+
+        // Fall back to file
         let path = Self::auto_unlock_key_path();
         let passphrase = match std::fs::read_to_string(&path) {
             Ok(pp) if !pp.is_empty() => pp,
             _ => return Ok(false),
         };
         self.unlock(&passphrase).await?;
-        tracing::info!("Pond auto-unlocked on boot via saved key");
+        tracing::info!("Pond auto-unlocked on boot via saved key file");
         Ok(true)
     }
 
@@ -737,7 +861,9 @@ impl CertmeshCore {
 
         let audit_log = audit::read_log().map_err(CertmeshError::Io)?;
 
-        let ca_key_pem = ca_state.key.private_key_pem().to_string();
+        let ca_key_pem = ca_state.key.private_key_pem()
+            .map_err(|e| CertmeshError::Crypto(e.to_string()))?
+            .to_string();
         let payload = backup::BackupPayload::new(
             ca_key_pem,
             ca_state.cert_pem.clone(),
@@ -892,20 +1018,24 @@ impl CertmeshCore {
 
         certfiles::write_cert_files(&request.hostname, &issued)?;
 
-        // Update roster
-        let mut roster = self.state.roster.lock().await;
-        if roster.is_revoked(&request.hostname) {
-            return Err(CertmeshError::Revoked(request.hostname.clone()));
-        }
-        if let Some(member) = roster.find_member_mut(&request.hostname) {
-            member.cert_fingerprint = issued.fingerprint.clone();
-            member.cert_expires = issued.expires;
-        }
+        // Update roster and extract hook command, then drop the lock
+        // before executing the hook (which may block).
+        let hook_cmd = {
+            let mut roster = self.state.roster.lock().await;
+            if roster.is_revoked(&request.hostname) {
+                return Err(CertmeshError::Revoked(request.hostname.clone()));
+            }
+            if let Some(member) = roster.find_member_mut(&request.hostname) {
+                member.cert_fingerprint = issued.fingerprint.clone();
+                member.cert_expires = issued.expires;
+            }
+            roster
+                .find_member(&request.hostname)
+                .and_then(|m| m.reload_hook.clone())
+            // roster lock dropped here
+        };
 
-        let hook_result = roster
-            .find_member(&request.hostname)
-            .and_then(|m| m.reload_hook.as_ref())
-            .map(|hook| lifecycle::execute_reload_hook(hook));
+        let hook_result = hook_cmd.map(|hook| lifecycle::execute_reload_hook(&hook));
 
         Ok(protocol::RenewResponse {
             hostname: request.hostname.clone(),
@@ -1110,9 +1240,11 @@ impl CertmeshCore {
     /// Prepare promotion material for a standby.
     ///
     /// Called on the primary when a standby requests promotion.
+    /// When `client_public_key` is provided, uses DH key agreement
+    /// to encrypt the CA key for wire transfer.
     pub async fn promote(
         &self,
-        passphrase: &str,
+        client_public_key: Option<&[u8; 32]>,
     ) -> Result<protocol::PromoteResponse, CertmeshError> {
         let ca_guard = self.state.ca.lock().await;
         let ca = ca_guard.as_ref().ok_or_else(|| {
@@ -1127,7 +1259,7 @@ impl CertmeshCore {
         let auth_state = auth_guard.as_ref().ok_or(CertmeshError::CaLocked)?;
 
         let roster = self.state.roster.lock().await;
-        failover::prepare_promotion(ca, auth_state, &roster, passphrase)
+        failover::prepare_promotion(ca, auth_state, &roster, client_public_key)
     }
 }
 
@@ -1556,7 +1688,7 @@ mod tests {
     async fn promote_returns_error_when_ca_locked() {
         let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
         let core = make_locked_core(roster);
-        let result = core.promote("passphrase").await;
+        let result = core.promote(None).await;
         assert!(matches!(result, Err(CertmeshError::CaLocked)));
     }
 
@@ -1566,25 +1698,33 @@ mod tests {
         let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
 
-        let response = core.promote("test-passphrase").await.unwrap();
+        let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
+        let client_pub = client_kp.public_key_bytes();
+
+        let response = core.promote(Some(&client_pub)).await.unwrap();
         assert!(!response.encrypted_ca_key.ciphertext.is_empty());
         assert!(!response.auth_data.is_null());
         assert!(!response.roster_json.is_empty());
         assert!(response.ca_cert_pem.contains("BEGIN CERTIFICATE"));
+        assert!(response.ephemeral_public.is_some());
     }
 
     #[tokio::test]
-    async fn promote_response_can_be_accepted() {
+    async fn promote_response_can_be_accepted_with_dh() {
         let ca = make_test_ca();
         let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
 
-        let response = core.promote("round-trip-pass").await.unwrap();
+        let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
+        let client_pub = client_kp.public_key_bytes();
 
-        // Accept the promotion on the standby side
+        let response = core.promote(Some(&client_pub)).await.unwrap();
+        assert!(response.ephemeral_public.is_some());
+
+        // Accept the promotion on the standby side using DH
         let (ca_key, accepted_auth, accepted_roster) =
-            failover::accept_promotion(&response, "round-trip-pass").unwrap();
-        assert!(!ca_key.public_key_pem().is_empty());
+            failover::accept_promotion(&response, "", Some(client_kp)).unwrap();
+        assert!(!ca_key.public_key_pem().unwrap().is_empty());
         assert_eq!(accepted_auth.method_name(), "totp");
         assert_eq!(accepted_roster.members.len(), 1);
     }
@@ -1898,7 +2038,7 @@ mod tests {
     #[tokio::test]
     async fn uninitialized_core_promote_returns_error() {
         let core = CertmeshCore::uninitialized();
-        let result = core.promote("passphrase").await;
+        let result = core.promote(None).await;
         assert!(result.is_err());
     }
 

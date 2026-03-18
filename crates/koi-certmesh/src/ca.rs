@@ -155,10 +155,13 @@ pub fn create_ca(
     passphrase: &str,
     entropy_seed: &[u8],
 ) -> Result<(CaState, [u8; 32]), CertmeshError> {
-    let ca_key = keys::generate_ca_keypair(entropy_seed);
+    let ca_key = keys::generate_ca_keypair(entropy_seed)
+        .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
     // Build rcgen KeyPair from our P-256 key
-    let key_pem = ca_key.private_key_pem();
+    let key_pem = ca_key
+        .private_key_pem()
+        .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
     let rcgen_key =
         KeyPair::from_pem(&key_pem).map_err(|e| CertmeshError::Certificate(e.to_string()))?;
 
@@ -304,7 +307,9 @@ fn build_ca_state_from_der(ca_key_der: &[u8]) -> Result<CaState, CertmeshError> 
     let cert_der = parsed.contents().to_vec();
 
     // Rebuild rcgen KeyPair for signing operations
-    let key_pem_str = ca_key.private_key_pem();
+    let key_pem_str = ca_key
+        .private_key_pem()
+        .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
     let rcgen_key =
         KeyPair::from_pem(&key_pem_str).map_err(|e| CertmeshError::Certificate(e.to_string()))?;
 
@@ -412,8 +417,8 @@ mod tests {
 
     #[test]
     fn create_ca_produces_valid_state() {
-        let ca_key = keys::generate_ca_keypair(&test_entropy());
-        let pem = ca_key.public_key_pem();
+        let ca_key = keys::generate_ca_keypair(&test_entropy()).unwrap();
+        let pem = ca_key.public_key_pem().unwrap();
         assert!(pem.contains("BEGIN PUBLIC KEY"));
     }
 

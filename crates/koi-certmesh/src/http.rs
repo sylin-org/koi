@@ -19,10 +19,19 @@ use crate::protocol::{
     AuditLogResponse, BackupRequest, BackupResponse, CertmeshStatus, ComplianceResponse,
     CreateCaRequest, CreateCaResponse, DestroyResponse, HealthRequest, HealthResponse, JoinRequest,
     JoinResponse, PolicyRequest, PolicySummary, PromoteRequest, PromoteResponse, RenewRequest,
-    RenewResponse, RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse,
-    RosterManifest, RotateAuthRequest, RotateAuthResponse, SetHookRequest, SetHookResponse,
-    UnlockRequest, UnlockResponse,
+    RenewResponse, RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse, RosterManifest,
+    RotateAuthRequest, RotateAuthResponse, SetHookRequest, SetHookResponse, UnlockRequest,
+    UnlockResponse,
 };
+
+/// Authenticated client certificate CN, injected by the mTLS adapter as an axum Extension.
+///
+/// When a request arrives over the mTLS port, the adapter extracts the CN from the
+/// client certificate and attaches it as `Extension(ClientCn(cn))`. Handlers that
+/// need per-caller authorization (set-hook, health, renew) check this against the
+/// hostname in the request body. Handlers on the plain HTTP port receive `None`.
+#[derive(Clone, Debug)]
+pub struct ClientCn(pub String);
 
 /// Route path constants - single source of truth for axum routing AND the command manifest.
 pub mod paths {
@@ -84,6 +93,22 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .layer(Extension(state))
 }
 
+/// Build the inter-node router for the mTLS listener.
+///
+/// Contains only routes that require mutual TLS between mesh members:
+/// promote, health, renew, roster, set-hook.
+/// Mounted by the binary crate on the mTLS port (5642).
+pub(crate) fn inter_node_routes(state: Arc<CertmeshState>) -> Router {
+    use paths::rel;
+    Router::new()
+        .route(rel(paths::PROMOTE), post(promote_handler))
+        .route(rel(paths::HEALTH), post(health_handler))
+        .route(rel(paths::RENEW), post(renew_handler))
+        .route(rel(paths::ROSTER), get(roster_handler))
+        .route(rel(paths::SET_HOOK), put(set_hook_handler))
+        .layer(Extension(state))
+}
+
 /// POST /join - Enroll a new member in the mesh.
 #[utoipa::path(post, path = "/join", tag = "certmesh",
     summary = "Enroll a new member in the certificate mesh",
@@ -126,6 +151,9 @@ async fn status_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl
     Json(status)
 }
 
+/// Characters forbidden in reload hook commands (shell metacharacters).
+const HOOK_FORBIDDEN_CHARS: &[char] = &['|', ';', '&', '$', '`', '>', '<', '\n', '\r'];
+
 /// PUT /hook - Set a post-renewal reload hook for a member.
 #[utoipa::path(put, path = "/set-hook", tag = "certmesh",
     summary = "Set reload hook for a member",
@@ -133,8 +161,32 @@ async fn status_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl
     responses((status = 200, body = SetHookResponse)))]
 async fn set_hook_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
+    client_cn: Option<Extension<ClientCn>>,
     Json(request): Json<SetHookRequest>,
 ) -> impl IntoResponse {
+    // CN authorization: if present, caller can only set hooks for their own hostname
+    if let Some(Extension(ClientCn(ref caller))) = client_cn {
+        if caller != &request.hostname {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                &CertmeshError::Internal(format!(
+                    "CN mismatch: authenticated as '{}' but requesting hook for '{}'",
+                    caller, request.hostname
+                )),
+            );
+        }
+    }
+
+    // Reject shell metacharacters in the reload command
+    if request.reload.contains(HOOK_FORBIDDEN_CHARS) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &CertmeshError::Internal(
+                "reload hook contains forbidden shell metacharacters (|;&$`><\\n\\r)".to_string(),
+            ),
+        );
+    }
+
     // Verify the member exists
     let mut roster = state.roster.lock().await;
     match roster.find_member_mut(&request.hostname) {
@@ -760,8 +812,13 @@ async fn compliance_handler(Extension(state): Extension<Arc<CertmeshState>>) -> 
     responses((status = 200, body = PromoteResponse)))]
 async fn promote_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
+    client_cn: Option<Extension<ClientCn>>,
     Json(request): Json<PromoteRequest>,
 ) -> impl IntoResponse {
+    if let Some(Extension(ClientCn(ref caller))) = client_cn {
+        tracing::info!(%caller, "promote requested by authenticated member");
+    }
+
     let ca_guard = state.ca.lock().await;
     let ca = match ca_guard.as_ref() {
         Some(ca) => ca,
@@ -812,7 +869,7 @@ async fn promote_handler(
 
     let roster = state.roster.lock().await;
 
-    match crate::failover::prepare_promotion(ca, auth_state, &roster, "") {
+    match crate::failover::prepare_promotion(ca, auth_state, &roster, request.ephemeral_public.as_ref()) {
         Ok(response) => match serde_json::to_value(&response) {
             Ok(val) => {
                 let _ = crate::audit::append_entry("promotion_prepared", &[]);
@@ -842,8 +899,22 @@ async fn promote_handler(
     responses((status = 200, body = RenewResponse)))]
 async fn renew_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
+    client_cn: Option<Extension<ClientCn>>,
     Json(request): Json<RenewRequest>,
 ) -> impl IntoResponse {
+    // CN authorization: caller can only receive renewals for their own hostname
+    if let Some(Extension(ClientCn(ref caller))) = client_cn {
+        if caller != &request.hostname {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                &CertmeshError::Internal(format!(
+                    "CN mismatch: authenticated as '{}' but renewing for '{}'",
+                    caller, request.hostname
+                )),
+            );
+        }
+    }
+
     // Build an IssuedCert from the request to reuse write_cert_files
     let issued = crate::ca::IssuedCert {
         cert_pem: request.cert_pem,
@@ -899,7 +970,14 @@ async fn renew_handler(
 #[utoipa::path(get, path = "/roster", tag = "certmesh",
     summary = "Get signed roster manifest",
     responses((status = 200, body = RosterManifest)))]
-async fn roster_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
+async fn roster_handler(
+    Extension(state): Extension<Arc<CertmeshState>>,
+    client_cn: Option<Extension<ClientCn>>,
+) -> impl IntoResponse {
+    if let Some(Extension(ClientCn(ref caller))) = client_cn {
+        tracing::debug!(%caller, "roster requested by authenticated member");
+    }
+
     let ca_guard = state.ca.lock().await;
     let ca = match ca_guard.as_ref() {
         Some(ca) => ca,
@@ -941,8 +1019,22 @@ async fn roster_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl
     responses((status = 200, body = HealthResponse)))]
 async fn health_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
+    client_cn: Option<Extension<ClientCn>>,
     Json(request): Json<HealthRequest>,
 ) -> impl IntoResponse {
+    // CN authorization: caller can only report health for their own hostname
+    if let Some(Extension(ClientCn(ref caller))) = client_cn {
+        if caller != &request.hostname {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                &CertmeshError::Internal(format!(
+                    "CN mismatch: authenticated as '{}' but reporting health for '{}'",
+                    caller, request.hostname
+                )),
+            );
+        }
+    }
+
     let ca_guard = state.ca.lock().await;
     let ca = match ca_guard.as_ref() {
         Some(ca) => ca,
@@ -1006,49 +1098,64 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
 #[derive(utoipa::OpenApi)]
 #[openapi(
     paths(
-        join_handler, status_handler, set_hook_handler, promote_handler,
-        renew_handler, roster_handler, health_handler, create_handler,
-        unlock_handler, rotate_auth_handler, log_handler, destroy_handler,
-        backup_handler, restore_handler, revoke_handler, compliance_handler,
-        open_enrollment_handler, close_enrollment_handler, set_policy_handler,
+        join_handler,
+        status_handler,
+        set_hook_handler,
+        promote_handler,
+        renew_handler,
+        roster_handler,
+        health_handler,
+        create_handler,
+        unlock_handler,
+        rotate_auth_handler,
+        log_handler,
+        destroy_handler,
+        backup_handler,
+        restore_handler,
+        revoke_handler,
+        compliance_handler,
+        open_enrollment_handler,
+        close_enrollment_handler,
+        set_policy_handler,
     ),
     components(schemas(
-    crate::protocol::JoinRequest,
-    crate::protocol::JoinResponse,
-    crate::protocol::CertmeshStatus,
-    crate::protocol::MemberSummary,
-    crate::protocol::SetHookRequest,
-    crate::protocol::SetHookResponse,
-    crate::protocol::CreateCaRequest,
-    crate::protocol::CreateCaResponse,
-    crate::protocol::UnlockRequest,
-    crate::protocol::UnlockResponse,
-    crate::protocol::RotateAuthRequest,
-    crate::protocol::RotateAuthResponse,
-    crate::protocol::AuditLogResponse,
-    crate::protocol::DestroyResponse,
-    crate::protocol::BackupRequest,
-    crate::protocol::BackupResponse,
-    crate::protocol::RestoreRequest,
-    crate::protocol::RestoreResponse,
-    crate::protocol::RevokeRequest,
-    crate::protocol::RevokeResponse,
-    crate::protocol::PolicyRequest,
-    crate::protocol::OpenEnrollmentRequest,
-    crate::protocol::PolicySummary,
-    crate::protocol::ComplianceResponse,
-    crate::protocol::PromoteRequest,
-    crate::protocol::PromoteResponse,
-    crate::protocol::RenewRequest,
-    crate::protocol::RenewResponse,
-    crate::protocol::HookResult,
-    crate::protocol::RosterManifest,
-    crate::protocol::HealthRequest,
-    crate::protocol::HealthResponse,
-    crate::profiles::TrustProfile,
-    crate::roster::EnrollmentState,
-    koi_crypto::keys::EncryptedKey,
-)))]
+        crate::protocol::JoinRequest,
+        crate::protocol::JoinResponse,
+        crate::protocol::CertmeshStatus,
+        crate::protocol::MemberSummary,
+        crate::protocol::SetHookRequest,
+        crate::protocol::SetHookResponse,
+        crate::protocol::CreateCaRequest,
+        crate::protocol::CreateCaResponse,
+        crate::protocol::UnlockRequest,
+        crate::protocol::UnlockResponse,
+        crate::protocol::RotateAuthRequest,
+        crate::protocol::RotateAuthResponse,
+        crate::protocol::AuditLogResponse,
+        crate::protocol::DestroyResponse,
+        crate::protocol::BackupRequest,
+        crate::protocol::BackupResponse,
+        crate::protocol::RestoreRequest,
+        crate::protocol::RestoreResponse,
+        crate::protocol::RevokeRequest,
+        crate::protocol::RevokeResponse,
+        crate::protocol::PolicyRequest,
+        crate::protocol::OpenEnrollmentRequest,
+        crate::protocol::PolicySummary,
+        crate::protocol::ComplianceResponse,
+        crate::protocol::PromoteRequest,
+        crate::protocol::PromoteResponse,
+        crate::protocol::RenewRequest,
+        crate::protocol::RenewResponse,
+        crate::protocol::HookResult,
+        crate::protocol::RosterManifest,
+        crate::protocol::HealthRequest,
+        crate::protocol::HealthResponse,
+        crate::profiles::TrustProfile,
+        crate::roster::EnrollmentState,
+        koi_crypto::keys::EncryptedKey,
+    ))
+)]
 pub struct CertmeshApiDoc;
 
 #[cfg(test)]

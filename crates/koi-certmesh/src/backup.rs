@@ -139,5 +139,6 @@ fn decode_envelope(bytes: &[u8]) -> Result<EncryptedKey, CertmeshError> {
         ciphertext,
         salt,
         nonce,
+        kdf_params: Default::default(),
     })
 }
