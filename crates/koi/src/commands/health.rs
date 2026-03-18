@@ -25,14 +25,22 @@ async fn build_core(
         None
     };
 
-    let dns_runtime = if !config.no_dns {
-        let core = koi_dns::DnsCore::new(config.dns_config(), mdns.clone(), None).await?;
-        Some(Arc::new(koi_dns::DnsRuntime::new(core)))
+    let mdns_bridge: Option<Arc<dyn koi_common::integration::MdnsSnapshot>> =
+        if let Some(ref core) = mdns {
+            Some(crate::integrations::MdnsBridge::spawn(core.clone()).await)
+        } else {
+            None
+        };
+
+    let dns_bridge: Option<Arc<dyn koi_common::integration::DnsProbe>> = if !config.no_dns {
+        let core = koi_dns::DnsCore::new(config.dns_config(), mdns_bridge.clone(), None, None).await?;
+        let runtime = Arc::new(koi_dns::DnsRuntime::new(core));
+        Some(crate::integrations::DnsBridge::new(runtime))
     } else {
         None
     };
 
-    let core = koi_health::HealthCore::new(mdns.clone(), dns_runtime).await;
+    let core = koi_health::HealthCore::new(mdns_bridge, dns_bridge, None, None).await;
     Ok((Arc::new(core), mdns))
 }
 
@@ -93,8 +101,8 @@ pub async fn watch(config: &Config, mode: Mode, interval: u64) -> anyhow::Result
                 let _ = mdns.shutdown().await;
             }
         }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+        Mode::Client { endpoint, token } => {
+            let client = KoiClient::with_token(&endpoint, &token);
             let mut ticker = tokio::time::interval(interval);
             loop {
                 tokio::select! {

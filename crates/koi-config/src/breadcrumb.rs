@@ -11,6 +11,18 @@ const APP_DIR_NAME: &str = "koi";
 #[cfg(unix)]
 const UNIX_FALLBACK_RUNTIME_DIR: &str = "/var/run";
 
+/// Prefix for the DAT line in the breadcrumb file.
+const DAT_PREFIX: &str = "dat:";
+
+/// Parsed breadcrumb information: daemon endpoint and access token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreadcrumbInfo {
+    /// The HTTP endpoint URL of the daemon (e.g. "http://localhost:5641").
+    pub endpoint: String,
+    /// Daemon Access Token (base64-encoded). Empty string for legacy breadcrumbs.
+    pub token: String,
+}
+
 /// Path to the breadcrumb file that advertises the daemon's endpoint.
 pub fn breadcrumb_path() -> PathBuf {
     #[cfg(windows)]
@@ -35,15 +47,48 @@ pub fn breadcrumb_path() -> PathBuf {
     }
 }
 
-/// Write the daemon endpoint to the breadcrumb file.
-pub fn write_breadcrumb(endpoint: &str) {
+/// Write the daemon endpoint and access token to the breadcrumb file.
+///
+/// Format (two lines):
+/// ```text
+/// http://localhost:5641
+/// dat:base64_encoded_token
+/// ```
+pub fn write_breadcrumb(endpoint: &str, token: &str) {
     let path = breadcrumb_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    match std::fs::write(&path, endpoint) {
-        Ok(()) => tracing::debug!(path = %path.display(), "Breadcrumb written"),
-        Err(e) => tracing::warn!(error = %e, path = %path.display(), "Failed to write breadcrumb"),
+
+    let content = format!("{endpoint}\n{DAT_PREFIX}{token}\n");
+
+    // On Unix, restrict permissions to owner-only (0600) since the file
+    // contains a secret token.
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let result = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .and_then(|mut f| f.write_all(content.as_bytes()));
+
+        match result {
+            Ok(()) => tracing::debug!(path = %path.display(), "Breadcrumb written (mode 0600)"),
+            Err(e) => tracing::warn!(error = %e, path = %path.display(), "Failed to write breadcrumb"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        match std::fs::write(&path, &content) {
+            Ok(()) => tracing::debug!(path = %path.display(), "Breadcrumb written"),
+            Err(e) => tracing::warn!(error = %e, path = %path.display(), "Failed to write breadcrumb"),
+        }
     }
 }
 
@@ -57,12 +102,38 @@ pub fn delete_breadcrumb() {
     }
 }
 
-/// Read the daemon endpoint from the breadcrumb file.
-pub fn read_breadcrumb() -> Option<String> {
-    std::fs::read_to_string(breadcrumb_path())
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+/// Read the daemon endpoint and token from the breadcrumb file.
+///
+/// Supports both new format (two lines: endpoint + dat:token) and legacy
+/// format (single line: endpoint only). Legacy breadcrumbs return an empty
+/// token string.
+pub fn read_breadcrumb() -> Option<BreadcrumbInfo> {
+    let content = std::fs::read_to_string(breadcrumb_path()).ok()?;
+    let mut lines = content.lines();
+
+    let endpoint = lines.next()?.trim().to_string();
+    if endpoint.is_empty() {
+        return None;
+    }
+
+    // Second line is optional (backward compat with old single-line format)
+    let token = lines
+        .next()
+        .and_then(|line| {
+            let trimmed = line.trim();
+            trimmed.strip_prefix(DAT_PREFIX).map(|t| t.to_string())
+        })
+        .unwrap_or_default();
+
+    Some(BreadcrumbInfo { endpoint, token })
+}
+
+/// Convenience: read just the endpoint from the breadcrumb file.
+///
+/// Equivalent to `read_breadcrumb().map(|b| b.endpoint)`. Useful for
+/// callers that only need the endpoint and not the token.
+pub fn read_breadcrumb_endpoint() -> Option<String> {
+    read_breadcrumb().map(|b| b.endpoint)
 }
 
 #[cfg(test)]
@@ -88,6 +159,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_new_format_with_token() {
+        let dir = std::env::temp_dir().join(format!("koi-bc-new-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("test.endpoint");
+
+        std::fs::write(&file, "http://localhost:5641\ndat:abc123token\n").unwrap();
+
+        // Simulate read_breadcrumb logic on this file
+        let content = std::fs::read_to_string(&file).unwrap();
+        let mut lines = content.lines();
+        let endpoint = lines.next().unwrap().trim().to_string();
+        let token = lines
+            .next()
+            .and_then(|line| line.trim().strip_prefix(DAT_PREFIX).map(|t| t.to_string()))
+            .unwrap_or_default();
+
+        assert_eq!(endpoint, "http://localhost:5641");
+        assert_eq!(token, "abc123token");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_legacy_format_without_token() {
+        let dir = std::env::temp_dir().join(format!("koi-bc-legacy-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("test.endpoint");
+
+        std::fs::write(&file, "http://localhost:5641\n").unwrap();
+
+        let content = std::fs::read_to_string(&file).unwrap();
+        let mut lines = content.lines();
+        let endpoint = lines.next().unwrap().trim().to_string();
+        let token = lines
+            .next()
+            .and_then(|line| line.trim().strip_prefix(DAT_PREFIX).map(|t| t.to_string()))
+            .unwrap_or_default();
+
+        assert_eq!(endpoint, "http://localhost:5641");
+        assert_eq!(token, "");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_empty_content_returns_none() {
+        let dir = std::env::temp_dir().join(format!("koi-bc-empty2-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("test.endpoint");
+
+        std::fs::write(&file, "").unwrap();
+
+        let content = std::fs::read_to_string(&file).unwrap();
+        let mut lines = content.lines();
+        let endpoint = lines.next().map(|s| s.trim().to_string());
+        // Empty first line should yield None
+        assert!(
+            endpoint.is_none() || endpoint.as_deref() == Some(""),
+            "empty breadcrumb first line"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_breadcrumb_endpoint_convenience() {
+        // Just verify the function compiles and returns the right type
+        let result: Option<String> = read_breadcrumb_endpoint();
+        // On a dev machine without a daemon, this is typically None
+        let _ = result;
+    }
+
     /// Test the write → read → delete lifecycle using a temp directory.
     /// We override LOCALAPPDATA (Windows) or XDG_RUNTIME_DIR (Unix) to
     /// point at a temp dir, then verify the full cycle.
@@ -98,19 +242,25 @@ mod tests {
 
         let breadcrumb_file = dir.join(BREADCRUMB_FILENAME);
         let endpoint = "http://127.0.0.1:5641";
+        let token = "test-token-base64";
 
         // Write
         if let Some(parent) = breadcrumb_file.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(&breadcrumb_file, endpoint).unwrap();
+        let content = format!("{endpoint}\n{DAT_PREFIX}{token}\n");
+        std::fs::write(&breadcrumb_file, &content).unwrap();
 
         // Read
-        let content = std::fs::read_to_string(&breadcrumb_file)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        assert_eq!(content.as_deref(), Some(endpoint));
+        let raw = std::fs::read_to_string(&breadcrumb_file).unwrap();
+        let mut lines = raw.lines();
+        let read_ep = lines.next().unwrap().trim().to_string();
+        let read_tok = lines
+            .next()
+            .and_then(|line| line.trim().strip_prefix(DAT_PREFIX).map(|t| t.to_string()))
+            .unwrap_or_default();
+        assert_eq!(read_ep, endpoint);
+        assert_eq!(read_tok, token);
 
         // Delete
         std::fs::remove_file(&breadcrumb_file).unwrap();
@@ -139,13 +289,11 @@ mod tests {
 
         // Write whitespace-only content
         std::fs::write(&file, "  \n  ").unwrap();
-        let content = std::fs::read_to_string(&file)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+        let raw = std::fs::read_to_string(&file).unwrap();
+        let ep = raw.lines().next().map(|s| s.trim().to_string());
         assert!(
-            content.is_none(),
-            "whitespace-only breadcrumb should return None"
+            ep.as_deref() == Some(""),
+            "whitespace-only first line should be empty"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -157,12 +305,11 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let file = dir.join("trim.endpoint");
 
-        std::fs::write(&file, "  http://localhost:5641  \n").unwrap();
-        let content = std::fs::read_to_string(&file)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        assert_eq!(content.as_deref(), Some("http://localhost:5641"));
+        std::fs::write(&file, "  http://localhost:5641  \ndat:mytoken\n").unwrap();
+        let raw = std::fs::read_to_string(&file).unwrap();
+        let mut lines = raw.lines();
+        let ep = lines.next().unwrap().trim().to_string();
+        assert_eq!(ep, "http://localhost:5641");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

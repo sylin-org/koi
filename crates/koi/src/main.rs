@@ -4,6 +4,7 @@ pub(crate) mod cli;
 mod client;
 mod commands;
 mod format;
+mod integrations;
 mod platform;
 mod surface;
 
@@ -445,7 +446,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     let api_endpoint = cli
         .endpoint
         .clone()
-        .or_else(koi_config::breadcrumb::read_breadcrumb)
+        .or_else(koi_config::breadcrumb::read_breadcrumb_endpoint)
         .unwrap_or_else(|| "http://localhost:5641".to_string());
     print_top_level_help(&api_endpoint);
     Ok(())
@@ -457,10 +458,19 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     koi_config::dirs::ensure_data_dir();
     startup_diagnostics(&config);
 
+    // Generate a Daemon Access Token (DAT) for authenticating mutation requests
+    let dat_token = {
+        use base64::Engine;
+        use rand::RngCore;
+        let mut token_bytes = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut token_bytes);
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes)
+    };
+
     // Write breadcrumb so clients can discover the daemon
     if !config.no_http {
         let endpoint = format!("http://localhost:{}", config.http_port);
-        koi_config::breadcrumb::write_breadcrumb(&endpoint);
+        koi_config::breadcrumb::write_breadcrumb(&endpoint, &dat_token);
     }
 
     let cancel = CancellationToken::new();
@@ -488,11 +498,33 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         None
     };
 
+    // ── Integration bridges ──
+    // These wrap domain cores and implement cross-domain traits from koi_common::integration.
+    let mdns_bridge: Option<Arc<dyn koi_common::integration::MdnsSnapshot>> =
+        if let Some(ref core) = mdns_core {
+            Some(integrations::MdnsBridge::spawn(core.clone()).await)
+        } else {
+            None
+        };
+
+    let certmesh_bridge: Option<Arc<dyn koi_common::integration::CertmeshSnapshot>> =
+        certmesh_core.as_ref().map(|core| {
+            integrations::CertmeshBridge::new(core.clone())
+                as Arc<dyn koi_common::integration::CertmeshSnapshot>
+        });
+
+    let alias_feedback: Option<Arc<dyn koi_common::integration::AliasFeedback>> =
+        certmesh_core.as_ref().map(|core| {
+            integrations::AliasFeedbackBridge::new(core.clone())
+                as Arc<dyn koi_common::integration::AliasFeedback>
+        });
+
     let dns_runtime = if !config.no_dns {
         let core = koi_dns::DnsCore::new(
             config.dns_config(),
-            mdns_core.clone(),
-            certmesh_core.clone(),
+            mdns_bridge.clone(),
+            certmesh_bridge.clone(),
+            alias_feedback,
         )
         .await;
         match core {
@@ -513,19 +545,6 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         None
     };
 
-    let health_runtime = if !config.no_health {
-        let core =
-            Arc::new(koi_health::HealthCore::new(mdns_core.clone(), dns_runtime.clone()).await);
-        let runtime = Arc::new(koi_health::HealthRuntime::new(core));
-        if let Err(e) = runtime.start().await {
-            tracing::error!(error = %e, "Failed to start health checks");
-        }
-        Some(runtime)
-    } else {
-        tracing::info!("Health capability: disabled");
-        None
-    };
-
     let proxy_runtime = if !config.no_proxy {
         match koi_proxy::ProxyCore::new() {
             Ok(core) => {
@@ -542,6 +561,38 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         }
     } else {
         tracing::info!("Proxy capability: disabled");
+        None
+    };
+
+    let dns_bridge: Option<Arc<dyn koi_common::integration::DnsProbe>> =
+        dns_runtime.as_ref().map(|rt| {
+            integrations::DnsBridge::new(rt.clone())
+                as Arc<dyn koi_common::integration::DnsProbe>
+        });
+
+    let proxy_bridge: Option<Arc<dyn koi_common::integration::ProxySnapshot>> =
+        proxy_runtime.as_ref().map(|rt| {
+            integrations::ProxyBridge::new(rt.core())
+                as Arc<dyn koi_common::integration::ProxySnapshot>
+        });
+
+    let health_runtime = if !config.no_health {
+        let core = Arc::new(
+            koi_health::HealthCore::new(
+                mdns_bridge.clone(),
+                dns_bridge,
+                certmesh_bridge,
+                proxy_bridge,
+            )
+            .await,
+        );
+        let runtime = Arc::new(koi_health::HealthRuntime::new(core));
+        if let Err(e) = runtime.start().await {
+            tracing::error!(error = %e, "Failed to start health checks");
+        }
+        Some(runtime)
+    } else {
+        tracing::info!("Health capability: disabled");
         None
     };
 
@@ -575,10 +626,7 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
 
     // ── mDNS browser worker (conditional on mDNS being enabled) ──
     let browser_state = if let Some(ref mdns) = mdns_core {
-        let adapter = adapters::mdns_browser::MdnsBrowseAdapter::new(
-            mdns.clone(),
-            cancel.clone(),
-        );
+        let adapter = adapters::mdns_browser::MdnsBrowseAdapter::new(mdns.clone(), cancel.clone());
         let cache = koi_common::browser::BrowserCache::new();
         let source = adapter.clone() as std::sync::Arc<dyn koi_common::browser::BrowseSource>;
         let bc = cache.clone();
@@ -598,14 +646,46 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     if !config.no_http {
         let c = cores.clone();
         let port = config.http_port;
-        let token = cancel.clone();
+        let cancel_token = cancel.clone();
         let ds = dashboard_state.clone();
         let bs = browser_state.clone();
+        let dat = dat_token.clone();
         tasks.push(tokio::spawn(async move {
-            if let Err(e) = adapters::http::start(c, port, token, started_at, ds, bs).await {
+            if let Err(e) = adapters::http::start(c, port, cancel_token, started_at, ds, bs, dat).await {
                 tracing::error!(error = %e, "HTTP adapter failed");
             }
         }));
+    }
+
+    // ── mTLS adapter (only if certmesh CA is initialized and unlocked) ──
+    if let Some(ref certmesh) = cores.certmesh {
+        match certmesh.self_enroll().await {
+            Ok(enrollment) => {
+                let cm = certmesh.clone();
+                let port = config.mtls_port;
+                let token = cancel.clone();
+                tasks.push(tokio::spawn(async move {
+                    if let Err(e) = adapters::mtls::start(
+                        port,
+                        cm,
+                        &enrollment.cert_pem,
+                        &enrollment.key_pem,
+                        &enrollment.ca_cert_pem,
+                        token,
+                    )
+                    .await
+                    {
+                        tracing::error!(error = %e, "mTLS adapter failed");
+                    }
+                }));
+            }
+            Err(e) => {
+                tracing::info!(
+                    reason = %e,
+                    "mTLS adapter: skipped (CA not available for self-enrollment)"
+                );
+            }
+        }
     }
 
     // ── IPC adapter (only if mDNS is enabled - IPC speaks mDNS NDJSON protocol) ──
@@ -635,10 +715,7 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
 
             let mut txt = std::collections::HashMap::new();
             txt.insert("path".to_string(), "/".to_string());
-            txt.insert(
-                "version".to_string(),
-                env!("CARGO_PKG_VERSION").to_string(),
-            );
+            txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
             txt.insert("api".to_string(), "v1".to_string());
             txt.insert("dashboard".to_string(), "true".to_string());
 
@@ -844,8 +921,8 @@ fn spawn_certmesh_background_tasks(
                         continue;
                     }
 
-                    let endpoint = match koi_config::breadcrumb::read_breadcrumb() {
-                        Some(ep) => ep,
+                    let bc = match koi_config::breadcrumb::read_breadcrumb() {
+                        Some(bc) => bc,
                         None => {
                             tracing::debug!("Roster sync: no primary endpoint found");
                             continue;
@@ -854,7 +931,7 @@ fn spawn_certmesh_background_tasks(
 
                     // KoiClient is blocking (ureq) - run in a blocking task
                     let manifest_json = tokio::task::spawn_blocking(move || {
-                        let client = client::KoiClient::new(&endpoint);
+                        let client = client::KoiClient::with_token(&bc.endpoint, &bc.token);
                         client.get_roster_manifest()
                     })
                     .await;
@@ -920,13 +997,14 @@ fn spawn_certmesh_background_tasks(
                         }
                     };
 
-                    let endpoint = match koi_config::breadcrumb::read_breadcrumb() {
-                        Some(ep) => ep,
+                    let bc = match koi_config::breadcrumb::read_breadcrumb() {
+                        Some(bc) => bc,
                         None => {
                             tracing::debug!("Health heartbeat: no CA endpoint found");
                             continue;
                         }
                     };
+                    let endpoint = bc.endpoint;
 
                     let request = serde_json::json!({
                         "hostname": hostname,

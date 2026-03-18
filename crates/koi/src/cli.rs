@@ -27,6 +27,10 @@ pub struct Cli {
     #[arg(long, env = "KOI_PORT", default_value = "5641")]
     pub port: u16,
 
+    /// mTLS port for certmesh inter-node traffic
+    #[arg(long, env = "KOI_MTLS_PORT", default_value = "5642")]
+    pub mtls_port: u16,
+
     /// IPC socket/pipe path (default: platform-specific)
     #[arg(long, env = "KOI_PIPE")]
     pub pipe: Option<PathBuf>,
@@ -477,6 +481,7 @@ pub enum CertmeshSubcommand {
 /// Resolved configuration used at runtime.
 pub struct Config {
     pub http_port: u16,
+    pub mtls_port: u16,
     pub pipe_path: PathBuf,
     pub no_http: bool,
     pub no_ipc: bool,
@@ -497,6 +502,7 @@ impl Config {
         let pipe_path = cli.pipe.clone().unwrap_or_else(default_pipe_path);
         Self {
             http_port: cli.port,
+            mtls_port: cli.mtls_port,
             pipe_path,
             no_http: cli.no_http,
             no_ipc: cli.no_ipc,
@@ -551,6 +557,11 @@ impl Config {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(DEFAULT_HTTP_PORT);
+
+        let mtls_port = std::env::var("KOI_MTLS_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(crate::adapters::mtls::DEFAULT_MTLS_PORT);
 
         let pipe_path = std::env::var("KOI_PIPE")
             .ok()
@@ -616,6 +627,7 @@ impl Config {
 
         Self {
             http_port,
+            mtls_port,
             pipe_path,
             no_http,
             no_ipc,
@@ -637,6 +649,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             http_port: DEFAULT_HTTP_PORT,
+            mtls_port: crate::adapters::mtls::DEFAULT_MTLS_PORT,
             pipe_path: default_pipe_path(),
             no_http: false,
             no_ipc: false,

@@ -28,7 +28,13 @@ async fn build_core(
     } else {
         None
     };
-    let core = koi_dns::DnsCore::new(dns_config(config), mdns.clone(), None).await?;
+    let mdns_bridge: Option<Arc<dyn koi_common::integration::MdnsSnapshot>> =
+        if let Some(ref core) = mdns {
+            Some(crate::integrations::MdnsBridge::spawn(core.clone()).await)
+        } else {
+            None
+        };
+    let core = koi_dns::DnsCore::new(dns_config(config), mdns_bridge, None, None).await?;
     Ok((core, mdns))
 }
 

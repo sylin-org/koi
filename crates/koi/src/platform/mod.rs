@@ -31,9 +31,12 @@ pub fn register_service() -> anyhow::Result<()> {
 /// Bails with a clear message if not elevated.
 #[cfg(unix)]
 pub fn check_root(verb: &str) -> anyhow::Result<()> {
-    let output = std::process::Command::new("id").arg("-u").output();
-    match output {
-        Ok(o) if String::from_utf8_lossy(&o.stdout).trim() == "0" => Ok(()),
-        _ => anyhow::bail!("koi {verb} requires root \u{2014} try: sudo koi {verb}"),
+    // SAFETY: getuid() is always safe to call and has no preconditions.
+    if unsafe { libc::getuid() } == 0 {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "\"koi {verb}\" requires root privileges. Re-run with sudo."
+        )
     }
 }

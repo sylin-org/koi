@@ -7,8 +7,7 @@ use crate::format;
 
 // ── Status ──────────────────────────────────────────────────────────
 
-pub fn status(endpoint: &str, json: bool) -> anyhow::Result<()> {
-    let client = KoiClient::new(endpoint);
+pub fn status(client: &KoiClient, json: bool) -> anyhow::Result<()> {
     let status = client.admin_status()?;
     if json {
         println!("{}", serde_json::to_string_pretty(&status)?);
@@ -27,8 +26,7 @@ pub fn status(endpoint: &str, json: bool) -> anyhow::Result<()> {
 
 // ── List ─────────────────────────────────────────────────────────────
 
-pub fn list(endpoint: &str, json: bool) -> anyhow::Result<()> {
-    let client = KoiClient::new(endpoint);
+pub fn list(client: &KoiClient, json: bool) -> anyhow::Result<()> {
     let registrations = client.admin_registrations()?;
     if json {
         println!("{}", serde_json::to_string_pretty(&registrations)?);
@@ -48,8 +46,7 @@ pub fn list(endpoint: &str, json: bool) -> anyhow::Result<()> {
 
 // ── Inspect ──────────────────────────────────────────────────────────
 
-pub fn inspect(endpoint: &str, id: &str, json: bool) -> anyhow::Result<()> {
-    let client = KoiClient::new(endpoint);
+pub fn inspect(client: &KoiClient, id: &str, json: bool) -> anyhow::Result<()> {
     let reg = client.admin_inspect(id)?;
     if json {
         let body = serde_json::to_string_pretty(&reg)?;
@@ -62,8 +59,7 @@ pub fn inspect(endpoint: &str, id: &str, json: bool) -> anyhow::Result<()> {
 
 // ── Force unregister ─────────────────────────────────────────────────
 
-pub fn unregister(endpoint: &str, id: &str, json: bool) -> anyhow::Result<()> {
-    let client = KoiClient::new(endpoint);
+pub fn unregister(client: &KoiClient, id: &str, json: bool) -> anyhow::Result<()> {
     client.admin_force_unregister(id)?;
     if json {
         println!(
@@ -78,8 +74,7 @@ pub fn unregister(endpoint: &str, id: &str, json: bool) -> anyhow::Result<()> {
 
 // ── Drain ────────────────────────────────────────────────────────────
 
-pub fn drain(endpoint: &str, id: &str, json: bool) -> anyhow::Result<()> {
-    let client = KoiClient::new(endpoint);
+pub fn drain(client: &KoiClient, id: &str, json: bool) -> anyhow::Result<()> {
     client.admin_drain(id)?;
     if json {
         println!("{}", serde_json::json!({"drained": id}));
@@ -91,8 +86,7 @@ pub fn drain(endpoint: &str, id: &str, json: bool) -> anyhow::Result<()> {
 
 // ── Revive ───────────────────────────────────────────────────────────
 
-pub fn revive(endpoint: &str, id: &str, json: bool) -> anyhow::Result<()> {
-    let client = KoiClient::new(endpoint);
+pub fn revive(client: &KoiClient, id: &str, json: bool) -> anyhow::Result<()> {
     client.admin_revive(id)?;
     if json {
         println!("{}", serde_json::json!({"revived": id}));

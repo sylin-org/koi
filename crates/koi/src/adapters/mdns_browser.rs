@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
 
-use koi_common::browser::{BrowserEvent, BrowseError, BrowseHandle, BrowseSource};
+use koi_common::browser::{BrowseError, BrowseHandle, BrowseSource, BrowserEvent};
 use koi_mdns::{MdnsCore, MdnsEvent};
 
 /// Adapts `MdnsCore` to the `BrowseSource` trait.
@@ -62,7 +62,9 @@ impl BrowseSource for MdnsBrowseAdapter {
     fn browse(
         &self,
         service_type: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<BrowseHandle, BrowseError>> + Send + '_>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<BrowseHandle, BrowseError>> + Send + '_>,
+    > {
         let svc_type = service_type.to_string();
         Box::pin(async move {
             let mdns_handle = self

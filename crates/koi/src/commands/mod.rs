@@ -34,7 +34,11 @@ pub(crate) enum Mode {
     /// Operate directly on a local MdnsCore instance.
     Standalone,
     /// Talk to a running daemon via HTTP.
-    Client { endpoint: String },
+    Client {
+        endpoint: String,
+        /// Daemon Access Token from breadcrumb (empty if not available).
+        token: String,
+    },
 }
 
 /// Determine whether to run standalone (local mDNS core) or as a client
@@ -46,25 +50,29 @@ pub(crate) fn detect_mode(cli: &Cli) -> Mode {
     if let Some(endpoint) = &cli.endpoint {
         return Mode::Client {
             endpoint: endpoint.clone(),
+            token: String::new(),
         };
     }
     // Check breadcrumb - if a daemon is advertising its endpoint, use client mode
-    if let Some(endpoint) = koi_config::breadcrumb::read_breadcrumb() {
-        let c = KoiClient::new(&endpoint);
+    if let Some(bc) = koi_config::breadcrumb::read_breadcrumb() {
+        let c = KoiClient::new(&bc.endpoint);
         if c.health().is_ok() {
-            return Mode::Client { endpoint };
+            return Mode::Client {
+                endpoint: bc.endpoint,
+                token: bc.token,
+            };
         }
     }
     Mode::Standalone
 }
 
 /// Resolve an endpoint for admin commands (which always need a daemon).
-pub(crate) fn resolve_endpoint(cli: &Cli) -> anyhow::Result<String> {
+pub(crate) fn resolve_endpoint(cli: &Cli) -> anyhow::Result<(String, String)> {
     if let Some(endpoint) = &cli.endpoint {
-        return Ok(endpoint.clone());
+        return Ok((endpoint.clone(), String::new()));
     }
-    if let Some(endpoint) = koi_config::breadcrumb::read_breadcrumb() {
-        return Ok(endpoint);
+    if let Some(bc) = koi_config::breadcrumb::read_breadcrumb() {
+        return Ok((bc.endpoint, bc.token));
     }
     anyhow::bail!("No daemon endpoint found. Is the daemon running? Use --endpoint to specify.")
 }
@@ -82,8 +90,8 @@ where
 {
     match mode {
         Mode::Standalone => local().await,
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+        Mode::Client { endpoint, token } => {
+            let client = KoiClient::with_token(&endpoint, &token);
             client_fn(client).await
         }
     }
@@ -96,8 +104,8 @@ where
 {
     match mode {
         Mode::Standalone => local(),
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+        Mode::Client { endpoint, token } => {
+            let client = KoiClient::with_token(&endpoint, &token);
             client_fn(client)
         }
     }

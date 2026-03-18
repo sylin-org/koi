@@ -44,9 +44,14 @@ pub type Result<T> = std::result::Result<T, ClientError>;
 
 // ── Client ────────────────────────────────────────────────────────
 
+/// Header name for Daemon Access Token authentication.
+const DAT_HEADER: &str = "X-Koi-Token";
+
 pub struct KoiClient {
     endpoint: String,
     agent: ureq::Agent,
+    /// Daemon Access Token (empty string means no auth).
+    token: String,
 }
 
 impl KoiClient {
@@ -60,6 +65,62 @@ impl KoiClient {
         Self {
             endpoint: resolved,
             agent,
+            token: String::new(),
+        }
+    }
+
+    /// Create a client with a Daemon Access Token for authenticated requests.
+    pub fn with_token(endpoint: &str, token: &str) -> Self {
+        let mut client = Self::new(endpoint);
+        client.token = token.to_string();
+        client
+    }
+
+    /// Create a client from the breadcrumb file (endpoint + token).
+    ///
+    /// Returns `None` if no breadcrumb exists.
+    pub fn from_breadcrumb() -> Option<Self> {
+        let bc = koi_config::breadcrumb::read_breadcrumb()?;
+        Some(Self::with_token(&bc.endpoint, &bc.token))
+    }
+
+    /// Attach the DAT header to a request if a token is present.
+    fn auth_get(&self, url: &str) -> ureq::Request {
+        let req = self.agent.get(url);
+        if self.token.is_empty() {
+            req
+        } else {
+            req.set(DAT_HEADER, &self.token)
+        }
+    }
+
+    /// Attach the DAT header to a POST request.
+    fn auth_post(&self, url: &str) -> ureq::Request {
+        let req = self.agent.post(url);
+        if self.token.is_empty() {
+            req
+        } else {
+            req.set(DAT_HEADER, &self.token)
+        }
+    }
+
+    /// Attach the DAT header to a PUT request.
+    fn auth_put(&self, url: &str) -> ureq::Request {
+        let req = self.agent.put(url);
+        if self.token.is_empty() {
+            req
+        } else {
+            req.set(DAT_HEADER, &self.token)
+        }
+    }
+
+    /// Attach the DAT header to a DELETE request.
+    fn auth_delete(&self, url: &str) -> ureq::Request {
+        let req = self.agent.delete(url);
+        if self.token.is_empty() {
+            req
+        } else {
+            req.set(DAT_HEADER, &self.token)
         }
     }
 
@@ -83,8 +144,7 @@ impl KoiClient {
         let json_val =
             serde_json::to_value(payload).map_err(|e| ClientError::Decode(e.to_string()))?;
         let resp = self
-            .agent
-            .post(&url)
+            .auth_post(&url)
             .send_json(json_val)
             .map_err(map_error)?;
         let json: serde_json::Value = resp
@@ -95,13 +155,13 @@ impl KoiClient {
 
     pub fn unregister(&self, id: &str) -> Result<()> {
         let url = format!("{}/v1/mdns/unregister/{id}", self.endpoint);
-        self.agent.delete(&url).call().map_err(map_error)?;
+        self.auth_delete(&url).call().map_err(map_error)?;
         Ok(())
     }
 
     pub fn heartbeat(&self, id: &str) -> Result<RenewalResult> {
         let url = format!("{}/v1/mdns/heartbeat/{id}", self.endpoint);
-        let resp = self.agent.put(&url).send_bytes(&[]).map_err(map_error)?;
+        let resp = self.auth_put(&url).send_bytes(&[]).map_err(map_error)?;
         let json: serde_json::Value = resp
             .into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))?;
@@ -111,8 +171,7 @@ impl KoiClient {
     pub fn resolve(&self, instance: &str) -> Result<ServiceRecord> {
         let url = format!("{}/v1/mdns/resolve", self.endpoint);
         let resp = self
-            .agent
-            .get(&url)
+            .auth_get(&url)
             .query("name", instance)
             .call()
             .map_err(map_error)?;
@@ -125,9 +184,11 @@ impl KoiClient {
     /// Start a browse SSE stream. Returns an iterator of JSON events.
     pub fn browse_stream(&self, service_type: &str) -> Result<SseStream> {
         let url = format!("{}/v1/mdns/discover", self.endpoint);
-        let resp = self
-            .stream_agent()
-            .get(&url)
+        let mut req = self.stream_agent().get(&url);
+        if !self.token.is_empty() {
+            req = req.set(DAT_HEADER, &self.token);
+        }
+        let resp = req
             .query("type", service_type)
             .call()
             .map_err(map_error)?;
@@ -137,9 +198,11 @@ impl KoiClient {
     /// Start an events SSE stream. Returns an iterator of JSON events.
     pub fn events_stream(&self, service_type: &str) -> Result<SseStream> {
         let url = format!("{}/v1/mdns/subscribe", self.endpoint);
-        let resp = self
-            .stream_agent()
-            .get(&url)
+        let mut req = self.stream_agent().get(&url);
+        if !self.token.is_empty() {
+            req = req.set(DAT_HEADER, &self.token);
+        }
+        let resp = req
             .query("type", service_type)
             .call()
             .map_err(map_error)?;
@@ -151,7 +214,7 @@ impl KoiClient {
     /// Fetch unified status from `/v1/status`.
     pub fn unified_status(&self) -> Result<serde_json::Value> {
         let url = format!("{}/v1/status", self.endpoint);
-        let resp = self.agent.get(&url).call().map_err(map_error)?;
+        let resp = self.auth_get(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
@@ -165,8 +228,7 @@ impl KoiClient {
     pub fn dns_lookup(&self, name: &str, record_type: RecordType) -> Result<serde_json::Value> {
         let url = format!("{}/v1/dns/lookup", self.endpoint);
         let resp = self
-            .agent
-            .get(&url)
+            .auth_get(&url)
             .query("name", name)
             .query("type", record_type_str(record_type))
             .call()
@@ -190,7 +252,7 @@ impl KoiClient {
 
     pub fn dns_remove(&self, name: &str) -> Result<serde_json::Value> {
         let url = format!("{}/v1/dns/remove/{}", self.endpoint, name);
-        let resp = self.agent.delete(&url).call().map_err(map_error)?;
+        let resp = self.auth_delete(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
@@ -229,7 +291,7 @@ impl KoiClient {
 
     pub fn health_remove_check(&self, name: &str) -> Result<serde_json::Value> {
         let url = format!("{}/v1/health/remove/{}", self.endpoint, name);
-        let resp = self.agent.delete(&url).call().map_err(map_error)?;
+        let resp = self.auth_delete(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
@@ -262,7 +324,7 @@ impl KoiClient {
 
     pub fn proxy_remove(&self, name: &str) -> Result<serde_json::Value> {
         let url = format!("{}/v1/proxy/remove/{}", self.endpoint, name);
-        let resp = self.agent.delete(&url).call().map_err(map_error)?;
+        let resp = self.auth_delete(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
@@ -284,7 +346,7 @@ impl KoiClient {
 
     pub fn udp_unbind(&self, id: &str) -> Result<serde_json::Value> {
         let url = format!("{}/v1/udp/bind/{}", self.endpoint, id);
-        let resp = self.agent.delete(&url).call().map_err(map_error)?;
+        let resp = self.auth_delete(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
@@ -309,8 +371,7 @@ impl KoiClient {
     pub fn post_json(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
         let url = format!("{}{path}", self.endpoint);
         let resp = self
-            .agent
-            .post(&url)
+            .auth_post(&url)
             .send_json(body.clone())
             .map_err(map_error)?;
         resp.into_json()
@@ -320,7 +381,7 @@ impl KoiClient {
     /// GET JSON from an arbitrary path and return the response as a JSON value.
     pub fn get_json(&self, path: &str) -> Result<serde_json::Value> {
         let url = format!("{}{path}", self.endpoint);
-        let resp = self.agent.get(&url).call().map_err(map_error)?;
+        let resp = self.auth_get(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
@@ -329,8 +390,7 @@ impl KoiClient {
     pub fn put_json(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
         let url = format!("{}{path}", self.endpoint);
         let resp = self
-            .agent
-            .put(&url)
+            .auth_put(&url)
             .send_json(body.clone())
             .map_err(map_error)?;
         resp.into_json()
@@ -341,40 +401,40 @@ impl KoiClient {
 
     pub fn admin_status(&self) -> Result<DaemonStatus> {
         let url = format!("{}/v1/mdns/admin/status", self.endpoint);
-        let resp = self.agent.get(&url).call().map_err(map_error)?;
+        let resp = self.auth_get(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
     pub fn admin_registrations(&self) -> Result<Vec<AdminRegistration>> {
         let url = format!("{}/v1/mdns/admin/ls", self.endpoint);
-        let resp = self.agent.get(&url).call().map_err(map_error)?;
+        let resp = self.auth_get(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
     pub fn admin_inspect(&self, id: &str) -> Result<AdminRegistration> {
         let url = format!("{}/v1/mdns/admin/inspect/{id}", self.endpoint);
-        let resp = self.agent.get(&url).call().map_err(map_error)?;
+        let resp = self.auth_get(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
     pub fn admin_force_unregister(&self, id: &str) -> Result<()> {
         let url = format!("{}/v1/mdns/admin/unregister/{id}", self.endpoint);
-        self.agent.delete(&url).call().map_err(map_error)?;
+        self.auth_delete(&url).call().map_err(map_error)?;
         Ok(())
     }
 
     pub fn admin_drain(&self, id: &str) -> Result<()> {
         let url = format!("{}/v1/mdns/admin/drain/{id}", self.endpoint);
-        self.agent.post(&url).call().map_err(map_error)?;
+        self.auth_post(&url).call().map_err(map_error)?;
         Ok(())
     }
 
     pub fn admin_revive(&self, id: &str) -> Result<()> {
         let url = format!("{}/v1/mdns/admin/revive/{id}", self.endpoint);
-        self.agent.post(&url).call().map_err(map_error)?;
+        self.auth_post(&url).call().map_err(map_error)?;
         Ok(())
     }
 
@@ -383,7 +443,7 @@ impl KoiClient {
     /// Request a graceful shutdown of the running daemon.
     pub fn shutdown(&self) -> Result<()> {
         let url = format!("{}/v1/admin/shutdown", self.endpoint);
-        self.agent.post(&url).call().map_err(map_error)?;
+        self.auth_post(&url).call().map_err(map_error)?;
         Ok(())
     }
 
@@ -392,7 +452,7 @@ impl KoiClient {
     /// GET /v1/certmesh/roster - fetch signed roster manifest.
     pub fn get_roster_manifest(&self) -> Result<serde_json::Value> {
         let url = format!("{}/v1/certmesh/roster", self.endpoint);
-        let resp = self.agent.get(&url).call().map_err(map_error)?;
+        let resp = self.auth_get(&url).call().map_err(map_error)?;
         resp.into_json()
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
@@ -409,8 +469,7 @@ impl KoiClient {
     ) -> Result<serde_json::Value> {
         let url = format!("{member_endpoint}/v1/certmesh/renew");
         let resp = self
-            .agent
-            .post(&url)
+            .auth_post(&url)
             .send_json(request.clone())
             .map_err(map_error)?;
         resp.into_json()
@@ -421,8 +480,7 @@ impl KoiClient {
     pub fn health_heartbeat(&self, request: &serde_json::Value) -> Result<serde_json::Value> {
         let url = format!("{}/v1/certmesh/health", self.endpoint);
         let resp = self
-            .agent
-            .post(&url)
+            .auth_post(&url)
             .send_json(request.clone())
             .map_err(map_error)?;
         resp.into_json()
@@ -571,6 +629,14 @@ mod tests {
             client.endpoint
         );
         assert!(!client.endpoint.ends_with("/"));
+        assert!(client.token.is_empty());
+    }
+
+    #[test]
+    fn client_with_token_sets_token() {
+        let client = KoiClient::with_token("http://10.0.0.1:5641", "my-secret-token");
+        assert_eq!(client.endpoint, "http://10.0.0.1:5641");
+        assert_eq!(client.token, "my-secret-token");
     }
 
     #[test]

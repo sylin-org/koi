@@ -109,8 +109,8 @@ pub fn uninstall() -> anyhow::Result<()> {
     println!("Uninstalling Koi service...");
 
     // Best-effort graceful shutdown via HTTP
-    if let Some(ep) = koi_config::breadcrumb::read_breadcrumb() {
-        let client = crate::client::KoiClient::new(&ep);
+    if let Some(bc) = koi_config::breadcrumb::read_breadcrumb() {
+        let client = crate::client::KoiClient::with_token(&bc.endpoint, &bc.token);
         if client.shutdown().is_ok() {
             std::thread::sleep(std::time::Duration::from_millis(500));
         }

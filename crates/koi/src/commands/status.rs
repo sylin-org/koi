@@ -61,7 +61,7 @@ pub fn try_daemon_status(cli: &Cli) -> Option<serde_json::Value> {
     let endpoint = cli
         .endpoint
         .clone()
-        .or_else(koi_config::breadcrumb::read_breadcrumb)?;
+        .or_else(koi_config::breadcrumb::read_breadcrumb_endpoint)?;
 
     let client = KoiClient::new(&endpoint);
     if client.health().is_err() {

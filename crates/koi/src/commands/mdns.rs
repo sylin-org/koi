@@ -27,14 +27,15 @@ const MIN_HEARTBEAT_LEASE_FLOOR: u64 = 4;
 
 /// Route admin subcommands to the appropriate handler.
 pub fn admin(subcmd: &AdminSubcommand, cli: &crate::cli::Cli) -> anyhow::Result<()> {
-    let endpoint = super::resolve_endpoint(cli)?;
+    let (endpoint, token) = super::resolve_endpoint(cli)?;
+    let client = crate::client::KoiClient::with_token(&endpoint, &token);
     match subcmd {
-        AdminSubcommand::Status => crate::admin::status(&endpoint, cli.json),
-        AdminSubcommand::List => crate::admin::list(&endpoint, cli.json),
-        AdminSubcommand::Inspect { id } => crate::admin::inspect(&endpoint, id, cli.json),
-        AdminSubcommand::Unregister { id } => crate::admin::unregister(&endpoint, id, cli.json),
-        AdminSubcommand::Drain { id } => crate::admin::drain(&endpoint, id, cli.json),
-        AdminSubcommand::Revive { id } => crate::admin::revive(&endpoint, id, cli.json),
+        AdminSubcommand::Status => crate::admin::status(&client, cli.json),
+        AdminSubcommand::List => crate::admin::list(&client, cli.json),
+        AdminSubcommand::Inspect { id } => crate::admin::inspect(&client, id, cli.json),
+        AdminSubcommand::Unregister { id } => crate::admin::unregister(&client, id, cli.json),
+        AdminSubcommand::Drain { id } => crate::admin::drain(&client, id, cli.json),
+        AdminSubcommand::Revive { id } => crate::admin::revive(&client, id, cli.json),
     }
 }
 
@@ -68,8 +69,8 @@ pub async fn discover(
 
             let _ = core.shutdown().await;
         }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+        Mode::Client { endpoint, token } => {
+            let client = KoiClient::with_token(&endpoint, &token);
             let stream = client.browse_stream(browse_type)?;
 
             super::run_streaming(timeout, Some(super::DEFAULT_TIMEOUT), || async {
@@ -142,23 +143,23 @@ pub async fn announce(
 
             let _ = core.shutdown().await;
         }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+        Mode::Client { endpoint, token } => {
+            let client = KoiClient::with_token(&endpoint, &token);
             let result = client.register(&payload)?;
             let id = result.id.clone();
             print_registration(&result, json);
 
             // Start heartbeat loop if the registration has a lease
             let stop = Arc::new(AtomicBool::new(false));
-            if let Some(lease_secs) = result.lease_secs {
-                let heartbeat_client = KoiClient::new(&endpoint);
+            let heartbeat_handle = if let Some(lease_secs) = result.lease_secs {
+                let heartbeat_client = KoiClient::with_token(&endpoint, &token);
                 let heartbeat_id = id.clone();
                 let stop_clone = stop.clone();
                 let interval = Duration::from_secs(lease_secs.max(MIN_HEARTBEAT_LEASE_FLOOR) / 2);
 
-                std::thread::spawn(move || loop {
+                Some(std::thread::spawn(move || loop {
                     std::thread::sleep(interval);
-                    if stop_clone.load(Ordering::Relaxed) {
+                    if stop_clone.load(Ordering::Acquire) {
                         break;
                     }
                     match heartbeat_client.heartbeat(&heartbeat_id) {
@@ -168,13 +169,18 @@ pub async fn announce(
                             break;
                         }
                     }
-                });
-            }
+                }))
+            } else {
+                None
+            };
 
             let dur = super::effective_timeout(timeout, None);
             super::wait_for_signal_or_timeout(dur).await;
 
-            stop.store(true, Ordering::Relaxed);
+            stop.store(true, Ordering::Release);
+            if let Some(handle) = heartbeat_handle {
+                let _ = handle.join();
+            }
             let _ = client.unregister(&id);
         }
     }
@@ -201,8 +207,8 @@ pub async fn unregister(id: &str, json: bool, mode: Mode) -> anyhow::Result<()> 
             core.unregister(id)?;
             let _ = core.shutdown().await;
         }
-        Mode::Client { endpoint } => {
-            KoiClient::new(&endpoint).unregister(id)?;
+        Mode::Client { endpoint, token } => {
+            KoiClient::with_token(&endpoint, &token).unregister(id)?;
         }
     }
 
@@ -226,7 +232,7 @@ pub async fn resolve(instance: &str, json: bool, mode: Mode) -> anyhow::Result<(
             let _ = core.shutdown().await;
             r
         }
-        Mode::Client { endpoint } => KoiClient::new(&endpoint).resolve(instance)?,
+        Mode::Client { endpoint, token } => KoiClient::with_token(&endpoint, &token).resolve(instance)?,
     };
 
     if json {
@@ -264,8 +270,8 @@ pub async fn subscribe(
 
             let _ = core.shutdown().await;
         }
-        Mode::Client { endpoint } => {
-            let client = KoiClient::new(&endpoint);
+        Mode::Client { endpoint, token } => {
+            let client = KoiClient::with_token(&endpoint, &token);
             let stream = client.events_stream(service_type)?;
 
             super::run_streaming(timeout, Some(super::DEFAULT_TIMEOUT), || async {

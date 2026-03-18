@@ -87,16 +87,16 @@ mod color {
 
 /// Resolve the daemon endpoint or bail with a clear message.
 fn require_daemon(endpoint: Option<&str>) -> anyhow::Result<KoiClient> {
-    let ep = endpoint
-        .map(String::from)
-        .or_else(koi_config::breadcrumb::read_breadcrumb)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No running Koi service found.\n\
-                 Install and start the service first: koi install"
-            )
-        })?;
-    Ok(KoiClient::new(&ep))
+    if let Some(ep) = endpoint {
+        return Ok(KoiClient::new(ep));
+    }
+    let bc = koi_config::breadcrumb::read_breadcrumb().ok_or_else(|| {
+        anyhow::anyhow!(
+            "No running Koi service found.\n\
+             Install and start the service first: koi install"
+        )
+    })?;
+    Ok(KoiClient::with_token(&bc.endpoint, &bc.token))
 }
 
 // ── Create ──────────────────────────────────────────────────────────
@@ -317,10 +317,11 @@ fn validate_operator(requires_approval: bool, operator: Option<&str>) -> anyhow:
 }
 
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}…", &s[..max - 1])
+        let truncated: String = s.chars().take(max - 1).collect();
+        format!("{truncated}…")
     }
 }
 
@@ -711,9 +712,17 @@ pub async fn promote(
         anyhow::bail!("Passphrase cannot be empty.");
     }
 
-    // Request promotion from the primary
+    // Generate ephemeral X25519 keypair for DH key agreement
+    let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
+    let client_pub = client_kp.public_key_bytes();
+    let client_pub_hex = koi_common::encoding::hex_encode(&client_pub);
+
+    // Request promotion from the primary with DH public key
     let client = KoiClient::new(&resolved_endpoint);
-    let body = serde_json::json!({ "auth": { "method": "totp", "code": code } });
+    let body = serde_json::json!({
+        "auth": { "method": "totp", "code": code },
+        "ephemeral_public": client_pub_hex,
+    });
     let resp = client.post_json("/v1/certmesh/promote", &body)?;
 
     // Parse the promotion response
@@ -722,8 +731,9 @@ pub async fn promote(
             .map_err(|e| anyhow::anyhow!("Failed to parse promotion response: {e}"))?;
 
     // Decrypt and install the CA key, auth credential, and roster locally
+    // using DH key agreement (the passphrase is NOT sent over the wire)
     let (ca_key, auth_state, roster) =
-        koi_certmesh::failover::accept_promotion(&promote_response, &passphrase)?;
+        koi_certmesh::failover::accept_promotion(&promote_response, &passphrase, Some(client_kp))?;
 
     // Save to local disk
     let ca_dir = koi_certmesh::ca::ca_dir();

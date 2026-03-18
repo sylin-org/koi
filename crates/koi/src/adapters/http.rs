@@ -5,8 +5,10 @@
 
 use std::sync::Arc;
 
-use axum::extract::Extension;
-use axum::response::Json;
+use axum::extract::{Extension, Request, State};
+use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use koi_common::capability::Capability;
@@ -17,9 +19,12 @@ use utoipa::OpenApi;
 use utoipa::ToSchema;
 use utoipa_scalar::{Scalar, Servable};
 
+use crate::DaemonCores;
 use koi_common::browser::BrowserState;
 use koi_common::dashboard::DashboardState;
-use crate::DaemonCores;
+
+/// Header name for Daemon Access Token authentication.
+const DAT_HEADER: &str = "x-koi-token";
 
 // ── System-level route path constants ───────────────────────────────
 
@@ -54,6 +59,7 @@ pub async fn start(
     started_at: std::time::Instant,
     dashboard_state: DashboardState,
     browser_state: Option<BrowserState>,
+    dat_token: String,
 ) -> anyhow::Result<()> {
     let app_state = AppState {
         mdns: cores.mdns.clone(),
@@ -73,8 +79,14 @@ pub async fn start(
         .route(paths::SHUTDOWN, post(shutdown_handler))
         .route(paths::HOST, get(host_handler))
         .route("/", get(koi_common::dashboard::get_dashboard))
-        .route("/v1/dashboard/snapshot", get(koi_common::dashboard::get_snapshot))
-        .route("/v1/dashboard/events", get(koi_common::dashboard::get_events));
+        .route(
+            "/v1/dashboard/snapshot",
+            get(koi_common::dashboard::get_snapshot),
+        )
+        .route(
+            "/v1/dashboard/events",
+            get(koi_common::dashboard::get_events),
+        );
 
     // ── mDNS browser (conditional on mDNS being enabled) ──
     if let Some(bs) = browser_state {
@@ -82,10 +94,7 @@ pub async fn start(
             .route("/mdns-browser", get(koi_common::browser::get_page))
             .nest("/v1/mdns/browser", koi_common::browser::routes(bs));
     } else {
-        app = app.nest(
-            "/v1/mdns/browser",
-            disabled_fallback_router("mdns-browser"),
-        );
+        app = app.nest("/v1/mdns/browser", disabled_fallback_router("mdns-browser"));
     }
 
     // Mount domain routes or fallback routers
@@ -163,9 +172,13 @@ pub async fn start(
 
     // Serve interactive API docs at /docs and raw spec at /openapi.json
     app = app.merge(Scalar::with_url("/docs", openapi.clone()));
-    let spec_json = openapi
-        .to_pretty_json()
-        .expect("OpenAPI JSON serialization");
+    let spec_json = match openapi.to_pretty_json() {
+        Ok(json) => json,
+        Err(e) => {
+            tracing::error!(error = %e, "OpenAPI JSON serialization failed");
+            String::from(r#"{"error":"OpenAPI serialization failed"}"#)
+        }
+    };
     app = app.route(
         "/openapi.json",
         get(move || {
@@ -181,7 +194,21 @@ pub async fn start(
 
     app = app.layer(Extension(app_state));
     app = app.layer(Extension(dashboard_state));
-    app = app.layer(CorsLayer::permissive());
+    let cors = CorsLayer::new()
+        .allow_origin([
+            "http://localhost".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1".parse::<HeaderValue>().unwrap(),
+        ])
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers([header::CONTENT_TYPE]);
+    app = app.layer(cors);
+
+    // DAT auth middleware: mutation requests (non-GET) require X-Koi-Token header
+    let token_state = Arc::new(dat_token);
+    app = app.layer(middleware::from_fn_with_state(
+        token_state,
+        dat_auth_middleware,
+    ));
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     tracing::info!("HTTP adapter listening on port {}", port);
@@ -275,12 +302,30 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
     use utoipa::openapi::{InfoBuilder, LicenseBuilder};
 
     let openapi = KoiSchemas::openapi()
-        .nest(koi_mdns::http::paths::PREFIX, koi_mdns::http::MdnsApiDoc::openapi())
-        .nest(koi_certmesh::http::paths::PREFIX, koi_certmesh::http::CertmeshApiDoc::openapi())
-        .nest(koi_dns::http::paths::PREFIX, koi_dns::http::DnsApiDoc::openapi())
-        .nest(koi_health::http::paths::PREFIX, koi_health::http::HealthApiDoc::openapi())
-        .nest(koi_proxy::http::paths::PREFIX, koi_proxy::http::ProxyApiDoc::openapi())
-        .nest(koi_udp::http::paths::PREFIX, koi_udp::http::UdpApiDoc::openapi());
+        .nest(
+            koi_mdns::http::paths::PREFIX,
+            koi_mdns::http::MdnsApiDoc::openapi(),
+        )
+        .nest(
+            koi_certmesh::http::paths::PREFIX,
+            koi_certmesh::http::CertmeshApiDoc::openapi(),
+        )
+        .nest(
+            koi_dns::http::paths::PREFIX,
+            koi_dns::http::DnsApiDoc::openapi(),
+        )
+        .nest(
+            koi_health::http::paths::PREFIX,
+            koi_health::http::HealthApiDoc::openapi(),
+        )
+        .nest(
+            koi_proxy::http::paths::PREFIX,
+            koi_proxy::http::ProxyApiDoc::openapi(),
+        )
+        .nest(
+            koi_udp::http::paths::PREFIX,
+            koi_udp::http::UdpApiDoc::openapi(),
+        );
 
     let info = InfoBuilder::new()
         .title("Koi Network Toolkit API")
@@ -364,6 +409,51 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
     openapi.info = info;
     openapi.tags = Some(tags);
     openapi
+}
+
+// ── DAT auth middleware ──────────────────────────────────────────────
+
+/// Daemon Access Token authentication middleware.
+///
+/// GET requests pass through unconditionally (read-only).
+/// All other methods require a valid `X-Koi-Token` header or `?token=` query
+/// parameter matching the daemon's generated token.
+async fn dat_auth_middleware(
+    State(expected_token): State<Arc<String>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    // Allow all GET requests (read-only endpoints are public)
+    if request.method() == Method::GET {
+        return next.run(request).await;
+    }
+
+    // Check X-Koi-Token header (case-insensitive header lookup by axum)
+    if let Some(val) = request.headers().get(DAT_HEADER) {
+        if val.as_bytes() == expected_token.as_bytes() {
+            return next.run(request).await;
+        }
+    }
+
+    // Fallback: check ?token= query parameter (for browser/SSE clients)
+    if let Some(query) = request.uri().query() {
+        for pair in query.split('&') {
+            if let Some(val) = pair.strip_prefix("token=") {
+                if val == expected_token.as_str() {
+                    return next.run(request).await;
+                }
+            }
+        }
+    }
+
+    (
+        StatusCode::UNAUTHORIZED,
+        axum::Json(serde_json::json!({
+            "error": "unauthorized",
+            "message": "Missing or invalid X-Koi-Token header"
+        })),
+    )
+        .into_response()
 }
 
 // ── Handlers ────────────────────────────────────────────────────────

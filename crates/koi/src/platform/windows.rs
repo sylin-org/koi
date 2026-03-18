@@ -285,8 +285,8 @@ pub fn uninstall() -> anyhow::Result<()> {
     println!("Uninstalling Koi service...");
 
     // Best-effort graceful shutdown via HTTP (before SCM stop)
-    if let Some(ep) = koi_config::breadcrumb::read_breadcrumb() {
-        let client = crate::client::KoiClient::new(&ep);
+    if let Some(bc) = koi_config::breadcrumb::read_breadcrumb() {
+        let client = crate::client::KoiClient::with_token(&bc.endpoint, &bc.token);
         if client.shutdown().is_ok() {
             // Give the service a moment to begin shutting down
             std::thread::sleep(Duration::from_millis(500));
@@ -452,11 +452,32 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             None
         };
 
+        // Integration bridges
+        let mdns_bridge: Option<std::sync::Arc<dyn koi_common::integration::MdnsSnapshot>> =
+            if let Some(ref core) = mdns_core {
+                Some(crate::integrations::MdnsBridge::spawn(core.clone()).await)
+            } else {
+                None
+            };
+
+        let certmesh_bridge: Option<std::sync::Arc<dyn koi_common::integration::CertmeshSnapshot>> =
+            certmesh_core.as_ref().map(|core| {
+                crate::integrations::CertmeshBridge::new(core.clone())
+                    as std::sync::Arc<dyn koi_common::integration::CertmeshSnapshot>
+            });
+
+        let alias_feedback: Option<std::sync::Arc<dyn koi_common::integration::AliasFeedback>> =
+            certmesh_core.as_ref().map(|core| {
+                crate::integrations::AliasFeedbackBridge::new(core.clone())
+                    as std::sync::Arc<dyn koi_common::integration::AliasFeedback>
+            });
+
         let dns_runtime = if !config.no_dns {
             match koi_dns::DnsCore::new(
                 config.dns_config(),
-                mdns_core.clone(),
-                certmesh_core.clone(),
+                mdns_bridge.clone(),
+                certmesh_bridge.clone(),
+                alias_feedback,
             )
             .await
             {
@@ -474,20 +495,6 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             }
         } else {
             tracing::info!("DNS capability disabled");
-            None
-        };
-
-        let health_runtime = if !config.no_health {
-            let core = std::sync::Arc::new(
-                koi_health::HealthCore::new(mdns_core.clone(), dns_runtime.clone()).await,
-            );
-            let runtime = std::sync::Arc::new(koi_health::HealthRuntime::new(core));
-            if let Err(e) = runtime.start().await {
-                tracing::error!(error = %e, "Failed to start health checks");
-            }
-            Some(runtime)
-        } else {
-            tracing::info!("Health capability disabled");
             None
         };
 
@@ -512,6 +519,38 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             None
         };
 
+        let dns_bridge: Option<std::sync::Arc<dyn koi_common::integration::DnsProbe>> =
+            dns_runtime.as_ref().map(|rt| {
+                crate::integrations::DnsBridge::new(rt.clone())
+                    as std::sync::Arc<dyn koi_common::integration::DnsProbe>
+            });
+
+        let proxy_bridge: Option<std::sync::Arc<dyn koi_common::integration::ProxySnapshot>> =
+            proxy_runtime.as_ref().map(|rt| {
+                crate::integrations::ProxyBridge::new(rt.core())
+                    as std::sync::Arc<dyn koi_common::integration::ProxySnapshot>
+            });
+
+        let health_runtime = if !config.no_health {
+            let core = std::sync::Arc::new(
+                koi_health::HealthCore::new(
+                    mdns_bridge.clone(),
+                    dns_bridge,
+                    certmesh_bridge,
+                    proxy_bridge,
+                )
+                .await,
+            );
+            let runtime = std::sync::Arc::new(koi_health::HealthRuntime::new(core));
+            if let Err(e) = runtime.start().await {
+                tracing::error!(error = %e, "Failed to start health checks");
+            }
+            Some(runtime)
+        } else {
+            tracing::info!("Health capability disabled");
+            None
+        };
+
         let udp_runtime = if !config.no_udp {
             Some(std::sync::Arc::new(koi_udp::UdpRuntime::new(
                 cancel.clone(),
@@ -530,6 +569,15 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             udp: udp_runtime.clone(),
         };
 
+        // Generate a Daemon Access Token (DAT) for authenticating mutation requests
+        let dat_token = {
+            use base64::Engine;
+            use rand::RngCore;
+            let mut token_bytes = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut token_bytes);
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes)
+        };
+
         // Ensure data directory exists
         koi_config::dirs::ensure_data_dir();
 
@@ -540,7 +588,8 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         let started_at = std::time::Instant::now();
 
         // Dashboard state
-        let dashboard_state = crate::adapters::dashboard::build_dashboard_state(&cores, started_at, "daemon");
+        let dashboard_state =
+            crate::adapters::dashboard::build_dashboard_state(&cores, started_at, "daemon");
         tasks.push(crate::adapters::dashboard::spawn_event_forwarder(
             cores.mdns.clone(),
             cores.certmesh.clone(),
@@ -553,10 +602,8 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
 
         // mDNS browser worker (conditional on mDNS being enabled)
         let browser_state = if let Some(ref mdns) = cores.mdns {
-            let adapter = crate::adapters::mdns_browser::MdnsBrowseAdapter::new(
-                mdns.clone(),
-                cancel.clone(),
-            );
+            let adapter =
+                crate::adapters::mdns_browser::MdnsBrowseAdapter::new(mdns.clone(), cancel.clone());
             let cache = koi_common::browser::BrowserCache::new();
             let source = adapter.clone() as std::sync::Arc<dyn koi_common::browser::BrowseSource>;
             let bc = cache.clone();
@@ -576,14 +623,46 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         if !config.no_http {
             let c = cores.clone();
             let port = config.http_port;
-            let token = cancel.clone();
+            let cancel_token = cancel.clone();
             let ds = dashboard_state.clone();
             let bs = browser_state.clone();
+            let dat = dat_token.clone();
             tasks.push(tokio::spawn(async move {
-                if let Err(e) = crate::adapters::http::start(c, port, token, started_at, ds, bs).await {
+                if let Err(e) = crate::adapters::http::start(c, port, cancel_token, started_at, ds, bs, dat).await {
                     tracing::error!(error = %e, "HTTP adapter failed");
                 }
             }));
+        }
+
+        // mTLS adapter (only if certmesh CA is initialized and unlocked)
+        if let Some(ref certmesh) = cores.certmesh {
+            match certmesh.self_enroll().await {
+                Ok(enrollment) => {
+                    let cm = certmesh.clone();
+                    let port = config.mtls_port;
+                    let token = cancel.clone();
+                    tasks.push(tokio::spawn(async move {
+                        if let Err(e) = crate::adapters::mtls::start(
+                            port,
+                            cm,
+                            &enrollment.cert_pem,
+                            &enrollment.key_pem,
+                            &enrollment.ca_cert_pem,
+                            token,
+                        )
+                        .await
+                        {
+                            tracing::error!(error = %e, "mTLS adapter failed");
+                        }
+                    }));
+                }
+                Err(e) => {
+                    tracing::info!(
+                        reason = %e,
+                        "mTLS adapter: skipped (CA not available for self-enrollment)"
+                    );
+                }
+            }
         }
 
         // IPC adapter (mDNS only - skip if mDNS disabled)
@@ -613,10 +692,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
 
                 let mut txt = std::collections::HashMap::new();
                 txt.insert("path".to_string(), "/".to_string());
-                txt.insert(
-                    "version".to_string(),
-                    env!("CARGO_PKG_VERSION").to_string(),
-                );
+                txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
                 txt.insert("api".to_string(), "v1".to_string());
                 txt.insert("dashboard".to_string(), "true".to_string());
 
@@ -649,7 +725,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         // Write breadcrumb for client discovery
         if !config.no_http {
             let endpoint = format!("http://localhost:{}", config.http_port);
-            koi_config::breadcrumb::write_breadcrumb(&endpoint);
+            koi_config::breadcrumb::write_breadcrumb(&endpoint, &dat_token);
         }
 
         // Report Running to SCM

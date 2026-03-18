@@ -19,7 +19,7 @@ use koi_mdns::{LeasePolicy, MdnsCore};
 
 /// Create a new session ID using the shared short-ID generator.
 pub fn new_session_id() -> SessionId {
-    SessionId(koi_common::id::generate_short_id())
+    SessionId::new(koi_common::id::generate_short_id())
 }
 
 /// Dispatch a single NDJSON request line and write responses to the writer.
@@ -138,23 +138,23 @@ mod tests {
     #[test]
     fn new_session_id_has_correct_length() {
         let sid = new_session_id();
-        assert_eq!(sid.0.len(), 8); // SHORT_ID_LEN
+        assert_eq!(sid.as_str().len(), 8); // SHORT_ID_LEN
     }
 
     #[test]
     fn new_session_id_is_unique() {
         let a = new_session_id();
         let b = new_session_id();
-        assert_ne!(a.0, b.0);
+        assert_ne!(a.as_str(), b.as_str());
     }
 
     #[test]
     fn new_session_id_is_hex() {
         let sid = new_session_id();
         assert!(
-            sid.0.chars().all(|c| c.is_ascii_hexdigit()),
+            sid.as_str().chars().all(|c| c.is_ascii_hexdigit()),
             "session ID should be hex: {}",
-            sid.0
+            sid.as_str()
         );
     }
 
