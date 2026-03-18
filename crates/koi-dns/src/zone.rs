@@ -77,4 +77,16 @@ mod tests {
         let zone = DnsZone::new("lan").unwrap();
         assert_eq!(zone.normalize_name("grafana.local"), None);
     }
+
+    #[test]
+    fn clone_preserves_zone_and_suffix() {
+        let zone = DnsZone::new("lan").unwrap();
+        let cloned = zone.clone();
+        assert_eq!(cloned.zone(), zone.zone());
+        assert_eq!(cloned.fqdn_suffix(), zone.fqdn_suffix());
+        assert_eq!(
+            cloned.normalize_name("grafana"),
+            zone.normalize_name("grafana"),
+        );
+    }
 }
