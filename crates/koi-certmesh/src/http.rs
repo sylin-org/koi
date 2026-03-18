@@ -206,8 +206,14 @@ async fn set_hook_handler(
         Some(member) => {
             member.reload_hook = Some(request.reload.clone());
 
+            let roster_clone = roster.clone();
             let roster_path = crate::ca::roster_path();
-            if let Err(e) = crate::roster::save_roster(&roster, &roster_path) {
+            drop(roster);
+            if let Err(e) = tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path))
+                .await
+                .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
+                .and_then(|r| r.map_err(CertmeshError::Io))
+            {
                 tracing::warn!(error = %e, "Failed to save roster after set-hook");
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -314,8 +320,16 @@ async fn create_handler(
             )
         }
     };
-    if let Err(e) = std::fs::write(crate::ca::auth_path(), auth_json) {
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::Io(e));
+    {
+        let auth_path = crate::ca::auth_path();
+        let auth_json_clone = auth_json.clone();
+        if let Err(e) = tokio::task::spawn_blocking(move || std::fs::write(&auth_path, &auth_json_clone))
+            .await
+            .map_err(|e| std::io::Error::other(format!("file I/O: {e}")))
+            .and_then(|r| r)
+        {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::Io(e));
+        }
     }
 
     let totp_uri = koi_crypto::totp::build_totp_uri(&totp_secret, "Koi Certmesh", "enrollment");
@@ -328,8 +342,16 @@ async fn create_handler(
         request.requires_approval,
     );
     let roster_path = crate::ca::roster_path();
-    if let Err(e) = crate::roster::save_roster(&new_roster, &roster_path) {
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::Io(e));
+    {
+        let roster_clone = new_roster.clone();
+        let roster_path_clone = roster_path.clone();
+        if let Err(e) = tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path_clone))
+            .await
+            .map_err(|e| std::io::Error::other(format!("roster save task: {e}")))
+            .and_then(|r| r)
+        {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::Io(e));
+        }
     }
 
     // Self-enroll the CA node as the first (primary) member.
@@ -371,8 +393,16 @@ async fn create_handler(
             };
             new_roster.members.push(member);
             // Persist updated roster with the self-enrolled member
-            if let Err(e) = crate::roster::save_roster(&new_roster, &roster_path) {
-                tracing::warn!(error = %e, "Could not save roster after self-enrollment");
+            {
+                let roster_clone = new_roster.clone();
+                let roster_path_clone = roster_path.clone();
+                if let Err(e) = tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path_clone))
+                    .await
+                    .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
+                    .and_then(|r| r.map_err(CertmeshError::Io))
+                {
+                    tracing::warn!(error = %e, "Could not save roster after self-enrollment");
+                }
             }
             let _ = crate::audit::append_entry(
                 "member_joined",
@@ -445,8 +475,9 @@ async fn unlock_handler(
     // Load auth credential from auth.json
     let auth_path = crate::ca::auth_path();
     if auth_path.exists() {
-        match std::fs::read_to_string(&auth_path) {
-            Ok(json) => match serde_json::from_str::<koi_crypto::auth::StoredAuth>(&json) {
+        let auth_path_clone = auth_path.clone();
+        match tokio::task::spawn_blocking(move || std::fs::read_to_string(&auth_path_clone)).await {
+            Ok(Ok(json)) => match serde_json::from_str::<koi_crypto::auth::StoredAuth>(&json) {
                 Ok(stored) => match stored.unlock(&request.passphrase) {
                     Ok(auth_state) => {
                         *state.auth.lock().await = Some(auth_state);
@@ -455,7 +486,8 @@ async fn unlock_handler(
                 },
                 Err(e) => tracing::warn!(error = %e, "Failed to parse auth.json"),
             },
-            Err(e) => tracing::warn!(error = %e, "Failed to read auth.json"),
+            Ok(Err(e)) => tracing::warn!(error = %e, "Failed to read auth.json"),
+            Err(e) => tracing::warn!(error = %e, "Failed to spawn auth.json read task"),
         }
     }
 
@@ -680,8 +712,14 @@ async fn open_enrollment_handler(
     let mut roster = state.roster.lock().await;
     roster.open_enrollment(deadline);
 
+    let roster_clone = roster.clone();
     let roster_path = crate::ca::roster_path();
-    if let Err(e) = crate::roster::save_roster(&roster, &roster_path) {
+    drop(roster);
+    if let Err(e) = tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path))
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
+        .and_then(|r| r.map_err(CertmeshError::Io))
+    {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &CertmeshError::Internal(format!("Failed to save roster: {e}")),
@@ -715,8 +753,14 @@ async fn close_enrollment_handler(
     let mut roster = state.roster.lock().await;
     roster.close_enrollment();
 
+    let roster_clone = roster.clone();
     let roster_path = crate::ca::roster_path();
-    if let Err(e) = crate::roster::save_roster(&roster, &roster_path) {
+    drop(roster);
+    if let Err(e) = tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path))
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
+        .and_then(|r| r.map_err(CertmeshError::Io))
+    {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &CertmeshError::Internal(format!("Failed to save roster: {e}")),
@@ -749,8 +793,14 @@ async fn set_policy_handler(
     roster.metadata.allowed_domain = request.allowed_domain.clone();
     roster.metadata.allowed_subnet = request.allowed_subnet.clone();
 
+    let roster_clone = roster.clone();
     let roster_path = crate::ca::roster_path();
-    if let Err(e) = crate::roster::save_roster(&roster, &roster_path) {
+    drop(roster);
+    if let Err(e) = tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path))
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
+        .and_then(|r| r.map_err(CertmeshError::Io))
+    {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &CertmeshError::Internal(format!("Failed to save roster: {e}")),
@@ -1079,8 +1129,14 @@ async fn health_handler(
     roster.touch_member(&request.hostname);
 
     // Save roster with updated last_seen
+    let roster_clone = roster.clone();
     let roster_path = crate::ca::roster_path();
-    if let Err(e) = crate::roster::save_roster(&roster, &roster_path) {
+    drop(roster);
+    if let Err(e) = tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path))
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
+        .and_then(|r| r.map_err(CertmeshError::Io))
+    {
         tracing::warn!(error = %e, "Failed to save roster after health heartbeat");
     }
 

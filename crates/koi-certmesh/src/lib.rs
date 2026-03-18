@@ -335,8 +335,14 @@ impl CertmeshCore {
         )?;
 
         // Save roster after successful enrollment
+        let roster_clone = roster.clone();
         let roster_path = ca::roster_path();
-        if let Err(e) = roster::save_roster(&roster, &roster_path) {
+        drop(roster);
+        if let Err(e) = tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
+            .and_then(|r| r.map_err(CertmeshError::Io))
+        {
             tracing::warn!(error = %e, "Failed to save roster after enrollment");
         }
 
@@ -462,11 +468,16 @@ impl CertmeshCore {
             pinned_ca_fingerprint: None,
             proxy_entries: Vec::new(),
         });
+        let roster_clone = roster.clone();
         let roster_path = ca::roster_path();
-        if let Err(e) = roster::save_roster(&roster, &roster_path) {
+        drop(roster);
+        if let Err(e) = tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
+            .and_then(|r| r.map_err(CertmeshError::Io))
+        {
             tracing::warn!(error = %e, "Failed to save roster after self-enrollment");
         }
-        drop(roster);
 
         tracing::info!(hostname = %hostname, "Daemon self-enrolled as certmesh member");
 
@@ -537,8 +548,13 @@ impl CertmeshCore {
             .ok_or_else(|| CertmeshError::Internal("member not found".into()))?;
         member.reload_hook = Some(hook.to_string());
 
+        let roster_clone = roster.clone();
         let roster_path = ca::roster_path();
-        roster::save_roster(&roster, &roster_path)?;
+        drop(roster);
+        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
+            .map_err(CertmeshError::Io)?;
 
         tracing::info!(hostname, hook, "Reload hook set");
         Ok(())
@@ -556,8 +572,13 @@ impl CertmeshCore {
             .ok_or_else(|| CertmeshError::Internal(format!("member not found: {hostname}")))?;
         member.role = role.clone();
 
+        let roster_clone = roster.clone();
         let roster_path = ca::roster_path();
-        roster::save_roster(&roster, &roster_path)?;
+        drop(roster);
+        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
+            .map_err(CertmeshError::Io)?;
 
         tracing::info!(hostname, role = ?role, "Member role updated");
         Ok(())
@@ -780,8 +801,13 @@ impl CertmeshCore {
         let mut roster = self.state.roster.lock().await;
         roster.open_enrollment(deadline);
 
+        let roster_clone = roster.clone();
         let roster_path = ca::roster_path();
-        roster::save_roster(&roster, &roster_path)?;
+        drop(roster);
+        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
+            .map_err(CertmeshError::Io)?;
 
         if let Some(d) = deadline {
             tracing::info!(deadline = %d, "Enrollment window opened with deadline");
@@ -805,8 +831,13 @@ impl CertmeshCore {
         let mut roster = self.state.roster.lock().await;
         roster.close_enrollment();
 
+        let roster_clone = roster.clone();
         let roster_path = ca::roster_path();
-        roster::save_roster(&roster, &roster_path)?;
+        drop(roster);
+        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
+            .map_err(CertmeshError::Io)?;
 
         tracing::info!("Enrollment window closed");
         let _ = audit::append_entry("enrollment_closed", &[]);
@@ -839,8 +870,13 @@ impl CertmeshCore {
         roster.metadata.allowed_domain = allowed_domain.clone();
         roster.metadata.allowed_subnet = allowed_subnet.clone();
 
+        let roster_clone = roster.clone();
         let roster_path = ca::roster_path();
-        roster::save_roster(&roster, &roster_path)?;
+        drop(roster);
+        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
+            .map_err(CertmeshError::Io)?;
 
         tracing::info!(
             domain = ?allowed_domain,
@@ -919,7 +955,11 @@ impl CertmeshCore {
 
         let json = serde_json::to_string_pretty(&stored)
             .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?;
-        std::fs::write(ca::auth_path(), json)?;
+        let auth_path = ca::auth_path();
+        tokio::task::spawn_blocking(move || std::fs::write(&auth_path, &json))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("file I/O: {e}")))?
+            .map_err(CertmeshError::Io)?;
         *self.state.auth.lock().await = Some(new_state);
 
         tracing::info!(method = target, "auth credential rotated");
@@ -1035,8 +1075,13 @@ impl CertmeshCore {
             .revoke_member(hostname, operator.clone(), reason.clone())
             .map_err(CertmeshError::NotFound)?;
 
+        let roster_clone = roster.clone();
         let roster_path = ca::roster_path();
-        roster::save_roster(&roster, &roster_path)?;
+        drop(roster);
+        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
+            .map_err(CertmeshError::Io)?;
 
         let _ = self.state.event_tx.send(CertmeshEvent::MemberRevoked {
             hostname: hostname.to_string(),
@@ -1084,8 +1129,14 @@ impl CertmeshCore {
 
         // Save roster after all renewals
         if !hostnames.is_empty() {
+            let roster_clone = roster.clone();
             let roster_path = ca::roster_path();
-            if let Err(e) = roster::save_roster(&roster, &roster_path) {
+            drop(roster);
+            if let Err(e) = tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+                .await
+                .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
+                .and_then(|r| r.map_err(CertmeshError::Io))
+            {
                 tracing::warn!(error = %e, "Failed to save roster after batch renewal");
             }
         }
@@ -1164,8 +1215,14 @@ impl CertmeshCore {
         }
         roster.touch_member(&request.hostname);
 
+        let roster_clone = roster.clone();
         let roster_path = ca::roster_path();
-        if let Err(e) = roster::save_roster(&roster, &roster_path) {
+        drop(roster);
+        if let Err(e) = tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
+            .and_then(|r| r.map_err(CertmeshError::Io))
+        {
             tracing::warn!(error = %e, "Failed to save roster after health heartbeat");
         }
 
@@ -1202,8 +1259,13 @@ impl CertmeshCore {
         let mut roster = self.state.roster.lock().await;
         *roster = verified_roster;
 
+        let roster_clone = roster.clone();
         let roster_path = ca::roster_path();
-        roster::save_roster(&roster, &roster_path)?;
+        drop(roster);
+        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
+            .map_err(CertmeshError::Io)?;
 
         tracing::info!("Roster synced from primary");
         Ok(())
@@ -1259,8 +1321,13 @@ impl CertmeshCore {
             return Err(CertmeshError::NotFound(hostname.clone()));
         }
 
+        let roster_clone = roster.clone();
         let roster_path = ca::roster_path();
-        roster::save_roster(&roster, &roster_path)?;
+        drop(roster);
+        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
+            .map_err(CertmeshError::Io)?;
         Ok(true)
     }
 
@@ -1281,8 +1348,13 @@ impl CertmeshCore {
 
         member.role = roster::MemberRole::Standby;
 
+        let roster_clone = roster.clone();
         let roster_path = ca::roster_path();
-        roster::save_roster(&roster, &roster_path)?;
+        drop(roster);
+        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
+            .map_err(CertmeshError::Io)?;
         Ok(true)
     }
 
@@ -1308,8 +1380,13 @@ impl CertmeshCore {
         }
 
         if changed {
+            let roster_clone = roster.clone();
             let roster_path = ca::roster_path();
-            roster::save_roster(&roster, &roster_path)?;
+            drop(roster);
+            tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
+                .await
+                .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
+                .map_err(CertmeshError::Io)?;
         }
 
         Ok(changed)
