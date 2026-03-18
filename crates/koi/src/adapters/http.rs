@@ -443,18 +443,14 @@ async fn dat_auth_middleware(
         return next.run(req).await;
     }
 
-    // Check x-koi-token header with constant-time comparison
+    // Check x-koi-token header with constant-time comparison.
+    // ct_eq on unequal-length slices returns Choice(0) without short-circuiting,
+    // so no separate length check is needed (which would leak token length via timing).
     let authenticated = req
         .headers()
         .get(DAT_HEADER)
         .and_then(|val| val.to_str().ok())
-        .map(|val| {
-            val.len() == expected_token.len()
-                && val
-                    .as_bytes()
-                    .ct_eq(expected_token.as_bytes())
-                    .into()
-        })
+        .map(|val| bool::from(val.as_bytes().ct_eq(expected_token.as_bytes())))
         .unwrap_or(false);
 
     if !authenticated {
