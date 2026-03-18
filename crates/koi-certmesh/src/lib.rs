@@ -1982,7 +1982,10 @@ mod tests {
     async fn receive_renewal_executes_hook_if_set() {
         let ca = make_test_ca();
         let mut roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let cmd = "echo renewed";
+        #[cfg(unix)]
+        let cmd = "/bin/echo renewed";
+        #[cfg(windows)]
+        let cmd = "C:\\Windows\\System32\\cmd.exe /c echo renewed";
         roster.members[0].reload_hook = Some(cmd.to_string());
         let core = make_unlocked_core(ca, roster);
 

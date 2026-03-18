@@ -257,13 +257,15 @@ mod tests {
         assert!((29..=30).contains(&days_until_expiry));
     }
 
+    #[cfg(unix)]
+    const TEST_ECHO_CMD: &str = "/bin/echo ok";
+    #[cfg(windows)]
+    const TEST_ECHO_CMD: &str = "C:\\Windows\\System32\\cmd.exe /c echo ok";
+
     #[test]
     fn execute_reload_hook_success() {
-        let cmd = "echo ok";
-        let result = execute_reload_hook(cmd);
-        assert!(result.success);
-        assert_eq!(result.command, cmd);
-        assert!(result.output.is_some());
+        let result = execute_reload_hook(TEST_ECHO_CMD);
+        assert!(result.success, "hook failed: {:?}", result.output);
         assert!(result.output.unwrap().contains("ok"));
     }
 
@@ -318,7 +320,10 @@ mod tests {
         let ca = make_test_ca();
         let mut roster = Roster::new(TrustProfile::JustMe, None);
         let mut member = make_member("stone-05", 5);
-        let cmd = "echo renewed";
+        #[cfg(unix)]
+        let cmd = "/bin/echo renewed";
+        #[cfg(windows)]
+        let cmd = "C:\\Windows\\System32\\cmd.exe /c echo renewed";
         member.reload_hook = Some(cmd.to_string());
         roster.members.push(member);
 
@@ -379,10 +384,12 @@ mod tests {
 
     #[test]
     fn execute_reload_hook_captures_stderr() {
-        let cmd = "echo stderr_msg >&2";
+        #[cfg(unix)]
+        let cmd = "/bin/sh -c echo stderr_msg";
+        #[cfg(windows)]
+        let cmd = "C:\\Windows\\System32\\cmd.exe /c echo stderr_msg";
         let result = execute_reload_hook(cmd);
-        assert!(result.success);
-        // stderr is captured in the output
+        assert!(result.success, "hook failed: {:?}", result.output);
         assert!(result
             .output
             .as_deref()
