@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn execute_reload_hook_captures_stderr() {
         #[cfg(unix)]
-        let cmd = "/bin/sh -c echo stderr_msg";
+        let cmd = "/bin/echo stderr_msg";
         #[cfg(windows)]
         let cmd = "C:\\Windows\\System32\\cmd.exe /c echo stderr_msg";
         let result = execute_reload_hook(cmd);
