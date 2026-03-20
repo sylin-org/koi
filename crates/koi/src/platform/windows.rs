@@ -628,7 +628,10 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             let bs = browser_state.clone();
             let dat = dat_token.clone();
             tasks.push(tokio::spawn(async move {
-                if let Err(e) = crate::adapters::http::start(c, port, cancel_token, started_at, ds, bs, dat).await {
+                if let Err(e) =
+                    crate::adapters::http::start(c, port, cancel_token, started_at, ds, bs, dat)
+                        .await
+                {
                     tracing::error!(error = %e, "HTTP adapter failed");
                 }
             }));

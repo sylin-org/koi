@@ -33,7 +33,8 @@ async fn build_core(
         };
 
     let dns_bridge: Option<Arc<dyn koi_common::integration::DnsProbe>> = if !config.no_dns {
-        let core = koi_dns::DnsCore::new(config.dns_config(), mdns_bridge.clone(), None, None).await?;
+        let core =
+            koi_dns::DnsCore::new(config.dns_config(), mdns_bridge.clone(), None, None).await?;
         let runtime = Arc::new(koi_dns::DnsRuntime::new(core));
         Some(crate::integrations::DnsBridge::new(runtime))
     } else {

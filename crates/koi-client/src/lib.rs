@@ -188,10 +188,7 @@ impl KoiClient {
         if !self.token.is_empty() {
             req = req.set(DAT_HEADER, &self.token);
         }
-        let resp = req
-            .query("type", service_type)
-            .call()
-            .map_err(map_error)?;
+        let resp = req.query("type", service_type).call().map_err(map_error)?;
         Ok(SseStream::new(Box::new(resp.into_reader())))
     }
 
@@ -202,10 +199,7 @@ impl KoiClient {
         if !self.token.is_empty() {
             req = req.set(DAT_HEADER, &self.token);
         }
-        let resp = req
-            .query("type", service_type)
-            .call()
-            .map_err(map_error)?;
+        let resp = req.query("type", service_type).call().map_err(map_error)?;
         Ok(SseStream::new(Box::new(resp.into_reader())))
     }
 

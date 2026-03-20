@@ -314,8 +314,7 @@ impl KoiEmbedded {
 
         let dns_bridge: Option<Arc<dyn koi_common::integration::DnsProbe>> =
             dns.as_ref().map(|rt| {
-                DnsBridgeEmbedded::new(rt.clone())
-                    as Arc<dyn koi_common::integration::DnsProbe>
+                DnsBridgeEmbedded::new(rt.clone()) as Arc<dyn koi_common::integration::DnsProbe>
             });
 
         let proxy_bridge: Option<Arc<dyn koi_common::integration::ProxySnapshot>> =
@@ -977,7 +976,11 @@ impl koi_common::integration::CertmeshSnapshot for CertmeshBridgeEmbedded {
 }
 
 struct MdnsBridgeEmbedded {
-    records: Arc<std::sync::RwLock<std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>>>,
+    records: Arc<
+        std::sync::RwLock<
+            std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>,
+        >,
+    >,
     cancel: CancellationToken,
 }
 
@@ -1012,8 +1015,12 @@ impl koi_common::integration::MdnsSnapshot for MdnsBridgeEmbedded {
         let mut map = std::collections::HashMap::new();
         for type_map in guard.values() {
             for record in type_map.values() {
-                let Some(host) = record.host.as_deref() else { continue; };
-                let Some(ip) = record.ip.as_deref().and_then(|ip| ip.parse().ok()) else { continue; };
+                let Some(host) = record.host.as_deref() else {
+                    continue;
+                };
+                let Some(ip) = record.ip.as_deref().and_then(|ip| ip.parse().ok()) else {
+                    continue;
+                };
                 let hostname = host.trim_end_matches('.').trim_end_matches(".local");
                 if !hostname.is_empty() {
                     map.insert(hostname.to_string(), ip);
@@ -1094,10 +1101,16 @@ impl koi_common::integration::AliasFeedback for AliasFeedbackBridgeEmbedded {
 async fn run_meta_browse_embedded(
     core: Arc<koi_mdns::MdnsCore>,
     handle: koi_mdns::BrowseHandle,
-    records: Arc<std::sync::RwLock<std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>>>,
+    records: Arc<
+        std::sync::RwLock<
+            std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>,
+        >,
+    >,
     cancel: CancellationToken,
 ) {
-    let active = Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::<String>::new()));
+    let active = Arc::new(tokio::sync::Mutex::new(
+        std::collections::HashSet::<String>::new(),
+    ));
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -1125,7 +1138,11 @@ async fn run_meta_browse_embedded(
 
 async fn run_type_browse_embedded(
     handle: koi_mdns::BrowseHandle,
-    records: Arc<std::sync::RwLock<std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>>>,
+    records: Arc<
+        std::sync::RwLock<
+            std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>,
+        >,
+    >,
     cancel: CancellationToken,
 ) {
     loop {

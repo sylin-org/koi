@@ -92,10 +92,7 @@ pub fn save_entries(entries: &[ProxyEntry]) -> Result<(), ProxyError> {
     save_entries_to(entries, &config_path())
 }
 
-fn save_entries_to(
-    entries: &[ProxyEntry],
-    path: &std::path::Path,
-) -> Result<(), ProxyError> {
+fn save_entries_to(entries: &[ProxyEntry], path: &std::path::Path) -> Result<(), ProxyError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ProxyError::Io(e.to_string()))?;
     }

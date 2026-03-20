@@ -79,7 +79,9 @@ pub fn write_breadcrumb(endpoint: &str, token: &str) {
 
         match result {
             Ok(()) => tracing::debug!(path = %path.display(), "Breadcrumb written (mode 0600)"),
-            Err(e) => tracing::warn!(error = %e, path = %path.display(), "Failed to write breadcrumb"),
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "Failed to write breadcrumb")
+            }
         }
     }
 
@@ -93,10 +95,14 @@ pub fn write_breadcrumb(endpoint: &str, token: &str) {
                 restrict_breadcrumb_acl(&tmp_path);
                 match std::fs::rename(&tmp_path, &path) {
                     Ok(()) => tracing::debug!(path = %path.display(), "Breadcrumb written"),
-                    Err(e) => tracing::warn!(error = %e, path = %path.display(), "Failed to rename breadcrumb"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, path = %path.display(), "Failed to rename breadcrumb")
+                    }
                 }
             }
-            Err(e) => tracing::warn!(error = %e, path = %path.display(), "Failed to write breadcrumb"),
+            Err(e) => {
+                tracing::warn!(error = %e, path = %path.display(), "Failed to write breadcrumb")
+            }
         }
     }
 }
@@ -111,8 +117,10 @@ fn restrict_breadcrumb_acl(path: &std::path::Path) {
     let mut args = vec![
         path_str,
         "/inheritance:r".to_string(),
-        "/grant:r".to_string(), "SYSTEM:F".to_string(),
-        "/grant:r".to_string(), "BUILTIN\\Administrators:F".to_string(),
+        "/grant:r".to_string(),
+        "SYSTEM:F".to_string(),
+        "/grant:r".to_string(),
+        "BUILTIN\\Administrators:F".to_string(),
     ];
     if let Ok(user) = std::env::var("USERNAME") {
         if !user.eq_ignore_ascii_case("SYSTEM") {

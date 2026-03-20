@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use koi_crypto::auth::AuthState;
 use koi_crypto::key_agreement::EphemeralKeyPair;
 use koi_crypto::keys::{self, CaKeyPair};
-use zeroize::Zeroize;
 use koi_crypto::signing;
+use zeroize::Zeroize;
 
 use crate::ca::CaState;
 use crate::error::CertmeshError;
@@ -45,11 +45,11 @@ pub fn prepare_promotion(
 ) -> Result<PromoteResponse, CertmeshError> {
     let server_kp = EphemeralKeyPair::generate();
     let server_pub = server_kp.public_key_bytes();
-    let mut shared_key = server_kp.derive_shared_key(client_public_key)
+    let mut shared_key = server_kp
+        .derive_shared_key(client_public_key)
         .map_err(|e| CertmeshError::PromotionFailed(format!("key derivation: {e}")))?;
-    let shared_key_hex = koi_crypto::secret::SecretString::new(
-        koi_common::encoding::hex_encode(&shared_key),
-    );
+    let shared_key_hex =
+        koi_crypto::secret::SecretString::new(koi_common::encoding::hex_encode(&shared_key));
     shared_key.zeroize();
     let encrypted_ca_key = keys::encrypt_key(&ca.key, shared_key_hex.as_ref())?;
 
@@ -94,11 +94,11 @@ pub fn accept_promotion(
     let server_pub = response.ephemeral_public.as_ref().ok_or_else(|| {
         CertmeshError::PromotionFailed("server did not provide ephemeral public key".into())
     })?;
-    let mut shared_key = our_keypair.derive_shared_key(server_pub)
+    let mut shared_key = our_keypair
+        .derive_shared_key(server_pub)
         .map_err(|e| CertmeshError::PromotionFailed(format!("key derivation: {e}")))?;
-    let shared_key_hex = koi_crypto::secret::SecretString::new(
-        koi_common::encoding::hex_encode(&shared_key),
-    );
+    let shared_key_hex =
+        koi_crypto::secret::SecretString::new(koi_common::encoding::hex_encode(&shared_key));
     shared_key.zeroize();
     let ca_key = keys::decrypt_key(&response.encrypted_ca_key, shared_key_hex.as_ref())
         .map_err(|e| CertmeshError::PromotionFailed(format!("CA key DH decryption: {e}")))?;
@@ -132,7 +132,9 @@ pub fn build_signed_manifest(
         .map_err(|e| CertmeshError::Internal(format!("roster serialization failed: {e}")))?;
 
     let signature = signing::sign_bytes(&ca.key, roster_json.as_bytes());
-    let ca_public_key = ca.key.public_key_pem()
+    let ca_public_key = ca
+        .key
+        .public_key_pem()
         .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
     Ok(RosterManifest {
@@ -253,8 +255,7 @@ mod tests {
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
         let client_pub = client_kp.public_key_bytes();
 
-        let response =
-            prepare_promotion(&ca, &auth_state, &roster, &client_pub).unwrap();
+        let response = prepare_promotion(&ca, &auth_state, &roster, &client_pub).unwrap();
 
         // Verify encrypted material is non-empty
         assert!(!response.encrypted_ca_key.ciphertext.is_empty());
@@ -268,7 +269,10 @@ mod tests {
             accept_promotion(&response, client_kp).unwrap();
 
         // Verify the decrypted key produces the same public key
-        assert_eq!(ca_key.public_key_pem().unwrap(), ca.key.public_key_pem().unwrap());
+        assert_eq!(
+            ca_key.public_key_pem().unwrap(),
+            ca.key.public_key_pem().unwrap()
+        );
         // Verify auth state survived the round-trip
         assert_eq!(accepted_auth.method_name(), "totp");
         // Verify roster survived
@@ -303,8 +307,7 @@ mod tests {
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
         let client_pub = client_kp.public_key_bytes();
 
-        let response =
-            prepare_promotion(&ca, &auth_state, &roster, &client_pub).unwrap();
+        let response = prepare_promotion(&ca, &auth_state, &roster, &client_pub).unwrap();
 
         // Try to accept with a DIFFERENT keypair -- should fail
         let wrong_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();

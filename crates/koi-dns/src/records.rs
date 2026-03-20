@@ -23,12 +23,8 @@ pub fn build_snapshot(
     mdns: Option<&dyn MdnsSnapshot>,
 ) -> RecordsSnapshot {
     let static_entries = static_entries(zone, state);
-    let mdns_records = mdns
-        .map(|m| m.cached_records())
-        .unwrap_or_default();
-    let host_ips = mdns
-        .map(|m| m.host_ips())
-        .unwrap_or_default();
+    let mdns_records = mdns.map(|m| m.cached_records()).unwrap_or_default();
+    let host_ips = mdns.map(|m| m.host_ips()).unwrap_or_default();
     let certmesh_entries = certmesh
         .map(|cm| certmesh_entries(zone, &cm.active_members(), &host_ips))
         .unwrap_or_default();

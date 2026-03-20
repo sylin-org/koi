@@ -518,15 +518,14 @@ fn get_or_create_fallback_key() -> Result<[u8; 32], CryptoError> {
     // (handles concurrent initialization where the second writer wins).
     let mut key = [0u8; 32];
     OsRng.fill_bytes(&mut key);
-    crate::tpm::seal_key_material(TOTP_FALLBACK_KEY_LABEL, &key)
-        .map_err(|e| CryptoError::Encryption(format!(
+    crate::tpm::seal_key_material(TOTP_FALLBACK_KEY_LABEL, &key).map_err(|e| {
+        CryptoError::Encryption(format!(
             "cannot seal TOTP fallback key in platform credential store: {e}"
-        )))?;
+        ))
+    })?;
     // Re-read the authoritative value (another process may have written concurrently)
     let confirmed = crate::tpm::unseal_key_material(TOTP_FALLBACK_KEY_LABEL)
-        .map_err(|e| CryptoError::Encryption(format!(
-            "cannot confirm TOTP fallback key: {e}"
-        )))?;
+        .map_err(|e| CryptoError::Encryption(format!("cannot confirm TOTP fallback key: {e}")))?;
     if confirmed.len() == 32 {
         let mut k = [0u8; 32];
         k.copy_from_slice(&confirmed);

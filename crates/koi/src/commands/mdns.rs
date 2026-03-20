@@ -232,7 +232,9 @@ pub async fn resolve(instance: &str, json: bool, mode: Mode) -> anyhow::Result<(
             let _ = core.shutdown().await;
             r
         }
-        Mode::Client { endpoint, token } => KoiClient::with_token(&endpoint, &token).resolve(instance)?,
+        Mode::Client { endpoint, token } => {
+            KoiClient::with_token(&endpoint, &token).resolve(instance)?
+        }
     };
 
     if json {

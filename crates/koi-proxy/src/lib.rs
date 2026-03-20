@@ -87,16 +87,14 @@ impl ProxyCore {
     }
 
     pub async fn reload(&self) -> Result<Vec<ProxyEntry>, ProxyError> {
-        let entries =
-            config::load_entries_with_data_dir(self.data_dir.as_deref())?;
+        let entries = config::load_entries_with_data_dir(self.data_dir.as_deref())?;
         let mut guard = self.entries.lock().await;
         *guard = entries.clone();
         Ok(entries)
     }
 
     pub async fn upsert(&self, entry: ProxyEntry) -> Result<Vec<ProxyEntry>, ProxyError> {
-        let entries =
-            config::upsert_entry_with_data_dir(entry.clone(), self.data_dir.as_deref())?;
+        let entries = config::upsert_entry_with_data_dir(entry.clone(), self.data_dir.as_deref())?;
         let mut guard = self.entries.lock().await;
         *guard = entries.clone();
         let _ = self.event_tx.send(ProxyEvent::EntryUpdated { entry });
@@ -104,8 +102,7 @@ impl ProxyCore {
     }
 
     pub async fn remove(&self, name: &str) -> Result<Vec<ProxyEntry>, ProxyError> {
-        let entries =
-            config::remove_entry_with_data_dir(name, self.data_dir.as_deref())?;
+        let entries = config::remove_entry_with_data_dir(name, self.data_dir.as_deref())?;
         let mut guard = self.entries.lock().await;
         *guard = entries.clone();
         let _ = self.event_tx.send(ProxyEvent::EntryRemoved {

@@ -12,7 +12,9 @@ use hickory_server::server::{
     Request, RequestHandler, ResponseHandler, ResponseInfo, ServerFuture,
 };
 use koi_common::capability::{Capability, CapabilityStatus};
-use koi_common::integration::{AliasFeedback as AliasFeedbackTrait, CertmeshSnapshot, MdnsSnapshot};
+use koi_common::integration::{
+    AliasFeedback as AliasFeedbackTrait, CertmeshSnapshot, MdnsSnapshot,
+};
 use koi_common::persist;
 use koi_config::state::{DnsEntry, DnsState};
 use tokio::net::{TcpListener, UdpSocket};

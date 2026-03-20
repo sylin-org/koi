@@ -69,9 +69,7 @@ pub fn collect_machine_health(
     certmesh: Option<&Arc<dyn CertmeshSnapshot>>,
     threshold: Duration,
 ) -> Vec<MachineHealth> {
-    let roster_members = certmesh
-        .map(|cm| cm.active_members())
-        .unwrap_or_default();
+    let roster_members = certmesh.map(|cm| cm.active_members()).unwrap_or_default();
 
     let mut hostnames: HashSet<String> =
         roster_members.iter().map(|m| m.hostname.clone()).collect();
@@ -162,4 +160,3 @@ async fn run_mdns_poll(
         }
     }
 }
-

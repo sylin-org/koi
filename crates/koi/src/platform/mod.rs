@@ -35,8 +35,6 @@ pub fn check_root(verb: &str) -> anyhow::Result<()> {
     if unsafe { libc::getuid() } == 0 {
         Ok(())
     } else {
-        anyhow::bail!(
-            "\"koi {verb}\" requires root privileges. Re-run with sudo."
-        )
+        anyhow::bail!("\"koi {verb}\" requires root privileges. Re-run with sudo.")
     }
 }

@@ -365,8 +365,8 @@ fn error_json(e: MdnsError) -> impl IntoResponse {
 fn error_event_stream(
     e: MdnsError,
 ) -> impl Stream<Item = std::result::Result<Event, std::convert::Infallible>> {
-    let data = serde_json::to_string(&crate::protocol::error_to_pipeline(&e))
-        .unwrap_or_else(|_| {
+    let data =
+        serde_json::to_string(&crate::protocol::error_to_pipeline(&e)).unwrap_or_else(|_| {
             let msg = serde_json::Value::String(e.to_string());
             format!(r#"{{"error":"serialization_failed","message":{msg}}}"#)
         });

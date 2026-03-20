@@ -53,10 +53,7 @@ fn validate_name(name: &str) -> Result<(), TrustStoreError> {
             "name contains forbidden characters: {name}"
         )));
     }
-    if name
-        .chars()
-        .any(|c| c.is_ascii_control())
-    {
+    if name.chars().any(|c| c.is_ascii_control()) {
         return Err(TrustStoreError::InvalidName(format!(
             "name contains control characters: {name}"
         )));

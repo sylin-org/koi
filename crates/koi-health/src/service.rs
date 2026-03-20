@@ -62,10 +62,7 @@ pub fn validate_check(check: &HealthCheckConfig) -> Result<(), String> {
     }
 }
 
-pub async fn run_check(
-    check: &HealthCheckConfig,
-    client: &reqwest::Client,
-) -> ServiceCheckOutcome {
+pub async fn run_check(check: &HealthCheckConfig, client: &reqwest::Client) -> ServiceCheckOutcome {
     match check.kind {
         ServiceCheckKind::Http => run_http_check(check, client).await,
         ServiceCheckKind::Tcp => run_tcp_check(check).await,

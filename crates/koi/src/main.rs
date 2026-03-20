@@ -566,8 +566,7 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
 
     let dns_bridge: Option<Arc<dyn koi_common::integration::DnsProbe>> =
         dns_runtime.as_ref().map(|rt| {
-            integrations::DnsBridge::new(rt.clone())
-                as Arc<dyn koi_common::integration::DnsProbe>
+            integrations::DnsBridge::new(rt.clone()) as Arc<dyn koi_common::integration::DnsProbe>
         });
 
     let proxy_bridge: Option<Arc<dyn koi_common::integration::ProxySnapshot>> =
@@ -651,7 +650,9 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         let bs = browser_state.clone();
         let dat = dat_token.clone();
         tasks.push(tokio::spawn(async move {
-            if let Err(e) = adapters::http::start(c, port, cancel_token, started_at, ds, bs, dat).await {
+            if let Err(e) =
+                adapters::http::start(c, port, cancel_token, started_at, ds, bs, dat).await
+            {
                 tracing::error!(error = %e, "HTTP adapter failed");
             }
         }));

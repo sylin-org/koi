@@ -392,8 +392,8 @@ mod optional_byte_array {
         let opt: Option<String> = Option::deserialize(deserializer)?;
         match opt {
             Some(hex) => {
-                let bytes = koi_common::encoding::hex_decode(&hex)
-                    .map_err(serde::de::Error::custom)?;
+                let bytes =
+                    koi_common::encoding::hex_decode(&hex).map_err(serde::de::Error::custom)?;
                 if bytes.len() != 32 {
                     return Err(serde::de::Error::custom(format!(
                         "expected 32 bytes, got {}",
