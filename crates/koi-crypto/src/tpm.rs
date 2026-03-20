@@ -30,7 +30,14 @@ const SERVICE_NAME: &str = "koi-certmesh";
 /// Performs a probe write / read / delete cycle with a disposable entry
 /// so we know up-front if the store is reachable.  Returns `false` on
 /// headless Linux without Secret Service or keyutils.
+///
+/// Returns `false` immediately if `KOI_NO_CREDENTIAL_STORE=1` is set
+/// (used in tests and CI to avoid Keychain authorization prompts on macOS).
 pub fn is_available() -> bool {
+    if std::env::var("KOI_NO_CREDENTIAL_STORE").is_ok() {
+        return false;
+    }
+
     let probe_user = "koi-probe-test";
     let entry = match keyring::Entry::new(SERVICE_NAME, probe_user) {
         Ok(e) => e,
@@ -86,8 +93,10 @@ mod tests {
     #[test]
     fn is_available_returns_bool() {
         // Just verify it doesn't panic - actual availability depends
-        // on the CI/dev environment.
-        let _ = is_available();
+        // on the CI/dev environment. The env-var guard is tested here.
+        std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+        assert!(!is_available());
+        std::env::remove_var("KOI_NO_CREDENTIAL_STORE");
     }
 
     #[test]

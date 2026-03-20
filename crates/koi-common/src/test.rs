@@ -4,6 +4,10 @@ use std::sync::OnceLock;
 pub fn ensure_data_dir(prefix: &str) -> PathBuf {
     static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 
+    // Disable platform credential store in tests to prevent macOS
+    // Keychain authorization prompts from blocking CI runners.
+    std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+
     DATA_DIR
         .get_or_init(|| {
             let mut base = if let Ok(existing) = std::env::var("KOI_DATA_DIR") {

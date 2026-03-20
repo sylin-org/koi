@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use koi_config::state::DnsEntry;
 use koi_embedded::{Builder, KoiEvent, ServiceMode};
 use koi_health::{HealthCheck, ServiceCheckKind, ServiceStatus};
-use koi_mdns::protocol::{RegisterPayload, Request as MdnsRequest};
+use koi_mdns::protocol::RegisterPayload;
 use koi_proxy::ProxyEntry;
 
 struct Harness {
@@ -542,6 +542,7 @@ async fn run_ipc_tests(
     mdns: std::sync::Arc<koi_mdns::MdnsCore>,
     harness: &mut Harness,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use koi_mdns::protocol::Request as MdnsRequest;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::windows::named_pipe::ServerOptions;
 
