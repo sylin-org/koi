@@ -2,9 +2,15 @@
 name = "koi-truststore"
 description = "Platform trust store integration for installing and removing local CA certificates"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["truststore", "certificate", "tls", "ca", "platform"]
+categories = ["cryptography", "os"]
 
 [dependencies]
 koi-common.workspace = true

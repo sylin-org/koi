@@ -2,9 +2,15 @@
 name = "koi-common"
 description = "Shared types, traits, and utilities for the Koi local network toolkit"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["koi", "networking", "types", "pipeline", "service-discovery"]
+categories = ["network-programming"]
 
 [dependencies]
 serde.workspace = true

@@ -2,9 +2,15 @@
 name = "koi-mdns"
 description = "mDNS/DNS-SD service discovery and registration for the local network"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["mdns", "dns-sd", "service-discovery", "zeroconf", "bonjour"]
+categories = ["network-programming"]
 
 [dependencies]
 koi-common.workspace = true

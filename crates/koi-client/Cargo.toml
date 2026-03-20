@@ -2,9 +2,15 @@
 name = "koi-client"
 description = "HTTP client for the Koi daemon"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["koi", "client", "http", "daemon", "api"]
+categories = ["network-programming", "api-bindings"]
 
 [dependencies]
 koi-common.workspace = true

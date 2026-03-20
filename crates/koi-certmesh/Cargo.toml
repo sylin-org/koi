@@ -2,9 +2,15 @@
 name = "koi-certmesh"
 description = "Zero-config private CA, certificate enrollment, and mesh trust for the local network"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["certificate", "pki", "tls", "mesh", "enrollment"]
+categories = ["cryptography", "network-programming"]
 
 [dependencies]
 koi-common.workspace = true

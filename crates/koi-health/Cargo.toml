@@ -2,9 +2,15 @@
 name = "koi-health"
 description = "Machine and service health monitoring for the local network"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["health-check", "monitoring", "http", "tcp", "service-health"]
+categories = ["network-programming"]
 
 [dependencies]
 koi-common.workspace = true

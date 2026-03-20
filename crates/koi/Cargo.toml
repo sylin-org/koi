@@ -2,9 +2,15 @@
 name = "koi-net"
 description = "Local network toolkit: service discovery, DNS, health monitoring, TLS proxy, and certificate mesh"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["networking", "mdns", "dns", "tls-proxy", "service-discovery"]
+categories = ["command-line-utilities", "network-programming"]
 
 [[bin]]
 name = "koi"

@@ -2,9 +2,15 @@
 name = "koi-config"
 description = "Configuration, breadcrumb discovery, and state persistence for Koi"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["koi", "configuration", "state", "discovery"]
+categories = ["config"]
 
 [dependencies]
 koi-common.workspace = true

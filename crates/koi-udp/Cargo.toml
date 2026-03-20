@@ -2,9 +2,15 @@
 name = "koi-udp"
 description = "UDP datagram bridging over HTTP/SSE for containerized workloads"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["udp", "datagram", "bridge", "sse", "container"]
+categories = ["network-programming"]
 
 [dependencies]
 koi-common.workspace = true

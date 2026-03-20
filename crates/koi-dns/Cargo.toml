@@ -2,9 +2,15 @@
 name = "koi-dns"
 description = "Local DNS resolver with mDNS, certmesh, and static record integration"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["dns", "resolver", "local-network", "mdns", "service-discovery"]
+categories = ["network-programming"]
 
 [dependencies]
 koi-common.workspace = true

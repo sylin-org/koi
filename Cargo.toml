@@ -19,7 +19,9 @@ members = [
 
 [workspace.package]
 version = "0.2.202603181223"
+authors = ["Sylin.org <hello@sylin.org>"]
 edition = "2021"
+rust-version = "1.87"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/sylin-org/koi"
 homepage = "https://sylin.org/koi"

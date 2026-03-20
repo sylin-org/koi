@@ -2,9 +2,15 @@
 name = "koi-crypto"
 description = "Key management, TOTP, signing, and encryption primitives for local network trust"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["cryptography", "totp", "signing", "encryption", "key-management"]
+categories = ["cryptography", "authentication"]
 
 [dependencies]
 koi-common.workspace = true
