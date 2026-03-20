@@ -59,6 +59,7 @@ pub struct ProxyStatus {
 pub struct ProxyCore {
     entries: Arc<Mutex<Vec<ProxyEntry>>>,
     event_tx: broadcast::Sender<ProxyEvent>,
+    data_dir: Option<std::path::PathBuf>,
 }
 
 impl ProxyCore {
@@ -67,6 +68,17 @@ impl ProxyCore {
         Ok(Self {
             entries: Arc::new(Mutex::new(entries)),
             event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
+            data_dir: None,
+        })
+    }
+
+    /// Create a ProxyCore that reads/writes config from a custom data directory.
+    pub fn with_data_dir(data_dir: &std::path::Path) -> Result<Self, ProxyError> {
+        let entries = config::load_entries_with_data_dir(Some(data_dir))?;
+        Ok(Self {
+            entries: Arc::new(Mutex::new(entries)),
+            event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
+            data_dir: Some(data_dir.to_path_buf()),
         })
     }
 
@@ -75,14 +87,16 @@ impl ProxyCore {
     }
 
     pub async fn reload(&self) -> Result<Vec<ProxyEntry>, ProxyError> {
-        let entries = config::load_entries()?;
+        let entries =
+            config::load_entries_with_data_dir(self.data_dir.as_deref())?;
         let mut guard = self.entries.lock().await;
         *guard = entries.clone();
         Ok(entries)
     }
 
     pub async fn upsert(&self, entry: ProxyEntry) -> Result<Vec<ProxyEntry>, ProxyError> {
-        let entries = config::upsert_entry(entry.clone())?;
+        let entries =
+            config::upsert_entry_with_data_dir(entry.clone(), self.data_dir.as_deref())?;
         let mut guard = self.entries.lock().await;
         *guard = entries.clone();
         let _ = self.event_tx.send(ProxyEvent::EntryUpdated { entry });
@@ -90,7 +104,8 @@ impl ProxyCore {
     }
 
     pub async fn remove(&self, name: &str) -> Result<Vec<ProxyEntry>, ProxyError> {
-        let entries = config::remove_entry(name)?;
+        let entries =
+            config::remove_entry_with_data_dir(name, self.data_dir.as_deref())?;
         let mut guard = self.entries.lock().await;
         *guard = entries.clone();
         let _ = self.event_tx.send(ProxyEvent::EntryRemoved {

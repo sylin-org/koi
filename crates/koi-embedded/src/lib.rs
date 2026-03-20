@@ -302,7 +302,11 @@ impl KoiEmbedded {
         };
 
         let proxy = if self.config.proxy_enabled {
-            let core = Arc::new(koi_proxy::ProxyCore::new()?);
+            let core = if let Some(dir) = &self.config.data_dir {
+                Arc::new(koi_proxy::ProxyCore::with_data_dir(dir)?)
+            } else {
+                Arc::new(koi_proxy::ProxyCore::new()?)
+            };
             Some(Arc::new(koi_proxy::ProxyRuntime::new(core)))
         } else {
             None
