@@ -276,9 +276,13 @@ pub fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), CryptoError> {
 
     #[cfg(not(unix))]
     {
-        // Write to a .tmp file, apply ACL, then rename atomically
-        // to avoid a TOCTOU window where the file is world-readable.
-        let tmp_path = path.with_extension("tmp");
+        // Write to a uniquely-named .tmp file, apply ACL, then rename
+        // atomically to avoid a TOCTOU window where the file is
+        // world-readable. The thread ID suffix prevents races when
+        // parallel tests write to the same target path.
+        let tid = std::thread::current().id();
+        let tmp_ext = format!("tmp-{tid:?}");
+        let tmp_path = path.with_extension(tmp_ext);
         std::fs::write(&tmp_path, data)?;
         #[cfg(windows)]
         restrict_windows_acl(&tmp_path);
@@ -319,8 +323,8 @@ pub fn encrypt_bytes(plaintext: &[u8], passphrase: &str) -> Result<EncryptedKey,
 
     let kdf_params = KdfParams::default();
     let aes_key = derive_aes_key(passphrase, &salt, &kdf_params)?;
-    let cipher = Aes256Gcm::new_from_slice(&aes_key)
-        .map_err(|e| CryptoError::Encryption(e.to_string()))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&aes_key).map_err(|e| CryptoError::Encryption(e.to_string()))?;
 
     let nonce_arr: [u8; NONCE_LEN] = nonce_bytes
         .as_slice()
@@ -342,8 +346,8 @@ pub fn encrypt_bytes(plaintext: &[u8], passphrase: &str) -> Result<EncryptedKey,
 /// Decrypt bytes encrypted with `encrypt_bytes`.
 pub fn decrypt_bytes(encrypted: &EncryptedKey, passphrase: &str) -> Result<Vec<u8>, CryptoError> {
     let aes_key = derive_aes_key(passphrase, &encrypted.salt, &encrypted.kdf_params)?;
-    let cipher = Aes256Gcm::new_from_slice(&aes_key)
-        .map_err(|e| CryptoError::Decryption(e.to_string()))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&aes_key).map_err(|e| CryptoError::Decryption(e.to_string()))?;
 
     let nonce_arr: [u8; NONCE_LEN] = encrypted
         .nonce
@@ -360,7 +364,7 @@ pub fn decrypt_bytes(encrypted: &EncryptedKey, passphrase: &str) -> Result<Vec<u
 
 /// Derive a 256-bit AES key from a passphrase using Argon2id with explicit params.
 /// Minimum Argon2id parameters to prevent downgrade from tampered key files.
-const MIN_M_COST: u32 = 8192;  // 8 MiB
+const MIN_M_COST: u32 = 8192; // 8 MiB
 const MIN_T_COST: u32 = 1;
 const MIN_P_COST: u32 = 1;
 
@@ -369,15 +373,28 @@ fn derive_aes_key(
     salt: &[u8],
     kdf_params: &KdfParams,
 ) -> Result<SecretBytes, CryptoError> {
-    if kdf_params.m_cost < MIN_M_COST || kdf_params.t_cost < MIN_T_COST || kdf_params.p_cost < MIN_P_COST {
+    if kdf_params.m_cost < MIN_M_COST
+        || kdf_params.t_cost < MIN_T_COST
+        || kdf_params.p_cost < MIN_P_COST
+    {
         return Err(CryptoError::KeyDerivation(format!(
             "KDF params below minimum: m_cost={} (min {}), t_cost={} (min {}), p_cost={} (min {})",
-            kdf_params.m_cost, MIN_M_COST, kdf_params.t_cost, MIN_T_COST, kdf_params.p_cost, MIN_P_COST,
+            kdf_params.m_cost,
+            MIN_M_COST,
+            kdf_params.t_cost,
+            MIN_T_COST,
+            kdf_params.p_cost,
+            MIN_P_COST,
         )));
     }
     let mut key = vec![0u8; 32];
-    let params = Params::new(kdf_params.m_cost, kdf_params.t_cost, kdf_params.p_cost, Some(32))
-        .map_err(|e| CryptoError::KeyDerivation(format!("invalid KDF params: {e}")))?;
+    let params = Params::new(
+        kdf_params.m_cost,
+        kdf_params.t_cost,
+        kdf_params.p_cost,
+        Some(32),
+    )
+    .map_err(|e| CryptoError::KeyDerivation(format!("invalid KDF params: {e}")))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     argon2
         .hash_password_into(passphrase.as_bytes(), salt, &mut key)
@@ -477,10 +494,7 @@ mod tests {
         let kp1 = generate_ca_keypair(b"entropy seed one________________").unwrap();
         let kp2 = generate_ca_keypair(b"entropy seed two________________").unwrap();
 
-        assert_ne!(
-            kp1.public_key_pem().unwrap(),
-            kp2.public_key_pem().unwrap()
-        );
+        assert_ne!(kp1.public_key_pem().unwrap(), kp2.public_key_pem().unwrap());
     }
 
     #[test]
