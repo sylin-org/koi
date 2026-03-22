@@ -10,7 +10,6 @@
 //! generate an XKCD-style passphrase (via the EFF large wordlist). The passphrase
 //! protects the key at rest; the entropy seed determines the key itself.
 
-use rand::rngs::OsRng;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
@@ -169,7 +168,7 @@ fn collect_keyboard_entropy() -> Result<[u8; ENTROPY_BYTES], std::io::Error> {
 
     // Mix with OS RNG
     let mut os_entropy = [0u8; 32];
-    OsRng.fill_bytes(&mut os_entropy);
+    rand::rng().fill_bytes(&mut os_entropy);
     hasher.update(os_entropy);
 
     let result = hasher.finalize();
@@ -182,14 +181,14 @@ fn collect_keyboard_entropy() -> Result<[u8; ENTROPY_BYTES], std::io::Error> {
 /// Auto-generate: collect entropy from OS RNG only.
 fn collect_os_entropy() -> Result<[u8; ENTROPY_BYTES], std::io::Error> {
     let mut output = [0u8; ENTROPY_BYTES];
-    OsRng.fill_bytes(&mut output);
+    rand::rng().fill_bytes(&mut output);
 
     // Hash to mix distribution uniformly
     let mut hasher = Sha256::new();
     hasher.update(output);
     // Add a second round of OS RNG for defense in depth
     let mut extra = [0u8; 32];
-    OsRng.fill_bytes(&mut extra);
+    rand::rng().fill_bytes(&mut extra);
     hasher.update(extra);
 
     let result = hasher.finalize();
@@ -203,7 +202,7 @@ pub fn hash_passphrase(passphrase: &str) -> [u8; ENTROPY_BYTES] {
     hasher.update(passphrase.as_bytes());
 
     let mut os_entropy = [0u8; 32];
-    OsRng.fill_bytes(&mut os_entropy);
+    rand::rng().fill_bytes(&mut os_entropy);
     hasher.update(os_entropy);
 
     let result = hasher.finalize();

@@ -5,7 +5,6 @@
 //! with a key that never traverses the wire.
 
 use hkdf::Hkdf;
-use rand::rngs::OsRng;
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
@@ -26,7 +25,8 @@ pub struct EphemeralKeyPair {
 impl EphemeralKeyPair {
     /// Generate a fresh ephemeral key pair using OS randomness.
     pub fn generate() -> Self {
-        let secret = EphemeralSecret::random_from_rng(OsRng);
+        // Use rand_core 0.6 OsRng (re-exported through p256) for x25519-dalek compat
+        let secret = EphemeralSecret::random_from_rng(p256::elliptic_curve::rand_core::OsRng);
         let public = PublicKey::from(&secret);
         Self { secret, public }
     }
