@@ -302,7 +302,7 @@ impl SlotTable {
 
         // Generate a random slot_kek and wrap the master key
         let mut slot_kek = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut slot_kek);
+        rand::rng().fill_bytes(&mut slot_kek);
         let slot_kek_hex = hex_encode(&slot_kek);
         let wrapped = encrypt_bytes(master_key, &slot_kek_hex)?;
 
@@ -476,7 +476,7 @@ pub struct Fido2SlotInfo {
 /// Generate a fresh random master key.
 pub fn generate_master_key() -> [u8; MASTER_KEY_LEN] {
     let mut key = [0u8; MASTER_KEY_LEN];
-    rand::thread_rng().fill_bytes(&mut key);
+    rand::rng().fill_bytes(&mut key);
     key
 }
 
@@ -516,7 +516,7 @@ fn get_or_create_fallback_key() -> Result<[u8; 32], CryptoError> {
     // Generate and seal a new random key, then re-read to confirm
     // (handles concurrent initialization where the second writer wins).
     let mut key = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut key);
+    rand::rng().fill_bytes(&mut key);
     crate::tpm::seal_key_material(TOTP_FALLBACK_KEY_LABEL, &key).map_err(|e| {
         CryptoError::Encryption(format!(
             "cannot seal TOTP fallback key in platform credential store: {e}"

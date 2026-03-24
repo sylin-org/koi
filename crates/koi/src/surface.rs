@@ -7,11 +7,11 @@ use command_surface::{
     ApiEndpoint, Category, Color, CommandDef, CommandManifest, Confirmation, Example, Glyph,
     Presentation, Scope, Tag,
 };
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::io::{self};
 
-pub static MANIFEST: Lazy<CommandManifest<KoiCategory, KoiTag, KoiScope>> =
-    Lazy::new(build_manifest);
+pub static MANIFEST: LazyLock<CommandManifest<KoiCategory, KoiTag, KoiScope>> =
+    LazyLock::new(build_manifest);
 
 pub fn print_command_detail(def: &CommandDef<KoiCategory, KoiTag, KoiScope>) -> io::Result<()> {
     let profile = TerminalProfile::detect_stdout();
