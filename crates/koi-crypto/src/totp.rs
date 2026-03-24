@@ -6,6 +6,7 @@
 
 use std::time::{Duration, Instant};
 
+use rand::rngs::OsRng;
 use rand::RngCore;
 use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
@@ -47,7 +48,7 @@ impl Drop for TotpSecret {
 /// Generate a fresh TOTP secret from the OS CSPRNG.
 pub fn generate_secret() -> TotpSecret {
     let mut secret = vec![0u8; SECRET_LEN];
-    rand::rng().fill_bytes(&mut secret);
+    OsRng.fill_bytes(&mut secret);
     TotpSecret { secret }
 }
 

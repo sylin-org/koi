@@ -304,7 +304,7 @@ impl AuthAdapter for Fido2Adapter {
         };
         let mut challenge = vec![0u8; 32];
         use rand::RngCore;
-        rand::rng().fill_bytes(&mut challenge);
+        rand::rngs::OsRng.fill_bytes(&mut challenge);
         Ok(AuthChallenge::Fido2 {
             challenge,
             credential_id: cred.credential_id.clone(),
@@ -669,7 +669,7 @@ mod tests {
     /// sign a challenge through the real adapter, and verify.
     fn make_fido2_keypair() -> (p256::ecdsa::SigningKey, Fido2Credential) {
         use p256::ecdsa::SigningKey;
-        use p256::elliptic_curve::rand_core::OsRng;
+        use rand::rngs::OsRng;
 
         let sk = SigningKey::random(&mut OsRng);
         let vk = sk.verifying_key();

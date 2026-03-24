@@ -574,7 +574,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             use base64::Engine;
             use rand::RngCore;
             let mut token_bytes = [0u8; 32];
-            rand::rng().fill_bytes(&mut token_bytes);
+            rand::rngs::OsRng.fill_bytes(&mut token_bytes);
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes)
         };
 

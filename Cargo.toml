@@ -18,10 +18,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 authors = ["Sylin.org <hello@sylin.org>"]
 edition = "2021"
-rust-version = "1.92"
+rust-version = "1.87"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/sylin-org/koi"
 homepage = "https://sylin.org/koi"
@@ -81,6 +81,7 @@ console = "0.15"
 is-terminal = "0.4"
 supports-color = "3"
 terminal_size = "0.4"
+once_cell = "1"
 open = "5"
 ipnet = "2"
 libc = "0.2"
@@ -91,7 +92,7 @@ p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 aes-gcm = "0.10"
 argon2 = "0.5"
 sha2 = "0.10"
-rand = "0.9"
+rand = "0.8"
 zeroize = { version = "1", features = ["derive"] }
 subtle = "2"
 totp-rs = { version = "5", features = ["gen_secret"] }

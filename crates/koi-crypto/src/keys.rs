@@ -12,6 +12,7 @@ use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use argon2::{Argon2, Params};
 use p256::ecdsa::SigningKey;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
+use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -144,7 +145,7 @@ pub fn generate_ca_keypair(entropy_seed: &[u8]) -> Result<CaKeyPair, CryptoError
     hasher.update(entropy_seed);
 
     let mut os_random = [0u8; 32];
-    rand::rng().fill_bytes(&mut os_random);
+    OsRng.fill_bytes(&mut os_random);
     hasher.update(os_random);
 
     let mixed_seed = hasher.finalize();
@@ -315,10 +316,10 @@ pub fn load_encrypted_key(path: &Path) -> Result<EncryptedKey, CryptoError> {
 /// Encrypt arbitrary bytes with passphrase-derived AES-256-GCM.
 pub fn encrypt_bytes(plaintext: &[u8], passphrase: &str) -> Result<EncryptedKey, CryptoError> {
     let mut salt = vec![0u8; SALT_LEN];
-    rand::rng().fill_bytes(&mut salt);
+    OsRng.fill_bytes(&mut salt);
 
     let mut nonce_bytes = vec![0u8; NONCE_LEN];
-    rand::rng().fill_bytes(&mut nonce_bytes);
+    OsRng.fill_bytes(&mut nonce_bytes);
 
     let kdf_params = KdfParams::default();
     let aes_key = derive_aes_key(passphrase, &salt, &kdf_params)?;

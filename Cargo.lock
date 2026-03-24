@@ -507,7 +507,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "command-surface"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "console",
  "is-terminal",
@@ -1160,7 +1160,7 @@ dependencies = [
  "idna",
  "ipnet",
  "once_cell",
- "rand",
+ "rand 0.9.2",
  "ring",
  "serde",
  "thiserror 2.0.18",
@@ -1183,7 +1183,7 @@ dependencies = [
  "moka",
  "once_cell",
  "parking_lot",
- "rand",
+ "rand 0.9.2",
  "resolv-conf",
  "smallvec",
  "thiserror 2.0.18",
@@ -1686,7 +1686,7 @@ dependencies = [
 
 [[package]]
 name = "koi-certmesh"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "axum",
  "chrono",
@@ -1698,7 +1698,7 @@ dependencies = [
  "koi-crypto",
  "koi-truststore",
  "pem",
- "rand",
+ "rand 0.8.5",
  "rcgen",
  "serde",
  "serde_json",
@@ -1714,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "koi-client"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "hickory-proto",
  "koi-common",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "koi-common"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "async-stream",
  "axum",
@@ -1748,7 +1748,7 @@ dependencies = [
 
 [[package]]
 name = "koi-config"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "koi-common",
  "serde",
@@ -1760,7 +1760,7 @@ dependencies = [
 
 [[package]]
 name = "koi-crypto"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1773,7 +1773,7 @@ dependencies = [
  "p256",
  "pem",
  "qrcode",
- "rand",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "sha2",
@@ -1788,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "koi-dns"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "axum",
  "hickory-proto",
@@ -1807,7 +1807,7 @@ dependencies = [
 
 [[package]]
 name = "koi-embedded"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "axum",
  "base64",
@@ -1842,7 +1842,7 @@ dependencies = [
 
 [[package]]
 name = "koi-health"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "axum",
  "chrono",
@@ -1859,7 +1859,7 @@ dependencies = [
 
 [[package]]
 name = "koi-mdns"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "async-stream",
  "axum",
@@ -1881,7 +1881,7 @@ dependencies = [
 
 [[package]]
 name = "koi-net"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1908,8 +1908,9 @@ dependencies = [
  "koi-udp",
  "libc",
  "netdev",
+ "once_cell",
  "open",
- "rand",
+ "rand 0.8.5",
  "rcgen",
  "rustls",
  "rustls-pemfile",
@@ -1936,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "koi-proxy"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "axum",
  "axum-server",
@@ -1963,7 +1964,7 @@ dependencies = [
 
 [[package]]
 name = "koi-truststore"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "koi-common",
  "thiserror 2.0.18",
@@ -1972,7 +1973,7 @@ dependencies = [
 
 [[package]]
 name = "koi-udp"
-version = "0.2.202603181223"
+version = "0.2.202603241441"
 dependencies = [
  "async-stream",
  "axum",
@@ -2632,7 +2633,7 @@ dependencies = [
  "bytes",
  "getrandom 0.3.4",
  "lru-slab",
- "rand",
+ "rand 0.9.2",
  "ring",
  "rustc-hash",
  "rustls",
@@ -2681,12 +2682,33 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
+dependencies = [
+ "libc",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "rand"
 version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6db2770f06117d490610c7488547d543617b21bfa07796d7a12f6f1bd53850d1"
 dependencies = [
- "rand_chacha",
+ "rand_chacha 0.9.0",
  "rand_core 0.9.5",
+]
+
+[[package]]
+name = "rand_chacha"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.6.4",
 ]
 
 [[package]]
@@ -3563,7 +3585,7 @@ dependencies = [
  "base32",
  "constant_time_eq",
  "hmac",
- "rand",
+ "rand 0.9.2",
  "sha1",
  "sha2",
 ]
