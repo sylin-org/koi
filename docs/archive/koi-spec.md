@@ -1,9 +1,14 @@
 # Koi - Local Network Toolkit
 
+> **Archived.** This is the pre-v0.2 design specification. The authoritative
+> references are now in `docs/reference/` (architecture, HTTP API, CLI, wire
+> protocol, ceremony protocol, envelope encryption) and `docs/adr/` (decision
+> records). Kept for historical context.
+
 **Version:** 2.0.0-draft
 **Date:** February 2026
 **Author:** Leon (sylin.org)
-**Status:** Design Specification
+**Status:** Design Specification (superseded by reference docs)
 **Review:** Architecture review, ISO 27001 security evaluation, integration feasibility assessment
 
 ---

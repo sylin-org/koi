@@ -1,7 +1,11 @@
 # Koi Technical Specification
 
+> **Archived.** This was the v0.1 technical specification. The authoritative
+> references are now in `docs/reference/` and the wire protocol details in
+> `docs/reference/wire-protocol.md`. Kept for historical context.
+
 **Version:** 0.2.0
-**Status:** Implemented
+**Status:** Implemented (superseded by reference docs)
 
 ## Table of Contents
 

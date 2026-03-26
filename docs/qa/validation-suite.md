@@ -5,6 +5,11 @@
 **Companion to:** `koi-spec.md`, `koi-implementation-prompt.md`
 **Date:** February 2026
 
+> **Status (2026-03-25):** All eight implementation phases (0-8) are code-complete
+> with 779+ passing unit tests. The checkboxes in this document track **manual
+> acceptance testing**, not implementation status. Run through each phase's tests
+> to confirm end-to-end behavior before checking off the gates at the bottom.
+
 ---
 
 ## How to Use This Document
@@ -68,7 +73,7 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 | ID    | Test                                                | Expected                                                   | Auto? |
 | ----- | --------------------------------------------------- | ---------------------------------------------------------- | ----- |
 | P0-30 | `cargo build`                                       | Compiles successfully from workspace root                  | ✓     |
-| P0-31 | `cargo build --no-default-features --features mdns` | Compiles with mDNS only, no crypto dependencies            | ✓     |
+| P0-31 | ~~`cargo build --no-default-features --features mdns`~~ | **Removed:** Compile-time feature flags replaced by runtime tunables (`--no-mdns`, etc.). All capabilities compile into a single binary. | -     |
 | P0-32 | `cargo test`                                        | All existing tests pass without modification to test logic | ✓     |
 | P0-33 | Inspect workspace `Cargo.toml`                      | Placeholder crates exist for certmesh, dns, health, proxy  | ✓     |
 

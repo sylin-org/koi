@@ -1,7 +1,11 @@
 # Koi - Implementation Guide
 
-**For:** Claude Code (agentic coding)  
-**From:** Claude (co-author, design phase)  
+> **Archived.** This was the original implementation prompt for v0.1. The current
+> agentic context is `.agentic/CONTEXT.md` and `CLAUDE.md`. Kept for historical
+> context.
+
+**For:** Claude Code (agentic coding)
+**From:** Claude (co-author, design phase)
 **Context:** You are implementing Koi, a cross-platform mDNS/DNS-SD daemon. Read `README.md` and `TECHNICAL.md` first - they contain the full design. This document tells you _how_ to build it well.
 
 ---

@@ -179,3 +179,15 @@ Certmesh create/destroy touches the trust store and may require elevated permiss
 - [ ] IPC surface validation (Windows pipe)
 
 See also: `crates/koi-embedded/examples/embedded-integration.rs`
+
+---
+
+## Unit tests
+
+The crate includes 56 unit tests covering the testable surface that doesn't require a runtime:
+
+- **`config.rs`** — `KoiConfig` defaults, `firewall_ports()` deduplication and capability-awareness, `DnsConfigBuilder` fluent API, `ServiceMode` variants
+- **`events.rs`** — all `KoiEvent` variant construction, Clone preservation, Debug formatting
+- **`lib.rs`** — `KoiError` Display and From impls, all 5 event mapping functions (`map_mdns_event`, `map_health_event`, `map_dns_event`, `map_certmesh_event`, `map_proxy_event`), `Builder` defaults and fluent overrides
+
+Integration tests requiring the tokio runtime (startup, shutdown, domain handle operations, HTTP surface) are exercised via the example binary and the integration checklist above.

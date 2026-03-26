@@ -1,5 +1,9 @@
 # Koi Implementation Prompt
 
+> **Archived.** This was the v0.2 multi-crate implementation prompt. The current
+> agentic context is `.agentic/CONTEXT.md` and `CLAUDE.md`. Kept for historical
+> context.
+
 **For:** Claude (coding agent)
 **Project:** Koi - Local Network Toolkit
 **Spec:** See `koi-spec.md` (attached or in repository root)

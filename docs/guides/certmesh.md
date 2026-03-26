@@ -192,6 +192,21 @@ The hook is stored in the roster and runs after each successful certificate rene
 
 ---
 
+## Network architecture
+
+The daemon listens on two ports with different security postures:
+
+| Port | Default | Bind address | Auth | Purpose |
+|------|---------|-------------|------|---------|
+| **5641** | `--port` | `127.0.0.1` (loopback) | DAT header (planned, ADR-011) | Local CLI, dashboard, management API |
+| **5642** | `--mtls-port` | `0.0.0.0` (all interfaces) | mTLS client certificate | Inter-node communication (promote, roster sync, health heartbeat, set-hook, renew) |
+
+The mTLS port only starts when the CA is initialized and the daemon has self-enrolled. Client certificates must be signed by the certmesh CA. The authenticated Common Name (CN) from the client certificate is used for per-caller authorization — a member can only set hooks for its own hostname, report its own health, and receive its own renewals.
+
+If certmesh is disabled (`--no-certmesh`), the mTLS port is not opened.
+
+---
+
 ## HTTP API
 
 All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
