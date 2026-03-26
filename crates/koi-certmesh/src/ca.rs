@@ -104,18 +104,30 @@ pub fn has_slot_table() -> bool {
 /// Load the slot table from disk. Returns `None` if no slot table exists
 /// (legacy passphrase-direct encryption).
 pub fn load_slot_table() -> Result<Option<SlotTable>, CertmeshError> {
-    let path = slot_table_path();
+    load_slot_table_from(&slot_table_path())
+}
+
+/// Load the slot table from an explicit path.
+pub fn load_slot_table_from(path: &std::path::Path) -> Result<Option<SlotTable>, CertmeshError> {
     if !path.exists() {
         return Ok(None);
     }
-    let table = SlotTable::load(&path).map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+    let table = SlotTable::load(path).map_err(|e| CertmeshError::Crypto(e.to_string()))?;
     Ok(Some(table))
 }
 
 /// Save the slot table to disk.
 pub fn save_slot_table(table: &SlotTable) -> Result<(), CertmeshError> {
+    save_slot_table_to(table, &slot_table_path())
+}
+
+/// Save the slot table to an explicit path.
+pub fn save_slot_table_to(
+    table: &SlotTable,
+    path: &std::path::Path,
+) -> Result<(), CertmeshError> {
     table
-        .save(&slot_table_path())
+        .save(path)
         .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
     Ok(())
 }
@@ -155,6 +167,15 @@ pub fn create_ca(
     passphrase: &str,
     entropy_seed: &[u8],
 ) -> Result<(CaState, [u8; 32]), CertmeshError> {
+    create_ca_with_paths(passphrase, entropy_seed, &crate::CertmeshPaths::default())
+}
+
+/// Create a new CA using explicit paths (for testing or embedded usage).
+pub fn create_ca_with_paths(
+    passphrase: &str,
+    entropy_seed: &[u8],
+    paths: &crate::CertmeshPaths,
+) -> Result<(CaState, [u8; 32]), CertmeshError> {
     let ca_key = keys::generate_ca_keypair(entropy_seed)
         .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
@@ -175,7 +196,7 @@ pub fn create_ca(
     let cert_der = ca_cert.der().to_vec();
 
     // Envelope encryption: master key wraps CA key, passphrase wraps master key
-    let dir = ca_dir();
+    let dir = paths.ca_dir();
     std::fs::create_dir_all(&dir)?;
 
     let ca_key_der =
@@ -224,7 +245,15 @@ pub fn create_ca(
 /// encryption (slot table). Legacy keys are auto-migrated to envelope
 /// encryption on load.
 pub fn load_ca(passphrase: &str) -> Result<CaState, CertmeshError> {
-    let dir = ca_dir();
+    load_ca_with_paths(passphrase, &crate::CertmeshPaths::default())
+}
+
+/// Load an existing CA using explicit paths.
+pub fn load_ca_with_paths(
+    passphrase: &str,
+    paths: &crate::CertmeshPaths,
+) -> Result<CaState, CertmeshError> {
+    let dir = paths.ca_dir();
     let key_path = dir.join(CA_KEY_FILENAME);
     let slot_path = dir.join(SLOT_TABLE_FILENAME);
 
@@ -272,7 +301,7 @@ pub fn load_ca(passphrase: &str) -> Result<CaState, CertmeshError> {
         plaintext
     };
 
-    build_ca_state_from_der(&ca_key_der)
+    build_ca_state_from_der(&ca_key_der, paths)
 }
 
 /// Load an existing CA using a pre-unwrapped master key.
@@ -280,7 +309,15 @@ pub fn load_ca(passphrase: &str) -> Result<CaState, CertmeshError> {
 /// Used when the master key was obtained via TOTP, FIDO2, or auto-unlock
 /// rather than passphrase.
 pub fn load_ca_with_master_key(master_key: &[u8; 32]) -> Result<CaState, CertmeshError> {
-    let dir = ca_dir();
+    load_ca_with_master_key_paths(master_key, &crate::CertmeshPaths::default())
+}
+
+/// Load an existing CA using a pre-unwrapped master key and explicit paths.
+pub fn load_ca_with_master_key_paths(
+    master_key: &[u8; 32],
+    paths: &crate::CertmeshPaths,
+) -> Result<CaState, CertmeshError> {
+    let dir = paths.ca_dir();
     let key_path = dir.join(CA_KEY_FILENAME);
 
     if !key_path.exists() {
@@ -291,15 +328,18 @@ pub fn load_ca_with_master_key(master_key: &[u8; 32]) -> Result<CaState, Certmes
     let ca_key_der = unlock_slots::decrypt_with_master_key(&encrypted, master_key)
         .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
-    build_ca_state_from_der(&ca_key_der)
+    build_ca_state_from_der(&ca_key_der, paths)
 }
 
 /// Reconstruct `CaState` from decrypted PKCS#8 DER key bytes.
-fn build_ca_state_from_der(ca_key_der: &[u8]) -> Result<CaState, CertmeshError> {
+fn build_ca_state_from_der(
+    ca_key_der: &[u8],
+    paths: &crate::CertmeshPaths,
+) -> Result<CaState, CertmeshError> {
     let ca_key =
         keys::ca_keypair_from_der(ca_key_der).map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
-    let cert_path = ca_dir().join(CA_CERT_FILENAME);
+    let cert_path = paths.ca_cert_path();
     let cert_pem = std::fs::read_to_string(&cert_path)?;
 
     // Parse the cert PEM to get DER for fingerprinting

@@ -9,6 +9,7 @@ pub mod audit;
 pub mod backup;
 pub mod ca;
 pub mod certfiles;
+pub mod certmesh_paths;
 pub mod enrollment;
 pub mod entropy;
 pub mod error;
@@ -21,6 +22,8 @@ pub mod profiles;
 pub mod protocol;
 pub mod roster;
 pub mod wordlist;
+
+pub use certmesh_paths::CertmeshPaths;
 
 use std::sync::Arc;
 
@@ -60,6 +63,8 @@ pub enum CertmeshEvent {
 /// Internal shared state for CertmeshCore and HTTP handlers.
 /// Not exposed outside this crate - all access goes through CertmeshCore methods.
 pub(crate) struct CertmeshState {
+    /// Resolved filesystem paths (immutable after construction).
+    pub(crate) paths: CertmeshPaths,
     pub(crate) ca: tokio::sync::Mutex<Option<ca::CaState>>,
     pub(crate) roster: tokio::sync::Mutex<Roster>,
     pub(crate) auth: tokio::sync::Mutex<Option<AuthState>>,
@@ -115,21 +120,21 @@ impl CertmeshState {
         }
 
         // Remove certmesh directory (contains ca/, roster.json)
-        let certmesh_dir = ca::certmesh_dir();
+        let certmesh_dir = self.paths.certmesh_dir();
         if certmesh_dir.exists() {
             std::fs::remove_dir_all(&certmesh_dir)?;
             tracing::info!(path = %certmesh_dir.display(), "Certmesh data directory removed");
         }
 
         // Remove issued certificate files
-        let certs_dir = koi_common::paths::koi_certs_dir();
+        let certs_dir = self.paths.certs_dir();
         if certs_dir.exists() {
             std::fs::remove_dir_all(&certs_dir)?;
             tracing::info!(path = %certs_dir.display(), "Certificate files removed");
         }
 
         // Remove audit log
-        let audit_path = audit::audit_log_path();
+        let audit_path = self.paths.audit_log_path();
         if audit_path.exists() {
             std::fs::remove_file(&audit_path)?;
             tracing::info!(path = %audit_path.display(), "Audit log removed");
@@ -163,8 +168,20 @@ impl CertmeshCore {
         auth_state: Option<AuthState>,
         profile: TrustProfile,
     ) -> Self {
+        Self::new_with_paths(ca, roster, auth_state, profile, CertmeshPaths::default())
+    }
+
+    /// Create a new CertmeshCore with an unlocked CA and explicit paths.
+    pub fn new_with_paths(
+        ca: ca::CaState,
+        roster: Roster,
+        auth_state: Option<AuthState>,
+        profile: TrustProfile,
+        paths: CertmeshPaths,
+    ) -> Self {
         Self {
             state: Arc::new(CertmeshState {
+                paths,
                 ca: tokio::sync::Mutex::new(Some(ca)),
                 roster: tokio::sync::Mutex::new(roster),
                 auth: tokio::sync::Mutex::new(auth_state),
@@ -179,8 +196,14 @@ impl CertmeshCore {
 
     /// Create a CertmeshCore in locked state (CA initialized but not unlocked).
     pub fn locked(roster: Roster, profile: TrustProfile) -> Self {
+        Self::locked_with_paths(roster, profile, CertmeshPaths::default())
+    }
+
+    /// Create a CertmeshCore in locked state with explicit paths.
+    pub fn locked_with_paths(roster: Roster, profile: TrustProfile, paths: CertmeshPaths) -> Self {
         Self {
             state: Arc::new(CertmeshState {
+                paths,
                 ca: tokio::sync::Mutex::new(None),
                 roster: tokio::sync::Mutex::new(roster),
                 auth: tokio::sync::Mutex::new(None),
@@ -198,8 +221,14 @@ impl CertmeshCore {
     /// HTTP routes are still mounted so `/create` is reachable on a fresh install.
     /// All operations that require an initialized CA will return `CaNotInitialized`.
     pub fn uninitialized() -> Self {
+        Self::uninitialized_with_paths(CertmeshPaths::default())
+    }
+
+    /// Create a CertmeshCore in uninitialized state with explicit paths.
+    pub fn uninitialized_with_paths(paths: CertmeshPaths) -> Self {
         Self {
             state: Arc::new(CertmeshState {
+                paths,
                 ca: tokio::sync::Mutex::new(None),
                 roster: tokio::sync::Mutex::new(Roster::empty()),
                 auth: tokio::sync::Mutex::new(None),
@@ -251,7 +280,7 @@ impl CertmeshCore {
 
     /// Read the audit log entries.
     pub fn read_audit_log(&self) -> Result<String, CertmeshError> {
-        audit::read_log().map_err(CertmeshError::Io)
+        audit::read_log_from(&self.state.paths.audit_log_path()).map_err(CertmeshError::Io)
     }
 
     /// Destroy all certmesh state - CA key, certs, roster, and audit log.
@@ -293,7 +322,7 @@ impl CertmeshCore {
 
         let ca_guard = self.state.ca.lock().await;
         let ca = ca_guard.as_ref().ok_or_else(|| {
-            if ca::is_ca_initialized() {
+            if self.state.paths.is_ca_initialized() {
                 CertmeshError::CaLocked
             } else {
                 CertmeshError::CaNotInitialized
@@ -336,7 +365,7 @@ impl CertmeshCore {
 
         // Save roster after successful enrollment
         let roster_clone = roster.clone();
-        let roster_path = ca::roster_path();
+        let roster_path = self.state.paths.roster_path();
         drop(roster);
         if let Err(e) =
             tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
@@ -393,7 +422,7 @@ impl CertmeshCore {
         };
         if let Some(cert_dir) = existing_cert_dir {
             // Validate cert_path is under the expected certs directory
-            let expected_prefix = koi_common::paths::koi_certs_dir();
+            let expected_prefix = self.state.paths.certs_dir();
             if !cert_dir.starts_with(&expected_prefix) {
                 return Err(CertmeshError::Internal(format!(
                     "cert_path '{}' is outside expected directory '{}'",
@@ -404,7 +433,7 @@ impl CertmeshCore {
             tracing::debug!(hostname = %hostname, "already self-enrolled, reading existing cert");
             let ca_guard = self.state.ca.lock().await;
             let ca = ca_guard.as_ref().ok_or_else(|| {
-                if ca::is_ca_initialized() {
+                if self.state.paths.is_ca_initialized() {
                     CertmeshError::CaLocked
                 } else {
                     CertmeshError::CaNotInitialized
@@ -425,7 +454,7 @@ impl CertmeshCore {
 
         let ca_guard = self.state.ca.lock().await;
         let ca = ca_guard.as_ref().ok_or_else(|| {
-            if ca::is_ca_initialized() {
+            if self.state.paths.is_ca_initialized() {
                 CertmeshError::CaLocked
             } else {
                 CertmeshError::CaNotInitialized
@@ -436,7 +465,7 @@ impl CertmeshCore {
         let ca_cert_pem = ca.cert_pem.clone();
 
         // Write cert files to the standard path
-        let cert_dir = certfiles::write_cert_files(&hostname, &issued)?;
+        let cert_dir = certfiles::write_cert_files_to(&self.state.paths.certs_dir().join(&hostname), &issued)?;
 
         // Add self to roster as primary member.
         // Re-check roster under the lock to prevent duplicate entries from
@@ -467,7 +496,7 @@ impl CertmeshCore {
             proxy_entries: Vec::new(),
         });
         let roster_clone = roster.clone();
-        let roster_path = ca::roster_path();
+        let roster_path = self.state.paths.roster_path();
         drop(roster);
         if let Err(e) =
             tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
@@ -548,7 +577,7 @@ impl CertmeshCore {
         member.reload_hook = Some(hook.to_string());
 
         let roster_clone = roster.clone();
-        let roster_path = ca::roster_path();
+        let roster_path = self.state.paths.roster_path();
         drop(roster);
         tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
             .await
@@ -572,7 +601,7 @@ impl CertmeshCore {
         member.role = role.clone();
 
         let roster_clone = roster.clone();
-        let roster_path = ca::roster_path();
+        let roster_path = self.state.paths.roster_path();
         drop(roster);
         tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
             .await
@@ -588,7 +617,7 @@ impl CertmeshCore {
         let ca_state = ca::load_ca(passphrase)?;
 
         // Load auth credential from auth.json
-        let auth_path = ca::auth_path();
+        let auth_path = self.state.paths.auth_path();
         if auth_path.exists() {
             let json = std::fs::read_to_string(&auth_path)?;
             let stored: koi_crypto::auth::StoredAuth = serde_json::from_str(&json)
@@ -674,9 +703,9 @@ impl CertmeshCore {
 
     // ── Auto-unlock key management ──────────────────────────────────
 
-    /// Path to the auto-unlock key file (inside the koi data directory).
+    /// Path to the auto-unlock key file using default platform paths.
     fn auto_unlock_key_path() -> std::path::PathBuf {
-        koi_common::paths::koi_data_dir().join("auto-unlock-key")
+        CertmeshPaths::default().auto_unlock_key_path()
     }
 
     /// Platform credential store label for auto-unlock.
@@ -759,7 +788,7 @@ impl CertmeshCore {
         }
 
         // Fall back to file
-        let path = Self::auto_unlock_key_path();
+        let path = self.state.paths.auto_unlock_key_path();
         let passphrase = match std::fs::read_to_string(&path) {
             Ok(pp) if !pp.is_empty() => pp,
             _ => return Ok(false),
@@ -801,7 +830,7 @@ impl CertmeshCore {
         roster.open_enrollment(deadline);
 
         let roster_clone = roster.clone();
-        let roster_path = ca::roster_path();
+        let roster_path = self.state.paths.roster_path();
         drop(roster);
         tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
             .await
@@ -813,7 +842,7 @@ impl CertmeshCore {
         } else {
             tracing::info!("Enrollment window opened (no deadline)");
         }
-        let _ = audit::append_entry(
+        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),
             "enrollment_opened",
             &[(
                 "deadline",
@@ -831,7 +860,7 @@ impl CertmeshCore {
         roster.close_enrollment();
 
         let roster_clone = roster.clone();
-        let roster_path = ca::roster_path();
+        let roster_path = self.state.paths.roster_path();
         drop(roster);
         tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
             .await
@@ -839,7 +868,7 @@ impl CertmeshCore {
             .map_err(CertmeshError::Io)?;
 
         tracing::info!("Enrollment window closed");
-        let _ = audit::append_entry("enrollment_closed", &[]);
+        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),"enrollment_closed", &[]);
         Ok(())
     }
 
@@ -870,7 +899,7 @@ impl CertmeshCore {
         roster.metadata.allowed_subnet = allowed_subnet.clone();
 
         let roster_clone = roster.clone();
-        let roster_path = ca::roster_path();
+        let roster_path = self.state.paths.roster_path();
         drop(roster);
         tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
             .await
@@ -882,7 +911,7 @@ impl CertmeshCore {
             subnet = ?allowed_subnet,
             "Enrollment policy updated"
         );
-        let _ = audit::append_entry(
+        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),
             "policy_updated",
             &[
                 (
@@ -910,7 +939,7 @@ impl CertmeshCore {
         // Verify CA is unlocked
         let ca_guard = self.state.ca.lock().await;
         if ca_guard.is_none() {
-            return Err(if ca::is_ca_initialized() {
+            return Err(if self.state.paths.is_ca_initialized() {
                 CertmeshError::CaLocked
             } else {
                 CertmeshError::CaNotInitialized
@@ -954,7 +983,7 @@ impl CertmeshCore {
 
         let json = serde_json::to_string_pretty(&stored)
             .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?;
-        let auth_path = ca::auth_path();
+        let auth_path = self.state.paths.auth_path();
         tokio::task::spawn_blocking(move || std::fs::write(&auth_path, &json))
             .await
             .map_err(|e| CertmeshError::Internal(format!("file I/O: {e}")))?
@@ -962,7 +991,7 @@ impl CertmeshCore {
         *self.state.auth.lock().await = Some(new_state);
 
         tracing::info!(method = target, "auth credential rotated");
-        let _ = audit::append_entry("auth_rotated", &[("method", target)]);
+        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),"auth_rotated", &[("method", target)]);
         Ok(setup)
     }
 
@@ -974,14 +1003,14 @@ impl CertmeshCore {
         ca_passphrase: &str,
         backup_passphrase: &str,
     ) -> Result<Vec<u8>, CertmeshError> {
-        if !ca::is_ca_initialized() {
+        if !self.state.paths.is_ca_initialized() {
             return Err(CertmeshError::CaNotInitialized);
         }
 
         let ca_state = ca::load_ca(ca_passphrase)?;
 
         // Load auth state for backup
-        let auth_path = ca::auth_path();
+        let auth_path = self.state.paths.auth_path();
         let json = std::fs::read_to_string(&auth_path)
             .map_err(|e| CertmeshError::Internal(format!("cannot read auth.json: {e}")))?;
         let stored: koi_crypto::auth::StoredAuth = serde_json::from_str(&json)
@@ -994,7 +1023,7 @@ impl CertmeshCore {
         let roster_json = serde_json::to_string(&*roster)
             .map_err(|e| CertmeshError::Internal(format!("roster serialization failed: {e}")))?;
 
-        let audit_log = audit::read_log().map_err(CertmeshError::Io)?;
+        let audit_log = audit::read_log_from(&self.state.paths.audit_log_path()).map_err(CertmeshError::Io)?;
 
         let ca_key_pem = ca_state
             .key
@@ -1011,7 +1040,7 @@ impl CertmeshCore {
         );
 
         let bundle = backup::encode_backup(&payload, backup_passphrase)?;
-        let _ = audit::append_entry("backup_created", &[]);
+        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),"backup_created", &[]);
         Ok(bundle)
     }
 
@@ -1026,9 +1055,9 @@ impl CertmeshCore {
 
         let ca_key = koi_crypto::keys::ca_keypair_from_pem(&payload.ca_key_pem)?;
         let encrypted_key = koi_crypto::keys::encrypt_key(&ca_key, new_passphrase)?;
-        std::fs::create_dir_all(ca::ca_dir())?;
-        koi_crypto::keys::save_encrypted_key(&ca::ca_key_path(), &encrypted_key)?;
-        std::fs::write(ca::ca_cert_path(), &payload.ca_cert_pem)?;
+        std::fs::create_dir_all(self.state.paths.ca_dir())?;
+        koi_crypto::keys::save_encrypted_key(&self.state.paths.ca_key_path(), &encrypted_key)?;
+        std::fs::write(self.state.paths.ca_cert_path(), &payload.ca_cert_pem)?;
 
         let auth_state = AuthState::from_backup(&payload.auth_method, payload.auth_data)
             .map_err(|e| CertmeshError::Internal(format!("auth restore failed: {e}")))?;
@@ -1040,16 +1069,16 @@ impl CertmeshCore {
         };
         let auth_json = serde_json::to_string_pretty(&stored)
             .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?;
-        std::fs::write(ca::auth_path(), auth_json)?;
+        std::fs::write(self.state.paths.auth_path(), auth_json)?;
 
-        if let Some(parent) = ca::roster_path().parent() {
+        if let Some(parent) = self.state.paths.roster_path().parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(ca::roster_path(), &payload.roster_json)?;
-        if let Some(parent) = audit::audit_log_path().parent() {
+        std::fs::write(self.state.paths.roster_path(), &payload.roster_json)?;
+        if let Some(parent) = self.state.paths.audit_log_path().parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(audit::audit_log_path(), &payload.audit_log)?;
+        std::fs::write(self.state.paths.audit_log_path(), &payload.audit_log)?;
 
         let restored_roster: Roster = serde_json::from_str(&payload.roster_json)
             .map_err(|e| CertmeshError::Internal(format!("roster deserialization failed: {e}")))?;
@@ -1060,7 +1089,7 @@ impl CertmeshCore {
         *self.state.profile.lock().await = restored_roster.metadata.trust_profile;
         *self.state.roster.lock().await = restored_roster;
 
-        let _ = audit::append_entry("backup_restored", &[]);
+        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),"backup_restored", &[]);
         Ok(())
     }
 
@@ -1077,7 +1106,7 @@ impl CertmeshCore {
             .map_err(CertmeshError::NotFound)?;
 
         let roster_clone = roster.clone();
-        let roster_path = ca::roster_path();
+        let roster_path = self.state.paths.roster_path();
         drop(roster);
         tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
             .await
@@ -1088,7 +1117,7 @@ impl CertmeshCore {
             hostname: hostname.to_string(),
         });
 
-        let _ = audit::append_entry(
+        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),
             "member_revoked",
             &[
                 ("hostname", hostname),
@@ -1131,7 +1160,7 @@ impl CertmeshCore {
         // Save roster after all renewals
         if !hostnames.is_empty() {
             let roster_clone = roster.clone();
-            let roster_path = ca::roster_path();
+            let roster_path = self.state.paths.roster_path();
             drop(roster);
             if let Err(e) = tokio::task::spawn_blocking(move || {
                 roster::save_roster(&roster_clone, &roster_path)
@@ -1166,7 +1195,7 @@ impl CertmeshCore {
                 .unwrap_or_else(|_| chrono::Utc::now()),
         };
 
-        certfiles::write_cert_files(&request.hostname, &issued)?;
+        certfiles::write_cert_files_to(&self.state.paths.certs_dir().join(&request.hostname), &issued)?;
 
         // Update roster and extract hook command, then drop the lock
         // before executing the hook (which may block).
@@ -1201,7 +1230,7 @@ impl CertmeshCore {
     ) -> Result<protocol::HealthResponse, CertmeshError> {
         let ca_guard = self.state.ca.lock().await;
         let ca = ca_guard.as_ref().ok_or_else(|| {
-            if ca::is_ca_initialized() {
+            if self.state.paths.is_ca_initialized() {
                 CertmeshError::CaLocked
             } else {
                 CertmeshError::CaNotInitialized
@@ -1219,7 +1248,7 @@ impl CertmeshCore {
         roster.touch_member(&request.hostname);
 
         let roster_clone = roster.clone();
-        let roster_path = ca::roster_path();
+        let roster_path = self.state.paths.roster_path();
         drop(roster);
         if let Err(e) =
             tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
@@ -1240,7 +1269,7 @@ impl CertmeshCore {
     pub async fn roster_manifest(&self) -> Result<protocol::RosterManifest, CertmeshError> {
         let ca_guard = self.state.ca.lock().await;
         let ca = ca_guard.as_ref().ok_or_else(|| {
-            if ca::is_ca_initialized() {
+            if self.state.paths.is_ca_initialized() {
                 CertmeshError::CaLocked
             } else {
                 CertmeshError::CaNotInitialized
@@ -1264,7 +1293,7 @@ impl CertmeshCore {
         *roster = verified_roster;
 
         let roster_clone = roster.clone();
-        let roster_path = ca::roster_path();
+        let roster_path = self.state.paths.roster_path();
         drop(roster);
         tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
             .await
@@ -1326,7 +1355,7 @@ impl CertmeshCore {
         }
 
         let roster_clone = roster.clone();
-        let roster_path = ca::roster_path();
+        let roster_path = self.state.paths.roster_path();
         drop(roster);
         tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
             .await
@@ -1353,7 +1382,7 @@ impl CertmeshCore {
         member.role = roster::MemberRole::Standby;
 
         let roster_clone = roster.clone();
-        let roster_path = ca::roster_path();
+        let roster_path = self.state.paths.roster_path();
         drop(roster);
         tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
             .await
@@ -1385,7 +1414,7 @@ impl CertmeshCore {
 
         if changed {
             let roster_clone = roster.clone();
-            let roster_path = ca::roster_path();
+            let roster_path = self.state.paths.roster_path();
             drop(roster);
             tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
                 .await
@@ -1424,7 +1453,7 @@ impl CertmeshCore {
     ) -> Result<protocol::PromoteResponse, CertmeshError> {
         let ca_guard = self.state.ca.lock().await;
         let ca = ca_guard.as_ref().ok_or_else(|| {
-            if ca::is_ca_initialized() {
+            if self.state.paths.is_ca_initialized() {
                 CertmeshError::CaLocked
             } else {
                 CertmeshError::CaNotInitialized
@@ -1491,7 +1520,7 @@ impl Capability for CertmeshCore {
 
     fn status(&self) -> CapabilityStatus {
         // Use try_lock for sync Capability trait - best effort
-        let ca_initialized = ca::is_ca_initialized();
+        let ca_initialized = self.state.paths.is_ca_initialized();
         let ca_locked = self
             .state
             .ca

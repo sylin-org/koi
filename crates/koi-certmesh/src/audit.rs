@@ -53,9 +53,13 @@ pub fn append_entry_to(
 
 /// Read all audit log entries from the default path.
 pub fn read_log() -> Result<String, std::io::Error> {
-    let path = audit_log_path();
+    read_log_from(&audit_log_path())
+}
+
+/// Read all audit log entries from an explicit path.
+pub fn read_log_from(path: &Path) -> Result<String, std::io::Error> {
     if path.exists() {
-        std::fs::read_to_string(&path)
+        std::fs::read_to_string(path)
     } else {
         Ok(String::new())
     }

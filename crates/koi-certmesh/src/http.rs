@@ -207,7 +207,7 @@ async fn set_hook_handler(
             member.reload_hook = Some(request.reload.clone());
 
             let roster_clone = roster.clone();
-            let roster_path = crate::ca::roster_path();
+            let roster_path = state.paths.roster_path();
             drop(roster);
             if let Err(e) = tokio::task::spawn_blocking(move || {
                 crate::roster::save_roster(&roster_clone, &roster_path)
@@ -274,7 +274,7 @@ async fn create_handler(
     };
 
     // Reject if CA already initialized
-    if crate::ca::is_ca_initialized() {
+    if state.paths.is_ca_initialized() {
         return error_response(
             StatusCode::CONFLICT,
             &CertmeshError::Internal("CA is already initialized".to_string()),
@@ -282,7 +282,8 @@ async fn create_handler(
     }
 
     // Create CA
-    let (ca_state, _master_key) = match crate::ca::create_ca(&request.passphrase, &entropy) {
+    let (ca_state, _master_key) =
+        match crate::ca::create_ca_with_paths(&request.passphrase, &entropy, &state.paths) {
         Ok(ca) => ca,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
@@ -323,7 +324,7 @@ async fn create_handler(
         }
     };
     {
-        let auth_path = crate::ca::auth_path();
+        let auth_path = state.paths.auth_path();
         let auth_json_clone = auth_json.clone();
         if let Err(e) =
             tokio::task::spawn_blocking(move || std::fs::write(&auth_path, &auth_json_clone))
@@ -344,7 +345,7 @@ async fn create_handler(
         request.enrollment_open,
         request.requires_approval,
     );
-    let roster_path = crate::ca::roster_path();
+    let roster_path = state.paths.roster_path();
     {
         let roster_clone = new_roster.clone();
         let roster_path_clone = roster_path.clone();
@@ -373,13 +374,15 @@ async fn create_handler(
     ];
     match crate::ca::issue_certificate(&ca_state, &local_hostname, &sans) {
         Ok(issued) => {
-            let cert_dir = match crate::certfiles::write_cert_files(&local_hostname, &issued) {
-                Ok(dir) => dir,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Could not write CA node cert files");
-                    koi_common::paths::koi_certs_dir().join(&local_hostname)
-                }
-            };
+            let cert_dir_base = state.paths.certs_dir().join(&local_hostname);
+            let cert_dir =
+                match crate::certfiles::write_cert_files_to(&cert_dir_base, &issued) {
+                    Ok(dir) => dir,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Could not write CA node cert files");
+                        cert_dir_base
+                    }
+                };
             let ca_fp = crate::ca::ca_fingerprint(&ca_state);
             let member = crate::roster::RosterMember {
                 hostname: local_hostname.clone(),
@@ -411,7 +414,8 @@ async fn create_handler(
                     tracing::warn!(error = %e, "Could not save roster after self-enrollment");
                 }
             }
-            let _ = crate::audit::append_entry(
+            let _ = crate::audit::append_entry_to(
+                &state.paths.audit_log_path(),
                 "member_joined",
                 &[
                     ("hostname", local_hostname.as_str()),
@@ -437,7 +441,8 @@ async fn create_handler(
     *state.roster.lock().await = new_roster;
     *state.profile.lock().await = request.profile;
 
-    let _ = crate::audit::append_entry(
+    let _ = crate::audit::append_entry_to(
+        &state.paths.audit_log_path(),
         "pond_initialized",
         &[
             ("profile", &request.profile.to_string()),
@@ -469,7 +474,7 @@ async fn unlock_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<UnlockRequest>,
 ) -> impl IntoResponse {
-    let ca_state = match crate::ca::load_ca(&request.passphrase) {
+    let ca_state = match crate::ca::load_ca_with_paths(&request.passphrase, &state.paths) {
         Ok(ca) => ca,
         Err(e) => {
             let code = koi_common::error::ErrorCode::from(&e);
@@ -480,7 +485,7 @@ async fn unlock_handler(
     };
 
     // Load auth credential from auth.json
-    let auth_path = crate::ca::auth_path();
+    let auth_path = state.paths.auth_path();
     if auth_path.exists() {
         let auth_path_clone = auth_path.clone();
         match tokio::task::spawn_blocking(move || std::fs::read_to_string(&auth_path_clone)).await {
@@ -548,8 +553,8 @@ async fn rotate_auth_handler(
 #[utoipa::path(get, path = "/log", tag = "certmesh",
     summary = "Read audit log entries",
     responses((status = 200, body = AuditLogResponse)))]
-async fn log_handler(Extension(_state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
-    match crate::audit::read_log() {
+async fn log_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
+    match crate::audit::read_log_from(&state.paths.audit_log_path()) {
         Ok(entries) => {
             let response = crate::protocol::AuditLogResponse { entries };
             match serde_json::to_value(&response) {
@@ -720,7 +725,7 @@ async fn open_enrollment_handler(
     roster.open_enrollment(deadline);
 
     let roster_clone = roster.clone();
-    let roster_path = crate::ca::roster_path();
+    let roster_path = state.paths.roster_path();
     drop(roster);
     if let Err(e) =
         tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path))
@@ -734,7 +739,8 @@ async fn open_enrollment_handler(
         );
     }
 
-    let _ = crate::audit::append_entry(
+    let _ = crate::audit::append_entry_to(
+        &state.paths.audit_log_path(),
         "enrollment_opened",
         &[(
             "deadline",
@@ -762,7 +768,7 @@ async fn close_enrollment_handler(
     roster.close_enrollment();
 
     let roster_clone = roster.clone();
-    let roster_path = crate::ca::roster_path();
+    let roster_path = state.paths.roster_path();
     drop(roster);
     if let Err(e) =
         tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path))
@@ -776,7 +782,7 @@ async fn close_enrollment_handler(
         );
     }
 
-    let _ = crate::audit::append_entry("enrollment_closed", &[]);
+    let _ = crate::audit::append_entry_to(&state.paths.audit_log_path(), "enrollment_closed", &[]);
 
     let body = serde_json::json!({ "enrollment_state": "closed" });
     (StatusCode::OK, Json(body)).into_response()
@@ -803,7 +809,7 @@ async fn set_policy_handler(
     roster.metadata.allowed_subnet = request.allowed_subnet.clone();
 
     let roster_clone = roster.clone();
-    let roster_path = crate::ca::roster_path();
+    let roster_path = state.paths.roster_path();
     drop(roster);
     if let Err(e) =
         tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path))
@@ -817,7 +823,8 @@ async fn set_policy_handler(
         );
     }
 
-    let _ = crate::audit::append_entry(
+    let _ = crate::audit::append_entry_to(
+        &state.paths.audit_log_path(),
         "policy_updated",
         &[
             (
@@ -855,7 +862,7 @@ async fn compliance_handler(Extension(state): Extension<Arc<CertmeshState>>) -> 
     };
     drop(roster);
 
-    let audit_entries = crate::audit::read_log()
+    let audit_entries = crate::audit::read_log_from(&state.paths.audit_log_path())
         .map(|content| content.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0);
 
@@ -896,7 +903,7 @@ async fn promote_handler(
     let ca = match ca_guard.as_ref() {
         Some(ca) => ca,
         None => {
-            return if crate::ca::is_ca_initialized() {
+            return if state.paths.is_ca_initialized() {
                 error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
             } else {
                 error_response(
@@ -952,7 +959,11 @@ async fn promote_handler(
     match crate::failover::prepare_promotion(ca, auth_state, &roster, client_pk) {
         Ok(response) => match serde_json::to_value(&response) {
             Ok(val) => {
-                let _ = crate::audit::append_entry("promotion_prepared", &[]);
+                let _ = crate::audit::append_entry_to(
+                    &state.paths.audit_log_path(),
+                    "promotion_prepared",
+                    &[],
+                );
                 (StatusCode::OK, Json(val)).into_response()
             }
             Err(e) => error_response(
@@ -1008,7 +1019,8 @@ async fn renew_handler(
     };
 
     // Write cert files
-    if let Err(e) = crate::certfiles::write_cert_files(&request.hostname, &issued) {
+    let cert_dir = state.paths.certs_dir().join(&request.hostname);
+    if let Err(e) = crate::certfiles::write_cert_files_to(&cert_dir, &issued) {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &CertmeshError::RenewalFailed {
@@ -1062,7 +1074,7 @@ async fn roster_handler(
     let ca = match ca_guard.as_ref() {
         Some(ca) => ca,
         None => {
-            return if crate::ca::is_ca_initialized() {
+            return if state.paths.is_ca_initialized() {
                 error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
             } else {
                 error_response(
@@ -1119,7 +1131,7 @@ async fn health_handler(
     let ca = match ca_guard.as_ref() {
         Some(ca) => ca,
         None => {
-            return if crate::ca::is_ca_initialized() {
+            return if state.paths.is_ca_initialized() {
                 error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
             } else {
                 error_response(
@@ -1140,7 +1152,7 @@ async fn health_handler(
 
     // Save roster with updated last_seen
     let roster_clone = roster.clone();
-    let roster_path = crate::ca::roster_path();
+    let roster_path = state.paths.roster_path();
     drop(roster);
     if let Err(e) =
         tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path))
@@ -1253,12 +1265,14 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_extension() -> Arc<CertmeshState> {
+        use crate::certmesh_paths::CertmeshPaths;
         use crate::profiles::TrustProfile;
         use crate::roster::{EnrollmentState, Roster, RosterMetadata};
         use koi_crypto::totp::RateLimiter;
 
-        let _ = koi_common::test::ensure_data_dir("koi-certmesh-http-tests");
+        let data_dir = koi_common::test::ensure_data_dir("koi-certmesh-http-tests");
         Arc::new(CertmeshState {
+            paths: CertmeshPaths::with_data_dir(data_dir),
             ca: tokio::sync::Mutex::new(None),
             roster: tokio::sync::Mutex::new(Roster {
                 metadata: RosterMetadata {
