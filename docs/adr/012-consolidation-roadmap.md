@@ -6,7 +6,7 @@
 
 ## Context
 
-All eight implementation phases (0–8) are code-complete. The project has 14 crates, ~70 HTTP endpoints, ~50 CLI commands, and 260 passing unit tests. A full inventory audit on 2026-03-25 identified gaps in three categories:
+All eight implementation phases (0–8) are code-complete. The project has 14 crates, ~70 HTTP endpoints, ~50 CLI commands, and 807+ passing unit tests. A full inventory audit on 2026-03-25 identified gaps in three categories:
 
 1. **Immediate defects** — 1 failing test, 1 crate with zero test coverage
 2. **Documentation drift** — validation suite not reflecting completion, stale phase references, minor gaps
@@ -176,6 +176,9 @@ After wiring bridges, remove `koi-certmesh`, `koi-mdns`, `koi-dns`, `koi-proxy` 
 - `ZeroizeOnDrop`, no `Clone`, no `Debug` (or redacted Debug)
 - Replace all `Vec<u8>` / `String` / `[u8; 32]` secret material
 - Audit: grep for raw key bytes in `koi-crypto`, `koi-certmesh`
+- **Includes vault master key**: `Vault.master_key: [u8; 32]` currently uses
+  manual `Drop` zeroize (`iter_mut().for_each(|b| *b = 0)`) which the compiler
+  may optimize away. Migrate to `SecretBytes` for guaranteed clearing.
 
 ### 5.2 Store Argon2id parameters with ciphertext
 
@@ -277,6 +280,13 @@ Gate behind `#[cfg(feature = "fido2-unlock")]` (already done). Full redesign: pl
 
 Seal passphrase in DPAPI (Win), Keychain (Mac), Secret Service (Linux). Fallback to 0600-permission file with warning.
 
+**Update (e94ffbd):** The new `koi-crypto::vault` module already implements
+this pattern generically (keyring-first, Argon2id-from-machine-ID fallback).
+`CertmeshCore::save_auto_unlock_key` / `try_auto_unlock` should migrate to
+store the passphrase via `Vault::store("certmesh-auto-unlock", passphrase)`
+instead of reimplementing the same dual-backend logic. This collapses WS-5
+into a thin wrapper around the vault.
+
 ### 7.7 Dashboard enhancements (KOI-0002 phases 7.2–7.4)
 
 - Browser actions (register/unregister from UI)
@@ -308,7 +318,13 @@ Seal passphrase in DPAPI (Win), Keychain (Mac), Secret Service (Linux). Fallback
 
 ---
 
-## Appendix A: Dead Code Inventory
+## Appendix A: New Capabilities Added During Consolidation
+
+| Capability | Commit | Location | Impact on Roadmap |
+|------------|--------|----------|-------------------|
+| `koi-crypto::vault` | e94ffbd | `crates/koi-crypto/src/vault.rs` | Block 5.1 (master key → SecretBytes), Block 7.6 (certmesh auto-unlock → vault) |
+
+## Appendix B: Dead Code Inventory
 
 All `#[allow(dead_code)]` items and their disposition:
 
@@ -322,7 +338,7 @@ All `#[allow(dead_code)]` items and their disposition:
 | `CertmeshBridgeEmbedded` | koi-embedded/src/lib.rs:939 | Keep — used via trait impls in embedding scenarios |
 | `ProxyBridgeEmbedded` | koi-embedded/src/lib.rs:1058 | Keep — used via trait impls in embedding scenarios |
 
-## Appendix B: Documentation Gaps
+## Appendix C: Documentation Gaps
 
 | Gap | Block | Action |
 |-----|-------|--------|
