@@ -85,12 +85,61 @@ curl -s http://localhost:5641/v1/runtime/instances
 
 ---
 
-## Labels
+## The quick way: announce shorthand
+
+Most containers only need one thing: "make me discoverable under this name." The announce shorthand does exactly that.
+
+**As a Docker label:**
+
+```bash
+docker run -d -p 8080:80 --label koi.announce=pi-hole pihole/pihole
+```
+
+**As an environment variable** (works from inside the container too):
+
+```bash
+docker run -d -p 8080:80 -e KOI_MDNS_ANNOUNCE=pi-hole pihole/pihole
+```
+
+Both produce the same result:
+
+- mDNS: `pi-hole._http._tcp` announced on host port 8080 (port 80 → `_http._tcp` heuristic)
+- DNS: `pi-hole.lan` added to the local resolver
+- Health: TCP check registered on port 8080
+
+For containers with multiple published ports, each gets its own announcement:
+
+```bash
+docker run -d -e KOI_MDNS_ANNOUNCE=pi-hole -p 8080:80 -p 5353:53/udp pihole/pihole
+```
+
+→ `pi-hole._http._tcp` on port 8080 + `pi-hole._dns._udp` on port 5353
+
+**Precedence** (highest wins):
+
+1. Explicit `koi.*` labels — full control over every field
+2. `koi.announce` label — shorthand, heuristics fill the rest
+3. `KOI_MDNS_ANNOUNCE` env var — same as the label, lower precedence
+4. No signal — container not announced
+
+The announce shorthand sets `name`, `dns_name`, and `enable=true`. You can combine it with explicit labels to override specific fields:
+
+```yaml
+labels:
+  koi.announce: pi-hole
+  koi.type: "_dns._tcp"        # override the port heuristic
+  koi.health.path: "/admin"    # add an HTTP health check
+```
+
+---
+
+## Full label reference
 
 The adapter reads `koi.*` labels from containers to control what Koi does. All labels are optional - when absent, the adapter uses heuristics.
 
 | Label | Purpose | Example |
 |-------|---------|---------|
+| `koi.announce` | Announce shorthand (sets name + dns_name + enable) | `koi.announce=pi-hole` |
 | `koi.enable` | Opt in/out (`true`/`false`) | `koi.enable=true` |
 | `koi.type` | mDNS service type | `koi.type=_http._tcp` |
 | `koi.name` | Override service name | `koi.name=My Grafana` |
@@ -102,7 +151,9 @@ The adapter reads `koi.*` labels from containers to control what Koi does. All l
 | `koi.proxy.port` | Enable TLS proxy on this port | `koi.proxy.port=443` |
 | `koi.certmesh` | Enable cert injection | `koi.certmesh=true` |
 
-### Example: Docker Compose
+| `KOI_MDNS_ANNOUNCE` | Env var announce shorthand (same as `koi.announce`) | `KOI_MDNS_ANNOUNCE=pi-hole` |
+
+### Example: Docker Compose (simple)
 
 ```yaml
 services:
@@ -111,21 +162,30 @@ services:
     ports:
       - "3000:3000"
     labels:
+      koi.announce: grafana
+```
+
+That's it. Port 3000 → `_http._tcp` heuristic, `grafana.lan` DNS entry, auto health check.
+
+### Example: Docker Compose (detailed)
+
+```yaml
+services:
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    labels:
+      koi.announce: grafana
       koi.type: "_http._tcp"
-      koi.dns.name: "grafana"
       koi.txt.version: "10.4"
       koi.health.path: "/api/health"
       koi.health.kind: "http"
 ```
 
-With this configuration, when `docker compose up` runs:
+The explicit labels refine what `koi.announce` started: custom service type, TXT records, and an HTTP health check path.
 
-1. Koi detects the container start
-2. Announces `grafana._http._tcp` via mDNS on the LAN
-3. Adds `grafana.lan` to the DNS resolver
-4. Registers an HTTP health check at `http://host:3000/api/health`
-
-When `docker compose down` runs, all three are cleaned up automatically.
+When `docker compose down` runs, all registrations are cleaned up automatically.
 
 ### Example: Docker CLI
 

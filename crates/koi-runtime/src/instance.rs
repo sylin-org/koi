@@ -127,8 +127,39 @@ impl KoiMetadata {
     /// Keys use the `koi.` prefix: `koi.type`, `koi.name`, `koi.dns.name`,
     /// `koi.txt.key`, `koi.health.path`, etc.
     pub fn from_labels(labels: &HashMap<String, String>) -> Self {
+        Self::from_labels_and_env(labels, &[])
+    }
+
+    /// Parse from labels with optional environment variable overrides.
+    ///
+    /// Environment variables provide a lower-precedence shorthand:
+    /// - `KOI_MDNS_ANNOUNCE=<name>` — equivalent to `koi.announce=<name>` label
+    ///
+    /// The `koi.announce=<name>` shorthand (label or env var) sets:
+    /// - `enable = true`
+    /// - `name = <name>`
+    /// - `dns_name = <name>`
+    ///
+    /// Explicit `koi.*` labels always override the shorthand.
+    pub fn from_labels_and_env(labels: &HashMap<String, String>, env: &[String]) -> Self {
         let mut meta = Self::default();
 
+        // 1. Check env var shorthand (lowest precedence)
+        let env_announce = env
+            .iter()
+            .find_map(|e| e.strip_prefix("KOI_MDNS_ANNOUNCE=").map(|v| v.to_string()));
+
+        // 2. Check label shorthand (overrides env var)
+        let label_announce = labels.get("koi.announce").cloned();
+
+        // Apply announce shorthand: label > env var
+        if let Some(announce_name) = label_announce.or(env_announce) {
+            meta.enable = Some(true);
+            meta.name = Some(announce_name.clone());
+            meta.dns_name = Some(announce_name);
+        }
+
+        // 3. Apply explicit labels (highest precedence — override shorthand)
         for (key, value) in labels {
             match key.as_str() {
                 "koi.enable" => meta.enable = value.parse().ok(),
@@ -142,6 +173,7 @@ impl KoiMetadata {
                 "koi.proxy.port" => meta.proxy_port = value.parse().ok(),
                 "koi.proxy.remote" => meta.proxy_remote = value.parse().ok(),
                 "koi.certmesh" => meta.certmesh = value.parse().ok(),
+                "koi.announce" => {} // already handled above
                 k if k.starts_with("koi.txt.") => {
                     if let Some(txt_key) = k.strip_prefix("koi.txt.") {
                         meta.txt.insert(txt_key.to_string(), value.clone());
@@ -234,6 +266,69 @@ mod tests {
         labels.insert("koi.enable".into(), "false".into());
         let meta = KoiMetadata::from_labels(&labels);
         assert!(meta.is_disabled());
+    }
+
+    #[test]
+    fn announce_label_sets_enable_name_dns() {
+        let mut labels = HashMap::new();
+        labels.insert("koi.announce".into(), "pi-hole".into());
+        let meta = KoiMetadata::from_labels(&labels);
+
+        assert_eq!(meta.enable, Some(true));
+        assert_eq!(meta.name.as_deref(), Some("pi-hole"));
+        assert_eq!(meta.dns_name.as_deref(), Some("pi-hole"));
+        // service_type left to heuristics
+        assert!(meta.service_type.is_none());
+    }
+
+    #[test]
+    fn env_var_announce_sets_enable_name_dns() {
+        let labels = HashMap::new();
+        let env = vec![
+            "PATH=/usr/bin".to_string(),
+            "KOI_MDNS_ANNOUNCE=grafana".to_string(),
+        ];
+        let meta = KoiMetadata::from_labels_and_env(&labels, &env);
+
+        assert_eq!(meta.enable, Some(true));
+        assert_eq!(meta.name.as_deref(), Some("grafana"));
+        assert_eq!(meta.dns_name.as_deref(), Some("grafana"));
+    }
+
+    #[test]
+    fn label_announce_overrides_env_var() {
+        let mut labels = HashMap::new();
+        labels.insert("koi.announce".into(), "from-label".into());
+        let env = vec!["KOI_MDNS_ANNOUNCE=from-env".to_string()];
+        let meta = KoiMetadata::from_labels_and_env(&labels, &env);
+
+        assert_eq!(meta.name.as_deref(), Some("from-label"));
+    }
+
+    #[test]
+    fn explicit_labels_override_announce_shorthand() {
+        let mut labels = HashMap::new();
+        labels.insert("koi.announce".into(), "pi-hole".into());
+        labels.insert("koi.name".into(), "Pi-Hole DNS".into());
+        labels.insert("koi.dns.name".into(), "pihole".into());
+        labels.insert("koi.type".into(), "_dns._tcp".into());
+        let meta = KoiMetadata::from_labels(&labels);
+
+        assert_eq!(meta.enable, Some(true)); // from announce
+        assert_eq!(meta.name.as_deref(), Some("Pi-Hole DNS")); // overridden
+        assert_eq!(meta.dns_name.as_deref(), Some("pihole")); // overridden
+        assert_eq!(meta.service_type.as_deref(), Some("_dns._tcp")); // explicit
+    }
+
+    #[test]
+    fn no_announce_no_env_leaves_defaults() {
+        let labels = HashMap::new();
+        let env = vec!["PATH=/usr/bin".to_string()];
+        let meta = KoiMetadata::from_labels_and_env(&labels, &env);
+
+        assert!(meta.enable.is_none());
+        assert!(meta.name.is_none());
+        assert!(meta.dns_name.is_none());
     }
 
     #[test]

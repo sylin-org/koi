@@ -5,6 +5,7 @@ mod client;
 mod commands;
 mod format;
 mod integrations;
+mod orchestrator;
 mod platform;
 mod surface;
 
@@ -634,6 +635,21 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         tracing::info!("Runtime capability: disabled");
         None
     };
+
+    // ── Runtime orchestrator ──────────────────────────────────────────
+    // Translates container lifecycle events into mDNS/DNS/health/proxy operations.
+    if let Some(ref rt) = runtime_core {
+        tasks.push(orchestrator::spawn_orchestrator(
+            rt,
+            orchestrator::OrchestrationTargets {
+                mdns: mdns_core.clone(),
+                dns: dns_runtime.clone(),
+                health: health_runtime.clone(),
+                proxy: proxy_runtime.clone(),
+            },
+            cancel.clone(),
+        ));
+    }
 
     let cores = DaemonCores {
         mdns: mdns_core.clone(),

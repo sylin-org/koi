@@ -123,24 +123,40 @@ export KOI_HOST=172.17.0.1             # Linux default bridge
 
 ## Automatic mode: runtime adapter (recommended)
 
-If Koi's runtime adapter is enabled (on by default), you don't need any of the manual API calls below. Just add `koi.*` labels to your containers and Koi handles everything:
+If Koi's runtime adapter is enabled (on by default), you don't need any of the manual API calls below. One label or env var is enough:
+
+```bash
+# Just one label:
+docker run -d -p 3000:3000 --label koi.announce=grafana grafana/grafana
+
+# Or one env var:
+docker run -d -p 3000:3000 -e KOI_MDNS_ANNOUNCE=grafana grafana/grafana
+```
+
+Either way, Koi auto-discovers the container, announces `grafana._http._tcp` via mDNS (port heuristic: 3000 → HTTP), adds `grafana.lan` to DNS, and registers a health check. When the container stops, everything is cleaned up.
+
+For Docker Compose:
 
 ```yaml
-# docker-compose.yml
 services:
   grafana:
     image: grafana/grafana:latest
     ports:
       - "3000:3000"
     labels:
-      koi.type: "_http._tcp"
-      koi.dns.name: "grafana"
-      koi.health.path: "/api/health"
+      koi.announce: grafana
 ```
 
-`docker compose up` → Koi auto-announces via mDNS, adds `grafana.lan` to DNS, registers the health check. `docker compose down` → all cleaned up.
+For more control, add explicit labels alongside the shorthand:
 
-See the full [Runtime Adapter Guide](docs/guides/runtime.md) for label reference, port heuristics, and Compose integration details.
+```yaml
+labels:
+  koi.announce: grafana
+  koi.health.path: "/api/health"
+  koi.health.kind: "http"
+```
+
+See the full [Runtime Adapter Guide](docs/guides/runtime.md) for the complete label reference, port heuristics, and multi-port examples.
 
 The manual profiles below are still available for containers where you need fine-grained control or when the runtime adapter is disabled (`--no-runtime`).
 
