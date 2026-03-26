@@ -140,6 +140,7 @@ cargo install koi-net
 - [Health - Endpoint Monitoring](docs/guides/health.md)
 - [Proxy - TLS Termination](docs/guides/proxy.md)
 - [UDP - Datagram Bridging](docs/guides/udp.md)
+- [Runtime - Container Lifecycle Adapter](docs/guides/runtime.md)
 - [System - Daemon Lifecycle](docs/guides/system.md)
 - [Embedded - Rust In-Process](docs/guides/embedded.md)
 

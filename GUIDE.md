@@ -10,6 +10,7 @@ This guide covers the basics. Each capability has a detailed walkthrough:
 - **[Health - Endpoint Monitoring](docs/guides/health.md)** - HTTP and TCP health checks
 - **[Proxy - TLS Termination](docs/guides/proxy.md)** - local TLS-terminating reverse proxy
 - **[UDP - Datagram Bridging](docs/guides/udp.md)** - relay host UDP sockets to containers over HTTP/SSE
+- **[Runtime - Container Lifecycle](docs/guides/runtime.md)** - auto-discover Docker/Podman containers via labels
 - **[System - Daemon Lifecycle](docs/guides/system.md)** - install, manage, uninstall
 - **[Embedded - Rust In-Process](docs/guides/embedded.md)** - use Koi as a library in Rust apps
 
