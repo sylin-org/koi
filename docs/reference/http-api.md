@@ -421,6 +421,53 @@ Response: `200 OK` with `{"renewed": "a1b2c3d4"}` or `404` if the binding does n
 
 ---
 
+## Runtime adapter (`/v1/runtime`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/v1/runtime/status` | Adapter status (active, backend, instance count) |
+| GET | `/v1/runtime/instances` | List all tracked instances |
+
+### GET /v1/runtime/status
+
+Returns the adapter's connection state.
+
+```json
+{
+  "active": true,
+  "backend": "docker",
+  "instance_count": 3
+}
+```
+
+### GET /v1/runtime/instances
+
+Returns all instances currently tracked by the adapter. Each includes resolved port mappings, parsed `koi.*` labels, IPs, and image info.
+
+```json
+[
+  {
+    "id": "a1b2c3d4e5f6...",
+    "name": "grafana",
+    "ports": [
+      {"host_port": 3000, "container_port": 3000, "protocol": "tcp", "host_ip": "0.0.0.0"}
+    ],
+    "ips": ["172.17.0.2"],
+    "metadata": {
+      "service_type": "_http._tcp",
+      "dns_name": "grafana",
+      "health_path": "/api/health"
+    },
+    "backend": "docker",
+    "state": "running",
+    "discovered_at": "2026-03-26T10:00:00Z",
+    "image": "grafana/grafana:latest"
+  }
+]
+```
+
+---
+
 ## Pipeline properties
 
 Status, warnings, and errors are operational metadata attached alongside responses. Their absence is the happy path.

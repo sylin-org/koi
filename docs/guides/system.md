@@ -22,11 +22,12 @@ This is a one-time setup. On each platform, Koi registers itself with the native
 
 The daemon listens on port 5641 by default and exposes both the HTTP API (for any language) and the IPC pipe (for the CLI). Once installed, every other Koi command can talk to the daemon automatically.
 
-**All six domain modules are enabled by default.** On a fresh install the daemon starts every module, even if you haven't configured it yet:
+**All seven domain modules are enabled by default.** On a fresh install the daemon starts every module, even if you haven't configured it yet:
 
 - **mDNS** begins discovering peers immediately.
 - **DNS**, **Health**, **Proxy**, and **UDP** start in a _ready_ state with zero entries/routes - they accept configuration at any time.
 - **CertMesh** reports _ready - run certmesh create_ until you initialise a CA.
+- **Runtime** auto-detects Docker/Podman and begins watching container lifecycle events. If no runtime is available, it reports _inactive_ and the daemon continues normally.
 
 This is by design. A freshly-installed Koi is healthy; unused modules carry no overhead and can be activated whenever you need them. Use `koi status` to see each module's current state. Disable any capability with `--no-<name>` (e.g., `--no-udp`, `--no-proxy`).
 

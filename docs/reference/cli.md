@@ -23,6 +23,8 @@ Global flags work with any subcommand:
 | `--no-health`     | `KOI_NO_HEALTH`   | false            | Disable health                     |
 | `--no-proxy`      | `KOI_NO_PROXY`    | false            | Disable proxy                      |
 | `--no-udp`        | `KOI_NO_UDP`      | false            | Disable UDP bridging               |
+| `--no-runtime`    | `KOI_NO_RUNTIME`  | false            | Disable runtime adapter            |
+| `--runtime KIND`  | `KOI_RUNTIME`     | `auto`           | Runtime backend (docker/podman/auto) |
 | `--dns-port`      | `KOI_DNS_PORT`    | `53`             | DNS server port                    |
 | `--dns-zone`      | `KOI_DNS_ZONE`    | `lan`            | Local DNS zone                     |
 | `--dns-public`    | `KOI_DNS_PUBLIC`  | false            | Allow non-private DNS clients      |
@@ -114,10 +116,31 @@ koi proxy list                                    # list entries
 
 ---
 
+## Runtime adapter
+
+The runtime adapter is controlled via daemon flags (no CLI subcommands). Status and instances are available via the HTTP API:
+
+```
+GET /v1/runtime/status                            # adapter status
+GET /v1/runtime/instances                         # tracked instances
+```
+
+Runtime backend selection:
+
+```
+koi --daemon --runtime auto                       # auto-detect (default)
+koi --daemon --runtime docker                     # explicit Docker
+koi --daemon --runtime podman                     # explicit Podman
+koi --daemon --no-runtime                         # disable
+```
+
+---
+
 ## System
 
 ```
 koi status                                        # unified capability status
+koi factory-reset                                 # destroy data directory
 koi install                                       # install system service
 koi uninstall                                     # remove system service
 koi version                                       # show version
