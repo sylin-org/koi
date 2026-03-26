@@ -386,10 +386,7 @@ fn collect_select_many(prompt: &Prompt) -> anyhow::Result<String> {
         // Empty = none selected
         if trimmed.is_empty() {
             if prompt.required && !prompt.options.is_empty() {
-                println!(
-                    "  {} At least one selection is required.",
-                    color::red("✗")
-                );
+                println!("  {} At least one selection is required.", color::red("✗"));
                 continue;
             }
             println!("  {} {}\n", color::green("✓"), color::dim("None selected"));
@@ -436,10 +433,7 @@ fn collect_select_many(prompt: &Prompt) -> anyhow::Result<String> {
         }
 
         if prompt.required && selected_indices.is_empty() {
-            println!(
-                "  {} At least one selection is required.",
-                color::red("✗")
-            );
+            println!("  {} At least one selection is required.", color::red("✗"));
             continue;
         }
 

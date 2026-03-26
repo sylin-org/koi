@@ -71,9 +71,7 @@ mod tests {
             name: "Old Service".to_string(),
             service_type: "_http._tcp".to_string(),
         };
-        assert!(
-            matches!(event, KoiEvent::MdnsRemoved { ref name, .. } if name == "Old Service")
-        );
+        assert!(matches!(event, KoiEvent::MdnsRemoved { ref name, .. } if name == "Old Service"));
     }
 
     #[test]
@@ -82,7 +80,9 @@ mod tests {
             name: "grafana".to_string(),
             ip: "10.0.0.5".to_string(),
         };
-        assert!(matches!(event, KoiEvent::DnsEntryUpdated { ref name, ref ip } if name == "grafana" && ip == "10.0.0.5"));
+        assert!(
+            matches!(event, KoiEvent::DnsEntryUpdated { ref name, ref ip } if name == "grafana" && ip == "10.0.0.5")
+        );
     }
 
     #[test]
@@ -152,9 +152,7 @@ mod tests {
         let event = KoiEvent::ProxyEntryRemoved {
             name: "grafana".to_string(),
         };
-        assert!(
-            matches!(event, KoiEvent::ProxyEntryRemoved { ref name } if name == "grafana")
-        );
+        assert!(matches!(event, KoiEvent::ProxyEntryRemoved { ref name } if name == "grafana"));
     }
 
     #[test]

@@ -281,9 +281,16 @@ async fn create_handler(
         );
     }
 
-    // Create CA
-    let (ca_state, _master_key) =
-        match crate::ca::create_ca_with_paths(&request.passphrase, &entropy, &state.paths) {
+    // Create CA (blocking I/O: key gen, file writes, slot table save)
+    let passphrase_clone = request.passphrase.clone();
+    let paths_clone = state.paths.clone();
+    let (ca_state, _master_key) = match tokio::task::spawn_blocking(move || {
+        crate::ca::create_ca_with_paths(&passphrase_clone, &entropy, &paths_clone)
+    })
+    .await
+    .map_err(|e| CertmeshError::Internal(format!("CA creation task: {e}")))
+    .and_then(|r| r)
+    {
         Ok(ca) => ca,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
@@ -375,14 +382,23 @@ async fn create_handler(
     match crate::ca::issue_certificate(&ca_state, &local_hostname, &sans) {
         Ok(issued) => {
             let cert_dir_base = state.paths.certs_dir().join(&local_hostname);
-            let cert_dir =
-                match crate::certfiles::write_cert_files_to(&cert_dir_base, &issued) {
-                    Ok(dir) => dir,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Could not write CA node cert files");
-                        cert_dir_base
-                    }
-                };
+            let cert_dir_base_clone = cert_dir_base.clone();
+            let issued_for_write = issued.clone();
+            let cert_dir = match tokio::task::spawn_blocking(move || {
+                crate::certfiles::write_cert_files_to(&cert_dir_base_clone, &issued_for_write)
+            })
+            .await
+            {
+                Ok(Ok(dir)) => dir,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "Could not write CA node cert files");
+                    cert_dir_base
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Cert file write task panicked");
+                    cert_dir_base
+                }
+            };
             let ca_fp = crate::ca::ca_fingerprint(&ca_state);
             let member = crate::roster::RosterMember {
                 hostname: local_hostname.clone(),

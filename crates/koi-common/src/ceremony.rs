@@ -454,10 +454,13 @@ impl<R: CeremonyRules> CeremonyHost<R> {
 
     /// Number of active sessions (for diagnostics).
     pub fn active_session_count(&self) -> usize {
-        self.sessions.lock().unwrap_or_else(|e| {
-            tracing::warn!("ceremony session lock was poisoned, recovering");
-            e.into_inner()
-        }).len()
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| {
+                tracing::warn!("ceremony session lock was poisoned, recovering");
+                e.into_inner()
+            })
+            .len()
     }
 
     // ── Internal ────────────────────────────────────────────────────

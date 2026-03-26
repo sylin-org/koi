@@ -1443,10 +1443,7 @@ mod tests {
         assert!(embedded.config.dns_auto_start);
         assert!(embedded.config.health_auto_start);
         assert!(embedded.config.proxy_auto_start);
-        assert_eq!(
-            embedded.config.service_endpoint,
-            "http://10.0.0.1:8080"
-        );
+        assert_eq!(embedded.config.service_endpoint, "http://10.0.0.1:8080");
         assert_eq!(embedded.config.service_mode, ServiceMode::EmbeddedOnly);
         assert_eq!(
             embedded.config.data_dir,

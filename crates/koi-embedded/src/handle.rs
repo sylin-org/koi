@@ -157,9 +157,8 @@ impl KoiHandle {
             .data_dir
             .as_ref()
             .ok_or(KoiError::DisabledCapability("vault (no data_dir)"))?;
-        koi_crypto::vault::Vault::open(dir).map_err(|e| {
-            KoiError::Io(std::io::Error::other(e.to_string()))
-        })
+        koi_crypto::vault::Vault::open(dir)
+            .map_err(|e| KoiError::Io(std::io::Error::other(e.to_string())))
     }
 
     pub fn proxy(&self) -> Result<ProxyHandle, KoiError> {

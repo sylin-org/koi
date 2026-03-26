@@ -92,7 +92,9 @@ impl Vault {
     /// Store a secret value under `key`. Overwrites if exists.
     pub fn store(&self, key: &str, value: &str) -> Result<(), VaultError> {
         let mut secrets = self.load_secrets()?;
-        secrets.entries.insert(key.to_string(), self.encrypt(value)?);
+        secrets
+            .entries
+            .insert(key.to_string(), self.encrypt(value)?);
         self.save_secrets(&secrets)
     }
 
@@ -148,7 +150,8 @@ impl Vault {
         let salt = sha2::Sha256::digest(format!("koi-vault-salt:{machine_id}").as_bytes());
         let params = argon2::Params::new(65536, 3, 4, Some(MASTER_KEY_LEN))
             .map_err(|e| VaultError::MasterKey(e.to_string()))?;
-        let argon2 = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+        let argon2 =
+            argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
 
         let mut key = Zeroizing::new([0u8; MASTER_KEY_LEN]);
         argon2
@@ -260,7 +263,12 @@ fn get_machine_id() -> Result<String, String> {
     {
         // Read MachineGuid from Windows registry
         let output = std::process::Command::new("reg")
-            .args(["query", r"HKLM\SOFTWARE\Microsoft\Cryptography", "/v", "MachineGuid"])
+            .args([
+                "query",
+                r"HKLM\SOFTWARE\Microsoft\Cryptography",
+                "/v",
+                "MachineGuid",
+            ])
             .output()
             .map_err(|e| e.to_string())?;
         let stdout = String::from_utf8_lossy(&output.stdout);

@@ -7,8 +7,8 @@ use command_surface::{
     ApiEndpoint, Category, Color, CommandDef, CommandManifest, Confirmation, Example, Glyph,
     Presentation, Scope, Tag,
 };
-use std::sync::LazyLock;
 use std::io::{self};
+use std::sync::LazyLock;
 
 pub static MANIFEST: LazyLock<CommandManifest<KoiCategory, KoiTag, KoiScope>> =
     LazyLock::new(build_manifest);

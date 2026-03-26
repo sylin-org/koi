@@ -507,7 +507,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "command-surface"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "console",
  "is-terminal",
@@ -1686,7 +1686,7 @@ dependencies = [
 
 [[package]]
 name = "koi-certmesh"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "axum",
  "chrono",
@@ -1714,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "koi-client"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "hickory-proto",
  "koi-common",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "koi-common"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "async-stream",
  "axum",
@@ -1748,7 +1748,7 @@ dependencies = [
 
 [[package]]
 name = "koi-config"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "koi-common",
  "serde",
@@ -1760,7 +1760,7 @@ dependencies = [
 
 [[package]]
 name = "koi-crypto"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1778,6 +1778,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "subtle",
+ "tempfile",
  "thiserror 2.0.18",
  "totp-rs",
  "tracing",
@@ -1788,7 +1789,7 @@ dependencies = [
 
 [[package]]
 name = "koi-dns"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "axum",
  "hickory-proto",
@@ -1807,7 +1808,7 @@ dependencies = [
 
 [[package]]
 name = "koi-embedded"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "axum",
  "base64",
@@ -1842,7 +1843,7 @@ dependencies = [
 
 [[package]]
 name = "koi-health"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "axum",
  "chrono",
@@ -1859,7 +1860,7 @@ dependencies = [
 
 [[package]]
 name = "koi-mdns"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "async-stream",
  "axum",
@@ -1881,7 +1882,7 @@ dependencies = [
 
 [[package]]
 name = "koi-net"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1936,7 +1937,7 @@ dependencies = [
 
 [[package]]
 name = "koi-proxy"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "axum",
  "axum-server",
@@ -1963,7 +1964,7 @@ dependencies = [
 
 [[package]]
 name = "koi-truststore"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "koi-common",
  "thiserror 2.0.18",
@@ -1972,7 +1973,7 @@ dependencies = [
 
 [[package]]
 name = "koi-udp"
-version = "0.2.202603181223"
+version = "0.2.202603241449"
 dependencies = [
  "async-stream",
  "axum",
@@ -3333,6 +3334,19 @@ name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
+
+[[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.2",
+ "once_cell",
+ "rustix 1.1.4",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "terminal_size"

@@ -120,26 +120,35 @@ impl CertmeshState {
             tracing::debug!(error = %e, "No platform-sealed key material to clean up");
         }
 
-        // Remove certmesh directory (contains ca/, roster.json)
+        // Filesystem cleanup via spawn_blocking to avoid blocking the async executor
         let certmesh_dir = self.paths.certmesh_dir();
-        if certmesh_dir.exists() {
-            std::fs::remove_dir_all(&certmesh_dir)?;
-            tracing::info!(path = %certmesh_dir.display(), "Certmesh data directory removed");
-        }
-
-        // Remove issued certificate files
         let certs_dir = self.paths.certs_dir();
-        if certs_dir.exists() {
-            std::fs::remove_dir_all(&certs_dir)?;
-            tracing::info!(path = %certs_dir.display(), "Certificate files removed");
-        }
-
-        // Remove audit log
         let audit_path = self.paths.audit_log_path();
-        if audit_path.exists() {
-            std::fs::remove_file(&audit_path)?;
-            tracing::info!(path = %audit_path.display(), "Audit log removed");
-        }
+        tokio::task::spawn_blocking(move || {
+            if certmesh_dir.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&certmesh_dir) {
+                    tracing::warn!(error = %e, "Failed to remove certmesh directory");
+                } else {
+                    tracing::info!(path = %certmesh_dir.display(), "Certmesh data directory removed");
+                }
+            }
+            if certs_dir.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&certs_dir) {
+                    tracing::warn!(error = %e, "Failed to remove certificate files");
+                } else {
+                    tracing::info!(path = %certs_dir.display(), "Certificate files removed");
+                }
+            }
+            if audit_path.exists() {
+                if let Err(e) = std::fs::remove_file(&audit_path) {
+                    tracing::warn!(error = %e, "Failed to remove audit log");
+                } else {
+                    tracing::info!(path = %audit_path.display(), "Audit log removed");
+                }
+            }
+        })
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("destroy task: {e}")))?;
 
         tracing::info!("Certmesh state destroyed");
         Ok(())
@@ -465,8 +474,14 @@ impl CertmeshCore {
         let issued = ca::issue_certificate(ca, &hostname, &sans)?;
         let ca_cert_pem = ca.cert_pem.clone();
 
-        // Write cert files to the standard path
-        let cert_dir = certfiles::write_cert_files_to(&self.state.paths.certs_dir().join(&hostname), &issued)?;
+        // Write cert files to the standard path (blocking I/O)
+        let cert_path = self.state.paths.certs_dir().join(&hostname);
+        let issued_clone = issued.clone();
+        let cert_dir = tokio::task::spawn_blocking(move || {
+            certfiles::write_cert_files_to(&cert_path, &issued_clone)
+        })
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("cert write task: {e}")))??;
 
         // Add self to roster as primary member.
         // Re-check roster under the lock to prevent duplicate entries from
@@ -799,7 +814,8 @@ impl CertmeshCore {
         } else {
             tracing::info!("Enrollment window opened (no deadline)");
         }
-        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),
+        let _ = audit::append_entry_to(
+            &self.state.paths.audit_log_path(),
             "enrollment_opened",
             &[(
                 "deadline",
@@ -825,7 +841,8 @@ impl CertmeshCore {
             .map_err(CertmeshError::Io)?;
 
         tracing::info!("Enrollment window closed");
-        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),"enrollment_closed", &[]);
+        let _ =
+            audit::append_entry_to(&self.state.paths.audit_log_path(), "enrollment_closed", &[]);
         Ok(())
     }
 
@@ -868,7 +885,8 @@ impl CertmeshCore {
             subnet = ?allowed_subnet,
             "Enrollment policy updated"
         );
-        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),
+        let _ = audit::append_entry_to(
+            &self.state.paths.audit_log_path(),
             "policy_updated",
             &[
                 (
@@ -948,7 +966,11 @@ impl CertmeshCore {
         *self.state.auth.lock().await = Some(new_state);
 
         tracing::info!(method = target, "auth credential rotated");
-        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),"auth_rotated", &[("method", target)]);
+        let _ = audit::append_entry_to(
+            &self.state.paths.audit_log_path(),
+            "auth_rotated",
+            &[("method", target)],
+        );
         Ok(setup)
     }
 
@@ -980,7 +1002,8 @@ impl CertmeshCore {
         let roster_json = serde_json::to_string(&*roster)
             .map_err(|e| CertmeshError::Internal(format!("roster serialization failed: {e}")))?;
 
-        let audit_log = audit::read_log_from(&self.state.paths.audit_log_path()).map_err(CertmeshError::Io)?;
+        let audit_log =
+            audit::read_log_from(&self.state.paths.audit_log_path()).map_err(CertmeshError::Io)?;
 
         let ca_key_pem = ca_state
             .key
@@ -997,7 +1020,7 @@ impl CertmeshCore {
         );
 
         let bundle = backup::encode_backup(&payload, backup_passphrase)?;
-        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),"backup_created", &[]);
+        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(), "backup_created", &[]);
         Ok(bundle)
     }
 
@@ -1046,7 +1069,7 @@ impl CertmeshCore {
         *self.state.profile.lock().await = restored_roster.metadata.trust_profile;
         *self.state.roster.lock().await = restored_roster;
 
-        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),"backup_restored", &[]);
+        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(), "backup_restored", &[]);
         Ok(())
     }
 
@@ -1074,7 +1097,8 @@ impl CertmeshCore {
             hostname: hostname.to_string(),
         });
 
-        let _ = audit::append_entry_to(&self.state.paths.audit_log_path(),
+        let _ = audit::append_entry_to(
+            &self.state.paths.audit_log_path(),
             "member_revoked",
             &[
                 ("hostname", hostname),
@@ -1152,7 +1176,10 @@ impl CertmeshCore {
                 .unwrap_or_else(|_| chrono::Utc::now()),
         };
 
-        certfiles::write_cert_files_to(&self.state.paths.certs_dir().join(&request.hostname), &issued)?;
+        certfiles::write_cert_files_to(
+            &self.state.paths.certs_dir().join(&request.hostname),
+            &issued,
+        )?;
 
         // Update roster and extract hook command, then drop the lock
         // before executing the hook (which may block).

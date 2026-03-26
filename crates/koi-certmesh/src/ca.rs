@@ -45,7 +45,7 @@ pub struct CaState {
 }
 
 /// Result of issuing a certificate to a member.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IssuedCert {
     pub cert_pem: String,
     pub key_pem: String,
@@ -123,10 +123,7 @@ pub fn save_slot_table(table: &SlotTable) -> Result<(), CertmeshError> {
 }
 
 /// Save the slot table to an explicit path.
-pub fn save_slot_table_to(
-    table: &SlotTable,
-    path: &std::path::Path,
-) -> Result<(), CertmeshError> {
+pub fn save_slot_table_to(table: &SlotTable, path: &std::path::Path) -> Result<(), CertmeshError> {
     table
         .save(path)
         .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
