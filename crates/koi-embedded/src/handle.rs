@@ -34,6 +34,7 @@ enum HandleBackend {
 
 pub struct KoiHandle {
     backend: HandleBackend,
+    data_dir: Option<std::path::PathBuf>,
     events: broadcast::Sender<KoiEvent>,
     cancel: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
@@ -49,6 +50,7 @@ impl KoiHandle {
         certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
         proxy: Option<Arc<ProxyRuntime>>,
         udp: Option<Arc<koi_udp::UdpRuntime>>,
+        data_dir: Option<std::path::PathBuf>,
         events: broadcast::Sender<KoiEvent>,
         cancel: CancellationToken,
         tasks: Vec<JoinHandle<()>>,
@@ -63,6 +65,7 @@ impl KoiHandle {
                 proxy,
                 udp,
             },
+            data_dir,
             events,
             cancel,
             tasks,
@@ -78,6 +81,7 @@ impl KoiHandle {
     ) -> Self {
         Self {
             backend: HandleBackend::Remote { client },
+            data_dir: None,
             events,
             cancel,
             tasks,
@@ -141,6 +145,21 @@ impl KoiHandle {
             }
             HandleBackend::Remote { client } => Ok(CertmeshHandle::new_remote(Arc::clone(client))),
         }
+    }
+
+    /// Open the encrypted key-value vault for general-purpose secret storage.
+    ///
+    /// The vault uses platform credential binding (keyring) when available,
+    /// with a machine-bound fallback. Each call opens a fresh handle sharing
+    /// the same on-disk state.
+    pub fn vault(&self) -> Result<koi_crypto::vault::Vault, KoiError> {
+        let dir = self
+            .data_dir
+            .as_ref()
+            .ok_or(KoiError::DisabledCapability("vault (no data_dir)"))?;
+        koi_crypto::vault::Vault::open(dir).map_err(|e| {
+            KoiError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+        })
     }
 
     pub fn proxy(&self) -> Result<ProxyHandle, KoiError> {

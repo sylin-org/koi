@@ -25,6 +25,9 @@ pub use koi_mdns::protocol::{RegisterPayload, RegistrationResult};
 pub use koi_mdns::MdnsEvent;
 pub use koi_proxy::ProxyEntry;
 
+// Vault: general-purpose encrypted secret storage
+pub use koi_crypto::vault::{Vault, VaultError};
+
 pub type Result<T> = std::result::Result<T, KoiError>;
 
 #[derive(Debug, thiserror::Error)]
@@ -702,6 +705,7 @@ impl KoiEmbedded {
             certmesh,
             proxy,
             udp,
+            self.config.data_dir.clone(),
             event_tx,
             cancel,
             tasks,

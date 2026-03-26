@@ -36,6 +36,9 @@ x25519-dalek.workspace = true
 hkdf.workspace = true
 hostname.workspace = true
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 default = []
 # Gate FIDO2 unlock slot behind a feature flag. The current implementation
