@@ -14,8 +14,8 @@ Koi is a single binary with a layered architecture. Three adapter layers sit on 
 │                                                             │
 │  koi-mdns    koi-certmesh    koi-dns    koi-health    koi-proxy
 │  MdnsCore    CertmeshCore    DnsCore    HealthCore    ProxyRuntime
-│                                                       koi-udp
-│                                                       UdpRuntime
+│                                                       koi-udp    koi-runtime
+│                                                       UdpRuntime RuntimeCore
 └─────────────────────────┬───────────────────────────────────┘
                           │
               ┌───────────┼───────────┐
@@ -44,6 +44,7 @@ Koi is a single binary with a layered architecture. Three adapter layers sit on 
 | `crates/koi-client/`      | `koi-client`      | Blocking HTTP client for daemon communication (ureq)               | ~650   |
 | `crates/koi-embedded/`    | `koi-embedded`    | In-process facade - builder, handles, events                       | ~1,300 |
 | `crates/koi-udp/`         | `koi-udp`         | UDP datagram bridging - bind, relay, lease reaper, HTTP routes     | ~500   |
+| `crates/koi-runtime/`     | `koi-runtime`     | Container/service runtime adapter - Docker/Podman lifecycle events | ~800   |
 | `crates/command-surface/` | `command-surface` | Glyph-based command rendering, semantic metadata                   | ~500   |
 
 ---
@@ -62,8 +63,9 @@ koi (bin)
 ├── koi-health      → koi-common, koi-config, axum, tokio
 ├── koi-proxy       → koi-common, koi-config, axum-server, rustls, reqwest, tokio
 ├── koi-udp         → koi-common, axum, tokio
+├── koi-runtime     → koi-common, bollard, axum, utoipa, tokio, chrono
 ├── koi-client      → koi-common, ureq (blocking)
-├── koi-embedded    → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-config, tokio
+├── koi-embedded    → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, tokio
 └── command-surface → crossterm
 ```
 
@@ -138,6 +140,6 @@ Platform-conditional compilation (`#[cfg(target_os)]`) lives exclusively in `pla
 
 **Adapters share protocol, not code.** The HTTP, IPC, and CLI adapters all speak the same JSON shapes but are independent modules (~150 lines each). The pipe and CLI adapters share NDJSON dispatch logic via `adapters::dispatch`.
 
-**Runtime capability control.** All domain capabilities are compiled into one binary. Enable/disable at runtime with `--no-mdns`, `--no-certmesh`, etc. No `#[cfg(feature)]` for domain capabilities.
+**Runtime capability control.** All domain capabilities are compiled into one binary. Enable/disable at runtime with `--no-mdns`, `--no-certmesh`, `--no-runtime`, etc. No `#[cfg(feature)]` for domain capabilities.
 
-**Domain facade pattern.** Every domain crate exposes an opaque facade (`MdnsCore`, `CertmeshCore`, etc.) with internal state hidden behind `pub(crate)`. HTTP handlers delegate to facade methods - no lock management in handlers.
+**Domain facade pattern.** Every domain crate exposes an opaque facade (`MdnsCore`, `CertmeshCore`, `RuntimeCore`, etc.) with internal state hidden behind `pub(crate)`. HTTP handlers delegate to facade methods - no lock management in handlers.

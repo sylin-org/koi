@@ -40,6 +40,7 @@ crates/
 ├── koi-health/       # Machine & service health monitoring - HTTP/TCP checks, transitions
 ├── koi-proxy/        # TLS-terminating reverse proxy - cert reload, forwarding
 ├── koi-udp/          # UDP datagram bridging - HTTP/SSE tunneling, binding lifecycle
+├── koi-runtime/      # Container/service runtime adapter - Docker, Podman lifecycle events
 ├── koi-client/       # HTTP client for daemon communication (blocking ureq)
 ├── koi-embedded/     # Embed Koi in Rust applications - builder, handles, events
 └── command-surface/  # Glyph-based command rendering - semantic metadata, profiles
@@ -66,7 +67,7 @@ Each domain crate exposes three faces:
 ### 3. Crate Dependency Graph
 
 ```
-koi (bin) → koi-common, koi-mdns, koi-certmesh, koi-crypto, koi-truststore, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-client, koi-embedded, command-surface
+koi (bin) → koi-common, koi-mdns, koi-certmesh, koi-crypto, koi-truststore, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, koi-embedded, command-surface
 koi-mdns      → koi-common, mdns-sd, axum, utoipa, tokio
 koi-certmesh  → koi-common, koi-crypto, koi-truststore, axum, utoipa, tokio
 koi-crypto    → (standalone: ring/rcgen/totp-rs/p256)
@@ -76,8 +77,9 @@ koi-dns       → koi-common, koi-config, hickory-server, hickory-resolver, axum
 koi-health    → koi-common, koi-config, axum, utoipa, tokio
 koi-proxy     → koi-common, koi-config, axum-server, rustls, reqwest, utoipa, tokio
 koi-udp       → koi-common, axum, utoipa, tokio
+koi-runtime   → koi-common, bollard, axum, utoipa, tokio, chrono, async-trait
 koi-client    → koi-common, ureq (blocking)
-koi-embedded  → koi-common, koi-crypto, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-config, koi-client, tokio
+koi-embedded  → koi-common, koi-crypto, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, koi-client, tokio
 command-surface → (standalone: crossterm)
 ```
 
@@ -145,8 +147,15 @@ All domain capabilities are compiled into a **single binary**. Enable/disable at
 | `--no-health`   | `KOI_NO_HEALTH=1`   | Disable health capability    |
 | `--no-proxy`    | `KOI_NO_PROXY=1`    | Disable proxy capability     |
 | `--no-udp`      | `KOI_NO_UDP=1`      | Disable UDP bridging         |
+| `--no-runtime`  | `KOI_NO_RUNTIME=1`  | Disable runtime adapter      |
 | `--no-http`     | `KOI_NO_HTTP=1`     | Disable the HTTP adapter     |
 | `--no-ipc`      | `KOI_NO_IPC=1`      | Disable the IPC adapter      |
+
+Additional runtime adapter flags:
+
+| Flag                  | Env Var          | Effect                                          |
+| --------------------- | ---------------- | ----------------------------------------------- |
+| `--runtime <backend>` | `KOI_RUNTIME`    | Select backend: auto, docker, podman (default: auto) |
 
 All capabilities are **enabled by default**.
 

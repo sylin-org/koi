@@ -132,6 +132,15 @@ Route handlers: `crates/koi-udp/src/http.rs`
 | GET | `/v1/udp/status` | List all active bindings |
 | PUT | `/v1/udp/heartbeat/{id}` | Renew a binding's lease |
 
+### Runtime Operations (`/v1/runtime`)
+
+Route handlers: `crates/koi-runtime/src/http.rs`
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/v1/runtime/status` | Runtime adapter status (active, backend, instance count) |
+| GET | `/v1/runtime/instances` | List all tracked runtime instances |
+
 ---
 
 ## Query Parameters

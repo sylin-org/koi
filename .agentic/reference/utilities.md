@@ -334,6 +334,52 @@ No other module should contain `println!`-based presentation functions.
 
 ---
 
+## Runtime Domain Types (`koi-runtime`)
+
+### `koi_runtime` (re-exports from `lib.rs`)
+
+| Type                 | Purpose                                                      |
+| -------------------- | ------------------------------------------------------------ |
+| `RuntimeCore`        | Main domain facade (instance tracking, backend lifecycle)    |
+| `RuntimeConfig`      | Configuration (backend_kind, optional socket_path)           |
+| `RuntimeBackend`     | Trait: connect, list_instances, watch lifecycle events        |
+| `RuntimeBackendKind` | Backend selector enum (Auto, Docker, Podman, Systemd, Incus, Kubernetes) |
+| `RuntimeEvent`       | Domain event enum (Started, Stopped, Updated, BackendDisconnected, BackendReconnected) |
+| `RuntimeError`       | Domain error enum (BackendUnavailable, Connection, EventStream, NotFound, Io, Internal) |
+| `Instance`           | Normalized instance (id, name, ports, ips, metadata, state)  |
+| `InstanceState`      | Lifecycle state enum (Running, Stopped, Paused, Restarting, Unknown) |
+| `PortMapping`        | Host-side port mapping (host_port, container_port, protocol, host_ip) |
+| `KoiMetadata`        | Koi-specific metadata from labels (enable, service_type, dns_name, health, proxy, certmesh) |
+
+### `koi_runtime::http` (response types)
+
+| Type             | Purpose                                           |
+| ---------------- | ------------------------------------------------- |
+| `RuntimeStatus`  | Runtime adapter status (active, backend, instance_count) |
+| `RuntimeApiDoc`  | OpenAPI documentation for the runtime domain      |
+
+### Internal (not re-exported)
+
+| Type             | Location         | Purpose                                              |
+| ---------------- | ---------------- | ---------------------------------------------------- |
+| `RuntimeState`   | `lib.rs`         | Internal shared state (instances, backend, event_tx)  |
+| `DockerBackend`  | `docker.rs`      | Docker/Podman backend (bollard client)               |
+| `ComposeInfo`    | `instance.rs`    | Docker Compose label extraction (project, service)   |
+
+### `koi_runtime` constants (`lib.rs`)
+
+| Constant                     | Value | Purpose                       |
+| ---------------------------- | ----- | ----------------------------- |
+| `BROADCAST_CHANNEL_CAPACITY` | 256   | Event subscriber channel size |
+
+### `koi_runtime::heuristics` constants
+
+| Constant                | Value                | Purpose                                  |
+| ----------------------- | -------------------- | ---------------------------------------- |
+| `FALLBACK_SERVICE_TYPE` | `_koi-managed._tcp`  | Default service type for unknown ports   |
+
+---
+
 ## Binary Crate Types (`koi`)
 
 | Type                 | Location            | Purpose                                             |
@@ -420,18 +466,20 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 | `clap`                 | 4 (derive, env) | koi                                           | CLI parsing                              |
 | `tracing`              | 0.1             | all                                           | Structured logging                       |
 | `tower-http`           | 0.6             | koi, koi-embedded                             | CORS middleware                          |
-| `thiserror`            | 2               | koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp | Error derive macros |
+| `thiserror`            | 2               | koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime | Error derive macros |
 | `ureq`                 | 2               | koi-client                                    | Blocking HTTP client                     |
 | `uuid`                 | 1 (v4)          | koi-common, koi                               | ID generation                            |
-| `tokio-util`           | 0.7             | koi-mdns, koi-dns, koi-health, koi-proxy, koi-udp, koi | CancellationToken               |
-| `utoipa`               | 5               | koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp | OpenAPI schema generation |
+| `tokio-util`           | 0.7             | koi-mdns, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi | CancellationToken               |
+| `utoipa`               | 5               | koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime | OpenAPI schema generation |
 | `utoipa-scalar`        | 0.3             | koi                                           | Interactive API docs UI                  |
 | `windows-service`      | 0.8             | koi (Windows)                                 | Windows SCM                              |
 | `ring`                 | 0.17            | koi-crypto                                    | Cryptographic primitives                 |
 | `rcgen`                | 0.13            | koi-crypto                                    | X.509 certificate generation             |
 | `totp-rs`              | 5               | koi-crypto                                    | TOTP enrollment codes                    |
 | `p256`                 | 0.13            | koi-crypto                                    | FIDO2 ECDSA P-256 signature verification |
-| `chrono`               | 0.4             | koi-certmesh, koi-udp                         | Timestamp handling                       |
+| `chrono`               | 0.4             | koi-certmesh, koi-udp, koi-runtime            | Timestamp handling                       |
+| `bollard`              | 0.18            | koi-runtime                                   | Docker Engine API client                 |
+| `async-trait`          | latest          | koi-runtime                                   | Async trait support                      |
 | `hickory-server`       | latest           | koi-dns                                      | DNS server implementation                |
 | `hickory-resolver`     | latest           | koi-dns                                      | DNS upstream resolution                  |
 | `reqwest`              | latest           | koi-proxy, koi-embedded                       | HTTP forwarding                          |
