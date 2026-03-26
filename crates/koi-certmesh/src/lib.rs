@@ -704,98 +704,54 @@ impl CertmeshCore {
 
     // ── Auto-unlock key management ──────────────────────────────────
 
-    /// Path to the auto-unlock key file using default platform paths.
-    fn auto_unlock_key_path() -> std::path::PathBuf {
-        CertmeshPaths::default().auto_unlock_key_path()
-    }
-
-    /// Platform credential store label for auto-unlock.
-    const AUTO_UNLOCK_LABEL: &'static str = "koi-auto-unlock";
+    /// Vault key under which the auto-unlock passphrase is stored.
+    const VAULT_AUTO_UNLOCK_KEY: &'static str = "certmesh-auto-unlock";
 
     /// Save a passphrase for automatic unlock on reboot.
     ///
-    /// Tries the platform credential store first (Windows Credential Manager,
-    /// macOS Keychain, Linux Secret Service). Falls back to a file with
-    /// restricted permissions if the credential store is unavailable.
+    /// Uses the koi-crypto vault which automatically selects the strongest
+    /// available backend: platform credential store (DPAPI, Keychain,
+    /// Secret Service) first, machine-bound Argon2id derivation as fallback.
     pub fn save_auto_unlock_key(passphrase: &str) -> Result<(), CertmeshError> {
-        match koi_crypto::tpm::seal_key_material(Self::AUTO_UNLOCK_LABEL, passphrase.as_bytes()) {
-            Ok(()) => {
-                tracing::info!("Auto-unlock key sealed in platform credential store");
-                // Remove any legacy file if it exists
-                let _ = std::fs::remove_file(Self::auto_unlock_key_path());
-                return Ok(());
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "Platform credential store unavailable; falling back to file"
-                );
-            }
-        }
-
-        // Fallback: write to file with restricted permissions
-        let path = Self::auto_unlock_key_path();
-
-        // Atomic write: create temp file with restricted permissions, then rename.
-        // This prevents a window where the file exists with default permissions.
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let tmp_path = path.with_extension("tmp");
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp_path)?;
-            file.write_all(passphrase.as_bytes())?;
-            file.sync_all()?;
-            std::fs::rename(&tmp_path, &path)?;
-        }
-
-        #[cfg(not(unix))]
-        {
-            koi_crypto::keys::write_secret_file(&path, passphrase.as_bytes())?;
-        }
-
-        tracing::info!("Auto-unlock key saved to file");
+        let vault = koi_crypto::vault::Vault::open(CertmeshPaths::default().data_dir())?;
+        vault.store(Self::VAULT_AUTO_UNLOCK_KEY, passphrase)?;
+        tracing::info!(
+            backend = vault.backend_name(),
+            "Auto-unlock key saved to vault"
+        );
+        // Remove any legacy file/credential store entries
+        let _ = std::fs::remove_file(CertmeshPaths::default().auto_unlock_key_path());
+        let _ = koi_crypto::tpm::delete_key_material("koi-auto-unlock");
         Ok(())
     }
 
-    /// Delete the auto-unlock key from all stores (idempotent).
+    /// Delete the auto-unlock key from the vault (idempotent).
     pub fn delete_auto_unlock_key() {
-        // Remove from platform credential store
-        let _ = koi_crypto::tpm::delete_key_material(Self::AUTO_UNLOCK_LABEL);
-        // Remove legacy file
-        let path = Self::auto_unlock_key_path();
-        let _ = std::fs::remove_file(&path);
+        let data_dir = CertmeshPaths::default().data_dir().to_path_buf();
+        if let Ok(vault) = koi_crypto::vault::Vault::open(&data_dir) {
+            let _ = vault.delete(Self::VAULT_AUTO_UNLOCK_KEY);
+        }
+        // Clean up legacy stores
+        let _ = std::fs::remove_file(CertmeshPaths::default().auto_unlock_key_path());
+        let _ = koi_crypto::tpm::delete_key_material("koi-auto-unlock");
     }
 
-    /// Try to auto-unlock the CA from platform credential store or saved file.
+    /// Try to auto-unlock the CA from the vault.
     ///
     /// Returns `Ok(true)` if the CA was unlocked, `Ok(false)` if no
     /// stored key exists, and `Err` if the key exists but decryption
     /// failed (corrupt key, changed passphrase, etc.).
     pub async fn try_auto_unlock(&self) -> Result<bool, CertmeshError> {
-        // Try platform credential store first
-        if let Ok(bytes) = koi_crypto::tpm::unseal_key_material(Self::AUTO_UNLOCK_LABEL) {
-            let passphrase = Zeroizing::new(String::from_utf8_lossy(&bytes).to_string());
-            if !passphrase.is_empty() {
-                self.unlock(&passphrase).await?;
-                tracing::info!("Pond auto-unlocked via platform credential store");
-                return Ok(true);
-            }
-        }
-
-        // Fall back to file
-        let path = self.state.paths.auto_unlock_key_path();
-        let passphrase = match std::fs::read_to_string(&path) {
-            Ok(pp) if !pp.is_empty() => Zeroizing::new(pp),
+        let vault = koi_crypto::vault::Vault::open(self.state.paths.data_dir())?;
+        let passphrase = match vault.retrieve(Self::VAULT_AUTO_UNLOCK_KEY)? {
+            Some(pp) if !pp.is_empty() => Zeroizing::new(pp),
             _ => return Ok(false),
         };
         self.unlock(&passphrase).await?;
-        tracing::info!("Pond auto-unlocked on boot via saved key file");
+        tracing::info!(
+            backend = vault.backend_name(),
+            "Pond auto-unlocked via vault"
+        );
         Ok(true)
     }
 

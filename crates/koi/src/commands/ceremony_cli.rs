@@ -277,10 +277,7 @@ fn collect_single_prompt(prompt: &Prompt) -> anyhow::Result<String> {
         InputType::Fido2 => {
             anyhow::bail!("FIDO2 hardware key input is not yet supported in this CLI.");
         }
-        InputType::SelectMany => {
-            // SelectMany not yet needed; fall back to text
-            collect_text(prompt)
-        }
+        InputType::SelectMany => collect_select_many(prompt),
     }
 }
 
@@ -355,6 +352,108 @@ fn collect_select_one(prompt: &Prompt) -> anyhow::Result<String> {
             color::red("✗"),
             prompt.options.len()
         );
+    }
+}
+
+fn collect_select_many(prompt: &Prompt) -> anyhow::Result<String> {
+    println!();
+    println!("  {}\n", prompt.prompt);
+
+    for (i, opt) in prompt.options.iter().enumerate() {
+        let num = i + 1;
+        println!("  [{}] {}", num, opt.label);
+        if let Some(desc) = &opt.description {
+            for line in textwrap_simple(desc, 60) {
+                println!("      {}", color::dim(&line));
+            }
+        }
+        println!();
+    }
+
+    loop {
+        let line = prompt_line(&format!(
+            "  Select [comma-separated, {}, Enter=none, esc={}]: ",
+            color::cyan("all"),
+            color::dim("cancel"),
+        ))?;
+
+        let trimmed = line.trim().to_ascii_lowercase();
+
+        if trimmed == "esc" {
+            anyhow::bail!("Canceled. No changes made.");
+        }
+
+        // Empty = none selected
+        if trimmed.is_empty() {
+            if prompt.required && !prompt.options.is_empty() {
+                println!(
+                    "  {} At least one selection is required.",
+                    color::red("✗")
+                );
+                continue;
+            }
+            println!("  {} {}\n", color::green("✓"), color::dim("None selected"));
+            return Ok(String::new());
+        }
+
+        // "all" = every option
+        if trimmed == "all" {
+            let labels: Vec<&str> = prompt.options.iter().map(|o| o.label.as_str()).collect();
+            println!("  {} {}\n", color::green("✓"), labels.join(", "));
+            let values: Vec<&str> = prompt.options.iter().map(|o| o.value.as_str()).collect();
+            return Ok(values.join(","));
+        }
+
+        // Parse comma-separated numbers
+        let parts: Vec<&str> = trimmed.split(',').map(|s| s.trim()).collect();
+        let mut selected_indices: Vec<usize> = Vec::new();
+        let mut valid = true;
+
+        for part in &parts {
+            if part.is_empty() {
+                continue;
+            }
+            match part.parse::<usize>() {
+                Ok(n) if n >= 1 && n <= prompt.options.len() => {
+                    if !selected_indices.contains(&(n - 1)) {
+                        selected_indices.push(n - 1);
+                    }
+                }
+                _ => {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+
+        if !valid || selected_indices.is_empty() {
+            println!(
+                "  {} Enter comma-separated numbers from 1 to {}, \"all\", or press Enter for none.",
+                color::red("✗"),
+                prompt.options.len()
+            );
+            continue;
+        }
+
+        if prompt.required && selected_indices.is_empty() {
+            println!(
+                "  {} At least one selection is required.",
+                color::red("✗")
+            );
+            continue;
+        }
+
+        let labels: Vec<&str> = selected_indices
+            .iter()
+            .map(|&i| prompt.options[i].label.as_str())
+            .collect();
+        println!("  {} {}\n", color::green("✓"), labels.join(", "));
+
+        let values: Vec<&str> = selected_indices
+            .iter()
+            .map(|&i| prompt.options[i].value.as_str())
+            .collect();
+        return Ok(values.join(","));
     }
 }
 

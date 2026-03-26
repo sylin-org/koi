@@ -85,6 +85,12 @@ impl From<koi_crypto::auth::AuthError> for CertmeshError {
     }
 }
 
+impl From<koi_crypto::vault::VaultError> for CertmeshError {
+    fn from(e: koi_crypto::vault::VaultError) -> Self {
+        Self::Internal(format!("vault error: {e}"))
+    }
+}
+
 impl From<&CertmeshError> for ErrorCode {
     fn from(e: &CertmeshError) -> Self {
         match e {

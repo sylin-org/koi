@@ -211,9 +211,16 @@ Currently stored as plaintext hex in `unlock-slots.json`. Encrypt with a key der
 
 ## Block 6: Authentication & Network Security (ADR-011 WS-1 + WS-6)
 
-**Goal:** No unauthenticated mutations; secure inter-node communication.
-**Risk:** High — breaking changes to breadcrumb format and wire protocol.
-**Estimated scope:** Large.
+**Status:** SKIP — verified 2026-03-25 that all items are already implemented:
+- 6.1 DAT: `dat_auth_middleware`, `X-Koi-Token` header, breadcrumb write ✓
+- 6.2 Loopback: HTTP binds `127.0.0.1`, mTLS on `0.0.0.0` ✓
+- 6.3 X25519: `EphemeralKeyPair`, DH key agreement in failover.rs ✓
+- 6.4 CORS: origin predicate restricts to localhost/127.0.0.1 ✓
+- 6.5 Hooks: `HOOK_FORBIDDEN` chars, absolute path check, CN auth ✓
+
+~~**Goal:** No unauthenticated mutations; secure inter-node communication.~~
+~~**Risk:** High — breaking changes to breadcrumb format and wire protocol.~~
+~~**Estimated scope:** Large.~~
 
 ### 6.1 Daemon Access Token (DAT)
 

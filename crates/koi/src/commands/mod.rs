@@ -11,6 +11,7 @@
 pub mod ceremony_cli;
 pub mod certmesh;
 pub mod dns;
+pub mod factory_reset;
 pub mod health;
 pub mod mdns;
 pub mod proxy;

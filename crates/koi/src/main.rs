@@ -141,6 +141,9 @@ fn main() -> anyhow::Result<()> {
                 }
                 return Ok(());
             }
+            Command::FactoryReset => {
+                return commands::factory_reset::run(cli.json);
+            }
             _ => {} // All other commands go through the runtime
         }
     }
@@ -405,8 +408,12 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     }
                 }
             }
-            // Install, Uninstall, Version, Launch handled before runtime
-            Command::Install | Command::Uninstall | Command::Version | Command::Launch => Ok(()),
+            // Install, Uninstall, Version, Launch, FactoryReset handled before runtime
+            Command::Install
+            | Command::Uninstall
+            | Command::Version
+            | Command::Launch
+            | Command::FactoryReset => Ok(()),
         };
     }
 

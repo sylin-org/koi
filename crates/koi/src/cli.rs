@@ -139,6 +139,9 @@ pub enum Command {
     Proxy(ProxyCommand),
     /// UDP datagram bridging
     Udp(UdpCommand),
+    /// Destroy all Koi data and start fresh
+    #[command(name = "factory-reset")]
+    FactoryReset,
 }
 
 #[derive(Args, Debug)]
