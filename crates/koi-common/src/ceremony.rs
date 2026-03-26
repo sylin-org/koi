@@ -434,7 +434,10 @@ impl<R: CeremonyRules> CeremonyHost<R> {
     /// Remove expired sessions. Call periodically from a background task.
     /// Returns the number of sessions removed.
     pub fn sweep_expired(&self) -> usize {
-        let mut sessions = self.sessions.lock().expect("session lock poisoned");
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| {
+            tracing::warn!("ceremony session lock was poisoned, recovering");
+            e.into_inner()
+        });
         let now = Instant::now();
         let before = sessions.len();
         sessions.retain(|_id, session| now.duration_since(session.last_active) < self.session_ttl);
@@ -451,7 +454,10 @@ impl<R: CeremonyRules> CeremonyHost<R> {
 
     /// Number of active sessions (for diagnostics).
     pub fn active_session_count(&self) -> usize {
-        self.sessions.lock().expect("session lock poisoned").len()
+        self.sessions.lock().unwrap_or_else(|e| {
+            tracing::warn!("ceremony session lock was poisoned, recovering");
+            e.into_inner()
+        }).len()
     }
 
     // ── Internal ────────────────────────────────────────────────────
@@ -488,7 +494,10 @@ impl<R: CeremonyRules> CeremonyHost<R> {
         session_id: Uuid,
         request: CeremonyRequest,
     ) -> Result<CeremonyResponse, CeremonyError> {
-        let mut sessions = self.sessions.lock().expect("session lock poisoned");
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| {
+            tracing::warn!("ceremony session lock was poisoned, recovering");
+            e.into_inner()
+        });
 
         let session = sessions
             .get_mut(&session_id)
@@ -523,7 +532,9 @@ impl<R: CeremonyRules> CeremonyHost<R> {
             .evaluate(&ceremony_type, &mut session.bag, &render);
 
         // Extract session to finalize outside the lock
-        let session = sessions.remove(&session_id).expect("just accessed");
+        let Some(session) = sessions.remove(&session_id) else {
+            return Err(CeremonyError::SessionNotFound(session_id));
+        };
         drop(sessions);
 
         self.finalize(session, result)
@@ -567,7 +578,10 @@ impl<R: CeremonyRules> CeremonyHost<R> {
 
         // Only store if not complete
         if !complete {
-            let mut sessions = self.sessions.lock().expect("session lock poisoned");
+            let mut sessions = self.sessions.lock().unwrap_or_else(|e| {
+                tracing::warn!("ceremony session lock was poisoned, recovering");
+                e.into_inner()
+            });
             sessions.insert(session_id, session);
         }
 

@@ -186,8 +186,8 @@ pub(crate) async fn serve(
     app = app.layer(Extension(embedded_state));
     let cors = CorsLayer::new()
         .allow_origin([
-            "http://localhost".parse::<HeaderValue>().unwrap(),
-            "http://127.0.0.1".parse::<HeaderValue>().unwrap(),
+            HeaderValue::from_static("http://localhost"),
+            HeaderValue::from_static("http://127.0.0.1"),
         ])
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
         .allow_headers([header::CONTENT_TYPE]);

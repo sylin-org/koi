@@ -87,14 +87,25 @@ impl ProxyCore {
     }
 
     pub async fn reload(&self) -> Result<Vec<ProxyEntry>, ProxyError> {
-        let entries = config::load_entries_with_data_dir(self.data_dir.as_deref())?;
+        let data_dir = self.data_dir.clone();
+        let entries = tokio::task::spawn_blocking(move || {
+            config::load_entries_with_data_dir(data_dir.as_deref())
+        })
+        .await
+        .map_err(|e| ProxyError::Io(format!("config task: {e}")))??;
         let mut guard = self.entries.lock().await;
         *guard = entries.clone();
         Ok(entries)
     }
 
     pub async fn upsert(&self, entry: ProxyEntry) -> Result<Vec<ProxyEntry>, ProxyError> {
-        let entries = config::upsert_entry_with_data_dir(entry.clone(), self.data_dir.as_deref())?;
+        let data_dir = self.data_dir.clone();
+        let entry_for_io = entry.clone();
+        let entries = tokio::task::spawn_blocking(move || {
+            config::upsert_entry_with_data_dir(entry_for_io, data_dir.as_deref())
+        })
+        .await
+        .map_err(|e| ProxyError::Io(format!("config task: {e}")))??;
         let mut guard = self.entries.lock().await;
         *guard = entries.clone();
         let _ = self.event_tx.send(ProxyEvent::EntryUpdated { entry });
@@ -102,7 +113,13 @@ impl ProxyCore {
     }
 
     pub async fn remove(&self, name: &str) -> Result<Vec<ProxyEntry>, ProxyError> {
-        let entries = config::remove_entry_with_data_dir(name, self.data_dir.as_deref())?;
+        let data_dir = self.data_dir.clone();
+        let name_owned = name.to_string();
+        let entries = tokio::task::spawn_blocking(move || {
+            config::remove_entry_with_data_dir(&name_owned, data_dir.as_deref())
+        })
+        .await
+        .map_err(|e| ProxyError::Io(format!("config task: {e}")))??;
         let mut guard = self.entries.lock().await;
         *guard = entries.clone();
         let _ = self.event_tx.send(ProxyEvent::EntryRemoved {

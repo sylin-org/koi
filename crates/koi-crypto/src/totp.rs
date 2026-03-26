@@ -208,7 +208,7 @@ impl RateLimiter {
         if self.is_locked() {
             let remaining = self
                 .locked_until
-                .unwrap()
+                .unwrap_or_else(Instant::now)
                 .saturating_duration_since(Instant::now());
             return Err(RateLimitError::LockedOut {
                 remaining_secs: remaining.as_secs(),

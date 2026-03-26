@@ -222,35 +222,38 @@ impl Registry {
             .map(|(id, _)| id.clone());
 
         if let Some(existing_id) = reconnect_id {
-            let reg = regs.get_mut(&existing_id).unwrap();
-            let old_payload = reg.payload.clone();
-            reg.payload = payload;
-            reg.state = RegistrationState::Alive;
-            reg.policy = policy;
-            reg.last_seen = now;
-            reg.last_seen_wall = SystemTime::now();
-            reg.session_id = session_id;
-            InsertOutcome::Reconnected {
-                id: existing_id,
-                old_payload,
+            if let Some(reg) = regs.get_mut(&existing_id) {
+                let old_payload = reg.payload.clone();
+                reg.payload = payload;
+                reg.state = RegistrationState::Alive;
+                reg.policy = policy;
+                reg.last_seen = now;
+                reg.last_seen_wall = SystemTime::now();
+                reg.session_id = session_id;
+                return InsertOutcome::Reconnected {
+                    id: existing_id,
+                    old_payload,
+                };
             }
-        } else {
-            let id = new_id.clone();
-            let wall = SystemTime::now();
-            regs.insert(
-                new_id,
-                Registration {
-                    payload,
-                    state: RegistrationState::Alive,
-                    policy,
-                    last_seen: now,
-                    session_id,
-                    registered_at_wall: wall,
-                    last_seen_wall: wall,
-                },
-            );
-            InsertOutcome::New { id }
+            // Should never happen: id was just found in this locked map
+            tracing::warn!(id = %existing_id, "registration vanished during reconnect");
         }
+
+        let id = new_id.clone();
+        let wall = SystemTime::now();
+        regs.insert(
+            new_id,
+            Registration {
+                payload,
+                state: RegistrationState::Alive,
+                policy,
+                last_seen: now,
+                session_id,
+                registered_at_wall: wall,
+                last_seen_wall: wall,
+            },
+        );
+        InsertOutcome::New { id }
     }
 
     pub(crate) fn heartbeat_at(&self, id: &str, now: Instant) -> Result<u64> {

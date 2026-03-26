@@ -257,7 +257,10 @@ impl KoiEmbedded {
         };
 
         let certmesh = if self.config.certmesh_enabled {
-            init_certmesh_core(self.config.data_dir.as_deref())
+            let data_dir = self.config.data_dir.clone();
+            tokio::task::spawn_blocking(move || init_certmesh_core(data_dir.as_deref()))
+                .await
+                .map_err(|e| std::io::Error::other(format!("certmesh init: {e}")))?
         } else {
             None
         };
