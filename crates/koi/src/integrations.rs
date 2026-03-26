@@ -27,7 +27,7 @@ impl CertmeshBridge {
 
 impl integration::CertmeshSnapshot for CertmeshBridge {
     fn active_members(&self) -> Vec<integration::MemberSummary> {
-        let roster_path = koi_certmesh::ca::roster_path();
+        let roster_path = koi_certmesh::CertmeshPaths::default().roster_path();
         let Ok(roster) = koi_certmesh::roster::load_roster(&roster_path) else {
             return Vec::new();
         };

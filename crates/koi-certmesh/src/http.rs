@@ -285,7 +285,7 @@ async fn create_handler(
     let passphrase_clone = request.passphrase.clone();
     let paths_clone = state.paths.clone();
     let (ca_state, _master_key) = match tokio::task::spawn_blocking(move || {
-        crate::ca::create_ca_with_paths(&passphrase_clone, &entropy, &paths_clone)
+        crate::ca::create_ca(&passphrase_clone, &entropy, &paths_clone)
     })
     .await
     .map_err(|e| CertmeshError::Internal(format!("CA creation task: {e}")))
@@ -490,7 +490,7 @@ async fn unlock_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<UnlockRequest>,
 ) -> impl IntoResponse {
-    let ca_state = match crate::ca::load_ca_with_paths(&request.passphrase, &state.paths) {
+    let ca_state = match crate::ca::load_ca(&request.passphrase, &state.paths) {
         Ok(ca) => ca,
         Err(e) => {
             let code = koi_common::error::ErrorCode::from(&e);

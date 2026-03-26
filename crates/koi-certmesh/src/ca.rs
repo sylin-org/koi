@@ -3,8 +3,6 @@
 //! Creates ECDSA P-256 root CA certificates using `rcgen` and issues
 //! service certificates for mesh members signed by the CA.
 
-use std::path::PathBuf;
-
 use chrono::{DateTime, Duration, Utc};
 use koi_crypto::keys::{self, CaKeyPair, CryptoError};
 use koi_crypto::pinning;
@@ -13,14 +11,6 @@ use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsage
 use zeroize::Zeroizing;
 
 use crate::error::CertmeshError;
-
-const CA_DIR_NAME: &str = "certmesh";
-const CA_SUBDIR: &str = "ca";
-const CA_KEY_FILENAME: &str = "ca-key.enc";
-const CA_CERT_FILENAME: &str = "ca-cert.pem";
-const SLOT_TABLE_FILENAME: &str = "unlock-slots.json";
-const AUTH_FILENAME: &str = "auth.json";
-const ROSTER_FILENAME: &str = "roster.json";
 
 /// Certificate lifetime for issued service certificates.
 const CERT_LIFETIME_DAYS: i64 = 30;
@@ -55,61 +45,9 @@ pub struct IssuedCert {
     pub expires: DateTime<Utc>,
 }
 
-/// Directory where CA state is stored.
-pub fn ca_dir() -> PathBuf {
-    koi_common::paths::koi_data_dir()
-        .join(CA_DIR_NAME)
-        .join(CA_SUBDIR)
-}
-
-/// Directory where certmesh state is stored (parent of ca/).
-pub fn certmesh_dir() -> PathBuf {
-    koi_common::paths::koi_data_dir().join(CA_DIR_NAME)
-}
-
-/// Check if a CA has been initialized (encrypted key file exists).
-pub fn is_ca_initialized() -> bool {
-    ca_dir().join(CA_KEY_FILENAME).exists()
-}
-
-/// Path to the encrypted CA key file.
-pub fn ca_key_path() -> PathBuf {
-    ca_dir().join(CA_KEY_FILENAME)
-}
-
-/// Path to the CA certificate PEM file.
-pub fn ca_cert_path() -> PathBuf {
-    ca_dir().join(CA_CERT_FILENAME)
-}
-
-/// Path to the auth credential file.
-pub fn auth_path() -> PathBuf {
-    ca_dir().join(AUTH_FILENAME)
-}
-
-/// Path to the roster file.
-pub fn roster_path() -> PathBuf {
-    certmesh_dir().join(ROSTER_FILENAME)
-}
-
-/// Path to the unlock slot table.
-pub fn slot_table_path() -> PathBuf {
-    ca_dir().join(SLOT_TABLE_FILENAME)
-}
-
-/// Check whether envelope encryption (slot table) is active.
-pub fn has_slot_table() -> bool {
-    slot_table_path().exists()
-}
-
 /// Load the slot table from disk. Returns `None` if no slot table exists
 /// (legacy passphrase-direct encryption).
-pub fn load_slot_table() -> Result<Option<SlotTable>, CertmeshError> {
-    load_slot_table_from(&slot_table_path())
-}
-
-/// Load the slot table from an explicit path.
-pub fn load_slot_table_from(path: &std::path::Path) -> Result<Option<SlotTable>, CertmeshError> {
+pub fn load_slot_table(path: &std::path::Path) -> Result<Option<SlotTable>, CertmeshError> {
     if !path.exists() {
         return Ok(None);
     }
@@ -118,12 +56,7 @@ pub fn load_slot_table_from(path: &std::path::Path) -> Result<Option<SlotTable>,
 }
 
 /// Save the slot table to disk.
-pub fn save_slot_table(table: &SlotTable) -> Result<(), CertmeshError> {
-    save_slot_table_to(table, &slot_table_path())
-}
-
-/// Save the slot table to an explicit path.
-pub fn save_slot_table_to(table: &SlotTable, path: &std::path::Path) -> Result<(), CertmeshError> {
+pub fn save_slot_table(table: &SlotTable, path: &std::path::Path) -> Result<(), CertmeshError> {
     table
         .save(path)
         .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
@@ -153,7 +86,7 @@ fn build_ca_params() -> Result<CertificateParams, CertmeshError> {
     Ok(ca_params)
 }
 
-/// Create a new CA from scratch with envelope encryption.
+/// Create a new CA with envelope encryption.
 ///
 /// Generates a keypair, creates a self-signed root CA certificate,
 /// encrypts the key with a random master key, creates a slot table
@@ -162,14 +95,6 @@ fn build_ca_params() -> Result<CertificateParams, CertmeshError> {
 /// Returns the CA state and the master key (so callers can add
 /// additional unlock slots before discarding it).
 pub fn create_ca(
-    passphrase: &str,
-    entropy_seed: &[u8],
-) -> Result<(CaState, Zeroizing<[u8; 32]>), CertmeshError> {
-    create_ca_with_paths(passphrase, entropy_seed, &crate::CertmeshPaths::default())
-}
-
-/// Create a new CA using explicit paths (for testing or embedded usage).
-pub fn create_ca_with_paths(
     passphrase: &str,
     entropy_seed: &[u8],
     paths: &crate::CertmeshPaths,
@@ -203,13 +128,13 @@ pub fn create_ca_with_paths(
         unlock_slots::envelope_encrypt_new(&ca_key_der, passphrase)
             .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
-    keys::save_encrypted_key(&dir.join(CA_KEY_FILENAME), &encrypted_key)?;
+    keys::save_encrypted_key(&paths.ca_key_path(), &encrypted_key)?;
     slot_table
-        .save(&dir.join(SLOT_TABLE_FILENAME))
+        .save(&paths.slot_table_path())
         .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
     // Save CA certificate
-    std::fs::write(dir.join(CA_CERT_FILENAME), &cert_pem)?;
+    std::fs::write(paths.ca_cert_path(), &cert_pem)?;
 
     // Platform credential binding - seal the ciphertext in the OS
     // credential store so the key blob is machine-bound.
@@ -242,18 +167,9 @@ pub fn create_ca_with_paths(
 /// Supports both legacy (direct passphrase encryption) and envelope
 /// encryption (slot table). Legacy keys are auto-migrated to envelope
 /// encryption on load.
-pub fn load_ca(passphrase: &str) -> Result<CaState, CertmeshError> {
-    load_ca_with_paths(passphrase, &crate::CertmeshPaths::default())
-}
-
-/// Load an existing CA using explicit paths.
-pub fn load_ca_with_paths(
-    passphrase: &str,
-    paths: &crate::CertmeshPaths,
-) -> Result<CaState, CertmeshError> {
-    let dir = paths.ca_dir();
-    let key_path = dir.join(CA_KEY_FILENAME);
-    let slot_path = dir.join(SLOT_TABLE_FILENAME);
+pub fn load_ca(passphrase: &str, paths: &crate::CertmeshPaths) -> Result<CaState, CertmeshError> {
+    let key_path = paths.ca_key_path();
+    let slot_path = paths.slot_table_path();
 
     if !key_path.exists() {
         return Err(CertmeshError::CaNotInitialized);
@@ -306,17 +222,11 @@ pub fn load_ca_with_paths(
 ///
 /// Used when the master key was obtained via TOTP, FIDO2, or auto-unlock
 /// rather than passphrase.
-pub fn load_ca_with_master_key(master_key: &[u8; 32]) -> Result<CaState, CertmeshError> {
-    load_ca_with_master_key_paths(master_key, &crate::CertmeshPaths::default())
-}
-
-/// Load an existing CA using a pre-unwrapped master key and explicit paths.
-pub fn load_ca_with_master_key_paths(
+pub fn load_ca_with_master_key(
     master_key: &[u8; 32],
     paths: &crate::CertmeshPaths,
 ) -> Result<CaState, CertmeshError> {
-    let dir = paths.ca_dir();
-    let key_path = dir.join(CA_KEY_FILENAME);
+    let key_path = paths.ca_key_path();
 
     if !key_path.exists() {
         return Err(CertmeshError::CaNotInitialized);
@@ -433,8 +343,8 @@ pub fn ca_fingerprint(ca: &CaState) -> String {
 }
 
 /// Get the SHA-256 fingerprint of the CA certificate on disk.
-pub fn ca_fingerprint_from_disk() -> Result<String, CertmeshError> {
-    let cert_path = ca_cert_path();
+pub fn ca_fingerprint_from_disk(paths: &crate::CertmeshPaths) -> Result<String, CertmeshError> {
+    let cert_path = paths.ca_cert_path();
     if !cert_path.exists() {
         return Err(CertmeshError::CaNotInitialized);
     }
@@ -471,12 +381,15 @@ mod tests {
 
     #[test]
     fn is_ca_initialized_false_by_default() {
-        let _ = is_ca_initialized();
+        let paths = crate::CertmeshPaths::with_data_dir(std::path::PathBuf::from("/nonexistent"));
+        assert!(!paths.is_ca_initialized());
     }
 
     #[test]
     fn full_ca_and_issue_round_trip() {
-        let (ca, _master_key) = create_ca("test-pass", &test_entropy()).unwrap();
+        let entropy = test_entropy();
+        let paths = crate::CertmeshPaths::default();
+        let (ca, _master_key) = create_ca("test-pass", &entropy, &paths).unwrap();
         assert!(ca.cert_pem.contains("BEGIN CERTIFICATE"));
         assert!(!ca.cert_der.is_empty());
 

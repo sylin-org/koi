@@ -437,6 +437,8 @@ fn collect_select_many(prompt: &Prompt) -> anyhow::Result<String> {
             continue;
         }
 
+        selected_indices.sort();
+
         let labels: Vec<&str> = selected_indices
             .iter()
             .map(|&i| prompt.options[i].label.as_str())
@@ -452,55 +454,63 @@ fn collect_select_many(prompt: &Prompt) -> anyhow::Result<String> {
 }
 
 fn collect_text(prompt: &Prompt) -> anyhow::Result<String> {
-    println!();
-    let value = prompt_line(&format!("  {}: ", prompt.prompt))?;
-    if value.trim().is_empty() && prompt.required {
-        println!("  {} This field is required.", color::red("✗"));
-        return collect_text(prompt);
+    loop {
+        println!();
+        let value = prompt_line(&format!("  {}: ", prompt.prompt))?;
+        if value.trim().is_empty() && prompt.required {
+            println!("  {} This field is required.", color::red("✗"));
+            continue;
+        }
+        println!("  {} {}\n", color::green("✓"), prompt.prompt);
+        return Ok(value.trim().to_string());
     }
-    println!("  {} {}\n", color::green("✓"), prompt.prompt);
-    Ok(value.trim().to_string())
 }
 
 fn collect_secret(prompt: &Prompt) -> anyhow::Result<String> {
-    println!();
-    let value = prompt_line(&format!("  {}: ", prompt.prompt))?;
-    if value.is_empty() && prompt.required {
-        println!("  {} This field is required.", color::red("✗"));
-        return collect_secret(prompt);
+    loop {
+        println!();
+        let value = prompt_line(&format!("  {}: ", prompt.prompt))?;
+        if value.is_empty() && prompt.required {
+            println!("  {} This field is required.", color::red("✗"));
+            continue;
+        }
+        println!("  {} {}\n", color::green("✓"), color::dim("Set"));
+        return Ok(value);
     }
-    println!("  {} {}\n", color::green("✓"), color::dim("Set"));
-    Ok(value)
 }
 
 fn collect_secret_confirm(prompt: &Prompt) -> anyhow::Result<String> {
-    println!();
-    let first = prompt_line(&format!("  {}: ", prompt.prompt))?;
-    if first.is_empty() && prompt.required {
-        println!("  {} This field is required.", color::red("✗"));
-        return collect_secret_confirm(prompt);
+    loop {
+        println!();
+        let first = prompt_line(&format!("  {}: ", prompt.prompt))?;
+        if first.is_empty() && prompt.required {
+            println!("  {} This field is required.", color::red("✗"));
+            continue;
+        }
+        let confirm = prompt_line("  Confirm: ")?;
+        if first != confirm {
+            println!("  {} Values do not match. Try again.", color::red("✗"));
+            continue;
+        }
+        println!("  {} {}\n", color::green("✓"), color::dim("Set"));
+        return Ok(first);
     }
-    let confirm = prompt_line("  Confirm: ")?;
-    if first != confirm {
-        println!("  {} Values do not match. Try again.", color::red("✗"));
-        return collect_secret_confirm(prompt);
-    }
-    println!("  {} {}\n", color::green("✓"), color::dim("Set"));
-    Ok(first)
 }
 
 fn collect_code(prompt: &Prompt) -> anyhow::Result<String> {
-    println!();
-    let code = prompt_line(&format!(
-        "  {} ",
-        color::cyan(&format!("{}:", prompt.prompt))
-    ))?;
-    let cleaned = code.trim().replace(' ', "");
-    if cleaned.is_empty() {
-        println!("  {} Code cannot be empty.", color::red("✗"));
-        return collect_code(prompt);
+    loop {
+        println!();
+        let code = prompt_line(&format!(
+            "  {} ",
+            color::cyan(&format!("{}:", prompt.prompt))
+        ))?;
+        let cleaned = code.trim().replace(' ', "");
+        if cleaned.is_empty() {
+            println!("  {} Code cannot be empty.", color::red("✗"));
+            continue;
+        }
+        return Ok(cleaned);
     }
-    Ok(cleaned)
 }
 
 fn collect_entropy(prompt: &Prompt) -> anyhow::Result<String> {

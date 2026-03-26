@@ -352,7 +352,8 @@ impl SlotTable {
                     // Derive storage key from credential_id, decrypt slot_kek
                     let cred_derived_key = derive_fido2_storage_key(credential_id);
                     let cred_derived_hex = Zeroizing::new(hex_encode(&*cred_derived_key));
-                    let slot_kek = decrypt_bytes(encrypted_slot_kek, &cred_derived_hex)?;
+                    let slot_kek =
+                        Zeroizing::new(decrypt_bytes(encrypted_slot_kek, &cred_derived_hex)?);
                     let slot_kek_hex = Zeroizing::new(hex_encode(&slot_kek));
 
                     // Unwrap master key

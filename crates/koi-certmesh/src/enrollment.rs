@@ -201,7 +201,9 @@ mod tests {
 
     fn make_test_ca() -> CaState {
         let _ = koi_common::test::ensure_data_dir("koi-certmesh-enrollment-tests");
-        ca::create_ca("test-pass", &[42u8; 32]).unwrap().0
+        ca::create_ca("test-pass", &[42u8; 32], &crate::CertmeshPaths::default())
+            .unwrap()
+            .0
     }
 
     fn make_auth_and_code(

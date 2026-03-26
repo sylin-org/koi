@@ -23,7 +23,7 @@ const AUTO_UNLOCK_KEY_FILENAME: &str = "auto-unlock-key";
 /// Every path is derived from a single root `data_dir`. Production code
 /// constructs this via `Default` (which reads the platform data dir);
 /// test code injects a tempdir via `with_data_dir`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertmeshPaths {
     data_dir: PathBuf,
 }
@@ -91,7 +91,7 @@ impl CertmeshPaths {
 
     /// Auto-unlock key file.
     pub fn auto_unlock_key_path(&self) -> PathBuf {
-        self.data_dir.join(AUTO_UNLOCK_KEY_FILENAME)
+        self.certmesh_dir().join(AUTO_UNLOCK_KEY_FILENAME)
     }
 
     /// Check if CA has been initialized (encrypted key file exists on disk).
@@ -149,7 +149,7 @@ mod tests {
         );
         assert_eq!(
             paths.auto_unlock_key_path(),
-            PathBuf::from("/test/root/auto-unlock-key")
+            PathBuf::from("/test/root/certmesh/auto-unlock-key")
         );
     }
 

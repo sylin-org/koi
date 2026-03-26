@@ -717,11 +717,15 @@ impl KoiEmbedded {
 fn init_certmesh_core(
     data_dir: Option<&std::path::Path>,
 ) -> Option<Arc<koi_certmesh::CertmeshCore>> {
-    if !koi_certmesh::ca::is_ca_initialized() {
+    let paths = match data_dir {
+        Some(dir) => koi_certmesh::CertmeshPaths::with_data_dir(dir.to_path_buf()),
+        None => koi_certmesh::CertmeshPaths::default(),
+    };
+    if !paths.is_ca_initialized() {
         return Some(Arc::new(koi_certmesh::CertmeshCore::uninitialized()));
     }
 
-    let roster_path = koi_certmesh::ca::roster_path();
+    let roster_path = paths.roster_path();
     let roster = match koi_certmesh::roster::load_roster(&roster_path) {
         Ok(r) => r,
         Err(_) => {
@@ -739,11 +743,11 @@ fn init_certmesh_core(
     let auto_key_path = resolved_data_dir.join("auto-unlock-key");
     if let Ok(pp) = std::fs::read_to_string(&auto_key_path) {
         if !pp.is_empty() {
-            match koi_certmesh::ca::load_ca(&pp) {
+            match koi_certmesh::ca::load_ca(&pp, &paths) {
                 Ok(ca_state) => {
                     // Reload roster (fresh copy for the new Arc)
                     if let Ok(fresh_roster) = koi_certmesh::roster::load_roster(&roster_path) {
-                        let auth_path = koi_certmesh::ca::auth_path();
+                        let auth_path = paths.auth_path();
                         let auth = if auth_path.exists() {
                             std::fs::read_to_string(&auth_path)
                                 .ok()
@@ -953,7 +957,7 @@ impl CertmeshBridgeEmbedded {
 
 impl koi_common::integration::CertmeshSnapshot for CertmeshBridgeEmbedded {
     fn active_members(&self) -> Vec<koi_common::integration::MemberSummary> {
-        let roster_path = koi_certmesh::ca::roster_path();
+        let roster_path = koi_certmesh::CertmeshPaths::default().roster_path();
         let Ok(roster) = koi_certmesh::roster::load_roster(&roster_path) else {
             return Vec::new();
         };

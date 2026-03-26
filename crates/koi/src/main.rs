@@ -842,12 +842,13 @@ pub(crate) struct DaemonCores {
 /// If a CA is initialized, creates a locked core with the roster.
 /// If not initialized, creates an uninitialized core (routes are reachable for `/create`).
 pub(crate) fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
-    if !koi_certmesh::ca::is_ca_initialized() {
+    let paths = koi_certmesh::CertmeshPaths::default();
+    if !paths.is_ca_initialized() {
         tracing::info!("Certmesh: CA not initialized - routes mounted for /create");
         return Some(Arc::new(koi_certmesh::CertmeshCore::uninitialized()));
     }
 
-    let roster_path = koi_certmesh::ca::roster_path();
+    let roster_path = paths.roster_path();
     let roster = match koi_certmesh::roster::load_roster(&roster_path) {
         Ok(r) => r,
         Err(e) => {
@@ -1097,7 +1098,7 @@ fn spawn_certmesh_background_tasks(
                     let pinned_fp = cm
                         .pinned_ca_fingerprint()
                         .await
-                        .or_else(|| koi_certmesh::ca::ca_fingerprint_from_disk().ok());
+                        .or_else(|| koi_certmesh::ca::ca_fingerprint_from_disk(&koi_certmesh::CertmeshPaths::default()).ok());
 
                     let Some(pinned_fp) = pinned_fp else {
                         continue;

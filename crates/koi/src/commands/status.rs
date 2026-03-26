@@ -101,7 +101,7 @@ fn offline_capabilities(config: &Config) -> Vec<CapabilityStatus> {
             healthy: false,
         });
     } else {
-        let certmesh_summary = if koi_certmesh::ca::is_ca_initialized() {
+        let certmesh_summary = if koi_certmesh::CertmeshPaths::default().is_ca_initialized() {
             "CA initialized (daemon not running)".to_string()
         } else {
             "CA not initialized".to_string()

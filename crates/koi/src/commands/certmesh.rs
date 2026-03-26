@@ -739,15 +739,13 @@ pub async fn promote(
         koi_certmesh::failover::accept_promotion(&promote_response, client_kp)?;
 
     // Save to local disk
-    let ca_dir = koi_certmesh::ca::ca_dir();
+    let paths = koi_certmesh::CertmeshPaths::default();
+    let ca_dir = paths.ca_dir();
     std::fs::create_dir_all(&ca_dir)?;
 
     let encrypted_key = koi_crypto::keys::encrypt_key(&ca_key, &passphrase)?;
-    koi_crypto::keys::save_encrypted_key(&koi_certmesh::ca::ca_key_path(), &encrypted_key)?;
-    std::fs::write(
-        koi_certmesh::ca::ca_cert_path(),
-        &promote_response.ca_cert_pem,
-    )?;
+    koi_crypto::keys::save_encrypted_key(&paths.ca_key_path(), &encrypted_key)?;
+    std::fs::write(paths.ca_cert_path(), &promote_response.ca_cert_pem)?;
 
     // Persist auth credential to auth.json
     let stored = match &auth_state {
@@ -757,19 +755,19 @@ pub async fn promote(
         koi_crypto::auth::AuthState::Fido2(cred) => koi_crypto::auth::store_fido2(cred.clone()),
     };
     let auth_json = serde_json::to_string_pretty(&stored)?;
-    std::fs::write(koi_certmesh::ca::auth_path(), auth_json)?;
+    std::fs::write(paths.auth_path(), auth_json)?;
 
-    koi_certmesh::roster::save_roster(&roster, &koi_certmesh::ca::roster_path())?;
+    koi_certmesh::roster::save_roster(&roster, &paths.roster_path())?;
 
     // Update local member role to Standby
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "localhost".to_string());
 
-    let mut roster = koi_certmesh::roster::load_roster(&koi_certmesh::ca::roster_path())?;
+    let mut roster = koi_certmesh::roster::load_roster(&paths.roster_path())?;
     if let Some(member) = roster.find_member_mut(&hostname) {
         member.role = koi_certmesh::roster::MemberRole::Standby;
-        koi_certmesh::roster::save_roster(&roster, &koi_certmesh::ca::roster_path())?;
+        koi_certmesh::roster::save_roster(&roster, &paths.roster_path())?;
     }
 
     let _ = koi_certmesh::audit::append_entry("promoted_to_standby", &[("hostname", &hostname)]);

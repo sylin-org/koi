@@ -901,7 +901,7 @@ fn eval_unlock(
     _render: &RenderHints,
 ) -> EvalResult {
     // Determine available unlock methods from the slot table
-    let slot_table_path = crate::ca::slot_table_path();
+    let slot_table_path = crate::CertmeshPaths::default().slot_table_path();
     let available_methods = if slot_table_path.exists() {
         match koi_crypto::unlock_slots::SlotTable::load(&slot_table_path) {
             Ok(table) => table

@@ -630,7 +630,7 @@ impl CertmeshCore {
 
     /// Unlock the CA with a passphrase.
     pub async fn unlock(&self, passphrase: &str) -> Result<(), CertmeshError> {
-        let ca_state = ca::load_ca(passphrase)?;
+        let ca_state = ca::load_ca(passphrase, &self.state.paths)?;
 
         // Load auth credential from auth.json
         let auth_path = self.state.paths.auth_path();
@@ -657,7 +657,7 @@ impl CertmeshCore {
     /// the slot table's embedded TOTP shared_secret for verification
     /// if auth gating is needed.
     pub async fn unlock_with_master_key(&self, master_key: &[u8; 32]) -> Result<(), CertmeshError> {
-        let ca_state = ca::load_ca_with_master_key(master_key)?;
+        let ca_state = ca::load_ca_with_master_key(master_key, &self.state.paths)?;
         *self.state.ca.lock().await = Some(ca_state);
         tracing::info!("CA unlocked via master key (non-passphrase slot)");
         Ok(())
@@ -668,11 +668,12 @@ impl CertmeshCore {
     /// Loads the slot table, verifies the TOTP code, unwraps the master
     /// key, and decrypts the CA key.
     pub async fn unlock_with_totp(&self, code: &str) -> Result<(), CertmeshError> {
-        let slot_table = ca::load_slot_table()?.ok_or_else(|| {
-            CertmeshError::NoSlotFound(
-                "no slot table found - pond may use legacy passphrase format".into(),
-            )
-        })?;
+        let slot_table =
+            ca::load_slot_table(&self.state.paths.slot_table_path())?.ok_or_else(|| {
+                CertmeshError::NoSlotFound(
+                    "no slot table found - pond may use legacy passphrase format".into(),
+                )
+            })?;
 
         if !slot_table.has_totp_slot() {
             return Err(CertmeshError::NoSlotFound(
@@ -698,11 +699,12 @@ impl CertmeshCore {
     /// This function performs the cryptographic unwrap using the
     /// credential ID.
     pub async fn unlock_with_fido2(&self, credential_id: &[u8]) -> Result<(), CertmeshError> {
-        let slot_table = ca::load_slot_table()?.ok_or_else(|| {
-            CertmeshError::NoSlotFound(
-                "no slot table found - pond may use legacy passphrase format".into(),
-            )
-        })?;
+        let slot_table =
+            ca::load_slot_table(&self.state.paths.slot_table_path())?.ok_or_else(|| {
+                CertmeshError::NoSlotFound(
+                    "no slot table found - pond may use legacy passphrase format".into(),
+                )
+            })?;
 
         if slot_table.fido2_credential().is_none() {
             return Err(CertmeshError::NoSlotFound(
@@ -783,9 +785,11 @@ impl CertmeshCore {
             Self::save_auto_unlock_key(passphrase)?;
 
             // Mark auto-unlock in the slot table (if it exists)
-            if let Some(mut table) = ca::load_slot_table()? {
+            let paths = CertmeshPaths::default();
+            let slot_path = paths.slot_table_path();
+            if let Some(mut table) = ca::load_slot_table(&slot_path)? {
                 table.add_auto_unlock();
-                ca::save_slot_table(&table)?;
+                ca::save_slot_table(&table, &slot_path)?;
             }
         }
         Ok(())
@@ -986,7 +990,7 @@ impl CertmeshCore {
             return Err(CertmeshError::CaNotInitialized);
         }
 
-        let ca_state = ca::load_ca(ca_passphrase)?;
+        let ca_state = ca::load_ca(ca_passphrase, &self.state.paths)?;
 
         // Load auth state for backup
         let auth_path = self.state.paths.auth_path();
@@ -1063,7 +1067,7 @@ impl CertmeshCore {
         let restored_roster: Roster = serde_json::from_str(&payload.roster_json)
             .map_err(|e| CertmeshError::Internal(format!("roster deserialization failed: {e}")))?;
 
-        let ca_state = ca::load_ca(new_passphrase)?;
+        let ca_state = ca::load_ca(new_passphrase, &self.state.paths)?;
         *self.state.ca.lock().await = Some(ca_state);
         *self.state.auth.lock().await = Some(auth_state);
         *self.state.profile.lock().await = restored_roster.metadata.trust_profile;
@@ -1559,13 +1563,14 @@ pub(crate) fn build_status(
     profile: &TrustProfile,
     auth_method: Option<&str>,
 ) -> protocol::CertmeshStatus {
+    let paths = CertmeshPaths::default();
     let ca_fingerprint = match ca_guard {
         Some(ca) => Some(ca::ca_fingerprint(ca)),
-        None => ca::ca_fingerprint_from_disk().ok(),
+        None => ca::ca_fingerprint_from_disk(&paths).ok(),
     };
 
     protocol::CertmeshStatus {
-        ca_initialized: ca::is_ca_initialized(),
+        ca_initialized: paths.is_ca_initialized(),
         ca_locked: ca_guard.is_none(),
         ca_fingerprint,
         profile: *profile,
@@ -1597,7 +1602,9 @@ mod tests {
 
     fn make_test_ca() -> ca::CaState {
         let _ = koi_common::test::ensure_data_dir("koi-certmesh-core-tests");
-        ca::create_ca("test-pass", &[42u8; 32]).unwrap().0
+        ca::create_ca("test-pass", &[42u8; 32], &CertmeshPaths::default())
+            .unwrap()
+            .0
     }
 
     fn make_test_roster_with_member(hostname: &str, role: MemberRole) -> Roster {
@@ -2346,7 +2353,7 @@ mod tests {
         // When no CA files exist on disk this is a healthy "ready" state.
         // On a dev machine with existing CA files it appears as "CA locked"
         // because the filesystem check sees them but the core has no loaded CA.
-        if ca::is_ca_initialized() {
+        if CertmeshPaths::default().is_ca_initialized() {
             assert!(!status.healthy);
             assert!(
                 status.summary.contains("locked"),
