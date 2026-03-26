@@ -158,7 +158,7 @@ impl KoiHandle {
             .as_ref()
             .ok_or(KoiError::DisabledCapability("vault (no data_dir)"))?;
         koi_crypto::vault::Vault::open(dir).map_err(|e| {
-            KoiError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            KoiError::Io(std::io::Error::other(e.to_string()))
         })
     }
 

@@ -344,8 +344,10 @@ mod tests {
 
     #[test]
     fn persistence_across_open() {
-        // Force machine-bound backend for deterministic key derivation in tests
-        std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+        // ensure_data_dir sets KOI_NO_CREDENTIAL_STORE=1, which forces
+        // the machine-bound backend for deterministic key derivation.
+        // Using the shared helper avoids env var races with parallel tests.
+        let _ = koi_common::test::ensure_data_dir("koi-vault-persist-tests");
         let tmp = tempfile::tempdir().unwrap();
         {
             let vault = Vault::open(tmp.path()).unwrap();
@@ -358,6 +360,5 @@ mod tests {
                 Some("hello".to_string())
             );
         }
-        std::env::remove_var("KOI_NO_CREDENTIAL_STORE");
     }
 }
