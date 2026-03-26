@@ -1,6 +1,6 @@
 # ADR-012: Post-v0.2 Consolidation Roadmap
 
-**Status:** Proposed
+**Status:** Accepted (executed 2026-03-25)
 **Date:** 2026-03-25
 **Depends on:** ADR-011 (Security & Architecture Overhaul)
 
@@ -266,36 +266,38 @@ Replace `CorsLayer::permissive()` with:
 **Risk:** Low — independent, non-breaking additions.
 **Estimated scope:** Small per item.
 
-### 7.1 Factory reset command
+### 7.1 Factory reset command — DONE (commit 1d02de4)
 
-`koi factory-reset` — destroys entire data directory and recreates from scratch. Equivalent to `koi certmesh destroy` + clearing mDNS registrations + removing state files.
+`koi factory-reset` with RESET confirmation, daemon shutdown, full data dir wipe.
 
-### 7.2 FIDO2 CLI input support
+### 7.2 FIDO2 CLI input support — DEFERRED
 
-Wire FIDO2 hardware key input in `ceremony_cli.rs`. Currently hard-coded `bail!()`. Requires platform-specific authenticator library integration.
+Requires platform authenticator library (ctap-hid-fido2 or webauthn-authenticator-rs).
+Rust ecosystem support is immature. Remains behind `bail!()` in ceremony_cli.rs.
 
-### 7.3 SelectMany ceremony input
+### 7.3 SelectMany ceremony input — DONE (commit 1d02de4)
 
-Implement multi-select input in the ceremony CLI render loop. Currently falls back to text.
+Numbered options with comma-separated selection, "all", empty, dedup, validation.
 
-### 7.4 SSE event replay (ring buffer)
+### 7.4 SSE event replay (ring buffer) — DEFERRED
 
-Phase 2 of the SSE Event IDs proposal: bounded ring buffer for event replay on `Last-Event-ID` reconnection.
+New feature work, not consolidation debt. Requires bounded ring buffer in
+broadcast system + `Last-Event-ID` header parsing in SSE handlers.
 
-### 7.5 FIDO2 unlock redesign (ADR-011 WS-3)
+### 7.5 FIDO2 unlock redesign (ADR-011 WS-3) — DEFERRED
 
-Gate behind `#[cfg(feature = "fido2-unlock")]` (already done). Full redesign: platform credential store sealing + strict sign_count enforcement.
+Same platform authenticator dependency as 7.2. Gated behind
+`#[cfg(feature = "fido2-unlock")]` (off by default).
 
-### 7.6 Auto-unlock via platform credential store (ADR-011 WS-5)
+### 7.6 Auto-unlock via vault — DONE (commit 1d02de4)
 
-Seal passphrase in DPAPI (Win), Keychain (Mac), Secret Service (Linux). Fallback to 0600-permission file with warning.
+Migrated from custom dual-backend (platform store + file) to
+`Vault::store/retrieve/delete("certmesh-auto-unlock")`.
+~60 lines of manual crypto/file code replaced by 3 vault calls.
 
-**Update (e94ffbd):** The new `koi-crypto::vault` module already implements
-this pattern generically (keyring-first, Argon2id-from-machine-ID fallback).
-`CertmeshCore::save_auto_unlock_key` / `try_auto_unlock` should migrate to
-store the passphrase via `Vault::store("certmesh-auto-unlock", passphrase)`
-instead of reimplementing the same dual-backend logic. This collapses WS-5
-into a thin wrapper around the vault.
+### 7.7 Dashboard enhancements (KOI-0002 phases 7.2–7.4) — DEFERRED
+
+New feature work: browser actions, additional pages, WebSocket upgrade.
 
 ### 7.7 Dashboard enhancements (KOI-0002 phases 7.2–7.4)
 
