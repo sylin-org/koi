@@ -121,11 +121,16 @@ Replace unbounded `mpsc` in the mDNS daemon worker with bounded `sync_channel(25
 
 ## Block 4: Cross-Domain Trait Boundaries (ADR-011 WS-7)
 
-**Goal:** Domain crates depend only on `koi-common`, never on each other.
-**Risk:** Medium — architectural refactor, but no behavior change.
-**Estimated scope:** Medium-large.
+**Status:** SKIP — verified 2026-03-25 that zero cross-domain imports exist.
+The domain boundary model was implemented correctly from the start.
+ADR-011's description of cross-domain imports was prospective (proposed
+architecture), not a finding about current code.
 
-Currently `koi-health` imports `koi-proxy`, `koi-dns`, `koi-certmesh`, `koi-mdns` for read-only data. This violates the domain boundary model stated in CONTEXT.md.
+~~**Goal:** Domain crates depend only on `koi-common`, never on each other.~~
+~~**Risk:** Medium — architectural refactor, but no behavior change.~~
+~~**Estimated scope:** Medium-large.~~
+
+~~Currently `koi-health` imports `koi-proxy`, `koi-dns`, `koi-certmesh`, `koi-mdns` for read-only data. This violates the domain boundary model stated in CONTEXT.md.~~
 
 ### 4.1 Define integration traits in `koi-common`
 
@@ -199,10 +204,8 @@ Currently stored as plaintext hex in `unlock-slots.json`. Encrypt with a key der
 
 ### 5.4 Inject storage paths via CertmeshState (from Block 1.1)
 
-Move `ca_dir()`, `roster_path()`, etc. from free functions into `CertmeshState` fields. This enables:
-- Test isolation (tempdir injection)
-- Future multi-instance support
-- Cleaner domain boundary (state owns its storage context)
+**Status:** DONE (commit dc843b6). `CertmeshPaths` struct added to
+`CertmeshState`, all internal callsites migrated.
 
 ---
 

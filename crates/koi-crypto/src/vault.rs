@@ -25,6 +25,7 @@ use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 const VAULT_DIR: &str = "vault";
 const SECRETS_FILE: &str = "secrets.json";
@@ -51,7 +52,7 @@ pub enum VaultError {
 /// Encrypted key-value vault with platform-adaptive master key protection.
 pub struct Vault {
     vault_dir: PathBuf,
-    master_key: [u8; MASTER_KEY_LEN],
+    master_key: Zeroizing<[u8; MASTER_KEY_LEN]>,
     backend_name: &'static str,
 }
 
@@ -120,18 +121,18 @@ impl Vault {
     // ── Master Key Backends ───────────────────────────────────────────
 
     /// Load master key from platform credential store, or create + seal a new one.
-    fn load_or_create_keyring_master() -> Result<[u8; MASTER_KEY_LEN], VaultError> {
+    fn load_or_create_keyring_master() -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, VaultError> {
         match crate::tpm::unseal_key_material(KEYRING_LABEL) {
             Ok(data) if data.len() == MASTER_KEY_LEN => {
-                let mut key = [0u8; MASTER_KEY_LEN];
+                let mut key = Zeroizing::new([0u8; MASTER_KEY_LEN]);
                 key.copy_from_slice(&data);
                 Ok(key)
             }
             _ => {
                 // Generate new master key and seal it
-                let mut key = [0u8; MASTER_KEY_LEN];
-                rand::rng().fill_bytes(&mut key);
-                crate::tpm::seal_key_material(KEYRING_LABEL, &key)
+                let mut key = Zeroizing::new([0u8; MASTER_KEY_LEN]);
+                rand::rng().fill_bytes(key.as_mut());
+                crate::tpm::seal_key_material(KEYRING_LABEL, &*key)
                     .map_err(|e| VaultError::MasterKey(e.to_string()))?;
                 tracing::info!("Vault master key created and sealed in platform credential store");
                 Ok(key)
@@ -140,7 +141,7 @@ impl Vault {
     }
 
     /// Derive master key from machine-specific identity (fallback).
-    fn derive_machine_master() -> Result<[u8; MASTER_KEY_LEN], VaultError> {
+    fn derive_machine_master() -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, VaultError> {
         let machine_id = get_machine_id()
             .map_err(|e| VaultError::MasterKey(format!("machine ID unavailable: {e}")))?;
 
@@ -149,9 +150,9 @@ impl Vault {
             .map_err(|e| VaultError::MasterKey(e.to_string()))?;
         let argon2 = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
 
-        let mut key = [0u8; MASTER_KEY_LEN];
+        let mut key = Zeroizing::new([0u8; MASTER_KEY_LEN]);
         argon2
-            .hash_password_into(machine_id.as_bytes(), &salt[..16], &mut key)
+            .hash_password_into(machine_id.as_bytes(), &salt[..16], key.as_mut())
             .map_err(|e| VaultError::MasterKey(e.to_string()))?;
         Ok(key)
     }
@@ -159,7 +160,7 @@ impl Vault {
     // ── Encryption ────────────────────────────────────────────────────
 
     fn encrypt(&self, plaintext: &str) -> Result<EncryptedEntry, VaultError> {
-        let cipher = Aes256Gcm::new_from_slice(&self.master_key)
+        let cipher = Aes256Gcm::new_from_slice(&*self.master_key)
             .map_err(|e| VaultError::Encryption(e.to_string()))?;
 
         let mut nonce_bytes = [0u8; NONCE_LEN];
@@ -177,7 +178,7 @@ impl Vault {
     }
 
     fn decrypt(&self, entry: &EncryptedEntry) -> Result<String, VaultError> {
-        let cipher = Aes256Gcm::new_from_slice(&self.master_key)
+        let cipher = Aes256Gcm::new_from_slice(&*self.master_key)
             .map_err(|e| VaultError::Decryption(e.to_string()))?;
 
         let nonce_arr: [u8; NONCE_LEN] = entry
@@ -225,13 +226,6 @@ impl Vault {
         }
 
         Ok(())
-    }
-}
-
-impl Drop for Vault {
-    fn drop(&mut self) {
-        // Zeroize master key when vault is dropped
-        self.master_key.iter_mut().for_each(|b| *b = 0);
     }
 }
 

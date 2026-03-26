@@ -5,6 +5,7 @@
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use koi_crypto::keys::{decrypt_bytes, encrypt_bytes, EncryptedKey};
 
@@ -58,8 +59,10 @@ pub fn encode_backup(payload: &BackupPayload, passphrase: &str) -> Result<Vec<u8
 
 pub fn decode_backup(bytes: &[u8], passphrase: &str) -> Result<BackupPayload, CertmeshError> {
     let encrypted = decode_envelope(bytes)?;
-    let plaintext = decrypt_bytes(&encrypted, passphrase)
-        .map_err(|e| CertmeshError::BackupInvalid(e.to_string()))?;
+    let plaintext = Zeroizing::new(
+        decrypt_bytes(&encrypted, passphrase)
+            .map_err(|e| CertmeshError::BackupInvalid(e.to_string()))?,
+    );
     serde_json::from_slice(&plaintext).map_err(|e| CertmeshError::BackupInvalid(e.to_string()))
 }
 

@@ -10,6 +10,7 @@ use koi_crypto::keys::{self, CaKeyPair, CryptoError};
 use koi_crypto::pinning;
 use koi_crypto::unlock_slots::{self, SlotTable};
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose, SanType};
+use zeroize::Zeroizing;
 
 use crate::error::CertmeshError;
 
@@ -166,7 +167,7 @@ fn build_ca_params() -> Result<CertificateParams, CertmeshError> {
 pub fn create_ca(
     passphrase: &str,
     entropy_seed: &[u8],
-) -> Result<(CaState, [u8; 32]), CertmeshError> {
+) -> Result<(CaState, Zeroizing<[u8; 32]>), CertmeshError> {
     create_ca_with_paths(passphrase, entropy_seed, &crate::CertmeshPaths::default())
 }
 
@@ -175,7 +176,7 @@ pub fn create_ca_with_paths(
     passphrase: &str,
     entropy_seed: &[u8],
     paths: &crate::CertmeshPaths,
-) -> Result<(CaState, [u8; 32]), CertmeshError> {
+) -> Result<(CaState, Zeroizing<[u8; 32]>), CertmeshError> {
     let ca_key = keys::generate_ca_keypair(entropy_seed)
         .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 

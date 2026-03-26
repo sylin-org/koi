@@ -29,6 +29,7 @@
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::keys::{decrypt_bytes, encrypt_bytes, CryptoError, EncryptedKey};
 use koi_common::encoding::{hex_decode, hex_encode};
@@ -133,7 +134,7 @@ impl SlotTable {
     pub fn unwrap_with_passphrase(
         &self,
         passphrase: &str,
-    ) -> Result<[u8; MASTER_KEY_LEN], CryptoError> {
+    ) -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, CryptoError> {
         for slot in &self.slots {
             if let UnlockSlot::Passphrase {
                 wrapped_master_key, ..
@@ -177,7 +178,7 @@ impl SlotTable {
         self.slots.retain(|s| !matches!(s, UnlockSlot::Totp { .. }));
 
         let slot_kek = derive_totp_slot_kek(shared_secret);
-        let slot_kek_hex = hex_encode(&slot_kek);
+        let slot_kek_hex = Zeroizing::new(hex_encode(&*slot_kek));
         let wrapped = encrypt_bytes(master_key, &slot_kek_hex)?;
 
         // Try platform credential store first; fallback uses a random key
@@ -192,7 +193,7 @@ impl SlotTable {
                     // Direct seal failed — try the fallback: encrypt with a random key
                     // that is itself sealed in the credential store.
                     let fallback_key = get_or_create_fallback_key()?;
-                    let fallback_hex = hex_encode(&fallback_key);
+                    let fallback_hex = Zeroizing::new(hex_encode(&*fallback_key));
                     let enc = encrypt_bytes(shared_secret, &fallback_hex)?;
                     tracing::info!("TOTP shared secret encrypted with sealed fallback key");
                     (false, Some(enc))
@@ -214,7 +215,7 @@ impl SlotTable {
     /// Recovers the shared secret from the platform credential store,
     /// encrypted fallback, or legacy plaintext field, then verifies the
     /// code and unwraps the master key.
-    pub fn unwrap_with_totp(&self, code: &str) -> Result<[u8; MASTER_KEY_LEN], CryptoError> {
+    pub fn unwrap_with_totp(&self, code: &str) -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, CryptoError> {
         for slot in &self.slots {
             if let UnlockSlot::Totp {
                 sealed,
@@ -227,7 +228,7 @@ impl SlotTable {
                 // 1. Platform credential store (sealed == true)
                 // 2. Machine-key encrypted fallback
                 // 3. Legacy plaintext hex (backward compat)
-                let secret_bytes = if *sealed {
+                let secret_bytes = Zeroizing::new(if *sealed {
                     crate::tpm::unseal_key_material(TOTP_CREDENTIAL_LABEL).map_err(|e| {
                         CryptoError::Decryption(format!(
                             "failed to unseal TOTP secret from platform store: {e}"
@@ -239,7 +240,7 @@ impl SlotTable {
                             "failed to retrieve TOTP fallback key: {e}"
                         ))
                     })?;
-                    let fallback_hex = hex_encode(&fallback_key);
+                    let fallback_hex = Zeroizing::new(hex_encode(&*fallback_key));
                     decrypt_bytes(enc, &fallback_hex).map_err(|e| {
                         CryptoError::Decryption(format!(
                             "failed to decrypt TOTP secret with fallback key: {e}"
@@ -258,9 +259,9 @@ impl SlotTable {
                     return Err(CryptoError::Decryption(
                         "TOTP slot has no recoverable secret".into(),
                     ));
-                };
+                });
 
-                let secret = crate::totp::TotpSecret::from_bytes(secret_bytes.clone());
+                let secret = crate::totp::TotpSecret::from_bytes(secret_bytes.to_vec());
 
                 // Verify TOTP code
                 if !crate::totp::verify_code(&secret, code) {
@@ -269,8 +270,8 @@ impl SlotTable {
 
                 // Derive slot_kek and unwrap
                 let slot_kek = derive_totp_slot_kek(&secret_bytes);
-                drop(secret_bytes); // Free the Vec (allocator may reuse; not a secure zeroize)
-                let slot_kek_hex = hex_encode(&slot_kek);
+                drop(secret_bytes);
+                let slot_kek_hex = Zeroizing::new(hex_encode(&*slot_kek));
                 let bytes = decrypt_bytes(wrapped_master_key, &slot_kek_hex)?;
                 return bytes_to_master_key(&bytes);
             }
@@ -301,15 +302,16 @@ impl SlotTable {
             .retain(|s| !matches!(s, UnlockSlot::Fido2 { .. }));
 
         // Generate a random slot_kek and wrap the master key
-        let mut slot_kek = [0u8; 32];
-        rand::rng().fill_bytes(&mut slot_kek);
-        let slot_kek_hex = hex_encode(&slot_kek);
+        let mut slot_kek = Zeroizing::new([0u8; 32]);
+        rand::rng().fill_bytes(slot_kek.as_mut());
+        let slot_kek_hex = Zeroizing::new(hex_encode(slot_kek.as_ref()));
         let wrapped = encrypt_bytes(master_key, &slot_kek_hex)?;
 
         // Encrypt the slot_kek with a key derived from credential_id
         // This is a software gate - the real gate is assertion verification
         let cred_derived_key = derive_fido2_storage_key(credential_id);
-        let encrypted_slot_kek = encrypt_bytes(&slot_kek, &hex_encode(&cred_derived_key))?;
+        let cred_derived_hex = Zeroizing::new(hex_encode(&*cred_derived_key));
+        let encrypted_slot_kek = encrypt_bytes(&*slot_kek, &cred_derived_hex)?;
 
         self.slots.push(UnlockSlot::Fido2 {
             credential_id: b64.encode(credential_id),
@@ -330,7 +332,7 @@ impl SlotTable {
     pub fn unwrap_with_fido2(
         &self,
         credential_id: &[u8],
-    ) -> Result<[u8; MASTER_KEY_LEN], CryptoError> {
+    ) -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, CryptoError> {
         use base64::Engine;
         let b64 = base64::engine::general_purpose::STANDARD;
         let target_id = b64.encode(credential_id);
@@ -346,9 +348,10 @@ impl SlotTable {
                 if stored_id == &target_id {
                     // Derive storage key from credential_id, decrypt slot_kek
                     let cred_derived_key = derive_fido2_storage_key(credential_id);
+                    let cred_derived_hex = Zeroizing::new(hex_encode(&*cred_derived_key));
                     let slot_kek =
-                        decrypt_bytes(encrypted_slot_kek, &hex_encode(&cred_derived_key))?;
-                    let slot_kek_hex = hex_encode(&slot_kek);
+                        decrypt_bytes(encrypted_slot_kek, &cred_derived_hex)?;
+                    let slot_kek_hex = Zeroizing::new(hex_encode(&slot_kek));
 
                     // Unwrap master key
                     let bytes = decrypt_bytes(wrapped_master_key, &slot_kek_hex)?;
@@ -474,9 +477,9 @@ pub struct Fido2SlotInfo {
 // ── Key derivation helpers ──────────────────────────────────────────
 
 /// Generate a fresh random master key.
-pub fn generate_master_key() -> [u8; MASTER_KEY_LEN] {
-    let mut key = [0u8; MASTER_KEY_LEN];
-    rand::rng().fill_bytes(&mut key);
+pub fn generate_master_key() -> Zeroizing<[u8; MASTER_KEY_LEN]> {
+    let mut key = Zeroizing::new([0u8; MASTER_KEY_LEN]);
+    rand::rng().fill_bytes(key.as_mut());
     key
 }
 
@@ -486,12 +489,12 @@ pub fn generate_master_key() -> [u8; MASTER_KEY_LEN] {
 /// We use a simple HKDF-extract + expand since we don't have hkdf as
 /// a dependency. The shared_secret has enough entropy (256 bits) that
 /// a single SHA-256 pass is sufficient.
-fn derive_totp_slot_kek(shared_secret: &[u8]) -> [u8; 32] {
+fn derive_totp_slot_kek(shared_secret: &[u8]) -> Zeroizing<[u8; 32]> {
     let mut hasher = Sha256::new();
     hasher.update(shared_secret);
     hasher.update(TOTP_SLOT_HKDF_INFO);
     let result = hasher.finalize();
-    let mut kek = [0u8; 32];
+    let mut kek = Zeroizing::new([0u8; 32]);
     kek.copy_from_slice(&result);
     kek
 }
@@ -504,20 +507,20 @@ const TOTP_FALLBACK_KEY_LABEL: &str = "koi-certmesh-totp-fallback-key";
 ///
 /// Unlike the previous hostname-derived key, this key is truly random and
 /// machine-bound (only the platform store can unseal it).
-fn get_or_create_fallback_key() -> Result<[u8; 32], CryptoError> {
+fn get_or_create_fallback_key() -> Result<Zeroizing<[u8; 32]>, CryptoError> {
     // Try to retrieve an existing fallback key
     if let Ok(bytes) = crate::tpm::unseal_key_material(TOTP_FALLBACK_KEY_LABEL) {
         if bytes.len() == 32 {
-            let mut key = [0u8; 32];
+            let mut key = Zeroizing::new([0u8; 32]);
             key.copy_from_slice(&bytes);
             return Ok(key);
         }
     }
     // Generate and seal a new random key, then re-read to confirm
     // (handles concurrent initialization where the second writer wins).
-    let mut key = [0u8; 32];
-    rand::rng().fill_bytes(&mut key);
-    crate::tpm::seal_key_material(TOTP_FALLBACK_KEY_LABEL, &key).map_err(|e| {
+    let mut key = Zeroizing::new([0u8; 32]);
+    rand::rng().fill_bytes(key.as_mut());
+    crate::tpm::seal_key_material(TOTP_FALLBACK_KEY_LABEL, &*key).map_err(|e| {
         CryptoError::Encryption(format!(
             "cannot seal TOTP fallback key in platform credential store: {e}"
         ))
@@ -526,7 +529,7 @@ fn get_or_create_fallback_key() -> Result<[u8; 32], CryptoError> {
     let confirmed = crate::tpm::unseal_key_material(TOTP_FALLBACK_KEY_LABEL)
         .map_err(|e| CryptoError::Encryption(format!("cannot confirm TOTP fallback key: {e}")))?;
     if confirmed.len() == 32 {
-        let mut k = [0u8; 32];
+        let mut k = Zeroizing::new([0u8; 32]);
         k.copy_from_slice(&confirmed);
         Ok(k)
     } else {
@@ -540,25 +543,25 @@ fn get_or_create_fallback_key() -> Result<[u8; 32], CryptoError> {
 // TODO(ADR-011): credential_id is not secret material — deriving a storage
 // key from it provides no real confidentiality. Replace with a proper
 // key agreement when the FIDO2 integration is hardened.
-fn derive_fido2_storage_key(credential_id: &[u8]) -> [u8; 32] {
+fn derive_fido2_storage_key(credential_id: &[u8]) -> Zeroizing<[u8; 32]> {
     let mut hasher = Sha256::new();
     hasher.update(b"pond-fido2-storage-key-v1");
     hasher.update(credential_id);
     let result = hasher.finalize();
-    let mut key = [0u8; 32];
+    let mut key = Zeroizing::new([0u8; 32]);
     key.copy_from_slice(&result);
     key
 }
 
 /// Convert a Vec<u8> to a fixed-size master key array.
-fn bytes_to_master_key(bytes: &[u8]) -> Result<[u8; MASTER_KEY_LEN], CryptoError> {
+fn bytes_to_master_key(bytes: &[u8]) -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, CryptoError> {
     if bytes.len() != MASTER_KEY_LEN {
         return Err(CryptoError::Decryption(format!(
             "master key has wrong length: expected {MASTER_KEY_LEN}, got {}",
             bytes.len()
         )));
     }
-    let mut key = [0u8; MASTER_KEY_LEN];
+    let mut key = Zeroizing::new([0u8; MASTER_KEY_LEN]);
     key.copy_from_slice(bytes);
     Ok(key)
 }
@@ -578,7 +581,7 @@ fn bytes_to_master_key(bytes: &[u8]) -> Result<[u8; MASTER_KEY_LEN], CryptoError
 pub fn migrate_to_envelope(
     old_encrypted: &EncryptedKey,
     passphrase: &str,
-) -> Result<(EncryptedKey, SlotTable, [u8; MASTER_KEY_LEN]), CryptoError> {
+) -> Result<(EncryptedKey, SlotTable, Zeroizing<[u8; MASTER_KEY_LEN]>), CryptoError> {
     // Decrypt with old passphrase-direct model
     let plaintext = decrypt_bytes(old_encrypted, passphrase)?;
 
@@ -586,7 +589,7 @@ pub fn migrate_to_envelope(
     let master_key = generate_master_key();
 
     // Re-encrypt CA key with master key
-    let master_key_hex = hex_encode(&master_key);
+    let master_key_hex = Zeroizing::new(hex_encode(master_key.as_ref()));
     let new_encrypted = encrypt_bytes(&plaintext, &master_key_hex)?;
 
     // Create slot table with passphrase slot
@@ -601,9 +604,9 @@ pub fn migrate_to_envelope(
 pub fn envelope_encrypt_new(
     ca_key_der: &[u8],
     passphrase: &str,
-) -> Result<(EncryptedKey, SlotTable, [u8; MASTER_KEY_LEN]), CryptoError> {
+) -> Result<(EncryptedKey, SlotTable, Zeroizing<[u8; MASTER_KEY_LEN]>), CryptoError> {
     let master_key = generate_master_key();
-    let master_key_hex = hex_encode(&master_key);
+    let master_key_hex = Zeroizing::new(hex_encode(master_key.as_ref()));
     let encrypted = encrypt_bytes(ca_key_der, &master_key_hex)?;
     let slot_table = SlotTable::new_with_passphrase(&master_key, passphrase)?;
     Ok((encrypted, slot_table, master_key))
@@ -614,7 +617,7 @@ pub fn decrypt_with_master_key(
     encrypted: &EncryptedKey,
     master_key: &[u8; MASTER_KEY_LEN],
 ) -> Result<Vec<u8>, CryptoError> {
-    let master_key_hex = hex_encode(master_key);
+    let master_key_hex = Zeroizing::new(hex_encode(master_key));
     decrypt_bytes(encrypted, &master_key_hex)
 }
 

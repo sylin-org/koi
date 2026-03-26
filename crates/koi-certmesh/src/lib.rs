@@ -32,6 +32,7 @@ use koi_common::capability::{Capability, CapabilityStatus};
 use koi_crypto::auth::AuthState;
 use koi_crypto::totp::RateLimiter;
 use tokio::sync::{broadcast, mpsc, oneshot};
+use zeroize::Zeroizing;
 
 pub use error::CertmeshError;
 use profiles::TrustProfile;
@@ -779,7 +780,7 @@ impl CertmeshCore {
     pub async fn try_auto_unlock(&self) -> Result<bool, CertmeshError> {
         // Try platform credential store first
         if let Ok(bytes) = koi_crypto::tpm::unseal_key_material(Self::AUTO_UNLOCK_LABEL) {
-            let passphrase = String::from_utf8_lossy(&bytes).to_string();
+            let passphrase = Zeroizing::new(String::from_utf8_lossy(&bytes).to_string());
             if !passphrase.is_empty() {
                 self.unlock(&passphrase).await?;
                 tracing::info!("Pond auto-unlocked via platform credential store");
@@ -790,7 +791,7 @@ impl CertmeshCore {
         // Fall back to file
         let path = self.state.paths.auto_unlock_key_path();
         let passphrase = match std::fs::read_to_string(&path) {
-            Ok(pp) if !pp.is_empty() => pp,
+            Ok(pp) if !pp.is_empty() => Zeroizing::new(pp),
             _ => return Ok(false),
         };
         self.unlock(&passphrase).await?;
