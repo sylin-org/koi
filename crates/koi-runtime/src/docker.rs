@@ -6,8 +6,7 @@
 
 use std::collections::HashMap;
 
-use bollard::container::{InspectContainerOptions, ListContainersOptions};
-use bollard::system::EventsOptions;
+use bollard::query_parameters::{EventsOptions, InspectContainerOptions, ListContainersOptions};
 use bollard::Docker;
 use chrono::Utc;
 use futures_util::StreamExt;
@@ -98,9 +97,9 @@ impl DockerBackend {
         let ips = extract_ips(&info);
 
         let state = match info.state.as_ref().and_then(|s| s.status) {
-            Some(bollard::secret::ContainerStateStatusEnum::RUNNING) => InstanceState::Running,
-            Some(bollard::secret::ContainerStateStatusEnum::PAUSED) => InstanceState::Paused,
-            Some(bollard::secret::ContainerStateStatusEnum::RESTARTING) => {
+            Some(bollard::models::ContainerStateStatusEnum::RUNNING) => InstanceState::Running,
+            Some(bollard::models::ContainerStateStatusEnum::PAUSED) => InstanceState::Paused,
+            Some(bollard::models::ContainerStateStatusEnum::RESTARTING) => {
                 InstanceState::Restarting
             }
             _ => InstanceState::Stopped,
@@ -108,7 +107,13 @@ impl DockerBackend {
 
         let image = config.and_then(|c| c.image.clone());
 
-        let koi_metadata = KoiMetadata::from_labels(&labels);
+        // Extract environment variables for KOI_MDNS_ANNOUNCE shorthand
+        let env_vars: Vec<String> = config
+            .and_then(|c| c.env.as_ref())
+            .cloned()
+            .unwrap_or_default();
+
+        let koi_metadata = KoiMetadata::from_labels_and_env(&labels, &env_vars);
 
         Ok(Instance {
             id: info.id.unwrap_or_else(|| container_id.to_string()),
@@ -190,7 +195,7 @@ impl RuntimeBackend for DockerBackend {
     async fn list_instances(&self) -> Result<Vec<Instance>, RuntimeError> {
         let client = self.client()?;
 
-        let opts = ListContainersOptions::<String> {
+        let opts = ListContainersOptions {
             all: false, // only running containers
             ..Default::default()
         };
@@ -223,8 +228,8 @@ impl RuntimeBackend for DockerBackend {
         let client = self.client()?;
 
         let event_filters = HashMap::from([("type".to_string(), vec!["container".to_string()])]);
-        let opts = EventsOptions::<String> {
-            filters: event_filters,
+        let opts = EventsOptions {
+            filters: Some(event_filters),
             ..Default::default()
         };
 
@@ -269,7 +274,7 @@ impl DockerBackend {
         &self,
         client: &Docker,
         tx: &mpsc::Sender<RuntimeEvent>,
-        event: &bollard::secret::EventMessage,
+        event: &bollard::models::EventMessage,
     ) -> Result<(), RuntimeError> {
         let action = event.action.as_deref().unwrap_or("");
         let actor = event.actor.as_ref();
@@ -323,7 +328,7 @@ impl DockerBackend {
 }
 
 /// Extract host-side port mappings from a container inspect result.
-fn extract_port_mappings(info: &bollard::secret::ContainerInspectResponse) -> Vec<PortMapping> {
+fn extract_port_mappings(info: &bollard::models::ContainerInspectResponse) -> Vec<PortMapping> {
     let mut mappings = Vec::new();
 
     let network_ports = info
@@ -379,18 +384,11 @@ fn parse_port_spec(spec: &str) -> (u16, PortProtocol) {
 }
 
 /// Extract IP addresses from a container's network settings.
-fn extract_ips(info: &bollard::secret::ContainerInspectResponse) -> Vec<String> {
+fn extract_ips(info: &bollard::models::ContainerInspectResponse) -> Vec<String> {
     let mut ips = Vec::new();
 
     if let Some(ns) = &info.network_settings {
-        // Primary IP
-        if let Some(ref ip) = ns.ip_address {
-            if !ip.is_empty() && !ips.contains(ip) {
-                ips.push(ip.clone());
-            }
-        }
-
-        // Per-network IPs
+        // Per-network IPs (bollard 0.20 removed top-level ip_address; use networks map)
         if let Some(ref networks) = ns.networks {
             for network in networks.values() {
                 if let Some(ref ip) = network.ip_address {
