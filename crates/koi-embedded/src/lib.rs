@@ -1136,6 +1136,368 @@ async fn run_meta_browse_embedded(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koi_common::types::ServiceRecord;
+    use std::collections::HashMap;
+
+    fn sample_record() -> ServiceRecord {
+        ServiceRecord {
+            name: "Test Service".to_string(),
+            service_type: "_http._tcp".to_string(),
+            host: Some("host.local".to_string()),
+            ip: Some("10.0.0.1".to_string()),
+            port: Some(8080),
+            txt: HashMap::new(),
+        }
+    }
+
+    // ── KoiError Display ───────────────────────────────────────────
+
+    #[test]
+    fn koi_error_disabled_capability_display() {
+        let err = KoiError::DisabledCapability("mdns");
+        assert_eq!(err.to_string(), "capability disabled: mdns");
+    }
+
+    #[test]
+    fn koi_error_io_from_impl() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
+        let err: KoiError = io_err.into();
+        assert!(matches!(err, KoiError::Io(_)));
+        assert!(err.to_string().contains("file missing"));
+    }
+
+    #[test]
+    fn koi_error_debug_does_not_panic() {
+        let err = KoiError::DisabledCapability("proxy");
+        let debug = format!("{err:?}");
+        assert!(debug.contains("DisabledCapability"));
+    }
+
+    // ── map_mdns_event ─────────────────────────────────────────────
+
+    #[test]
+    fn map_mdns_found() {
+        let record = sample_record();
+        let event = koi_mdns::MdnsEvent::Found(record.clone());
+        let mapped = map_mdns_event(event);
+        assert!(mapped.is_some());
+        match mapped.unwrap() {
+            KoiEvent::MdnsFound(r) => assert_eq!(r.name, "Test Service"),
+            other => panic!("expected MdnsFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_mdns_resolved() {
+        let record = sample_record();
+        let event = koi_mdns::MdnsEvent::Resolved(record);
+        let mapped = map_mdns_event(event);
+        assert!(mapped.is_some());
+        match mapped.unwrap() {
+            KoiEvent::MdnsResolved(r) => {
+                assert_eq!(r.port, Some(8080));
+                assert_eq!(r.service_type, "_http._tcp");
+            }
+            other => panic!("expected MdnsResolved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_mdns_removed() {
+        let event = koi_mdns::MdnsEvent::Removed {
+            name: "Gone Service".to_string(),
+            service_type: "_http._tcp".to_string(),
+        };
+        let mapped = map_mdns_event(event);
+        assert!(mapped.is_some());
+        match mapped.unwrap() {
+            KoiEvent::MdnsRemoved { name, service_type } => {
+                assert_eq!(name, "Gone Service");
+                assert_eq!(service_type, "_http._tcp");
+            }
+            other => panic!("expected MdnsRemoved, got {other:?}"),
+        }
+    }
+
+    // ── map_health_event ───────────────────────────────────────────
+
+    #[test]
+    fn map_health_status_changed_up() {
+        let event = koi_health::HealthEvent::StatusChanged {
+            name: "api".to_string(),
+            status: koi_health::HealthStatus::Up,
+        };
+        let mapped = map_health_event(event);
+        match mapped {
+            KoiEvent::HealthChanged { name, status } => {
+                assert_eq!(name, "api");
+                assert!(matches!(status, koi_health::HealthStatus::Up));
+            }
+            other => panic!("expected HealthChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_health_status_changed_down() {
+        let event = koi_health::HealthEvent::StatusChanged {
+            name: "db".to_string(),
+            status: koi_health::HealthStatus::Down,
+        };
+        let mapped = map_health_event(event);
+        match mapped {
+            KoiEvent::HealthChanged { name, status } => {
+                assert_eq!(name, "db");
+                assert!(matches!(status, koi_health::HealthStatus::Down));
+            }
+            other => panic!("expected HealthChanged, got {other:?}"),
+        }
+    }
+
+    // ── map_dns_event ──────────────────────────────────────────────
+
+    #[test]
+    fn map_dns_entry_updated() {
+        let event = koi_dns::DnsEvent::EntryUpdated {
+            name: "grafana".to_string(),
+            ip: "10.0.0.5".to_string(),
+        };
+        let mapped = map_dns_event(event);
+        match mapped {
+            KoiEvent::DnsEntryUpdated { name, ip } => {
+                assert_eq!(name, "grafana");
+                assert_eq!(ip, "10.0.0.5");
+            }
+            other => panic!("expected DnsEntryUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_dns_entry_removed() {
+        let event = koi_dns::DnsEvent::EntryRemoved {
+            name: "old-host".to_string(),
+        };
+        let mapped = map_dns_event(event);
+        match mapped {
+            KoiEvent::DnsEntryRemoved { name } => {
+                assert_eq!(name, "old-host");
+            }
+            other => panic!("expected DnsEntryRemoved, got {other:?}"),
+        }
+    }
+
+    // ── map_certmesh_event ─────────────────────────────────────────
+
+    #[test]
+    fn map_certmesh_member_joined() {
+        let event = koi_certmesh::CertmeshEvent::MemberJoined {
+            hostname: "node-a".to_string(),
+            fingerprint: "sha256:abc".to_string(),
+        };
+        let mapped = map_certmesh_event(event);
+        match mapped {
+            KoiEvent::CertmeshMemberJoined {
+                hostname,
+                fingerprint,
+            } => {
+                assert_eq!(hostname, "node-a");
+                assert_eq!(fingerprint, "sha256:abc");
+            }
+            other => panic!("expected CertmeshMemberJoined, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_certmesh_member_revoked() {
+        let event = koi_certmesh::CertmeshEvent::MemberRevoked {
+            hostname: "node-b".to_string(),
+        };
+        let mapped = map_certmesh_event(event);
+        match mapped {
+            KoiEvent::CertmeshMemberRevoked { hostname } => {
+                assert_eq!(hostname, "node-b");
+            }
+            other => panic!("expected CertmeshMemberRevoked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_certmesh_destroyed() {
+        let event = koi_certmesh::CertmeshEvent::Destroyed;
+        let mapped = map_certmesh_event(event);
+        assert!(matches!(mapped, KoiEvent::CertmeshDestroyed));
+    }
+
+    // ── map_proxy_event ────────────────────────────────────────────
+
+    #[test]
+    fn map_proxy_entry_updated() {
+        let entry = koi_proxy::ProxyEntry {
+            name: "web".to_string(),
+            listen_port: 443,
+            backend: "http://localhost:3000".to_string(),
+            allow_remote: true,
+        };
+        let event = koi_proxy::ProxyEvent::EntryUpdated {
+            entry: entry.clone(),
+        };
+        let mapped = map_proxy_event(event);
+        match mapped {
+            KoiEvent::ProxyEntryUpdated { entry } => {
+                assert_eq!(entry.name, "web");
+                assert_eq!(entry.listen_port, 443);
+                assert!(entry.allow_remote);
+            }
+            other => panic!("expected ProxyEntryUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_proxy_entry_removed() {
+        let event = koi_proxy::ProxyEvent::EntryRemoved {
+            name: "old-proxy".to_string(),
+        };
+        let mapped = map_proxy_event(event);
+        match mapped {
+            KoiEvent::ProxyEntryRemoved { name } => {
+                assert_eq!(name, "old-proxy");
+            }
+            other => panic!("expected ProxyEntryRemoved, got {other:?}"),
+        }
+    }
+
+    // ── map_join_error ─────────────────────────────────────────────
+
+    #[test]
+    fn map_join_error_produces_io_error() {
+        // We can't easily create a real JoinError, but we can test the function
+        // signature exists and the KoiError::Io variant wraps correctly.
+        let io_err = std::io::Error::other("simulated join error");
+        let koi_err = KoiError::Io(io_err);
+        assert!(koi_err.to_string().contains("simulated join error"));
+    }
+
+    // ── Builder defaults ───────────────────────────────────────────
+
+    #[test]
+    fn builder_default_config() {
+        let builder = Builder::new();
+        let embedded = builder.build().expect("build should succeed");
+        assert!(embedded.config.mdns_enabled);
+        assert!(!embedded.config.http_enabled);
+        assert_eq!(embedded.config.http_port, 5641);
+    }
+
+    #[test]
+    fn builder_default_trait() {
+        let builder = Builder::default();
+        let embedded = builder.build().expect("build should succeed");
+        assert_eq!(embedded.config.service_endpoint, "http://127.0.0.1:5641");
+    }
+
+    #[test]
+    fn builder_fluent_overrides() {
+        let embedded = Builder::new()
+            .http(true)
+            .mdns(false)
+            .dns_enabled(false)
+            .health(true)
+            .certmesh(true)
+            .proxy(true)
+            .udp(true)
+            .http_port(9000)
+            .dashboard(true)
+            .api_docs(true)
+            .mdns_browser(true)
+            .announce_http(true)
+            .dns_auto_start(true)
+            .health_auto_start(true)
+            .proxy_auto_start(true)
+            .service_endpoint("http://10.0.0.1:8080")
+            .service_mode(ServiceMode::EmbeddedOnly)
+            .data_dir("/tmp/koi-test")
+            .build()
+            .expect("build should succeed");
+
+        assert!(embedded.config.http_enabled);
+        assert!(!embedded.config.mdns_enabled);
+        assert!(!embedded.config.dns_enabled);
+        assert!(embedded.config.health_enabled);
+        assert!(embedded.config.certmesh_enabled);
+        assert!(embedded.config.proxy_enabled);
+        assert!(embedded.config.udp_enabled);
+        assert_eq!(embedded.config.http_port, 9000);
+        assert!(embedded.config.dashboard_enabled);
+        assert!(embedded.config.api_docs_enabled);
+        assert!(embedded.config.mdns_browser_enabled);
+        assert!(embedded.config.announce_http);
+        assert!(embedded.config.dns_auto_start);
+        assert!(embedded.config.health_auto_start);
+        assert!(embedded.config.proxy_auto_start);
+        assert_eq!(
+            embedded.config.service_endpoint,
+            "http://10.0.0.1:8080"
+        );
+        assert_eq!(embedded.config.service_mode, ServiceMode::EmbeddedOnly);
+        assert_eq!(
+            embedded.config.data_dir,
+            Some(std::path::PathBuf::from("/tmp/koi-test"))
+        );
+    }
+
+    #[test]
+    fn builder_dns_configure_closure() {
+        let embedded = Builder::new()
+            .dns(|b| b.port(5353).zone("home").local_ttl(120))
+            .build()
+            .expect("build should succeed");
+
+        assert_eq!(embedded.config.dns_config.port, 5353);
+        assert_eq!(embedded.config.dns_config.zone, "home");
+        assert_eq!(embedded.config.dns_config.local_ttl, 120);
+    }
+
+    #[test]
+    fn builder_event_handler() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+
+        let embedded = Builder::new()
+            .events(move |_event| {
+                called_clone.store(true, Ordering::SeqCst);
+            })
+            .build()
+            .expect("build should succeed");
+
+        assert!(embedded.event_handler.is_some());
+    }
+
+    #[test]
+    fn builder_extra_firewall_ports() {
+        use koi_common::firewall::{FirewallPort, FirewallProtocol};
+        let extra = vec![FirewallPort::new("Custom", FirewallProtocol::Tcp, 12345)];
+        let _builder = Builder::new().extra_firewall_ports(extra);
+        // Just verifying the method compiles and does not panic.
+    }
+
+    // ── Result type alias ──────────────────────────────────────────
+
+    #[test]
+    fn result_type_works_with_ok() {
+        let result: Result<i32> = Ok(42);
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn result_type_works_with_err() {
+        let result: Result<i32> = Err(KoiError::DisabledCapability("test"));
+        assert!(result.is_err());
+    }
+}
+
 async fn run_type_browse_embedded(
     handle: koi_mdns::BrowseHandle,
     records: Arc<

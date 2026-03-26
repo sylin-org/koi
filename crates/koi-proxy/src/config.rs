@@ -177,6 +177,7 @@ mod tests {
 
     #[test]
     fn config_path_is_under_data_dir() {
+        let _ = koi_common::test::ensure_data_dir("koi-proxy-config-tests");
         let path = config_path();
         assert!(path.ends_with("config.toml"));
     }

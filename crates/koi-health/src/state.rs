@@ -56,26 +56,6 @@ pub fn save_health_state(state: &HealthChecksState) -> Result<(), std::io::Error
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn with_temp_data_dir<F, T>(f: F) -> T
-    where
-        F: FnOnce() -> T,
-    {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("koi-health-state-test-{nanos}"));
-        let prev = std::env::var("KOI_DATA_DIR").ok();
-        std::env::set_var("KOI_DATA_DIR", &dir);
-        let result = f();
-        match prev {
-            Some(v) => std::env::set_var("KOI_DATA_DIR", v),
-            None => std::env::remove_var("KOI_DATA_DIR"),
-        }
-        result
-    }
 
     #[test]
     fn defaults_are_stable() {
@@ -85,9 +65,8 @@ mod tests {
 
     #[test]
     fn load_health_state_missing_returns_default() {
-        with_temp_data_dir(|| {
-            let state = load_health_state().unwrap();
-            assert!(state.checks.is_empty());
-        });
+        let _ = koi_common::test::ensure_data_dir("koi-health-state-tests");
+        let state = load_health_state().unwrap();
+        assert!(state.checks.is_empty());
     }
 }
