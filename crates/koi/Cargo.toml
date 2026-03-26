@@ -27,6 +27,7 @@ koi-dns.workspace = true
 koi-health.workspace = true
 koi-proxy.workspace = true
 koi-udp.workspace = true
+koi-runtime.workspace = true
 koi-client.workspace = true
 chrono.workspace = true
 clap.workspace = true

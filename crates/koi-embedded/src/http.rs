@@ -31,6 +31,7 @@ struct EmbeddedState {
     health: Option<Arc<koi_health::HealthRuntime>>,
     proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
     udp: Option<Arc<koi_udp::UdpRuntime>>,
+    runtime: Option<Arc<koi_runtime::RuntimeCore>>,
     started_at: std::time::Instant,
 }
 
@@ -57,6 +58,7 @@ pub(crate) async fn serve(
     certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
     proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
     udp: Option<Arc<koi_udp::UdpRuntime>>,
+    runtime: Option<Arc<koi_runtime::RuntimeCore>>,
     dashboard_state: Option<DashboardState>,
     browser_state: Option<BrowserState>,
     api_docs_enabled: bool,
@@ -69,6 +71,7 @@ pub(crate) async fn serve(
         health: health.clone(),
         proxy: proxy.clone(),
         udp: udp.clone(),
+        runtime: runtime.clone(),
         started_at: std::time::Instant::now(),
     };
 
@@ -148,13 +151,22 @@ pub(crate) async fn serve(
         app = app.nest(koi_proxy::http::paths::PREFIX, disabled_fallback("proxy"));
     }
 
-    if let Some(ref runtime) = udp {
+    if let Some(ref udp_runtime) = udp {
         app = app.nest(
             koi_udp::http::paths::PREFIX,
-            koi_udp::http::routes(runtime.clone()),
+            koi_udp::http::routes(udp_runtime.clone()),
         );
     } else {
         app = app.nest(koi_udp::http::paths::PREFIX, disabled_fallback("udp"));
+    }
+
+    if let Some(ref rt) = runtime {
+        app = app.nest(koi_runtime::http::paths::PREFIX, rt.routes());
+    } else {
+        app = app.nest(
+            koi_runtime::http::paths::PREFIX,
+            disabled_fallback("runtime"),
+        );
     }
 
     // ── OpenAPI docs (opt-in) ────────────────────────────────────
@@ -337,11 +349,21 @@ async fn status_handler(Extension(state): Extension<EmbeddedState>) -> Json<Stat
         });
     }
 
-    if let Some(ref runtime) = state.udp {
-        capabilities.push(Capability::status(runtime.as_ref()));
+    if let Some(ref udp_runtime) = state.udp {
+        capabilities.push(Capability::status(udp_runtime.as_ref()));
     } else {
         capabilities.push(CapabilityStatus {
             name: "udp".to_string(),
+            summary: "disabled".to_string(),
+            healthy: false,
+        });
+    }
+
+    if let Some(ref rt) = state.runtime {
+        capabilities.push(rt.capability_status().await);
+    } else {
+        capabilities.push(CapabilityStatus {
+            name: "runtime".to_string(),
             summary: "disabled".to_string(),
             healthy: false,
         });

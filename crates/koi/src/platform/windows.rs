@@ -560,6 +560,33 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             None
         };
 
+        let runtime_core = if !config.no_runtime {
+            let backend_kind =
+                koi_runtime::RuntimeBackendKind::from_str_loose(&config.runtime)
+                    .unwrap_or_else(|| {
+                        tracing::warn!(
+                            value = %config.runtime,
+                            "Unknown runtime backend, falling back to auto"
+                        );
+                        koi_runtime::RuntimeBackendKind::Auto
+                    });
+            let rt_config = koi_runtime::RuntimeConfig {
+                backend_kind,
+                socket_path: None,
+            };
+            let core = std::sync::Arc::new(koi_runtime::RuntimeCore::new(rt_config));
+            match core.start_watching(cancel.clone()).await {
+                Ok(()) => Some(core),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Runtime adapter unavailable, continuing without it");
+                    None
+                }
+            }
+        } else {
+            tracing::info!("Runtime capability disabled");
+            None
+        };
+
         let cores = crate::DaemonCores {
             mdns: mdns_core,
             certmesh: certmesh_core,
@@ -567,6 +594,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             health: health_runtime.clone(),
             proxy: proxy_runtime.clone(),
             udp: udp_runtime.clone(),
+            runtime: runtime_core.clone(),
         };
 
         // Generate a Daemon Access Token (DAT) for authenticating mutation requests

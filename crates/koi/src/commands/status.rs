@@ -169,6 +169,20 @@ fn offline_capabilities(config: &Config) -> Vec<CapabilityStatus> {
         });
     }
 
+    if config.no_runtime {
+        caps.push(CapabilityStatus {
+            name: "runtime".to_string(),
+            summary: "disabled".to_string(),
+            healthy: false,
+        });
+    } else {
+        caps.push(CapabilityStatus {
+            name: "runtime".to_string(),
+            summary: "not running".to_string(),
+            healthy: false,
+        });
+    }
+
     caps
 }
 
@@ -278,9 +292,20 @@ mod tests {
     }
 
     #[test]
-    fn offline_returns_six_capabilities() {
+    fn offline_returns_seven_capabilities() {
         let config = Config::default();
         let caps = offline_capabilities(&config);
-        assert_eq!(caps.len(), 6);
+        assert_eq!(caps.len(), 7);
+    }
+
+    #[test]
+    fn offline_runtime_disabled() {
+        let config = Config {
+            no_runtime: true,
+            ..Config::default()
+        };
+        let caps = offline_capabilities(&config);
+        assert_eq!(caps[6].name, "runtime");
+        assert_eq!(caps[6].summary, "disabled");
     }
 }

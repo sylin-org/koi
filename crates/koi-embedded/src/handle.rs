@@ -26,6 +26,7 @@ enum HandleBackend {
         certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
         proxy: Option<Arc<ProxyRuntime>>,
         udp: Option<Arc<koi_udp::UdpRuntime>>,
+        runtime: Option<Arc<koi_runtime::RuntimeCore>>,
     },
     Remote {
         client: Arc<KoiClient>,
@@ -50,6 +51,7 @@ impl KoiHandle {
         certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
         proxy: Option<Arc<ProxyRuntime>>,
         udp: Option<Arc<koi_udp::UdpRuntime>>,
+        runtime: Option<Arc<koi_runtime::RuntimeCore>>,
         data_dir: Option<std::path::PathBuf>,
         events: broadcast::Sender<KoiEvent>,
         cancel: CancellationToken,
@@ -64,6 +66,7 @@ impl KoiHandle {
                 certmesh,
                 proxy,
                 udp,
+                runtime,
             },
             data_dir,
             events,
@@ -184,6 +187,23 @@ impl KoiHandle {
                 Ok(Arc::clone(runtime))
             }
             HandleBackend::Remote { .. } => Err(KoiError::DisabledCapability("udp (remote mode)")),
+        }
+    }
+
+    /// Get the runtime adapter core.
+    ///
+    /// Only available in embedded mode when runtime is enabled.
+    pub fn runtime(&self) -> Result<Arc<koi_runtime::RuntimeCore>, KoiError> {
+        match &self.backend {
+            HandleBackend::Embedded { runtime, .. } => {
+                let core = runtime
+                    .as_ref()
+                    .ok_or(KoiError::DisabledCapability("runtime"))?;
+                Ok(Arc::clone(core))
+            }
+            HandleBackend::Remote { .. } => {
+                Err(KoiError::DisabledCapability("runtime (remote mode)"))
+            }
         }
     }
 

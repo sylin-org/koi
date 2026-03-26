@@ -609,6 +609,32 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         None
     };
 
+    let runtime_core = if !config.no_runtime {
+        let backend_kind = koi_runtime::RuntimeBackendKind::from_str_loose(&config.runtime)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    value = %config.runtime,
+                    "Unknown runtime backend, falling back to auto"
+                );
+                koi_runtime::RuntimeBackendKind::Auto
+            });
+        let rt_config = koi_runtime::RuntimeConfig {
+            backend_kind,
+            socket_path: None,
+        };
+        let core = Arc::new(koi_runtime::RuntimeCore::new(rt_config));
+        match core.start_watching(cancel.clone()).await {
+            Ok(()) => Some(core),
+            Err(e) => {
+                tracing::warn!(error = %e, "Runtime adapter unavailable, continuing without it");
+                None
+            }
+        }
+    } else {
+        tracing::info!("Runtime capability: disabled");
+        None
+    };
+
     let cores = DaemonCores {
         mdns: mdns_core.clone(),
         certmesh: certmesh_core,
@@ -616,6 +642,7 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         health: health_runtime.clone(),
         proxy: proxy_runtime.clone(),
         udp: udp_runtime.clone(),
+        runtime: runtime_core.clone(),
     };
 
     // ── Dashboard state ──
@@ -834,6 +861,7 @@ pub(crate) struct DaemonCores {
     pub(crate) health: Option<Arc<koi_health::HealthRuntime>>,
     pub(crate) proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
     pub(crate) udp: Option<Arc<koi_udp::UdpRuntime>>,
+    pub(crate) runtime: Option<Arc<koi_runtime::RuntimeCore>>,
 }
 
 /// Initialize the certmesh core for daemon mode.

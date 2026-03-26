@@ -79,6 +79,14 @@ pub struct Cli {
     #[arg(long, env = "KOI_NO_UDP")]
     pub no_udp: bool,
 
+    /// Disable the runtime adapter capability
+    #[arg(long, env = "KOI_NO_RUNTIME")]
+    pub no_runtime: bool,
+
+    /// Runtime backend to use (auto, docker, podman, systemd, incus, kubernetes)
+    #[arg(long, env = "KOI_RUNTIME", default_value = "auto")]
+    pub runtime: String,
+
     /// DNS port for the local resolver
     #[arg(long, env = "KOI_DNS_PORT", default_value = "53")]
     pub dns_port: u16,
@@ -494,6 +502,8 @@ pub struct Config {
     pub no_health: bool,
     pub no_proxy: bool,
     pub no_udp: bool,
+    pub no_runtime: bool,
+    pub runtime: String,
     pub announce_http: bool,
     pub dns_port: u16,
     pub dns_zone: String,
@@ -515,6 +525,8 @@ impl Config {
             no_health: cli.no_health,
             no_proxy: cli.no_proxy,
             no_udp: cli.no_udp,
+            no_runtime: cli.no_runtime,
+            runtime: cli.runtime.clone(),
             announce_http: cli.announce_http,
             dns_port: cli.dns_port,
             dns_zone: cli.dns_zone.clone(),
@@ -531,6 +543,7 @@ impl Config {
             "health" => self.no_health,
             "proxy" => self.no_proxy,
             "udp" => self.no_udp,
+            "runtime" => self.no_runtime,
             _ => false,
         };
         if disabled {
@@ -611,6 +624,13 @@ impl Config {
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let no_runtime = std::env::var("KOI_NO_RUNTIME")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let runtime = std::env::var("KOI_RUNTIME").unwrap_or_else(|_| "auto".to_string());
+
         let announce_http = std::env::var("KOI_ANNOUNCE_HTTP")
             .ok()
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
@@ -640,6 +660,8 @@ impl Config {
             no_health,
             no_proxy,
             no_udp,
+            no_runtime,
+            runtime,
             announce_http,
             dns_port,
             dns_zone,
@@ -662,6 +684,8 @@ impl Default for Config {
             no_health: false,
             no_proxy: false,
             no_udp: false,
+            no_runtime: false,
+            runtime: "auto".to_string(),
             announce_http: false,
             dns_port: 53,
             dns_zone: "lan".to_string(),

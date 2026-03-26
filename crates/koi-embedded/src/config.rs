@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use koi_common::firewall::{FirewallPort, FirewallProtocol};
 use koi_dns::DnsConfig;
+use koi_runtime::RuntimeBackendKind;
 
 #[derive(Debug, Clone)]
 pub struct KoiConfig {
@@ -16,6 +17,8 @@ pub struct KoiConfig {
     pub certmesh_enabled: bool,
     pub proxy_enabled: bool,
     pub udp_enabled: bool,
+    pub runtime_enabled: bool,
+    pub runtime_backend: RuntimeBackendKind,
     pub http_port: u16,
     pub dashboard_enabled: bool,
     pub api_docs_enabled: bool,
@@ -79,6 +82,8 @@ impl Default for KoiConfig {
             certmesh_enabled: false,
             proxy_enabled: false,
             udp_enabled: false,
+            runtime_enabled: false,
+            runtime_backend: RuntimeBackendKind::Auto,
             http_port: 5641,
             dashboard_enabled: false,
             api_docs_enabled: false,
@@ -160,6 +165,8 @@ mod tests {
         assert!(!cfg.certmesh_enabled);
         assert!(!cfg.proxy_enabled);
         assert!(!cfg.udp_enabled);
+        assert!(!cfg.runtime_enabled);
+        assert_eq!(cfg.runtime_backend, RuntimeBackendKind::Auto);
         assert_eq!(cfg.http_port, 5641);
         assert!(!cfg.dashboard_enabled);
         assert!(!cfg.api_docs_enabled);

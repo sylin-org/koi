@@ -48,6 +48,7 @@ struct AppState {
     health: Option<Arc<koi_health::HealthRuntime>>,
     proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
     udp: Option<Arc<koi_udp::UdpRuntime>>,
+    runtime: Option<Arc<koi_runtime::RuntimeCore>>,
     started_at: std::time::Instant,
     cancel: CancellationToken,
 }
@@ -70,6 +71,7 @@ pub async fn start(
         health: cores.health.clone(),
         proxy: cores.proxy.clone(),
         udp: cores.udp.clone(),
+        runtime: cores.runtime.clone(),
         started_at,
         cancel: cancel.clone(),
     };
@@ -166,6 +168,15 @@ pub async fn start(
         app = app.nest(
             koi_udp::http::paths::PREFIX,
             disabled_fallback_router("udp"),
+        );
+    }
+
+    if let Some(ref runtime_core) = cores.runtime {
+        app = app.nest(koi_runtime::http::paths::PREFIX, runtime_core.routes());
+    } else {
+        app = app.nest(
+            koi_runtime::http::paths::PREFIX,
+            disabled_fallback_router("runtime"),
         );
     }
 
@@ -339,6 +350,10 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
         .nest(
             koi_udp::http::paths::PREFIX,
             koi_udp::http::UdpApiDoc::openapi(),
+        )
+        .nest(
+            koi_runtime::http::paths::PREFIX,
+            koi_runtime::http::RuntimeApiDoc::openapi(),
         );
 
     let info = InfoBuilder::new()
@@ -416,6 +431,14 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
                  and receive datagrams over HTTP/SSE.",
             ))
             .external_docs(Some(ExternalDocs::new(format!("{base}/guide-udp.md"))))
+            .build(),
+        TagBuilder::new()
+            .name("runtime")
+            .description(Some(
+                "Runtime adapter - container and service lifecycle \
+                 integration (Docker, Podman, systemd, Incus, Kubernetes).",
+            ))
+            .external_docs(Some(ExternalDocs::new(format!("{base}/guide-runtime.md"))))
             .build(),
     ];
 
@@ -574,6 +597,16 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
     } else {
         capabilities.push(CapabilityStatus {
             name: "udp".to_string(),
+            summary: "disabled".to_string(),
+            healthy: false,
+        });
+    }
+
+    if let Some(ref runtime_core) = state.runtime {
+        capabilities.push(runtime_core.capability_status().await);
+    } else {
+        capabilities.push(CapabilityStatus {
+            name: "runtime".to_string(),
             summary: "disabled".to_string(),
             healthy: false,
         });

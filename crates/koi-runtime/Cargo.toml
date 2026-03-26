@@ -1,0 +1,46 @@
+[package]
+name = "koi-runtime"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Runtime adapter for container/service lifecycle integration"
+
+[dependencies]
+koi-common.workspace = true
+
+# Async runtime
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# HTTP routes
+axum.workspace = true
+utoipa.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Async trait
+async-trait.workspace = true
+futures-util.workspace = true
+
+# Docker/Podman backend
+bollard = "0.18"
+
+# Timestamps
+chrono.workspace = true
+
+# Platform-specific
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

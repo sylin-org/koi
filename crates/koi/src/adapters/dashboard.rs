@@ -94,12 +94,13 @@ struct DomainCores {
     health: Option<Arc<koi_health::HealthRuntime>>,
     proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
     udp: Option<Arc<koi_udp::UdpRuntime>>,
+    runtime: Option<Arc<koi_runtime::RuntimeCore>>,
 }
 
 // ── Build snapshot (domain-specific) ────────────────────────────────
 
 async fn build_snapshot_value(cores: &DomainCores) -> serde_json::Value {
-    let mut capabilities = Vec::with_capacity(6);
+    let mut capabilities = Vec::with_capacity(7);
 
     // mDNS
     if let Some(ref core) = cores.mdns {
@@ -227,6 +228,24 @@ async fn build_snapshot_value(cores: &DomainCores) -> serde_json::Value {
     } else {
         capabilities.push(CapabilityCard {
             name: "udp".to_string(),
+            enabled: false,
+            healthy: false,
+            summary: "disabled".to_string(),
+        });
+    }
+
+    // Runtime
+    if let Some(ref runtime_core) = cores.runtime {
+        let s = runtime_core.capability_status().await;
+        capabilities.push(CapabilityCard {
+            name: s.name,
+            enabled: true,
+            healthy: s.healthy,
+            summary: s.summary,
+        });
+    } else {
+        capabilities.push(CapabilityCard {
+            name: "runtime".to_string(),
             enabled: false,
             healthy: false,
             summary: "disabled".to_string(),
@@ -445,6 +464,7 @@ pub(crate) fn build_dashboard_state(
         health: cores.health.clone(),
         proxy: cores.proxy.clone(),
         udp: cores.udp.clone(),
+        runtime: cores.runtime.clone(),
     };
 
     let snapshot_fn: koi_common::dashboard::SnapshotFn = Arc::new(move || {

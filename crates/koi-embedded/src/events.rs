@@ -35,6 +35,13 @@ pub enum KoiEvent {
     ProxyEntryRemoved {
         name: String,
     },
+    RuntimeInstanceStarted {
+        name: String,
+        backend: String,
+    },
+    RuntimeInstanceStopped {
+        name: String,
+    },
 }
 
 #[cfg(test)]
@@ -156,6 +163,25 @@ mod tests {
     }
 
     #[test]
+    fn runtime_instance_started_variant() {
+        let event = KoiEvent::RuntimeInstanceStarted {
+            name: "nginx".to_string(),
+            backend: "docker".to_string(),
+        };
+        assert!(
+            matches!(event, KoiEvent::RuntimeInstanceStarted { ref name, ref backend } if name == "nginx" && backend == "docker")
+        );
+    }
+
+    #[test]
+    fn runtime_instance_stopped_variant() {
+        let event = KoiEvent::RuntimeInstanceStopped {
+            name: "nginx".to_string(),
+        };
+        assert!(matches!(event, KoiEvent::RuntimeInstanceStopped { ref name } if name == "nginx"));
+    }
+
+    #[test]
     fn clone_preserves_data() {
         let event = KoiEvent::MdnsFound(sample_record());
         let cloned = event.clone();
@@ -206,6 +232,13 @@ mod tests {
             },
             KoiEvent::ProxyEntryRemoved {
                 name: "p".to_string(),
+            },
+            KoiEvent::RuntimeInstanceStarted {
+                name: "web".to_string(),
+                backend: "docker".to_string(),
+            },
+            KoiEvent::RuntimeInstanceStopped {
+                name: "web".to_string(),
             },
         ];
         for event in &events {

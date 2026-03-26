@@ -15,6 +15,7 @@ members = [
     "crates/koi-health",
     "crates/koi-proxy",
     "crates/koi-udp",
+    "crates/koi-runtime",
 ]
 
 [workspace.package]
@@ -40,6 +41,7 @@ koi-dns = { path = "crates/koi-dns", version = "0.2" }
 koi-health = { path = "crates/koi-health", version = "0.2" }
 koi-proxy = { path = "crates/koi-proxy", version = "0.2" }
 koi-udp = { path = "crates/koi-udp", version = "0.2" }
+koi-runtime = { path = "crates/koi-runtime", version = "0.2" }
 
 # Shared external dependencies - single version pin
 serde = { version = "1", features = ["derive"] }
@@ -57,6 +59,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 async-stream = "0.3"
+async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 hostname = "0.4"

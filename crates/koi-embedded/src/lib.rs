@@ -28,6 +28,9 @@ pub use koi_proxy::ProxyEntry;
 // Vault: general-purpose encrypted secret storage
 pub use koi_crypto::vault::{Vault, VaultError};
 
+// Runtime adapter re-exports
+pub use koi_runtime::{RuntimeBackendKind, RuntimeConfig};
+
 pub type Result<T> = std::result::Result<T, KoiError>;
 
 #[derive(Debug, thiserror::Error)]
@@ -44,6 +47,8 @@ pub enum KoiError {
     Proxy(#[from] koi_proxy::ProxyError),
     #[error("certmesh error: {0}")]
     Certmesh(#[from] koi_certmesh::CertmeshError),
+    #[error("runtime error: {0}")]
+    Runtime(#[from] koi_runtime::RuntimeError),
     #[error("client error: {0}")]
     Client(#[from] koi_client::ClientError),
     #[error("io error: {0}")]
@@ -136,6 +141,23 @@ impl Builder {
 
     pub fn udp(mut self, enabled: bool) -> Self {
         self.config.udp_enabled = enabled;
+        self
+    }
+
+    /// Enable the runtime adapter with the specified backend kind.
+    ///
+    /// Runtime is opt-in for embedded (unlike daemon where capabilities
+    /// are enabled by default).
+    pub fn runtime(mut self, kind: koi_runtime::RuntimeBackendKind) -> Self {
+        self.config.runtime_enabled = true;
+        self.config.runtime_backend = kind;
+        self
+    }
+
+    /// Enable the runtime adapter with auto-detection.
+    pub fn runtime_auto(mut self) -> Self {
+        self.config.runtime_enabled = true;
+        self.config.runtime_backend = koi_runtime::RuntimeBackendKind::Auto;
         self
     }
 
@@ -366,6 +388,26 @@ impl KoiEmbedded {
             None
         };
 
+        let runtime = if self.config.runtime_enabled {
+            let config = koi_runtime::RuntimeConfig {
+                backend_kind: self.config.runtime_backend,
+                socket_path: None,
+            };
+            let core = Arc::new(koi_runtime::RuntimeCore::new(config));
+            match core.start_watching(cancel.clone()).await {
+                Ok(()) => {
+                    tracing::info!("Runtime adapter started");
+                    Some(core)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Runtime backend unavailable — continuing without runtime adapter");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // Build dashboard state if enabled
         let dashboard_state = if self.config.dashboard_enabled && self.config.http_enabled {
             let started_at = std::time::Instant::now();
@@ -375,6 +417,7 @@ impl KoiEmbedded {
             let snap_health = health.clone();
             let snap_proxy = proxy.clone();
             let snap_udp = udp.clone();
+            let snap_runtime = runtime.clone();
 
             let snapshot_fn: koi_common::dashboard::SnapshotFn = Arc::new(move || {
                 let m = snap_mdns.clone();
@@ -383,7 +426,8 @@ impl KoiEmbedded {
                 let h = snap_health.clone();
                 let p = snap_proxy.clone();
                 let u = snap_udp.clone();
-                Box::pin(async move { build_embedded_snapshot(m, cm, d, h, p, u).await })
+                let rt = snap_runtime.clone();
+                Box::pin(async move { build_embedded_snapshot(m, cm, d, h, p, u, rt).await })
             });
 
             let (dash_event_tx, _) = broadcast::channel(256);
@@ -405,6 +449,7 @@ impl KoiEmbedded {
                 let mut dns_rx = dns.as_ref().map(|r| r.core().subscribe());
                 let mut certmesh_rx = certmesh.as_ref().map(|c| c.subscribe());
                 let mut proxy_rx = proxy.as_ref().map(|r| r.core().subscribe());
+                let mut runtime_rx = runtime.as_ref().map(|r| r.subscribe());
                 let tx = dash_event_tx;
                 let token = cancel.clone();
                 tasks.push(tokio::spawn(async move {
@@ -480,6 +525,31 @@ impl KoiEmbedded {
                                     }),
                                 }
                             },
+                            Some(Ok(ev)) = async { match runtime_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
+                                let id = uuid::Uuid::now_v7().to_string();
+                                match ev {
+                                    koi_runtime::RuntimeEvent::Started(instance) => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "runtime.started".to_string(), id,
+                                        data: serde_json::to_value(instance).unwrap_or_default(),
+                                    }),
+                                    koi_runtime::RuntimeEvent::Stopped { id: inst_id, name } => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "runtime.stopped".to_string(), id,
+                                        data: serde_json::json!({ "id": inst_id, "name": name }),
+                                    }),
+                                    koi_runtime::RuntimeEvent::Updated(instance) => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "runtime.updated".to_string(), id,
+                                        data: serde_json::to_value(instance).unwrap_or_default(),
+                                    }),
+                                    koi_runtime::RuntimeEvent::BackendDisconnected { backend, reason } => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "runtime.disconnected".to_string(), id,
+                                        data: serde_json::json!({ "backend": backend, "reason": reason }),
+                                    }),
+                                    koi_runtime::RuntimeEvent::BackendReconnected { backend } => Some(koi_common::dashboard::DashboardSseEvent {
+                                        event_type: "runtime.reconnected".to_string(), id,
+                                        data: serde_json::json!({ "backend": backend }),
+                                    }),
+                                }
+                            },
                         };
                         if let Some(ev) = sse_event {
                             let _ = tx.send(ev);
@@ -527,6 +597,7 @@ impl KoiEmbedded {
             let http_certmesh = certmesh.clone();
             let http_proxy = proxy.clone();
             let http_udp = udp.clone();
+            let http_runtime = runtime.clone();
             let http_api_docs = self.config.api_docs_enabled;
             tasks.push(tokio::spawn(async move {
                 http::serve(
@@ -537,6 +608,7 @@ impl KoiEmbedded {
                     http_certmesh,
                     http_proxy,
                     http_udp,
+                    http_runtime,
                     dashboard_state,
                     browser_state,
                     http_api_docs,
@@ -678,8 +750,8 @@ impl KoiEmbedded {
         }
 
         if self.config.proxy_enabled {
-            if let Some(runtime) = &proxy {
-                let mut rx = runtime.core().subscribe();
+            if let Some(runtime_proxy) = &proxy {
+                let mut rx = runtime_proxy.core().subscribe();
                 let tx = event_tx.clone();
                 let token = cancel.clone();
                 let handler = self.event_handler.clone();
@@ -698,6 +770,26 @@ impl KoiEmbedded {
             }
         }
 
+        if let Some(ref runtime_core) = runtime {
+            let mut rx = runtime_core.subscribe();
+            let tx = event_tx.clone();
+            let token = cancel.clone();
+            let handler = self.event_handler.clone();
+            tasks.push(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = token.cancelled() => break,
+                        msg = rx.recv() => {
+                            let Ok(event) = msg else { continue; };
+                            if let Some(mapped) = map_runtime_event(event) {
+                                emit_event(&tx, handler.as_ref(), mapped);
+                            }
+                        }
+                    }
+                }
+            }));
+        }
+
         Ok(KoiHandle::new_embedded(
             mdns,
             dns,
@@ -705,6 +797,7 @@ impl KoiEmbedded {
             certmesh,
             proxy,
             udp,
+            runtime,
             self.config.data_dir.clone(),
             event_tx,
             cancel,
@@ -831,6 +924,21 @@ fn map_proxy_event(event: koi_proxy::ProxyEvent) -> KoiEvent {
     }
 }
 
+fn map_runtime_event(event: koi_runtime::RuntimeEvent) -> Option<KoiEvent> {
+    match event {
+        koi_runtime::RuntimeEvent::Started(instance) => Some(KoiEvent::RuntimeInstanceStarted {
+            name: instance.name,
+            backend: instance.backend,
+        }),
+        koi_runtime::RuntimeEvent::Stopped { name, .. } => {
+            Some(KoiEvent::RuntimeInstanceStopped { name })
+        }
+        // Updated, BackendDisconnected, BackendReconnected are operational events
+        // not surfaced as KoiEvents (dashboard SSE covers them)
+        _ => None,
+    }
+}
+
 fn emit_event(
     tx: &broadcast::Sender<KoiEvent>,
     handler: Option<&Arc<dyn Fn(KoiEvent) + Send + Sync>>,
@@ -854,6 +962,7 @@ async fn build_embedded_snapshot(
     health: Option<Arc<koi_health::HealthRuntime>>,
     proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
     udp: Option<Arc<koi_udp::UdpRuntime>>,
+    runtime: Option<Arc<koi_runtime::RuntimeCore>>,
 ) -> serde_json::Value {
     use koi_common::capability::Capability;
 
@@ -937,6 +1046,17 @@ async fn build_embedded_snapshot(
     } else {
         capabilities.push(serde_json::json!({
             "name": "udp", "enabled": false, "healthy": false, "summary": "disabled",
+        }));
+    }
+
+    if let Some(ref rt) = runtime {
+        let s = rt.capability_status().await;
+        capabilities.push(serde_json::json!({
+            "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
+        }));
+    } else {
+        capabilities.push(serde_json::json!({
+            "name": "runtime", "enabled": false, "healthy": false, "summary": "disabled",
         }));
     }
 

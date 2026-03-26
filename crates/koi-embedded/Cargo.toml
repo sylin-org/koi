@@ -23,6 +23,7 @@ koi-proxy.workspace = true
 koi-udp.workspace = true
 koi-config.workspace = true
 koi-client.workspace = true
+koi-runtime.workspace = true
 hickory-proto.workspace = true
 
 tokio.workspace = true
