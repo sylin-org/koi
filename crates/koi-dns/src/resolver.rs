@@ -6,8 +6,6 @@ use std::time::SystemTime;
 
 use hickory_proto::op::{Header, ResponseCode};
 use hickory_proto::rr::{Name, RData, Record, RecordType};
-use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig};
-use hickory_resolver::name_server::TokioConnectionProvider;
 use hickory_resolver::{Resolver, TokioResolver};
 use hickory_server::authority::MessageResponseBuilder;
 use hickory_server::server::{
@@ -82,17 +80,6 @@ pub struct DnsConfig {
     /// Override the state file path (for testing / embedded use).
     /// When `None`, defaults to `koi_config::state::dns_state_path()`.
     pub state_path: Option<PathBuf>,
-    /// Explicit upstream DNS servers to forward non-local queries to.
-    ///
-    /// When non-empty, the resolver bypasses `/etc/resolv.conf` and forwards
-    /// non-local names to exactly these servers (UDP + TCP on port 53). This
-    /// removes the dependency on host DNS configuration — useful when koi-dns
-    /// is embedded in a stack that owns its own DNS chain and cannot rely on
-    /// the host having a working system resolver.
-    ///
-    /// When empty (default), upstream is built from the system resolver
-    /// (typically `/etc/resolv.conf`), preserving the historical behaviour.
-    pub upstream_servers: Vec<IpAddr>,
 }
 
 impl Default for DnsConfig {
@@ -106,7 +93,6 @@ impl Default for DnsConfig {
             max_qps: DEFAULT_MAX_QPS,
             local_zone: true,
             state_path: None,
-            upstream_servers: Vec::new(),
         }
     }
 }
@@ -152,7 +138,9 @@ impl DnsCore {
         };
 
         let state = StateCache::new(config.state_path.clone());
-        let upstream = build_upstream(&config.upstream_servers);
+        let upstream = Resolver::builder_tokio()
+            .map(|builder| builder.build())
+            .ok();
 
         let alias_tx = if let Some(af) = alias_feedback.clone() {
             let (tx, rx) = mpsc::channel(128);
@@ -708,23 +696,6 @@ fn header_from_request(header: &Header, code: ResponseCode) -> Header {
     let mut h = Header::response_from_request(header);
     h.set_response_code(code);
     h
-}
-
-/// Build the upstream resolver used to forward non-local queries.
-///
-/// When `servers` is non-empty, an explicit forwarder is built (UDP+TCP per
-/// IP on port 53), bypassing `/etc/resolv.conf` entirely. Otherwise the
-/// resolver is constructed from the system configuration, returning `None`
-/// if that fails.
-fn build_upstream(servers: &[IpAddr]) -> Option<TokioResolver> {
-    if servers.is_empty() {
-        return Resolver::builder_tokio()
-            .map(|builder| builder.build())
-            .ok();
-    }
-    let name_servers = NameServerConfigGroup::from_ips_clear(servers, 53, true);
-    let cfg = ResolverConfig::from_parts(None, vec![], name_servers);
-    Some(Resolver::builder_with_config(cfg, TokioConnectionProvider::default()).build())
 }
 
 fn rdata_ip_addr(data: &RData) -> Option<IpAddr> {
