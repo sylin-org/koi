@@ -141,6 +141,21 @@ impl DnsConfigBuilder {
         self
     }
 
+    /// Forward non-local DNS queries to these explicit upstream servers.
+    ///
+    /// When set to a non-empty list, the embedded resolver bypasses the
+    /// host's `/etc/resolv.conf` entirely and forwards to exactly the
+    /// supplied IPs (UDP + TCP on port 53). Use this when the embedding
+    /// process owns its own DNS chain and cannot rely on the host having
+    /// a working system resolver.
+    ///
+    /// An empty list (default) preserves the historical behaviour of
+    /// inheriting the system resolver.
+    pub fn upstream_servers(mut self, servers: Vec<IpAddr>) -> Self {
+        self.config.upstream_servers = servers;
+        self
+    }
+
     pub fn build(self) -> DnsConfig {
         self.config
     }
