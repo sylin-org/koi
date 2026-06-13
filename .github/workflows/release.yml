@@ -4,6 +4,10 @@ on:
   push:
     tags:
       - 'v*'
+  # Build-only dry run: validates the full cross-compile matrix (incl. the
+  # aws-lc-sys musl/aarch64 builds) WITHOUT creating a release. The `release`
+  # job is gated on a tag push, so a manual dispatch runs prepare+test+build only.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -153,6 +157,9 @@ jobs:
   # ── Release ───────────────────────────────────────────────────────
   release:
     needs: [prepare, build]
+    # Only create a GitHub Release on a real tag push; workflow_dispatch runs
+    # the build matrix as a dry run and stops here.
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -166,10 +173,14 @@ jobs:
 
       - name: Generate release notes
         shell: bash
+        env:
+          # Pass via env: — env values are NOT re-parsed by bash, so backticks
+          # and $() in the CHANGELOG body cannot trigger command substitution.
+          # (Interpolating ${{ }} directly into a quoted assignment crashed this
+          # step with exit 127 on any backtick in the notes.)
+          VERSION: ${{ needs.prepare.outputs.tag }}
+          DESCRIPTION: ${{ needs.prepare.outputs.description }}
         run: |
-          VERSION="${{ needs.prepare.outputs.tag }}"
-          DESCRIPTION="${{ needs.prepare.outputs.description }}"
-
           # Read the template and substitute
           TEMPLATE=$(cat .github/release-template.md)
           NOTES="${TEMPLATE//\$\{VERSION\}/$VERSION}"
