@@ -208,3 +208,14 @@ jobs:
             --title "$TAG" \
             --notes-file release-notes.md \
             artifacts/*
+
+  # ── Publish to crates.io ──────────────────────────────────────────
+  # Runs only after the GitHub Release succeeds (which requires all 6 cross
+  # builds + tests to pass), and only on a real tag push — so a broken tag never
+  # reaches the irreversible crates.io publish, and the workflow_dispatch dry run
+  # never publishes. Reuses publish.yml (rate-limit bucketing + index verify).
+  publish-crates:
+    needs: [release]
+    if: startsWith(github.ref, 'refs/tags/')
+    uses: ./.github/workflows/publish.yml
+    secrets: inherit
