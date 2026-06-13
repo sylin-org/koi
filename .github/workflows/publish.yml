@@ -1,7 +1,14 @@
 name: Publish
 
 on:
+  # Manual run (decoupled from a release).
   workflow_dispatch:
+  # Called by release.yml after a v* tag's GitHub Release succeeds, so a tag
+  # both creates the release and publishes to crates.io.
+  workflow_call:
+    secrets:
+      CARGO_REGISTRY_TOKEN:
+        required: true
 
 env:
   CARGO_TERM_COLOR: always
