@@ -104,7 +104,7 @@ pem = "3"
 rcgen = "0.13"
 time = "0.3"
 crossterm = "0.28"
-indicatif = "0.17"
+indicatif = "0.18"
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 hkdf = "0.12"
