@@ -743,8 +743,11 @@ pub async fn promote(
     let ca_dir = paths.ca_dir();
     std::fs::create_dir_all(&ca_dir)?;
 
-    let encrypted_key = koi_crypto::keys::encrypt_key(&ca_key, &passphrase)?;
+    let ca_key_der = koi_crypto::keys::ca_keypair_to_der(&ca_key)?;
+    let (encrypted_key, slot_table, _master_key) =
+        koi_crypto::unlock_slots::envelope_encrypt_new(&ca_key_der, &passphrase)?;
     koi_crypto::keys::save_encrypted_key(&paths.ca_key_path(), &encrypted_key)?;
+    slot_table.save(&paths.slot_table_path())?;
     std::fs::write(paths.ca_cert_path(), &promote_response.ca_cert_pem)?;
 
     // Persist auth credential to auth.json

@@ -1428,4 +1428,65 @@ mod tests {
             other => panic!("Expected Destroy, got: {other:?}"),
         }
     }
+
+    #[test]
+    fn test_msrv_drift_guard() {
+        use std::path::PathBuf;
+        let cargo_toml_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("Cargo.toml");
+        let cargo_contents =
+            std::fs::read_to_string(&cargo_toml_path).expect("failed to read Cargo.toml");
+        let rust_version = cargo_contents
+            .lines()
+            .find_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with("rust-version") {
+                    let parts: Vec<&str> = trimmed.split('=').collect();
+                    if parts.len() == 2 {
+                        let ver = parts[1]
+                            .trim()
+                            .trim_matches('"')
+                            .trim_matches('\'')
+                            .to_string();
+                        return Some(ver);
+                    }
+                }
+                None
+            })
+            .expect("Could not find rust-version in Cargo.toml");
+
+        let readme_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("README.md");
+        let readme_contents =
+            std::fs::read_to_string(&readme_path).expect("failed to read README.md");
+        let readme_version = readme_contents
+            .lines()
+            .find_map(|line| {
+                if line.contains("requires [Rust](https://rustup.rs/)") {
+                    let prefix = "requires [Rust](https://rustup.rs/) ";
+                    if let Some(idx) = line.find(prefix) {
+                        let start = idx + prefix.len();
+                        let rest = &line[start..];
+                        let ver = rest.split_whitespace().next().unwrap_or("");
+                        return Some(ver.to_string());
+                    }
+                }
+                None
+            })
+            .expect("Could not find Rust MSRV reference in README.md");
+
+        assert_eq!(
+            rust_version, readme_version,
+            "MSRV in Cargo.toml ({}) does not match README.md ({})",
+            rust_version, readme_version
+        );
+    }
 }

@@ -157,16 +157,23 @@ pub async fn announce(
                 let stop_clone = stop.clone();
                 let interval = Duration::from_secs(lease_secs.max(MIN_HEARTBEAT_LEASE_FLOOR) / 2);
 
-                Some(std::thread::spawn(move || loop {
-                    std::thread::sleep(interval);
-                    if stop_clone.load(Ordering::Acquire) {
-                        break;
-                    }
-                    match heartbeat_client.heartbeat(&heartbeat_id) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            eprintln!("Heartbeat failed: {e}");
+                Some(std::thread::spawn(move || {
+                    let mut elapsed = Duration::ZERO;
+                    loop {
+                        std::thread::sleep(Duration::from_millis(100));
+                        if stop_clone.load(Ordering::Acquire) {
                             break;
+                        }
+                        elapsed += Duration::from_millis(100);
+                        if elapsed >= interval {
+                            elapsed = Duration::ZERO;
+                            match heartbeat_client.heartbeat(&heartbeat_id) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    eprintln!("Heartbeat failed: {e}");
+                                    break;
+                                }
+                            }
                         }
                     }
                 }))

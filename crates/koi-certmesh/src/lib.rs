@@ -1038,9 +1038,12 @@ impl CertmeshCore {
         let payload = backup::decode_backup(backup_bytes, backup_passphrase)?;
 
         let ca_key = koi_crypto::keys::ca_keypair_from_pem(&payload.ca_key_pem)?;
-        let encrypted_key = koi_crypto::keys::encrypt_key(&ca_key, new_passphrase)?;
+        let ca_key_der = koi_crypto::keys::ca_keypair_to_der(&ca_key)?;
+        let (encrypted_key, slot_table, _master_key) =
+            koi_crypto::unlock_slots::envelope_encrypt_new(&ca_key_der, new_passphrase)?;
         std::fs::create_dir_all(self.state.paths.ca_dir())?;
         koi_crypto::keys::save_encrypted_key(&self.state.paths.ca_key_path(), &encrypted_key)?;
+        slot_table.save(&self.state.paths.slot_table_path())?;
         std::fs::write(self.state.paths.ca_cert_path(), &payload.ca_cert_pem)?;
 
         let auth_state = AuthState::from_backup(&payload.auth_method, payload.auth_data)

@@ -273,7 +273,7 @@ impl BrowserCache {
             }
         }
 
-        type_summaries.sort_by(|a, b| b.count.cmp(&a.count));
+        type_summaries.sort_by_key(|b| std::cmp::Reverse(b.count));
         all_instances.sort_by(|a, b| a.last_seen.cmp(&b.last_seen).reverse());
 
         BrowserSnapshot {
