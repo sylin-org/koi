@@ -459,7 +459,7 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 
 | Crate                  | Version         | Used By                                       | Purpose                                  |
 | ---------------------- | --------------- | --------------------------------------------- | ---------------------------------------- |
-| `mdns-sd`              | 0.17            | koi-mdns                                      | mDNS/DNS-SD engine                       |
+| `mdns-sd`              | 0.20            | koi-mdns                                      | mDNS/DNS-SD engine                       |
 | `axum`                 | 0.8             | koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi | HTTP framework |
 | `tokio`                | 1 (full)        | all                                           | Async runtime                            |
 | `serde` / `serde_json` | 1               | all                                           | Serialization                            |
@@ -478,10 +478,10 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 | `totp-rs`              | 5               | koi-crypto                                    | TOTP enrollment codes                    |
 | `p256`                 | 0.13            | koi-crypto                                    | FIDO2 ECDSA P-256 signature verification |
 | `chrono`               | 0.4             | koi-certmesh, koi-udp, koi-runtime            | Timestamp handling                       |
-| `bollard`              | 0.18            | koi-runtime                                   | Docker Engine API client                 |
-| `async-trait`          | latest          | koi-runtime                                   | Async trait support                      |
-| `hickory-server`       | latest           | koi-dns                                      | DNS server implementation                |
-| `hickory-resolver`     | latest           | koi-dns                                      | DNS upstream resolution                  |
+| `bollard`              | 0.21            | koi-runtime                                   | Docker Engine API client                 |
+| `async-trait`          | latest          | koi-runtime, koi-dns                          | Async trait support                      |
+| `hickory-server`       | 0.26             | koi-dns                                      | DNS server implementation                |
+| `hickory-resolver`     | 0.26             | koi-dns                                      | DNS upstream resolution                  |
 | `reqwest`              | latest           | koi-embedded                                  | HTTP forwarding                          |
 | `tokio-rustls`         | 0.26             | koi-proxy, koi                                | TLS termination (proxy passthrough)      |
 | `rcgen`                | 0.13             | koi-crypto, koi-proxy                         | X.509 / self-signed cert generation      |
