@@ -36,7 +36,7 @@ async-trait.workspace = true
 futures-util.workspace = true
 
 # Docker/Podman backend
-bollard = "0.20"
+bollard = "0.21"
 
 # Timestamps
 chrono.workspace = true

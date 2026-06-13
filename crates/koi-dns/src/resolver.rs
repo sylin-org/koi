@@ -4,13 +4,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
-use hickory_proto::op::{Header, ResponseCode};
+use hickory_proto::op::{Header, HeaderCounts, Metadata, ResponseCode};
 use hickory_proto::rr::{Name, RData, Record, RecordType};
 use hickory_resolver::{Resolver, TokioResolver};
-use hickory_server::authority::MessageResponseBuilder;
-use hickory_server::server::{
-    Request, RequestHandler, ResponseHandler, ResponseInfo, ServerFuture,
-};
+use hickory_server::net::runtime::Time;
+use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo, Server};
+use hickory_server::zone_handler::MessageResponseBuilder;
 use koi_common::capability::{Capability, CapabilityStatus};
 use koi_common::integration::{
     AliasFeedback as AliasFeedbackTrait, CertmeshSnapshot, MdnsSnapshot,
@@ -32,6 +31,8 @@ const DEFAULT_LOCAL_TTL: u32 = 60;
 const DEFAULT_MAX_QPS: u32 = 200;
 /// TCP timeout for DNS requests.
 const TCP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Per-connection outgoing-response queue depth for DNS-over-TCP.
+const TCP_RESPONSE_BUFFER: usize = 32;
 /// Alias feedback flush interval.
 const FEEDBACK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -139,7 +140,7 @@ impl DnsCore {
 
         let state = StateCache::new(config.state_path.clone());
         let upstream = Resolver::builder_tokio()
-            .map(|builder| builder.build())
+            .and_then(|builder| builder.build())
             .ok();
 
         let alias_tx = if let Some(af) = alias_feedback.clone() {
@@ -328,8 +329,8 @@ impl DnsCore {
             .await
             .ok()?;
         let mut ips = Vec::new();
-        for record in lookup.record_iter() {
-            if let Some(ip) = rdata_ip_addr(record.data()) {
+        for record in lookup.answers() {
+            if let Some(ip) = rdata_ip_addr(&record.data) {
                 ips.push(ip);
             }
         }
@@ -354,9 +355,9 @@ impl DnsCore {
             .map_err(|e| DnsError::Bind(e.to_string()))?;
 
         let handler = DnsHandler::new(self.clone());
-        let mut server = ServerFuture::new(handler);
+        let mut server = Server::new(handler);
         server.register_socket(udp);
-        server.register_listener(tcp, TCP_TIMEOUT);
+        server.register_listener(tcp, TCP_TIMEOUT, TCP_RESPONSE_BUFFER);
 
         let server_token = server.shutdown_token().clone();
         let mut server_task = tokio::spawn(async move { server.block_until_done().await });
@@ -506,196 +507,196 @@ impl DnsHandler {
     }
 }
 
+#[async_trait::async_trait]
 impl RequestHandler for DnsHandler {
-    fn handle_request<'life0, 'life1, 'async_trait, R>(
-        &'life0 self,
-        request: &'life1 Request,
+    async fn handle_request<R: ResponseHandler, T: Time>(
+        &self,
+        request: &Request,
         mut response_handle: R,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ResponseInfo> + Send + 'async_trait>>
-    where
-        R: 'async_trait + ResponseHandler,
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async move {
-            let info = match request.request_info() {
-                Ok(info) => info,
-                Err(_) => {
-                    let builder = MessageResponseBuilder::from_message_request(request);
-                    let response = builder.error_msg(request.header(), ResponseCode::FormErr);
-                    return response_handle
-                        .send_response(response)
-                        .await
-                        .unwrap_or_else(|_| {
-                            ResponseInfo::from(header_from_request(
-                                request.header(),
-                                ResponseCode::FormErr,
-                            ))
-                        });
-                }
-            };
-
-            if !self.core.config.allow_public_clients && !is_local_client(&request.src()) {
+    ) -> ResponseInfo {
+        let info = match request.request_info() {
+            Ok(info) => info,
+            Err(_) => {
                 let builder = MessageResponseBuilder::from_message_request(request);
-                let response = builder.error_msg(info.header, ResponseCode::Refused);
+                let response = builder.error_msg(&request.metadata, ResponseCode::FormErr);
                 return response_handle
                     .send_response(response)
                     .await
                     .unwrap_or_else(|_| {
-                        ResponseInfo::from(header_from_request(info.header, ResponseCode::Refused))
+                        error_response_info(&request.metadata, ResponseCode::FormErr)
                     });
             }
+        };
 
-            if !self.core.rate_limiter.allow() {
-                let builder = MessageResponseBuilder::from_message_request(request);
-                let response = builder.error_msg(info.header, ResponseCode::ServFail);
-                return response_handle
-                    .send_response(response)
-                    .await
-                    .unwrap_or_else(|_| {
-                        ResponseInfo::from(header_from_request(info.header, ResponseCode::ServFail))
-                    });
-            }
-
-            let query = info.query;
-            let query_name = query.name();
-            let query_type = query.query_type();
-            let query_str = query_name.to_string();
-
-            let mut answers: Vec<Record> = Vec::new();
-            let mut response_code = ResponseCode::NoError;
-            let mut authoritative = false;
-
-            if self.core.zone.is_local_name(&query_str) {
-                // Primary zone (.zengarden / .lan): static + certmesh + mDNS aliases
-                authoritative = true;
-                match self.core.resolve_local(&query_str, query_type) {
-                    Some(result) => {
-                        let name = Name::from(query_name);
-                        for ip in result.ips {
-                            let record = Record::from_rdata(
-                                name.clone(),
-                                self.core.config.local_ttl,
-                                RData::from(ip),
-                            );
-                            answers.push(record);
-                        }
-                    }
-                    None => {
-                        response_code = if matches!(
-                            query_type,
-                            RecordType::A | RecordType::AAAA | RecordType::ANY
-                        ) {
-                            ResponseCode::NXDomain
-                        } else {
-                            ResponseCode::NotImp
-                        };
-                    }
-                }
-            } else if self
-                .core
-                .local_zone
-                .as_ref()
-                .is_some_and(|z| z.is_local_name(&query_str))
-            {
-                // .local zone: direct hostname→IP from mDNS cache
-                match self.core.resolve_mdns_local(&query_str, query_type) {
-                    Some(result) => {
-                        authoritative = true;
-                        let name = Name::from(query_name);
-                        for ip in result.ips {
-                            let record = Record::from_rdata(
-                                name.clone(),
-                                self.core.config.local_ttl,
-                                RData::from(ip),
-                            );
-                            answers.push(record);
-                        }
-                    }
-                    None => {
-                        // Not in mDNS cache — fall through to upstream.
-                    }
-                }
-                // If answers is still empty after .local lookup, fall through
-                // to upstream resolver below (no early return).
-                if answers.is_empty() && response_code == ResponseCode::NoError {
-                    if let Some(resolver) = &self.core.upstream {
-                        let lookup = resolver.lookup(Name::from(query_name), query_type).await;
-                        match lookup {
-                            Ok(result) => {
-                                answers.extend(
-                                    result
-                                        .record_iter()
-                                        .filter(|r| match query_type {
-                                            RecordType::ANY => {
-                                                matches!(
-                                                    r.record_type(),
-                                                    RecordType::A | RecordType::AAAA
-                                                )
-                                            }
-                                            _ => r.record_type() == query_type,
-                                        })
-                                        .cloned(),
-                                );
-                            }
-                            Err(_) => {
-                                // Upstream also failed — NXDOMAIN since we tried both
-                                response_code = ResponseCode::NXDomain;
-                            }
-                        }
-                    }
-                }
-            } else if let Some(resolver) = &self.core.upstream {
-                let lookup = resolver.lookup(Name::from(query_name), query_type).await;
-                match lookup {
-                    Ok(result) => {
-                        answers.extend(
-                            result
-                                .record_iter()
-                                .filter(|r| match query_type {
-                                    RecordType::ANY => {
-                                        matches!(r.record_type(), RecordType::A | RecordType::AAAA)
-                                    }
-                                    _ => r.record_type() == query_type,
-                                })
-                                .cloned(),
-                        );
-                    }
-                    Err(e) => {
-                        tracing::debug!(error = %e, "Upstream lookup failed");
-                        response_code = ResponseCode::ServFail;
-                    }
-                }
-            } else {
-                response_code = ResponseCode::Refused;
-            }
-
-            let mut header = Header::response_from_request(info.header);
-            header.set_authoritative(authoritative);
-            header.set_response_code(response_code);
-
+        if !self.core.config.allow_public_clients && !is_local_client(&request.src()) {
             let builder = MessageResponseBuilder::from_message_request(request);
-            let response = builder.build(
-                header,
-                answers.iter(),
-                std::iter::empty(),
-                std::iter::empty(),
-                std::iter::empty(),
-            );
-
-            response_handle
+            let response = builder.error_msg(info.metadata, ResponseCode::Refused);
+            return response_handle
                 .send_response(response)
                 .await
-                .unwrap_or_else(|_| ResponseInfo::from(header))
-        })
+                .unwrap_or_else(|_| error_response_info(info.metadata, ResponseCode::Refused));
+        }
+
+        if !self.core.rate_limiter.allow() {
+            let builder = MessageResponseBuilder::from_message_request(request);
+            let response = builder.error_msg(info.metadata, ResponseCode::ServFail);
+            return response_handle
+                .send_response(response)
+                .await
+                .unwrap_or_else(|_| error_response_info(info.metadata, ResponseCode::ServFail));
+        }
+
+        let query = info.query;
+        let query_name = query.name();
+        let query_type = query.query_type();
+        let query_str = query_name.to_string();
+
+        let mut answers: Vec<Record> = Vec::new();
+        let mut response_code = ResponseCode::NoError;
+        let mut authoritative = false;
+
+        if self.core.zone.is_local_name(&query_str) {
+            // Primary zone (.zengarden / .lan): static + certmesh + mDNS aliases
+            authoritative = true;
+            match self.core.resolve_local(&query_str, query_type) {
+                Some(result) => {
+                    let name = Name::from(query_name);
+                    for ip in result.ips {
+                        let record = Record::from_rdata(
+                            name.clone(),
+                            self.core.config.local_ttl,
+                            RData::from(ip),
+                        );
+                        answers.push(record);
+                    }
+                }
+                None => {
+                    response_code = if matches!(
+                        query_type,
+                        RecordType::A | RecordType::AAAA | RecordType::ANY
+                    ) {
+                        ResponseCode::NXDomain
+                    } else {
+                        ResponseCode::NotImp
+                    };
+                }
+            }
+        } else if self
+            .core
+            .local_zone
+            .as_ref()
+            .is_some_and(|z| z.is_local_name(&query_str))
+        {
+            // .local zone: direct hostname→IP from mDNS cache
+            match self.core.resolve_mdns_local(&query_str, query_type) {
+                Some(result) => {
+                    authoritative = true;
+                    let name = Name::from(query_name);
+                    for ip in result.ips {
+                        let record = Record::from_rdata(
+                            name.clone(),
+                            self.core.config.local_ttl,
+                            RData::from(ip),
+                        );
+                        answers.push(record);
+                    }
+                }
+                None => {
+                    // Not in mDNS cache — fall through to upstream.
+                }
+            }
+            // If answers is still empty after .local lookup, fall through
+            // to upstream resolver below (no early return).
+            if answers.is_empty() && response_code == ResponseCode::NoError {
+                if let Some(resolver) = &self.core.upstream {
+                    let lookup = resolver.lookup(Name::from(query_name), query_type).await;
+                    match lookup {
+                        Ok(result) => {
+                            answers.extend(
+                                result
+                                    .answers()
+                                    .iter()
+                                    .filter(|r| match query_type {
+                                        RecordType::ANY => {
+                                            matches!(
+                                                r.record_type(),
+                                                RecordType::A | RecordType::AAAA
+                                            )
+                                        }
+                                        _ => r.record_type() == query_type,
+                                    })
+                                    .cloned(),
+                            );
+                        }
+                        Err(_) => {
+                            // Upstream also failed — NXDOMAIN since we tried both
+                            response_code = ResponseCode::NXDomain;
+                        }
+                    }
+                }
+            }
+        } else if let Some(resolver) = &self.core.upstream {
+            let lookup = resolver.lookup(Name::from(query_name), query_type).await;
+            match lookup {
+                Ok(result) => {
+                    answers.extend(
+                        result
+                            .answers()
+                            .iter()
+                            .filter(|r| match query_type {
+                                RecordType::ANY => {
+                                    matches!(r.record_type(), RecordType::A | RecordType::AAAA)
+                                }
+                                _ => r.record_type() == query_type,
+                            })
+                            .cloned(),
+                    );
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, "Upstream lookup failed");
+                    response_code = ResponseCode::ServFail;
+                }
+            }
+        } else {
+            response_code = ResponseCode::Refused;
+        }
+
+        // hickory 0.26 split the old flat `Header` into `Metadata` (flags/codes)
+        // plus `HeaderCounts`; the builder takes the owned `Metadata`.
+        let mut metadata = Metadata::response_from_request(info.metadata);
+        metadata.authoritative = authoritative;
+        metadata.response_code = response_code;
+
+        let builder = MessageResponseBuilder::from_message_request(request);
+        let response = builder.build(
+            metadata,
+            answers.iter(),
+            std::iter::empty(),
+            std::iter::empty(),
+            std::iter::empty(),
+        );
+
+        response_handle
+            .send_response(response)
+            .await
+            .unwrap_or_else(|_| {
+                ResponseInfo::from(Header {
+                    metadata,
+                    counts: HeaderCounts::default(),
+                })
+            })
     }
 }
 
-fn header_from_request(header: &Header, code: ResponseCode) -> Header {
-    let mut h = Header::response_from_request(header);
-    h.set_response_code(code);
-    h
+/// Build a bare `ResponseInfo` for the rare case where sending the real response
+/// fails — mirrors the response header the client would have received.
+fn error_response_info(request_meta: &Metadata, code: ResponseCode) -> ResponseInfo {
+    let mut metadata = Metadata::response_from_request(request_meta);
+    metadata.response_code = code;
+    ResponseInfo::from(Header {
+        metadata,
+        counts: HeaderCounts::default(),
+    })
 }
 
 fn rdata_ip_addr(data: &RData) -> Option<IpAddr> {

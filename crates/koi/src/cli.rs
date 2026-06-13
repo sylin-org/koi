@@ -411,10 +411,10 @@ pub enum ProxySubcommand {
         /// TLS listen port
         #[arg(long)]
         listen: u16,
-        /// Backend URL (http://...)
+        /// Backend TCP endpoint (host:port, or a URL whose host:port is used)
         #[arg(long)]
         backend: String,
-        /// Allow non-local backend destinations
+        /// Allow a non-loopback backend destination
         #[arg(long)]
         backend_remote: bool,
     },

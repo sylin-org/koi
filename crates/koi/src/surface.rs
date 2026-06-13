@@ -510,12 +510,12 @@ fn curated_examples(category: KoiCategory) -> &'static [Example] {
         ],
         KoiCategory::Proxy => &[
             Example {
-                command: "koi proxy add web --listen 8443 --backend http://127.0.0.1:8080",
-                description: "TLS-terminate a backend",
+                command: "koi proxy add web --listen 8443 --backend 127.0.0.1:8080",
+                description: "TLS-terminate in front of a TCP backend",
             },
             Example {
                 command: "koi proxy status",
-                description: "Show active listeners",
+                description: "Show listeners and their real state",
             },
             Example {
                 command: "koi proxy list",
@@ -1724,11 +1724,15 @@ name, old state, new state, and reason.",
         name: "proxy add",
         summary: "Add or update a proxy entry",
         long_description: "\
-Configures a TLS-terminating reverse proxy entry. Koi uses certificates
-from the certmesh (if available) to terminate TLS and forward traffic
-to a plaintext backend.
+Adds a TLS-terminating TCP passthrough. Koi binds the listen port, terminates
+TLS with a certmesh certificate (if one is on disk) or a generated self-signed
+cert, then pipes raw bytes to the backend — so WebSockets and any bidirectional
+protocol work transparently.
 
-Arguments: <name> --listen <port> --backend <url>
+It is passthrough only: no path routing, no header injection, no rewrites. For
+those, point this proxy at Caddy/Traefik/nginx and let them do L7 routing.
+
+Arguments: <name> --listen <port> --backend <host:port>
 
 If a proxy with the same name exists, it is updated in place.",
         category: KoiCategory::Proxy,
@@ -1736,12 +1740,12 @@ If a proxy with the same name exists, it is updated in place.",
         scope: KoiScope::Admin,
         examples: &[
             Example {
-                command: "koi proxy add web --listen 8443 --backend http://127.0.0.1:8080",
-                description: "Add a TLS proxy",
+                command: "koi proxy add web --listen 8443 --backend 127.0.0.1:8080",
+                description: "Add a TLS passthrough",
             },
             Example {
-                command: "koi proxy add api --listen 9443 --backend http://127.0.0.1:3000",
-                description: "Another proxy",
+                command: "koi proxy add api --listen 9443 --backend 127.0.0.1:3000",
+                description: "Another passthrough",
             },
         ],
         see_also: &["proxy remove", "proxy list", "proxy status"],
@@ -1775,8 +1779,9 @@ port is released.",
         name: "proxy status",
         summary: "Show proxy status",
         long_description: "\
-Shows all active proxy listeners: name, listen port, backend URL,
-TLS certificate source, and connection counts.",
+Shows all proxy listeners: name, listen port, backend, TLS certificate source
+(certmesh or self-signed), and real STATE — running, or the bind/accept error
+(e.g. 'address in use') when a listener failed to start.",
         category: KoiCategory::Proxy,
         tags: &[KoiTag::ReadOnly],
         scope: KoiScope::Public,
@@ -1796,7 +1801,7 @@ TLS certificate source, and connection counts.",
         summary: "List configured proxies",
         long_description: "\
 Lists all configured proxy entries with their names, listen ports,
-and backend URLs. Use 'proxy status' for runtime details.",
+and backends. Use 'proxy status' for runtime details.",
         category: KoiCategory::Proxy,
         tags: &[KoiTag::ReadOnly],
         scope: KoiScope::Public,

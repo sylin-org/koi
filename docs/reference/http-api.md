@@ -349,6 +349,11 @@ Sources: `static`, `certmesh`, `mdns`.
 
 ## Proxy (`/v1/proxy`)
 
+A TLS-terminating **TCP passthrough**: it binds the listen port, terminates TLS, and
+pipes raw bytes to the backend (so WebSockets and any bidirectional protocol work). It
+does **not** do path routing, header injection, or rewrites — point it at Caddy/Traefik
+for L7 features.
+
 | Method | Path                      | Description          |
 | ------ | ------------------------- | -------------------- |
 | GET    | `/v1/proxy/status`        | Active proxy status  |
@@ -358,12 +363,47 @@ Sources: `static`, `certmesh`, `mdns`.
 
 ### POST /v1/proxy/add
 
+`backend` is a TCP endpoint as `host:port`. A URL (`http://127.0.0.1:8080`) is also
+accepted — only its `host:port` is used; the path is irrelevant to a byte passthrough.
+A non-loopback backend requires `allow_remote: true` (the proxy→backend hop is plaintext).
+
 ```json
 {
   "name": "web",
   "listen_port": 8443,
-  "backend": "http://127.0.0.1:8080",
+  "backend": "127.0.0.1:8080",
   "allow_remote": false
+}
+```
+
+### GET /v1/proxy/status
+
+`state` reflects each listener's real liveness; `error` is present only when a listener
+failed (e.g. the port was already in use). `cert_source` is `certmesh` when a cert file
+was found on disk (where certmesh deposits certs) or `self-signed` for the generated
+zero-config fallback.
+
+```json
+{
+  "proxies": [
+    {
+      "name": "web",
+      "listen_port": 8443,
+      "backend": "127.0.0.1:8080",
+      "allow_remote": false,
+      "cert_source": "certmesh",
+      "state": "running"
+    },
+    {
+      "name": "old-app",
+      "listen_port": 9443,
+      "backend": "127.0.0.1:9000",
+      "allow_remote": false,
+      "cert_source": "self-signed",
+      "state": "error",
+      "error": "address in use"
+    }
+  ]
 }
 ```
 

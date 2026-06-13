@@ -74,3 +74,11 @@ jobs:
       - uses: rustsec/audit-check@v1.4.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  surfaces:
+    # Surface-ledger tripwire (Epic E02): docs/SURFACES.md must exist and parse.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint surface ledger
+        run: bash scripts/lint-surfaces.sh docs/SURFACES.md

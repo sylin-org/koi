@@ -20,6 +20,8 @@
 - Architecture Decision Records documenting why things are built the way they are
 - **Stack canon (cross-repo)**: [../docs/adr/STACK-0001-sylin-stack-canon.md](../docs/adr/STACK-0001-sylin-stack-canon.md) — Koi is the **base layer** of the Sylin stack (Koi → Zen Garden → Koan). STACK-0001 is canon: Koi may not name, special-case, or document its consumers (the K2 vocabulary leakage), the HKDF domain-separation byte strings are **frozen** (K3, never renamed), and the contract surface is mdns/dns/certmesh/udp/truststore (the TLS proxy is excluded until tested). Do not contradict it without an upstream architect decision.
 
+**Surface ledger (cross-repo)**: [../docs/SURFACES.md](../docs/SURFACES.md) — records which surfaces are exercised by what, when last, and what guard protects them. Its top is the **rotation contract** (binding): before a lane leaves a surface, leave a tripwire and update that surface's row (`Last exercised` → today, `Guard` → the tripwire). The `surfaces` job in `.github/workflows/ci.yml` lints that the ledger parses. Honesty rule: unknown exercise status is written `unknown since <date>`, never a guessed "works" — the proxy row reads guard `none` (truth).
+
 ---
 
 ## Critical Rules
@@ -76,7 +78,7 @@ koi-truststore → (standalone: platform cert APIs)
 koi-config    → koi-common
 koi-dns       → koi-common, koi-config, hickory-server, hickory-resolver, axum, utoipa, tokio
 koi-health    → koi-common, koi-config, axum, utoipa, tokio
-koi-proxy     → koi-common, koi-config, axum-server, rustls, reqwest, utoipa, tokio
+koi-proxy     → koi-common, koi-config, tokio-rustls, rustls, rcgen, axum, utoipa, tokio
 koi-udp       → koi-common, axum, utoipa, tokio
 koi-runtime   → koi-common, bollard, axum, utoipa, tokio, chrono, async-trait
 koi-client    → koi-common, ureq (blocking)

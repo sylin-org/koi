@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use koi_common::integration::CertmeshSnapshot;
 use koi_common::paths;
 
 use crate::ProxyError;
@@ -36,38 +35,6 @@ pub fn load_entries_with_data_dir(
     data_dir: Option<&std::path::Path>,
 ) -> Result<Vec<ProxyEntry>, ProxyError> {
     load_entries_from(&config_path_with_override(data_dir))
-}
-
-/// Load entries from config file and merge with roster entries from certmesh.
-pub fn load_entries_with_certmesh(
-    certmesh: Option<&dyn CertmeshSnapshot>,
-) -> Result<Vec<ProxyEntry>, ProxyError> {
-    let mut entries = load_entries_from(&config_path())?;
-
-    if let Some(cm) = certmesh {
-        let hostname = hostname::get()
-            .map_err(|e| ProxyError::Io(e.to_string()))?
-            .to_string_lossy()
-            .to_string();
-
-        let members = cm.active_members();
-        if let Some(member) = members.iter().find(|m| m.hostname == hostname) {
-            let roster_entries: Vec<ProxyEntry> = member
-                .proxy_entries
-                .iter()
-                .map(|entry| ProxyEntry {
-                    name: entry.name.clone(),
-                    listen_port: entry.listen_port,
-                    backend: entry.backend.clone(),
-                    allow_remote: entry.allow_remote,
-                })
-                .collect();
-            merge_entries(&mut entries, roster_entries);
-        }
-    }
-
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(entries)
 }
 
 fn load_entries_from(path: &std::path::Path) -> Result<Vec<ProxyEntry>, ProxyError> {
@@ -158,17 +125,6 @@ pub fn remove_entry_with_data_dir(
     }
     save_entries_to(&entries, &path)?;
     Ok(entries)
-}
-
-fn merge_entries(entries: &mut Vec<ProxyEntry>, roster_entries: Vec<ProxyEntry>) {
-    let mut map: std::collections::BTreeMap<String, ProxyEntry> = std::collections::BTreeMap::new();
-    for entry in roster_entries {
-        map.insert(entry.name.clone(), entry);
-    }
-    for entry in entries.drain(..) {
-        map.insert(entry.name.clone(), entry);
-    }
-    *entries = map.into_values().collect();
 }
 
 #[cfg(test)]
