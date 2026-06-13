@@ -48,3 +48,10 @@ here: date, prompt ID, what was found, what was done instead.
   target the binary use `-p koi-net`.
 - **Verify** with `cargo check --workspace`, `cargo test`,
   `cargo clippy -- -D warnings`, `cargo fmt --check` before marking a row `done`.
+
+## Releases
+
+- **v0.3.0** — shipped 2026-06-13 (tag `v0.3.0` → release.yml run #33, Success): GitHub
+  Release with 6 platform binaries + all 15 crates published to crates.io. Bundles
+  P01–P04 + the dependency/security modernization (hickory 0.26, 6 RUSTSEC TLS CVE
+  patches, clean `cargo audit`, netdev removal); green CI across Linux/Windows/macOS.
