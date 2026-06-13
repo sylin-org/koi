@@ -17,7 +17,8 @@
 
 **Check design decisions**: `docs/adr/`
 
-- 10 Architecture Decision Records documenting why things are built the way they are
+- Architecture Decision Records documenting why things are built the way they are
+- **Stack canon (cross-repo)**: [../docs/adr/STACK-0001-sylin-stack-canon.md](../docs/adr/STACK-0001-sylin-stack-canon.md) — Koi is the **base layer** of the Sylin stack (Koi → Zen Garden → Koan). STACK-0001 is canon: Koi may not name, special-case, or document its consumers (the K2 vocabulary leakage), the HKDF domain-separation byte strings are **frozen** (K3, never renamed), and the contract surface is mdns/dns/certmesh/udp/truststore (the TLS proxy is excluded until tested). Do not contradict it without an upstream architect decision.
 
 ---
 
