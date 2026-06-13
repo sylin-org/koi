@@ -33,21 +33,18 @@ $ErrorActionPreference = "Stop"
 
 $Root = $PSScriptRoot
 
-# Read version.json
-$versionFile = Join-Path $Root "version.json"
-$versionData = Get-Content $versionFile | ConvertFrom-Json
-$buildNumber = Get-Date -Format "yyyyMMddHHmm"
-$version = "$($versionData.major).$($versionData.minor).$buildNumber"
+# Read version from Cargo.toml
+$cargoToml = Join-Path $Root "Cargo.toml"
+$content = Get-Content $cargoToml -Raw
+if ($content -match '\[workspace\.package\][\s\S]*?version\s*=\s*"([^"]+)"') {
+    $version = $Matches[1]
+} else {
+    throw "Could not parse version from Cargo.toml [workspace.package]"
+}
 
 Write-Host ""
 Write-Host "  Building Koi $version" -ForegroundColor Cyan
 Write-Host ""
-
-# Patch Cargo.toml version (permanent - no restore)
-$cargoToml = Join-Path $Root "Cargo.toml"
-$content = Get-Content $cargoToml -Raw
-$content = $content -replace '(?m)^version\s*=\s*"[^"]*"', "version = `"$version`""
-Set-Content $cargoToml -Value $content -NoNewline
 
 # Build
 if ($DebugBuild) {
@@ -91,11 +88,13 @@ if (-not $SkipTests) {
 $distDir = Join-Path $Root "dist"
 if (-not (Test-Path $distDir)) { New-Item -ItemType Directory -Path $distDir | Out-Null }
 
-$binary = Join-Path $Root "target" $targetDir "koi.exe"
-Copy-Item $binary (Join-Path $distDir "koi.exe") -Force
+$IsWin = ($IsWindows -eq $true) -or ($env:OS -eq 'Windows_NT')
+$binName = if ($IsWin) { "koi.exe" } else { "koi" }
+$binary = Join-Path $Root "target" $targetDir $binName
+Copy-Item $binary (Join-Path $distDir $binName) -Force
 
 Write-Host ""
 Write-Host "  Build complete." -ForegroundColor Green
-Write-Host "  Binary:  dist\koi.exe"
+Write-Host "  Binary:  dist\$binName"
 Write-Host "  Version: $version"
 Write-Host ""

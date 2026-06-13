@@ -50,7 +50,7 @@ if-addrs.workspace = true
 hickory-proto.workspace = true
 crossterm.workspace = true
 url.workspace = true
-command-surface = { path = "../command-surface", version = "0.2", features = ["render"] }
+command-surface = { workspace = true, features = ["render"] }
 utoipa.workspace = true
 utoipa-scalar = { workspace = true }
 netdev.workspace = true

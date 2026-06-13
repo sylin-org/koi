@@ -1,7 +1,6 @@
-﻿[package]
+[package]
 name = "command-surface"
 description = "Glyph-based command rendering and semantic metadata for the Koi CLI"
-publish = false
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
