@@ -227,7 +227,8 @@ dirs don't collide; ephemeral ports grabbed via throwaway bind. A `NoVerifier`
       conflicts with criteria 2 (real state) + 3 (hot-reload) and the charter's
       non-negotiable DX (#2 zero-config first success ⇒ self-signed fallback). Kept DX +
       correctness; surfaced for a user decision. Removing self-signed would regress DX and
-      still not reach <871. See divergence log.
+      still not reach <871. **Resolved: user accepted the size as correct behaviour
+      (2026-06-13)** — no further trimming. See divergence log.
 
 ## Risks & decisions
 
