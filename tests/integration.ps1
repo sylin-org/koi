@@ -47,7 +47,14 @@ $TestPipeName = 'koi-test'
 $TestDir = Join-Path $env:TEMP "koi-test-$(Get-Random)"
 $TestLog = Join-Path $TestDir 'koi-test.log'
 $BreadcrumbDir = Join-Path $TestDir 'breadcrumb'
-$KoiBin = Join-Path $PSScriptRoot '..\target\release\koi.exe'
+$IsWin = ($IsWindows -eq $true) -or ($env:OS -eq 'Windows_NT')
+$KoiBinName = if ($IsWin) { 'koi.exe' } else { 'koi' }
+$KoiBin = Join-Path $PSScriptRoot "..\target\release\$KoiBinName"
+$breadcrumbFile = if ($IsWin) {
+    Join-Path (Join-Path $BreadcrumbDir 'koi') 'koi.endpoint'
+} else {
+    Join-Path $BreadcrumbDir 'koi.endpoint'
+}
 # Use 127.0.0.1 instead of localhost to avoid IPv6 resolution issues
 # (axum binds 0.0.0.0 = IPv4 only).
 $Endpoint = "http://127.0.0.1:$TestPort"
@@ -64,6 +71,7 @@ $script:failed = 0
 $script:skipped = 0
 $script:tests = @()
 $script:daemonProc = $null
+$script:daemonToken = $null
 
 function Log($msg) {
     Write-Host "  $msg" -ForegroundColor DarkGray
@@ -141,18 +149,19 @@ function Invoke-Koi {
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
-    $psi.RedirectStandardInput = ($null -ne $Stdin)
+    $psi.RedirectStandardInput = ($null -ne $Stdin -and $Stdin -ne '')
     $psi.CreateNoWindow = $true
     # In service mode, use real system paths so CLI auto-discovers the service.
     # In normal mode, isolate breadcrumb + data dir from the real system.
     if (-not $Service) {
         $psi.EnvironmentVariables['ProgramData'] = $BreadcrumbDir
+        $psi.EnvironmentVariables['XDG_RUNTIME_DIR'] = $BreadcrumbDir
         $psi.EnvironmentVariables['KOI_DATA_DIR'] = (Join-Path $TestDir 'data')
     }
 
     $proc = [System.Diagnostics.Process]::Start($psi)
 
-    if ($null -ne $Stdin) {
+    if ($null -ne $Stdin -and $Stdin -ne '') {
         $proc.StandardInput.WriteLine($Stdin)
         $proc.StandardInput.Close()
     }
@@ -202,6 +211,9 @@ function Invoke-Http {
         TimeoutSec      = $TimeoutSec
         UseBasicParsing = $true
     }
+    if ($script:daemonToken) {
+        $params['Headers'] = @{ 'x-koi-token' = $script:daemonToken }
+    }
     if ($Body) {
         $params['Body'] = $Body
         $params['ContentType'] = 'application/json'
@@ -235,7 +247,7 @@ function Invoke-HttpExpectError {
             $statusCode = [int]$ex.Response.StatusCode
             # PowerShell 7 (HttpClient): response body is in ErrorDetails.Message
             # PowerShell 5.1 (WebRequest): response body is in GetResponseStream()
-            $content = $_.ErrorDetails.Message
+            $content = if ($null -ne $_.ErrorDetails) { $_.ErrorDetails.Message } else { $null }
             if (-not $content) {
                 try {
                     $reader = New-Object System.IO.StreamReader($ex.Response.GetResponseStream())
@@ -534,12 +546,13 @@ if ($Service) {
 
                     $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/create" -Body $createBody
                     $json = $resp.Content | ConvertFrom-Json
-                    if ($json.totp_uri -and $json.ca_fingerprint) {
+                    if ($json.auth_setup.totp_uri -and $json.ca_fingerprint) {
                         $weCreatedCa = $true
+                        $script:caFingerprint = $json.ca_fingerprint
                         Pass "certmesh create (fingerprint=$($json.ca_fingerprint.Substring(0, [Math]::Min(16, $json.ca_fingerprint.Length)))...)"
                     }
                     else {
-                        Fail 'certmesh create' "totp_uri=$($json.totp_uri) ca_fingerprint=$($json.ca_fingerprint)"
+                        Fail 'certmesh create' "totp_uri=$($json.auth_setup.totp_uri) ca_fingerprint=$($json.ca_fingerprint)"
                     }
                 }
                 catch {
@@ -665,13 +678,13 @@ if ($Service) {
             # S.13 - Rotate TOTP (only if we created the CA - passphrase must match)
             if ($weCreatedCa) {
                 try {
-                    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/rotate-totp" -Body '{"passphrase":"test-koi-service"}'
+                    $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/rotate-auth" -Body '{"passphrase":"test-koi-service"}'
                     $json = $resp.Content | ConvertFrom-Json
-                    if ($json.totp_uri -match 'otpauth://') {
+                    if ($json.auth_setup.totp_uri -match 'otpauth://') {
                         Pass 'rotate TOTP returns new URI'
                     }
                     else {
-                        Fail 'rotate TOTP' "totp_uri=$($json.totp_uri)"
+                        Fail 'rotate TOTP' "totp_uri=$($json.auth_setup.totp_uri)"
                     }
                 }
                 catch {
@@ -797,7 +810,7 @@ if ($Service) {
 
                 # Post-destroy - rotate TOTP should return 503
                 try {
-                    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/rotate-totp" -Body '{"passphrase":"test"}'
+                    $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/rotate-auth" -Body '{"passphrase":"test"}'
                     if ($errResp.StatusCode -eq 503) {
                         Pass 'rotate TOTP after destroy returns 503'
                     }
@@ -1245,8 +1258,9 @@ if (-not $Service) {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
-    # Isolate breadcrumb + data dir from real system (both use ProgramData)
+    # Isolate breadcrumb + data dir from real system
     $psi.EnvironmentVariables['ProgramData'] = $BreadcrumbDir
+    $psi.EnvironmentVariables['XDG_RUNTIME_DIR'] = $BreadcrumbDir
     # Data dir override for certmesh/paths isolation
     $psi.EnvironmentVariables['KOI_DATA_DIR'] = (Join-Path $TestDir 'data')
 
@@ -1271,6 +1285,7 @@ if (-not $Service) {
         }
         catch {
             # Not ready yet
+            if ($Verbose) { Log "Health poll error: $_" }
         }
         Start-Sleep -Milliseconds 500
     }
@@ -1283,6 +1298,18 @@ if (-not $Service) {
         }
         Cleanup
         exit 1
+    }
+
+    # Read token from breadcrumb
+    $script:daemonToken = $null
+    if (Test-Path $breadcrumbFile) {
+        $bcLines = Get-Content $breadcrumbFile
+        if ($bcLines.Count -ge 2) {
+            $tokenLine = $bcLines[1].Trim()
+            if ($tokenLine -match '^dat:(.*)$') {
+                $script:daemonToken = $Matches[1]
+            }
+        }
     }
 
     # 2.1 - Health check + body assertion
@@ -1300,7 +1327,7 @@ if (-not $Service) {
     }
 
     # 2.2 - Breadcrumb exists
-    $breadcrumbFile = Join-Path (Join-Path $BreadcrumbDir 'koi') 'koi.endpoint'
+    # $breadcrumbFile is already defined dynamically
     if (Test-Path $breadcrumbFile) {
         $bcContent = (Get-Content $breadcrumbFile -Raw).Trim()
         # Breadcrumb writes "http://localhost:PORT" - match either localhost or 127.0.0.1
@@ -1580,7 +1607,7 @@ if (-not $Service) {
     # 2.R3 - Proxy add/remove via HTTP
     try {
         $proxyName = 'daemon-proxy-test'
-        $body = @{ name = $proxyName; listen = '127.0.0.1:19990'; target = '127.0.0.1:19991' } | ConvertTo-Json
+        $body = @{ name = $proxyName; listen_port = 19990; backend = 'http://127.0.0.1:19991' } | ConvertTo-Json
         $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/proxy/add" -Body $body
         $respJson = $resp.Content | ConvertFrom-Json
         if ($null -ne $respJson) {
@@ -1655,11 +1682,12 @@ if (-not $Service) {
 
         $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/create" -Body $createBody
         $json = $resp.Content | ConvertFrom-Json
-        if ($json.totp_uri -and $json.ca_fingerprint) {
+        if ($json.auth_setup.totp_uri -and $json.ca_fingerprint) {
+            $script:caFingerprint = $json.ca_fingerprint
             Pass "certmesh create via HTTP (fingerprint=$($json.ca_fingerprint.Substring(0, [Math]::Min(16, $json.ca_fingerprint.Length)))...)"
         }
         else {
-            Fail 'certmesh create via HTTP' "totp_uri=$($json.totp_uri) ca_fingerprint=$($json.ca_fingerprint)"
+            Fail 'certmesh create via HTTP' "totp_uri=$($json.auth_setup.totp_uri) ca_fingerprint=$($json.ca_fingerprint)"
         }
     }
     catch {
@@ -1728,7 +1756,7 @@ if (-not $Service) {
 
     # 2.C7 - Certmesh join with invalid TOTP via HTTP (expect 4xx/5xx)
     try {
-        $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/join" -Body '{"totp_code":"000000"}'
+        $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/join" -Body '{"hostname":"test-host","auth":{"method":"totp","code":"000000"}}'
         if ($errResp.StatusCode -ge 400) {
             $errJson = $errResp.Content | ConvertFrom-Json
             Pass "certmesh join (invalid TOTP) returns $($errResp.StatusCode) $($errJson.error)"
@@ -1860,13 +1888,13 @@ if (-not $Service) {
 
     # 2.P6 - Rotate TOTP
     try {
-        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/rotate-totp" -Body '{"passphrase":"test-koi-integration"}'
+        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/rotate-auth" -Body '{"passphrase":"test-koi-integration"}'
         $json = $resp.Content | ConvertFrom-Json
-        if ($json.totp_uri -match 'otpauth://') {
+        if ($json.auth_setup.totp_uri -match 'otpauth://') {
             Pass 'rotate TOTP returns new URI'
         }
         else {
-            Fail 'rotate TOTP' "totp_uri=$($json.totp_uri)"
+            Fail 'rotate TOTP' "totp_uri=$($json.auth_setup.totp_uri)"
         }
     }
     catch {
@@ -1935,8 +1963,9 @@ if (-not $Service) {
     try {
         $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/roster"
         $json = $resp.Content | ConvertFrom-Json
-        if ($null -ne $json.members) {
-            Pass "certmesh roster returns members (count=$(@($json.members).Count))"
+        $roster = $json.roster_json | ConvertFrom-Json
+        if ($null -ne $roster.members) {
+            Pass "certmesh roster returns members (count=$(@($roster.members).Count))"
         }
         else {
             Fail 'certmesh roster' 'Missing members field'
@@ -1963,7 +1992,11 @@ if (-not $Service) {
 
     # 2.CM3 - Certmesh health (POST) - returns health check
     try {
-        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/health"
+        $healthBody = @{
+            hostname = [System.Net.Dns]::GetHostName()
+            pinned_ca_fingerprint = $script:caFingerprint
+        } | ConvertTo-Json
+        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/health" -Body $healthBody
         $json = $resp.Content | ConvertFrom-Json
         if ($null -ne $json) {
             Pass 'certmesh health returns OK'
@@ -2084,20 +2117,16 @@ if (-not $Service) {
         Fail 'register with lease_secs round-trip' $_.Exception.Message
     }
 
-    # 2.6 - Register with lease_secs=0 (permanent mode, no heartbeat needed)
+    # 2.6 - Register with lease_secs=0 via HTTP (expect 400 Bad Request - HTTP is stateless)
     $permanentRegId = $null
     try {
         $body = '{"name":"PermanentTest","type":"_http._tcp","port":19991,"lease_secs":0}'
-        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body $body
-        $json = $resp.Content | ConvertFrom-Json
-        $permanentRegId = $json.registered.id
-        # lease_secs is omitted (skip_serializing_if) for permanent - check via PSObject.Properties
-        $hasLease = $null -ne $json.registered.PSObject.Properties['lease_secs']
-        if ($json.registered.mode -eq 'permanent' -and -not $hasLease) {
-            Pass "register with lease_secs=0 returns mode=permanent"
+        $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body $body
+        if ($errResp.StatusCode -eq 400) {
+            Pass "register with lease_secs=0 returns 400 Bad Request"
         }
         else {
-            Fail 'register with lease_secs=0' "mode=$($json.registered.mode), hasLease=$hasLease"
+            Fail 'register with lease_secs=0' "Expected 400, got $($errResp.StatusCode)"
         }
     }
     catch {
@@ -2112,7 +2141,7 @@ if (-not $Service) {
         if ($statusJson.version -and
             $statusJson.platform -and
             $null -ne $statusJson.uptime_secs -and $statusJson.uptime_secs -ge 0 -and
-            $regs -and $regs.total -ge 4 -and
+            $regs -and $regs.total -ge 3 -and
             ($regs.alive + $regs.draining) -eq $regs.total) {
             Pass "admin status (v$($statusJson.version), total: $($regs.total), alive+draining=$($regs.alive)+$($regs.draining))"
         }
@@ -2142,7 +2171,7 @@ if (-not $Service) {
     try {
         $r = Invoke-Koi -KoiArgs 'mdns', 'admin', 'ls', '--endpoint', $Endpoint, '--json'
         $lsJson = $r.Stdout.Trim() | ConvertFrom-Json
-        if ($lsJson -is [array] -and $lsJson.Count -ge 4) {
+        if ($lsJson -is [array] -and $lsJson.Count -ge 3) {
             $allHaveFields = $true
             foreach ($entry in $lsJson) {
                 if (-not $entry.id -or -not $entry.name -or -not $entry.type -or $null -eq $entry.port -or -not $entry.state) {
@@ -2158,7 +2187,7 @@ if (-not $Service) {
             }
         }
         else {
-            Fail 'admin ls --json' "Expected array with >=4 entries, got: $(if ($lsJson -is [array]) { $lsJson.Count } else { 'non-array' })"
+            Fail 'admin ls --json' "Expected array with >=3 entries, got: $(if ($lsJson -is [array]) { $lsJson.Count } else { 'non-array' })"
         }
     }
     catch {
@@ -2169,7 +2198,8 @@ if (-not $Service) {
     # Note: client-mode announce auto-unregisters on exit (line 137 in client.rs),
     # so the service is cleaned up when the --timeout fires.
     try {
-        $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'announce', '--timeout', '3', 'CLIClient', 'http', '17777' -TimeoutSec 15 -AllowFailure
+        # Auto-discovers token and endpoint via breadcrumb directory variable
+        $r = Invoke-Koi -KoiArgs '--json', 'mdns', 'announce', '--timeout', '3', 'CLIClient', 'http', '17777' -TimeoutSec 15 -AllowFailure
         if ($r.ExitCode -ne 0) {
             Log "CLI client announce stderr: $($r.Stderr.Trim())"
             Fail 'announce via CLI client mode' "Exit code $($r.ExitCode)"
@@ -2191,12 +2221,13 @@ if (-not $Service) {
     # Note: CLI announce (2.9) auto-unregisters on exit, so we register a fresh
     # service via HTTP specifically for the CLI unregister test.
     try {
-        $body = '{"name":"UnregTarget","type":"_http._tcp","port":19995,"lease_secs":0}'
+        $body = '{"name":"UnregTarget","type":"_http._tcp","port":19995,"lease_secs":300}'
         $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body $body
         $json = $resp.Content | ConvertFrom-Json
         $unregTargetId = $json.registered.id
 
-        $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'unregister', $unregTargetId
+        # Auto-discovers token and endpoint via breadcrumb directory variable
+        $r = Invoke-Koi -KoiArgs '--json', 'mdns', 'unregister', $unregTargetId
         $parsed = $r.Stdout.Trim() | ConvertFrom-Json
         if ($parsed.unregistered -eq $unregTargetId) {
             Pass 'unregister via CLI client mode'
@@ -3007,7 +3038,7 @@ if (-not $Service) {
         $burstIds = @()
         $burstFailed = $false
         for ($i = 1; $i -le 5; $i++) {
-            $body = "{`"name`":`"Burst$i`",`"type`":`"_http._tcp`",`"port`":$( 18000 + $i ),`"lease_secs`":0}"
+            $body = "{`"name`":`"Burst$i`",`"type`":`"_http._tcp`",`"port`":$( 18000 + $i ),`"lease_secs`":300}"
             $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/mdns/announce" -Body $body
             $json = $resp.Content | ConvertFrom-Json
             if ($json.registered.id) {

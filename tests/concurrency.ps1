@@ -1,4 +1,4 @@
-﻿param(
+param(
     [switch]$NoBuild,
     [int]$Requests = 50,
     [int]$Parallel = 10
@@ -13,7 +13,15 @@ $TestDir = Join-Path $env:TEMP "koi-concurrency-$PID-$(Get-Random)"
 $TestLog = Join-Path $TestDir 'koi-concurrency.log'
 $BreadcrumbDir = Join-Path $TestDir 'breadcrumb'
 $DataDir = Join-Path $TestDir 'data'
-$KoiBin = Join-Path $PSScriptRoot '..\target\release\koi.exe'
+
+$IsWin = ($IsWindows -eq $true) -or ($env:OS -eq 'Windows_NT')
+$KoiBinName = if ($IsWin) { 'koi.exe' } else { 'koi' }
+$KoiBin = Join-Path $PSScriptRoot "..\target\release\$KoiBinName"
+$breadcrumbFile = if ($IsWin) {
+    Join-Path (Join-Path $BreadcrumbDir 'koi') 'koi.endpoint'
+} else {
+    Join-Path $BreadcrumbDir 'koi.endpoint'
+}
 $Endpoint = "http://127.0.0.1:$TestPort"
 $script:daemonProc = $null
 
@@ -56,6 +64,7 @@ $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
 $psi.CreateNoWindow = $true
 $psi.EnvironmentVariables['ProgramData'] = $BreadcrumbDir
+$psi.EnvironmentVariables['XDG_RUNTIME_DIR'] = $BreadcrumbDir
 $psi.EnvironmentVariables['KOI_DATA_DIR'] = $DataDir
 
 $script:daemonProc = [System.Diagnostics.Process]::Start($psi)
@@ -77,6 +86,18 @@ if (-not $healthy) {
     Write-Error 'Daemon failed to start.'
     Cleanup
     exit 1
+}
+
+# Read token from breadcrumb
+$script:daemonToken = $null
+if (Test-Path $breadcrumbFile) {
+    $bcLines = Get-Content $breadcrumbFile
+    if ($bcLines.Count -ge 2) {
+        $tokenLine = $bcLines[1].Trim()
+        if ($tokenLine -match '^dat:(.*)$') {
+            $script:daemonToken = $Matches[1]
+        }
+    }
 }
 
 function Invoke-ParallelRequests {
@@ -101,7 +122,10 @@ function Invoke-ParallelRequests {
 $registerResults = Invoke-ParallelRequests -Count $Requests -Throttle $Parallel -Action {
     param($i)
     $client = [System.Net.Http.HttpClient]::new()
-    $body = @{ name = "Burst$i"; type = "_http._tcp"; port = 18000 + $i; lease_secs = 0 } | ConvertTo-Json -Compress
+    if ($using:script:daemonToken) {
+        $client.DefaultRequestHeaders.Add('x-koi-token', $using:script:daemonToken)
+    }
+    $body = @{ name = "Burst$i"; type = "_http._tcp"; port = 18000 + $i; lease_secs = 300 } | ConvertTo-Json -Compress
     $content = New-Object System.Net.Http.StringContent($body, [System.Text.Encoding]::UTF8, 'application/json')
     $resp = $client.PostAsync("$using:Endpoint/v1/mdns/announce", $content).GetAwaiter().GetResult()
     $json = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
@@ -138,6 +162,9 @@ $null = Invoke-ParallelRequests -Count $ids.Count -Throttle $Parallel -Action {
     $idsLocal = $using:ids
     $id = $idsLocal[$i - 1]
     $client = [System.Net.Http.HttpClient]::new()
+    if ($using:script:daemonToken) {
+        $client.DefaultRequestHeaders.Add('x-koi-token', $using:script:daemonToken)
+    }
     $null = $client.PutAsync("$using:Endpoint/v1/mdns/heartbeat/$id", $null).GetAwaiter().GetResult()
     $client.Dispose()
     return $true
@@ -151,6 +178,9 @@ $null = Invoke-ParallelRequests -Count $ids.Count -Throttle $Parallel -Action {
     $idsLocal = $using:ids
     $id = $idsLocal[$i - 1]
     $client = [System.Net.Http.HttpClient]::new()
+    if ($using:script:daemonToken) {
+        $client.DefaultRequestHeaders.Add('x-koi-token', $using:script:daemonToken)
+    }
     $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Delete, "$using:Endpoint/v1/mdns/unregister/$id")
     $null = $client.SendAsync($req).GetAwaiter().GetResult()
     $client.Dispose()
