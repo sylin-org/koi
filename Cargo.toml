@@ -69,7 +69,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 futures-util = "0.3"
 hickory-server = "0.25"
 hickory-resolver = { version = "0.25", features = ["tokio", "system-config"] }
-hickory-proto = "0.25"
+hickory-proto = "0.26"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 hyper = { version = "1", features = ["full"] }
