@@ -16,6 +16,7 @@ pub mod health;
 pub mod mdns;
 pub mod proxy;
 pub mod status;
+pub mod token;
 pub mod udp;
 
 use std::collections::HashMap;

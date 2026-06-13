@@ -27,6 +27,12 @@ pub struct Cli {
     #[arg(long, env = "KOI_PORT", default_value = "5641")]
     pub port: u16,
 
+    /// HTTP API bind address: loopback (default), bridge, <ip>, or 0.0.0.0.
+    /// Non-loopback exposes the daemon to other hosts/containers; mutations
+    /// still require the daemon token. See `docs/reference/security-model.md`.
+    #[arg(long, env = "KOI_HTTP_BIND", default_value = "loopback")]
+    pub http_bind: String,
+
     /// mTLS port for certmesh inter-node traffic
     #[arg(long, env = "KOI_MTLS_PORT", default_value = "5642")]
     pub mtls_port: u16,
@@ -147,9 +153,32 @@ pub enum Command {
     Proxy(ProxyCommand),
     /// UDP datagram bridging
     Udp(UdpCommand),
+    /// Manage the daemon access token (show, write to a file for containers)
+    Token(TokenCommand),
     /// Destroy all Koi data and start fresh
     #[command(name = "factory-reset")]
     FactoryReset,
+}
+
+#[derive(Args, Debug)]
+pub struct TokenCommand {
+    #[command(subcommand)]
+    pub command: Option<TokenSubcommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TokenSubcommand {
+    /// Print the current daemon token (refuses non-tty output unless --force)
+    Show {
+        /// Print even when stdout is not a TTY (e.g. piping into a file)
+        #[arg(long)]
+        force: bool,
+    },
+    /// Write the daemon token to a 0600 file for mounting into containers
+    Write {
+        /// Destination path (created with 0600 permissions)
+        path: PathBuf,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -508,6 +537,8 @@ pub struct Config {
     pub dns_port: u16,
     pub dns_zone: String,
     pub dns_public: bool,
+    /// HTTP bind mode: loopback (default), bridge, <ip>, or 0.0.0.0.
+    pub http_bind: String,
 }
 
 impl Config {
@@ -517,6 +548,7 @@ impl Config {
             http_port: cli.port,
             mtls_port: cli.mtls_port,
             pipe_path,
+            http_bind: cli.http_bind.clone(),
             no_http: cli.no_http,
             no_ipc: cli.no_ipc,
             no_mdns: cli.no_mdns,
@@ -648,10 +680,13 @@ impl Config {
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let http_bind = std::env::var("KOI_HTTP_BIND").unwrap_or_else(|_| "loopback".to_string());
+
         Self {
             http_port,
             mtls_port,
             pipe_path,
+            http_bind,
             no_http,
             no_ipc,
             no_mdns,
@@ -676,6 +711,7 @@ impl Default for Config {
             http_port: DEFAULT_HTTP_PORT,
             mtls_port: crate::adapters::mtls::DEFAULT_MTLS_PORT,
             pipe_path: default_pipe_path(),
+            http_bind: "loopback".to_string(),
             no_http: false,
             no_ipc: false,
             no_mdns: false,

@@ -678,6 +678,53 @@ mode, it reads local state files directly.",
             path: crate::adapters::http::paths::UNIFIED_STATUS,
         }],
         confirmation: None,
+    })
+    .add(CommandDef {
+        name: "token show",
+        summary: "Print the daemon access token",
+        long_description: "\
+Prints the current daemon access token (DAT) — the secret that authorizes
+mutating HTTP requests (anything that is not a GET). The token is read from
+the breadcrumb file the daemon writes on startup.
+
+For safety it refuses to print to a non-tty (where it could be captured in
+logs or scrollback) unless you pass --force. To hand the token to a
+container, prefer `koi token write`.",
+        category: KoiCategory::Core,
+        tags: &[KoiTag::ReadOnly, KoiTag::CliOnly],
+        scope: KoiScope::Admin,
+        examples: &[
+            Example {
+                command: "koi token show",
+                description: "Print the token (tty only)",
+            },
+            Example {
+                command: "koi token show --json",
+                description: "Emit {\"token\": \"...\"} for scripting",
+            },
+        ],
+        see_also: &["token write"],
+        api: &[],
+        confirmation: None,
+    })
+    .add(CommandDef {
+        name: "token write",
+        summary: "Write the daemon token to a 0600 file",
+        long_description: "\
+Writes the current daemon access token to a file with owner-only
+permissions (0600 on Unix; ACL-restricted on Windows), ready to mount into
+a container as a secret. Pair with `--http-bind` to expose the daemon and
+let containers authenticate their requests.",
+        category: KoiCategory::Core,
+        tags: &[KoiTag::CliOnly],
+        scope: KoiScope::Admin,
+        examples: &[Example {
+            command: "koi token write /run/koi/token",
+            description: "Write the token for mounting into a container",
+        }],
+        see_also: &["token show"],
+        api: &[],
+        confirmation: None,
     });
 
     // ── Discovery (mDNS) ─────────────────────────────────────────────

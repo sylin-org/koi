@@ -10,16 +10,29 @@
 
 | Listener | Bind | Purpose |
 | -------- | ---- | ------- |
-| HTTP API + dashboard | `127.0.0.1:5641` | All `/v1/*` endpoints, dashboard (`/`), mDNS browser (`/mdns-browser`), OpenAPI (`/docs`) |
+| HTTP API + dashboard | `127.0.0.1:5641` (default; see `--http-bind`) | All `/v1/*` endpoints, dashboard (`/`), mDNS browser (`/mdns-browser`), OpenAPI (`/docs`) |
 | mTLS plane | `0.0.0.0:5642` | Certmesh inter-node traffic only (enrollment sync, roster, promotion). Client certificates required; CN-based authorization |
 | DNS resolver (if started) | `0.0.0.0:53` (configurable) | `koi dns serve` — rate-limited, private-client-only by default |
 
-**The HTTP API is loopback-only.** Processes on the same machine can reach it;
-other machines and (on native Linux) containers on bridge networks cannot. There is
-currently no flag to change the HTTP bind address — LAN/container exposure of the
-HTTP API is a roadmap item (see `docs/prompts/P03-container-access.md`). On Docker
-Desktop (Windows/macOS), `host.docker.internal` proxies into the host's loopback, so
-container access works there; on native Linux Docker it does not.
+**The HTTP API is loopback-only by default.** Processes on the same machine can
+reach it; other machines and (on native Linux) containers on bridge networks cannot.
+On Docker Desktop (Windows/macOS), `host.docker.internal` proxies into the host's
+loopback, so container access works there with no extra flags.
+
+To reach the daemon from a container on native Linux — or from elsewhere on the LAN —
+expose it deliberately with `--http-bind` (env `KOI_HTTP_BIND`):
+
+| Value | Binds | Use |
+| ----- | ----- | --- |
+| `loopback` (default) | `127.0.0.1` | Local processes only — quiet |
+| `bridge` | the docker/podman bridge IPv4 (e.g. `172.17.0.1`) | Bridge-networked containers on native Linux |
+| `<ip>` | that interface | A specific NIC |
+| `0.0.0.0` | all interfaces | Whole LAN — loudest warning |
+
+Non-loopback binds log a warning at startup and surface in `koi status` (`Bind:`
+line / `http_bind` JSON field) and the breadcrumb. **Exposure does not relax auth** —
+mutations still require the token; on Windows the exposed HTTP port also gets a
+firewall rule. `0.0.0.0` exposes `GET` endpoints to any device on the network.
 
 ## The daemon access token (DAT)
 
@@ -68,6 +81,14 @@ Invoke-RestMethod -Method Post -Uri http://localhost:5641/v1/mdns/announce `
 
 The `koi` CLI handles all of this automatically: it reads the breadcrumb, attaches
 the token, and falls back to standalone mode when no daemon is running.
+
+To hand the token to another process or container, use `koi token` instead of
+parsing the breadcrumb by hand:
+
+```bash
+koi token show                 # print the token (tty only; --force to pipe)
+koi token write /run/koi/token # write a 0600 file to mount as a container secret
+```
 
 ## CORS
 

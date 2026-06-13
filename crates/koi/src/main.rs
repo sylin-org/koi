@@ -409,6 +409,7 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     }
                 }
             }
+            Command::Token(token_cmd) => commands::token::run(token_cmd, cli.json),
             // Install, Uninstall, Version, Launch, FactoryReset handled before runtime
             Command::Install
             | Command::Uninstall
@@ -464,7 +465,15 @@ async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
 
 async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     koi_config::dirs::ensure_data_dir();
-    startup_diagnostics(&config);
+
+    // Resolve the HTTP bind address up front so startup logs and the breadcrumb
+    // agree with what the adapter actually binds. Only meaningful when HTTP is on.
+    let http_bind_ip = if config.no_http {
+        None
+    } else {
+        Some(resolve_http_bind_ip(&config.http_bind)?)
+    };
+    startup_diagnostics(&config, http_bind_ip);
 
     // Generate a Daemon Access Token (DAT) for authenticating mutation requests
     let dat_token = {
@@ -475,9 +484,10 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes)
     };
 
-    // Write breadcrumb so clients can discover the daemon
+    // Write breadcrumb so clients can discover the daemon. Clients connect over a
+    // routable address, so an unspecified bind (0.0.0.0) is advertised as loopback.
     if !config.no_http {
-        let endpoint = format!("http://localhost:{}", config.http_port);
+        let endpoint = breadcrumb_endpoint(http_bind_ip, config.http_port);
         koi_config::breadcrumb::write_breadcrumb(&endpoint, &dat_token);
     }
 
@@ -695,13 +705,14 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     if !config.no_http {
         let c = cores.clone();
         let port = config.http_port;
+        let bind_ip = http_bind_ip.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
         let cancel_token = cancel.clone();
         let ds = dashboard_state.clone();
         let bs = browser_state.clone();
         let dat = dat_token.clone();
         tasks.push(tokio::spawn(async move {
             if let Err(e) =
-                adapters::http::start(c, port, cancel_token, started_at, ds, bs, dat).await
+                adapters::http::start(c, bind_ip, port, cancel_token, started_at, ds, bs, dat).await
             {
                 tracing::error!(error = %e, "HTTP adapter failed");
             }
@@ -1444,7 +1455,7 @@ async fn shutdown_signal(cancel: CancellationToken) {
 
 // ── Daemon startup diagnostics ──────────────────────────────────────
 
-pub(crate) fn startup_diagnostics(config: &Config) {
+pub(crate) fn startup_diagnostics(config: &Config, http_bind_ip: Option<std::net::IpAddr>) {
     tracing::info!("Koi v{} starting", env!("CARGO_PKG_VERSION"));
     tracing::info!("Platform: {}", std::env::consts::OS);
 
@@ -1484,8 +1495,8 @@ pub(crate) fn startup_diagnostics(config: &Config) {
         tracing::info!("Proxy capability: disabled");
     }
 
-    if !config.no_http {
-        tracing::info!("TCP {}: listening (HTTP adapter)", config.http_port);
+    if let Some(bind_ip) = http_bind_ip {
+        log_http_bind(config, bind_ip);
     } else {
         tracing::info!("HTTP adapter: disabled");
     }
@@ -1498,6 +1509,160 @@ pub(crate) fn startup_diagnostics(config: &Config) {
 
     #[cfg(windows)]
     platform::windows::check_firewall(config);
+}
+
+// ── HTTP bind resolution ────────────────────────────────────────────
+
+/// Emits the HTTP bind log line(s) with mode-appropriate exposure warnings.
+/// Loopback is quiet; non-loopback binds are loud and always note that
+/// mutations still require the daemon token (charter principle 5).
+fn log_http_bind(config: &Config, bind_ip: std::net::IpAddr) {
+    let port = config.http_port;
+
+    if bind_ip.is_loopback() {
+        tracing::info!("HTTP: {bind_ip}:{port} (loopback only — use --http-bind to expose)");
+        return;
+    }
+
+    if bind_ip.is_unspecified() {
+        tracing::warn!(
+            "WARNING: Koi is reachable from your entire LAN. Mutations still require the \
+             daemon token; GET endpoints are readable by any device. (--http-bind 0.0.0.0)"
+        );
+        tracing::info!("HTTP: {bind_ip}:{port} (exposed) — mutations require x-koi-token");
+    } else if config.http_bind == "bridge" {
+        tracing::info!("HTTP: {bind_ip}:{port} (docker bridge) — mutations require x-koi-token");
+    } else {
+        tracing::warn!(
+            "WARNING: Koi is reachable on interface {bind_ip}. Mutations still require the \
+             daemon token; GET endpoints are readable by any device. (--http-bind {})",
+            config.http_bind
+        );
+        tracing::info!("HTTP: {bind_ip}:{port} (exposed) — mutations require x-koi-token");
+    }
+    tracing::info!("hint: containers read the token from a mounted secret; see `koi token --help`");
+}
+
+/// Builds the breadcrumb endpoint clients connect to. An unspecified bind
+/// (0.0.0.0) is advertised as loopback since clients need a routable address.
+pub(crate) fn breadcrumb_endpoint(http_bind_ip: Option<std::net::IpAddr>, port: u16) -> String {
+    match http_bind_ip {
+        Some(ip) if !ip.is_unspecified() => format!("http://{ip}:{port}"),
+        _ => format!("http://127.0.0.1:{port}"),
+    }
+}
+
+/// Resolves the `--http-bind` mode string to a concrete bind address:
+/// `loopback` → 127.0.0.1, `0.0.0.0` → all interfaces, `bridge` → the
+/// docker/podman bridge IPv4 (errors if none), `<ip>` → parsed literally.
+pub(crate) fn resolve_http_bind_ip(mode: &str) -> anyhow::Result<std::net::IpAddr> {
+    use std::net::{IpAddr, Ipv4Addr};
+    match mode {
+        "loopback" => Ok(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        "0.0.0.0" => Ok(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+        "bridge" => resolve_bridge_ip(),
+        other => other.parse::<IpAddr>().map_err(|_| {
+            anyhow::anyhow!(
+                "invalid --http-bind value '{other}': expected loopback, bridge, \
+                 an IP address, or 0.0.0.0"
+            )
+        }),
+    }
+}
+
+/// Finds the IPv4 address of the local docker/podman bridge interface.
+fn resolve_bridge_ip() -> anyhow::Result<std::net::IpAddr> {
+    use std::net::IpAddr;
+    let ifaces = if_addrs::get_if_addrs()
+        .map_err(|e| anyhow::anyhow!("could not enumerate network interfaces: {e}"))?;
+
+    let is_v4 = |iface: &if_addrs::Interface| matches!(iface.addr.ip(), IpAddr::V4(_));
+
+    // Prefer well-known bridge interface names…
+    for name in ["docker0", "podman0", "cni-podman0"] {
+        if let Some(iface) = ifaces.iter().find(|i| i.name == name && is_v4(i)) {
+            return Ok(iface.addr.ip());
+        }
+    }
+    // …then common bridge name prefixes (user-defined docker networks are `br-*`).
+    for iface in &ifaces {
+        if iface.is_loopback() || !is_v4(iface) {
+            continue;
+        }
+        let n = &iface.name;
+        if n.starts_with("docker")
+            || n.starts_with("podman")
+            || n.starts_with("br-")
+            || n.starts_with("cni-")
+        {
+            return Ok(iface.addr.ip());
+        }
+    }
+    anyhow::bail!(
+        "no docker/podman bridge interface found (looked for docker0, podman0, br-*, …). \
+         Use --http-bind <ip> with the host IP that containers should reach."
+    )
+}
+
+#[cfg(test)]
+mod http_bind_tests {
+    use super::{breadcrumb_endpoint, resolve_http_bind_ip};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn loopback_mode_resolves_to_localhost() {
+        assert_eq!(
+            resolve_http_bind_ip("loopback").unwrap(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        );
+    }
+
+    #[test]
+    fn unspecified_mode_resolves_to_all_interfaces() {
+        assert_eq!(
+            resolve_http_bind_ip("0.0.0.0").unwrap(),
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        );
+    }
+
+    #[test]
+    fn explicit_ipv4_is_parsed() {
+        assert_eq!(
+            resolve_http_bind_ip("192.168.1.42").unwrap(),
+            "192.168.1.42".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn explicit_ipv6_is_parsed() {
+        assert_eq!(
+            resolve_http_bind_ip("::1").unwrap(),
+            "::1".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn garbage_is_rejected() {
+        assert!(resolve_http_bind_ip("not-an-ip").is_err());
+        assert!(resolve_http_bind_ip("999.999.999.999").is_err());
+    }
+
+    #[test]
+    fn breadcrumb_advertises_loopback_for_unspecified() {
+        assert_eq!(
+            breadcrumb_endpoint(Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)), 5641),
+            "http://127.0.0.1:5641"
+        );
+    }
+
+    #[test]
+    fn breadcrumb_uses_specific_bind_ip() {
+        let ip: IpAddr = "172.17.0.1".parse().unwrap();
+        assert_eq!(
+            breadcrumb_endpoint(Some(ip), 5641),
+            "http://172.17.0.1:5641"
+        );
+    }
 }
 
 // ── Logging setup ───────────────────────────────────────────────────

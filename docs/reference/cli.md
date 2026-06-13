@@ -13,6 +13,7 @@ Global flags work with any subcommand:
 | `-v`, `-vv`       | -                 | off              | Increase verbosity (debug, trace)  |
 | `--log-file PATH` | `KOI_LOG_FILE`    | -                | Write logs to file                 |
 | `--port PORT`     | `KOI_PORT`        | `5641`           | HTTP API port                      |
+| `--http-bind`     | `KOI_HTTP_BIND`   | `loopback`       | HTTP bind: loopback / bridge / `<ip>` / 0.0.0.0 |
 | `--pipe PATH`     | `KOI_PIPE`        | platform default | IPC socket/pipe path               |
 | `--log-level`     | `KOI_LOG`         | `info`           | Log level                          |
 | `--no-http`       | `KOI_NO_HTTP`     | false            | Disable HTTP adapter               |
@@ -140,11 +141,20 @@ koi --daemon --no-runtime                         # disable
 
 ```
 koi status                                        # unified capability status
+koi token show                                    # print the daemon access token (tty only)
+koi token write /run/koi/token                    # write the token to a 0600 file for containers
 koi factory-reset                                 # destroy data directory
 koi install                                       # install system service
 koi uninstall                                     # remove system service
 koi version                                       # show version
 ```
+
+`koi token` reads the daemon's current access token from the breadcrumb file so it
+can be handed to another process or mounted into a container as a secret. `show`
+refuses to print into a non-tty unless `--force`; `write` creates the file
+owner-only (0600 on Unix, ACL-restricted on Windows). See
+[CONTAINERS.md](../../CONTAINERS.md) and the
+[security model](security-model.md) for `--http-bind` exposure and the token recipe.
 
 ---
 

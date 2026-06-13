@@ -609,8 +609,22 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         // Ensure data directory exists
         koi_config::dirs::ensure_data_dir();
 
+        // Resolve the HTTP bind address. The service can't surface errors to a
+        // console, so an invalid bind safe-fails to loopback rather than aborting.
+        let http_bind_ip = if config.no_http {
+            None
+        } else {
+            match crate::resolve_http_bind_ip(&config.http_bind) {
+                Ok(ip) => Some(ip),
+                Err(e) => {
+                    tracing::error!(error = %e, "Invalid KOI_HTTP_BIND; falling back to loopback");
+                    Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+                }
+            }
+        };
+
         // Startup diagnostics (logged to file)
-        crate::startup_diagnostics(&config);
+        crate::startup_diagnostics(&config, http_bind_ip);
 
         let mut tasks = Vec::new();
         let started_at = std::time::Instant::now();
@@ -651,14 +665,24 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         if !config.no_http {
             let c = cores.clone();
             let port = config.http_port;
+            let bind_ip =
+                http_bind_ip.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
             let cancel_token = cancel.clone();
             let ds = dashboard_state.clone();
             let bs = browser_state.clone();
             let dat = dat_token.clone();
             tasks.push(tokio::spawn(async move {
-                if let Err(e) =
-                    crate::adapters::http::start(c, port, cancel_token, started_at, ds, bs, dat)
-                        .await
+                if let Err(e) = crate::adapters::http::start(
+                    c,
+                    bind_ip,
+                    port,
+                    cancel_token,
+                    started_at,
+                    ds,
+                    bs,
+                    dat,
+                )
+                .await
                 {
                     tracing::error!(error = %e, "HTTP adapter failed");
                 }
@@ -755,7 +779,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
 
         // Write breadcrumb for client discovery
         if !config.no_http {
-            let endpoint = format!("http://localhost:{}", config.http_port);
+            let endpoint = crate::breadcrumb_endpoint(http_bind_ip, config.http_port);
             koi_config::breadcrumb::write_breadcrumb(&endpoint, &dat_token);
         }
 
@@ -891,7 +915,16 @@ fn firewall_ports_for_config(
     if !config.no_mdns {
         ports.extend(koi_mdns::firewall_ports());
     }
-    if !config.no_http {
+    // The HTTP adapter binds loopback by default — loopback traffic never
+    // crosses the firewall, so only open the port when actually exposed
+    // (--http-bind bridge/<ip>/0.0.0.0). Explicit loopback IPs stay closed.
+    let http_exposed = config.http_bind != "loopback"
+        && config
+            .http_bind
+            .parse::<std::net::IpAddr>()
+            .map(|ip| !ip.is_loopback())
+            .unwrap_or(true);
+    if !config.no_http && http_exposed {
         ports.push(FirewallPort::new(
             "HTTP",
             FirewallProtocol::Tcp,

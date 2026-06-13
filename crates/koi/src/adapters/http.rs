@@ -51,12 +51,14 @@ struct AppState {
     runtime: Option<Arc<koi_runtime::RuntimeCore>>,
     started_at: std::time::Instant,
     cancel: CancellationToken,
+    http_bind: String,
 }
 
 // ── Entrypoint ──────────────────────────────────────────────────────
 
 pub async fn start(
     cores: DaemonCores,
+    bind_ip: std::net::IpAddr,
     port: u16,
     cancel: CancellationToken,
     started_at: std::time::Instant,
@@ -74,6 +76,7 @@ pub async fn start(
         runtime: cores.runtime.clone(),
         started_at,
         cancel: cancel.clone(),
+        http_bind: bind_ip.to_string(),
     };
 
     // ── Dashboard (always mounted) ──
@@ -233,10 +236,10 @@ pub async fn start(
         }));
     app = app.layer(cors);
 
-    // Bind to loopback only — the HTTP adapter serves localhost clients.
-    // The mTLS adapter (if enabled) binds 0.0.0.0 for LAN inter-node traffic.
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-    tracing::info!("HTTP adapter listening on 127.0.0.1:{}", port);
+    // Bind to the resolved address (loopback by default; see --http-bind).
+    // Exposure does not relax auth — mutations still require the DAT token.
+    let listener = tokio::net::TcpListener::bind((bind_ip, port)).await?;
+    tracing::info!("HTTP adapter listening on {}:{}", bind_ip, port);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -256,6 +259,8 @@ struct UnifiedStatusResponse {
     platform: String,
     uptime_secs: u64,
     daemon: bool,
+    /// The HTTP adapter's bind address (e.g. "127.0.0.1" or "0.0.0.0").
+    http_bind: String,
     capabilities: Vec<koi_common::capability::CapabilityStatus>,
 }
 
@@ -618,6 +623,7 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
         "platform": std::env::consts::OS,
         "uptime_secs": uptime_secs,
         "daemon": true,
+        "http_bind": state.http_bind,
         "capabilities": capabilities,
     }))
 }
@@ -754,6 +760,59 @@ mod tests {
         let req = Request::post("/join").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // ── DAT auth: --http-bind exposure must never relax authentication ──
+    // The token requirement is independent of the bind address, so these
+    // wrap the exact production middleware and assert the policy directly.
+
+    /// Minimal router applying the production `dat_auth_middleware`.
+    fn dat_test_router(token: &str) -> Router {
+        let expected = Arc::new(token.to_string());
+        Router::new()
+            .route("/probe", get(|| async { "ok" }).post(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let expected = expected.clone();
+                dat_auth_middleware(req, next, expected)
+            }))
+    }
+
+    #[tokio::test]
+    async fn get_is_exempt_from_dat_auth() {
+        let app = dat_test_router("secret-token");
+        let req = Request::get("/probe").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn post_without_token_is_rejected() {
+        let app = dat_test_router("secret-token");
+        let req = Request::post("/probe").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn post_with_valid_token_is_accepted() {
+        let app = dat_test_router("secret-token");
+        let req = Request::post("/probe")
+            .header(DAT_HEADER, "secret-token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn post_with_wrong_token_is_rejected() {
+        let app = dat_test_router("secret-token");
+        let req = Request::post("/probe")
+            .header(DAT_HEADER, "wrong-token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
 
     #[test]

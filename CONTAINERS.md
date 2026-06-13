@@ -1,20 +1,21 @@
 # Koi Container Guide
 
-> **Current limitations — read first.** Koi's HTTP API binds to `127.0.0.1` only
-> (see the [security model](docs/reference/security-model.md)). That means:
+> **Exposing Koi to containers — read first.** Koi's HTTP API binds to `127.0.0.1`
+> by default. How you reach it depends on your platform (see the
+> [security model](docs/reference/security-model.md)):
 >
-> - **Docker Desktop (Windows/macOS):** `host.docker.internal` reaches the host's
->   loopback — the patterns in this guide work.
+> - **Docker Desktop (Windows/macOS):** `host.docker.internal` proxies into the
+>   host's loopback, so the default loopback bind works as-is — no `--http-bind`
+>   needed.
 > - **Native Linux Docker/Podman:** bridge-networked containers **cannot** reach a
->   loopback-bound daemon; the `172.17.0.1` / `host-gateway` patterns below will
->   not connect until the planned `--http-bind` exposure flag lands
->   (see [the roadmap](docs/assessment/2026-06-maturity-assessment.md)).
-> - **All platforms:** every non-GET request requires the `x-koi-token` header —
->   the [security model](docs/reference/security-model.md) shows how to read it
->   from the breadcrumb file; mount it into containers as a secret.
-> - The **runtime adapter** (label-driven, below) is unaffected — it runs on the
->   host and needs no container→Koi connectivity at all. On native Linux today,
->   it is the recommended path.
+>   loopback-bound daemon. Start Koi with `--http-bind bridge` (binds the docker
+>   bridge IP, e.g. `172.17.0.1`) or `--http-bind 0.0.0.0`, then reach it via the
+>   bridge gateway or a `host.docker.internal:host-gateway` mapping.
+> - **All platforms:** every non-GET request requires the `x-koi-token` header.
+>   Write the token to a file with `koi token write /run/koi/token` and mount it as
+>   a secret; GET endpoints stay readable without a token.
+> - The **runtime adapter** (label-driven, below) runs on the host and needs no
+>   container→Koi connectivity at all — it works regardless of bind mode.
 
 Docker containers can't do mDNS. The bridge network doesn't forward multicast traffic, and every workaround - `--network=host`, macvlan, mDNS reflectors - sacrifices isolation or adds fragility.
 
@@ -44,9 +45,23 @@ sudo koi install
 koi --daemon
 ```
 
-Either way, Koi's HTTP API listens on `127.0.0.1:5641` — loopback only. On Docker
-Desktop, `host.docker.internal` proxies into the host's loopback, so containers can
-reach it as-is. On native Linux, see the limitations note at the top of this guide.
+Either way, Koi's HTTP API listens on `127.0.0.1:5641` — loopback only by default.
+On Docker Desktop, `host.docker.internal` proxies into the host's loopback, so
+containers can reach it as-is.
+
+On **native Linux**, loopback is unreachable from bridge-networked containers, so
+expose the daemon deliberately with `--http-bind`:
+
+```bash
+koi --daemon --http-bind bridge     # binds the docker/podman bridge IP (e.g. 172.17.0.1)
+koi --daemon --http-bind 0.0.0.0    # binds all interfaces (loudest warning)
+```
+
+`--http-bind` accepts `loopback` (default), `bridge`, an explicit `<ip>`, or
+`0.0.0.0`; the env var `KOI_HTTP_BIND` mirrors it. Non-loopback binds log a warning
+and surface in `koi status` and the breadcrumb. Exposure does **not** relax auth —
+every non-GET request still needs the `x-koi-token` header (see
+[Distributing the token](#distributing-the-token) below).
 
 ### Test from a container
 
@@ -138,6 +153,54 @@ For the rest of this guide, we'll use `$KOI_HOST` as a placeholder. Set it to wh
 export KOI_HOST=host.docker.internal   # Mac/Windows
 export KOI_HOST=172.17.0.1             # Linux default bridge
 ```
+
+### Distributing the token
+
+Every non-GET request needs the `x-koi-token` header. The daemon generates a fresh
+token each time it starts and writes it to a host-only breadcrumb file. Hand it to
+containers one of two ways.
+
+**Write it to a file and mount it as a secret** (recommended):
+
+```bash
+# On the host — writes a 0600, owner-only file
+sudo koi token write /run/koi/token
+```
+
+```yaml
+# docker-compose.yml
+services:
+  app:
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    environment:
+      - KOI_URL=http://host.docker.internal:5641
+    secrets:
+      - koi_token
+secrets:
+  koi_token:
+    file: /run/koi/token
+```
+
+Inside the container the token is mounted at `/run/secrets/koi_token`:
+
+```bash
+TOKEN=$(cat /run/secrets/koi_token)
+curl -H "x-koi-token: $TOKEN" -X POST "$KOI_URL/v1/mdns/announce" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"My App","type":"_http._tcp","port":8080}'
+```
+
+**Or print it for quick experiments.** `koi token show` refuses to print into a
+pipe (where it could be captured in logs) unless you pass `--force`:
+
+```bash
+koi token show              # prints to your terminal
+koi token show --json       # {"token": "..."} for scripting
+```
+
+GET endpoints (`/healthz`, `/v1/mdns/discover`, `/v1/dns/lookup`, …) need no token;
+only mutations do. See the [security model](docs/reference/security-model.md) for
+the full policy.
 
 ---
 
@@ -328,6 +391,8 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - KOI_HOST=host.docker.internal
+    secrets:
+      - koi_token
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://host.docker.internal:5641/healthz"]
       interval: 30s
@@ -342,25 +407,34 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - KOI_HOST=host.docker.internal
+    secrets:
+      - koi_token
+
+secrets:
+  koi_token:
+    file: /run/koi/token   # created on the host with `koi token write /run/koi/token`
 ```
 
-Start Koi on the host (if it isn't already running as a service), then bring up the containers:
+Start Koi on the host (if it isn't already running as a service), write the token
+file, then bring up the containers:
 
 ```bash
-# On the host (skip if Koi is already installed as a service)
-koi --daemon
+# On the host (skip the daemon line if Koi is already installed as a service)
+koi --daemon                          # add --http-bind bridge on native Linux
+sudo koi token write /run/koi/token
 
 # In another terminal
 docker compose up -d
 ```
 
-Now register the web server from inside its container (passing the mounted token secret, see startup pattern below):
+Now register the web server from inside its container, reading the token from the
+mounted secret:
 
 ```bash
-docker exec web curl -s -X POST http://host.docker.internal:5641/v1/mdns/announce \
-  -H "x-koi-token: $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "Nginx", "type": "_http._tcp", "port": 8080, "lease_secs": 0}'
+docker exec web sh -c 'curl -s -X POST http://host.docker.internal:5641/v1/mdns/announce \
+  -H "x-koi-token: $(cat /run/secrets/koi_token)" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\": \"Nginx\", \"type\": \"_http._tcp\", \"port\": 8080, \"lease_secs\": 0}"'
 ```
 
 Any mDNS client on the network - a phone, another laptop, a different server - will now discover "Nginx" as an HTTP service.
@@ -713,10 +787,11 @@ services:
       - "8080:80" # host:container
 ```
 
-Register with port `8080`, not `80`:
+Register with port `8080`, not `80` (requires the daemon token, see security model):
 
 ```bash
 curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
+  -H "x-koi-token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name": "My Web Server", "type": "_http._tcp", "port": 8080}'
 ```
@@ -731,10 +806,11 @@ If you're using `--network=host` (where there's no port mapping), use the contai
 
 By default, Koi advertises **all** of the host's IP addresses in the mDNS A record. On machines with Docker bridges, WSL virtual adapters, or VPN interfaces, this can include addresses that other devices on the LAN can't reach (e.g. `172.17.0.1`, `127.0.0.1`).
 
-Use the `ip` field to pin the registration to a specific LAN address:
+Use the `ip` field to pin the registration to a specific LAN address (requires the daemon token, see security model):
 
 ```bash
 curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
+  -H "x-koi-token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name": "My Service", "type": "_http._tcp", "port": 8080, "ip": "192.168.1.42"}'
 ```

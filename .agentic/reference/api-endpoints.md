@@ -282,6 +282,8 @@ Streaming responses include a `status` field:
 | `koi udp status` | Client | Show active bindings |
 | `koi udp heartbeat <id>` | Client | Renew binding lease |
 | `koi status` | Standalone/Client | Unified capability status |
+| `koi token show` | - | Print the daemon access token (tty-guarded) |
+| `koi token write <path>` | - | Write the token to a 0600 file for containers |
 | `koi launch` | - | Open dashboard in browser |
 | `koi install` | - | Install as OS service |
 | `koi uninstall` | - | Uninstall OS service |

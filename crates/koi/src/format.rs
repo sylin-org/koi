@@ -201,6 +201,9 @@ pub fn unified_status(json: &serde_json::Value) -> String {
         let _ = writeln!(out, "  Uptime:    {secs}s");
     }
     let _ = writeln!(out, "  Daemon:    running");
+    if let Some(bind) = json.get("http_bind").and_then(|v| v.as_str()) {
+        let _ = writeln!(out, "  Bind:      {bind}");
+    }
 
     if let Some(caps) = json.get("capabilities").and_then(|v| v.as_array()) {
         for cap in caps {
@@ -601,13 +604,15 @@ mod tests {
         let json = serde_json::json!({
             "version": "0.2.0",
             "platform": "windows",
-            "uptime_secs": 120
+            "uptime_secs": 120,
+            "http_bind": "127.0.0.1"
         });
         let out = unified_status(&json);
         assert!(out.contains("Koi v0.2.0"));
         assert!(out.contains("Platform:  windows"));
         assert!(out.contains("Uptime:    120s"));
         assert!(out.contains("Daemon:    running"));
+        assert!(out.contains("Bind:      127.0.0.1"));
     }
 
     #[test]

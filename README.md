@@ -140,11 +140,12 @@ and **interactive API docs** (`/docs`).
 ## Containers
 
 Koi's container story — host daemon speaks multicast, containers speak plain HTTP —
-is the design center, with one honest caveat today: the HTTP API binds to loopback,
-so it works out of the box with **Docker Desktop** (`host.docker.internal`), while
-**native Linux** bridge networks can't reach it until the planned `--http-bind`
-exposure flag lands. [CONTAINERS.md](CONTAINERS.md) has the patterns, current
-limitations, and the label-driven runtime adapter (the zero-code path).
+is the design center. The HTTP API binds to loopback by default, so it works out of
+the box with **Docker Desktop** (`host.docker.internal`); on **native Linux**, expose
+it deliberately with `--http-bind bridge` (or `0.0.0.0`) and hand containers the
+token with `koi token write` (mutations still require it). [CONTAINERS.md](CONTAINERS.md)
+has the patterns, the secure exposure recipe, and the label-driven runtime adapter
+(the zero-code path).
 
 ## Platform support
 

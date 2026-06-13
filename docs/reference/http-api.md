@@ -6,7 +6,11 @@ All responses are JSON unless noted. Disabled capabilities return `503` with `{"
 
 ## Authentication & Security
 
-The HTTP API is **loopback-only** by default (`127.0.0.1:5641`).
+The HTTP API is **loopback-only** by default (`127.0.0.1:5641`). To reach it from
+containers or other hosts, start the daemon with `--http-bind bridge` / `<ip>` /
+`0.0.0.0` (env `KOI_HTTP_BIND`); the chosen address appears in `GET /v1/status`
+(`http_bind`). Exposure does not relax the token requirement below. See the
+[security model](security-model.md) for the bind modes and `koi token`.
 
 **CORS policy:** Browser requests are accepted only from `http://localhost` / `http://127.0.0.1` origins (any port). The API is not open to arbitrary web origins.
 
@@ -70,10 +74,11 @@ LAN interfaces exclude loopback and link-local addresses.
 
 ```json
 {
-  "version": "0.2.x",
+  "version": "0.3.x",
   "platform": "windows",
   "uptime_secs": 3600,
   "daemon": true,
+  "http_bind": "127.0.0.1",
   "capabilities": [
     { "name": "mdns", "summary": "3 registrations", "healthy": true }
   ]
