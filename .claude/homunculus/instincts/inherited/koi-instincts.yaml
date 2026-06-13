@@ -1,0 +1,477 @@
+# Instincts generated from https://github.com/sylin-org/koi
+# Generated: 2026-06-13T17:30:12.982Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: koi-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: docs, build, feat
+
+## Evidence
+
+- 9 commits analyzed
+- Detected conventional commit pattern
+- Examples: docs: add surface ledger + rotation contract (Epic E02), feat(proxy): rebuild data plane as TLS-terminating passthrough (P04)
+
+---
+id: koi-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Commit Length
+
+## Action
+
+Write moderate-length commit messages (~61 characters)
+
+## Evidence
+
+- Average commit message length: 61 chars
+- Based on 9 commits
+
+---
+id: koi-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: koi-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: koi-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: koi-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: koi-workflow-dependency-bump-and-verification
+trigger: "when doing dependency bump and verification"
+confidence: 0.7
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Workflow Dependency Bump And Verification
+
+## Action
+
+Follow the dependency-bump-and-verification workflow:
+1. Update version(s) in Cargo.toml for affected crate(s).
+2. Run cargo update to refresh Cargo.lock.
+3. Verify the code compiles (cargo build --all-targets).
+4. Run lints (clippy -D warnings).
+5. Run tests for affected crates.
+6. Update documentation references to dependency versions if needed.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~4x per month
+- Files: Cargo.toml, Cargo.lock, crates/*/Cargo.toml
+
+---
+id: koi-workflow-epic-feature-development-with-plan-and-ledger
+trigger: "when doing epic feature development with plan and ledger"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Workflow Epic Feature Development With Plan And Ledger
+
+## Action
+
+Follow the epic-feature-development-with-plan-and-ledger workflow:
+1. Write or update a plan/acceptance doc in docs/prompts/plans/ (goal, file list, tests, risks).
+2. Implement or refactor code across multiple files/crates.
+3. Update or add documentation (README, guides, API docs).
+4. Update progress/acceptance ledger (docs/prompts/PROGRESS.md).
+5. Update reference docs if APIs or utilities change.
+6. Add or update tests for new/refactored code.
+7. Cross-link in .agentic/CONTEXT.md or similar context files.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: docs/prompts/plans/*.md, docs/prompts/PROGRESS.md, crates/*/*.rs
+
+---
+id: koi-workflow-documentation-ledger-and-ci-integration
+trigger: "when doing documentation ledger and ci integration"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Workflow Documentation Ledger And Ci Integration
+
+## Action
+
+Follow the documentation-ledger-and-ci-integration workflow:
+1. Create or update a documentation ledger file (e.g., docs/SURFACES.md).
+2. Add or update a CI job in .github/workflows/ci.yml to lint or validate the ledger.
+3. Write or update a linting script in scripts/.
+4. Cross-link the ledger from .agentic/CONTEXT.md or similar context files.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: docs/SURFACES.md, .github/workflows/ci.yml, scripts/lint-*.sh
+
+---
+id: koi-instinct-file-naming-camelCase
+trigger: "When creating or renaming a source file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct File Naming CamelCase
+
+## Action
+
+Name the file using camelCase (e.g., myFile.rs)
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.files
+
+---
+id: koi-instinct-function-naming-camelCase
+trigger: "When defining a new function"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Function Naming CamelCase
+
+## Action
+
+Name the function using camelCase (e.g., doSomething)
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.functions
+
+---
+id: koi-instinct-class-naming-PascalCase
+trigger: "When defining a new struct or enum"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Class Naming PascalCase
+
+## Action
+
+Name the struct or enum using PascalCase (e.g., MyStruct)
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.classes
+
+---
+id: koi-instinct-constant-naming-SCREAMING_SNAKE_CASE
+trigger: "When defining a constant"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Constant Naming SCREAMING_SNAKE_CASE
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE (e.g., MAX_SIZE)
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.constants
+
+---
+id: koi-instinct-relative-imports
+trigger: "When importing modules within the repository"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Relative Imports
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in codeStyle.importStyle
+
+---
+id: koi-instinct-named-exports
+trigger: "When exporting functions or types from a module"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Named Exports
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in codeStyle.exportStyle
+
+---
+id: koi-instinct-tests-in-separate-location
+trigger: "When adding or updating tests"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Tests In Separate Location
+
+## Action
+
+Place tests in a separate location from source code (not inline)
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation
+
+---
+id: koi-instinct-conventional-commits
+trigger: "When writing a git commit message"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Conventional Commits
+
+## Action
+
+Use the conventional commit format: <type>(<scope>): <description>
+
+## Evidence
+
+- Seen in commit 'docs: add surface ledger + rotation contract (Epic E02)'
+- Pattern in commits.prefixes
+
+---
+id: koi-instinct-commit-prefix-docs
+trigger: "When committing documentation changes"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Commit Prefix Docs
+
+## Action
+
+Prefix the commit message with 'docs:' or 'docs(scope):'
+
+## Evidence
+
+- Seen in commit 'docs: add surface ledger + rotation contract (Epic E02)'
+
+---
+id: koi-instinct-commit-prefix-build
+trigger: "When committing build or dependency changes"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Commit Prefix Build
+
+## Action
+
+Prefix the commit message with 'build:' or 'build(deps):'
+
+## Evidence
+
+- Seen in commit 'build(deps): bump bollard 0.20 -> 0.21 (koi-runtime)'
+
+---
+id: koi-instinct-commit-prefix-feat
+trigger: "When committing new features"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Commit Prefix Feat
+
+## Action
+
+Prefix the commit message with 'feat:' or 'feat(scope):'
+
+## Evidence
+
+- Seen in commit 'feat(proxy): rebuild data plane as TLS-terminating passthrough (P04)'
+
+---
+id: koi-instinct-dependency-bump-workflow
+trigger: "When dependencies need to be updated or a Dependabot PR is received"
+confidence: 0.95
+domain: workflow
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Dependency Bump Workflow
+
+## Action
+
+Update Cargo.toml and Cargo.lock, run build/lints/tests, and update docs if needed
+
+## Evidence
+
+- Workflow: dependency-bump-and-verification
+- Seen in commit 'build(deps): bump bollard 0.20 -> 0.21 (koi-runtime)'
+
+---
+id: koi-instinct-epic-feature-workflow
+trigger: "When starting a major feature or refactor tracked as an epic"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Epic Feature Workflow
+
+## Action
+
+Write/update plan in docs/prompts/plans/, implement code, update ledger/docs/tests/context
+
+## Evidence
+
+- Workflow: epic-feature-development-with-plan-and-ledger
+- Seen in commit 'docs: add surface ledger + rotation contract (Epic E02)'
+
+---
+id: koi-instinct-documentation-ledger-workflow
+trigger: "When introducing or updating a documentation ledger and integrating with CI"
+confidence: 0.85
+domain: workflow
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Documentation Ledger Workflow
+
+## Action
+
+Create/update docs/SURFACES.md, add CI lint job, update scripts, cross-link in context
+
+## Evidence
+
+- Workflow: documentation-ledger-and-ci-integration
+- Seen in commit 'docs: add surface ledger + rotation contract (Epic E02)'
+
