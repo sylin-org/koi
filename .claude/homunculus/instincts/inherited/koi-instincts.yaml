@@ -1,0 +1,346 @@
+# Instincts generated from https://github.com/sylin-org/koi
+# Generated: 2026-06-13T19:38:49.220Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: koi-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: fix, refactor
+
+## Evidence
+
+- 3 commits analyzed
+- Detected conventional commit pattern
+- Examples: fix(deps): patch RUSTSEC advisories in the TLS stack (cargo audit), refactor(deps): drop netdev for stdlib default-route detection
+
+---
+id: koi-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Commit Length
+
+## Action
+
+Write moderate-length commit messages (~68 characters)
+
+## Evidence
+
+- Average commit message length: 68 chars
+- Based on 3 commits
+
+---
+id: koi-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Naming Files
+
+## Action
+
+Use PascalCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: PascalCase
+
+---
+id: koi-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: koi-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: koi-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: koi-workflow-dependency-update-and-security-audit
+trigger: "when doing dependency update and security audit"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Workflow Dependency Update And Security Audit
+
+## Action
+
+Follow the dependency-update-and-security-audit workflow:
+1. Run cargo audit to identify vulnerabilities and unmaintained dependencies.
+2. Update Cargo.toml and/or Cargo.lock to bump or remove affected dependencies.
+3. Refactor code to migrate away from deprecated or unmaintained crates (if necessary).
+4. Update CI configuration to reflect new audit status (e.g., remove/add ignores).
+5. Add documentation or assessment notes if a significant dependency change is made.
+6. Verify: Run cargo audit, build, clippy, fmt, and full test suite to ensure everything is clean.
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: Cargo.toml, Cargo.lock, .github/workflows/ci.yml
+
+---
+id: koi-instinct-naming-files
+trigger: "When creating or renaming a file"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Naming Files
+
+## Action
+
+Use PascalCase for file names
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.files
+
+---
+id: koi-instinct-naming-functions
+trigger: "When defining a function"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Naming Functions
+
+## Action
+
+Use camelCase for function names
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.functions
+
+---
+id: koi-instinct-naming-classes
+trigger: "When defining a class or struct"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Naming Classes
+
+## Action
+
+Use PascalCase for class/struct names
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.classes
+
+---
+id: koi-instinct-naming-constants
+trigger: "When defining a constant"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Naming Constants
+
+## Action
+
+Use SCREAMING_SNAKE_CASE for constant names
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.constants
+
+---
+id: koi-instinct-import-style
+trigger: "When importing modules"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Import Style
+
+## Action
+
+Use relative imports
+
+## Evidence
+
+- Pattern in codeStyle.importStyle
+
+---
+id: koi-instinct-export-style
+trigger: "When exporting modules or items"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Export Style
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in codeStyle.exportStyle
+
+---
+id: koi-instinct-test-location
+trigger: "When adding or organizing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Test Location
+
+## Action
+
+Place tests in a separate location from source code
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation
+
+---
+id: koi-instinct-git-commit-format
+trigger: "When writing a commit message"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Git Commit Format
+
+## Action
+
+Use conventional commit format with 'fix' or 'refactor' prefix as appropriate
+
+## Evidence
+
+- Seen in commit: fix(deps): patch RUSTSEC advisories in the TLS stack (cargo audit)
+- Seen in commit: refactor(deps): drop netdev for stdlib default-route detection
+
+---
+id: koi-instinct-git-commit-length
+trigger: "When writing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Git Commit Length
+
+## Action
+
+Keep commit message length around 68 characters on average
+
+## Evidence
+
+- Pattern in commits.averageLength
+
+---
+id: koi-instinct-dependency-update-workflow
+trigger: "When security advisories or outdated dependencies are detected"
+confidence: 0.95
+domain: workflow
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Dependency Update Workflow
+
+## Action
+
+Run the dependency-update-and-security-audit workflow: audit, update dependencies, refactor if needed, update CI, document changes, and verify with tests and linting
+
+## Evidence
+
+- Workflow: dependency-update-and-security-audit
+- Seen in commits: fix(deps): clear cargo audit warnings (rustls-pemfile, number_prefix, rand)
+
