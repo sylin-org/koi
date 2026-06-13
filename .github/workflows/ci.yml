@@ -10,6 +10,11 @@ env:
   CARGO_TERM_COLOR: always
   KOI_NO_CREDENTIAL_STORE: "1"
 
+# Least privilege: every job only reads the repo. No job creates checks, issues,
+# or releases, so the GITHUB_TOKEN never needs write scope.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -71,9 +76,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v1.4.1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit
+        # Audits the committed Cargo.lock. Fails on security vulnerabilities;
+        # unmaintained-crate notices (paste, number_prefix, rustls-pemfile) are
+        # informational warnings, not failures. No GITHUB_TOKEN / API needed, so
+        # this also works for pull requests from forks.
+        run: cargo audit
 
   surfaces:
     # Surface-ledger tripwire (Epic E02): docs/SURFACES.md must exist and parse.
