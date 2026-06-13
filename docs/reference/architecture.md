@@ -1,4 +1,4 @@
-﻿# Architecture
+# Architecture
 
 Koi is a single binary with a layered architecture. Three adapter layers sit on top of domain cores, which sit on top of engines. Adapters are thin transport translations. Cores own all domain logic. Engines are implementation details that cores wrap.
 
@@ -31,21 +31,21 @@ Koi is a single binary with a layered architecture. Three adapter layers sit on 
 
 | Crate                     | Package name      | Role                                                               | Lines  |
 | ------------------------- | ----------------- | ------------------------------------------------------------------ | ------ |
-| `crates/koi/`             | `koi-net`         | Binary - CLI entry, adapters, wiring                               | ~3,500 |
-| `crates/koi-common/`      | `koi-common`      | Shared kernel - types, errors, pipeline, ceremony engine           | ~2,000 |
-| `crates/koi-mdns/`        | `koi-mdns`        | mDNS domain - daemon, registry, protocol, HTTP routes              | ~2,500 |
-| `crates/koi-certmesh/`    | `koi-certmesh`    | Certificate mesh - CA, enrollment, roster, failover                | ~4,500 |
-| `crates/koi-crypto/`      | `koi-crypto`      | Crypto primitives - keys, TOTP, FIDO2, auth adapters, unlock slots | ~2,500 |
-| `crates/koi-truststore/`  | `koi-truststore`  | Platform trust store installation                                  | ~400   |
-| `crates/koi-config/`      | `koi-config`      | Config, state, breadcrumb discovery                                | ~600   |
-| `crates/koi-dns/`         | `koi-dns`         | Local DNS resolver - zone, resolution, rate limiting               | ~1,500 |
-| `crates/koi-health/`      | `koi-health`      | Health monitoring - HTTP/TCP checks, transitions                   | ~1,000 |
-| `crates/koi-proxy/`       | `koi-proxy`       | TLS-terminating reverse proxy - cert reload, forwarding            | ~800   |
-| `crates/koi-client/`      | `koi-client`      | Blocking HTTP client for daemon communication (ureq)               | ~650   |
-| `crates/koi-embedded/`    | `koi-embedded`    | In-process facade - builder, handles, events                       | ~1,300 |
-| `crates/koi-udp/`         | `koi-udp`         | UDP datagram bridging - bind, relay, lease reaper, HTTP routes     | ~500   |
-| `crates/koi-runtime/`     | `koi-runtime`     | Container/service runtime adapter - Docker/Podman lifecycle events | ~800   |
-| `crates/command-surface/` | `command-surface` | Glyph-based command rendering, semantic metadata                   | ~500   |
+| `crates/koi/`             | `koi-net`         | Binary - CLI entry, adapters, wiring                               | ~12,723|
+| `crates/koi-common/`      | `koi-common`      | Shared kernel - types, errors, pipeline, ceremony engine, assets   | ~3,020 |
+| `crates/koi-mdns/`        | `koi-mdns`        | mDNS domain - daemon, registry, protocol, HTTP routes              | ~2,705 |
+| `crates/koi-certmesh/`    | `koi-certmesh`    | Certificate mesh - CA, enrollment, roster, failover                | ~17,420|
+| `crates/koi-crypto/`      | `koi-crypto`      | Crypto primitives - keys, TOTP, FIDO2, auth adapters, unlock slots | ~3,284 |
+| `crates/koi-truststore/`  | `koi-truststore`  | Platform trust store installation                                  | ~256   |
+| `crates/koi-config/`      | `koi-config`      | Config, state, breadcrumb discovery                                | ~440   |
+| `crates/koi-dns/`         | `koi-dns`         | Local DNS resolver - zone, resolution, rate limiting               | ~1,499 |
+| `crates/koi-health/`      | `koi-health`      | Health monitoring - HTTP/TCP checks, transitions                   | ~924   |
+| `crates/koi-proxy/`       | `koi-proxy`       | TLS-terminating reverse proxy - cert reload, forwarding            | ~823   |
+| `crates/koi-client/`      | `koi-client`      | Blocking HTTP client for daemon communication (ureq)               | ~625   |
+| `crates/koi-embedded/`    | `koi-embedded`    | In-process facade - builder, handles, events                       | ~5,227 |
+| `crates/koi-udp/`         | `koi-udp`         | UDP datagram bridging - bind, relay, lease reaper, HTTP routes     | ~589   |
+| `crates/koi-runtime/`     | `koi-runtime`     | Container/service runtime adapter - Docker/Podman lifecycle events | ~1,641 |
+| `crates/command-surface/` | `command-surface` | Glyph-based command rendering, semantic metadata                   | ~901   |
 
 ---
 
@@ -100,9 +100,11 @@ Domain crates depend on `koi-common` but **never on each other**. Cross-domain w
 
 ```
 crates/koi/src/
-├── main.rs          # Pure orchestrator - CLI parse, routing, daemon wiring, shutdown
+├── main.rs          # CLI entry point and top-level execution routing
+├── orchestrator.rs  # Daemon orchestrator - coordinates background tasks, domain startup, and graceful shutdown
+├── integrations.rs  # Host integration hooks and capability bridges
 ├── cli.rs           # clap definitions (Cli, Command, Config)
-├── client.rs        # KoiClient (ureq HTTP client for client mode)
+├── client.rs        # client utility wrappers
 ├── format.rs        # All human-readable CLI output
 ├── admin.rs         # Admin command execution
 ├── openapi.rs       # OpenAPI spec generation
@@ -119,15 +121,19 @@ crates/koi/src/
 │   └── status.rs    # Unified status command
 ├── adapters/
 │   ├── http.rs      # HTTP server (Axum router, domain nesting, OpenAPI)
-│   ├── dashboard.rs # Web dashboard (HTML, snapshot, SSE events)
-│   ├── mdns_browser.rs  # mDNS network browser (HTML, cache, SSE)
+│   ├── dashboard.rs # Web dashboard adapter (links static assets from koi-common)
+│   ├── mdns_browser.rs  # mDNS network browser adapter (links static assets from koi-common)
+│   ├── mtls.rs      # mTLS server/client configuration for inter-node communication
 │   ├── pipe.rs      # Named Pipe (Windows) / UDS (Unix)
 │   ├── cli.rs       # stdin/stdout NDJSON
 │   └── dispatch.rs  # Shared NDJSON dispatch logic
 └── platform/
-    ├── windows.rs   # SCM, firewall, service paths
-    ├── unix.rs      # systemd, service paths
-    └── macos.rs     # launchd, service paths
+    ├── windows.rs   # Windows Service (SCM), firewall rules, registry access
+    ├── unix.rs      # systemd integration, Unix service paths
+    └── macos.rs     # launchd integration, macOS service paths
+```
+
+> Note: The HTML/CSS/JS frontend source codes for the **Web dashboard** (`dashboard.html`) and the **mDNS browser** (`mdns-browser.html`) reside as static assets in `crates/koi-common/assets/` and are embedded directly into the binary at compile time.
 ```
 
 Platform-conditional compilation (`#[cfg(target_os)]`) lives exclusively in `platform/`. Everything else is pure cross-platform Rust.

@@ -121,10 +121,8 @@ Replace unbounded `mpsc` in the mDNS daemon worker with bounded `sync_channel(25
 
 ## Block 4: Cross-Domain Trait Boundaries (ADR-011 WS-7)
 
-**Status:** SKIP — verified 2026-03-25 that zero cross-domain imports exist.
-The domain boundary model was implemented correctly from the start.
-ADR-011's description of cross-domain imports was prospective (proposed
-architecture), not a finding about current code.
+**Status:** SKIP — verified 2026-03-25 that zero cross-domain imports exist in the final state.
+Cross-domain dependencies did exist at commit `588b616` and were refactored/removed in `aa979d4`.
 
 ~~**Goal:** Domain crates depend only on `koi-common`, never on each other.~~
 ~~**Risk:** Medium — architectural refactor, but no behavior change.~~
@@ -298,12 +296,6 @@ Migrated from custom dual-backend (platform store + file) to
 ### 7.7 Dashboard enhancements (KOI-0002 phases 7.2–7.4) — DEFERRED
 
 New feature work: browser actions, additional pages, WebSocket upgrade.
-
-### 7.7 Dashboard enhancements (KOI-0002 phases 7.2–7.4)
-
-- Browser actions (register/unregister from UI)
-- Additional browser pages
-- WebSocket upgrade for lower-latency updates
 
 ---
 

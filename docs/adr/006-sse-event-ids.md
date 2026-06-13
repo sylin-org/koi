@@ -1,7 +1,8 @@
-﻿# ADR-006: UUIDv7 Event IDs on SSE Streams
+# ADR-006: UUIDv7 Event IDs on SSE Streams
 
 **Status:** Accepted  
-**Date:** 2025-10-01
+**Date:** 2025-10-01  
+> Retrospectively documented 2026-02-15; decision date approximate.
 
 ## Context
 

@@ -1,5 +1,21 @@
 # Koi Container Guide
 
+> **Current limitations — read first.** Koi's HTTP API binds to `127.0.0.1` only
+> (see the [security model](docs/reference/security-model.md)). That means:
+>
+> - **Docker Desktop (Windows/macOS):** `host.docker.internal` reaches the host's
+>   loopback — the patterns in this guide work.
+> - **Native Linux Docker/Podman:** bridge-networked containers **cannot** reach a
+>   loopback-bound daemon; the `172.17.0.1` / `host-gateway` patterns below will
+>   not connect until the planned `--http-bind` exposure flag lands
+>   (see [the roadmap](docs/assessment/2026-06-maturity-assessment.md)).
+> - **All platforms:** every non-GET request requires the `x-koi-token` header —
+>   the [security model](docs/reference/security-model.md) shows how to read it
+>   from the breadcrumb file; mount it into containers as a secret.
+> - The **runtime adapter** (label-driven, below) is unaffected — it runs on the
+>   host and needs no container→Koi connectivity at all. On native Linux today,
+>   it is the recommended path.
+
 Docker containers can't do mDNS. The bridge network doesn't forward multicast traffic, and every workaround - `--network=host`, macvlan, mDNS reflectors - sacrifices isolation or adds fragility.
 
 Koi solves this at the infrastructure level. It runs on the host, speaks multicast mDNS on the physical network, and exposes everything through a plain HTTP API. Containers make HTTP calls; Koi translates them into mDNS. No special network modes, no multicast forwarding, no libraries needed inside the container.
@@ -28,7 +44,9 @@ sudo koi install
 koi --daemon
 ```
 
-Either way, Koi binds to `0.0.0.0:5641` - every network interface, including the Docker bridge gateway. Containers can reach it without any extra configuration.
+Either way, Koi's HTTP API listens on `127.0.0.1:5641` — loopback only. On Docker
+Desktop, `host.docker.internal` proxies into the host's loopback, so containers can
+reach it as-is. On native Linux, see the limitations note at the top of this guide.
 
 ### Test from a container
 
@@ -69,8 +87,9 @@ Use this when containers need friendly names mapped to LAN IPs.
 # DNS lookup
 curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
 
-# Add a static entry
+# Add a static entry (requires the daemon token, see security model)
 curl -s -X POST http://$KOI_HOST:5641/v1/dns/add \
+  -H "x-koi-token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name":"grafana","ip":"192.168.1.42"}'
 ```
@@ -80,8 +99,9 @@ curl -s -X POST http://$KOI_HOST:5641/v1/dns/add \
 Use this when containers rely on shared health checks (HTTP/TCP).
 
 ```bash
-# Add a TCP check
+# Add a TCP check (requires the daemon token, see security model)
 curl -s -X POST http://$KOI_HOST:5641/v1/health/add \
+  -H "x-koi-token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name":"db","kind":"tcp","target":"10.0.0.10:5432"}'
 
@@ -218,7 +238,9 @@ This is the part that's normally impossible. A container behind Docker's NAT bri
 ### Register a service
 
 ```bash
+# Requires the daemon token (see security model)
 curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
+  -H "x-koi-token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name": "My Container App", "type": "_http._tcp", "port": 8080}'
 ```
@@ -242,10 +264,10 @@ The service is now visible to every mDNS client on the network. The `mode: heart
 
 HTTP registrations use a lease model. The default lease is 90 seconds - if Koi doesn't hear from you within that window, it starts a 30-second grace period, then removes the service from the network.
 
-Send a heartbeat at half the lease interval (every 45 seconds is a safe default):
+Send a heartbeat at half the lease interval (every 45 seconds is a safe default, requires the daemon token):
 
 ```bash
-curl -s -X PUT http://$KOI_HOST:5641/v1/mdns/heartbeat/a1b2c3d4
+curl -s -X PUT -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/heartbeat/a1b2c3d4
 ```
 
 ```json
@@ -254,10 +276,11 @@ curl -s -X PUT http://$KOI_HOST:5641/v1/mdns/heartbeat/a1b2c3d4
 
 ### Register permanently
 
-If the service should live for as long as Koi runs (or until you explicitly remove it), set `lease_secs` to 0:
+If the service should live for as long as Koi runs (or until you explicitly remove it), set `lease_secs` to 0 (requires the daemon token):
 
 ```bash
 curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
+  -H "x-koi-token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name": "My Container App", "type": "_http._tcp", "port": 8080, "lease_secs": 0}'
 ```
@@ -276,10 +299,10 @@ curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
 
 No heartbeats needed. The registration persists until you delete it or Koi shuts down. Good for infrastructure services that are always running.
 
-### Unregister
+### Unregister (requires the daemon token)
 
 ```bash
-curl -s -X DELETE http://$KOI_HOST:5641/v1/mdns/unregister/a1b2c3d4
+curl -s -X DELETE -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/unregister/a1b2c3d4
 ```
 
 ```json
@@ -331,10 +354,11 @@ koi --daemon
 docker compose up -d
 ```
 
-Now register the web server from inside its container:
+Now register the web server from inside its container (passing the mounted token secret, see startup pattern below):
 
 ```bash
 docker exec web curl -s -X POST http://host.docker.internal:5641/v1/mdns/announce \
+  -H "x-koi-token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name": "Nginx", "type": "_http._tcp", "port": 8080, "lease_secs": 0}'
 ```
@@ -364,8 +388,9 @@ until curl -sf "$KOI_URL/healthz" > /dev/null 2>&1; do
   sleep 2
 done
 
-# Register this service
+# Register this service (attaching x-koi-token read from mounted secret file/env)
 RESULT=$(curl -sf -X POST "$KOI_URL/v1/mdns/announce" \
+  -H "x-koi-token: $KOI_TOKEN" \
   -H 'Content-Type: application/json' \
   -d "{\"name\": \"$SERVICE_NAME\", \"type\": \"_http._tcp\", \"port\": $SERVICE_PORT, \"lease_secs\": 0}")
 
@@ -375,7 +400,7 @@ echo "Registered with Koi: $REG_ID"
 # Unregister on exit
 cleanup() {
   echo "Unregistering from Koi..."
-  curl -sf -X DELETE "$KOI_URL/v1/mdns/unregister/$REG_ID" > /dev/null 2>&1
+  curl -sf -X DELETE -H "x-koi-token: $KOI_TOKEN" "$KOI_URL/v1/mdns/unregister/$REG_ID" > /dev/null 2>&1
 }
 trap cleanup EXIT TERM INT
 
@@ -410,6 +435,7 @@ until curl -sf "$KOI_URL/healthz" > /dev/null 2>&1; do
 done
 
 RESULT=$(curl -sf -X POST "$KOI_URL/v1/mdns/announce" \
+  -H "x-koi-token: $KOI_TOKEN" \
   -H 'Content-Type: application/json' \
   -d "{\"name\": \"$SERVICE_NAME\", \"type\": \"_http._tcp\", \"port\": $SERVICE_PORT}")
 
@@ -418,13 +444,13 @@ REG_ID=$(echo "$RESULT" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
 # Background heartbeat loop
 (while true; do
   sleep 45
-  curl -sf -X PUT "$KOI_URL/v1/mdns/heartbeat/$REG_ID" > /dev/null 2>&1 || break
+  curl -sf -X PUT -H "x-koi-token: $KOI_TOKEN" "$KOI_URL/v1/mdns/heartbeat/$REG_ID" > /dev/null 2>&1 || break
 done) &
 HEARTBEAT_PID=$!
 
 cleanup() {
   kill $HEARTBEAT_PID 2>/dev/null
-  curl -sf -X DELETE "$KOI_URL/v1/mdns/unregister/$REG_ID" > /dev/null 2>&1
+  curl -sf -X DELETE -H "x-koi-token: $KOI_TOKEN" "$KOI_URL/v1/mdns/unregister/$REG_ID" > /dev/null 2>&1
 }
 trap cleanup EXIT TERM INT
 
@@ -552,21 +578,21 @@ curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
 curl -s "http://$KOI_HOST:5641/v1/dns/list"
 ```
 
-### Add and remove static entries
+### Add and remove static entries (requires the daemon token)
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/dns/add \
+curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/dns/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"grafana","ip":"192.168.1.42"}'
 
-curl -s -X DELETE http://$KOI_HOST:5641/v1/dns/remove/grafana
+curl -s -X DELETE -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/dns/remove/grafana
 ```
 
-If you need to start or stop the resolver from a container, use:
+If you need to start or stop the resolver from a container, use (requires the daemon token):
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/dns/serve
-curl -s -X POST http://$KOI_HOST:5641/v1/dns/stop
+curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/dns/serve
+curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/dns/stop
 ```
 
 ---
@@ -575,18 +601,18 @@ curl -s -X POST http://$KOI_HOST:5641/v1/dns/stop
 
 Use Koi to maintain a shared health view for services that containers depend on.
 
-### Add a TCP check
+### Add a TCP check (requires the daemon token)
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/health/add \
+curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/health/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"db","kind":"tcp","target":"10.0.0.10:5432"}'
 ```
 
-### Add an HTTP check
+### Add an HTTP check (requires the daemon token)
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/health/add \
+curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/health/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"api","kind":"http","target":"http://10.0.0.20:8080/health"}'
 ```
@@ -596,7 +622,7 @@ curl -s -X POST http://$KOI_HOST:5641/v1/health/add \
 ```bash
 curl -s http://$KOI_HOST:5641/v1/health/status
 curl -s http://$KOI_HOST:5641/v1/health/checks
-curl -s -X DELETE http://$KOI_HOST:5641/v1/health/remove/db
+curl -s -X DELETE -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/health/remove/db
 ```
 
 ---
@@ -610,8 +636,9 @@ store and cert files live in the host data directory.
 ```bash
 curl -s http://$KOI_HOST:5641/v1/certmesh/status
 curl -s http://$KOI_HOST:5641/v1/certmesh/log
-curl -s -X POST http://$KOI_HOST:5641/v1/certmesh/open-enrollment -H 'Content-Type: application/json' -d '{}'
-curl -s -X POST http://$KOI_HOST:5641/v1/certmesh/close-enrollment
+# Mutations require the daemon token:
+curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/certmesh/open-enrollment -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/certmesh/close-enrollment
 ```
 
 If you do enroll from a container, the `/v1/certmesh/join` response includes PEM
@@ -624,10 +651,10 @@ material you can store in the container, but it will not update the host trust s
 The proxy capability lets you terminate TLS on the host using certmesh-managed
 certificates and forward traffic to local backends.
 
-### Add a proxy entry
+### Add a proxy entry (requires the daemon token)
 
 ```bash
-curl -s -X POST http://$KOI_HOST:5641/v1/proxy/add \
+curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/proxy/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"app","listen_port":443,"backend":"http://127.0.0.1:8080"}'
 ```
@@ -637,7 +664,7 @@ curl -s -X POST http://$KOI_HOST:5641/v1/proxy/add \
 ```bash
 curl -s http://$KOI_HOST:5641/v1/proxy/status
 curl -s http://$KOI_HOST:5641/v1/proxy/list
-curl -s -X DELETE http://$KOI_HOST:5641/v1/proxy/remove/app
+curl -s -X DELETE -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/proxy/remove/app
 ```
 
 ---
@@ -839,17 +866,17 @@ koi mdns admin ls
 koi mdns admin unregister <id>
 ```
 
-Or via the HTTP API from another container:
+Or via the HTTP API from another container (requires the daemon token):
 
 ```bash
-curl -s -X DELETE http://$KOI_HOST:5641/v1/mdns/admin/unregister/<id>
+curl -s -X DELETE -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/admin/unregister/<id>
 ```
 
 For automatic cleanup, prefer heartbeat mode over permanent mode in containers.
 
 **CORS errors from browser-based containers**
 
-Koi allows all origins (CORS is fully permissive), so this shouldn't happen. If you see CORS errors, they're likely from a reverse proxy between the browser and Koi, not from Koi itself.
+Koi restricts CORS origins to localhost / 127.0.0.1 (any port). If you run browser applications on other origins (like on physical IP addresses or external domains), they cannot call the HTTP API directly due to this browser security restriction. Use a reverse proxy or run your pages on localhost.
 
 ---
 
@@ -865,21 +892,21 @@ curl -s http://$KOI_HOST:5641/v1/mdns/discover?type=_http._tcp
 # Resolve a specific instance
 curl -s http://$KOI_HOST:5641/v1/mdns/resolve?name=My%20NAS._http._tcp.local.
 
-# Register a service (heartbeat mode, 90s lease)
-curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
+# Register a service (heartbeat mode, 90s lease, requires token)
+curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/announce \
   -H 'Content-Type: application/json' \
   -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
 
-# Register permanently (no heartbeat needed)
-curl -s -X POST http://$KOI_HOST:5641/v1/mdns/announce \
+# Register permanently (no heartbeat needed, requires token)
+curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/announce \
   -H 'Content-Type: application/json' \
   -d '{"name": "My App", "type": "_http._tcp", "port": 8080, "lease_secs": 0}'
 
-# Send heartbeat
-curl -s -X PUT http://$KOI_HOST:5641/v1/mdns/heartbeat/{id}
+# Send heartbeat (requires token)
+curl -s -X PUT -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/heartbeat/{id}
 
-# Unregister
-curl -s -X DELETE http://$KOI_HOST:5641/v1/mdns/unregister/{id}
+# Unregister (requires token)
+curl -s -X DELETE -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/mdns/unregister/{id}
 
 # Subscribe to lifecycle events (SSE stream)
 curl -s http://$KOI_HOST:5641/v1/mdns/subscribe?type=_http._tcp
@@ -893,16 +920,16 @@ curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
 # DNS list
 curl -s http://$KOI_HOST:5641/v1/dns/list
 
-# Add a DNS entry
-curl -s -X POST http://$KOI_HOST:5641/v1/dns/add \
+# Add a DNS entry (requires token)
+curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/dns/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"grafana","ip":"192.168.1.42"}'
 
 # Health status
 curl -s http://$KOI_HOST:5641/v1/health/status
 
-# Add a health check
-curl -s -X POST http://$KOI_HOST:5641/v1/health/add \
+# Add a health check (requires token)
+curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/health/add \
   -H 'Content-Type: application/json' \
   -d '{"name":"db","kind":"tcp","target":"10.0.0.10:5432"}'
 

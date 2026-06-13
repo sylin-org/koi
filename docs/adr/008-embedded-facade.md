@@ -1,7 +1,9 @@
-﻿# ADR-008: Embedded Facade (`koi-embedded`)
+# ADR-008: Embedded Facade (`koi-embedded`)
 
 **Status:** Accepted  
 **Date:** 2025-12-01
+
+> Retrospectively documented 2026-02-15; decision date approximate.
 
 ## Context
 

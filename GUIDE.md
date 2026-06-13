@@ -1,20 +1,27 @@
 # Koi User Guide
 
-Koi is a local infrastructure toolkit. It handles service discovery (mDNS/DNS-SD) and certificate management (private CA with pluggable enrollment auth) - the two things every LAN needs but nobody wants to set up manually.
+Koi gives your local network the pipeline it never gets out of the box —
+**discover → name → trust → serve** — from one binary. This guide takes you from
+first command to daily usage; each capability then has its own deep-dive.
 
-This guide covers the basics. Each capability has a detailed walkthrough:
+**Core pillars:**
 
-- **[mDNS - Service Discovery](docs/guides/mdns.md)** - find, advertise, and monitor services on your network
-- **[Certmesh - Certificate Mesh](docs/guides/certmesh.md)** - private CA, TOTP/FIDO2 enrollment, mutual TLS trust
-- **[DNS - Local Resolver](docs/guides/dns.md)** - map friendly hostnames to local IPs
-- **[Health - Endpoint Monitoring](docs/guides/health.md)** - HTTP and TCP health checks
-- **[Proxy - TLS Termination](docs/guides/proxy.md)** - local TLS-terminating reverse proxy
-- **[UDP - Datagram Bridging](docs/guides/udp.md)** - relay host UDP sockets to containers over HTTP/SSE
-- **[Runtime - Container Lifecycle](docs/guides/runtime.md)** - auto-discover Docker/Podman containers via labels
-- **[System - Daemon Lifecycle](docs/guides/system.md)** - install, manage, uninstall
-- **[Embedded - Rust In-Process](docs/guides/embedded.md)** - use Koi as a library in Rust apps
+- **[mDNS — Service Discovery](docs/guides/mdns.md)** — find, advertise, and monitor services, with a real lease lifecycle
+- **[DNS — Local Resolver](docs/guides/dns.md)** — friendly names from three sources: static entries, discovery, certificates
+- **[Certmesh — Certificate Mesh](docs/guides/certmesh.md)** — private CA, guided enrollment, OS trust-store installation
+- **[Runtime — Container Lifecycle](docs/guides/runtime.md)** — label a container; Koi announces, names, and watches it
 
-For full CLI flags and configuration, see the [CLI Reference](docs/reference/cli.md). For the HTTP API, see the [HTTP API Reference](docs/reference/http-api.md).
+**Supporting cast:**
+
+- **[Proxy — TLS Endpoint](docs/guides/proxy.md)** — zero-config TLS termination for certmesh certificates
+- **[Health — Endpoint Monitoring](docs/guides/health.md)** — HTTP and TCP checks feeding status and the dashboard
+- **[UDP — Datagram Bridging](docs/guides/udp.md)** — host UDP sockets for bridge-networked containers
+- **[System — Daemon Lifecycle](docs/guides/system.md)** — install, manage, uninstall
+- **[Embedded — Rust In-Process](docs/guides/embedded.md)** — use Koi as a library
+
+References: [CLI](docs/reference/cli.md) ·
+[HTTP API](docs/reference/http-api.md) ·
+[Security model](docs/reference/security-model.md)
 
 ---
 
@@ -26,7 +33,8 @@ Open a terminal:
 koi mdns discover
 ```
 
-Koi scans your local network and lists every service type it can find. After five seconds it stops. You might see:
+Koi scans your local network and lists every service type it can find. After five
+seconds it stops. You might see:
 
 ```
 _http._tcp
@@ -34,7 +42,8 @@ _googlecast._tcp
 _spotify-connect._tcp
 ```
 
-That's mDNS discovery - no configuration, no server. Just devices talking to each other.
+That's mDNS discovery — no configuration, no server, no daemon. Just devices
+talking to each other.
 
 To advertise a service:
 
@@ -42,20 +51,74 @@ To advertise a service:
 koi mdns announce "My App" _http._tcp 8080
 ```
 
-Other devices running any mDNS browser will see it. Press Ctrl+C to stop.
+Other devices running any mDNS browser will see it. Press Ctrl+C to stop — and
+because announcements are *leased*, stopping actually removes it from the network.
+No ghosts.
 
 ---
 
-## Capabilities
+## Finding your way around
 
-Koi is organized into **capabilities** - independent domains that can be enabled or disabled individually. Each capability can be turned off with `--no-<capability>` (e.g., `--no-dns`). Check the status of all capabilities:
+Koi's CLI is built to be explored — three levels of help, no manual required:
+
+```
+koi                      # live daemon status + the full command catalog
+koi dns                  # one domain's commands, with curated examples
+koi mdns announce?       # any command + '?' → detail page with examples
+                         # and the equivalent HTTP call
+```
+
+Commands follow one shape throughout: `koi <domain> <verb> [args]`. Every command
+accepts `--json` for machine-readable output, `--timeout`, and `-v`/`-vv` for
+diagnostics.
+
+---
+
+## The daemon
+
+One-off commands work standalone, but the toolbox — DNS serving, certificates,
+the dashboard, container integration — lives in the daemon:
+
+```
+koi --daemon             # foreground (Ctrl+C to stop)
+koi install              # or install as a system service (see below)
+```
+
+The daemon exposes:
+
+- **HTTP API** on `127.0.0.1:5641` — loopback only; see the
+  [security model](docs/reference/security-model.md) for the bind and auth details
+- **Web dashboard** at `http://localhost:5641/` and an **mDNS network browser**
+  at `/mdns-browser` (`koi launch` opens it)
+- **Interactive API docs** at `/docs` (OpenAPI/Scalar)
+- **IPC** via Named Pipe (`\\.\pipe\koi` on Windows) or Unix socket
+  (`$XDG_RUNTIME_DIR/koi.sock`) — mDNS operations over NDJSON
+
+Bare `koi` (no flags, no subcommand) does **not** start a daemon — it shows status
+and the command catalog. The daemon starts only with `--daemon`, as an installed
+service, or in piped-stdin mode.
+
+### Writes require the daemon token
+
+`GET` endpoints are open on loopback. Everything else needs the `x-koi-token`
+header. The CLI handles this automatically; for raw HTTP, read the token from the
+breadcrumb file — the two-line recipe per OS is in the
+[security model](docs/reference/security-model.md).
+
+---
+
+## Capabilities and `koi status`
+
+Capabilities are independent domains, all enabled by default, each toggleable at
+runtime (`--no-dns`, `--no-certmesh`, … or `KOI_NO_DNS=1`, …). Disabled
+capabilities answer with a clear message naming the flag that re-enables them.
 
 ```
 koi status
 ```
 
 ```
-Koi v0.2.x
+Koi v0.x
   Platform:  windows
   Daemon:    running
   [+] mdns:      3 registrations
@@ -68,190 +131,110 @@ Koi v0.2.x
 
 ---
 
-## Daemon mode
+## How commands pick their mode
 
-When you run Koi without a subcommand, it starts as a persistent daemon:
+You normally never think about this — but here is the rule:
 
-```
-koi
-```
+1. **Subcommand present** (`koi mdns discover`, `koi dns add`, …):
+   - `--standalone` → run a local engine, ignore any daemon
+   - `--endpoint URL` → talk to that daemon explicitly
+   - otherwise → if a daemon is running (detected via the breadcrumb file, <1 ms),
+     act as its client; if not, run standalone where the command supports it
+2. **Stdin is a pipe** (`echo '…' | koi`) → NDJSON in, NDJSON out (mDNS verbs)
+3. **`koi --daemon`** → start the daemon
+4. **No subcommand, no pipe, no flag** → status + catalog
 
-The daemon exposes:
-
-- **HTTP API** on port 5641 (all interfaces)
-- **Web dashboard** at `http://localhost:5641/` with system overview and mDNS browser
-- **Interactive API docs** at `/docs` (OpenAPI/Scalar)
-- **IPC** via Named Pipe (`\\.\pipe\koi` on Windows) or Unix socket (`$XDG_RUNTIME_DIR/koi.sock`)
-
-Open the dashboard in your browser:
-
-```
-koi launch
-```
-
-All CLI commands automatically detect a running daemon and delegate to it. When no daemon is running, commands like `koi mdns discover` spin up a temporary mDNS engine and run standalone.
-
-### Health check
-
-```
-GET /healthz → "OK"
-```
-
-### Unified status
-
-```
-GET /v1/status
-```
-
-Returns version, uptime, platform, and the status of each capability.
-
-### Admin shutdown
-
-```
-POST /v1/admin/shutdown
-```
-
-Requests a graceful daemon shutdown.
+Client mode is what makes `koi mdns announce` pleasant: the CLI auto-heartbeats the
+lease while running and unregisters cleanly on Ctrl+C.
 
 ---
 
-## Client mode
+## JSON and piped modes
 
-When a daemon is running, verb commands (`discover`, `announce`, `resolve`, etc.) automatically connect to it instead of creating a standalone engine. Detection is fast (<1ms when no daemon exists) - Koi reads a breadcrumb file written on startup.
-
-```
-koi mdns discover http --endpoint http://localhost:5641   # force specific daemon
-koi mdns discover http --standalone                       # force standalone mode
-```
-
----
-
-## JSON output
-
-Every command supports `--json` for machine-readable NDJSON output:
+Every command supports `--json` (NDJSON to stdout):
 
 ```
-koi mdns discover http --json
-koi certmesh status --json
+koi mdns discover _http._tcp --json
 koi status --json
 ```
 
-The flag can appear before or after the subcommand.
-
----
-
-## Piped JSON mode
-
-When stdin is a pipe, Koi reads NDJSON commands and writes NDJSON responses:
+When stdin is a pipe, Koi speaks NDJSON directly — handy as a dev REPL:
 
 ```bash
 echo '{"browse":"_http._tcp"}' | koi
 ```
 
-| Operation  | Request JSON                                                           |
-| ---------- | ---------------------------------------------------------------------- |
-| Browse     | `{"browse": "_http._tcp"}`                                             |
-| Register   | `{"register": {"name": "My App", "type": "_http._tcp", "port": 8080}}` |
-| Unregister | `{"unregister": "a1b2c3d4"}`                                           |
-| Resolve    | `{"resolve": "My NAS._http._tcp.local."}`                              |
-| Subscribe  | `{"subscribe": "_http._tcp"}`                                          |
-| Heartbeat  | `{"heartbeat": "a1b2c3d4"}`                                            |
+| Operation | Request JSON |
+| --------- | ------------ |
+| Browse | `{"browse": "_http._tcp"}` |
+| Register | `{"register": {"name": "My App", "type": "_http._tcp", "port": 8080}}` |
+| Unregister | `{"unregister": "a1b2c3d4"}` |
+| Resolve | `{"resolve": "My NAS._http._tcp.local."}` |
+| Subscribe | `{"subscribe": "_http._tcp"}` |
+| Heartbeat | `{"heartbeat": "a1b2c3d4"}` |
+
+---
+
+## Local DNS in five minutes
+
+Koi's resolver serves one local zone (default: `.lan`) populated from three
+sources — static entries you add, certmesh certificate names, and mDNS-derived
+aliases — and forwards everything else upstream.
+
+```
+koi dns serve                      # start the resolver (or run inside the daemon)
+koi dns add grafana 10.0.0.42      # static entry → grafana.lan
+koi dns lookup grafana             # resolve through Koi
+koi dns list                       # everything currently resolvable
+```
+
+**Keeping your existing DNS:** you don't have to point machines at Koi. Delegate
+just the Koi zone from the resolver you already run — Pi-hole, AdGuard Home, and
+dnsmasq all support per-domain conditional forwarding (e.g. forward `*.lan` to
+Koi's port). Same pattern works for a Tailscale split-DNS rule, which lets remote
+tailnet devices resolve your LAN names. See the [DNS guide](docs/guides/dns.md).
 
 ---
 
 ## Configuration
 
-All daemon settings can be set via CLI flags or environment variables. A few common examples:
+All daemon settings are CLI flags with environment-variable mirrors:
 
 ```bash
-koi --port 8053 -v                       # custom port, debug logging
-koi -vv --log-file /var/log/koi.log      # trace-level with log file
-koi --no-http                            # IPC only, no HTTP adapter
-koi --no-certmesh --no-dns               # disable specific capabilities
-KOI_PORT=9090 KOI_LOG=trace koi          # all via environment
+koi --daemon --port 8053 -v              # custom port, debug logging
+koi --daemon -vv --log-file koi.log      # trace-level with log file
+koi --daemon --no-certmesh --no-dns      # disable capabilities
+KOI_PORT=9090 KOI_LOG=trace koi --daemon # same, via environment
 ```
 
-For the full configuration table (all flags, env vars, and defaults), see the [CLI Reference](docs/reference/cli.md).
+Full table: [CLI Reference](docs/reference/cli.md).
 
 ---
 
 ## System service
-
-Koi can run as a system service on all major platforms:
 
 ```
 koi install       # install and start
 koi uninstall     # stop and remove
 ```
 
-| Platform | Mechanism               | Service name    |
-| -------- | ----------------------- | --------------- |
-| Windows  | Service Control Manager | `koi`           |
-| Linux    | systemd unit            | `koi.service`   |
-| macOS    | launchd plist           | `org.sylin.koi` |
+| Platform | Mechanism | Service name |
+| -------- | --------- | ------------ |
+| Windows | Service Control Manager | `koi` |
+| Linux | systemd unit | `koi.service` |
+| macOS | launchd plist | `org.sylin.koi` |
 
-On Windows, manage with `sc stop koi` / `sc start koi`. On Linux, use `systemctl`.
-
----
-
-## DNS usage
-
-Koi can act as a lightweight resolver for a local zone (default: `.lan`).
-It combines static entries, certmesh SANs, and mDNS aliases, and forwards
-non-local queries upstream.
-
-### Start the resolver
-
-Standalone (foreground):
-
-```
-koi dns serve
-```
-
-Daemon (background):
-
-```
-koi dns serve --endpoint http://localhost:5641
-```
-
-### Add static entries
-
-```
-koi dns add grafana 10.0.0.42
-koi dns add grafana.lan 10.0.0.42
-koi dns remove grafana
-```
-
-### Query and list
-
-```
-koi dns lookup grafana
-koi dns lookup grafana --record-type AAAA
-koi dns list
-```
-
-### Stop (daemon mode)
-
-```
-koi dns stop --endpoint http://localhost:5641
-```
-
-## How modes are chosen
-
-1. **Subcommand present** (`koi mdns discover`, `koi certmesh status`, etc.):
-   - **`mdns admin` subcommand** - always talks to the daemon.
-   - **`--standalone`** - runs a local mDNS engine, no daemon needed.
-   - **`--endpoint URL`** - connects to the specified daemon.
-   - **Otherwise** - checks for a running daemon. If found, uses client mode. If not, standalone.
-2. **Stdin is a pipe** (`echo '...' | koi`) - reads NDJSON from stdin, writes to stdout.
-3. **No subcommand, no pipe** - starts daemon mode (HTTP + IPC adapters).
-4. **Windows, no arguments, launched by SCM** - runs as a Windows Service.
+On Windows, manage with `sc stop koi` / `sc start koi`; on Linux, `systemctl`.
 
 ---
 
 ## What's next
 
-- **[CLI Reference](docs/reference/cli.md)** - complete list of every command, flag, and environment variable
-- **[HTTP API Reference](docs/reference/http-api.md)** - all 60+ HTTP endpoints with request/response shapes
-- **[Architecture](docs/reference/architecture.md)** - how the crates fit together
-- **[Architecture Decision Records](docs/adr/)** - why Koi is built the way it is
+- **[Container Guide](CONTAINERS.md)** — the host-daemon pattern, label-driven
+  runtime adapter, and current limitations
+- **[Certmesh guide](docs/guides/certmesh.md)** — TLS on your LAN without browser
+  warnings, in minutes
+- **[Security model](docs/reference/security-model.md)** — exactly what listens
+  where, and what the token protects
+- **[Assessment & roadmap](docs/assessment/README.md)** — where the project is and
+  where it's going

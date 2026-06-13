@@ -1,4 +1,4 @@
-﻿# UDP - Datagram Bridging
+# UDP - Datagram Bridging
 
 Docker containers on bridge networking can't touch UDP. No multicast, no broadcast, no raw sockets. If your containerized application needs to participate in a Garden mesh, send Wake-on-LAN packets, or receive SSDP discovery traffic, it's out of luck - the bridge network simply doesn't forward those frames.
 
@@ -31,7 +31,7 @@ UDP bridging is available through the HTTP API when the daemon (or embedded HTTP
 ### Bind a port
 
 ```bash
-curl -X POST http://localhost:5641/v1/udp/bind \
+curl -X POST -H "x-koi-token: $TOKEN" http://localhost:5641/v1/udp/bind \
   -H "Content-Type: application/json" \
   -d '{"port": 7184, "addr": "0.0.0.0", "lease_secs": 300}'
 ```
@@ -67,7 +67,7 @@ The `payload` field is base64-encoded. Decode it to get the raw datagram bytes. 
 ### Send a datagram
 
 ```bash
-curl -X POST http://localhost:5641/v1/udp/send/01958f2a-... \
+curl -X POST -H "x-koi-token: $TOKEN" http://localhost:5641/v1/udp/send/01958f2a-... \
   -H "Content-Type: application/json" \
   -d '{"dest": "192.168.1.255:9", "payload": "//8AAAAAAADI..."}'
 ```
@@ -81,14 +81,14 @@ The payload is base64-encoded. The datagram is sent from the bound socket, so th
 ### Heartbeat
 
 ```bash
-curl -X POST http://localhost:5641/v1/udp/heartbeat/01958f2a-...
+curl -X PUT -H "x-koi-token: $TOKEN" http://localhost:5641/v1/udp/heartbeat/01958f2a-...
 ```
 
 ```json
 { "status": "ok" }
 ```
 
-Send heartbeats at roughly half the lease interval. If you set `lease_secs: 300`, heartbeat every ~150 seconds.
+Send heartbeats at roughly half the lease interval. If you set `lease_secs: 300`, heartbeat every ~150 seconds. Note: UDP heartbeat uses `PUT` rather than `POST`.
 
 ### Check status
 
@@ -113,7 +113,7 @@ curl http://localhost:5641/v1/udp/status
 ### Unbind
 
 ```bash
-curl -X DELETE http://localhost:5641/v1/udp/bind/01958f2a-...
+curl -X DELETE -H "x-koi-token: $TOKEN" http://localhost:5641/v1/udp/bind/01958f2a-...
 ```
 
 ```json
@@ -135,7 +135,7 @@ All UDP endpoints live under `/v1/udp/`:
 | `GET`    | `/v1/udp/recv/{id}`      | SSE stream of incoming datagrams      |
 | `POST`   | `/v1/udp/send/{id}`      | Send a datagram through a binding     |
 | `GET`    | `/v1/udp/status`         | List all active bindings              |
-| `POST`   | `/v1/udp/heartbeat/{id}` | Extend a binding's lease              |
+| `PUT`    | `/v1/udp/heartbeat/{id}` | Extend a binding's lease              |
 
 ### Bind request body
 
@@ -197,7 +197,7 @@ Bindings follow a lease-based lifecycle identical in spirit to mDNS registration
 2. The heartbeat timestamp is set to creation time.
 3. A background reaper checks every 30 seconds for expired leases.
 4. If `now - last_heartbeat > lease_secs`, the binding is reaped - the socket is closed and the relay task is cancelled.
-5. Sending a heartbeat (`POST /v1/udp/heartbeat/{id}`) updates the timestamp, extending the lease.
+5. Sending a heartbeat (`PUT /v1/udp/heartbeat/{id}`) updates the timestamp, extending the lease.
 
 This prevents resource leaks. If a container crashes without unbinding, the socket is automatically reclaimed after the lease expires. No orphaned sockets, no port exhaustion.
 

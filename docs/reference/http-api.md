@@ -1,10 +1,28 @@
-﻿# HTTP API Reference
+# HTTP API Reference
 
 Base URL: `http://localhost:5641` (configurable via `--port` or `KOI_PORT`)
 
 All responses are JSON unless noted. Disabled capabilities return `503` with `{"error": "capability_disabled", "message": "..."}`. Error responses follow `{"error": "error_code", "message": "description"}`.
 
-CORS is enabled by default. Interactive API docs are available at `GET /docs` (Scalar UI).
+## Authentication & Security
+
+The HTTP API is **loopback-only** by default (`127.0.0.1:5641`).
+
+**CORS policy:** Browser requests are accepted only from `http://localhost` / `http://127.0.0.1` origins (any port). The API is not open to arbitrary web origins.
+
+**Daemon Access Token (DAT):**
+At startup, the daemon generates a fresh random token and writes it to the breadcrumb file (`koi.endpoint`) with owner-only permissions.
+- **GET / HEAD / OPTIONS** requests are unauthenticated (exempt from token checks).
+- **All mutations (POST, PUT, DELETE)** require the token to be sent in the `x-koi-token` header (except `/v1/certmesh/join`, which uses standard TOTP credentials during bootstrap).
+- **Server-Sent Events (SSE)** endpoints (which cannot set custom headers) accept the token in the `?token=` query parameter.
+
+Example header:
+```http
+x-koi-token: dat:8a31…base64url…
+```
+
+Interactive API docs are available at `GET /docs` (Scalar UI).
+
 
 ---
 
@@ -363,16 +381,21 @@ Open a host-side UDP socket. Returns a binding ID used for all subsequent operat
 
 ```json
 {
-  "addr": "0.0.0.0:9999"
+  "port": 9999,
+  "addr": "0.0.0.0",
+  "lease_secs": 300
 }
 ```
 
-Response (`200 OK`):
+Response (`201 Created`):
 
 ```json
 {
   "id": "a1b2c3d4",
-  "addr": "0.0.0.0:9999"
+  "local_addr": "0.0.0.0:9999",
+  "created_at": "2026-06-13T02:09:30Z",
+  "last_heartbeat": "2026-06-13T02:09:30Z",
+  "lease_secs": 300
 }
 ```
 
@@ -385,7 +408,7 @@ Close a binding and release the socket. Returns `200` with `{"unbound": "a1b2c3d
 Subscribe to incoming datagrams on a binding. Returns an SSE stream. Each event carries a base64-encoded payload and the sender address:
 
 ```
-data: {"payload":"aGVsbG8=","from":"192.168.1.10:54321"}
+data: {"binding_id":"a1b2c3d4","src":"192.168.1.10:54321","payload":"aGVsbG8=","received_at":"2026-06-13T02:09:30Z"}
 ```
 
 Returns `404` if the binding does not exist.
@@ -409,7 +432,15 @@ List all active bindings with lease information.
 
 ```json
 {
-  "bindings": [{ "id": "a1b2c3d4", "addr": "0.0.0.0:9999" }]
+  "bindings": [
+    {
+      "id": "a1b2c3d4",
+      "local_addr": "0.0.0.0:9999",
+      "created_at": "2026-06-13T02:09:30Z",
+      "last_heartbeat": "2026-06-13T02:09:30Z",
+      "lease_secs": 300
+    }
+  ]
 }
 ```
 

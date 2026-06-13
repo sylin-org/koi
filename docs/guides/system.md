@@ -1,4 +1,4 @@
-﻿# System - Daemon Lifecycle
+# System - Daemon Lifecycle
 
 Koi is a single binary that wears two hats. When you type `koi mdns discover`, it's a short-lived CLI tool - it does its job and exits. But most of Koi's power comes from the **daemon**: a long-running process that holds mDNS registrations, serves the HTTP API, runs health checks, and keeps certificates alive. The system commands are how you manage that daemon's lifecycle.
 
@@ -95,19 +95,21 @@ This design is deliberate. Uninstalling a service shouldn't destroy the state it
 
 ---
 
-## Factory reset (planned)
+## Factory reset
 
-> **Note:** `koi factory-reset` is planned but not yet implemented. For now, use `koi certmesh destroy` to wipe certmesh state, or manually remove the data directory.
-
-The intent is a single command that destroys the entire program data folder and recreates it from scratch:
+The `koi factory-reset` command destroys the entire program data folder and recreates it from scratch. It wipes:
 
 - mDNS registrations
 - CA private keys and every certificate ever issued
 - DNS records
 - Health-check configurations
 - Proxy routes
+- Audit logs and rosters
 
-**This will be irreversible.** If this node is the certmesh CA root, every certificate it issued becomes unverifiable.
+To prevent accidents, the command prompts for confirmation: you must type `RESET` to proceed. When running non-interactively (e.g. for scripting), use the `--json` flag to skip the confirmation prompt.
+
+**This is irreversible.** If this node is the certmesh CA root, every certificate it issued becomes unverifiable and the entire mesh will lose trust.
+
 
 ---
 

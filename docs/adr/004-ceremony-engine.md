@@ -1,7 +1,8 @@
-﻿# ADR-004: Server-Driven Ceremony Engine
+# ADR-004: Server-Driven Ceremony Engine
 
 **Status:** Accepted  
-**Date:** 2025-06-01
+**Date:** 2025-06-01  
+> Retrospectively documented 2026-02-15; decision date approximate.
 
 ## Context
 

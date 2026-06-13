@@ -1,7 +1,9 @@
-﻿# ADR-009: Pluggable Auth Adapters
+# ADR-009: Pluggable Auth Adapters
 
 **Status:** Accepted  
 **Date:** 2025-12-15
+
+> Retrospectively documented 2026-02-15; decision date approximate.
 
 ## Context
 

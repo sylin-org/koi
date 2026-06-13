@@ -16,9 +16,7 @@ built-in HTTP API with an embedded dashboard.
 
 ## Install
 
-```sh
-cargo install koi-net
-```
+Download the prebuilt binaries from [GitHub Releases](https://github.com/sylin-org/koi/releases) for your platform, or build from source in the main workspace repository.
 
 ## Usage
 

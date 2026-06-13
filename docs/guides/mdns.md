@@ -308,7 +308,7 @@ Same `idle_for` parameter as browse.
 | `daemon_error`     | 500         | mDNS engine error                        |
 | `io_error`         | 500         | I/O failure                              |
 
-CORS is enabled for all origins, so browser-based dashboards can call the API directly.
+CORS is restricted to loopback/localhost origins only (any port). See the [security model](../reference/security-model.md) for details.
 
 ---
 

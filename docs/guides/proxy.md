@@ -1,4 +1,4 @@
-﻿# Proxy - TLS Reverse Proxy
+# Proxy - TLS Reverse Proxy
 
 Here's the problem: you have a service running on `http://127.0.0.1:8080`, and you want clients to reach it over TLS. In production, you'd put nginx or Caddy in front of it. But on a LAN, setting up a reverse proxy means managing certificates, configuring reload hooks, and maintaining yet another config file.
 
@@ -86,7 +86,7 @@ When the daemon is running, proxy endpoints live under `/v1/proxy/`:
 POST /v1/proxy/add
 Content-Type: application/json
 
-{"name": "web", "listen": 8443, "backend": "http://127.0.0.1:8080"}
+{"name": "web", "listen_port": 8443, "backend": "http://127.0.0.1:8080"}
 ```
 
 ---

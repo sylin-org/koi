@@ -1,7 +1,8 @@
-﻿# ADR-005: Registration Lease System
+# ADR-005: Registration Lease System
 
 **Status:** Accepted  
-**Date:** 2025-09-01
+**Date:** 2025-09-01  
+> Retrospectively documented 2026-02-15; decision date approximate.
 
 ## Context
 

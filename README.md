@@ -1,117 +1,169 @@
 # Koi 𓆝
 
-**Local network toolkit.**
+**The missing LAN toolbox.** Discover services, name them, trust them, serve them —
+one cross-platform binary, no accounts, no cloud, works when the internet doesn't.
 
 <p align="center">
   <img src="res/koi.gif" alt="Koi dashboard" />
 </p>
 
-Koi is a cross-platform local network toolkit. It bundles service discovery (mDNS/DNS-SD), a local DNS resolver for friendly names, and a private certificate mesh for LAN TLS. It ships as a single binary with HTTP, IPC, and CLI interfaces, so any language or container can use it.
+Koi runs as a small daemon on each machine and gives your local network the four
+things it never gets out of the box, wired together as one pipeline:
 
-Think of it as **the missing LAN toolbox**: discover services, name them, and secure them without installing a stack of OS-specific daemons.
+| | Pillar | What it means |
+| --- | --- | --- |
+| 🔎 | **Discover** | mDNS/DNS-SD service discovery with a real lifecycle — services that vanish actually disappear (leases, not ghosts) |
+| 🏷️ | **Name** | A local DNS zone where names appear automatically — from discovery, from containers, from certificates |
+| 🔐 | **Trust** | A private CA with guided enrollment and OS trust-store installation — HTTPS on the LAN without browser warnings |
+| 🛰️ | **Serve** | A zero-config TLS endpoint for those certificates, plus health checks to watch it all |
 
-```bash
-# Discover what's on the network
-koi mdns discover
+Label a container, and the pipeline runs end to end: it gets announced, named,
+certified, and watched — without touching the image.
 
-# Resolve a friendly local name
-koi dns lookup grafana
-
-# Add a static DNS entry
-koi dns add grafana 10.0.0.42
-
-# Check unified status
-koi status
-
-# Open the web dashboard
-koi launch
-```
-
-Or over HTTP - from any language, any container, any script:
+Everything is reachable three ways: a **CLI** built for discoverability, an
+**HTTP API** with interactive docs, and a **web dashboard** with a live mDNS
+network browser.
 
 ```bash
-curl http://localhost:5641/v1/mdns/discover?type=_http._tcp
-curl -X POST http://localhost:5641/v1/mdns/announce \
-  -d '{"name": "My App", "type": "_http._tcp", "port": 8080, "ip": "192.168.1.42"}'
+koi mdns discover              # what's on this network?
+koi dns add grafana 10.0.0.42  # give it a friendly name
+koi certmesh create            # mint a private CA (guided)
+koi status                     # one view of everything
+koi launch                     # open the dashboard
 ```
+
+Or over HTTP, from any language or script:
+
+```bash
+# Reads are open on localhost:
+curl "http://localhost:5641/v1/mdns/discover?type=_http._tcp"
+
+# Writes carry the daemon token (the CLI does this for you):
+curl -X POST -H "x-koi-token: $TOKEN" http://localhost:5641/v1/mdns/announce \
+  -d '{"name": "My App", "type": "_http._tcp", "port": 8080}'
+```
+
+The token lives in a breadcrumb file next to the daemon — see the
+[security model](docs/reference/security-model.md) for the two-line recipe per OS.
 
 ## Quick start
 
-Install Koi as a system service (recommended):
+Download a binary from [GitHub Releases](https://github.com/sylin-org/koi/releases),
+put it on your `PATH`, then:
+
+```bash
+koi mdns discover        # works instantly, no daemon, no config
+```
+
+For the full toolbox, run the daemon — foreground or as a system service:
+
+```bash
+koi --daemon             # foreground (Ctrl+C to stop)
+sudo koi install         # or: install as a service (Linux/macOS)
+```
 
 ```powershell
-# Windows (run as Administrator)
-koi install
+koi install              # Windows (run as Administrator)
 ```
 
-```bash
-# Linux / macOS
-sudo koi install
-```
-
-Koi is now running on port 5641, ready for HTTP, IPC, and CLI clients.
-
-For temporary or interactive use, run in the foreground instead:
-
-```bash
-koi --daemon
-```
+The daemon listens on `127.0.0.1:5641`. Bare `koi` shows live status plus the full
+command catalog; `koi <domain>` shows curated examples; any command + `?`
+(e.g. `koi mdns announce?`) opens a detail page.
 
 ## Why Koi exists
 
-mDNS is the invisible backbone of local networking. Printers, smart speakers, AirPlay, Chromecast, IoT devices - everything uses it. But **using** mDNS programmatically is surprisingly painful:
+mDNS is the invisible backbone of local networking. Printers, smart speakers,
+AirPlay, Chromecast, IoT devices — everything uses it. But **using** it
+programmatically is surprisingly painful:
 
-- **Windows** has native mDNS since Windows 10, but the Win32 APIs are poorly documented, 64-bit only, and don't expose full DNS-SD. The alternative - Apple's Bonjour - has redistribution-prohibiting licensing and a 13-year-old installer.
-- **Linux** has Avahi, which is excellent but Linux-only and deeply coupled to D-Bus and systemd.
-- **Containers** can't do mDNS at all. Docker's bridge network doesn't forward multicast traffic. Every workaround (`--network=host`, macvlan, mDNS reflectors) sacrifices isolation or adds fragility.
-- **Cross-platform** libraries exist, but they're libraries - you need to write code in a specific language to use them.
+- **Windows** has native mDNS since Windows 10, but the Win32 APIs are poorly
+  documented, 64-bit only, and don't expose full DNS-SD. The alternative — Apple's
+  Bonjour — is effectively abandoned, with redistribution-prohibiting licensing.
+- **Linux** has Avahi: Linux-only, semi-maintained, deeply coupled to D-Bus and
+  systemd. systemd-resolved's mDNS is famously flaky.
+- **Containers** can't do mDNS at all — bridge networks don't forward multicast,
+  and every workaround (`--network=host`, macvlan, reflectors) sacrifices isolation
+  or adds fragility.
+- **Cross-platform libraries** exist, but they're libraries: you re-implement
+  discovery per language, and then hit the container multicast wall anyway.
 
-Koi fills the gap: a single daemon that speaks mDNS on the network side and JSON over HTTP/IPC/stdio on the application side. Any language with an HTTP client or the ability to spawn a process can discover, name, and secure services on the local network.
+And discovery is only the first step. The moment you can *find* services, you want
+to *name* them (without hand-editing zone files) and *trust* them (HTTPS on private
+addresses, where public CAs are forbidden from issuing — for `.internal` names and
+RFC-1918 IPs, a private CA is the only path). Each layer has point solutions; the
+wiring between them is what you end up building by hand. **The wiring is what Koi
+is.**
 
-## Containers
+## Works with your stack
 
-When Koi runs on the host, every container gains LAN capabilities through plain HTTP - no `--network=host`, no macvlan, no mDNS reflectors.
+Koi is the substrate *under* the tools you already run, not a replacement for them:
 
-```bash
-# From inside any Docker container:
-curl http://host.docker.internal:5641/v1/mdns/discover?type=_http._tcp
-curl http://host.docker.internal:5641/v1/dns/lookup?name=grafana
-```
+- **Keep your DNS ad-blocker.** Delegate one zone via conditional forwarding —
+  Pi-hole/AdGuard/dnsmasq forward `*.lan` to Koi; everything else stays put.
+- **Keep Tailscale.** Point a tailnet split-DNS rule at Koi's resolver and remote
+  devices resolve your LAN names; Koi covers the printers, TVs, and guests the
+  tailnet can't see.
+- **Keep your reverse proxy.** Certmesh certs land as files with reload hooks for
+  Caddy/Traefik/NPM today; an ACME endpoint (so your proxy renews against Koi like
+  a local Let's Encrypt) is on the roadmap.
+- **Coming:** Prometheus service-discovery export, MCP tools so AI agents can
+  discover and trust local services, and reading the `traefik.*` labels your
+  containers already carry.
 
-See [CONTAINERS.md](CONTAINERS.md) for Docker Compose examples, startup patterns, and Kubernetes DaemonSet configuration.
+The doctrine: export in *their* formats, consume what you already wrote, and make
+every capability easy to leave — tools that are easy to stop using are easy to
+start using.
 
 ## Capabilities
 
-| Capability   | What it does                        | CLI                | Guide                                     |
-| ------------ | ----------------------------------- | ------------------ | ----------------------------------------- |
-| **mDNS**     | Service discovery (DNS-SD)          | `koi mdns ...`     | [mDNS guide](docs/guides/mdns.md)         |
-| **DNS**      | Local resolver for friendly names   | `koi dns ...`      | [DNS guide](docs/guides/dns.md)           |
-| **Certmesh** | Private CA + enrollment for LAN TLS | `koi certmesh ...` | [Certmesh guide](docs/guides/certmesh.md) |
-| **Health**   | Machine/service health monitoring   | `koi health ...`   | [Health guide](docs/guides/health.md)     |
-| **Proxy**    | TLS-terminating local reverse proxy | `koi proxy ...`    | [Proxy guide](docs/guides/proxy.md)       |
-| **UDP**      | Datagram bridging for containers    | HTTP API           | [UDP guide](docs/guides/udp.md)           |
+Core pillars:
 
-The daemon also serves a **web dashboard** at `http://localhost:5641/` with a system overview and an **mDNS network browser** at `/mdns-browser`. Interactive API docs are at `/docs` (OpenAPI/Scalar).
+| Capability | What it does | CLI | Guide |
+| --- | --- | --- | --- |
+| **mDNS** | Service discovery with lease lifecycle | `koi mdns …` | [mDNS guide](docs/guides/mdns.md) |
+| **DNS** | Local resolver; names from three sources | `koi dns …` | [DNS guide](docs/guides/dns.md) |
+| **Certmesh** | Private CA, guided enrollment, truststore install | `koi certmesh …` | [Certmesh guide](docs/guides/certmesh.md) |
+| **Runtime** | Container lifecycle → announce/name/cert/watch via labels | `--runtime` | [Runtime guide](docs/guides/runtime.md) |
+
+Supporting cast:
+
+| Capability | What it does | CLI | Guide |
+| --- | --- | --- | --- |
+| **Proxy** | TLS endpoint for certmesh certs | `koi proxy …` | [Proxy guide](docs/guides/proxy.md) |
+| **Health** | HTTP/TCP checks feeding status & dashboard | `koi health …` | [Health guide](docs/guides/health.md) |
+| **UDP** | Host UDP sockets for bridge-networked containers | `koi udp …` | [UDP guide](docs/guides/udp.md) |
+
+Every capability is runtime-toggleable (`--no-dns`, `KOI_NO_DNS=1`, …). The daemon
+also serves the **dashboard** (`/`), the **mDNS network browser** (`/mdns-browser`),
+and **interactive API docs** (`/docs`).
+
+## Containers
+
+Koi's container story — host daemon speaks multicast, containers speak plain HTTP —
+is the design center, with one honest caveat today: the HTTP API binds to loopback,
+so it works out of the box with **Docker Desktop** (`host.docker.internal`), while
+**native Linux** bridge networks can't reach it until the planned `--http-bind`
+exposure flag lands. [CONTAINERS.md](CONTAINERS.md) has the patterns, current
+limitations, and the label-driven runtime adapter (the zero-code path).
 
 ## Platform support
 
-| Platform | mDNS engine                   | Service integration   |
-| -------- | ----------------------------- | --------------------- |
-| Windows  | Pure Rust (no Bonjour needed) | Windows Service (SCM) |
-| Linux    | Pure Rust (no Avahi needed)   | systemd unit          |
-| macOS    | Pure Rust (no Bonjour needed) | launchd plist         |
+| Platform | mDNS engine | Service integration |
+| -------- | ----------- | ------------------- |
+| Windows | Pure Rust (no Bonjour) | Windows Service (SCM) + firewall rules |
+| Linux | Pure Rust (no Avahi) | systemd unit |
+| macOS | Pure Rust (no Bonjour) | launchd plist |
 
-Zero OS dependencies. No Bonjour, no Avahi, no system mDNS service required.
+Zero OS dependencies, single static binary, and — unusual for this space —
+**Windows is a first-class citizen**.
 
 ## Installation
 
-### Prebuilt binaries
+**Prebuilt binaries** (recommended): download from
+[GitHub Releases](https://github.com/sylin-org/koi/releases), extract, put `koi`
+(or `koi.exe`) on your `PATH`.
 
-Download the latest release from [GitHub Releases](https://github.com/sylin-org/koi/releases). Extract and place `koi` (or `koi.exe`) on your `PATH`.
-
-### Build from source
-
-Requires [Rust](https://rustup.rs/) 1.75 or later.
+**Build from source** — requires [Rust](https://rustup.rs/) 1.92 or later:
 
 ```bash
 git clone https://github.com/sylin-org/koi.git
@@ -119,60 +171,65 @@ cd koi
 cargo build --release
 ```
 
-Or install from [crates.io](https://crates.io/crates/koi-net):
+> Note: the crates.io packages are currently stale pending the v0.3 release reset —
+> install from Releases or source for now.
 
-```bash
-cargo install koi-net
-```
+## Project status
+
+Koi is **pre-1.0, feasibility-validated, and consolidating**. The architecture and
+the end-to-end pipeline are real; a thorough June 2026 assessment
+([docs/assessment/](docs/assessment/README.md)) mapped what's solid, what's broken,
+and what's being cut in the name of *less but more meaningful parts*. The work plan
+is public ([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until
+0.3; don't run it as load-bearing infrastructure yet — do play with it, and file
+issues when reality disagrees with the docs.
 
 ## Documentation
 
-**Using Koi:**
+**Using Koi:** [User Guide](GUIDE.md) ·
+[Container Guide](CONTAINERS.md) ·
+[Security model](docs/reference/security-model.md)
 
-- [**User Guide**](GUIDE.md) - from first command to advanced usage
-- [**Container Guide**](CONTAINERS.md) - Docker Compose, startup patterns, Kubernetes
+**Capability deep-dives:** [mDNS](docs/guides/mdns.md) ·
+[DNS](docs/guides/dns.md) · [Certmesh](docs/guides/certmesh.md) ·
+[Runtime](docs/guides/runtime.md) · [Proxy](docs/guides/proxy.md) ·
+[Health](docs/guides/health.md) · [UDP](docs/guides/udp.md) ·
+[System](docs/guides/system.md) · [Embedded (Rust)](docs/guides/embedded.md)
 
-**Capability deep-dives:**
+**Reference:** [Architecture](docs/reference/architecture.md) ·
+[HTTP API](docs/reference/http-api.md) · [CLI](docs/reference/cli.md) ·
+[Wire protocol](docs/reference/wire-protocol.md) ·
+[Ceremony protocol](docs/reference/ceremony-protocol.md) ·
+[Envelope encryption](docs/reference/envelope-encryption.md)
 
-- [mDNS - Service Discovery](docs/guides/mdns.md)
-- [Certmesh - Certificate Mesh](docs/guides/certmesh.md)
-- [DNS - Local Resolver](docs/guides/dns.md)
-- [Health - Endpoint Monitoring](docs/guides/health.md)
-- [Proxy - TLS Termination](docs/guides/proxy.md)
-- [UDP - Datagram Bridging](docs/guides/udp.md)
-- [Runtime - Container Lifecycle Adapter](docs/guides/runtime.md)
-- [System - Daemon Lifecycle](docs/guides/system.md)
-- [Embedded - Rust In-Process](docs/guides/embedded.md)
-
-**Reference:**
-
-- [Architecture](docs/reference/architecture.md) - crate structure, boundaries, design
-- [HTTP API](docs/reference/http-api.md) - all 60+ endpoints
-- [CLI Reference](docs/reference/cli.md) - every command and flag
-- [Wire Protocol](docs/reference/wire-protocol.md) - JSON protocol spec
-- [Ceremony Protocol](docs/reference/ceremony-protocol.md) - interactive flow engine
-- [Envelope Encryption](docs/reference/envelope-encryption.md) - CA key protection
-
-**Decisions:**
-
-- [Architecture Decision Records](docs/adr/) - why things are the way they are
+**Decisions & direction:** [ADRs](docs/adr/) ·
+[Assessment & roadmap](docs/assessment/README.md)
 
 ## Name
 
-Koi (鯉) are the fish that live in garden ponds. They're visible - they surface, they announce themselves by simply existing. You look into the pond and see what's there. That's service discovery: the network is the pond, the services are the koi. You peer in and see what's swimming.
+Koi (鯉) are the fish that live in garden ponds. They're visible — they surface,
+they announce themselves by simply existing. You look into the pond and see what's
+there. That's service discovery: the network is the pond, the services are the koi.
 
-The binary is `koi`. The crates.io package is published as `koi-net` because `koi` was already taken.
+The binary is `koi`. The crates.io package is `koi-net` because `koi` was taken.
 
 ## Acknowledgments
 
-Koi is an orchestration wrapper - the heavy lifting happens in [mdns-sd](https://github.com/keepsimple1/mdns-sd), a pure-Rust mDNS/DNS-SD implementation by [@keepsimple1](https://github.com/keepsimple1). Their library handles probing, conflict resolution, known-answer suppression, goodbye packets, cache flushing, and all the multicast plumbing that makes service discovery actually work. Koi just gives it a friendly front door.
+Koi's mDNS heavy lifting happens in
+[mdns-sd](https://github.com/keepsimple1/mdns-sd), a pure-Rust mDNS/DNS-SD
+implementation by [@keepsimple1](https://github.com/keepsimple1) — probing,
+conflict resolution, known-answer suppression, goodbye packets, and all the
+multicast plumbing. Koi gives it a friendly front door and builds the naming and
+trust layers on top.
 
 ## License
 
-Dual licensed under Apache-2.0 and MIT. See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).
-
-Free to use, embed, bundle, and redistribute, commercially or otherwise. Just link back to this project somewhere reasonable (a README, an about page, a comment in your manifest). That's it.
+Dual licensed under Apache-2.0 and MIT. See [LICENSE-APACHE](LICENSE-APACHE) and
+[LICENSE-MIT](LICENSE-MIT). Free to use, embed, bundle, and redistribute,
+commercially or otherwise — just link back to this project somewhere reasonable.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, and contribution guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) — including how AI-assisted sessions should
+work in this repo (we eat our own dog food: see
+[docs/prompts/CHARTER.md](docs/prompts/CHARTER.md)).

@@ -80,8 +80,9 @@ If you choose **Custom** in the profile step, you can explicitly set:
 Standard profiles (Just Me, My Team, My Organization) use sensible defaults:
 
 - **Just Me**: open enrollment, no approval, auto-unlock
-- **My Team**: open enrollment, approval required, passphrase unlock
+- **My Team**: open enrollment, approval required, auto-unlock
 - **My Organization**: closed enrollment, approval required, passphrase unlock
+
 
 After creation, the ceremony displays authentication setup for enrollment. For TOTP (default), this is a QR code and manual key - scan it with your authenticator app and enter a code to verify. For FIDO2, you'll register your hardware security key. If TOTP verification fails twice, you can regenerate the secret.
 

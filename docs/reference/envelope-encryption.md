@@ -1,4 +1,4 @@
-﻿# Envelope Encryption
+# Envelope Encryption
 
 CA private keys use envelope encryption, inspired by LUKS. A random 256-bit master key encrypts the CA private key via AES-256-GCM. Each unlock slot independently wraps that master key. Any single slot can unlock the CA.
 
@@ -80,9 +80,9 @@ Legacy single-passphrase keys (pre-envelope) are auto-migrated on first load via
 
 | Property | Value |
 |---|---|
-| Algorithm | Ed25519 (CA), ECDSA P-256 (member certs) |
+| Algorithm | ECDSA P-256 (CA and member certs) |
 | CA validity | 10 years |
-| Member validity | 90 days (auto-renewed) |
+| Member validity | 30 days (auto-renewed) |
 | SANs | Hostname, hostname.{zone}, custom entries |
 
 Implementation lives in `koi-crypto/src/keys.rs` (key generation), `koi-crypto/src/unlock_slots.rs` (slot management), and `koi-certmesh/src/ca.rs` (CA operations).

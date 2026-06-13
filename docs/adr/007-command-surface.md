@@ -1,7 +1,9 @@
-﻿# ADR-007: Command Surface and Glyph System
+# ADR-007: Command Surface and Glyph System
 
 **Status:** Accepted  
 **Date:** 2025-11-01
+
+> Retrospectively documented 2026-02-15; decision date approximate.
 
 ## Context
 

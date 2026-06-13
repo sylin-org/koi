@@ -1,7 +1,8 @@
-﻿# ADR-003: Envelope Encryption for CA Private Keys
+# ADR-003: Envelope Encryption for CA Private Keys
 
 **Status:** Accepted  
-**Date:** 2025-06-01
+**Date:** 2025-06-01  
+> Retrospectively documented 2026-02-15; decision date approximate.
 
 ## Context
 

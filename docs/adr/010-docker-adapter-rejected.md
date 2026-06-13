@@ -1,7 +1,9 @@
-﻿# ADR-010: Docker Adapter Kept Separate from Core
+# ADR-010: Docker Adapter Kept Separate from Core
 
 **Status:** Accepted  
 **Date:** 2025-12-15
+
+> Retrospectively documented 2026-02-15; decision date approximate.
 
 ## Context
 

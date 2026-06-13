@@ -1,4 +1,4 @@
-﻿# Ceremony Protocol
+# Ceremony Protocol
 
 Interactive multi-step operations (creating a CA, joining a mesh, unlocking) use a server-driven ceremony engine. The design separates transport (CLI terminal I/O, HTTP JSON) from domain logic (what to ask, how to validate, when to complete).
 
@@ -114,13 +114,13 @@ First request uses `"data": {}` to begin a session.
 | `invite` | Generate invitation       | passphrase, invite token                                          |
 | `unlock` | Unlock a locked CA        | method selection, credential                                      |
 
-The `init` ceremony supports four profiles:
+The `init` ceremony supports three built-in trust profiles and a custom interactive config:
 
 | Profile           | Enrollment   | Approval     | Unlock       |
 | ----------------- | ------------ | ------------ | ------------ |
-| `just_me`         | Closed       | No           | Auto-unlock  |
-| `my_team`         | Open         | No           | Passphrase   |
-| `my_organization` | Open         | Required     | Passphrase   |
+| `just_me`         | Open         | No           | Auto-unlock  |
+| `my_team`         | Open         | Yes          | Auto-unlock  |
+| `my_organization` | Closed       | Yes          | Passphrase   |
 | `custom`          | Configurable | Configurable | Configurable |
 
 ---

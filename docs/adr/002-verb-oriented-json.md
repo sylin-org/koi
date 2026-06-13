@@ -1,7 +1,8 @@
-﻿# ADR-002: Verb-Oriented JSON Protocol
+# ADR-002: Verb-Oriented JSON Protocol
 
 **Status:** Accepted  
-**Date:** 2025-01-15
+**Date:** 2025-01-15  
+> Retrospectively documented 2026-02-15; decision date approximate.
 
 ## Context
 
