@@ -29,13 +29,20 @@ jobs:
         run: |
           VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
           TAG="v${VERSION}"
-          DESCRIPTION=$(jq -r '.description // empty' version.json)
+          # Release description is the body of the latest CHANGELOG.md section
+          # (everything between the first "## [" heading and the next one).
+          DESCRIPTION=$(awk '/^## \[/{c++; if(c==2) exit; next} c==1' CHANGELOG.md)
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "description=$DESCRIPTION" >> "$GITHUB_OUTPUT"
+          {
+            echo "description<<__KOI_EOF__"
+            echo "$DESCRIPTION"
+            echo "__KOI_EOF__"
+          } >> "$GITHUB_OUTPUT"
           echo "Tag: $TAG"
           echo "Version: $VERSION"
-          echo "Description: $DESCRIPTION"
+          echo "Description:"
+          echo "$DESCRIPTION"
 
   # ── Test ──────────────────────────────────────────────────────────
   test:

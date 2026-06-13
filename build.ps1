@@ -1,25 +1,23 @@
 <#
 .SYNOPSIS
-    Build Koi with timestamp versioning.
+    Build Koi from the workspace SemVer version.
 
 .DESCRIPTION
-    Reads version.json for major.minor, appends a timestamp build number,
-    patches Cargo.toml permanently, builds, tests, and copies the binary to dist/.
+    Reads the version from Cargo.toml [workspace.package], builds the workspace
+    (release by default), runs the test suite (certmesh single-threaded, then the
+    rest of the workspace), and copies the binary to dist/.
 
-    Cargo.toml keeps the real version after each build - no restore.
-
-    Version format: major.minor.YYYYMMDDHHmm
-    Example: 0.1.202502071430
+    Cargo.toml is never modified; the version is plain SemVer (see CHANGELOG.md).
 
 .PARAMETER DebugBuild
-    Build debug binaries instead of release
+    Build debug binaries instead of release.
 
 .PARAMETER SkipTests
-    Skip running tests
+    Skip running tests.
 
 .EXAMPLE
     .\build.ps1
-    Build release binary with timestamp version
+    Build the release binary and run tests.
 #>
 
 [CmdletBinding()]
