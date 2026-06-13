@@ -1539,16 +1539,6 @@ dependencies = [
 
 [[package]]
 name = "if-addrs"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf39cc0423ee66021dc5eccface85580e4a001e0c5288bae8bea7ecb69225e90"
-dependencies = [
- "libc",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "if-addrs"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
@@ -1909,7 +1899,7 @@ dependencies = [
  "futures-util",
  "hickory-proto",
  "hostname",
- "if-addrs 0.15.0",
+ "if-addrs",
  "koi-certmesh",
  "koi-client",
  "koi-common",
@@ -1960,7 +1950,7 @@ dependencies = [
  "async-stream",
  "axum",
  "hostname",
- "if-addrs 0.15.0",
+ "if-addrs",
  "koi-common",
  "mdns-sd",
  "serde",
@@ -1990,7 +1980,7 @@ dependencies = [
  "hickory-proto",
  "hostname",
  "hyper-util",
- "if-addrs 0.15.0",
+ "if-addrs",
  "koi-certmesh",
  "koi-client",
  "koi-common",
@@ -2222,13 +2212,13 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "mdns-sd"
-version = "0.17.2"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "183d7ebd9fe3815c1635cd039d1ed95f1d315731cc13e6d504e4ae039d527b8d"
+checksum = "892f96f6d2ebe1ea641279f986ac52a2a6bac71e8f743bb258315cfe2bd7e88e"
 dependencies = [
  "fastrand",
  "flume",
- "if-addrs 0.14.0",
+ "if-addrs",
  "log",
  "mio 1.1.1",
  "socket-pktinfo",
