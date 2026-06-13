@@ -1,0 +1,160 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build & Test
+        run: cargo test --workspace --locked
+
+      - name: Publish to crates.io
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "Workspace target version: $VERSION"
+
+          CRATES=(
+            koi-common      # Layer 0: no internal deps
+            command-surface # Layer 0: command manifest helper
+            koi-config      # Layer 1: depends on koi-common
+            koi-crypto      # Layer 1: cryptographic primitives
+            koi-truststore  # Layer 1: trust store helpers
+            koi-mdns        # Layer 1: mDNS Querier/Responder
+            koi-udp         # Layer 1: UDP host socket binding
+            koi-runtime     # Layer 1: container integration runtime
+            koi-certmesh    # Layer 2: cert CA and enrollment mesh
+            koi-dns         # Layer 3: DNS server zone storage
+            koi-proxy       # Layer 3: proxy and termination engine
+            koi-health      # Layer 4: system health check engine
+            koi-client      # Layer 5: CLI client API communication
+            koi-embedded    # Layer 6: embedded engine facade
+            koi-net         # Layer 6: main daemon entrypoint (folder crates/koi)
+          )
+
+          # ── Phase 1: Inventory ─────────────────────────────────
+          echo "═══ Inventory ═══"
+          NEW_CRATES=()
+          UPDATE_CRATES=()
+          for crate in "${CRATES[@]}"; do
+            # The package name for crates/koi is "koi-net"
+            pkg_name="$crate"
+            if [ "$crate" = "koi-net" ]; then
+              pkg_name="koi-net"
+            fi
+            
+            status=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "User-Agent: koi-ci (https://github.com/sylin-org/koi)" \
+              "https://crates.io/api/v1/crates/${pkg_name}" || echo "404")
+              
+            if [ "$status" = "200" ]; then
+              UPDATE_CRATES+=("$crate")
+            else
+              NEW_CRATES+=("$crate")
+            fi
+          done
+
+          echo "Updates (burst 30): ${UPDATE_CRATES[*]:-none}"
+          echo "New     (burst 5):  ${NEW_CRATES[*]:-none}"
+          echo ""
+
+          NEW_TOTAL=${#NEW_CRATES[@]}
+          if [ "$NEW_TOTAL" -gt 0 ]; then
+            BATCHES=$(( (NEW_TOTAL + 4) / 5 ))
+            WAIT_MIN=$(( (BATCHES - 1) * 10 ))
+            echo "⚠️  ${NEW_TOTAL} new crate(s) → ${BATCHES} batch(es), ~${WAIT_MIN} min of rate-limit waits"
+          else
+            echo "✅ All crates are updates - no rate-limit waits needed"
+          fi
+          echo ""
+
+          # ── Phase 2: Publish ───────────────────────────────────
+          echo "═══ Publishing ═══"
+          NEW_COUNT=0
+          NEW_BURST=5
+
+          for crate in "${CRATES[@]}"; do
+            pkg_name="$crate"
+            # In workspace, koi-net's package folder is crates/koi
+            pkg_flag="-p $crate"
+            if [ "$crate" = "koi-net" ]; then
+              pkg_name="koi-net"
+              pkg_flag="-p koi-net"
+            fi
+
+            # Check if this crate is new (not in UPDATE_CRATES)
+            IS_UPDATE=false
+            for u in "${UPDATE_CRATES[@]}"; do
+              if [ "$u" = "$crate" ]; then
+                IS_UPDATE=true
+                break
+              fi
+            done
+
+            if [ "$IS_UPDATE" = true ]; then
+              echo "📦 ${crate}: update"
+            else
+              NEW_COUNT=$((NEW_COUNT + 1))
+              echo "🆕 ${crate}: new (${NEW_COUNT}/${NEW_BURST} tokens)"
+              if [ "$NEW_COUNT" -ge "$NEW_BURST" ]; then
+                echo "⏳ New-crate bucket exhausted. Waiting 10 min for refill..."
+                sleep 600
+                NEW_COUNT=0
+              fi
+            fi
+
+            # Perform the publish
+            # Read output, and handle the "already exists" case
+            cargo publish ${pkg_flag} --locked 2>&1 | tee /tmp/publish_output.txt || {
+              exit_code=${PIPESTATUS[0]}
+              if grep -q "already exists" /tmp/publish_output.txt; then
+                echo "⏭️  ${crate}: version already published, skipping verification"
+                continue
+              else
+                echo "❌ ${crate}: publish failed"
+                cat /tmp/publish_output.txt
+                exit "$exit_code"
+              fi
+            }
+            echo "✅ ${crate} publish command succeeded"
+
+            # Post-publish verification: query crates.io API until the version propagates
+            echo "🔎 Verifying ${pkg_name} version on crates.io..."
+            VERIFIED=false
+            for i in {1..12}; do
+              MAX_VER=$(curl -s -H "User-Agent: koi-ci (https://github.com/sylin-org/koi)" "https://crates.io/api/v1/crates/${pkg_name}" | jq -r '.crate.max_version // empty' || echo "")
+              if [ "$MAX_VER" = "$VERSION" ]; then
+                echo "✅ Verified: ${pkg_name} is active at version ${VERSION} on crates.io"
+                VERIFIED=true
+                break
+              fi
+              echo "⏳ Index not propagated yet (current: '${MAX_VER}', expected: '${VERSION}'). Retrying in 10 seconds (${i}/12)..."
+              sleep 10
+            done
+
+            if [ "$VERIFIED" = "false" ]; then
+              echo "❌ Failed to verify ${pkg_name} version ${VERSION} on crates.io after 2 minutes"
+              exit 1
+            fi
+
+            # Brief pause for index propagation before publishing dependents
+            sleep 20
+          done
+
+          echo ""
+          echo "═══ All ${#CRATES[@]} crates published and verified ═══"
