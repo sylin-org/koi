@@ -1,4 +1,5 @@
 ﻿use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use koi_config::state::DnsEntry;
@@ -6,11 +7,20 @@ use koi_embedded::{Builder, KoiEvent, ServiceMode};
 use koi_proxy::ProxyEntry;
 
 fn temp_data_dir() -> PathBuf {
+    // A monotonic counter guarantees uniqueness even when parallel tests start
+    // within the same clock tick — `SystemTime` resolution is coarse on some
+    // platforms (notably macOS), so nanos alone can collide and make two tests
+    // share a data dir (and its DNS state file).
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("koi-embedded-test-{nanos}"));
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "koi-embedded-test-{}-{nanos}-{n}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
