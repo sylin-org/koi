@@ -1125,7 +1125,7 @@ impl MdnsBridgeEmbedded {
         let meta_records = Arc::clone(&records);
         let meta_cancel = cancel.clone();
         tokio::spawn(async move {
-            if let Ok(handle) = meta_core.browse(META_QUERY).await {
+            if let Ok(handle) = meta_core.subscribe_type(META_QUERY).await {
                 run_meta_browse_embedded(meta_core, handle, meta_records, meta_cancel).await;
             }
         });
@@ -1231,7 +1231,7 @@ impl koi_common::integration::AliasFeedback for AliasFeedbackBridgeEmbedded {
 
 async fn run_meta_browse_embedded(
     core: Arc<koi_mdns::MdnsCore>,
-    handle: koi_mdns::BrowseHandle,
+    handle: koi_mdns::BrowseSubscription,
     records: Arc<
         std::sync::RwLock<
             std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>,
@@ -1239,9 +1239,9 @@ async fn run_meta_browse_embedded(
     >,
     cancel: CancellationToken,
 ) {
-    let active = Arc::new(tokio::sync::Mutex::new(
-        std::collections::HashSet::<String>::new(),
-    ));
+    // Dedup: browse each discovered service type once. Plain bookkeeping now —
+    // concurrent subscriptions share one real browse and survive churn.
+    let mut seen = std::collections::HashSet::<String>::new();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -1249,14 +1249,13 @@ async fn run_meta_browse_embedded(
                 let Some(event) = event else { break; };
                 if let koi_mdns::events::MdnsEvent::Found(record) = event {
                     let service_type = record.name;
-                    let mut guard = active.lock().await;
-                    if guard.insert(service_type.clone()) {
+                    if seen.insert(service_type.clone()) {
                         let c = Arc::clone(&core);
                         let r = Arc::clone(&records);
                         let t = service_type.clone();
                         let cancel_child = cancel.clone();
                         tokio::spawn(async move {
-                            if let Ok(handle) = c.browse(&t).await {
+                            if let Ok(handle) = c.subscribe_type(&t).await {
                                 run_type_browse_embedded(handle, r, cancel_child).await;
                             }
                         });
@@ -1627,7 +1626,7 @@ mod tests {
 }
 
 async fn run_type_browse_embedded(
-    handle: koi_mdns::BrowseHandle,
+    handle: koi_mdns::BrowseSubscription,
     records: Arc<
         std::sync::RwLock<
             std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>,
@@ -1646,23 +1645,15 @@ async fn run_type_browse_embedded(
                         let entry = guard.entry(record.service_type.clone()).or_default();
                         entry.insert(record.name.clone(), record);
                     }
+                    // Removed events carry the instance + type parsed at the
+                    // mDNS boundary — no string re-parsing here.
                     koi_mdns::events::MdnsEvent::Removed { name, service_type } => {
+                        if service_type.is_empty() {
+                            continue;
+                        }
                         let mut guard = records.write().unwrap_or_else(|e| e.into_inner());
-                        let st = if service_type.is_empty() {
-                            name.find("._").map(|idx| {
-                                let rest = &name[idx + 1..];
-                                rest.trim_end_matches('.').trim_end_matches(".local").to_string()
-                            })
-                        } else {
-                            Some(service_type)
-                        };
-                        if let Some(st) = st {
-                            if let Some(map) = guard.get_mut(&st) {
-                                let instance = name.find("._").map(|idx| name[..idx].to_string());
-                                if let Some(instance) = instance {
-                                    map.remove(&instance);
-                                }
-                            }
+                        if let Some(map) = guard.get_mut(&service_type) {
+                            map.remove(&name);
                         }
                     }
                     _ => {}

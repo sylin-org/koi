@@ -69,13 +69,13 @@ impl BrowseSource for MdnsBrowseAdapter {
         Box::pin(async move {
             let mdns_handle = self
                 .core
-                .browse(&svc_type)
+                .subscribe_type(&svc_type)
                 .await
                 .map_err(|e| BrowseError(e.to_string()))?;
 
             let (tx, rx) = mpsc::channel(128);
 
-            // Relay events from the koi-mdns BrowseHandle into the
+            // Relay events from the koi-mdns BrowseSubscription into the
             // koi-common BrowseHandle's mpsc channel.
             tokio::spawn(async move {
                 while let Some(mdns_event) = mdns_handle.recv().await {

@@ -13,7 +13,7 @@ use koi_config::state::DnsEntry;
 use koi_dns::{DnsLookupResult, DnsRuntime};
 use koi_health::{HealthCheck, HealthRuntime};
 use koi_mdns::protocol::{RegisterPayload, RegistrationResult};
-use koi_mdns::{BrowseHandle as MdnsBrowseHandle, MdnsCore, MdnsEvent};
+use koi_mdns::{BrowseSubscription as MdnsBrowseHandle, MdnsCore, MdnsEvent};
 use koi_proxy::{ProxyEntry, ProxyRuntime};
 
 use crate::{map_join_error, KoiError, KoiEvent};
@@ -311,7 +311,7 @@ impl MdnsHandle {
     pub async fn browse(&self, service_type: &str) -> Result<KoiBrowseHandle, KoiError> {
         match &self.backend {
             MdnsBackend::Embedded { core } => {
-                let handle = core.browse(service_type).await?;
+                let handle = core.subscribe_type(service_type).await?;
                 Ok(KoiBrowseHandle::embedded(handle))
             }
             MdnsBackend::Remote { client } => {

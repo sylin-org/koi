@@ -21,9 +21,10 @@ Existing constants and types - don't reinvent these.
 
 ### koi-mdns -- Daemon (`crates/koi-mdns/src/daemon.rs`)
 
-| Constant          | Value | Purpose                    |
-| ----------------- | ----- | -------------------------- |
-| `RESOLVE_TIMEOUT` | 5s    | mDNS resolve wait duration |
+| Constant                  | Value | Purpose                                 |
+| ------------------------- | ----- | --------------------------------------- |
+| `RESOLVE_TIMEOUT`         | 5s    | mDNS resolve wait duration              |
+| `TYPE_BROADCAST_CAPACITY` | 512   | Per-type browse fan-out channel size    |
 
 ### koi-mdns -- HTTP (`crates/koi-mdns/src/http.rs`)
 
@@ -189,9 +190,9 @@ No other module should contain `println!`-based presentation functions.
 
 | Type           | Purpose                                      |
 | -------------- | -------------------------------------------- |
-| `MdnsCore`     | Main domain facade (commands, state, events) |
-| `BrowseHandle` | RAII browse cleanup (closure on drop)        |
-| `MdnsError`    | Domain error enum (thiserror)                |
+| `MdnsCore`          | Main domain facade (commands, state, events)                          |
+| `BrowseSubscription`| Refcounted subscription to a shared per-type browse (`recv()` Koi events) |
+| `MdnsError`         | Domain error enum (thiserror)                                         |
 | `MdnsEvent`    | Domain event enum (Found, Resolved, Removed) |
 | `LeasePolicy`  | Session / Heartbeat(dur, grace) / Permanent  |
 

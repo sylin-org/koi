@@ -44,7 +44,7 @@ pub async fn handle_line<W: AsyncWriteExt + Unpin>(
 
     match request {
         Request::Browse(service_type) => {
-            let handle = match core.browse(&service_type).await {
+            let handle = match core.subscribe_type(&service_type).await {
                 Ok(h) => h,
                 Err(e) => {
                     write_response(writer, &mdns_protocol::error_to_pipeline(&e)).await?;
@@ -85,7 +85,7 @@ pub async fn handle_line<W: AsyncWriteExt + Unpin>(
         }
 
         Request::Subscribe(service_type) => {
-            let handle = match core.browse(&service_type).await {
+            let handle = match core.subscribe_type(&service_type).await {
                 Ok(h) => h,
                 Err(e) => {
                     write_response(writer, &mdns_protocol::error_to_pipeline(&e)).await?;

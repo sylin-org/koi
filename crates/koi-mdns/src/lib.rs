@@ -7,7 +7,6 @@
 //! - **State**: Read-only snapshots (admin_status, admin_registrations)
 //! - **Events**: Broadcast channel for service lifecycle events
 
-mod browse;
 mod daemon;
 pub mod error;
 pub mod events;
@@ -15,7 +14,7 @@ pub mod http;
 pub mod protocol;
 mod registry;
 
-pub use self::browse::BrowseHandle;
+pub use self::daemon::BrowseSubscription;
 pub use self::error::{MdnsError, Result};
 pub use self::events::MdnsEvent;
 pub use self::registry::LeasePolicy;
@@ -29,7 +28,7 @@ use self::registry::{InsertOutcome, Registry};
 use koi_common::capability::{Capability, CapabilityStatus};
 use koi_common::firewall::{FirewallPort, FirewallProtocol};
 use koi_common::id::generate_short_id;
-use koi_common::types::{ServiceRecord, ServiceType, SessionId, META_QUERY};
+use koi_common::types::{ServiceRecord, ServiceType, SessionId};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -55,7 +54,6 @@ pub fn firewall_ports() -> Vec<FirewallPort> {
 pub struct MdnsCore {
     daemon: Arc<MdnsDaemon>,
     registry: Arc<Registry>,
-    event_tx: broadcast::Sender<MdnsEvent>,
     started_at: Instant,
 }
 
@@ -69,9 +67,9 @@ impl MdnsCore {
     /// Create a new core with a shared cancellation token.
     /// Used by daemon mode for ordered shutdown.
     pub fn with_cancel(cancel: CancellationToken) -> Result<Self> {
-        let daemon = Arc::new(MdnsDaemon::new()?);
-        let registry = Arc::new(Registry::new());
         let (event_tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
+        let daemon = Arc::new(MdnsDaemon::new(event_tx)?);
+        let registry = Arc::new(Registry::new());
         let started_at = Instant::now();
 
         // Spawn reaper task - sweeps expired registrations every 5 seconds
@@ -106,34 +104,21 @@ impl MdnsCore {
         Ok(Self {
             daemon,
             registry,
-            event_tx,
             started_at,
         })
     }
 
     // ── Commands ──────────────────────────────────────────────────────
 
-    /// Start browsing for services of the given type.
+    /// Subscribe to services of the given type.
     /// Pass `META_QUERY` to discover all service types on the network.
     ///
-    /// The returned `BrowseHandle` calls `stop_browse` on drop, so the
-    /// underlying daemon resource is always cleaned up.
-    pub async fn browse(&self, service_type: &str) -> Result<BrowseHandle> {
-        let is_meta = service_type == META_QUERY;
-        let browse_type = if is_meta {
-            META_QUERY.to_string()
-        } else {
-            ServiceType::parse(service_type)?.as_str().to_string()
-        };
-        let receiver = self.daemon.browse(&browse_type).await?;
-        let event_tx = self.event_tx.clone();
-        Ok(BrowseHandle::new(
-            receiver,
-            event_tx,
-            is_meta,
-            browse_type,
-            self.daemon.clone(),
-        ))
+    /// Concurrent subscriptions to one type share a single real browse with
+    /// reference-counted fan-out: dropping one subscription never disturbs the
+    /// others, and the underlying browse stops only when the last drops.
+    pub async fn subscribe_type(&self, service_type: &str) -> Result<BrowseSubscription> {
+        let (key, is_meta) = daemon::canonical_key(service_type)?;
+        Ok(self.daemon.subscribe_type(&key, is_meta))
     }
 
     /// Register a service with a default permanent policy.
@@ -250,7 +235,7 @@ impl MdnsCore {
 
     /// Subscribe to all service events. Returns a broadcast receiver.
     pub fn subscribe(&self) -> broadcast::Receiver<MdnsEvent> {
-        self.event_tx.subscribe()
+        self.daemon.subscribe_all()
     }
 
     /// Shut down gracefully: unregister all services, then stop the daemon.

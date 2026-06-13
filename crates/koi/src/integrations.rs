@@ -75,7 +75,7 @@ impl MdnsBridge {
         let meta_records = Arc::clone(&records);
         let meta_cancel = cancel.clone();
         tokio::spawn(async move {
-            if let Ok(handle) = meta_core.browse(META_QUERY).await {
+            if let Ok(handle) = meta_core.subscribe_type(META_QUERY).await {
                 run_meta_browse(meta_core, handle, meta_records, meta_cancel).await;
             }
         });
@@ -202,11 +202,14 @@ impl integration::AliasFeedback for AliasFeedbackBridge {
 
 async fn run_meta_browse(
     core: Arc<koi_mdns::MdnsCore>,
-    handle: koi_mdns::BrowseHandle,
+    handle: koi_mdns::BrowseSubscription,
     records: Arc<RwLock<HashMap<String, HashMap<String, ServiceRecord>>>>,
     cancel: CancellationToken,
 ) {
-    let active = Arc::new(tokio::sync::Mutex::new(HashSet::<String>::new()));
+    // Dedup: browse each discovered service type once. This is plain
+    // bookkeeping now, not the old "never respawn" workaround — concurrent
+    // subscriptions share one real browse and survive resolve/subscriber churn.
+    let mut seen = HashSet::<String>::new();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -214,14 +217,13 @@ async fn run_meta_browse(
                 let Some(event) = event else { break; };
                 if let koi_mdns::events::MdnsEvent::Found(record) = event {
                     let service_type = record.name;
-                    let mut guard = active.lock().await;
-                    if guard.insert(service_type.clone()) {
+                    if seen.insert(service_type.clone()) {
                         let c = Arc::clone(&core);
                         let r = Arc::clone(&records);
                         let t = service_type.clone();
                         let cancel_child = cancel.clone();
                         tokio::spawn(async move {
-                            if let Ok(handle) = c.browse(&t).await {
+                            if let Ok(handle) = c.subscribe_type(&t).await {
                                 run_type_browse(handle, r, cancel_child).await;
                             }
                         });
@@ -233,7 +235,7 @@ async fn run_meta_browse(
 }
 
 async fn run_type_browse(
-    handle: koi_mdns::BrowseHandle,
+    handle: koi_mdns::BrowseSubscription,
     records: Arc<RwLock<HashMap<String, HashMap<String, ServiceRecord>>>>,
     cancel: CancellationToken,
 ) {
@@ -248,20 +250,15 @@ async fn run_type_browse(
                         let entry = guard.entry(record.service_type.clone()).or_default();
                         entry.insert(record.name.clone(), record);
                     }
+                    // Removed events now carry the instance name and service type
+                    // parsed at the mDNS boundary — no string re-parsing here.
                     koi_mdns::events::MdnsEvent::Removed { name, service_type } => {
+                        if service_type.is_empty() {
+                            continue;
+                        }
                         let mut guard = records.write().unwrap_or_else(|e| e.into_inner());
-                        let service_type = if service_type.is_empty() {
-                            extract_service_type(&name)
-                        } else {
-                            Some(service_type)
-                        };
-                        if let Some(st) = service_type {
-                            if let Some(map) = guard.get_mut(&st) {
-                                let instance = extract_instance_name(&name);
-                                if let Some(instance) = instance {
-                                    map.remove(&instance);
-                                }
-                            }
+                        if let Some(map) = guard.get_mut(&service_type) {
+                            map.remove(&name);
                         }
                     }
                     _ => {}
@@ -269,16 +266,4 @@ async fn run_type_browse(
             }
         }
     }
-}
-
-fn extract_service_type(fullname: &str) -> Option<String> {
-    let idx = fullname.find("._")?;
-    let rest = &fullname[idx + 1..];
-    let trimmed = rest.trim_end_matches('.').trim_end_matches(".local");
-    Some(trimmed.to_string())
-}
-
-fn extract_instance_name(fullname: &str) -> Option<String> {
-    let idx = fullname.find("._")?;
-    Some(fullname[..idx].to_string())
 }

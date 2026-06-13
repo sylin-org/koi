@@ -77,7 +77,7 @@ Domain crates depend on `koi-common` but **never on each other**. Cross-domain w
 
 **Adapters are pure translation.** An adapter maps a transport to core API calls. Each adapter is roughly 150 lines. They don't contain domain logic, validation, or state management.
 
-**Core owns the registry.** All registered services, active browse handles, and subscription fan-out live in the core. If an adapter disconnects, the core cleans up.
+**Core owns the registry.** All registered services, the per-type browse hub (one real mDNS browse per type, reference-counted broadcast fan-out to N subscriptions), and subscription fan-out live in the core. If an adapter disconnects, the core cleans up.
 
 **Rust visibility enforces boundaries.** Domain internals are `pub(crate)` - invisible to adapters. Adapters receive `Arc<DomainCore>` and nothing else.
 

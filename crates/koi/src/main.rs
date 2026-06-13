@@ -1119,7 +1119,7 @@ fn spawn_certmesh_background_tasks(
             }
         };
 
-        let browse = match mdns.browse(koi_certmesh::CERTMESH_SERVICE_TYPE).await {
+        let browse = match mdns.subscribe_type(koi_certmesh::CERTMESH_SERVICE_TYPE).await {
             Ok(handle) => handle,
             Err(e) => {
                 tracing::warn!(error = %e, "Failover monitor: browse failed");

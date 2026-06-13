@@ -59,7 +59,7 @@ impl BrowseSource for MdnsBrowseAdapter {
         Box::pin(async move {
             let mdns_handle = self
                 .core
-                .browse(&svc_type)
+                .subscribe_type(&svc_type)
                 .await
                 .map_err(|e| BrowseError(e.to_string()))?;
 

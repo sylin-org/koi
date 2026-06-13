@@ -53,7 +53,7 @@ pub async fn discover(
     match mode {
         Mode::Standalone => {
             let core = Arc::new(MdnsCore::new()?);
-            let handle = core.browse(browse_type).await?;
+            let handle = core.subscribe_type(browse_type).await?;
 
             super::run_streaming(timeout, Some(super::DEFAULT_TIMEOUT), || async {
                 while let Some(event) = handle.recv().await {
@@ -263,7 +263,7 @@ pub async fn subscribe(
     match mode {
         Mode::Standalone => {
             let core = Arc::new(MdnsCore::new()?);
-            let handle = core.browse(service_type).await?;
+            let handle = core.subscribe_type(service_type).await?;
 
             super::run_streaming(timeout, Some(super::DEFAULT_TIMEOUT), || async {
                 while let Some(event) = handle.recv().await {
