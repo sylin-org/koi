@@ -53,13 +53,11 @@ url.workspace = true
 command-surface = { workspace = true, features = ["render"] }
 utoipa.workspace = true
 utoipa-scalar = { workspace = true }
-netdev.workspace = true
 open.workspace = true
 rand.workspace = true
 base64.workspace = true
 subtle.workspace = true
 rustls.workspace = true
-rustls-pemfile.workspace = true
 tokio-rustls.workspace = true
 hyper-util.workspace = true
 x509-parser.workspace = true

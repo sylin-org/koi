@@ -5,13 +5,13 @@
 //! to axum/hyper. The CN is attached as `Extension(ClientCn(cn))` per-connection,
 //! making it available to handlers for authorization decisions.
 
-use std::io::BufReader;
 use std::sync::Arc;
 
 use axum::extract::Extension;
 use axum::Router;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
@@ -129,23 +129,19 @@ fn build_tls_config(
 ) -> anyhow::Result<rustls::ServerConfig> {
     // Parse server certificate chain
     let certs: Vec<CertificateDer<'static>> =
-        rustls_pemfile::certs(&mut BufReader::new(cert_pem.as_bytes()))
-            .collect::<Result<Vec<_>, _>>()?;
+        CertificateDer::pem_slice_iter(cert_pem.as_bytes()).collect::<Result<Vec<_>, _>>()?;
 
     if certs.is_empty() {
         anyhow::bail!("no certificates found in server cert PEM");
     }
 
     // Parse server private key
-    let key: PrivateKeyDer<'static> =
-        rustls_pemfile::private_key(&mut BufReader::new(key_pem.as_bytes()))?
-            .ok_or_else(|| anyhow::anyhow!("no private key found in key PEM"))?;
+    let key: PrivateKeyDer<'static> = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())?;
 
     // Build a root cert store from the CA certificate for client verification
     let mut root_store = rustls::RootCertStore::empty();
     let ca_certs: Vec<CertificateDer<'static>> =
-        rustls_pemfile::certs(&mut BufReader::new(ca_cert_pem.as_bytes()))
-            .collect::<Result<Vec<_>, _>>()?;
+        CertificateDer::pem_slice_iter(ca_cert_pem.as_bytes()).collect::<Result<Vec<_>, _>>()?;
     for ca_cert in ca_certs {
         root_store.add(ca_cert)?;
     }

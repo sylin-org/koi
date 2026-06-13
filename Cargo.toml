@@ -88,7 +88,6 @@ terminal_size = "0.4"
 open = "5"
 ipnet = "2"
 libc = "0.2"
-netdev = "0.31"
 
 # Crypto dependencies (Phase 2)
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }
@@ -104,7 +103,7 @@ pem = "3"
 rcgen = "0.13"
 time = "0.3"
 crossterm = "0.28"
-indicatif = "0.17"
+indicatif = "0.18"
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 hkdf = "0.12"

@@ -26,7 +26,6 @@ axum.workspace = true
 notify.workspace = true
 tokio-rustls.workspace = true
 rustls.workspace = true
-rustls-pemfile.workspace = true
 rcgen.workspace = true
 url.workspace = true
 hostname.workspace = true

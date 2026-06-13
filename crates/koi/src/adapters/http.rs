@@ -632,6 +632,47 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
     }))
 }
 
+/// LAN interfaces for the `/v1/host` response: the interface that owns the
+/// default route (matched by its source IP), or — failing that — every
+/// non-loopback, non-link-local IPv4 interface.
+fn default_lan_interfaces() -> Vec<NetworkInterface> {
+    let all = if_addrs::get_if_addrs().unwrap_or_default();
+
+    if let Some(ip) = default_route_ipv4() {
+        if let Some(iface) = all.iter().find(|i| i.addr.ip() == std::net::IpAddr::V4(ip)) {
+            return vec![NetworkInterface {
+                name: iface.name.clone(),
+                ip: ip.to_string(),
+            }];
+        }
+    }
+
+    all.into_iter()
+        .filter(|iface| !iface.is_loopback())
+        .filter_map(|iface| match iface.addr.ip() {
+            std::net::IpAddr::V4(v4) if !v4.is_link_local() => Some(NetworkInterface {
+                name: iface.name,
+                ip: v4.to_string(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The IPv4 source address the OS would use to reach the public internet — i.e.
+/// the address of the default-route interface. A UDP socket "connected" to a
+/// public IP sends no traffic; it only makes the kernel resolve its
+/// source-address choice, which `local_addr()` then reports. Returns `None`
+/// when there is no usable default route.
+fn default_route_ipv4() -> Option<std::net::Ipv4Addr> {
+    let sock = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+    sock.connect(("8.8.8.8", 80)).ok()?;
+    match sock.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(v4) if !v4.is_unspecified() => Some(v4),
+        _ => None,
+    }
+}
+
 #[utoipa::path(get, path = "/v1/host", tag = "system",
     summary = "Host identity and network interfaces",
     responses((status = 200, body = HostInfoResponse)))]
@@ -642,43 +683,11 @@ async fn host_handler() -> Json<HostInfoResponse> {
         .unwrap_or_else(|| "unknown".to_string());
     let fqdn = format!("{}.local", raw);
 
-    // Use netdev to find the interface with the default route.
-    // This is the only deterministic way to identify the real LAN adapter
-    // on Windows where virtual switches (vEthernet) report the same
-    // IfType as physical Ethernet.
-    let lan: Vec<NetworkInterface> = match netdev::get_default_interface() {
-        Ok(default_iface) => {
-            let mut interfaces = Vec::new();
-            for addr in &default_iface.ipv4 {
-                interfaces.push(NetworkInterface {
-                    name: default_iface.name.clone(),
-                    ip: addr.addr().to_string(),
-                });
-            }
-            interfaces
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "netdev default interface detection failed, falling back to if_addrs");
-            // Fallback: enumerate all non-loopback, non-link-local IPv4 interfaces
-            if_addrs::get_if_addrs()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|iface| {
-                    if iface.is_loopback() {
-                        return false;
-                    }
-                    match iface.addr.ip() {
-                        std::net::IpAddr::V4(v4) => !v4.is_link_local(),
-                        std::net::IpAddr::V6(_) => false, // IPv4 only in fallback
-                    }
-                })
-                .map(|iface| NetworkInterface {
-                    name: iface.name,
-                    ip: iface.addr.ip().to_string(),
-                })
-                .collect()
-        }
-    };
+    // Identify the interface that owns the default route — the real LAN adapter
+    // even on Windows, where virtual switches (vEthernet) share the physical
+    // Ethernet IfType. We use the kernel's own route selection rather than a
+    // network-enumeration crate (see `default_lan_interfaces`).
+    let lan = default_lan_interfaces();
 
     Json(HostInfoResponse {
         hostname: raw,

@@ -81,10 +81,9 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Audit
-        # Audits the committed Cargo.lock. Fails on security vulnerabilities;
-        # unmaintained-crate notices (paste, number_prefix, rustls-pemfile) are
-        # informational warnings, not failures. No GITHUB_TOKEN / API needed, so
-        # this also works for pull requests from forks.
+        # Audits the committed Cargo.lock. Fails on security vulnerabilities and
+        # reports unmaintained/unsound advisories. No GITHUB_TOKEN / API needed,
+        # so this also works for pull requests from forks.
         run: cargo audit
 
   surfaces:

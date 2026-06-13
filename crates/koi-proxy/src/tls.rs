@@ -14,12 +14,12 @@
 //! a tokio task via a channel — it **never** calls `tokio::spawn` from notify's
 //! thread, which is the second latent panic the old data plane carried.
 
-use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use notify::{RecursiveMode, Watcher};
 use rustls::crypto::CryptoProvider;
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
@@ -236,18 +236,15 @@ fn generate_self_signed(entry: &ProxyEntry) -> Result<(Vec<u8>, Vec<u8>), ProxyE
 
 /// Parse PEM cert chain + private key into a rustls [`CertifiedKey`].
 fn build_certified_key(cert_pem: &[u8], key_pem: &[u8]) -> Result<Arc<CertifiedKey>, ProxyError> {
-    let mut cert_reader = BufReader::new(cert_pem);
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_pem)
         .collect::<Result<_, _>>()
         .map_err(|e| ProxyError::Io(format!("cert parse: {e}")))?;
     if certs.is_empty() {
         return Err(ProxyError::Io("no certificates in PEM".to_string()));
     }
 
-    let mut key_reader = BufReader::new(key_pem);
-    let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_reader)
-        .map_err(|e| ProxyError::Io(format!("key parse: {e}")))?
-        .ok_or_else(|| ProxyError::Io("no private key in PEM".to_string()))?;
+    let key: PrivateKeyDer<'static> = PrivateKeyDer::from_pem_slice(key_pem)
+        .map_err(|e| ProxyError::Io(format!("key parse: {e}")))?;
 
     let signing_key = provider()
         .key_provider
