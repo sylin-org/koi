@@ -4,10 +4,12 @@ ${DESCRIPTION}
 
 **Download a binary** from the table below, extract, and place on your `PATH`.
 
-**Or install from source:**
+**Or build from source** (crates.io publishing is currently suspended — see the changelog):
 
 ```bash
-cargo install koi-net
+git clone https://github.com/sylin-org/koi
+cd koi
+cargo build --release   # binary at target/release/koi
 ```
 
 **Or install as a system service** (recommended for always-on discovery):
