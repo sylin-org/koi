@@ -81,13 +81,10 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Audit
-        # Audits the committed Cargo.lock. Fails on security vulnerabilities.
-        # RUSTSEC-2024-0436 (paste, unmaintained) is ignored: it's a build-time-only
-        # proc-macro pulled transitively on Linux via netdev -> netlink-packet-utils,
-        # with no runtime/security impact and no maintained drop-in. A real future
-        # vulnerability in paste would carry a different ID and still surface.
-        # No GITHUB_TOKEN / API needed, so this also works for pull requests from forks.
-        run: cargo audit --ignore RUSTSEC-2024-0436
+        # Audits the committed Cargo.lock. Fails on security vulnerabilities and
+        # reports unmaintained/unsound advisories. No GITHUB_TOKEN / API needed,
+        # so this also works for pull requests from forks.
+        run: cargo audit
 
   surfaces:
     # Surface-ledger tripwire (Epic E02): docs/SURFACES.md must exist and parse.

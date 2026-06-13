@@ -88,7 +88,6 @@ terminal_size = "0.4"
 open = "5"
 ipnet = "2"
 libc = "0.2"
-netdev = "0.31"
 
 # Crypto dependencies (Phase 2)
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }
