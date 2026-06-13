@@ -10,7 +10,7 @@ use utoipa::ToSchema;
 use koi_common::error::ErrorCode;
 
 use crate::config::ProxyEntry;
-use crate::{ensure_backend_allowed, ProxyError, ProxyRuntime};
+use crate::{ensure_backend_allowed, ProxyError, ProxyRuntime, ProxyStatus};
 
 #[derive(Debug, Deserialize, ToSchema)]
 struct AddProxyRequest {
@@ -23,7 +23,7 @@ struct AddProxyRequest {
 
 #[derive(Debug, Serialize, ToSchema)]
 struct ProxyStatusResponse {
-    proxies: Vec<serde_json::Value>,
+    proxies: Vec<ProxyStatus>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -66,8 +66,8 @@ pub fn routes(runtime: Arc<ProxyRuntime>) -> Router {
     summary = "Active proxy status",
     responses((status = 200, body = ProxyStatusResponse)))]
 async fn status_handler(Extension(runtime): Extension<Arc<ProxyRuntime>>) -> impl IntoResponse {
-    let status = runtime.status().await;
-    Json(serde_json::json!({ "proxies": status }))
+    let proxies = runtime.status().await;
+    Json(ProxyStatusResponse { proxies })
 }
 
 #[utoipa::path(get, path = "/list", tag = "proxy",
@@ -93,23 +93,11 @@ async fn add_entry_handler(
         allow_remote: payload.allow_remote,
     };
 
-    let backend = match url::Url::parse(&entry.backend) {
-        Ok(url) => url,
-        Err(e) => {
-            return koi_common::http::error_response(
-                ErrorCode::InvalidPayload,
-                format!("invalid_backend: {e}"),
-            )
-            .into_response();
-        }
-    };
-
-    if let Err(e) = ensure_backend_allowed(&backend, entry.allow_remote) {
+    if let Err(e) = ensure_backend_allowed(&entry.backend, entry.allow_remote) {
         return map_error(e).into_response();
     }
     if entry.allow_remote {
-        let host = backend.host_str().unwrap_or("unknown");
-        tracing::warn!("Backend traffic to {} is unencrypted", host);
+        tracing::warn!(backend = %entry.backend, "Proxy backend traffic is unencrypted");
     }
 
     match runtime.core().upsert(entry).await {
@@ -148,9 +136,7 @@ fn map_error(err: ProxyError) -> impl IntoResponse {
             koi_common::http::error_response(ErrorCode::InvalidPayload, msg)
         }
         ProxyError::NotFound(msg) => koi_common::http::error_response(ErrorCode::NotFound, msg),
-        ProxyError::Io(msg) | ProxyError::Forward(msg) => {
-            koi_common::http::error_response(ErrorCode::IoError, msg)
-        }
+        ProxyError::Io(msg) => koi_common::http::error_response(ErrorCode::IoError, msg),
     }
 }
 
@@ -166,6 +152,7 @@ fn map_error(err: ProxyError) -> impl IntoResponse {
     components(schemas(
         AddProxyRequest,
         ProxyEntry,
+        ProxyStatus,
         ProxyStatusResponse,
         ProxyEntriesResponse,
         StatusOk,

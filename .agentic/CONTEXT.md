@@ -78,7 +78,7 @@ koi-truststore → (standalone: platform cert APIs)
 koi-config    → koi-common
 koi-dns       → koi-common, koi-config, hickory-server, hickory-resolver, axum, utoipa, tokio
 koi-health    → koi-common, koi-config, axum, utoipa, tokio
-koi-proxy     → koi-common, koi-config, axum-server, rustls, reqwest, utoipa, tokio
+koi-proxy     → koi-common, koi-config, tokio-rustls, rustls, rcgen, axum, utoipa, tokio
 koi-udp       → koi-common, axum, utoipa, tokio
 koi-runtime   → koi-common, bollard, axum, utoipa, tokio, chrono, async-trait
 koi-client    → koi-common, ureq (blocking)

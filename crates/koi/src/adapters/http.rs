@@ -56,6 +56,10 @@ struct AppState {
 
 // ── Entrypoint ──────────────────────────────────────────────────────
 
+// Wiring entrypoint: it threads every daemon component through to the HTTP
+// adapter. Pre-existing signature (P03); clippy 0.1.95 (> repo MSRV 1.92) newly
+// flags the arg count. Behaviour-neutral allow to keep the gate green.
+#[allow(clippy::too_many_arguments)]
 pub async fn start(
     cores: DaemonCores,
     bind_ip: std::net::IpAddr,

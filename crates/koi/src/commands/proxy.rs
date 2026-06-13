@@ -10,11 +10,9 @@ fn build_entry(
     backend: &str,
     allow_remote: bool,
 ) -> anyhow::Result<ProxyEntry> {
-    let url = url::Url::parse(backend)?;
-    koi_proxy::ensure_backend_allowed(&url, allow_remote)?;
+    koi_proxy::ensure_backend_allowed(backend, allow_remote)?;
     if allow_remote {
-        let host = url.host_str().unwrap_or("unknown");
-        tracing::warn!("Backend traffic to {} is unencrypted", host);
+        tracing::warn!("Backend traffic to {} is unencrypted", backend);
     }
     Ok(ProxyEntry {
         name: name.to_string(),
@@ -154,16 +152,40 @@ pub async fn status(mode: Mode, json: bool) -> anyhow::Result<()> {
                 if proxies.is_empty() {
                     println!("Proxy: no listeners running");
                 } else {
-                    println!("Proxy listeners:");
-                    for entry in proxies {
-                        let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let backend = entry.get("backend").and_then(|v| v.as_str()).unwrap_or("?");
-                        let listen = entry
-                            .get("listen_port")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        println!("  {} -> {} (listen {})", name, backend, listen);
-                    }
+                    let rows: Vec<crate::format::ProxyStatusRow> = proxies
+                        .iter()
+                        .map(|entry| crate::format::ProxyStatusRow {
+                            name: entry
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?")
+                                .to_string(),
+                            listen_port: entry
+                                .get("listen_port")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as u16,
+                            backend: entry
+                                .get("backend")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?")
+                                .to_string(),
+                            cert_source: entry
+                                .get("cert_source")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?")
+                                .to_string(),
+                            state: entry
+                                .get("state")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?")
+                                .to_string(),
+                            error: entry
+                                .get("error")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string()),
+                        })
+                        .collect();
+                    print!("{}", crate::format::proxy_status_table(&rows));
                 }
             }
             Ok(())

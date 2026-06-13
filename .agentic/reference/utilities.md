@@ -267,11 +267,11 @@ No other module should contain `println!`-based presentation functions.
 | Type           | Purpose                                                    |
 | -------------- | ---------------------------------------------------------- |
 | `ProxyCore`    | Main domain facade (entry management, reload, events)      |
-| `ProxyError`   | Domain error enum (Config, Io, InvalidConfig, Forward, NotFound) |
+| `ProxyError`   | Domain error enum (Config, Io, InvalidConfig, NotFound)    |
 | `ProxyEvent`   | Domain event enum (EntryUpdated, EntryRemoved)             |
 | `ProxyEntry`   | Proxy entry config (name, listen_port, backend, allow_remote) |
-| `ProxyStatus`  | Runtime status (name, listen_port, backend, running)       |
-| `ProxyRuntime` | Runtime controller for proxy listeners                     |
+| `ProxyStatus`  | Runtime status (name, listen_port, backend, allow_remote, cert_source, state, error) |
+| `ProxyRuntime` | Runtime controller for passthrough listeners               |
 
 ### `koi_proxy::http` (request/response types)
 
@@ -482,5 +482,7 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 | `async-trait`          | latest          | koi-runtime                                   | Async trait support                      |
 | `hickory-server`       | latest           | koi-dns                                      | DNS server implementation                |
 | `hickory-resolver`     | latest           | koi-dns                                      | DNS upstream resolution                  |
-| `reqwest`              | latest           | koi-proxy, koi-embedded                       | HTTP forwarding                          |
+| `reqwest`              | latest           | koi-embedded                                  | HTTP forwarding                          |
+| `tokio-rustls`         | 0.26             | koi-proxy, koi                                | TLS termination (proxy passthrough)      |
+| `rcgen`                | 0.13             | koi-crypto, koi-proxy                         | X.509 / self-signed cert generation      |
 | `base64`               | latest           | koi-udp                                       | Datagram payload encoding                |

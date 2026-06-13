@@ -261,6 +261,49 @@ pub fn renewal_result(
     out
 }
 
+// ── Proxy formatting ────────────────────────────────────────────────
+
+/// One row of `koi proxy status` output.
+pub struct ProxyStatusRow {
+    pub name: String,
+    pub listen_port: u16,
+    pub backend: String,
+    /// Certificate source: "certmesh" or "self-signed".
+    pub cert_source: String,
+    /// Listener state: "starting" | "running" | "error" | "stopped".
+    pub state: String,
+    /// Error detail, shown inline when the state is "error".
+    pub error: Option<String>,
+}
+
+/// Render the proxy status table: `NAME  LISTEN  BACKEND  TLS  STATE`.
+///
+/// `STATE` is the listener's real liveness; on a bind/accept failure the error
+/// detail is shown inline (e.g. `error: address in use`).
+pub fn proxy_status_table(rows: &[ProxyStatusRow]) -> String {
+    let mut out = proxy_row_line("NAME", "LISTEN", "BACKEND", "TLS", "STATE");
+    for row in rows {
+        let listen = format!(":{}", row.listen_port);
+        let state = match &row.error {
+            Some(err) if row.state == "error" => format!("error: {err}"),
+            _ => row.state.clone(),
+        };
+        out.push_str(&proxy_row_line(
+            &row.name,
+            &listen,
+            &row.backend,
+            &row.cert_source,
+            &state,
+        ));
+    }
+    out
+}
+
+/// Format one aligned proxy status row (used for the header and each entry).
+fn proxy_row_line(name: &str, listen: &str, backend: &str, tls: &str, state: &str) -> String {
+    format!("{name:<12} {listen:<7} {backend:<22} {tls:<12} {state}\n")
+}
+
 // ── Shared helpers ──────────────────────────────────────────────────
 
 /// Format TXT record entries as inline `key=value` pairs.

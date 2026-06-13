@@ -1,21 +1,26 @@
 //! Koi Proxy - TLS-terminating reverse proxy (Phase 8).
 
 pub mod config;
-mod forwarder;
 pub mod http;
 mod listener;
 mod safety;
+mod tls;
+
+#[cfg(test)]
+mod data_plane_tests;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, watch, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use koi_common::capability::{Capability, CapabilityStatus};
 
+use listener::{spawn_listener, ListenerStatus};
+
 pub use config::ProxyEntry;
-pub use safety::ensure_backend_allowed;
+pub use safety::{ensure_backend_allowed, parse_backend};
 
 /// Capacity for the proxy event broadcast channel.
 const BROADCAST_CHANNEL_CAPACITY: usize = 256;
@@ -40,20 +45,28 @@ pub enum ProxyError {
     #[error("proxy invalid config: {0}")]
     InvalidConfig(String),
 
-    #[error("proxy forward error: {0}")]
-    Forward(String),
-
     #[error("proxy entry not found: {0}")]
     NotFound(String),
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+/// Runtime status of a single proxy listener.
+///
+/// `state`/`error` reflect the listener task's real liveness (bind/accept outcome),
+/// and `cert_source` records which certificate the listener is serving. This
+/// replaces the old hardcoded `running: true`.
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
 pub struct ProxyStatus {
     pub name: String,
     pub listen_port: u16,
     pub backend: String,
     pub allow_remote: bool,
-    pub running: bool,
+    /// "certmesh" (cert file found on disk) or "self-signed" (generated fallback).
+    pub cert_source: String,
+    /// "starting" | "running" | "error" | "stopped".
+    pub state: String,
+    /// Error detail, present only when `state == "error"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 pub struct ProxyCore {
@@ -151,6 +164,7 @@ impl Capability for ProxyCore {
 struct ProxyInstance {
     entry: ProxyEntry,
     cancel: CancellationToken,
+    status: watch::Receiver<ListenerStatus>,
 }
 
 /// Runtime controller for proxy listeners.
@@ -188,7 +202,6 @@ impl ProxyRuntime {
         for entry in entries {
             seen.insert(entry.name.clone(), entry.clone());
             let entry_name = entry.name.clone();
-            let entry_name_for_task = entry_name.clone();
             let needs_restart = match guard.get(&entry.name) {
                 Some(existing) => existing.entry != entry,
                 None => true,
@@ -198,18 +211,15 @@ impl ProxyRuntime {
                     existing.cancel.cancel();
                 }
                 let cancel = CancellationToken::new();
-                let mut listener =
-                    listener::ProxyListener::new(entry.clone(), cancel.clone()).await?;
-                let watch = listener.watch_certs().await;
-                if let Err(e) = watch {
-                    tracing::warn!(error = %e, name = %entry.name, "Failed to watch certs");
-                }
-                tokio::spawn(async move {
-                    if let Err(e) = listener.run().await {
-                        tracing::error!(error = %e, name = %entry_name_for_task, "Proxy listener failed");
-                    }
-                });
-                guard.insert(entry_name.clone(), ProxyInstance { entry, cancel });
+                let status = spawn_listener(entry.clone(), cancel.clone());
+                guard.insert(
+                    entry_name,
+                    ProxyInstance {
+                        entry,
+                        cancel,
+                        status,
+                    },
+                );
             }
         }
 
@@ -239,12 +249,17 @@ impl ProxyRuntime {
         let guard = self.instances.lock().await;
         guard
             .values()
-            .map(|instance| ProxyStatus {
-                name: instance.entry.name.clone(),
-                listen_port: instance.entry.listen_port,
-                backend: instance.entry.backend.clone(),
-                allow_remote: instance.entry.allow_remote,
-                running: true,
+            .map(|instance| {
+                let status = instance.status.borrow();
+                ProxyStatus {
+                    name: instance.entry.name.clone(),
+                    listen_port: instance.entry.listen_port,
+                    backend: instance.entry.backend.clone(),
+                    allow_remote: instance.entry.allow_remote,
+                    cert_source: status.cert_source.as_str().to_string(),
+                    state: status.state.as_str().to_string(),
+                    error: status.error.clone(),
+                }
             })
             .collect()
     }

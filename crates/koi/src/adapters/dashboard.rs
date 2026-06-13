@@ -70,7 +70,10 @@ struct ProxyEntryDetail {
 struct ProxyListenerDetail {
     name: String,
     listen_port: u16,
-    running: bool,
+    state: String,
+    cert_source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -310,7 +313,9 @@ async fn build_snapshot_value(cores: &DomainCores) -> serde_json::Value {
                 .map(|s| ProxyListenerDetail {
                     name: s.name,
                     listen_port: s.listen_port,
-                    running: s.running,
+                    state: s.state,
+                    cert_source: s.cert_source,
+                    error: s.error,
                 })
                 .collect(),
         })

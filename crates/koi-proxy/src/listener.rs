@@ -1,123 +1,205 @@
-use axum::body::Body;
-use axum::extract::{ConnectInfo, State};
-use axum::http::{Request, StatusCode};
-use axum::response::IntoResponse;
-use axum::routing::any;
-use axum::Router;
-use axum_server::tls_rustls::RustlsConfig;
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+//! TLS-terminating TCP passthrough listener.
+//!
+//! Each entry owns one listener task: it binds a `TcpListener`, terminates TLS with
+//! the entry's (hot-reloadable) certificate, opens a plain `TcpStream` to the backend,
+//! and pumps bytes both ways with [`copy_bidirectional`]. Because forwarding is at the
+//! byte level, WebSockets and any other bidirectional/upgraded protocol work by
+//! construction — there is no HTTP layer to misunderstand them.
+//!
+//! Liveness is reported through a [`watch`] channel: the real bind/accept outcome
+//! (including the error detail on failure) is observable, never guessed.
+
 use std::net::SocketAddr;
+
+use tokio::io::copy_bidirectional;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
+use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
-use url::Url;
 
 use crate::config::ProxyEntry;
-use crate::forwarder::{forward_request, ForwardState};
-use crate::ProxyError;
+use crate::safety::parse_backend;
+use crate::tls::{self, CertSource};
 
-pub struct ProxyListener {
+/// Real liveness of a listener task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListenerState {
+    Starting,
+    Running,
+    Error,
+    Stopped,
+}
+
+impl ListenerState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ListenerState::Starting => "starting",
+            ListenerState::Running => "running",
+            ListenerState::Error => "error",
+            ListenerState::Stopped => "stopped",
+        }
+    }
+}
+
+/// A snapshot of a listener's state, carried over a [`watch`] channel.
+#[derive(Debug, Clone)]
+pub struct ListenerStatus {
+    pub state: ListenerState,
+    pub error: Option<String>,
+    pub cert_source: CertSource,
+}
+
+impl ListenerStatus {
+    fn starting() -> Self {
+        Self {
+            state: ListenerState::Starting,
+            error: None,
+            cert_source: CertSource::SelfSigned,
+        }
+    }
+
+    fn error(message: String, cert_source: CertSource) -> Self {
+        Self {
+            state: ListenerState::Error,
+            error: Some(message),
+            cert_source,
+        }
+    }
+}
+
+/// Spawn a passthrough TLS listener for an entry.
+///
+/// Returns immediately with a [`watch::Receiver`] reflecting the listener's real
+/// liveness. The listener stops when `cancel` fires.
+pub fn spawn_listener(
     entry: ProxyEntry,
     cancel: CancellationToken,
-    config: RustlsConfig,
-    watcher: Option<RecommendedWatcher>,
+) -> watch::Receiver<ListenerStatus> {
+    let (tx, rx) = watch::channel(ListenerStatus::starting());
+    tokio::spawn(async move {
+        run_listener(entry, cancel, tx).await;
+    });
+    rx
 }
 
-impl ProxyListener {
-    pub async fn new(entry: ProxyEntry, cancel: CancellationToken) -> Result<Self, ProxyError> {
-        let tls = load_tls_config(&entry).await?;
-        Ok(Self {
-            entry,
-            cancel,
-            config: tls,
-            watcher: None,
-        })
-    }
+async fn run_listener(
+    entry: ProxyEntry,
+    cancel: CancellationToken,
+    tx: watch::Sender<ListenerStatus>,
+) {
+    // 1. TLS setup (cert resolution + self-signed fallback).
+    let setup = match tls::build_tls(&entry) {
+        Ok(setup) => setup,
+        Err(e) => {
+            let _ = tx.send(ListenerStatus::error(
+                format!("tls setup: {e}"),
+                CertSource::SelfSigned,
+            ));
+            tracing::warn!(name = %entry.name, error = %e, "Proxy TLS setup failed");
+            return;
+        }
+    };
+    let cert_source = setup.cert_source;
+    let acceptor = TlsAcceptor::from(setup.config);
 
-    pub async fn run(self) -> Result<(), ProxyError> {
-        let backend = Url::parse(&self.entry.backend)
-            .map_err(|e| ProxyError::InvalidConfig(format!("Invalid backend URL: {e}")))?;
+    // 2. Cert hot-reload watcher (best-effort). Kept alive for the listener's
+    //    lifetime; dropped when the accept loop exits.
+    let _watcher = tls::spawn_cert_watcher(entry.clone(), setup.resolver, cancel.clone());
 
-        let forward_state = ForwardState {
-            backend,
-            client: reqwest::Client::new(),
-        };
+    // 3. Bind. A bind failure (e.g. port in use) is a real, observable Error state.
+    let addr = SocketAddr::from(([0, 0, 0, 0], entry.listen_port));
+    let listener = match TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            let _ = tx.send(ListenerStatus::error(bind_error_message(&e), cert_source));
+            tracing::warn!(
+                name = %entry.name, port = entry.listen_port, error = %e,
+                "Proxy listener bind failed"
+            );
+            return;
+        }
+    };
 
-        let app = Router::new()
-            .route("/", any(proxy_handler))
-            .route("/*path", any(proxy_handler))
-            .with_state(forward_state);
+    let _ = tx.send(ListenerStatus {
+        state: ListenerState::Running,
+        error: None,
+        cert_source,
+    });
+    tracing::info!(
+        name = %entry.name, port = entry.listen_port, backend = %entry.backend,
+        cert = cert_source.as_str(), "Proxy listener running"
+    );
 
-        let addr = SocketAddr::from(([0, 0, 0, 0], self.entry.listen_port));
-        let cancel = self.cancel.clone();
-        let server = axum_server::bind_rustls(addr, self.config.clone())
-            .serve(app.into_make_service_with_connect_info::<SocketAddr>());
-
+    // 4. Accept loop — one passthrough task per connection.
+    loop {
         tokio::select! {
-            result = server => {
-                result.map_err(|e| ProxyError::Io(e.to_string()))?;
-            }
-            _ = cancel.cancelled() => {
-                return Ok(());
+            _ = cancel.cancelled() => break,
+            accept = listener.accept() => match accept {
+                Ok((tcp, peer)) => {
+                    let acceptor = acceptor.clone();
+                    let backend = entry.backend.clone();
+                    let name = entry.name.clone();
+                    tokio::spawn(async move {
+                        handle_conn(acceptor, tcp, peer, &backend, &name).await;
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(name = %entry.name, error = %e, "Proxy accept error");
+                }
             }
         }
-
-        Ok(())
     }
 
-    pub async fn watch_certs(&mut self) -> Result<(), ProxyError> {
-        let cert_dir_path = cert_dir(&self.entry);
-        let entry = self.entry.clone();
-        let config = self.config.clone();
-
-        let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |_| {
-            let entry = entry.clone();
-            let config = config.clone();
-            tokio::spawn(async move {
-                let cert = cert_dir(&entry).join("fullchain.pem");
-                let key = cert_dir(&entry).join("key.pem");
-                if let Err(e) = config.reload_from_pem_file(cert, key).await {
-                    tracing::warn!(error = %e, name = %entry.name, "Proxy TLS reload failed");
-                } else {
-                    tracing::info!(name = %entry.name, "Proxy TLS config reloaded");
-                }
-            });
-        })
-        .map_err(|e| ProxyError::Io(e.to_string()))?;
-
-        watcher
-            .watch(&cert_dir_path, RecursiveMode::NonRecursive)
-            .map_err(|e| ProxyError::Io(e.to_string()))?;
-
-        self.watcher = Some(watcher);
-        Ok(())
-    }
+    let _ = tx.send(ListenerStatus {
+        state: ListenerState::Stopped,
+        error: None,
+        cert_source,
+    });
 }
 
-async fn proxy_handler(
-    State(state): State<ForwardState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    req: Request<Body>,
-) -> impl IntoResponse {
-    match forward_request(State(state), req, Some(addr)).await {
-        Ok(resp) => resp.into_response(),
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            axum::Json(serde_json::json!({
-                "error": "proxy_error",
-                "message": e.to_string(),
-            })),
-        )
-            .into_response(),
+/// Terminate TLS, connect to the backend, and pump bytes both ways.
+async fn handle_conn(
+    acceptor: TlsAcceptor,
+    tcp: TcpStream,
+    peer: SocketAddr,
+    backend: &str,
+    name: &str,
+) {
+    let mut tls = match acceptor.accept(tcp).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            tracing::debug!(name, %peer, error = %e, "Proxy TLS handshake failed");
+            return;
+        }
+    };
+
+    let (host, port) = match parse_backend(backend) {
+        Ok(hostport) => hostport,
+        Err(e) => {
+            tracing::warn!(name, backend, error = %e, "Proxy backend parse failed");
+            return;
+        }
+    };
+
+    let mut upstream = match TcpStream::connect((host.as_str(), port)).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            tracing::warn!(name, backend, error = %e, "Proxy backend connect failed");
+            return;
+        }
+    };
+
+    if let Err(e) = copy_bidirectional(&mut tls, &mut upstream).await {
+        tracing::debug!(name, %peer, error = %e, "Proxy passthrough ended");
     }
 }
 
-async fn load_tls_config(entry: &ProxyEntry) -> Result<RustlsConfig, ProxyError> {
-    let cert = cert_dir(entry).join("fullchain.pem");
-    let key = cert_dir(entry).join("key.pem");
-    RustlsConfig::from_pem_file(cert, key)
-        .await
-        .map_err(|e| ProxyError::Io(e.to_string()))
-}
-
-fn cert_dir(entry: &ProxyEntry) -> std::path::PathBuf {
-    koi_common::paths::koi_certs_dir().join(&entry.name)
+/// Map a bind error to a concise, human-friendly message for the status surface.
+fn bind_error_message(e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::AddrInUse => "address in use".to_string(),
+        std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
+        std::io::ErrorKind::AddrNotAvailable => "address not available".to_string(),
+        _ => e.to_string(),
+    }
 }
