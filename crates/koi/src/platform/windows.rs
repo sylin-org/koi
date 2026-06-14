@@ -632,34 +632,25 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         // Dashboard state
         let dashboard_state =
             crate::adapters::dashboard::build_dashboard_state(&cores, started_at, "daemon");
-        tasks.push(crate::adapters::dashboard::spawn_event_forwarder(
-            cores.mdns.clone(),
-            cores.certmesh.clone(),
-            cores.dns.clone(),
-            cores.health.clone(),
-            cores.proxy.clone(),
+        tasks.push(koi_dashboard::forward::spawn_event_forwarder(
+            koi_dashboard::forward::ForwarderCores {
+                mdns: cores.mdns.clone(),
+                certmesh: cores.certmesh.clone(),
+                dns: cores.dns.clone(),
+                health: cores.health.clone(),
+                proxy: cores.proxy.clone(),
+                runtime: cores.runtime.clone(),
+            },
             dashboard_state.event_tx.clone(),
             cancel.clone(),
         ));
 
-        // mDNS browser worker (conditional on mDNS being enabled)
-        let browser_state = if let Some(ref mdns) = cores.mdns {
-            let adapter =
-                crate::adapters::mdns_browser::MdnsBrowseAdapter::new(mdns.clone(), cancel.clone());
-            let cache = koi_common::browser::BrowserCache::new();
-            let source = adapter.clone() as std::sync::Arc<dyn koi_common::browser::BrowseSource>;
-            let bc = cache.clone();
-            let token = cancel.clone();
-            tasks.push(tokio::spawn(async move {
-                koi_common::browser::worker(source, bc, token).await;
-            }));
-            Some(koi_common::browser::BrowserState {
-                source: adapter,
-                cache,
-            })
-        } else {
-            None
-        };
+        // mDNS browser state (lazy meta-browse; conditional on mDNS being enabled).
+        // No LAN-wide browsing until the first browser request (koi_dashboard::meta_browse).
+        let browser_state = cores
+            .mdns
+            .as_ref()
+            .map(|mdns| koi_dashboard::browser::build_state(mdns.clone(), cancel.clone()));
 
         // HTTP adapter
         if !config.no_http {

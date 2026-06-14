@@ -2,7 +2,6 @@ mod config;
 mod events;
 mod handle;
 pub(crate) mod http;
-mod mdns_browse_adapter;
 
 use std::sync::Arc;
 
@@ -419,7 +418,7 @@ impl KoiEmbedded {
             let snap_udp = udp.clone();
             let snap_runtime = runtime.clone();
 
-            let snapshot_fn: koi_common::dashboard::SnapshotFn = Arc::new(move || {
+            let snapshot_fn: koi_dashboard::dashboard::SnapshotFn = Arc::new(move || {
                 let m = snap_mdns.clone();
                 let cm = snap_certmesh.clone();
                 let d = snap_dns.clone();
@@ -431,8 +430,8 @@ impl KoiEmbedded {
             });
 
             let (dash_event_tx, _) = broadcast::channel(256);
-            let ds = koi_common::dashboard::DashboardState {
-                identity: koi_common::dashboard::DashboardIdentity {
+            let ds = koi_dashboard::dashboard::DashboardState {
+                identity: koi_dashboard::dashboard::DashboardIdentity {
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     platform: std::env::consts::OS.to_string(),
                 },
@@ -442,143 +441,34 @@ impl KoiEmbedded {
                 started_at,
             };
 
-            // Spawn event forwarder for dashboard SSE
-            {
-                let mut mdns_rx = mdns.as_ref().map(|c| c.subscribe());
-                let mut health_rx = health.as_ref().map(|r| r.core().subscribe());
-                let mut dns_rx = dns.as_ref().map(|r| r.core().subscribe());
-                let mut certmesh_rx = certmesh.as_ref().map(|c| c.subscribe());
-                let mut proxy_rx = proxy.as_ref().map(|r| r.core().subscribe());
-                let mut runtime_rx = runtime.as_ref().map(|r| r.subscribe());
-                let tx = dash_event_tx;
-                let token = cancel.clone();
-                tasks.push(tokio::spawn(async move {
-                    loop {
-                        let sse_event: Option<koi_common::dashboard::DashboardSseEvent> = tokio::select! {
-                            _ = token.cancelled() => break,
-                            Some(Ok(ev)) = async { match mdns_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
-                                let id = uuid::Uuid::now_v7().to_string();
-                                match ev {
-                                    koi_mdns::MdnsEvent::Found(record) => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "mdns.found".to_string(), id,
-                                        data: serde_json::to_value(record).unwrap_or_default(),
-                                    }),
-                                    koi_mdns::MdnsEvent::Resolved(record) => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "mdns.resolved".to_string(), id,
-                                        data: serde_json::to_value(record).unwrap_or_default(),
-                                    }),
-                                    koi_mdns::MdnsEvent::Removed { name, service_type } => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "mdns.removed".to_string(), id,
-                                        data: serde_json::json!({ "name": name, "service_type": service_type }),
-                                    }),
-                                }
-                            },
-                            Some(Ok(ev)) = async { match health_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
-                                let id = uuid::Uuid::now_v7().to_string();
-                                match ev {
-                                    koi_health::HealthEvent::StatusChanged { name, status } => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "health.changed".to_string(), id,
-                                        data: serde_json::json!({ "name": name, "status": status }),
-                                    }),
-                                }
-                            },
-                            Some(Ok(ev)) = async { match dns_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
-                                let id = uuid::Uuid::now_v7().to_string();
-                                match ev {
-                                    koi_dns::DnsEvent::EntryUpdated { name, ip } => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "dns.updated".to_string(), id,
-                                        data: serde_json::json!({ "name": name, "ip": ip }),
-                                    }),
-                                    koi_dns::DnsEvent::EntryRemoved { name } => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "dns.removed".to_string(), id,
-                                        data: serde_json::json!({ "name": name }),
-                                    }),
-                                }
-                            },
-                            Some(Ok(ev)) = async { match certmesh_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
-                                let id = uuid::Uuid::now_v7().to_string();
-                                match ev {
-                                    koi_certmesh::CertmeshEvent::MemberJoined { hostname, fingerprint } => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "certmesh.joined".to_string(), id,
-                                        data: serde_json::json!({ "hostname": hostname, "fingerprint": fingerprint }),
-                                    }),
-                                    koi_certmesh::CertmeshEvent::MemberRevoked { hostname } => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "certmesh.revoked".to_string(), id,
-                                        data: serde_json::json!({ "hostname": hostname }),
-                                    }),
-                                    koi_certmesh::CertmeshEvent::Destroyed => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "certmesh.destroyed".to_string(), id,
-                                        data: serde_json::json!({}),
-                                    }),
-                                }
-                            },
-                            Some(Ok(ev)) = async { match proxy_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
-                                let id = uuid::Uuid::now_v7().to_string();
-                                match ev {
-                                    koi_proxy::ProxyEvent::EntryUpdated { entry } => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "proxy.updated".to_string(), id,
-                                        data: serde_json::to_value(entry).unwrap_or_default(),
-                                    }),
-                                    koi_proxy::ProxyEvent::EntryRemoved { name } => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "proxy.removed".to_string(), id,
-                                        data: serde_json::json!({ "name": name }),
-                                    }),
-                                }
-                            },
-                            Some(Ok(ev)) = async { match runtime_rx.as_mut() { Some(rx) => Some(rx.recv().await), None => None } } => {
-                                let id = uuid::Uuid::now_v7().to_string();
-                                match ev {
-                                    koi_runtime::RuntimeEvent::Started(instance) => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "runtime.started".to_string(), id,
-                                        data: serde_json::to_value(instance).unwrap_or_default(),
-                                    }),
-                                    koi_runtime::RuntimeEvent::Stopped { id: inst_id, name } => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "runtime.stopped".to_string(), id,
-                                        data: serde_json::json!({ "id": inst_id, "name": name }),
-                                    }),
-                                    koi_runtime::RuntimeEvent::Updated(instance) => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "runtime.updated".to_string(), id,
-                                        data: serde_json::to_value(instance).unwrap_or_default(),
-                                    }),
-                                    koi_runtime::RuntimeEvent::BackendDisconnected { backend, reason } => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "runtime.disconnected".to_string(), id,
-                                        data: serde_json::json!({ "backend": backend, "reason": reason }),
-                                    }),
-                                    koi_runtime::RuntimeEvent::BackendReconnected { backend } => Some(koi_common::dashboard::DashboardSseEvent {
-                                        event_type: "runtime.reconnected".to_string(), id,
-                                        data: serde_json::json!({ "backend": backend }),
-                                    }),
-                                }
-                            },
-                        };
-                        if let Some(ev) = sse_event {
-                            let _ = tx.send(ev);
-                        }
-                    }
-                }));
-            }
+            // Spawn the single unified event forwarder (superset incl. runtime),
+            // shared with the daemon — no more inline copy here.
+            tasks.push(koi_dashboard::forward::spawn_event_forwarder(
+                koi_dashboard::forward::ForwarderCores {
+                    mdns: mdns.clone(),
+                    certmesh: certmesh.clone(),
+                    dns: dns.clone(),
+                    health: health.clone(),
+                    proxy: proxy.clone(),
+                    runtime: runtime.clone(),
+                },
+                dash_event_tx,
+                cancel.clone(),
+            ));
 
             Some(ds)
         } else {
             None
         };
 
-        // Build browser state if enabled (requires mDNS)
+        // Build browser state if enabled (requires mDNS). The LAN-wide meta-browse is
+        // lazy — it starts on the first browser request, not here.
         let browser_state = if self.config.mdns_browser_enabled && self.config.http_enabled {
             if let Some(ref mdns_core) = mdns {
-                let adapter =
-                    mdns_browse_adapter::MdnsBrowseAdapter::new(mdns_core.clone(), cancel.clone());
-                let cache = koi_common::browser::BrowserCache::new();
-                let source = adapter.clone() as Arc<dyn koi_common::browser::BrowseSource>;
-                let bc = cache.clone();
-                let token = cancel.clone();
-                tasks.push(tokio::spawn(async move {
-                    koi_common::browser::worker(source, bc, token).await;
-                }));
-                Some(koi_common::browser::BrowserState {
-                    source: adapter,
-                    cache,
-                })
+                Some(koi_dashboard::browser::build_state(
+                    mdns_core.clone(),
+                    cancel.clone(),
+                ))
             } else {
                 tracing::warn!("mdns_browser enabled but mDNS is disabled — skipping browser");
                 None

@@ -22,8 +22,9 @@ use utoipa::ToSchema;
 use utoipa_scalar::{Scalar, Servable};
 
 use crate::DaemonCores;
-use koi_common::browser::BrowserState;
-use koi_common::dashboard::DashboardState;
+use koi_dashboard::browser::BrowserState;
+use koi_dashboard::dashboard::DashboardState;
+use koi_dashboard::meta_browse::LazyMetaBrowse;
 
 /// Header name for Daemon Access Token authentication.
 const DAT_HEADER: &str = "x-koi-token";
@@ -52,6 +53,9 @@ struct AppState {
     started_at: std::time::Instant,
     cancel: CancellationToken,
     http_bind: String,
+    /// Lazy mDNS meta-browse controller (when mDNS is enabled), so `/v1/status` can
+    /// report whether LAN-wide browsing is currently active.
+    mdns_browse: Option<Arc<LazyMetaBrowse>>,
 }
 
 // ── Entrypoint ──────────────────────────────────────────────────────
@@ -81,6 +85,7 @@ pub async fn start(
         started_at,
         cancel: cancel.clone(),
         http_bind: bind_ip.to_string(),
+        mdns_browse: browser_state.as_ref().map(|b| b.meta.clone()),
     };
 
     // ── Dashboard (always mounted) ──
@@ -89,21 +94,21 @@ pub async fn start(
         .route(paths::UNIFIED_STATUS, get(unified_status_handler))
         .route(paths::SHUTDOWN, post(shutdown_handler))
         .route(paths::HOST, get(host_handler))
-        .route("/", get(koi_common::dashboard::get_dashboard))
+        .route("/", get(koi_dashboard::dashboard::get_dashboard))
         .route(
             "/v1/dashboard/snapshot",
-            get(koi_common::dashboard::get_snapshot),
+            get(koi_dashboard::dashboard::get_snapshot),
         )
         .route(
             "/v1/dashboard/events",
-            get(koi_common::dashboard::get_events),
+            get(koi_dashboard::dashboard::get_events),
         );
 
     // ── mDNS browser (conditional on mDNS being enabled) ──
     if let Some(bs) = browser_state {
         app = app
-            .route("/mdns-browser", get(koi_common::browser::get_page))
-            .nest("/v1/mdns/browser", koi_common::browser::routes(bs));
+            .route("/mdns-browser", get(koi_dashboard::browser::get_page))
+            .nest("/v1/mdns/browser", koi_dashboard::browser::routes(bs));
     } else {
         app = app.nest("/v1/mdns/browser", disabled_fallback_router("mdns-browser"));
     }
@@ -628,6 +633,7 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
         "uptime_secs": uptime_secs,
         "daemon": true,
         "http_bind": state.http_bind,
+        "mdns_browse_active": state.mdns_browse.as_ref().map(|m| m.is_active()),
         "capabilities": capabilities,
     }))
 }

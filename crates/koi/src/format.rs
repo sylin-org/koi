@@ -204,6 +204,13 @@ pub fn unified_status(json: &serde_json::Value) -> String {
     if let Some(bind) = json.get("http_bind").and_then(|v| v.as_str()) {
         let _ = writeln!(out, "  Bind:      {bind}");
     }
+    if let Some(active) = json.get("mdns_browse_active").and_then(|v| v.as_bool()) {
+        let _ = writeln!(
+            out,
+            "  Browse:    {}",
+            if active { "active" } else { "idle" }
+        );
+    }
 
     if let Some(caps) = json.get("capabilities").and_then(|v| v.as_array()) {
         for cap in caps {

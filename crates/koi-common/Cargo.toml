@@ -12,6 +12,10 @@ readme = "README.md"
 keywords = ["koi", "networking", "types", "pipeline", "service-discovery"]
 categories = ["network-programming"]
 
+# Types-only kernel. axum (wire error responses), utoipa (OpenAPI schemas), and chrono
+# (integration timestamps) have legitimate kernel uses; the presentation deps that the
+# dashboard/browser dragged in (tokio, tokio-stream, tokio-util, async-stream, hostname)
+# left with koi-dashboard in P06.
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -20,9 +24,4 @@ uuid.workspace = true
 tracing.workspace = true
 axum.workspace = true
 utoipa.workspace = true
-tokio.workspace = true
-tokio-stream = { workspace = true, features = ["sync"] }
-tokio-util.workspace = true
-async-stream.workspace = true
 chrono.workspace = true
-hostname.workspace = true

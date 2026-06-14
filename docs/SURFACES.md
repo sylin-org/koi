@@ -42,7 +42,7 @@ guessed "works".
 | runtime / orchestrator (Docker/Podman) | koi-runtime suite | 2026-03-26 | koi-runtime tests (ci.yml) | Docker reconnect unimplemented; daemon restart kills the capability |
 | health | koi-health suite | 2026-03-25 | koi-health tests (ci.yml) | Service + machine health; shrink candidate |
 | config | koi-config suite | 2026-03-25 | koi-config tests (ci.yml) | Breadcrumb discovery |
-| dashboard + mDNS browser | none (read-only UI) | unknown since 2026-03-26 | none | LAN-attacker XSS + unauthenticated GET exposure of CA roster/audit; no UI tests |
+| dashboard + mDNS browser | koi-dashboard tests | 2026-06-13 | koi-dashboard tests (ci.yml) | XSS closed structurally (DOM render + http/https launch allowlist) + CSP header; lazy meta-browse; lives in koi-dashboard crate, not the koi-common kernel (P06) |
 | CLI command manifest (surface.rs) | none | unknown since 2026-06-13 | none | Hand-written manifest; seven user-visible drift bugs; zero tests |
 | embedded / client API | koi-embedded + koi-client | 2026-05-10 | koi build (ci.yml); examples untested | Non-compiling README examples; remote mode degrades silently |
 

@@ -4,6 +4,7 @@ members = [
     "crates/command-surface",
     "crates/koi",
     "crates/koi-client",
+    "crates/koi-dashboard",
     "crates/koi-embedded",
     "crates/koi-common",
     "crates/koi-mdns",
@@ -31,6 +32,7 @@ homepage = "https://sylin.org/koi"
 # Internal crates - version is required for crates.io publish; path is used locally
 koi-common = { path = "crates/koi-common", version = "=0.3.0" }
 koi-client = { path = "crates/koi-client", version = "=0.3.0" }
+koi-dashboard = { path = "crates/koi-dashboard", version = "=0.3.0" }
 koi-embedded = { path = "crates/koi-embedded", version = "=0.3.0" }
 koi-mdns = { path = "crates/koi-mdns", version = "=0.3.0" }
 koi-config = { path = "crates/koi-config", version = "=0.3.0" }

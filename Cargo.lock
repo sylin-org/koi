@@ -1815,16 +1815,11 @@ dependencies = [
 name = "koi-common"
 version = "0.3.0"
 dependencies = [
- "async-stream",
  "axum",
  "chrono",
- "hostname",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tokio-util",
  "tracing",
  "utoipa",
  "uuid",
@@ -1872,6 +1867,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "koi-dashboard"
+version = "0.3.0"
+dependencies = [
+ "async-stream",
+ "axum",
+ "chrono",
+ "hostname",
+ "koi-certmesh",
+ "koi-common",
+ "koi-dns",
+ "koi-health",
+ "koi-mdns",
+ "koi-proxy",
+ "koi-runtime",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "koi-dns"
 version = "0.3.0"
 dependencies = [
@@ -1906,6 +1927,7 @@ dependencies = [
  "koi-common",
  "koi-config",
  "koi-crypto",
+ "koi-dashboard",
  "koi-dns",
  "koi-health",
  "koi-mdns",
@@ -1923,7 +1945,6 @@ dependencies = [
  "tracing",
  "utoipa",
  "utoipa-scalar",
- "uuid",
 ]
 
 [[package]]
@@ -1986,6 +2007,7 @@ dependencies = [
  "koi-common",
  "koi-config",
  "koi-crypto",
+ "koi-dashboard",
  "koi-dns",
  "koi-health",
  "koi-mdns",
@@ -2014,7 +2036,6 @@ dependencies = [
  "url",
  "utoipa",
  "utoipa-scalar",
- "uuid",
  "windows-service",
  "x509-parser",
 ]

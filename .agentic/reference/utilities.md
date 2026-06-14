@@ -34,6 +34,13 @@ Existing constants and types - don't reinvent these.
 | `DEFAULT_HEARTBEAT_GRACE` | 30s   | Grace period after expiry   |
 | `DEFAULT_SSE_IDLE`        | 5s    | SSE stream idle timeout     |
 
+### koi-dashboard -- Meta-browse (`crates/koi-dashboard/src/meta_browse.rs`)
+
+| Constant            | Value | Purpose                                            |
+| ------------------- | ----- | -------------------------------------------------- |
+| `META_BROWSE_IDLE`  | 300s  | Stop the lazy LAN-wide meta-browse after this idle |
+| `SUPERVISOR_TICK`   | 30s   | Idle-supervisor check interval                     |
+
 ### koi -- Pipe Adapter (`crates/koi/src/adapters/pipe.rs`)
 
 | Constant        | Value | Purpose                  |
@@ -398,8 +405,10 @@ No other module should contain `println!`-based presentation functions.
 | `DaemonCores`        | `main.rs`           | Runtime state: `Option<Arc<Core>>` per domain       |
 | `KoiClient`          | `koi-client`        | Blocking HTTP client (ureq) for client mode & admin |
 | `Mode`               | `commands/mod.rs`   | Execution mode enum (Standalone, Client)            |
-| `DashboardState`     | `adapters/dashboard.rs`    | Dashboard SSE state (all domain core refs)   |
-| `BrowserState`       | `adapters/mdns_browser.rs` | mDNS browser state (core + cache)            |
+| `DashboardState`     | `koi-dashboard` (`dashboard.rs`) | Dashboard identity + injected `SnapshotFn` + SSE channel |
+| `BrowserState`       | `koi-dashboard` (`browser.rs`)   | mDNS browser state (browse source + cache + lazy meta-browse) |
+| `LazyMetaBrowse`     | `koi-dashboard` (`meta_browse.rs`) | Lazy LAN-wide meta-browse controller (`touch`/`is_active`) |
+| `ForwarderCores`     | `koi-dashboard` (`forward.rs`)   | Domain cores for the single unified event forwarder |
 
 ---
 

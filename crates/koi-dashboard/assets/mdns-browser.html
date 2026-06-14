@@ -365,11 +365,25 @@ body::before {
   let pollTimer = null;
   let eventSource = null;
 
-  // ── Helpers ───────────────────────────────────────────────────
+  // ── DOM helpers (structural rendering — no HTML-string concatenation
+  //    of dynamic values, so attacker-controlled service data can never
+  //    break out of an attribute or inject markup) ────────────────
   function $(id) { return document.getElementById(id); }
-  function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
   function timeStr() { return new Date().toLocaleTimeString('en-GB', { hour12: false }); }
-  function launchIcon() { return $('tmpl-launch-icon').innerHTML; }
+
+  function el(tag, opts) {
+    const e = document.createElement(tag);
+    if (opts) {
+      if (opts.class) e.className = opts.class;
+      if (opts.text != null) e.textContent = opts.text;
+      if (opts.data) for (const k in opts.data) e.dataset[k] = opts.data[k];
+      if (opts.attrs) for (const k in opts.attrs) e.setAttribute(k, opts.attrs[k]);
+      if (opts.style) e.style.cssText = opts.style;
+    }
+    return e;
+  }
+  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+  function cloneLaunchIcon() { return $('tmpl-launch-icon').content.cloneNode(true); }
 
   function relTime(iso) {
     if (!iso) return '—';
@@ -380,6 +394,18 @@ body::before {
     return Math.floor(diff / 3600) + 'h ago';
   }
 
+  // ── Launch-link scheme allowlist ──────────────────────────────
+  //
+  // Only http/https URLs may become clickable launch links. `new URL()`
+  // happily accepts `javascript:` and `data:` — those must be dropped.
+  function safeLaunchUrl(raw) {
+    if (!raw) return null;
+    let u;
+    try { u = new URL(raw); } catch (_) { return null; }
+    if (u.protocol === 'http:' || u.protocol === 'https:') return u.href;
+    return null;
+  }
+
   // ── HTTP / launchable endpoint detection ──────────────────────
   //
   // Detects services that expose HTTP endpoints based on:
@@ -387,7 +413,7 @@ body::before {
   // 2. Well-known HTTP ports (80, 443, 8080, 8443, …)
   // 3. TXT record hints (path=, url=, etc.)
   //
-  // Returns { url, label } or null.
+  // Returns { url, label } or null. `url` is always scheme-allowlisted.
 
   const HTTP_TYPES = new Set([
     '_http._tcp', '_https._tcp', '_webapp._tcp',
@@ -414,14 +440,15 @@ body::before {
     const isHttpPort = HTTP_PORTS.has(svc.port);
     const isHttpsPort = HTTPS_PORTS.has(svc.port);
 
-    // Check TXT records for explicit URL
+    // Check TXT records for explicit URL — only honour http/https.
     const txt = svc.txt || {};
     const txtUrl = txt['url'] || txt['URL'] || txt['Url'];
     if (txtUrl) {
-      try {
-        new URL(txtUrl); // validate
-        return { url: txtUrl, label: txtUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') };
-      } catch (_) {}
+      const safe = safeLaunchUrl(txtUrl);
+      if (safe) {
+        return { url: safe, label: txtUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') };
+      }
+      // Non-http(s) TXT url (e.g. javascript:) — drop it, fall through.
     }
 
     // Must be an HTTP-like type or HTTP-ish port
@@ -441,11 +468,25 @@ body::before {
     const url = scheme + '://' + host + portStr + path;
     const label = host + portStr + path;
 
-    return { url, label };
+    const safe = safeLaunchUrl(url);
+    if (!safe) return null;
+    return { url: safe, label };
   }
 
-  function isLaunchable(svc) {
-    return inferEndpoint(svc) !== null;
+  function launchLink(endpoint, kind) {
+    const a = el('a', { class: kind === 'btn' ? 'launch-btn' : 'launch-inline' });
+    a.setAttribute('href', endpoint.url); // scheme-allowlisted; setAttribute is not HTML-parsed
+    a.setAttribute('target', '_blank');
+    a.setAttribute('rel', 'noopener');
+    if (kind === 'btn') {
+      a.setAttribute('title', 'Open ' + endpoint.label);
+      a.addEventListener('click', function(e) { e.stopPropagation(); });
+      a.appendChild(cloneLaunchIcon());
+    } else {
+      a.appendChild(document.createTextNode(endpoint.label));
+      a.appendChild(cloneLaunchIcon());
+    }
+    return a;
   }
 
   // ── Render ────────────────────────────────────────────────────
@@ -458,57 +499,55 @@ body::before {
     $('hero-count').textContent = s.total_instances;
     $('hero-types').textContent = s.total_types;
 
-    // Filter tags
     renderFilterTags(s.service_types);
-
-    // Histogram
     renderHistogram(s.service_types);
-
-    // Service table
     renderServiceTable(s.instances);
   }
 
   function renderFilterTags(types) {
     const container = $('filter-tags');
-    let html = '';
+    clear(container);
     for (const t of types) {
       const norm = normalizeType(t.service_type);
-      const cls = activeTypes.has(norm) ? ' active' : '';
-      html += '<span class="filter-tag' + cls + '" data-type="' + esc(norm) + '">' + esc(norm) + '</span>';
-    }
-    container.innerHTML = html;
-    container.querySelectorAll('.filter-tag').forEach(function(tag) {
+      const tag = el('span', {
+        class: 'filter-tag' + (activeTypes.has(norm) ? ' active' : ''),
+        text: norm,
+        data: { type: norm },
+      });
       tag.addEventListener('click', function() {
-        const t = this.dataset.type;
-        if (activeTypes.has(t)) activeTypes.delete(t); else activeTypes.add(t);
+        const ty = this.dataset.type;
+        if (activeTypes.has(ty)) activeTypes.delete(ty); else activeTypes.add(ty);
         render();
       });
-    });
+      container.appendChild(tag);
+    }
   }
 
   function renderHistogram(types) {
+    const host = $('histogram');
+    clear(host);
     if (types.length === 0) {
-      $('histogram').innerHTML = '<div class="panel-empty">Discovering…</div>';
+      host.appendChild(el('div', { class: 'panel-empty', text: 'Discovering…' }));
       return;
     }
     const max = Math.max(1, types[0].count);
-    let html = '';
     types.forEach(function(t, i) {
       const pct = Math.max(4, (t.count / max) * 100);
-      const colorClass = 'type-' + (i % 5);
       const norm = normalizeType(t.service_type);
-      html += '<div class="hist-row" data-type="' + esc(norm) + '">'
-        + '<span class="hist-label">' + esc(norm) + '</span>'
-        + '<span class="hist-bar-wrap"><span class="hist-bar ' + colorClass + '" style="width:' + pct + '%"></span></span>'
-        + '<span class="hist-count">' + t.count + '</span></div>';
-    });
-    $('histogram').innerHTML = html;
-    $('histogram').querySelectorAll('.hist-row').forEach(function(row) {
+      const row = el('div', { class: 'hist-row', data: { type: norm } });
+      row.appendChild(el('span', { class: 'hist-label', text: norm }));
+      const wrap = el('span', { class: 'hist-bar-wrap' });
+      const bar = el('span', { class: 'hist-bar type-' + (i % 5) });
+      bar.style.width = pct + '%'; // numeric — safe
+      wrap.appendChild(bar);
+      row.appendChild(wrap);
+      row.appendChild(el('span', { class: 'hist-count', text: String(t.count) }));
       row.addEventListener('click', function() {
-        const t = this.dataset.type;
-        if (activeTypes.has(t)) activeTypes.delete(t); else { activeTypes.clear(); activeTypes.add(t); }
+        const ty = this.dataset.type;
+        if (activeTypes.has(ty)) activeTypes.delete(ty); else { activeTypes.clear(); activeTypes.add(ty); }
         render();
       });
+      host.appendChild(row);
     });
   }
 
@@ -538,85 +577,21 @@ body::before {
       return 0;
     });
 
+    const body = $('svc-body');
+    clear(body);
+
     if (filtered.length === 0) {
-      $('svc-body').innerHTML = '';
       $('svc-empty').style.display = '';
-      return;
-    }
-    $('svc-empty').style.display = 'none';
-
-    let html = '';
-    for (const svc of filtered) {
-      const key = svc.instance_name;
-      const resDot = svc.resolved ? 'yes' : 'no';
-      const removed = svc.removed_at ? '<span class="removed-tag">removed</span>' : '';
-      const endpoint = inferEndpoint(svc);
-
-      // Launch column — show button inline if launchable
-      let launchCell = '';
-      if (endpoint) {
-        launchCell = '<a class="launch-btn" href="' + esc(endpoint.url) + '" target="_blank" rel="noopener" '
-          + 'title="Open ' + esc(endpoint.label) + '" onclick="event.stopPropagation()">'
-          + launchIcon() + '</a>';
+    } else {
+      $('svc-empty').style.display = 'none';
+      for (const svc of filtered) {
+        const detailRow = buildDetailRow(svc);
+        body.appendChild(buildServiceRow(svc, detailRow));
+        body.appendChild(detailRow);
       }
-
-      html += '<tr class="svc-row" data-key="' + esc(key) + '">'
-        + '<td><span class="resolved-dot ' + resDot + '"></span>' + esc(svc.name) + removed + '</td>'
-        + '<td><span style="font-family:var(--mono);font-size:0.72rem">' + esc(normalizeType(svc.service_type)) + '</span></td>'
-        + '<td>' + esc(svc.host ? svc.host.replace(/\.$/, '') : '—') + '</td>'
-        + '<td class="ip-cell">' + esc(svc.ip || '—') + '</td>'
-        + '<td class="port-cell">' + (svc.port || '—') + '</td>'
-        + '<td>' + launchCell + '</td>'
-        + '</tr>';
-
-      // Detail row (expandable)
-      const open = expandedRows.has(key) ? ' open' : '';
-      html += '<tr class="svc-detail' + open + '" data-detail="' + esc(key) + '"><td colspan="6">';
-      html += '<div class="detail-grid">';
-
-      // Endpoint link (prominent in detail pane)
-      if (endpoint) {
-        html += '<div class="detail-section">'
-          + '<h4>Endpoint</h4>'
-          + '<a class="launch-inline" href="' + esc(endpoint.url) + '" target="_blank" rel="noopener">'
-          + esc(endpoint.label) + launchIcon() + '</a>'
-          + '</div>';
-      }
-
-      // TXT Records
-      const txtKeys = Object.keys(svc.txt || {});
-      if (txtKeys.length > 0) {
-        html += '<div class="detail-section"><h4>TXT Records</h4><table class="txt-table">';
-        for (const k of txtKeys.sort()) {
-          html += '<tr><td class="txt-key">' + esc(k) + '</td><td class="txt-val">' + esc(svc.txt[k]) + '</td></tr>';
-        }
-        html += '</table></div>';
-      }
-
-      // Metadata
-      html += '<div class="detail-section"><h4>Discovery</h4><div class="detail-meta">'
-        + '<span>Instance: ' + esc(svc.instance_name) + '</span>'
-        + '<span>First seen: ' + relTime(svc.first_seen) + '</span>'
-        + '<span>Last seen: ' + relTime(svc.last_seen) + '</span>'
-        + '<span>Resolved: ' + (svc.resolved ? 'yes' : 'no') + '</span>'
-        + '</div></div>';
-
-      html += '</div></td></tr>';
     }
 
-    $('svc-body').innerHTML = html;
-
-    // Attach row click handlers
-    $('svc-body').querySelectorAll('.svc-row').forEach(function(row) {
-      row.addEventListener('click', function() {
-        const key = this.dataset.key;
-        if (expandedRows.has(key)) expandedRows.delete(key); else expandedRows.add(key);
-        const detail = document.querySelector('[data-detail="' + CSS.escape(key) + '"]');
-        if (detail) detail.classList.toggle('open');
-      });
-    });
-
-    // Update sort arrows
+    // Update sort arrows (static header cells)
     document.querySelectorAll('.svc-table th[data-sort]').forEach(function(th) {
       const arrow = th.querySelector('.sort-arrow');
       if (th.dataset.sort === sortKey) {
@@ -625,6 +600,95 @@ body::before {
         arrow.textContent = '';
       }
     });
+  }
+
+  function buildServiceRow(svc, detailRow) {
+    const key = svc.instance_name;
+    const endpoint = inferEndpoint(svc);
+
+    const row = el('tr', { class: 'svc-row', data: { key: key } });
+
+    const nameTd = el('td');
+    nameTd.appendChild(el('span', { class: 'resolved-dot ' + (svc.resolved ? 'yes' : 'no') }));
+    nameTd.appendChild(document.createTextNode(svc.name));
+    if (svc.removed_at) nameTd.appendChild(el('span', { class: 'removed-tag', text: 'removed' }));
+    row.appendChild(nameTd);
+
+    const typeTd = el('td');
+    typeTd.appendChild(el('span', {
+      text: normalizeType(svc.service_type),
+      style: 'font-family:var(--mono);font-size:0.72rem',
+    }));
+    row.appendChild(typeTd);
+
+    row.appendChild(el('td', { text: svc.host ? svc.host.replace(/\.$/, '') : '—' }));
+    row.appendChild(el('td', { class: 'ip-cell', text: svc.ip || '—' }));
+    row.appendChild(el('td', { class: 'port-cell', text: svc.port ? String(svc.port) : '—' }));
+
+    const launchTd = el('td');
+    if (endpoint) launchTd.appendChild(launchLink(endpoint, 'btn'));
+    row.appendChild(launchTd);
+
+    row.addEventListener('click', function() {
+      const k = svc.instance_name;
+      if (expandedRows.has(k)) expandedRows.delete(k); else expandedRows.add(k);
+      // Toggle the paired detail row directly — no DOM re-query, no selector built
+      // from instance data.
+      detailRow.classList.toggle('open');
+    });
+
+    return row;
+  }
+
+  function buildDetailRow(svc) {
+    const key = svc.instance_name;
+    const endpoint = inferEndpoint(svc);
+
+    const detailRow = el('tr', {
+      class: 'svc-detail' + (expandedRows.has(key) ? ' open' : ''),
+      data: { detail: key },
+    });
+    const td = el('td', { attrs: { colspan: '6' } });
+    const grid = el('div', { class: 'detail-grid' });
+
+    // Endpoint link (prominent in detail pane)
+    if (endpoint) {
+      const sec = el('div', { class: 'detail-section' });
+      sec.appendChild(el('h4', { text: 'Endpoint' }));
+      sec.appendChild(launchLink(endpoint, 'inline'));
+      grid.appendChild(sec);
+    }
+
+    // TXT Records
+    const txtKeys = Object.keys(svc.txt || {});
+    if (txtKeys.length > 0) {
+      const sec = el('div', { class: 'detail-section' });
+      sec.appendChild(el('h4', { text: 'TXT Records' }));
+      const table = el('table', { class: 'txt-table' });
+      for (const k of txtKeys.sort()) {
+        const tr = el('tr');
+        tr.appendChild(el('td', { class: 'txt-key', text: k }));
+        tr.appendChild(el('td', { class: 'txt-val', text: svc.txt[k] }));
+        table.appendChild(tr);
+      }
+      sec.appendChild(table);
+      grid.appendChild(sec);
+    }
+
+    // Metadata
+    const meta = el('div', { class: 'detail-section' });
+    meta.appendChild(el('h4', { text: 'Discovery' }));
+    const box = el('div', { class: 'detail-meta' });
+    box.appendChild(el('span', { text: 'Instance: ' + svc.instance_name }));
+    box.appendChild(el('span', { text: 'First seen: ' + relTime(svc.first_seen) }));
+    box.appendChild(el('span', { text: 'Last seen: ' + relTime(svc.last_seen) }));
+    box.appendChild(el('span', { text: 'Resolved: ' + (svc.resolved ? 'yes' : 'no') }));
+    meta.appendChild(box);
+    grid.appendChild(meta);
+
+    td.appendChild(grid);
+    detailRow.appendChild(td);
+    return detailRow;
   }
 
   // ── Sort handler ──────────────────────────────────────────────
@@ -650,16 +714,19 @@ body::before {
   }
 
   function renderLog() {
-    if (logEntries.length === 0) { $('log-empty').style.display = ''; return; }
-    $('log-empty').style.display = 'none';
-    let html = '';
-    for (const e of logEntries) {
-      html += '<div class="log-entry">'
-        + '<span class="log-time">' + esc(e.time) + '</span>'
-        + '<span class="log-type ' + esc(e.type) + '">' + esc(e.type) + '</span>'
-        + '<span class="log-msg">' + esc(e.msg) + '</span></div>';
+    const host = $('discovery-log');
+    clear(host);
+    if (logEntries.length === 0) {
+      host.appendChild(el('div', { class: 'panel-empty', attrs: { id: 'log-empty' }, text: 'Waiting for events…' }));
+      return;
     }
-    $('discovery-log').innerHTML = html;
+    for (const e of logEntries) {
+      const entry = el('div', { class: 'log-entry' });
+      entry.appendChild(el('span', { class: 'log-time', text: e.time }));
+      entry.appendChild(el('span', { class: 'log-type ' + e.type, text: e.type }));
+      entry.appendChild(el('span', { class: 'log-msg', text: e.msg }));
+      host.appendChild(entry);
+    }
   }
 
   // ── Polling ───────────────────────────────────────────────────

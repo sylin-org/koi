@@ -1,12 +1,9 @@
-//! Dashboard adapter — system-level operational overview.
+//! Dashboard surface — system-level operational overview.
 //!
-//! Provides the shared dashboard infrastructure (HTML serving, snapshot
-//! endpoint, SSE event stream) that both the standalone daemon and
-//! embedded mode can mount.  Domain-specific logic is injected via a
-//! boxed async closure (snapshot) and a broadcast channel (events).
-//!
-//! This module owns zero domain logic.  All data flows through the
-//! abstractions the caller provides.
+//! Serves the dashboard HTML, a JSON snapshot endpoint, and an SSE event stream.
+//! Domain data flows in through a boxed async snapshot closure ([`SnapshotFn`]) and a
+//! broadcast channel ([`DashboardSseEvent`]) — this module owns zero domain logic. The
+//! event forwarder that feeds the channel lives in [`crate::forward`].
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -27,8 +24,8 @@ const DASHBOARD_HTML: &str = include_str!("../assets/dashboard.html");
 
 // ── Public types ────────────────────────────────────────────────────
 
-/// Identity information injected by the caller so the snapshot reflects
-/// the host binary's version, not koi-common's.
+/// Identity information injected by the caller so the snapshot reflects the host
+/// binary's version, not koi-dashboard's.
 #[derive(Clone, Debug)]
 pub struct DashboardIdentity {
     pub version: String,
@@ -48,16 +45,14 @@ pub struct DashboardSseEvent {
 
 /// Type alias for the async snapshot closure.
 ///
-/// The caller provides a closure that queries all domain cores and
-/// returns a complete JSON snapshot.  koi-common wraps it with
-/// identity / uptime / mode metadata.
+/// The caller provides a closure that queries all domain cores and returns a complete
+/// JSON snapshot. koi-dashboard wraps it with identity / uptime / mode metadata. This
+/// inversion keeps the dashboard surface free of domain coupling.
 pub type SnapshotFn =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = serde_json::Value> + Send>> + Send + Sync>;
 
-/// Shared state for the dashboard routes.
-///
-/// Construct this in the binary crate or koi-embedded and inject it
-/// via `axum::Extension`.
+/// Shared state for the dashboard routes. Construct in the binary crate or
+/// koi-embedded and inject via `axum::Extension`.
 #[derive(Clone)]
 pub struct DashboardState {
     pub identity: DashboardIdentity,
@@ -125,9 +120,12 @@ fn dashboard_event_stream(state: DashboardState) -> impl Stream<Item = Result<Ev
 
 // ── Handlers ────────────────────────────────────────────────────────
 
-/// `GET /` — Serve the dashboard SPA.
-pub async fn get_dashboard() -> Html<&'static str> {
-    Html(DASHBOARD_HTML)
+/// `GET /` — Serve the dashboard SPA with a Content-Security-Policy header.
+pub async fn get_dashboard() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_SECURITY_POLICY, crate::HTML_CSP)],
+        Html(DASHBOARD_HTML),
+    )
 }
 
 /// `GET /v1/dashboard/snapshot` — System-level JSON snapshot.

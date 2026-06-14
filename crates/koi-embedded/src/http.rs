@@ -18,8 +18,8 @@ use tower_http::cors::CorsLayer;
 use utoipa::{OpenApi, ToSchema};
 use utoipa_scalar::{Scalar, Servable};
 
-use koi_common::browser::BrowserState;
-use koi_common::dashboard::DashboardState;
+use koi_dashboard::browser::BrowserState;
+use koi_dashboard::dashboard::DashboardState;
 
 // ── Embedded app state for system-level handlers ────────────────────
 
@@ -84,14 +84,14 @@ pub(crate) async fn serve(
 
     if let Some(ref ds) = dashboard_state {
         app = app
-            .route("/", get(koi_common::dashboard::get_dashboard))
+            .route("/", get(koi_dashboard::dashboard::get_dashboard))
             .route(
                 "/v1/dashboard/snapshot",
-                get(koi_common::dashboard::get_snapshot),
+                get(koi_dashboard::dashboard::get_snapshot),
             )
             .route(
                 "/v1/dashboard/events",
-                get(koi_common::dashboard::get_events),
+                get(koi_dashboard::dashboard::get_events),
             )
             .layer(Extension(ds.clone()));
     }
@@ -100,8 +100,8 @@ pub(crate) async fn serve(
 
     if let Some(bs) = browser_state {
         app = app
-            .route("/mdns-browser", get(koi_common::browser::get_page))
-            .nest("/v1/mdns/browser", koi_common::browser::routes(bs));
+            .route("/mdns-browser", get(koi_dashboard::browser::get_page))
+            .nest("/v1/mdns/browser", koi_dashboard::browser::routes(bs));
     }
 
     // ── Domain routes ────────────────────────────────────────────

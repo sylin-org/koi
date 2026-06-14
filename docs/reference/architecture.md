@@ -32,7 +32,8 @@ Koi is a single binary with a layered architecture. Three adapter layers sit on 
 | Crate                     | Package name      | Role                                                               | Lines  |
 | ------------------------- | ----------------- | ------------------------------------------------------------------ | ------ |
 | `crates/koi/`             | `koi-net`         | Binary - CLI entry, adapters, wiring                               | ~12,723|
-| `crates/koi-common/`      | `koi-common`      | Shared kernel - types, errors, pipeline, ceremony engine, assets   | ~3,020 |
+| `crates/koi-common/`      | `koi-common`      | Types-only kernel - types, errors, pipeline, ceremony engine       | ~2,460 |
+| `crates/koi-dashboard/`   | `koi-dashboard`   | Presentation - dashboard + mDNS browser (HTML, SSE, forwarder, lazy meta-browse) | ~1,600 |
 | `crates/koi-mdns/`        | `koi-mdns`        | mDNS domain - daemon, registry, protocol, HTTP routes              | ~2,705 |
 | `crates/koi-certmesh/`    | `koi-certmesh`    | Certificate mesh - CA, enrollment, roster, failover                | ~17,420|
 | `crates/koi-crypto/`      | `koi-crypto`      | Crypto primitives - keys, TOTP, FIDO2, auth adapters, unlock slots | ~3,284 |
@@ -65,11 +66,18 @@ koi (bin)
 ├── koi-udp         → koi-common, axum, tokio
 ├── koi-runtime     → koi-common, bollard, axum, utoipa, tokio, chrono
 ├── koi-client      → koi-common, ureq (blocking)
-├── koi-embedded    → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, tokio
+├── koi-dashboard   → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-runtime, axum, tokio
+├── koi-embedded    → koi-common, koi-dashboard, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, tokio
 └── command-surface → crossterm
 ```
 
-Domain crates depend on `koi-common` but **never on each other**. Cross-domain wiring happens exclusively in the binary crate.
+**Domain** crates depend on `koi-common` but **never on each other**. Cross-domain wiring
+happens in the binary crate and in `koi-dashboard`. `koi-dashboard` is a **composition/
+presentation** crate (not a domain): it depends on the event-bearing domain crates so the
+event forwarder + mDNS browse adapter exist once, shared by `koi` and `koi-embedded`.
+Because nothing else depends on it, the kernel and domain closures stay clean.
+`koi-common` is **types-only** — the dashboard/browser presentation deps (`tokio`,
+`tokio-stream`, `tokio-util`, `async-stream`, `hostname`) moved to `koi-dashboard` in P06.
 
 ---
 
@@ -121,8 +129,7 @@ crates/koi/src/
 │   └── status.rs    # Unified status command
 ├── adapters/
 │   ├── http.rs      # HTTP server (Axum router, domain nesting, OpenAPI)
-│   ├── dashboard.rs # Web dashboard adapter (links static assets from koi-common)
-│   ├── mdns_browser.rs  # mDNS network browser adapter (links static assets from koi-common)
+│   ├── dashboard.rs # Dashboard wiring: snapshot builder + DashboardState (HTML/SSE/forwarder in koi-dashboard)
 │   ├── mtls.rs      # mTLS server/client configuration for inter-node communication
 │   ├── pipe.rs      # Named Pipe (Windows) / UDS (Unix)
 │   ├── cli.rs       # stdin/stdout NDJSON
@@ -133,7 +140,12 @@ crates/koi/src/
     └── macos.rs     # launchd integration, macOS service paths
 ```
 
-> Note: The HTML/CSS/JS frontend source codes for the **Web dashboard** (`dashboard.html`) and the **mDNS browser** (`mdns-browser.html`) reside as static assets in `crates/koi-common/assets/` and are embedded directly into the binary at compile time.
+> Note: The single-file, zero-build HTML for the **Web dashboard** (`dashboard.html`) and
+> the **mDNS browser** (`mdns-browser.html`) live as static assets in
+> `crates/koi-dashboard/assets/` and are embedded into the binary at compile time. The
+> mDNS browser renders dynamic (LAN-attacker-controlled) data via DOM construction
+> (`createElement` + `textContent`/`dataset`) and restricts launch links to an
+> `http`/`https` scheme allowlist — closing the XSS class structurally (P06).
 ```
 
 Platform-conditional compilation (`#[cfg(target_os)]`) lives exclusively in `platform/`. Everything else is pure cross-platform Rust.
