@@ -36,6 +36,80 @@ let koi = Builder::new()
 
 ---
 
+## Cargo features: lean builds
+
+There are **two independent axes** for trimming Koi, and they do different things:
+
+- **Runtime toggles** (the `Builder` above) decide which capabilities *run*. Everything
+  is still *compiled* — you just don't start it.
+- **Cargo features** (this section) decide which optional, heavy, version-locked
+  *dependencies* are *compiled at all*. Use these to shrink build time and the dependency
+  closure for a deployment that will never use a given backend.
+
+Three dependencies are gated behind **default-on** features, so a default
+`koi-embedded = "0.4"` is identical to before — you only opt *out*:
+
+| Feature | Default | Compiles in | With it **off** |
+| --- | --- | --- | --- |
+| `docker` | on | `bollard` Docker/Podman client (and its `=`-pinned `bollard-stubs`) | the runtime adapter is present, but the Docker/Podman/Auto backend resolves to `BackendUnavailable` |
+| `keyring` | on | OS credential store (Keychain / Windows Cred Manager / Linux **Secret Service + D-Bus**) | the vault uses its passphrase backend; certmesh CA-key sealing and TOTP unlock slots fall back to passphrase |
+| `qr` | on | `qrcode` + the `image` PNG codec (enrollment QR rendering) | QR renderers return the `otpauth://` URI as text (still scannable / typeable) |
+
+`full = ["docker", "keyring", "qr"]` is a convenience umbrella for "everything".
+
+### Recipes
+
+```toml
+# Default — every backend (unchanged; the batteries-included path)
+koi-embedded = "0.4"
+
+# Lean — drop bollard, the OS-keychain / Secret-Service / D-Bus stack, and the image
+# codec. Ideal for a headless container that only needs discovery / DNS / health.
+koi-embedded = { version = "0.4", default-features = false }
+
+# À la carte — start lean and re-arm only what you need
+koi-embedded = { version = "0.4", default-features = false, features = ["docker"] }
+
+# Everything, explicitly
+koi-embedded = { version = "0.4", features = ["full"] }
+```
+
+A common reason to go lean is the **bollard version lock**: `bollard-stubs` pins with an
+exact `=` version, so if *your* app also uses `bollard` and the defaults compile koi's
+copy, you are pinned to koi's bollard line. `default-features = false` removes koi's
+bollard entirely so you own your version; add `features = ["docker"]` back only if you
+want koi's Docker backend too (and can share the version).
+
+### What a feature-off build does at runtime
+
+No call sites change — the APIs stay; only the behavior degrades gracefully:
+
+- **`docker` off** — if you enabled the runtime adapter (`Builder::runtime_auto()` /
+  `.runtime(kind)`), starting it yields a `RuntimeError::BackendUnavailable` whose message
+  names the missing `docker` feature. Runtime is opt-in at runtime anyway
+  (`KoiConfig.runtime_enabled` defaults to `false`), so a build that never enables it is
+  unaffected.
+- **`keyring` off** — `handle.vault()` still opens, using its passphrase backend; no OS
+  keychain is touched. Certmesh CA-key sealing and TOTP unlock slots fall back to
+  passphrase unlock.
+- **`qr` off** — certmesh enrollment returns the `otpauth://` URI as text instead of a
+  rendered QR (still scannable / typeable into an authenticator app).
+
+### Verify your build is lean
+
+From your own crate:
+
+```bash
+cargo tree -e normal | grep -E ' (bollard|keyring|image|qrcode) '   # empty == lean
+```
+
+> The standalone `koi` binary always ships every backend — these features are a
+> `koi-embedded` (library) concern only. See
+> [ADR-014](../adr/014-optional-backend-features.md) for the design and the full list of
+> behavioral trade-offs.
+
+---
+
 ## DNS configuration
 
 ```rust
