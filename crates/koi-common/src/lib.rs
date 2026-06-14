@@ -7,6 +7,7 @@ pub mod firewall;
 pub mod http;
 pub mod id;
 pub mod integration;
+pub mod mdns_protocol;
 pub mod net;
 pub mod paths;
 pub mod persist;

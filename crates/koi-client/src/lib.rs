@@ -7,12 +7,11 @@ use std::io::{BufRead, BufReader, Read};
 use std::time::Duration;
 
 use hickory_proto::rr::RecordType;
-use koi_common::net::resolve_localhost;
-use koi_common::types::ServiceRecord;
-use koi_health::ServiceCheckKind;
-use koi_mdns::protocol::{
+use koi_common::mdns_protocol::{
     AdminRegistration, DaemonStatus, RegisterPayload, RegistrationResult, RenewalResult,
 };
+use koi_common::net::resolve_localhost;
+use koi_common::types::{ServiceCheckKind, ServiceRecord};
 
 /// TCP connection timeout for general API requests.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);

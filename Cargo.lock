@@ -1803,8 +1803,6 @@ dependencies = [
  "hickory-proto",
  "koi-common",
  "koi-config",
- "koi-health",
- "koi-mdns",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

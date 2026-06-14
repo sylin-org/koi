@@ -1,8 +1,5 @@
-use std::collections::HashMap;
-
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
-use utoipa::ToSchema;
 
 use koi_common::api::{error_body, ErrorBody};
 use koi_common::error::ErrorCode;
@@ -12,103 +9,14 @@ use crate::error::MdnsError;
 use crate::events::MdnsEvent;
 
 // ── mDNS-specific wire types ─────────────────────────────────────────
-
-/// Payload for registering a new service.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
-pub struct RegisterPayload {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub service_type: String,
-    pub port: u16,
-    /// Pin the A/AAAA record to a specific IP address.
-    /// When absent, all machine IPs are advertised (auto-detect).
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ip: Option<String>,
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lease_secs: Option<u64>,
-    #[serde(default)]
-    pub txt: HashMap<String, String>,
-}
-
-/// Result of a successful registration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
-pub struct RegistrationResult {
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "type")]
-    pub service_type: String,
-    pub port: u16,
-    pub mode: LeaseMode,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lease_secs: Option<u64>,
-}
-
-/// Result of a successful lease renewal (heartbeat).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
-pub struct RenewalResult {
-    pub id: String,
-    pub lease_secs: u64,
-}
-
-/// How a registration stays alive (wire representation).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum LeaseMode {
-    Session,
-    Heartbeat,
-    Permanent,
-}
-
-/// Wire-level registration state (display-only projection).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum LeaseState {
-    Alive,
-    Draining,
-}
-
-/// Full registration state as exposed to admin queries.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct AdminRegistration {
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "type")]
-    pub service_type: String,
-    pub port: u16,
-    pub mode: LeaseMode,
-    pub state: LeaseState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lease_secs: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub remaining_secs: Option<u64>,
-    pub grace_secs: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    pub registered_at: String,
-    pub last_seen: String,
-    #[serde(default)]
-    pub txt: HashMap<String, String>,
-}
-
-/// Daemon status overview for admin queries.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct DaemonStatus {
-    pub version: String,
-    pub uptime_secs: u64,
-    pub platform: String,
-    pub registrations: RegistrationCounts,
-}
-
-/// Registration counts by state.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct RegistrationCounts {
-    pub alive: usize,
-    pub draining: usize,
-    pub permanent: usize,
-    pub total: usize,
-}
+//
+// The registration/admin wire-contract types now live in the kernel
+// (`koi_common::mdns_protocol`) so clients can speak the contract without the mDNS
+// engine. Re-exported here so `koi_mdns::protocol::*` paths are unchanged.
+pub use koi_common::mdns_protocol::{
+    AdminRegistration, DaemonStatus, LeaseMode, LeaseState, RegisterPayload, RegistrationCounts,
+    RegistrationResult, RenewalResult,
+};
 
 // ── Request ──────────────────────────────────────────────────────────
 
@@ -253,6 +161,7 @@ pub fn error_to_pipeline(e: &MdnsError) -> MdnsPipelineResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn test_record() -> ServiceRecord {
         ServiceRecord {
