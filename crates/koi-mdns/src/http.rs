@@ -116,7 +116,7 @@ async fn browse_handler(
         .service_type
         .as_deref()
         .unwrap_or(koi_common::types::META_QUERY);
-    let handle = match core.browse(browse_type).await {
+    let handle = match core.subscribe_type(browse_type).await {
         Ok(h) => h,
         Err(e) => return Sse::new(error_event_stream(e)).into_response(),
     };
@@ -217,7 +217,7 @@ async fn events_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Query(params): Query<EventsParams>,
 ) -> impl IntoResponse {
-    let handle = match core.browse(&params.service_type).await {
+    let handle = match core.subscribe_type(&params.service_type).await {
         Ok(h) => h,
         Err(e) => return Sse::new(error_event_stream(e)).into_response(),
     };

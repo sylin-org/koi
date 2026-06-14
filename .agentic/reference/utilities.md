@@ -21,9 +21,10 @@ Existing constants and types - don't reinvent these.
 
 ### koi-mdns -- Daemon (`crates/koi-mdns/src/daemon.rs`)
 
-| Constant          | Value | Purpose                    |
-| ----------------- | ----- | -------------------------- |
-| `RESOLVE_TIMEOUT` | 5s    | mDNS resolve wait duration |
+| Constant                  | Value | Purpose                                 |
+| ------------------------- | ----- | --------------------------------------- |
+| `RESOLVE_TIMEOUT`         | 5s    | mDNS resolve wait duration              |
+| `TYPE_BROADCAST_CAPACITY` | 512   | Per-type browse fan-out channel size    |
 
 ### koi-mdns -- HTTP (`crates/koi-mdns/src/http.rs`)
 
@@ -32,6 +33,13 @@ Existing constants and types - don't reinvent these.
 | `DEFAULT_HEARTBEAT_LEASE` | 90s   | HTTP service lease duration |
 | `DEFAULT_HEARTBEAT_GRACE` | 30s   | Grace period after expiry   |
 | `DEFAULT_SSE_IDLE`        | 5s    | SSE stream idle timeout     |
+
+### koi-dashboard -- Meta-browse (`crates/koi-dashboard/src/meta_browse.rs`)
+
+| Constant            | Value | Purpose                                            |
+| ------------------- | ----- | -------------------------------------------------- |
+| `META_BROWSE_IDLE`  | 300s  | Stop the lazy LAN-wide meta-browse after this idle |
+| `SUPERVISOR_TICK`   | 30s   | Idle-supervisor check interval                     |
 
 ### koi -- Pipe Adapter (`crates/koi/src/adapters/pipe.rs`)
 
@@ -189,9 +197,9 @@ No other module should contain `println!`-based presentation functions.
 
 | Type           | Purpose                                      |
 | -------------- | -------------------------------------------- |
-| `MdnsCore`     | Main domain facade (commands, state, events) |
-| `BrowseHandle` | RAII browse cleanup (closure on drop)        |
-| `MdnsError`    | Domain error enum (thiserror)                |
+| `MdnsCore`          | Main domain facade (commands, state, events)                          |
+| `BrowseSubscription`| Refcounted subscription to a shared per-type browse (`recv()` Koi events) |
+| `MdnsError`         | Domain error enum (thiserror)                                         |
 | `MdnsEvent`    | Domain event enum (Found, Resolved, Removed) |
 | `LeasePolicy`  | Session / Heartbeat(dur, grace) / Permanent  |
 
@@ -397,8 +405,10 @@ No other module should contain `println!`-based presentation functions.
 | `DaemonCores`        | `main.rs`           | Runtime state: `Option<Arc<Core>>` per domain       |
 | `KoiClient`          | `koi-client`        | Blocking HTTP client (ureq) for client mode & admin |
 | `Mode`               | `commands/mod.rs`   | Execution mode enum (Standalone, Client)            |
-| `DashboardState`     | `adapters/dashboard.rs`    | Dashboard SSE state (all domain core refs)   |
-| `BrowserState`       | `adapters/mdns_browser.rs` | mDNS browser state (core + cache)            |
+| `DashboardState`     | `koi-dashboard` (`dashboard.rs`) | Dashboard identity + injected `SnapshotFn` + SSE channel |
+| `BrowserState`       | `koi-dashboard` (`browser.rs`)   | mDNS browser state (browse source + cache + lazy meta-browse) |
+| `LazyMetaBrowse`     | `koi-dashboard` (`meta_browse.rs`) | Lazy LAN-wide meta-browse controller (`touch`/`is_active`) |
+| `ForwarderCores`     | `koi-dashboard` (`forward.rs`)   | Domain cores for the single unified event forwarder |
 
 ---
 

@@ -8,8 +8,15 @@
 //! [`RuntimeBackend`] to provide normalized lifecycle events and instance
 //! metadata. The [`RuntimeCore`] facade orchestrates the mapping from
 //! runtime events to Koi API calls.
+//!
+//! The `docker` feature (default-on) compiles the bollard-backed Docker/Podman backend.
+//! With it off, the runtime capability stays available but Docker/Podman/Auto resolve to
+//! [`RuntimeError::BackendUnavailable`] — like the not-yet-implemented systemd/incus/k8s
+//! backends.
+#![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 pub mod backend;
+#[cfg(feature = "docker")]
 pub mod docker;
 pub mod error;
 pub mod heuristics;
@@ -232,6 +239,7 @@ impl RuntimeCore {
     /// Create a backend based on the configured kind.
     fn create_backend(&self) -> Result<Box<dyn RuntimeBackend>, RuntimeError> {
         match self.config.backend_kind {
+            #[cfg(feature = "docker")]
             RuntimeBackendKind::Docker => {
                 let backend = if let Some(ref path) = self.config.socket_path {
                     docker::DockerBackend::with_socket(path.clone())
@@ -240,6 +248,7 @@ impl RuntimeCore {
                 };
                 Ok(Box::new(backend))
             }
+            #[cfg(feature = "docker")]
             RuntimeBackendKind::Podman => {
                 let backend = if let Some(ref path) = self.config.socket_path {
                     docker::DockerBackend::with_socket(path.clone())
@@ -249,6 +258,16 @@ impl RuntimeCore {
                 Ok(Box::new(backend))
             }
             RuntimeBackendKind::Auto => self.auto_detect_backend(),
+            // When the `docker` feature is off, Docker/Podman join the same
+            // not-compiled-in bucket as the stubbed backends below.
+            #[cfg(not(feature = "docker"))]
+            RuntimeBackendKind::Docker | RuntimeBackendKind::Podman => {
+                Err(RuntimeError::BackendUnavailable(
+                    "docker backend not compiled in — rebuild with the `docker` feature \
+                     (koi-embedded: features = [\"docker\"]); the koi binary ships it by default"
+                        .into(),
+                ))
+            }
             RuntimeBackendKind::Systemd => Err(RuntimeError::BackendUnavailable(
                 "systemd backend not yet implemented".into(),
             )),
@@ -263,18 +282,27 @@ impl RuntimeCore {
 
     /// Auto-detect the best available backend.
     fn auto_detect_backend(&self) -> Result<Box<dyn RuntimeBackend>, RuntimeError> {
-        if docker::is_docker_available() {
-            tracing::info!("Auto-detected Docker runtime");
-            return Ok(Box::new(docker::DockerBackend::new()));
-        }
+        #[cfg(feature = "docker")]
+        {
+            if docker::is_docker_available() {
+                tracing::info!("Auto-detected Docker runtime");
+                return Ok(Box::new(docker::DockerBackend::new()));
+            }
 
-        if docker::is_podman_available() {
-            tracing::info!("Auto-detected Podman runtime");
-            return Ok(Box::new(docker::DockerBackend::podman()));
+            if docker::is_podman_available() {
+                tracing::info!("Auto-detected Podman runtime");
+                return Ok(Box::new(docker::DockerBackend::podman()));
+            }
         }
 
         Err(RuntimeError::BackendUnavailable(
-            "no supported runtime detected (checked: Docker, Podman)".into(),
+            // Message names the missing feature when no backend was compiled in.
+            if cfg!(feature = "docker") {
+                "no supported runtime detected (checked: Docker, Podman)"
+            } else {
+                "no runtime backend compiled in (build without the `docker` feature)"
+            }
+            .into(),
         ))
     }
 }
@@ -290,6 +318,23 @@ mod tests {
         assert!(!status.active);
         assert_eq!(status.instance_count, 0);
         assert!(status.backend.is_none());
+    }
+
+    // With the `docker` feature off, selecting Docker resolves to BackendUnavailable
+    // (create_backend errors before any connect), naming the missing feature.
+    #[cfg(not(feature = "docker"))]
+    #[tokio::test]
+    async fn docker_backend_unavailable_without_feature() {
+        let core = RuntimeCore::new(RuntimeConfig {
+            backend_kind: RuntimeBackendKind::Docker,
+            ..Default::default()
+        });
+        let err = core
+            .start_watching(CancellationToken::new())
+            .await
+            .expect_err("docker backend must be unavailable without the feature");
+        assert!(matches!(err, RuntimeError::BackendUnavailable(_)));
+        assert!(err.to_string().contains("docker"));
     }
 
     #[tokio::test]

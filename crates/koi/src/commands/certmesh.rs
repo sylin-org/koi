@@ -1173,7 +1173,9 @@ async fn discover_ca() -> anyhow::Result<String> {
     eprintln!("Searching for certmesh CA on the local network...");
 
     let core = Arc::new(koi_mdns::MdnsCore::new()?);
-    let handle = core.browse(koi_certmesh::CERTMESH_SERVICE_TYPE).await?;
+    let handle = core
+        .subscribe_type(koi_certmesh::CERTMESH_SERVICE_TYPE)
+        .await?;
 
     let deadline = tokio::time::Instant::now() + CA_DISCOVERY_TIMEOUT;
     let mut found = Vec::new();

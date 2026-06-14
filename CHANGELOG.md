@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-06-13
+
+### Added
+- New `koi-dashboard` crate holding the dashboard + mDNS-browser presentation layer (HTML, SSE, snapshot, the single unified event forwarder, the mDNS browse adapter, and a lazy LAN-wide meta-browse). It is a composition crate consumed only by the binary and `koi-embedded`.
+- Optional, default-on cargo features for `koi-embedded`'s heavy backends so lean consumers can drop them: `docker` (bollard Docker/Podman client), `keyring` (OS credential store / Secret Service / D-Bus), and `qr` (qrcode + image PNG codec), plus a `full` umbrella. A default dependency is unchanged; `default-features = false` sheds all three (and the bollard-stubs `=` version pin), and any subset is re-armed à la carte. See the embedded guide and ADR-014.
+- Lazy mDNS meta-browse: the LAN-wide browse worker now starts on the first browser request and idles out after 5 minutes; `koi status` reports `Browse: active|idle`. Default daemon startup performs no LAN-wide multicast browsing.
+
+### Changed
+- Restored `koi-common` to a types-only kernel: the dashboard/browser presentation code and its presentation-only dependencies (`tokio`, `tokio-stream`, `tokio-util`, `async-stream`, `hostname`) moved out to `koi-dashboard`. Domain crates no longer pull them transitively via the kernel.
+- The Docker/Podman runtime backend is now gated behind the default-on `docker` feature in `koi-runtime` (the runtime *capability* stays unconditional). With it off, the Docker/Podman/Auto backends resolve to `BackendUnavailable`, like the not-yet-implemented systemd/incus/kubernetes backends. The `koi` binary always ships every backend.
+
+### Fixed
+- **Security:** closed verified LAN-attacker XSS vectors in the mDNS browser page. Service names and TXT records are now rendered via DOM construction (`createElement` + `textContent`/`dataset`) instead of HTML-string concatenation, so hostile values can no longer break out of attributes; launch links pass through an explicit `http`/`https` scheme allowlist (dropping `javascript:`/`data:`). The dashboard page's `esc()` is quote-safe and its activity log uses DOM construction, and both pages now send a `Content-Security-Policy` header.
+
 ## [0.3.0] - 2026-06-13
 
 ### Added

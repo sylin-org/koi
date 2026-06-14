@@ -643,6 +643,10 @@ mod tests {
         assert!(table.unwrap_with_passphrase("wrong").is_err());
     }
 
+    // The TOTP unlock slot seals its shared secret (and its fallback key) in the OS
+    // credential store, so it requires the `keyring` feature. A lean build without
+    // keyring uses passphrase unlock instead.
+    #[cfg(feature = "keyring")]
     #[test]
     fn totp_slot_round_trip() {
         let master_key = generate_master_key();
@@ -657,6 +661,7 @@ mod tests {
         assert_eq!(master_key, recovered);
     }
 
+    #[cfg(feature = "keyring")]
     #[test]
     fn totp_wrong_code_fails() {
         let master_key = generate_master_key();
@@ -742,6 +747,8 @@ mod tests {
         assert!(!table.has_auto_unlock());
     }
 
+    // Exercises add_totp_slot (credential-store-backed) → requires `keyring`.
+    #[cfg(feature = "keyring")]
     #[test]
     fn available_methods_lists_all_slots() {
         let master_key = generate_master_key();
@@ -762,6 +769,8 @@ mod tests {
         assert!(methods.contains(&"fido2"));
     }
 
+    // Builds a TOTP slot (credential-store-backed) → requires `keyring`.
+    #[cfg(feature = "keyring")]
     #[test]
     fn slot_table_serialization_round_trip() {
         let master_key = generate_master_key();

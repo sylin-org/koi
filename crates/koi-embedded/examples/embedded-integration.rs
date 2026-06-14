@@ -617,7 +617,7 @@ async fn run_ipc_tests(
                                     Err(err) => koi_mdns::protocol::error_to_pipeline(&err),
                                 },
                                 Ok(MdnsRequest::Browse(service_type)) => {
-                                    let handle = match core.browse(&service_type).await {
+                                    let handle = match core.subscribe_type(&service_type).await {
                                         Ok(handle) => handle,
                                         Err(err) => {
                                             let resp = koi_mdns::protocol::error_to_pipeline(&err);
@@ -639,7 +639,7 @@ async fn run_ipc_tests(
                                     continue;
                                 }
                                 Ok(MdnsRequest::Subscribe(service_type)) => {
-                                    let handle = match core.browse(&service_type).await {
+                                    let handle = match core.subscribe_type(&service_type).await {
                                         Ok(handle) => handle,
                                         Err(err) => {
                                             let resp = koi_mdns::protocol::error_to_pipeline(&err);

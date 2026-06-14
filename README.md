@@ -137,6 +137,30 @@ Every capability is runtime-toggleable (`--no-dns`, `KOI_NO_DNS=1`, …). The da
 also serves the **dashboard** (`/`), the **mDNS network browser** (`/mdns-browser`),
 and **interactive API docs** (`/docs`).
 
+### Embedding: optional heavy backends
+
+`koi-embedded` ships every backend by default. A lean consumer (e.g. a headless
+container that only needs discovery/DNS) can drop the heavy, version-locked ones with a
+single line — and re-arm any subset à la carte:
+
+| Cargo feature | Default | Pulls in | Off → fallback |
+| --- | --- | --- | --- |
+| `docker` | on | `bollard` Docker/Podman client (`=`-pinned stubs) | runtime backend → `BackendUnavailable` |
+| `keyring` | on | OS keychain / Secret Service / D-Bus | vault uses its passphrase backend |
+| `qr` | on | `qrcode` + `image` PNG codec | enrollment prints the `otpauth://` URI |
+
+```toml
+# everything (default) — unchanged
+koi-embedded = "0.4"
+# lean: no bollard, no OS-keychain/D-Bus, no image codec
+koi-embedded = { version = "0.4", default-features = false }
+# à la carte
+koi-embedded = { version = "0.4", default-features = false, features = ["docker"] }
+```
+
+See [ADR-014](docs/adr/014-optional-backend-features.md). The `koi` binary always ships
+all backends.
+
 ## Containers
 
 Koi's container story — host daemon speaks multicast, containers speak plain HTTP —

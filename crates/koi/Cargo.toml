@@ -18,16 +18,20 @@ path = "src/main.rs"
 
 [dependencies]
 koi-common.workspace = true
+koi-dashboard.workspace = true
 koi-mdns.workspace = true
 koi-certmesh.workspace = true
-koi-crypto.workspace = true
+# The batteries-included binary ships every optional backend. Request the leaf features
+# explicitly so a future default-features flip cannot silently strip Docker / the
+# credential store / QR from the daemon.
+koi-crypto = { workspace = true, features = ["keyring", "qr"] }
 koi-truststore.workspace = true
 koi-config.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true
 koi-proxy.workspace = true
 koi-udp.workspace = true
-koi-runtime.workspace = true
+koi-runtime = { workspace = true, features = ["docker"] }
 koi-client.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -44,7 +48,6 @@ thiserror.workspace = true
 async-stream.workspace = true
 axum.workspace = true
 tower-http.workspace = true
-uuid.workspace = true
 hostname = "0.4"
 if-addrs.workspace = true
 hickory-proto.workspace = true

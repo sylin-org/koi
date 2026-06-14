@@ -51,6 +51,30 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked -- -D warnings
 
+  lean:
+    name: lean-embedded (optional backends off)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Prove the feature gates compile with their optional backends removed (so the
+      # not(feature) arms / stubs don't bit-rot), and that the propagation through
+      # koi-embedded still builds lean.
+      - name: Build leaf crates without default features
+        run: |
+          cargo build --locked -p koi-runtime --no-default-features
+          cargo build --locked -p koi-crypto --no-default-features
+          cargo build --locked -p koi-embedded --no-default-features
+
+      # Prove a lean consumer actually sheds bollard / keyring / image (the real win) —
+      # from an external probe, robust to workspace feature unification.
+      - name: Lean dependency-closure tripwire
+        run: bash scripts/check-lean-embedded.sh
+
   fmt:
     runs-on: ubuntu-latest
     steps:

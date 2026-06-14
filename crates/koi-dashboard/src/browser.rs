@@ -1,15 +1,13 @@
-//! mDNS browser adapter — live network service discovery explorer.
+//! mDNS browser surface — live network service-discovery explorer.
 //!
-//! Maintains an in-memory [`BrowserCache`] populated by a background
-//! worker.  The worker runs a meta-browse to discover service types,
-//! then spawns a per-type browse pump for each discovered type.
+//! Maintains an in-memory [`BrowserCache`] populated by the [`worker`], which runs a
+//! meta-browse to discover service types then a per-type browse pump for each. The
+//! worker is driven lazily by [`crate::meta_browse::LazyMetaBrowse`] — it starts on the
+//! first browser request and idles out, so the daemon performs no LAN-wide browsing
+//! until a presentation surface asks.
 //!
-//! Domain-specific mDNS operations are abstracted behind the
-//! [`BrowseSource`] trait so that both the standalone daemon and
-//! embedded mode can provide their own implementation.
-//!
-//! This is a **presentation adapter** — the cache is an adapter-level
-//! read model, NOT a domain concept.
+//! This is a **presentation read model** — the cache is an adapter-level concept, NOT a
+//! domain concept.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -18,96 +16,23 @@ use std::time::Instant;
 
 use axum::extract::Extension;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{Html, Json};
+use axum::response::{Html, IntoResponse, Json};
 use axum::routing::get;
 use axum::Router;
 use chrono::Utc;
 use serde::Serialize;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::broadcast;
+use tokio::sync::RwLock;
 use tokio_stream::Stream;
 use tokio_util::sync::CancellationToken;
 
-use crate::types::META_QUERY;
+use crate::browse_source::{BrowseSource, BrowserEvent, ResolvedService};
+use crate::meta_browse::LazyMetaBrowse;
+use koi_common::types::META_QUERY;
 
 // ── HTML asset ──────────────────────────────────────────────────────
 
 const BROWSER_HTML: &str = include_str!("../assets/mdns-browser.html");
-
-// ── Domain-agnostic types ───────────────────────────────────────────
-
-/// A resolved service instance (domain-agnostic mirror of
-/// `koi_common::types::ServiceRecord` with guaranteed non-optional
-/// fields for the browser cache).
-#[derive(Clone, Debug, Serialize)]
-pub struct ResolvedService {
-    pub name: String,
-    pub service_type: String,
-    pub host: String,
-    pub ip: String,
-    pub port: u16,
-    pub txt: HashMap<String, String>,
-}
-
-/// Domain-agnostic browser event.
-#[derive(Clone, Debug)]
-pub enum BrowserEvent {
-    Found { name: String, service_type: String },
-    Resolved(ResolvedService),
-    Removed { name: String, service_type: String },
-}
-
-impl From<&crate::types::ServiceRecord> for ResolvedService {
-    fn from(record: &crate::types::ServiceRecord) -> Self {
-        Self {
-            name: record.name.clone(),
-            service_type: record.service_type.clone(),
-            host: record.host.clone().unwrap_or_default(),
-            ip: record.ip.clone().unwrap_or_default(),
-            port: record.port.unwrap_or(0),
-            txt: record.txt.clone(),
-        }
-    }
-}
-
-/// Error returned by [`BrowseSource::browse`].
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct BrowseError(pub String);
-
-/// Handle for receiving events from a single browse operation.
-pub struct BrowseHandle {
-    rx: mpsc::Receiver<BrowserEvent>,
-}
-
-impl BrowseHandle {
-    /// Create a new handle from an mpsc receiver.
-    pub fn new(rx: mpsc::Receiver<BrowserEvent>) -> Self {
-        Self { rx }
-    }
-
-    /// Receive the next event, or `None` if the browse stopped.
-    pub async fn recv(&mut self) -> Option<BrowserEvent> {
-        self.rx.recv().await
-    }
-}
-
-/// Trait abstracting mDNS browse operations.
-///
-/// Implemented by the caller wrapping their concrete `MdnsCore`.
-pub trait BrowseSource: Send + Sync {
-    /// Start browsing for the given service type.
-    ///
-    /// Returns a handle that yields events for this browse.
-    fn browse(
-        &self,
-        service_type: &str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<BrowseHandle, BrowseError>> + Send + '_>,
-    >;
-
-    /// Subscribe to the global event broadcast channel.
-    fn subscribe(&self) -> broadcast::Receiver<BrowserEvent>;
-}
 
 // ── Cache model ─────────────────────────────────────────────────────
 
@@ -158,6 +83,20 @@ impl BrowserCache {
                 types: HashMap::new(),
             })),
             started_at: Instant::now(),
+        }
+    }
+
+    /// Apply a browser event to the cache. Public so the worker and tests can drive the
+    /// cache through the same path without exposing the internal record model.
+    pub async fn ingest(&self, event: &BrowserEvent) {
+        match event {
+            BrowserEvent::Found { name, .. } => {
+                if !name.is_empty() {
+                    self.record_type(name).await;
+                }
+            }
+            BrowserEvent::Resolved(record) => self.record_resolved(record).await,
+            BrowserEvent::Removed { name, .. } => self.record_removed(name).await,
         }
     }
 
@@ -356,9 +295,8 @@ struct TypeSummary {
 
 // ── Background worker ───────────────────────────────────────────────
 
-/// Spawns the browser worker that populates the [`BrowserCache`].
-///
-/// The caller is responsible for spawning this as a tokio task.
+/// Populate the [`BrowserCache`] by meta-browsing for types and per-type browsing for
+/// instances. Runs until `cancel` fires (driven lazily by [`LazyMetaBrowse`]).
 pub async fn worker(source: Arc<dyn BrowseSource>, cache: BrowserCache, cancel: CancellationToken) {
     tracing::info!("mDNS browser worker starting");
 
@@ -527,6 +465,26 @@ fn browser_event_stream(
 pub struct BrowserState {
     pub source: Arc<dyn BrowseSource>,
     pub cache: BrowserCache,
+    pub meta: Arc<LazyMetaBrowse>,
+}
+
+/// Build a [`BrowserState`] wrapping the given `MdnsCore` with a lazy meta-browse.
+///
+/// No LAN-wide browsing happens until the first browser request `touch()`es the
+/// controller. `parent_cancel` ties the worker lifetime to daemon/embedded shutdown.
+pub fn build_state(
+    mdns_core: Arc<koi_mdns::MdnsCore>,
+    parent_cancel: CancellationToken,
+) -> BrowserState {
+    let adapter = crate::browse_source::MdnsBrowseAdapter::new(mdns_core, parent_cancel.clone());
+    let cache = BrowserCache::new();
+    let source = adapter as Arc<dyn BrowseSource>;
+    let meta = LazyMetaBrowse::new(source.clone(), cache.clone(), parent_cancel);
+    BrowserState {
+        source,
+        cache,
+        meta,
+    }
 }
 
 // ── Routes ──────────────────────────────────────────────────────────
@@ -541,13 +499,17 @@ pub fn routes(state: BrowserState) -> Router {
 
 // ── Handlers ────────────────────────────────────────────────────────
 
-/// `GET /mdns-browser` — Serve the mDNS browser SPA.
-pub async fn get_page() -> Html<&'static str> {
-    Html(BROWSER_HTML)
+/// `GET /mdns-browser` — Serve the mDNS browser SPA with a Content-Security-Policy header.
+pub async fn get_page() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_SECURITY_POLICY, crate::HTML_CSP)],
+        Html(BROWSER_HTML),
+    )
 }
 
 /// `GET /v1/mdns/browser/snapshot` — Full browser cache as JSON.
 async fn get_snapshot(Extension(state): Extension<BrowserState>) -> Json<BrowserSnapshot> {
+    state.meta.touch();
     Json(state.cache.snapshot().await)
 }
 
@@ -555,6 +517,7 @@ async fn get_snapshot(Extension(state): Extension<BrowserState>) -> Json<Browser
 async fn get_events(
     Extension(state): Extension<BrowserState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    state.meta.touch();
     Sse::new(browser_event_stream(
         state.source.clone(),
         state.cache.clone(),

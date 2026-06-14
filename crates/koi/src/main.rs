@@ -673,33 +673,26 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
 
     // ── Dashboard state ──
     let dashboard_state = adapters::dashboard::build_dashboard_state(&cores, started_at, "daemon");
-    tasks.push(adapters::dashboard::spawn_event_forwarder(
-        cores.mdns.clone(),
-        cores.certmesh.clone(),
-        cores.dns.clone(),
-        cores.health.clone(),
-        cores.proxy.clone(),
+    tasks.push(koi_dashboard::forward::spawn_event_forwarder(
+        koi_dashboard::forward::ForwarderCores {
+            mdns: cores.mdns.clone(),
+            certmesh: cores.certmesh.clone(),
+            dns: cores.dns.clone(),
+            health: cores.health.clone(),
+            proxy: cores.proxy.clone(),
+            runtime: cores.runtime.clone(),
+        },
         dashboard_state.event_tx.clone(),
         cancel.clone(),
     ));
 
-    // ── mDNS browser worker (conditional on mDNS being enabled) ──
-    let browser_state = if let Some(ref mdns) = mdns_core {
-        let adapter = adapters::mdns_browser::MdnsBrowseAdapter::new(mdns.clone(), cancel.clone());
-        let cache = koi_common::browser::BrowserCache::new();
-        let source = adapter.clone() as std::sync::Arc<dyn koi_common::browser::BrowseSource>;
-        let bc = cache.clone();
-        let token = cancel.clone();
-        tasks.push(tokio::spawn(async move {
-            koi_common::browser::worker(source, bc, token).await;
-        }));
-        Some(koi_common::browser::BrowserState {
-            source: adapter,
-            cache,
-        })
-    } else {
-        None
-    };
+    // ── mDNS browser state (conditional on mDNS being enabled) ──
+    // The LAN-wide meta-browse worker is NOT started here: it starts on the first
+    // browser request and idles out (koi_dashboard::meta_browse). Default daemon
+    // startup performs no LAN-wide browsing.
+    let browser_state = mdns_core
+        .as_ref()
+        .map(|mdns| koi_dashboard::browser::build_state(mdns.clone(), cancel.clone()));
 
     // ── HTTP adapter ──
     if !config.no_http {
@@ -1119,7 +1112,7 @@ fn spawn_certmesh_background_tasks(
             }
         };
 
-        let browse = match mdns.browse(koi_certmesh::CERTMESH_SERVICE_TYPE).await {
+        let browse = match mdns.subscribe_type(koi_certmesh::CERTMESH_SERVICE_TYPE).await {
             Ok(handle) => handle,
             Err(e) => {
                 tracing::warn!(error = %e, "Failover monitor: browse failed");

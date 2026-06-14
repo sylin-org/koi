@@ -345,7 +345,18 @@ body::before {
 
   // ── Helpers ───────────────────────────────────────────────────
   function $(id) { return document.getElementById(id); }
-  function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  // Attribute-safe escape: also escapes quotes/backtick so values are inert even when
+  // interpolated into a double-quoted HTML attribute (defense-in-depth — dashboard data
+  // is operator-controlled and lands in text context, but this closes the bug class).
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/`/g, '&#96;');
+  }
 
   function formatUptime(secs) {
     if (secs < 60) return secs + 's';
@@ -526,21 +537,34 @@ body::before {
     renderLog();
   }
 
+  // The activity log receives LAN-attacker-controlled mDNS service names (via the
+  // mdns.* SSE events). Build it with DOM construction (textContent), never innerHTML,
+  // so a name is always inert regardless of esc() — structural, not escape-dependent.
+  function logSpan(cls, text) {
+    const s = document.createElement('span');
+    s.className = cls;
+    s.textContent = text;
+    return s;
+  }
   function renderLog() {
+    const log = $('activity-log');
+    while (log.firstChild) log.removeChild(log.firstChild);
     if (logEntries.length === 0) {
-      $('log-empty').style.display = '';
+      const empty = document.createElement('div');
+      empty.className = 'panel-empty';
+      empty.id = 'log-empty';
+      empty.textContent = 'Waiting for events…';
+      log.appendChild(empty);
       return;
     }
-    $('log-empty').style.display = 'none';
-    const log = $('activity-log');
-    let html = '';
     for (const e of logEntries) {
-      html += '<div class="log-entry">'
-        + '<span class="log-time">' + esc(e.time) + '</span>'
-        + '<span class="log-type ' + esc(e.domain) + '">' + esc(e.type) + '</span>'
-        + '<span class="log-msg">' + esc(e.msg) + '</span></div>';
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      entry.appendChild(logSpan('log-time', e.time));
+      entry.appendChild(logSpan('log-type ' + e.domain, e.type));
+      entry.appendChild(logSpan('log-msg', e.msg));
+      log.appendChild(entry);
     }
-    log.innerHTML = html;
   }
 
   // ── Polling ───────────────────────────────────────────────────

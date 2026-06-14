@@ -34,15 +34,15 @@ guessed "works".
 | mdns | koi-mdns suite | 2026-03-25 | koi-mdns tests (ci.yml) | Browse-multiplexing bug known (one querier per type kills concurrent browses) |
 | dns | koi-dns suite | 2026-05-10 | koi-dns tests (ci.yml) | mDNS-to-DNS alias bridge; needs query caching |
 | certmesh (CA / enroll / roster / renew) | koi-certmesh suite (264 tests) | 2026-06-12 | koi-certmesh tests (ci.yml) | The claimed invention; revocation is roster-only (no CRL/OCSP) |
-| crypto (envelope enc / TOTP / auth) | koi-crypto suite | 2026-03-25 | koi-crypto tests (ci.yml) | HKDF domain-separation byte strings are FROZEN (STACK-0001 K3) |
+| crypto (envelope enc / TOTP / auth) | koi-crypto suite + lean tripwire | 2026-06-13 | koi-crypto tests + lean (ci.yml) | HKDF domain-separation byte strings are FROZEN (STACK-0001 K3). OS-keychain sealing (`keyring`) + QR rendering (`qr`) are opt-in default-on features (ADR-014); lean consumers shed the Secret Service/D-Bus + image-codec closures |
 | truststore | koi-truststore suite | 2026-03-20 | koi-truststore tests (ci.yml) | Platform cert install; a model small crate |
 | proxy (TLS reverse proxy) | none | unknown since 2026-03-25 | none | Panics at axum-0.8 listener start; status() hardcodes running:true; data-plane 0 tests; outside all contracts until tested (STACK-0001) |
 | udp (datagram bridging) | zen-garden | 2026-03-20 | koi-udp tests (ci.yml) | Exists for the zen-garden Garden-mesh substrate; token-topology fix pending |
 | token / DAT auth | private downstream solution / in-flight | unknown since 2026-03-25 | none | DAT constant-time auth; in-flight downstream work, not inspected (CHARTER rule 8) |
-| runtime / orchestrator (Docker/Podman) | koi-runtime suite | 2026-03-26 | koi-runtime tests (ci.yml) | Docker reconnect unimplemented; daemon restart kills the capability |
+| runtime / orchestrator (Docker/Podman) | koi-runtime suite + lean tripwire | 2026-06-13 | koi-runtime tests + lean (ci.yml) | Docker/Podman backend is now an opt-in `docker` feature (default-on, ADR-014); lean consumers shed bollard + the bollard-stubs `=` pin. Docker reconnect unimplemented; daemon restart kills the capability |
 | health | koi-health suite | 2026-03-25 | koi-health tests (ci.yml) | Service + machine health; shrink candidate |
 | config | koi-config suite | 2026-03-25 | koi-config tests (ci.yml) | Breadcrumb discovery |
-| dashboard + mDNS browser | none (read-only UI) | unknown since 2026-03-26 | none | LAN-attacker XSS + unauthenticated GET exposure of CA roster/audit; no UI tests |
+| dashboard + mDNS browser | koi-dashboard tests | 2026-06-13 | koi-dashboard tests (ci.yml) | XSS closed structurally (DOM render + http/https launch allowlist) + CSP header; lazy meta-browse; lives in koi-dashboard crate, not the koi-common kernel (P06) |
 | CLI command manifest (surface.rs) | none | unknown since 2026-06-13 | none | Hand-written manifest; seven user-visible drift bugs; zero tests |
 | embedded / client API | koi-embedded + koi-client | 2026-05-10 | koi build (ci.yml); examples untested | Non-compiling README examples; remote mode degrades silently |
 

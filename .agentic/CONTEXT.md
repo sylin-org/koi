@@ -45,6 +45,7 @@ crates/
 ├── koi-udp/          # UDP datagram bridging - HTTP/SSE tunneling, binding lifecycle
 ├── koi-runtime/      # Container/service runtime adapter - Docker, Podman lifecycle events
 ├── koi-client/       # HTTP client for daemon communication (blocking ureq)
+├── koi-dashboard/    # Presentation - dashboard + mDNS browser (HTML, SSE, event forwarder, lazy meta-browse)
 ├── koi-embedded/     # Embed Koi in Rust applications - builder, handles, events
 └── command-surface/  # Glyph-based command rendering - semantic metadata, profiles
 ```
@@ -70,7 +71,7 @@ Each domain crate exposes three faces:
 ### 3. Crate Dependency Graph
 
 ```
-koi (bin) → koi-common, koi-mdns, koi-certmesh, koi-crypto, koi-truststore, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, koi-embedded, command-surface
+koi (bin) → koi-common, koi-dashboard, koi-mdns, koi-certmesh, koi-crypto, koi-truststore, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, koi-embedded, command-surface
 koi-mdns      → koi-common, mdns-sd, axum, utoipa, tokio
 koi-certmesh  → koi-common, koi-crypto, koi-truststore, axum, utoipa, tokio
 koi-crypto    → (standalone: ring/rcgen/totp-rs/p256)
@@ -82,11 +83,19 @@ koi-proxy     → koi-common, koi-config, tokio-rustls, rustls, rcgen, axum, uto
 koi-udp       → koi-common, axum, utoipa, tokio
 koi-runtime   → koi-common, bollard, axum, utoipa, tokio, chrono, async-trait
 koi-client    → koi-common, ureq (blocking)
-koi-embedded  → koi-common, koi-crypto, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, koi-client, tokio
+koi-dashboard → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-runtime, axum, tokio
+koi-embedded  → koi-common, koi-dashboard, koi-crypto, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, koi-client, tokio
 command-surface → (standalone: crossterm)
 ```
 
-Domain crates depend on `koi-common` but **never** on each other.
+**Domain** crates depend on `koi-common` but **never** on each other.
+`koi-dashboard` is a **composition/presentation** crate (a peer of the binary's
+adapters, not a domain): it depends on the event-bearing domain crates so it can host a
+single event forwarder + mDNS browse adapter. Nothing depends on it except the two
+top-level consumers (`koi`, `koi-embedded`), so the kernel and domain closures stay
+clean. `koi-common` is a **types-only kernel** — it carries no presentation deps
+(`tokio`/`tokio-stream`/`tokio-util`/`async-stream`/`hostname` left with the dashboard in
+P06); the dashboard/browser HTML, SSE, and browse cache live in `koi-dashboard`.
 
 ### 4. mdns-sd Isolation (CRITICAL)
 
@@ -353,8 +362,7 @@ adapters/
   pipe.rs          - Named Pipe / UDS adapter
   cli.rs           - Piped stdin/stdout adapter
   dispatch.rs      - Shared NDJSON dispatch logic
-  dashboard.rs     - Embedded HTML dashboard (GET /, /v1/dashboard/*)
-  mdns_browser.rs  - mDNS network browser (GET /mdns-browser, /v1/mdns/browser/*)
+  dashboard.rs     - Dashboard wiring (snapshot builder + DashboardState); HTML/SSE/forwarder live in koi-dashboard
 platform/
   mod.rs           - Platform abstraction
   windows.rs       - SCM, firewall, service paths
@@ -368,7 +376,13 @@ Key design rules:
 - `format.rs` is the only file with `println!`-based presentation
 - Platform paths live in their respective `platform/` modules, not in `cli.rs`
 - Commands are organized by domain (`commands/mdns.rs`, `commands/certmesh.rs`, `commands/dns.rs`, etc.)
-- Dashboard and browser are presentation adapters in the binary crate, not domain crates
+- Dashboard and browser HTML/SSE/routes/cache live in the `koi-dashboard` crate (a
+  composition crate); the binary keeps only its snapshot builder + `DashboardState`
+  wiring in `adapters/dashboard.rs`. The single event forwarder
+  (`koi_dashboard::forward`) and mDNS browse adapter (`koi_dashboard::browse_source`) are
+  shared by both the binary and `koi-embedded`. The LAN-wide meta-browse is lazy
+  (`koi_dashboard::meta_browse`): it starts on the first browser request and idles out —
+  `koi status` reports `Browse: active|idle`.
 
 ### Serialization Safety
 
