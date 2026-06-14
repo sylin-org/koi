@@ -52,8 +52,9 @@ jobs:
             koi-dns         # Layer 3: DNS server zone storage
             koi-proxy       # Layer 3: proxy and termination engine
             koi-health      # Layer 4: system health check engine
+            koi-dashboard   # Layer 5: dashboard + mDNS browser presentation (deps: mdns/certmesh/dns/health/proxy/runtime)
             koi-client      # Layer 5: CLI client API communication
-            koi-embedded    # Layer 6: embedded engine facade
+            koi-embedded    # Layer 6: embedded engine facade (deps koi-dashboard)
             koi-net         # Layer 6: main daemon entrypoint (folder crates/koi)
           )
 
