@@ -14,17 +14,22 @@ categories = ["network-programming"]
 
 [dependencies]
 koi-common.workspace = true
-koi-dashboard.workspace = true
-koi-crypto.workspace = true
+# Optional heavy backends are gated at their leaf crates (koi-runtime → bollard,
+# koi-crypto → keyring/qr). Take every edge that reaches them with default-features off
+# so a lean consumer (`default-features = false`) compiles none of bollard, the OS
+# keychain / D-Bus stack, or the image PNG codec. The features below re-arm them
+# default-on, so a default `koi-embedded = "0.4"` is byte-identical to today.
+koi-dashboard = { workspace = true, default-features = false }
+koi-crypto = { workspace = true, default-features = false }
 koi-mdns.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true
-koi-certmesh.workspace = true
+koi-certmesh = { workspace = true, default-features = false }
 koi-proxy.workspace = true
 koi-udp.workspace = true
 koi-config.workspace = true
 koi-client.workspace = true
-koi-runtime.workspace = true
+koi-runtime = { workspace = true, default-features = false }
 hickory-proto.workspace = true
 
 tokio.workspace = true
@@ -42,6 +47,19 @@ utoipa-scalar.workspace = true
 futures-util.workspace = true
 hostname.workspace = true
 if-addrs.workspace = true
+
+[features]
+# Optional heavy backends, default-on (a default build is unchanged from today). A lean
+# consumer drops all three — bollard, the OS-keychain stack, and the image codec — with
+# `default-features = false`, and re-arms any subset à la carte (e.g. features=["docker"]).
+# Forwarding to the leaf crates (koi-runtime / koi-crypto) arms the single shared package
+# for the whole graph via Cargo feature unification, so the intermediate crates' edges
+# stay default-features=false.
+default = ["docker", "keyring", "qr"]
+full = ["docker", "keyring", "qr"]
+docker = ["koi-runtime/docker"]
+keyring = ["koi-crypto/keyring"]
+qr = ["koi-crypto/qr"]
 
 [dev-dependencies]
 base64.workspace = true

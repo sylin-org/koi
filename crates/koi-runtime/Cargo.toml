@@ -33,14 +33,37 @@ thiserror.workspace = true
 
 # Async trait
 async-trait.workspace = true
-futures-util.workspace = true
 
-# Docker/Podman backend
-bollard = "0.21"
+# Docker/Podman backend (optional — see the `docker` feature). futures-util is only used
+# by the bollard event stream in docker.rs, so it rides the same feature.
+bollard = { version = "0.21", optional = true }
+futures-util = { workspace = true, optional = true }
 
 # Timestamps
 chrono.workspace = true
 
-# Platform-specific
+[features]
+# The Docker/Podman backend (bollard + bollard-stubs' pinned closure) is the only
+# optional backend with a heavy, version-locked dependency. Default-on so the
+# batteries-included binary and existing consumers are byte-identical; lean library
+# consumers opt out with `default-features = false`. The runtime *capability* stays
+# unconditional (it is a runtime tunable, never #[cfg]'d) — only the backend *impl* is
+# gated. With `docker` off, Auto/Docker/Podman resolve to BackendUnavailable, exactly
+# like the already-stubbed systemd/incus/kubernetes backends.
+default = ["docker"]
+docker = ["dep:bollard", "dep:futures-util", "dep:libc"]
+
+# The Docker integration test imports koi_runtime::docker::* — only build it when the
+# backend is compiled, so `--no-default-features` builds/tests stay green.
+[[test]]
+name = "docker_integration"
+required-features = ["docker"]
+
+# Render feature-gated items with a badge on docs.rs.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+# Platform-specific (libc is used only by docker.rs's podman-socket uid probe)
 [target.'cfg(unix)'.dependencies]
-libc.workspace = true
+libc = { workspace = true, optional = true }

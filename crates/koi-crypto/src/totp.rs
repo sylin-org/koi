@@ -63,6 +63,10 @@ pub fn qr_code_unicode(secret: &TotpSecret, issuer: &str, account: &str) -> Stri
 ///
 /// This lower-level variant accepts any payload string, not just TOTP URIs,
 /// making it reusable for enrollment tokens, invite links, etc.
+///
+/// When the `qr` feature is disabled, returns the payload text verbatim (a graceful
+/// fallback — the caller can still display the `otpauth://` URI to type or scan).
+#[cfg(feature = "qr")]
 pub fn qr_code_unicode_raw(payload: &str) -> String {
     use qrcode::render::unicode;
     use qrcode::QrCode;
@@ -95,6 +99,9 @@ pub fn qr_code_png_base64(secret: &TotpSecret, issuer: &str, account: &str) -> S
 ///
 /// This lower-level variant accepts any payload string, not just TOTP URIs,
 /// making it reusable for enrollment tokens, invite links, etc.
+///
+/// When the `qr` feature is disabled, returns the payload text verbatim (no PNG codec).
+#[cfg(feature = "qr")]
 pub fn qr_code_png_base64_raw(payload: &str) -> String {
     use image::Luma;
     use qrcode::QrCode;
@@ -131,6 +138,25 @@ pub fn qr_code_png_base64_raw(payload: &str) -> String {
             format!("(QR code unavailable: {e})")
         }
     }
+}
+
+// ── Stubs when the `qr` feature is disabled ─────────────────────────
+//
+// The `qr_code_unicode`/`qr_code_png_base64` wrappers delegate to these `_raw`
+// functions, so the whole QR surface stays callable with no `#[cfg]` at any call site
+// (certmesh enrollment, the CLI ceremony). Without the qrcode/image deps, the fallback
+// is the payload text itself — the caller still has the scannable `otpauth://` URI.
+
+/// Returns the payload verbatim — built without the `qr` feature (no qrcode dep).
+#[cfg(not(feature = "qr"))]
+pub fn qr_code_unicode_raw(payload: &str) -> String {
+    payload.to_string()
+}
+
+/// Returns the payload verbatim — built without the `qr` feature (no qrcode/image deps).
+#[cfg(not(feature = "qr"))]
+pub fn qr_code_png_base64_raw(payload: &str) -> String {
+    payload.to_string()
 }
 
 /// Verify a 6-digit TOTP code against the secret using constant-time comparison.
@@ -305,6 +331,7 @@ mod tests {
         assert_eq!(secret.as_bytes().len(), SECRET_LEN);
     }
 
+    #[cfg(feature = "qr")]
     #[test]
     fn qr_code_contains_unicode() {
         let secret = generate_secret();
@@ -312,6 +339,15 @@ mod tests {
         // QR code should produce multi-line unicode output
         assert!(qr.contains('\n'));
         assert!(!qr.is_empty());
+    }
+
+    #[cfg(not(feature = "qr"))]
+    #[test]
+    fn qr_code_falls_back_to_uri_without_feature() {
+        let secret = generate_secret();
+        // Without the `qr` feature, the renderer returns the otpauth:// URI verbatim.
+        let out = qr_code_unicode(&secret, "Koi", "test@example.com");
+        assert!(out.starts_with("otpauth://"));
     }
 
     #[test]

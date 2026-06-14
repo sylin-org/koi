@@ -19,11 +19,15 @@ koi-common.workspace = true
 # browse adapter wraps MdnsCore. A composition crate, not a domain crate — nothing
 # depends on it, so the kernel and domain closures stay clean.
 koi-mdns.workspace = true
-koi-certmesh.workspace = true
+# The forwarder maps these crates' events at the type level only — it never uses their
+# optional heavy backends (bollard / keyring / qr). Take them with default-features off
+# so this presentation crate never drags bollard, the OS-keychain stack, or the image
+# codec into a lean consumer; the choice is forwarded from the top (see [features]).
+koi-certmesh = { workspace = true, default-features = false }
 koi-dns.workspace = true
 koi-health.workspace = true
 koi-proxy.workspace = true
-koi-runtime.workspace = true
+koi-runtime = { workspace = true, default-features = false }
 
 axum.workspace = true
 tokio.workspace = true
@@ -37,6 +41,15 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[features]
+# Pass-through to the optional backends, default-on so standalone/default builds are
+# unchanged. koi-dashboard never calls the gated code itself — these only control
+# whether the transitive heavy deps compile.
+default = ["docker", "keyring", "qr"]
+docker = ["koi-runtime/docker"]
+keyring = ["koi-certmesh/keyring"]
+qr = ["koi-certmesh/qr"]
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

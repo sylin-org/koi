@@ -23,6 +23,7 @@ pub enum TpmError {
     NotFound(String),
 }
 
+#[cfg(feature = "keyring")]
 const SERVICE_NAME: &str = "koi-certmesh";
 
 /// Check whether the platform credential store is functional.
@@ -33,6 +34,7 @@ const SERVICE_NAME: &str = "koi-certmesh";
 ///
 /// Returns `false` immediately if `KOI_NO_CREDENTIAL_STORE=1` is set
 /// (used in tests and CI to avoid Keychain authorization prompts on macOS).
+#[cfg(feature = "keyring")]
 pub fn is_available() -> bool {
     if std::env::var("KOI_NO_CREDENTIAL_STORE").is_ok() {
         return false;
@@ -54,6 +56,7 @@ pub fn is_available() -> bool {
 ///
 /// The material is stored as a binary secret keyed by
 /// `(SERVICE_NAME, label)`.
+#[cfg(feature = "keyring")]
 pub fn seal_key_material(label: &str, data: &[u8]) -> Result<(), TpmError> {
     let entry = keyring::Entry::new(SERVICE_NAME, label)
         .map_err(|e| TpmError::NotAvailable(e.to_string()))?;
@@ -65,6 +68,7 @@ pub fn seal_key_material(label: &str, data: &[u8]) -> Result<(), TpmError> {
 }
 
 /// Unseal (retrieve) key material from the platform credential store.
+#[cfg(feature = "keyring")]
 pub fn unseal_key_material(label: &str) -> Result<Vec<u8>, TpmError> {
     let entry = keyring::Entry::new(SERVICE_NAME, label)
         .map_err(|e| TpmError::NotAvailable(e.to_string()))?;
@@ -76,6 +80,7 @@ pub fn unseal_key_material(label: &str) -> Result<Vec<u8>, TpmError> {
 /// Delete sealed key material from the platform credential store.
 ///
 /// Called during `certmesh destroy` to clean up.
+#[cfg(feature = "keyring")]
 pub fn delete_key_material(label: &str) -> Result<(), TpmError> {
     let entry = keyring::Entry::new(SERVICE_NAME, label)
         .map_err(|e| TpmError::NotAvailable(e.to_string()))?;
@@ -83,6 +88,37 @@ pub fn delete_key_material(label: &str) -> Result<(), TpmError> {
         .delete_credential()
         .map_err(|e| TpmError::Failure(format!("delete failed for '{label}': {e}")))?;
     tracing::debug!(label, "Sealed key material deleted from credential store");
+    Ok(())
+}
+
+// ── Stubs when the `keyring` feature is disabled ────────────────────
+//
+// The public API is unchanged so callers (certmesh CA sealing, the vault) need no
+// `#[cfg]`. With keyring off, `is_available()` is `false`, so callers take their
+// existing fallback path (the vault's passphrase backend); seal/unseal report the
+// missing feature rather than touching any credential store.
+
+/// Always `false` — this build was compiled without the `keyring` feature.
+#[cfg(not(feature = "keyring"))]
+pub fn is_available() -> bool {
+    false
+}
+
+#[cfg(not(feature = "keyring"))]
+pub fn seal_key_material(label: &str, _data: &[u8]) -> Result<(), TpmError> {
+    Err(TpmError::NotAvailable(format!(
+        "koi-crypto built without the `keyring` feature; cannot seal '{label}'"
+    )))
+}
+
+#[cfg(not(feature = "keyring"))]
+pub fn unseal_key_material(label: &str) -> Result<Vec<u8>, TpmError> {
+    Err(TpmError::NotFound(label.to_string()))
+}
+
+#[cfg(not(feature = "keyring"))]
+pub fn delete_key_material(_label: &str) -> Result<(), TpmError> {
+    // Nothing was sealed without the credential store — destroy is a no-op.
     Ok(())
 }
 

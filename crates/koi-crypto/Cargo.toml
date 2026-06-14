@@ -15,7 +15,8 @@ categories = ["cryptography", "authentication"]
 [dependencies]
 koi-common.workspace = true
 base64.workspace = true
-image.workspace = true
+# QR rendering (image PNG codec + qrcode) is optional — see the `qr` feature.
+image = { workspace = true, optional = true }
 utoipa.workspace = true
 p256.workspace = true
 aes-gcm.workspace = true
@@ -25,22 +26,35 @@ rand.workspace = true
 zeroize.workspace = true
 subtle.workspace = true
 totp-rs.workspace = true
-qrcode.workspace = true
+qrcode = { workspace = true, optional = true }
 pem.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-keyring.workspace = true
+# OS credential store (Secret Service / D-Bus on Linux, Keychain, Cred Manager) is
+# optional — see the `keyring` feature.
+keyring = { workspace = true, optional = true }
 x25519-dalek.workspace = true
 hkdf.workspace = true
 hostname.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
 tempfile = "3"
 
 [features]
-default = []
+# `keyring` (OS credential store / TPM-style key sealing) and `qr` (qrcode + image PNG
+# rendering) are rarely-run, heavy, single-module dependencies, each with a graceful
+# fallback (vault passphrase backend; otpauth:// URI text). Default-on so the binary and
+# existing consumers are byte-identical; lean library consumers drop them — and the
+# Secret Service/D-Bus + PNG-codec closures — with `default-features = false`.
+default = ["keyring", "qr"]
+keyring = ["dep:keyring"]
+qr = ["dep:qrcode", "dep:image"]
 # Gate FIDO2 unlock slot behind a feature flag. The current implementation
 # derives the storage key from credential_id which is not secret — this is
 # a software gate only. Enable when the authenticator integration is hardened.
