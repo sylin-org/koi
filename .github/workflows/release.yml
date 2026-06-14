@@ -59,8 +59,11 @@ jobs:
         run: cargo test --locked
 
   # ── Build ─────────────────────────────────────────────────────────
+  # Runs in parallel with `test` (not gated on it) so the 6 cross builds and the
+  # ~6-min test suite overlap. `release` still requires `test` to pass, so a broken
+  # commit never produces a GitHub Release or a crates.io publish.
   build:
-    needs: [prepare, test]
+    needs: [prepare]
     strategy:
       fail-fast: false
       matrix:
@@ -97,7 +100,9 @@ jobs:
 
       - name: Install cross
         if: matrix.use_cross
-        run: cargo install cross --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
       - name: Build
         shell: bash
@@ -156,7 +161,7 @@ jobs:
 
   # ── Release ───────────────────────────────────────────────────────
   release:
-    needs: [prepare, build]
+    needs: [prepare, test, build]
     # Only create a GitHub Release on a real tag push; workflow_dispatch runs
     # the build matrix as a dry run and stops here.
     if: startsWith(github.ref, 'refs/tags/')
