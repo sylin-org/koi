@@ -75,6 +75,11 @@ jobs:
       - name: Lean dependency-closure tripwire
         run: bash scripts/check-lean-embedded.sh
 
+      # Catch a new publishable crate that was added to the workspace but not to
+      # publish.yml's CRATES list (the koi-dashboard / 0.4.0 partial-publish incident).
+      - name: Publish-list completeness
+        run: bash scripts/check-publish-list.sh
+
   fmt:
     runs-on: ubuntu-latest
     steps:

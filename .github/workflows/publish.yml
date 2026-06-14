@@ -23,8 +23,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build & Test
-        run: cargo test --workspace --locked
+      # No pre-publish `cargo test` here: on the tag path release.yml's `test` job has
+      # already built+tested this exact commit (release is gated on it), and each
+      # `cargo publish` below runs `--verify` (builds the crate from its packaged
+      # tarball — the check that actually catches packaging bugs). For a manual
+      # `workflow_dispatch`, run CI first; `--verify` still gates build-correctness.
 
       - name: Publish to crates.io
         shell: bash
@@ -49,8 +52,9 @@ jobs:
             koi-dns         # Layer 3: DNS server zone storage
             koi-proxy       # Layer 3: proxy and termination engine
             koi-health      # Layer 4: system health check engine
+            koi-dashboard   # Layer 5: dashboard + mDNS browser presentation (deps: mdns/certmesh/dns/health/proxy/runtime)
             koi-client      # Layer 5: CLI client API communication
-            koi-embedded    # Layer 6: embedded engine facade
+            koi-embedded    # Layer 6: embedded engine facade (deps koi-dashboard)
             koi-net         # Layer 6: main daemon entrypoint (folder crates/koi)
           )
 
@@ -159,8 +163,10 @@ jobs:
               exit 1
             fi
 
-            # Brief pause for index propagation before publishing dependents
-            sleep 20
+            # Small cushion before publishing dependents. The verify loop above
+            # already confirmed the version is live on crates.io, so this only covers
+            # residual sparse-index propagation lag.
+            sleep 8
           done
 
           echo ""
