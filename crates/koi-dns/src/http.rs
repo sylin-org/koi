@@ -79,6 +79,7 @@ pub mod paths {
     pub const LOOKUP: &str = "/v1/dns/lookup";
     pub const LIST: &str = "/v1/dns/list";
     pub const ENTRIES: &str = "/v1/dns/entries";
+    pub const ZONE: &str = "/v1/dns/zone";
     pub const ADD: &str = "/v1/dns/add";
     pub const REMOVE: &str = "/v1/dns/remove/{name}";
     pub const SERVE: &str = "/v1/dns/serve";
@@ -98,6 +99,7 @@ pub fn routes(runtime: Arc<DnsRuntime>) -> Router {
         .route(rel(paths::LOOKUP), get(lookup_handler))
         .route(rel(paths::LIST), get(list_handler))
         .route(rel(paths::ENTRIES), get(entries_handler))
+        .route(rel(paths::ZONE), get(zone_handler))
         .route(rel(paths::ADD), post(add_entry_handler))
         .route(rel(paths::REMOVE), delete(remove_entry_handler))
         .route(rel(paths::SERVE), post(start_handler))
@@ -167,6 +169,106 @@ async fn entries_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl
     Json(EntriesResponse {
         entries: runtime.core().list_entries(),
     })
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+struct ZoneParams {
+    /// Output format: `hosts`, `dnsmasq`, or `json` (default).
+    format: Option<String>,
+}
+
+/// Structured zone export (the `json` format): each source is a map of
+/// FQDN (trailing dot) → list of IP strings.
+#[derive(Debug, Serialize, ToSchema)]
+struct ZoneJson {
+    static_entries: std::collections::BTreeMap<String, Vec<String>>,
+    certmesh_entries: std::collections::BTreeMap<String, Vec<String>>,
+    mdns_entries: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+#[utoipa::path(get, path = "/zone", tag = "dns",
+    summary = "Export the resolvable zone (hosts / dnsmasq / json)",
+    params(ZoneParams),
+    responses((status = 200, description = "Zone export in the requested format")))]
+async fn zone_handler(
+    Extension(runtime): Extension<Arc<DnsRuntime>>,
+    Query(params): Query<ZoneParams>,
+) -> impl IntoResponse {
+    use axum::http::header;
+
+    let snapshot = runtime.core().snapshot();
+    match params.format.as_deref().unwrap_or("json") {
+        "hosts" => (
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            format_hosts(&snapshot),
+        )
+            .into_response(),
+        "dnsmasq" => (
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            format_dnsmasq(&snapshot),
+        )
+            .into_response(),
+        "json" => Json(format_json(&snapshot)).into_response(),
+        other => error_response(
+            ErrorCode::InvalidPayload,
+            format!("unknown format '{other}' (expected hosts, dnsmasq, or json)"),
+        )
+        .into_response(),
+    }
+}
+
+/// Collect every (name, ip) pair from all three sources, with the trailing dot
+/// stripped from names (hosts/dnsmasq want a bare FQDN), sorted for stable output.
+fn flat_records(snapshot: &crate::records::RecordsSnapshot) -> Vec<(String, String)> {
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for map in [
+        &snapshot.static_entries,
+        &snapshot.certmesh_entries,
+        &snapshot.mdns_entries,
+    ] {
+        for (name, ips) in map {
+            let bare = name.trim_end_matches('.');
+            for ip in ips {
+                rows.push((bare.to_string(), ip.to_string()));
+            }
+        }
+    }
+    rows.sort();
+    rows.dedup();
+    rows
+}
+
+/// `hosts(5)` format: `<ip> <name>`, one per line.
+fn format_hosts(snapshot: &crate::records::RecordsSnapshot) -> String {
+    let mut out = String::new();
+    for (name, ip) in flat_records(snapshot) {
+        out.push_str(&format!("{ip} {name}\n"));
+    }
+    out
+}
+
+/// dnsmasq `address=/<name>/<ip>` format, one per line.
+fn format_dnsmasq(snapshot: &crate::records::RecordsSnapshot) -> String {
+    let mut out = String::new();
+    for (name, ip) in flat_records(snapshot) {
+        out.push_str(&format!("address=/{name}/{ip}\n"));
+    }
+    out
+}
+
+/// Structured JSON: the three sources, names kept as stored (trailing dot),
+/// IPs stringified, sorted via BTreeMap for stable output.
+fn format_json(snapshot: &crate::records::RecordsSnapshot) -> ZoneJson {
+    let to_sorted = |map: &std::collections::HashMap<String, Vec<std::net::IpAddr>>| {
+        map.iter()
+            .map(|(name, ips)| (name.clone(), ips.iter().map(|ip| ip.to_string()).collect()))
+            .collect::<std::collections::BTreeMap<String, Vec<String>>>()
+    };
+    ZoneJson {
+        static_entries: to_sorted(&snapshot.static_entries),
+        certmesh_entries: to_sorted(&snapshot.certmesh_entries),
+        mdns_entries: to_sorted(&snapshot.mdns_entries),
+    }
 }
 
 #[utoipa::path(post, path = "/add", tag = "dns",
@@ -274,6 +376,7 @@ fn parse_record_type(input: Option<&str>) -> Result<RecordType, ErrorCode> {
         lookup_handler,
         list_handler,
         entries_handler,
+        zone_handler,
         add_entry_handler,
         remove_entry_handler,
         start_handler,
@@ -284,6 +387,7 @@ fn parse_record_type(input: Option<&str>) -> Result<RecordType, ErrorCode> {
         LookupResponse,
         NamesResponse,
         EntriesResponse,
+        ZoneJson,
         EntryRequest,
         RecordSummary,
         StartedResponse,
@@ -292,3 +396,128 @@ fn parse_record_type(input: Option<&str>) -> Result<RecordType, ErrorCode> {
     ))
 )]
 pub struct DnsApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::records::RecordsSnapshot;
+    use std::collections::HashMap;
+    use std::net::IpAddr;
+
+    /// Build a snapshot with sample records. Names are stored as FQDN with a
+    /// trailing dot (as the resolver normalizes them).
+    fn sample_snapshot() -> RecordsSnapshot {
+        let mut static_entries: HashMap<String, Vec<IpAddr>> = HashMap::new();
+        static_entries.insert(
+            "grafana.lan.".to_string(),
+            vec!["10.0.0.5".parse().unwrap()],
+        );
+        let mut certmesh_entries: HashMap<String, Vec<IpAddr>> = HashMap::new();
+        certmesh_entries.insert("ca.lan.".to_string(), vec!["10.0.0.1".parse().unwrap()]);
+        let mut mdns_entries: HashMap<String, Vec<IpAddr>> = HashMap::new();
+        mdns_entries.insert(
+            "printer.lan.".to_string(),
+            vec!["10.0.0.50".parse().unwrap()],
+        );
+        RecordsSnapshot {
+            static_entries,
+            certmesh_entries,
+            mdns_entries,
+            alias_feedback: Vec::new(),
+        }
+    }
+
+    fn empty_snapshot() -> RecordsSnapshot {
+        RecordsSnapshot {
+            static_entries: HashMap::new(),
+            certmesh_entries: HashMap::new(),
+            mdns_entries: HashMap::new(),
+            alias_feedback: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn hosts_format_strips_trailing_dot() {
+        let out = format_hosts(&sample_snapshot());
+        // <ip> <name>, trailing dot stripped, sorted across all sources.
+        assert!(out.contains("10.0.0.5 grafana.lan\n"), "out: {out}");
+        assert!(out.contains("10.0.0.1 ca.lan\n"), "out: {out}");
+        assert!(out.contains("10.0.0.50 printer.lan\n"), "out: {out}");
+        assert!(
+            !out.contains("lan.\n"),
+            "trailing dot should be stripped: {out}"
+        );
+    }
+
+    #[test]
+    fn dnsmasq_format_strips_trailing_dot() {
+        let out = format_dnsmasq(&sample_snapshot());
+        assert!(
+            out.contains("address=/grafana.lan/10.0.0.5\n"),
+            "out: {out}"
+        );
+        assert!(out.contains("address=/ca.lan/10.0.0.1\n"), "out: {out}");
+        assert!(
+            out.contains("address=/printer.lan/10.0.0.50\n"),
+            "out: {out}"
+        );
+    }
+
+    #[test]
+    fn json_format_keeps_sources_separate() {
+        let json = format_json(&sample_snapshot());
+        assert_eq!(
+            json.static_entries.get("grafana.lan."),
+            Some(&vec!["10.0.0.5".to_string()])
+        );
+        assert_eq!(
+            json.certmesh_entries.get("ca.lan."),
+            Some(&vec!["10.0.0.1".to_string()])
+        );
+        assert_eq!(
+            json.mdns_entries.get("printer.lan."),
+            Some(&vec!["10.0.0.50".to_string()])
+        );
+    }
+
+    #[test]
+    fn empty_zone_hosts_is_empty() {
+        assert_eq!(format_hosts(&empty_snapshot()), "");
+    }
+
+    #[test]
+    fn empty_zone_dnsmasq_is_empty() {
+        assert_eq!(format_dnsmasq(&empty_snapshot()), "");
+    }
+
+    #[test]
+    fn empty_zone_json_is_empty_maps() {
+        let json = format_json(&empty_snapshot());
+        assert!(json.static_entries.is_empty());
+        assert!(json.certmesh_entries.is_empty());
+        assert!(json.mdns_entries.is_empty());
+        // Serializes to the expected empty-but-present shape.
+        let v = serde_json::to_value(&json).unwrap();
+        assert_eq!(v["static_entries"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn hosts_output_is_sorted_and_deduped() {
+        // Two sources with the same (name, ip) → one line.
+        let mut a: HashMap<String, Vec<IpAddr>> = HashMap::new();
+        a.insert("dup.lan.".to_string(), vec!["10.0.0.9".parse().unwrap()]);
+        let mut b: HashMap<String, Vec<IpAddr>> = HashMap::new();
+        b.insert("dup.lan.".to_string(), vec!["10.0.0.9".parse().unwrap()]);
+        let snap = RecordsSnapshot {
+            static_entries: a,
+            certmesh_entries: b,
+            mdns_entries: HashMap::new(),
+            alias_feedback: Vec::new(),
+        };
+        let out = format_hosts(&snap);
+        assert_eq!(
+            out, "10.0.0.9 dup.lan\n",
+            "duplicates should collapse: {out}"
+        );
+    }
+}
