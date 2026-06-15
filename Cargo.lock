@@ -1857,6 +1857,7 @@ dependencies = [
  "tower",
  "tracing",
  "utoipa",
+ "x509-parser",
  "zeroize",
 ]
 
@@ -2912,6 +2913,7 @@ dependencies = [
  "ring",
  "rustls-pki-types",
  "time",
+ "x509-parser",
  "yasna",
 ]
 
@@ -4813,6 +4815,7 @@ dependencies = [
  "lazy_static",
  "nom",
  "oid-registry",
+ "ring",
  "rusticata-macros",
  "thiserror 1.0.69",
  "time",
