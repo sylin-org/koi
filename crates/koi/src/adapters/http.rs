@@ -36,6 +36,8 @@ pub mod paths {
     pub const UNIFIED_STATUS: &str = "/v1/status";
     pub const SHUTDOWN: &str = "/v1/admin/shutdown";
     pub const HOST: &str = "/v1/host";
+    /// Prometheus HTTP service discovery (their format — see Door 1 / integrations.md).
+    pub const PROMETHEUS_SD: &str = "/v1/sd/prometheus";
 }
 
 // ── App state ───────────────────────────────────────────────────────
@@ -55,6 +57,9 @@ struct AppState {
     /// Lazy mDNS meta-browse controller (when mDNS is enabled), so `/v1/status` can
     /// report whether LAN-wide browsing is currently active.
     mdns_browse: Option<Arc<LazyMetaBrowse>>,
+    /// Cached-mDNS snapshot used only by the Prometheus `?include=discovered` slice.
+    /// `None` when mDNS is disabled — the managed slice never touches it.
+    mdns_snapshot: Option<Arc<dyn koi_common::integration::MdnsSnapshot>>,
 }
 
 // ── Entrypoint ──────────────────────────────────────────────────────
@@ -72,6 +77,7 @@ pub async fn start(
     dashboard_state: DashboardState,
     browser_state: Option<BrowserState>,
     dat_token: String,
+    mdns_snapshot: Option<Arc<dyn koi_common::integration::MdnsSnapshot>>,
 ) -> anyhow::Result<()> {
     let app_state = AppState {
         mdns: cores.mdns.clone(),
@@ -85,6 +91,7 @@ pub async fn start(
         cancel: cancel.clone(),
         http_bind: bind_ip.to_string(),
         mdns_browse: browser_state.as_ref().map(|b| b.meta.clone()),
+        mdns_snapshot,
     };
 
     // ── Dashboard (always mounted) ──
@@ -93,6 +100,7 @@ pub async fn start(
         .route(paths::UNIFIED_STATUS, get(unified_status_handler))
         .route(paths::SHUTDOWN, post(shutdown_handler))
         .route(paths::HOST, get(host_handler))
+        .route(paths::PROMETHEUS_SD, get(prometheus_sd_handler))
         .route("/", get(koi_dashboard::dashboard::get_dashboard))
         .route(
             "/v1/dashboard/snapshot",
@@ -314,7 +322,13 @@ struct NetworkInterface {
 /// System-level OpenAPI doc with paths for top-level endpoints and schemas.
 #[derive(OpenApi)]
 #[openapi(
-    paths(health, unified_status_handler, shutdown_handler, host_handler),
+    paths(
+        health,
+        unified_status_handler,
+        shutdown_handler,
+        host_handler,
+        prometheus_sd_handler
+    ),
     components(schemas(
         UnifiedStatusResponse,
         ShutdownResponse,
@@ -529,6 +543,8 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
         proxy: state.proxy.clone(),
         udp: state.udp.clone(),
         runtime: state.runtime.clone(),
+        // Capability assembly does not read the snapshot bridge.
+        mdns_snapshot: None,
     };
     let capabilities: Vec<koi_common::capability::CapabilityStatus> =
         koi_compose::status::assemble_capabilities(&cores)
@@ -613,6 +629,80 @@ async fn host_handler() -> Json<HostInfoResponse> {
         arch: std::env::consts::ARCH.to_string(),
         interfaces: HostInterfaces { lan },
     })
+}
+
+/// Query parameters for the Prometheus SD endpoint.
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+struct PrometheusSdParams {
+    /// `discovered` to also include LAN-discovered mDNS `_http._tcp` services.
+    /// Absent/anything else returns only Koi-managed targets.
+    include: Option<String>,
+}
+
+#[utoipa::path(get, path = "/v1/sd/prometheus", tag = "system",
+    summary = "Prometheus HTTP service discovery",
+    params(PrometheusSdParams),
+    responses((status = 200, description = "Array of Prometheus target groups",
+        content_type = "application/json")))]
+async fn prometheus_sd_handler(
+    Extension(state): Extension<AppState>,
+    axum::extract::Query(params): axum::extract::Query<PrometheusSdParams>,
+) -> Response {
+    use crate::adapters::prometheus_sd::{build_target_groups, Slice};
+
+    let slice = Slice::from_query(params.include.as_deref());
+
+    // Snapshot each source (no locks held across await beyond the core's own).
+    let health = match &state.health {
+        Some(rt) => rt.core().snapshot().await.services,
+        None => Vec::new(),
+    };
+    let instances = match &state.runtime {
+        Some(rt) => rt.list_instances().await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    // The certmesh roster is read from disk via the bridge — cheap and lock-free.
+    let members = match &state.certmesh {
+        Some(core) => {
+            use koi_common::integration::CertmeshSnapshot;
+            koi_compose::bridges::CertmeshBridge::new(core.clone()).active_members()
+        }
+        None => Vec::new(),
+    };
+    let discovered = match (slice, &state.mdns_snapshot) {
+        (Slice::WithDiscovered, Some(snap)) => snap.cached_records(),
+        _ => Vec::new(),
+    };
+
+    let groups = build_target_groups(
+        &health,
+        &instances,
+        &members,
+        &discovered,
+        slice,
+        chrono::Utc::now(),
+    );
+
+    // Prometheus http_sd requires a 200 with Content-Type: application/json and a
+    // JSON array body. Build it explicitly so the content type is exact even on the
+    // empty `[]` case.
+    match serde_json::to_string(&groups) {
+        Ok(body) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            body,
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "Prometheus SD serialization failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                String::from("[]"),
+            )
+                .into_response()
+        }
+    }
 }
 
 #[utoipa::path(post, path = "/v1/admin/shutdown", tag = "system",
@@ -789,6 +879,98 @@ mod tests {
         assert!(
             paths.contains(&"/v1/udp/status"),
             "missing /v1/udp/status: {paths:?}"
+        );
+    }
+
+    // ── Prometheus HTTP SD endpoint ──
+    //
+    // An AppState with all-None cores models a fresh daemon: the endpoint must
+    // still return 200 + application/json + an empty array (Prometheus treats a
+    // missing array as an error, so `[]` is the contract for "nothing yet").
+
+    /// AppState with every capability absent — the empty-daemon fixture.
+    fn empty_app_state() -> AppState {
+        AppState {
+            mdns: None,
+            certmesh: None,
+            dns: None,
+            health: None,
+            proxy: None,
+            udp: None,
+            runtime: None,
+            started_at: std::time::Instant::now(),
+            cancel: CancellationToken::new(),
+            http_bind: "127.0.0.1".to_string(),
+            mdns_browse: None,
+            mdns_snapshot: None,
+        }
+    }
+
+    fn prometheus_test_router(state: AppState) -> Router {
+        Router::new()
+            .route(paths::PROMETHEUS_SD, get(prometheus_sd_handler))
+            .layer(Extension(state))
+    }
+
+    #[tokio::test]
+    async fn prometheus_sd_is_json_content_type() {
+        let app = prometheus_test_router(empty_app_state());
+        let req = Request::get(paths::PROMETHEUS_SD)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            ct.starts_with("application/json"),
+            "content-type should be application/json, got: {ct}"
+        );
+    }
+
+    #[tokio::test]
+    async fn prometheus_sd_empty_daemon_returns_empty_array() {
+        let app = prometheus_test_router(empty_app_state());
+        let req = Request::get(paths::PROMETHEUS_SD)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        // Must be a valid JSON array, and empty on a fresh daemon.
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.is_array(), "body should be a JSON array: {json}");
+        assert_eq!(json.as_array().unwrap().len(), 0, "empty daemon → []");
+    }
+
+    #[tokio::test]
+    async fn prometheus_sd_get_is_unauthenticated() {
+        // The endpoint must be reachable without the DAT token (like /healthz).
+        // GET is exempt from the auth middleware; this guards that it stays a GET.
+        let app = prometheus_test_router(empty_app_state()).layer(middleware::from_fn(
+            move |req, next| {
+                let token = Arc::new("never-supplied".to_string());
+                dat_auth_middleware(req, next, token)
+            },
+        ));
+        let req = Request::get(paths::PROMETHEUS_SD)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn openapi_spec_contains_prometheus_sd_path() {
+        let spec = build_openapi();
+        let paths: Vec<&str> = spec.paths.paths.keys().map(|k| k.as_str()).collect();
+        assert!(
+            paths.contains(&"/v1/sd/prometheus"),
+            "missing /v1/sd/prometheus: {paths:?}"
         );
     }
 

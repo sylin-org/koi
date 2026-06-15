@@ -114,6 +114,7 @@ async fn build_snapshot_value(cores: &DomainCores) -> serde_json::Value {
         proxy: cores.proxy.clone(),
         udp: cores.udp.clone(),
         runtime: cores.runtime.clone(),
+        mdns_snapshot: None,
     };
     let capabilities: Vec<CapabilityCard> =
         koi_compose::status::assemble_capabilities(&domain_cores)

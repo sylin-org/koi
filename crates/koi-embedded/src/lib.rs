@@ -835,6 +835,7 @@ async fn build_embedded_snapshot(
         proxy,
         udp,
         runtime,
+        mdns_snapshot: None,
     };
     let capabilities: Vec<serde_json::Value> = koi_compose::status::assemble_capabilities(&cores)
         .await

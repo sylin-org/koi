@@ -33,6 +33,11 @@ pub struct Cores {
     pub proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
     pub udp: Option<Arc<koi_udp::UdpRuntime>>,
     pub runtime: Option<Arc<koi_runtime::RuntimeCore>>,
+    /// The shared mDNS cached-records snapshot bridge (same instance DNS/health
+    /// consume). Exposed so presentation adapters (e.g. the Prometheus SD endpoint's
+    /// `?include=discovered` slice) can read cached records without spawning a second
+    /// meta-browse. `None` when mDNS is disabled.
+    pub mdns_snapshot: Option<Arc<dyn MdnsSnapshot>>,
 }
 
 /// Capability flags + inputs needed to build the cores. A daemon-`Config` subset, kept here
@@ -326,6 +331,7 @@ pub async fn build_cores(
         proxy: proxy_runtime,
         udp: udp_runtime,
         runtime: runtime_core,
+        mdns_snapshot: mdns_bridge,
     };
 
     // ── Certmesh role background loops (caller-invariant) ──

@@ -279,6 +279,7 @@ async fn status_handler(Extension(state): Extension<EmbeddedState>) -> Json<Stat
         proxy: state.proxy.clone(),
         udp: state.udp.clone(),
         runtime: state.runtime.clone(),
+        mdns_snapshot: None,
     };
     let capabilities = koi_compose::status::assemble_capabilities(&cores)
         .await

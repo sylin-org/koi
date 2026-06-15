@@ -101,9 +101,20 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         let ds = dashboard_state.clone();
         let bs = browser_state.clone();
         let dat = dat_token.clone();
+        let mdns_snap = cores.mdns_snapshot.clone();
         tasks.push(tokio::spawn(async move {
-            if let Err(e) =
-                adapters::http::start(c, bind_ip, port, cancel_token, started_at, ds, bs, dat).await
+            if let Err(e) = adapters::http::start(
+                c,
+                bind_ip,
+                port,
+                cancel_token,
+                started_at,
+                ds,
+                bs,
+                dat,
+                mdns_snap,
+            )
+            .await
             {
                 tracing::error!(error = %e, "HTTP adapter failed");
             }
