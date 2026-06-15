@@ -123,7 +123,7 @@ koi trust list                       # confirm it's there
 leaf/server cert, so you can't install the wrong file as a root. It tracks only the roots
 it installed and never touches the rest of your OS store; `koi trust remove <name>` undoes
 it. Full details and the step-ca/Caddy/mkcert variations are in the
-[trust how-to](../integrations.md#trust-root-distribution).
+[trust how-to](../trust.md).
 
 Now, from the client, the host's name is trusted:
 
@@ -196,6 +196,6 @@ koi trust remove <name>     # the name from `koi trust list`
 - [proxy.md](../proxy.md) — how the proxy resolves its cert and the per-entry override.
 - [certmesh.md](../certmesh.md) — what the member cert covers, unlock, the CA file layout.
 - [acme.md](../acme.md) — getting an in-zone cert (the warning-free `app.lan` path).
-- [trust how-to](../integrations.md#trust-root-distribution) — `koi trust` in full.
+- [trust how-to](../trust.md) — `koi trust` in full.
 - [security model](../reference/security-model.md) — the daemon access token, for any
   mutating HTTP call you script instead of using the CLI.

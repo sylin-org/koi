@@ -30,10 +30,11 @@ Learning-oriented, follow top to bottom:
 | **Issue certs to Caddy/Traefik/lego** | [ACME guide](guides/acme.md) |
 | **Let an AI agent see my LAN** | [MCP guide](guides/mcp.md) |
 | **Run Koi with my containers** | [Containers](../CONTAINERS.md) · [runtime](guides/runtime.md) · [recipes](#recipes) |
-| **Call the HTTP API from a script** | [HTTP API reference](reference/http-api.md) · [security model (the token)](reference/security-model.md) |
+| **Call the HTTP API from a script** | [API authentication](guides/api-authentication.md) · [HTTP API reference](reference/http-api.md) · [security model](reference/security-model.md) |
+| **Install it as a service / fix a problem** | [Install & service](guides/install-and-service.md) · [Troubleshooting](guides/troubleshooting.md) · [Upgrading](guides/upgrading.md) |
 | **Embed Koi in a Rust app** | [Embedded guide](guides/embedded.md) |
 | **Keep my existing DNS / proxy** | [DNS coexistence](guides/dns-coexistence.md) · [integrations](guides/integrations.md) |
-| **Distribute a CA root** | [Trust (root distribution)](guides/integrations.md#trust-root-distribution) |
+| **Distribute a CA root** | [Trust & CA-root distribution](guides/trust.md) |
 
 ---
 
@@ -46,13 +47,16 @@ Task-oriented, one goal each.
 
 **Trust & serving** — [certmesh (private CA)](guides/certmesh.md) ·
 [certmesh HA & recovery](guides/certmesh-ha-recovery.md) · [ACME server](guides/acme.md) ·
-[proxy (TLS endpoint)](guides/proxy.md)
+[trust (root distribution)](guides/trust.md) · [proxy (TLS endpoint)](guides/proxy.md)
 
 **Operate** — [health checks](guides/health.md) · [UDP bridging](guides/udp.md) ·
-[runtime / containers](guides/runtime.md) · [system: install, service, status](guides/system.md)
+[runtime / containers](guides/runtime.md) · [install & service](guides/install-and-service.md) ·
+[system status & config](guides/system.md) · [troubleshooting](guides/troubleshooting.md) ·
+[upgrading](guides/upgrading.md)
 
-**Integrate & extend** — [integrations (Prometheus, Traefik/Caddy labels, trust)](guides/integrations.md) ·
-[MCP (for AI agents)](guides/mcp.md) · [embedded (Rust library)](guides/embedded.md)
+**Integrate & extend** — [integrations (Prometheus, Traefik/Caddy labels)](guides/integrations.md) ·
+[API authentication](guides/api-authentication.md) · [MCP (for AI agents)](guides/mcp.md) ·
+[embedded (Rust library)](guides/embedded.md)
 
 ### Recipes
 

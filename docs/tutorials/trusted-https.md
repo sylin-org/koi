@@ -142,7 +142,7 @@ koi trust list
 koi trust remove koi-koi-root        # untrust later — every door has an exit
 ```
 
-(`koi trust` and its interop with step-ca / mkcert / Caddy roots is in the [integrations guide](../guides/integrations.md#trust-root-distribution).)
+(`koi trust` and its interop with step-ca / mkcert / Caddy roots is in the [trust guide](../guides/trust.md).)
 
 > **`koi trust` needs Koi on C, but C never joins the mesh.** Installing the binary just to run one `trust install` is the easy path. If you can't put Koi on C at all, you can still trust `koi-root.pem` by hand through the OS's normal "add a trusted root" UI / `update-ca-certificates` flow — `koi trust` is the convenience, not a requirement.
 
@@ -197,7 +197,7 @@ The full ACME walk-through — scope, wildcards, and the bootstrap recipe — is
 - [proxy guide](../guides/proxy.md) — cert resolution order, remote backends, WebSockets/gRPC passthrough.
 - [DNS guide](../guides/dns.md) — the three record sources, the `.lan` zone, port 53.
 - [ACME guide](../guides/acme.md) — get certs for any in-zone name with the tools you already run.
-- [integrations: trust](../guides/integrations.md#trust-root-distribution) — `koi trust` across step-ca / mkcert / Caddy.
+- [trust guide](../guides/trust.md) — `koi trust` across step-ca / mkcert / Caddy.
 - [security model](../reference/security-model.md) — the daemon access token (`x-koi-token`), bind addresses, what is and isn't protected.
 
 > **A note on the API.** Everything above used the CLI, which reads the daemon's access token for you. If you script these steps over HTTP instead, mutating calls (`POST`/`PUT`/`DELETE` — e.g. `/v1/dns/add`, `/v1/proxy/add`, `/v1/certmesh/join`) need the token in an `x-koi-token` header. `koi token show` prints it; `koi token write <path>` writes a `0600` file for containers. See the [security model](../reference/security-model.md) for the details.

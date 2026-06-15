@@ -182,7 +182,7 @@ Local-only (touches the OS certificate store directly; no daemon). `install`
 validates that the PEM is a real CA certificate and rejects a server/leaf cert.
 Koi tracks only the roots it installed (`state/trust.json`) and never enumerates
 or mutates the rest of the OS store. `install`/`remove` require elevated
-privileges. See the [integrations guide](../guides/integrations.md#trust-root-distribution).
+privileges. See the [trust guide](../guides/trust.md).
 
 ---
 

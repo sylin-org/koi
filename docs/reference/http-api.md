@@ -18,12 +18,13 @@ containers or other hosts, start the daemon with `--http-bind bridge` / `<ip>` /
 At startup, the daemon generates a fresh random token and writes it to the breadcrumb file (`koi.endpoint`) with owner-only permissions.
 - **GET / HEAD / OPTIONS** requests are unauthenticated (exempt from token checks) — **except `/v1/mcp`**, which requires the token on *every* method (including its server→client SSE GET); see the MCP note below.
 - **All mutations (POST, PUT, DELETE)** require the token to be sent in the `x-koi-token` header (except `/v1/certmesh/join`, which uses standard TOTP credentials during bootstrap).
-- **Server-Sent Events (SSE)** endpoints (which cannot set custom headers) accept the token in the `?token=` query parameter.
+- **Server-Sent Events (SSE)** endpoints are `GET`, so they are unauthenticated on the open methods above — except `/v1/mcp`'s server→client SSE stream, which (like the rest of `/v1/mcp`) requires the `x-koi-token` header.
 
-Example header:
+The header value is the **bare token** — the breadcrumb file stores it with a `dat:` line prefix, but that prefix is **not** part of the header value (clients strip it):
 ```http
-x-koi-token: dat:8a31…base64url…
+x-koi-token: 8a31…base64url…
 ```
+See the [API authentication guide](../guides/api-authentication.md) for the per-OS recipe to read the token and make an authenticated write.
 
 Interactive API docs are available at `GET /docs` (Scalar UI).
 
