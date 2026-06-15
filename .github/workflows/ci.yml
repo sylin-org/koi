@@ -122,3 +122,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Lint surface ledger
         run: bash scripts/lint-surfaces.sh docs/SURFACES.md
+      - name: No downstream-consumer names in user-facing docs (STACK-0001)
+        run: bash scripts/check-doc-leaks.sh

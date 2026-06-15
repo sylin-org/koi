@@ -695,7 +695,7 @@ curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/health/add \
 
 ```bash
 curl -s http://$KOI_HOST:5641/v1/health/status
-curl -s http://$KOI_HOST:5641/v1/health/checks
+curl -s http://$KOI_HOST:5641/v1/health/list
 curl -s -X DELETE -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/health/remove/db
 ```
 

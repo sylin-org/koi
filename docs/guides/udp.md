@@ -1,6 +1,6 @@
 # UDP - Datagram Bridging
 
-Docker containers on bridge networking can't touch UDP. No multicast, no broadcast, no raw sockets. If your containerized application needs to participate in a Garden mesh, send Wake-on-LAN packets, or receive SSDP discovery traffic, it's out of luck - the bridge network simply doesn't forward those frames.
+Docker containers on bridge networking can't touch UDP. No multicast, no broadcast, no raw sockets. If your containerized application needs to participate in a peer-to-peer UDP mesh, send Wake-on-LAN packets, or receive SSDP discovery traffic, it's out of luck - the bridge network simply doesn't forward those frames.
 
 Koi's UDP capability bridges this gap. It binds real UDP sockets on the host and relays datagrams over HTTP and SSE - the same pattern Koi already uses for mDNS (multicast → HTTP), DNS (UDP/TCP → HTTP), and proxy (TLS listeners → HTTP). UDP bridging extends this philosophy to arbitrary datagram traffic.
 
@@ -272,7 +272,7 @@ UDP bridging is for **control-plane and discovery traffic** - small, infrequent 
 
 | Use case                             | Fits | Why                                |
 | ------------------------------------ | ---- | ---------------------------------- |
-| Garden mesh chirps/beacons (`:7184`) | Yes  | ~3 KB datagrams, 10–30s intervals  |
+| Peer-to-peer mesh chirps/beacons     | Yes  | ~3 KB datagrams, 10–30s intervals  |
 | SSDP/UPnP discovery                  | Yes  | Small, infrequent                  |
 | Wake-on-LAN                          | Yes  | Fire-and-forget sends              |
 | CoAP (IoT)                           | Yes  | Small datagrams                    |

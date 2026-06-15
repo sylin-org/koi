@@ -178,4 +178,4 @@ If the resolver is running but names aren't resolving, make sure your system is 
 
 ### Names from certmesh or mDNS not appearing
 
-These sources only populate when their respective capabilities are enabled and active. Check that mDNS discovery is running (`koi mdns status`) or that certmesh members have SANs on their certificates (`koi certmesh status`).
+These sources only populate when their respective capabilities are enabled and active. Check that mDNS discovery is running (`koi mdns admin status`) or that certmesh members have SANs on their certificates (`koi certmesh status`).
