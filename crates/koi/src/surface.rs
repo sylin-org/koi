@@ -1169,10 +1169,13 @@ or --exec for a custom script.",
         name: "certmesh promote",
         summary: "Promote a member to standby CA",
         long_description: "\
-Promotes a mesh member to standby CA role. The standby receives a copy
-of the CA signing key and can take over if the primary CA goes offline.
+Promotes a mesh member to standby CA role. The standby receives an
+encrypted copy of the CA signing key so it can issue certificates if the
+original CA goes away.
 
-This is the key operation for high-availability certmesh deployments.",
+Promotion is a deliberate, manual operator action - there is no automatic
+failover or election. A dead CA pauses renewals (30-day certs give days of
+runway); it does not cause an outage.",
         category: KoiCategory::Trust,
         tags: &[KoiTag::Mutating],
         scope: KoiScope::Admin,
@@ -1231,7 +1234,7 @@ until enrollment is re-opened. Existing members are unaffected.",
         confirmation: None,
     })
     .add(CommandDef {
-        name: "certmesh rotate-totp",
+        name: "certmesh rotate-auth",
         summary: "Rotate the TOTP enrollment secret",
         long_description: "\
 Generates a new TOTP secret for enrollment authentication. The old

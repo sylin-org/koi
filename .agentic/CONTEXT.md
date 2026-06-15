@@ -226,7 +226,6 @@ koi certmesh join [endpoint]     # Join existing mesh
 koi certmesh status              # Mesh status
 koi certmesh unlock              # Decrypt CA key
 koi certmesh log                 # Audit log
-koi certmesh compliance          # Compliance summary
 koi certmesh set-hook            # Set reload hook
 koi certmesh promote [endpoint]  # Promote standby CA
 koi certmesh open-enrollment     # Open enrollment window

@@ -51,7 +51,7 @@ pub struct CoreSpec {
     pub dns_config: koi_dns::DnsConfig,
     /// Runtime backend selector string ("auto", "docker", "podman", …).
     pub runtime: String,
-    /// HTTP port — used by the certmesh CA announcement / heartbeat loops.
+    /// Daemon HTTP port (the local management/API port the daemon binds).
     pub http_port: u16,
 }
 

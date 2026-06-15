@@ -502,7 +502,7 @@ async fn run_http_tests(
     harness.pass("http: certmesh enrollment open/close");
 
     let rotate: serde_json::Value = client
-        .post(format!("{base_url}/v1/certmesh/rotate-totp"))
+        .post(format!("{base_url}/v1/certmesh/rotate-auth"))
         .json(&serde_json::json!({"passphrase": "http-test-pass"}))
         .send()
         .await?

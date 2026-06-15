@@ -70,11 +70,9 @@ Route handlers: `crates/koi-certmesh/src/http.rs`
 | POST | `/v1/certmesh/promote` | Promote standby (CA key transfer) |
 | POST | `/v1/certmesh/renew` | Trigger certificate renewal |
 | POST | `/v1/certmesh/revoke` | Revoke a member's certificate |
-| GET | `/v1/certmesh/roster` | Get signed roster manifest |
 | POST | `/v1/certmesh/health` | Member health heartbeat (pinned CA fingerprint) |
 | POST | `/v1/certmesh/rotate-auth` | Rotate enrollment auth credential |
 | GET | `/v1/certmesh/log` | Read audit log entries |
-| GET | `/v1/certmesh/compliance` | Compliance summary |
 | POST | `/v1/certmesh/open-enrollment` | Open enrollment window |
 | POST | `/v1/certmesh/close-enrollment` | Close enrollment window |
 | POST | `/v1/certmesh/backup` | Create encrypted backup |
@@ -248,7 +246,6 @@ Streaming responses include a `status` field:
 | `koi certmesh status` | Client | Show mesh status |
 | `koi certmesh unlock` | Client | Decrypt CA key |
 | `koi certmesh log` | Client | Show audit log |
-| `koi certmesh compliance` | Client | Show compliance summary |
 | `koi certmesh set-hook --reload CMD` | Client | Set reload hook |
 | `koi certmesh promote [endpoint]` | Client | Promote standby CA |
 | `koi certmesh open-enrollment` | Client | Open enrollment window |

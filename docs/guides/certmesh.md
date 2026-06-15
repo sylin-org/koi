@@ -22,24 +22,25 @@ This launches an interactive **ceremony** - a server-driven wizard where all bra
 
 The ceremony walks through these steps:
 
-1. **Choose a trust profile** - who is this mesh for? (Just Me, My Team, My Organization, or Custom)
-2. **Operator name** - prompted when the profile requires approval (team, organization, custom)
+1. **Choose a posture** - who is this mesh for? Pick one of three named presets (**Just Me**, **My Team**, **My Organization**) or **Custom** to set the underlying knobs yourself. The presets are just UX labels; what gets stored is two booleans (see "Choosing a posture" below)
+2. **Operator name** - prompted when the posture requires approval (My Team, My Organization, or a Custom posture with approval on)
 3. **Entropy collection** - the server generates 32 bytes of entropy; you contribute more by mashing keys on the keyboard. Both are combined via SHA-256 to seed passphrase generation
 4. **Set the CA passphrase** - three options:
    - **Keep the suggestion** (default) - an EFF-wordlist passphrase is generated from the combined entropy
    - **Generate another** - re-derives a new passphrase from fresh entropy
    - **Type my own** - enter and confirm a passphrase of your choice (minimum 8 characters)
-5. **Unlock method** (custom profile only) - choose how the CA can be unlocked on boot:
+5. **Unlock method** (Custom only) - choose how the CA can be unlocked on boot:
    - `auto` - CA unlocks automatically on daemon start (single-user homelabs)
-   - `token` - requires a TOTP code or FIDO2 tap to unlock
-   - `passphrase` - requires the CA passphrase to unlock (default for team/org)
-6. **Enrollment auth setup** - TOTP by default. Shows a QR code for your authenticator app. You must enter a valid code to verify your setup. After two failed attempts, you can regenerate the secret. FIDO2 support (USB security keys) is also available.
-7. **Unlock token registration** (if unlock method = `token`) - registers a separate TOTP secret or FIDO2 key for CA unlock (distinct from enrollment auth)
+   - `token` - requires a TOTP code to unlock
+   - `passphrase` - requires the CA passphrase to unlock
+   - (The three presets pick this for you: Just Me and My Team auto-unlock; My Organization requires manual unlock.)
+6. **Enrollment auth setup** - TOTP. Shows a QR code for your authenticator app. You must enter a valid code to verify your setup. After two failed attempts, you can regenerate the secret.
+7. **Unlock token registration** (if unlock method = `token`) - registers a separate TOTP secret for CA unlock (distinct from enrollment auth)
 
 After the ceremony completes, Koi:
 
 1. Generates an ECDSA P-256 CA keypair
-2. Encrypts the private key using **envelope encryption**: a random 256-bit master key encrypts the CA key, and the master key is wrapped by each unlock slot (passphrase, auto-unlock, TOTP, and/or FIDO2)
+2. Encrypts the private key using **envelope encryption**: a random 256-bit master key encrypts the CA key, and the master key is wrapped by each unlock slot (passphrase, auto-unlock, and/or TOTP)
 3. Creates a roster with this host as the primary member
 4. Issues a certificate for the local hostname (self-enrollment)
 5. Starts certmesh audit logging
@@ -47,17 +48,23 @@ After the ceremony completes, Koi:
 
 The ceremony design means every step can be replayed or revised before finalization. Press **ESC** at any time to cancel without making changes.
 
-TOTP supports any authenticator app (Google Authenticator, Authy, 1Password, etc.). FIDO2 supports USB security keys (YubiKey, SoloKey, Nitrokey, etc.). You'll need the chosen auth method to enroll new members.
+TOTP supports any authenticator app (Google Authenticator, Authy, 1Password, etc.). You'll need a valid TOTP code to enroll new members.
 
-### Choosing a trust profile
+### Choosing a posture
 
-The profile determines how much ceremony is required to join the mesh. Pick the one that matches your threat model:
+There is no `TrustProfile` type and nothing about a "profile" is persisted. A mesh's security posture is **two booleans** stored in the roster:
 
-| Profile             | Flag value     | Enrollment default | Operator required | Best for                                                |
-| ------------------- | -------------- | ------------------ | ----------------- | ------------------------------------------------------- |
-| **Just Me**         | `just-me`      | Open               | No                | Personal homelab - you control all machines             |
-| **My Team**         | `team`         | Open               | Yes               | Small office or lab - trust but verify                  |
-| **My Organization** | `organization` | Closed             | Yes               | Strict environments - explicit approval for each member |
+- `enrollment_open` - whether new nodes can join right now
+- `requires_approval` - whether a join needs an operator to approve it (and, separately, whether the daemon auto-unlocks the CA on boot)
+
+The wizard offers three **named presets** plus **Custom**. The names are purely UX - each preset just sets those booleans (and the boot-unlock decision) for you:
+
+| Preset              | `--profile`    | enrollment_open | requires_approval | Boot unlock | Best for                                                |
+| ------------------- | -------------- | --------------- | ----------------- | ----------- | ------------------------------------------------------- |
+| **Just Me**         | `just-me`      | open            | no                | auto        | Personal homelab - you control all machines             |
+| **My Team**         | `team`         | open            | yes               | auto        | Small office or lab - trust but verify                  |
+| **My Organization** | `organization` | closed          | yes               | manual      | Strict environments - explicit approval for each member |
+| **Custom**          | _(wizard only)_| you choose      | you choose        | you choose  | Any posture the presets don't cover                     |
 
 ```
 koi certmesh create --profile just-me
@@ -65,26 +72,19 @@ koi certmesh create --profile team --operator "Alice"
 koi certmesh create --profile organization --operator "Security Team"
 ```
 
-The operator field is a human-readable label for audit trails. In the "just-me" profile, you are the operator by default.
+The operator field is a human-readable label for audit trails and is required whenever `requires_approval` is on. In the Just Me preset, you are the operator by default.
 
 ### Interactive wizard + flags
 
 By default, `koi certmesh create` runs the interactive ceremony described above. The ceremony engine handles all branching and validation - the CLI is a generic render loop that works with any ceremony type.
 
-If you choose **Custom** in the profile step, you can explicitly set:
+If you choose **Custom** in the posture step, the wizard prompts you for each knob directly:
 
-- Enrollment at creation: `open` or `closed`
-- Join approval: `required` or `not required`
+- Enrollment at creation: `open` or `closed` (sets `enrollment_open`)
+- Join approval: `required` or `not required` (sets `requires_approval`)
 - Unlock method: `auto`, `token`, or `passphrase`
 
-Standard profiles (Just Me, My Team, My Organization) use sensible defaults:
-
-- **Just Me**: open enrollment, no approval, auto-unlock
-- **My Team**: open enrollment, approval required, auto-unlock
-- **My Organization**: closed enrollment, approval required, passphrase unlock
-
-
-After creation, the ceremony displays authentication setup for enrollment. For TOTP (default), this is a QR code and manual key - scan it with your authenticator app and enter a code to verify. For FIDO2, you'll register your hardware security key. If TOTP verification fails twice, you can regenerate the secret.
+After creation, the ceremony displays the TOTP enrollment auth setup: a QR code and manual key. Scan it with your authenticator app and enter a code to verify. If verification fails twice, you can regenerate the secret.
 
 For non-interactive use (automation), provide flags:
 
@@ -92,13 +92,19 @@ For non-interactive use (automation), provide flags:
 koi certmesh create --profile just-me --enrollment open --require-approval false --passphrase "my-secret"
 ```
 
-`--profile` skips the profile step. `--enrollment` and `--require-approval` override policy defaults. `--passphrase` skips the passphrase step. With `--json`, all required fields must be provided.
+The CLI accepts these `create` flags (the JSON/non-interactive path requires `--profile` and `--passphrase`):
+
+- `--profile <just-me|team|organization>` - select a preset and skip the posture step. **Custom is wizard-only** - there is no `--profile custom`; set the booleans directly with `--enrollment` / `--require-approval` instead.
+- `--operator <name>` - operator label (required when the resulting `requires_approval` is true).
+- `--enrollment <open|closed>` - override the preset's `enrollment_open`.
+- `--require-approval <true|false>` - override the preset's `requires_approval`.
+- `--passphrase <value>` - supply the CA passphrase and skip the passphrase step.
 
 ---
 
 ## Joining the mesh
 
-From a second machine, joining is a single command. Koi discovers the CA automatically via mDNS - the same discovery protocol the rest of Koi uses:
+From a second machine, joining is a single command. With no endpoint, Koi browses the LAN for a `_certmesh._tcp` CA via mDNS (see "Finding the CA"); if it can't find exactly one, it asks you to pass the endpoint directly:
 
 ```
 koi certmesh join
@@ -107,13 +113,13 @@ koi certmesh join
 ```
 Searching for certmesh CA on the local network...
 Found CA: stone-01 Certmesh CA at http://192.168.1.10:5641
-Authenticate to join (TOTP code or tap security key):
+Enter the TOTP code from your authenticator app:
 123456
 Enrolled as: stone-02
 Certificates written to: /var/lib/koi/certs/stone-02
 ```
 
-The flow is intentionally simple because the hard part - proving you're authorized - is handled by the enrollment auth (TOTP code or FIDO2 key tap). The CA verifies the credential, issues a certificate, and enrolls the new member in the roster. No certificate signing requests, no out-of-band key exchange, no manual approval queues (unless you chose the organization profile).
+The flow is intentionally simple because the hard part - proving you're authorized - is handled by the enrollment auth (a TOTP code). The CA verifies the credential, issues a certificate, and enrolls the new member in the roster. No certificate signing requests, no out-of-band key exchange, no manual approval queues (unless the mesh has `requires_approval` set, as the My Organization preset does).
 
 If multiple CAs are found on the network, or the machines aren't on the same broadcast domain, specify the endpoint directly:
 
@@ -134,13 +140,12 @@ koi certmesh unlock
 Koi supports multiple unlock methods via **envelope encryption**. Each method is stored as a slot in `unlock-slots.json`. The unlock ceremony detects which methods are available and prompts accordingly:
 
 - **Passphrase** - always available (the original CA passphrase)
-- **Auto-unlock** - if enabled during creation, the CA unlocks automatically on daemon start. No manual intervention needed. Best for single-user homelabs (the "Just Me" profile enables this by default)
+- **Auto-unlock** - if enabled during creation, the CA unlocks automatically on daemon start. No manual intervention needed. Best for single-user homelabs (the **Just Me** and **My Team** presets enable this by default)
 - **TOTP** - enter a 6-digit code from your authenticator app (if a TOTP unlock slot was registered during creation)
-- **FIDO2** - tap your hardware security key (if a FIDO2 unlock slot was registered)
 
 If only one method is available, it's used directly. If multiple unlock slots exist, the ceremony prompts you to choose.
 
-This is a deliberate security boundary. A machine reboot shouldn't automatically grant certificate-issuing power - unless you've explicitly configured auto-unlock for a single-user profile. While locked, enrollment requests receive a `503 CA locked` response, which is a clear, non-ambiguous signal to waiting clients.
+This is a deliberate security boundary. A machine reboot shouldn't automatically grant certificate-issuing power - unless you've explicitly enabled auto-unlock (the **Just Me** / **My Team** presets do). While locked, enrollment requests receive a `503 CA locked` response, which is a clear, non-ambiguous signal to waiting clients.
 
 ---
 
@@ -151,18 +156,14 @@ koi certmesh status
 ```
 
 ```
-Certificate Mesh Status
-  Profile:    Just Me
-  Enrollment: Open
-  Members:    1 active
-
-  stone-01 (primary, active)
-    Fingerprint: a1b2c3d4...
-    Expires:     2026-03-13
-    Cert path:   %ProgramData%\koi\certs\stone-01
+Certificate mesh: active
+  CA locked:  false
+  Enrollment: open (no approval)
+  Members:    1
+    stone-01 (primary) - active
 ```
 
-This is your at-a-glance view: who's in the mesh, whether enrollment is open or closed, and when certificates expire. JSON output (`--json`) is available for monitoring integrations.
+This is your at-a-glance view: whether the CA is locked, whether enrollment is open or closed (and whether joins need approval), and who's in the mesh. The posture line reflects the two stored booleans (`enrollment_open` + `requires_approval`) - there is no "profile" field to display, because none is persisted. JSON output (`--json`) is available for monitoring integrations.
 
 ### Audit log
 
@@ -200,7 +201,7 @@ The daemon listens on two ports with different security postures:
 | Port | Default | Bind address | Auth | Purpose |
 |------|---------|-------------|------|---------|
 | **5641** | `--port` | `127.0.0.1` (loopback) | DAT header (planned, ADR-011) | Local CLI, dashboard, management API |
-| **5642** | `--mtls-port` | `0.0.0.0` (all interfaces) | mTLS client certificate | Inter-node communication (promote, roster sync, health heartbeat, set-hook, renew) |
+| **5642** | `--mtls-port` | `0.0.0.0` (all interfaces) | mTLS client certificate | Inter-node communication (promote, health heartbeat, set-hook, renew) |
 
 The mTLS port only starts when the CA is initialized and the daemon has self-enrolled. Client certificates must be signed by the certmesh CA. The authenticated Common Name (CN) from the client certificate is used for per-caller authorization — a member can only set hooks for its own hostname, report its own health, and receive its own renewals.
 
@@ -221,9 +222,8 @@ All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 | `GET`  | `/v1/certmesh/status`           | Mesh status, members, CA state        |
 | `POST` | `/v1/certmesh/unlock`           | Decrypt the CA key                    |
 | `PUT`  | `/v1/certmesh/set-hook`         | Configure renewal hook                |
-| `POST` | `/v1/certmesh/promote`          | Promote a member to primary           |
+| `POST` | `/v1/certmesh/promote`          | Promote a member to standby CA        |
 | `POST` | `/v1/certmesh/renew`            | Force certificate renewal             |
-| `GET`  | `/v1/certmesh/roster`           | Full membership roster                |
 | `POST` | `/v1/certmesh/health`           | Mesh health check                     |
 | `POST` | `/v1/certmesh/rotate-auth`      | Rotate the enrollment auth credential |
 | `GET`  | `/v1/certmesh/log`              | Audit log                             |
@@ -262,7 +262,7 @@ Response:
 | -------------------- | ----------- | ---------------------------------------------------- |
 | `ca_not_initialized` | 503         | No CA has been created yet                           |
 | `ca_locked`          | 503         | CA key hasn't been decrypted                         |
-| `invalid_auth`       | 401         | Wrong auth credential (TOTP code or FIDO2 signature) |
+| `invalid_auth`       | 401         | Wrong auth credential (TOTP code)                    |
 | `rate_limited`       | 429         | Too many failed auth attempts                        |
 | `enrollment_closed`  | 403         | Enrollment is closed                                 |
 | `conflict`           | 409         | Hostname already enrolled                            |
@@ -306,28 +306,27 @@ CA state (on the primary):
 certmesh/ca/
   ca-key.enc          # master-key-encrypted CA private key
   ca-cert.pem         # CA certificate (public)
-  unlock-slots.json   # unlock slot table (passphrase, auto-unlock, TOTP, FIDO2)
-  auth.json           # enrollment auth credential (encrypted TOTP secret or FIDO2 public key)
+  unlock-slots.json   # unlock slot table (passphrase, auto-unlock, TOTP)
+  auth.json           # enrollment auth credential (encrypted TOTP secret)
 certmesh/roster.json  # mesh membership roster
 ```
 
-The `unlock-slots.json` file holds the envelope encryption slots. Each slot wraps the same master key using a different method (passphrase, TOTP, FIDO2, or auto-unlock). Legacy deployments without `unlock-slots.json` are auto-migrated on first load.
+The `unlock-slots.json` file holds the envelope encryption slots. Each slot wraps the same master key using a different method (passphrase, auto-unlock, or TOTP). Legacy deployments without `unlock-slots.json` are auto-migrated on first load.
 
 The `fullchain.pem` is what most applications want - it includes both the service certificate and the CA certificate, which is what `nginx`, `traefik`, and `curl --cacert` expect.
 
 ---
 
-## mDNS self-announcement
+## Finding the CA
 
-When the daemon starts with both mDNS and certmesh enabled, Koi automatically announces the CA via mDNS as `_certmesh._tcp`. This is how `koi certmesh join` discovers the CA automatically - it's mDNS all the way down.
+`koi certmesh join` and `koi certmesh promote` both take an optional endpoint. When you omit it, they browse the LAN for `_certmesh._tcp` over mDNS for a few seconds and use the single CA they find:
 
-The announcement includes TXT records:
+```
+koi certmesh join                       # browse for the CA
+koi certmesh join http://stone-01:5641  # or point at it directly
+```
 
-- `role=primary`
-- `fingerprint=<CA fingerprint>`
-- `profile=<trust profile>`
-
-This means you can also discover certmesh CAs with `koi mdns discover certmesh` - a nice way to check what's advertising before you join.
+The CA does **not** run a background self-announce / absence-watch loop - that machinery was removed along with automatic failover. The daemon's own management endpoint is still recorded locally in the breadcrumb file (`koi.endpoint`), which is how local CLI commands reach the running daemon. For cross-machine `join`/`promote`, passing the endpoint explicitly is the most reliable path; the mDNS browse is a convenience that depends on the CA being reachable and advertised on the same broadcast domain.
 
 ---
 
@@ -339,7 +338,21 @@ If a machine is compromised, decommissioned, or simply no longer trusted, revoke
 koi certmesh revoke stone-02 --reason "decommissioned"
 ```
 
-This marks the member as revoked in the roster and records the event in the audit log. The revoked host's certificate remains on disk but will no longer be renewed, and other members can check revocation status.
+This marks the member as revoked in the roster and records the event in the audit log. The revoked host's certificate remains on disk and will no longer be renewed - so it stops working once it expires (within the 30-day cert lifetime). Revocation is **roster state**, not a network-wide CRL or OCSP push: there is no revocation list distributed to other members. The short certificate lifetime is the bound on a revoked member's remaining access (see "What certmesh deliberately does not do").
+
+---
+
+## High availability and promotion
+
+Certmesh has one continuity primitive: **manual promotion**. You promote a member to a standby CA, which transfers an encrypted copy of the CA signing key so that node can issue certificates if the original CA goes away:
+
+```
+koi certmesh promote http://stone-01:5641
+```
+
+Promotion is a **deliberate operator action**, not an automatic election. There is no absence-watch loop, no lexicographic tiebreaker, and no background roster sync - that machinery was removed. Promotion only happens when you run the command.
+
+Manual is fine here because of how certmesh degrades. Member certificates live for 30 days and are renewed well before expiry. If the CA goes offline, **renewals pause - they do not fail closed**. Existing certificates keep working until they near expiry, which gives you days of runway to either bring the original CA back or promote a standby on your own schedule. A dead CA is a maintenance task, not an outage, so the complexity and failure modes of automatic failover are not justified.
 
 ---
 
@@ -380,3 +393,14 @@ koi certmesh destroy --json
 ```json
 { "destroyed": true }
 ```
+
+---
+
+## What certmesh deliberately does not do
+
+Certmesh is intentionally small. Knowing what it does *not* do is as important as knowing what it does:
+
+- **No network-wide revocation (CRL/OCSP).** Revocation is roster state only: a revoked member is removed from the roster and its certificate is never renewed. Already-issued, still-valid certificates are **not** actively revoked across the network. The 30-day certificate lifetime is the bound on a revoked member's remaining access.
+- **No automatic failover.** Continuity is the manual `koi certmesh promote`. There is no absence-watch, no automatic election, and no tiebreaker. A dead CA pauses renewals (days of runway), it does not cause an outage.
+- **No enterprise compliance or audit-export endpoint.** There is no compliance summary and no policy/scope engine. The audit trail is the append-only log (`koi certmesh log`) and the live view is `koi certmesh status` - use those.
+- **No FIDO2 / hardware-key auth.** Enrollment and unlock use TOTP and passphrase only. The extension point is the `AuthAdapter` trait in `koi-crypto` (`adapter_by_name`): a future hardware-key method would re-enter through there rather than as special-cased code.

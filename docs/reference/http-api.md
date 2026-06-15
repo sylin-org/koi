@@ -233,8 +233,7 @@ data: {"event":"removed","service":{"name":"...","type":"..."}}
 | POST   | `/v1/certmesh/renew`    | Renew a member's certificate  |
 | POST   | `/v1/certmesh/revoke`   | Revoke a member's certificate |
 | PUT    | `/v1/certmesh/set-hook` | Set renewal hook command      |
-| POST   | `/v1/certmesh/promote`  | Promote standby to primary CA |
-| GET    | `/v1/certmesh/roster`   | Signed roster manifest        |
+| POST   | `/v1/certmesh/promote`  | Promote a member to standby CA |
 | POST   | `/v1/certmesh/health`   | CA fingerprint health check   |
 
 ### Backup/restore

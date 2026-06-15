@@ -49,22 +49,11 @@ pub enum CertmeshError {
     #[error("invalid backup: {0}")]
     BackupInvalid(String),
 
-    // Phase 3 - Failover + Lifecycle
-    #[error("not a standby: {0}")]
-    NotStandby(String),
-
     #[error("promotion failed: {0}")]
     PromotionFailed(String),
 
     #[error("renewal failed for {hostname}: {reason}")]
     RenewalFailed { hostname: String, reason: String },
-
-    #[error("invalid roster manifest signature")]
-    InvalidManifest,
-
-    // Phase 4 - Enrollment Policy
-    #[error("scope violation: {0}")]
-    ScopeViolation(String),
 
     #[error("unlock slot not configured: {0}")]
     NoSlotFound(String),
@@ -115,11 +104,8 @@ impl From<&CertmeshError> for ErrorCode {
             CertmeshError::Io(_) => ErrorCode::IoError,
             CertmeshError::Internal(_) => ErrorCode::Internal,
             CertmeshError::BackupInvalid(_) => ErrorCode::InvalidPayload,
-            CertmeshError::NotStandby(_) => ErrorCode::NotStandby,
             CertmeshError::PromotionFailed(_) => ErrorCode::PromotionFailed,
             CertmeshError::RenewalFailed { .. } => ErrorCode::RenewalFailed,
-            CertmeshError::InvalidManifest => ErrorCode::InvalidManifest,
-            CertmeshError::ScopeViolation(_) => ErrorCode::ScopeViolation,
             CertmeshError::ApprovalDenied => ErrorCode::ApprovalDenied,
             CertmeshError::ApprovalTimeout => ErrorCode::ApprovalTimeout,
             CertmeshError::ApprovalUnavailable => ErrorCode::ApprovalUnavailable,
@@ -204,12 +190,6 @@ mod tests {
                 ErrorCode::InvalidPayload,
                 400,
             ),
-            // Phase 3
-            (
-                CertmeshError::NotStandby("stone-01".into()),
-                ErrorCode::NotStandby,
-                403,
-            ),
             (
                 CertmeshError::PromotionFailed("transfer error".into()),
                 ErrorCode::PromotionFailed,
@@ -222,17 +202,6 @@ mod tests {
                 },
                 ErrorCode::RenewalFailed,
                 500,
-            ),
-            (
-                CertmeshError::InvalidManifest,
-                ErrorCode::InvalidManifest,
-                400,
-            ),
-            // Phase 4
-            (
-                CertmeshError::ScopeViolation("hostname outside domain".into()),
-                ErrorCode::ScopeViolation,
-                403,
             ),
             (
                 CertmeshError::NoSlotFound("TOTP".into()),
