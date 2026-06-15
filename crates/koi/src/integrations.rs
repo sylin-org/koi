@@ -16,18 +16,18 @@ use koi_common::types::{ServiceRecord, META_QUERY};
 // ── CertmeshBridge ─────────────────────────────────────────────────
 
 pub struct CertmeshBridge {
-    _core: Arc<koi_certmesh::CertmeshCore>,
+    core: Arc<koi_certmesh::CertmeshCore>,
 }
 
 impl CertmeshBridge {
     pub fn new(core: Arc<koi_certmesh::CertmeshCore>) -> Arc<Self> {
-        Arc::new(Self { _core: core })
+        Arc::new(Self { core })
     }
 }
 
 impl integration::CertmeshSnapshot for CertmeshBridge {
     fn active_members(&self) -> Vec<integration::MemberSummary> {
-        let roster_path = koi_certmesh::CertmeshPaths::default().roster_path();
+        let roster_path = self.core.paths().roster_path();
         let Ok(roster) = koi_certmesh::roster::load_roster(&roster_path) else {
             return Vec::new();
         };

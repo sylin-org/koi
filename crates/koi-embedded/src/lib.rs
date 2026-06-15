@@ -700,69 +700,76 @@ impl KoiEmbedded {
 fn init_certmesh_core(
     data_dir: Option<&std::path::Path>,
 ) -> Option<Arc<koi_certmesh::CertmeshCore>> {
-    let paths = match data_dir {
-        Some(dir) => koi_certmesh::CertmeshPaths::with_data_dir(dir.to_path_buf()),
-        None => koi_certmesh::CertmeshPaths::default(),
-    };
+    // Composition root: resolve the data dir once (Some -> injected dir,
+    // None -> the one embedded default) and thread it into every branch so a
+    // custom data_dir is honoured end-to-end, including the early returns.
+    let paths = koi_certmesh::CertmeshPaths::with_data_dir(
+        koi_common::paths::koi_data_dir_with_override(data_dir),
+    );
     if !paths.is_ca_initialized() {
-        return Some(Arc::new(koi_certmesh::CertmeshCore::uninitialized()));
+        return Some(Arc::new(
+            koi_certmesh::CertmeshCore::uninitialized_with_paths(paths),
+        ));
     }
 
     let roster_path = paths.roster_path();
     let roster = match koi_certmesh::roster::load_roster(&roster_path) {
         Ok(r) => r,
         Err(_) => {
-            return Some(Arc::new(koi_certmesh::CertmeshCore::uninitialized()));
+            return Some(Arc::new(
+                koi_certmesh::CertmeshCore::uninitialized_with_paths(paths),
+            ));
         }
     };
 
     let profile = roster.metadata.trust_profile;
 
     // ── Auto-unlock at init: single source of truth ─────────────
-    // If the auto-unlock key file exists, boot the core already
-    // unlocked.  This collapses the "create locked -> read key ->
-    // unlock" three-step into a single atomic construction.
-    let resolved_data_dir = koi_common::paths::koi_data_dir_with_override(data_dir);
-    let auto_key_path = resolved_data_dir.join("auto-unlock-key");
-    if let Ok(pp) = std::fs::read_to_string(&auto_key_path) {
-        if !pp.is_empty() {
-            match koi_certmesh::ca::load_ca(&pp, &paths) {
-                Ok(ca_state) => {
-                    // Reload roster (fresh copy for the new Arc)
-                    if let Ok(fresh_roster) = koi_certmesh::roster::load_roster(&roster_path) {
-                        let auth_path = paths.auth_path();
-                        let auth = if auth_path.exists() {
-                            std::fs::read_to_string(&auth_path)
-                                .ok()
-                                .and_then(|json| {
-                                    serde_json::from_str::<koi_crypto::auth::StoredAuth>(&json).ok()
-                                })
-                                .and_then(|stored| stored.unlock(&pp).ok())
-                        } else {
-                            None
-                        };
+    // The auto-unlock passphrase lives in the koi-crypto vault (written by
+    // CertmeshCore::save_auto_unlock_key_at, which deletes any legacy
+    // plaintext file). Retrieve it through the domain crate so this boot
+    // path can never drift from where the key is actually stored. When a
+    // key is present, boot the core already unlocked — collapsing the
+    // "create locked -> read key -> unlock" three-step into a single
+    // atomic construction.
+    if let Ok(Some(pp)) = koi_certmesh::CertmeshCore::read_auto_unlock_key(&paths) {
+        match koi_certmesh::ca::load_ca(&pp, &paths) {
+            Ok(ca_state) => {
+                // Reload roster (fresh copy for the new Arc)
+                if let Ok(fresh_roster) = koi_certmesh::roster::load_roster(&roster_path) {
+                    let auth_path = paths.auth_path();
+                    let auth = if auth_path.exists() {
+                        std::fs::read_to_string(&auth_path)
+                            .ok()
+                            .and_then(|json| {
+                                serde_json::from_str::<koi_crypto::auth::StoredAuth>(&json).ok()
+                            })
+                            .and_then(|stored| stored.unlock(&pp).ok())
+                    } else {
+                        None
+                    };
 
-                        tracing::info!("Certmesh CA auto-unlocked at init");
-                        return Some(Arc::new(koi_certmesh::CertmeshCore::new(
-                            ca_state,
-                            fresh_roster,
-                            auth,
-                            profile,
-                        )));
-                    }
+                    tracing::info!("Certmesh CA auto-unlocked at init from vault");
+                    return Some(Arc::new(koi_certmesh::CertmeshCore::new_with_paths(
+                        ca_state,
+                        fresh_roster,
+                        auth,
+                        profile,
+                        paths,
+                    )));
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "Auto-unlock key exists but decryption failed"
-                    );
-                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Auto-unlock key exists in vault but CA decryption failed"
+                );
             }
         }
     }
 
     // No auto-unlock key - boot locked
-    let core = koi_certmesh::CertmeshCore::locked(roster, profile);
+    let core = koi_certmesh::CertmeshCore::locked_with_paths(roster, profile, paths);
     Some(Arc::new(core))
 }
 
@@ -967,7 +974,7 @@ impl CertmeshBridgeEmbedded {
 
 impl koi_common::integration::CertmeshSnapshot for CertmeshBridgeEmbedded {
     fn active_members(&self) -> Vec<koi_common::integration::MemberSummary> {
-        let roster_path = koi_certmesh::CertmeshPaths::default().roster_path();
+        let roster_path = self.0.paths().roster_path();
         let Ok(roster) = koi_certmesh::roster::load_roster(&roster_path) else {
             return Vec::new();
         };
@@ -1194,6 +1201,47 @@ mod tests {
         let err = KoiError::DisabledCapability("proxy");
         let debug = format!("{err:?}");
         assert!(debug.contains("DisabledCapability"));
+    }
+
+    // ── certmesh data-dir SSOT (custom data_dir honored end-to-end) ──
+
+    #[tokio::test]
+    async fn init_certmesh_core_honors_custom_data_dir_end_to_end() {
+        // The point of the path-SSOT refactor: a host that injects its own
+        // data_dir gets the CA created, discovered, and unlocked under THAT
+        // dir — never a split between the injected dir and an ambient default.
+        let base = koi_common::test::ensure_data_dir("koi-embedded-datadir-tests");
+        let data_dir = base.join("custom-pond");
+        let paths = koi_certmesh::CertmeshPaths::with_data_dir(data_dir.clone());
+
+        // Fresh machine: no CA yet. The uninitialized early-return must still
+        // carry the injected paths — this is the regression the dropped-paths
+        // bug (uninitialized branches dropping `paths`) used to fail.
+        let fresh = init_certmesh_core(Some(&data_dir)).expect("uninitialized core");
+        assert_eq!(
+            fresh.paths().data_dir(),
+            data_dir.as_path(),
+            "uninitialized core must keep the injected data_dir"
+        );
+
+        // Create a CA + roster UNDER the injected dir.
+        koi_certmesh::ca::create_ca("pond-pass-strong", &[7u8; 32], &paths)
+            .expect("create CA under injected dir");
+        let roster = koi_certmesh::roster::Roster::new(
+            koi_certmesh::profiles::TrustProfile::MyOrganization,
+            Some("ops".to_string()),
+        );
+        koi_certmesh::roster::save_roster(&roster, &paths.roster_path())
+            .expect("save roster under injected dir");
+
+        // Reopen on the same injected dir: the CA is discovered there and the
+        // core unlocks from it — proving the data root is honored end-to-end.
+        let reopened = init_certmesh_core(Some(&data_dir)).expect("locked core");
+        assert_eq!(reopened.paths().data_dir(), data_dir.as_path());
+        reopened
+            .unlock("pond-pass-strong")
+            .await
+            .expect("unlock CA from the injected data_dir");
     }
 
     // ── map_mdns_event ─────────────────────────────────────────────

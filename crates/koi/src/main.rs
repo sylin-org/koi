@@ -510,7 +510,7 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     };
 
     let certmesh_core = if !config.no_certmesh {
-        init_certmesh_core()
+        init_certmesh_core(&config.data_dir)
     } else {
         tracing::info!("Certmesh capability: disabled");
         None
@@ -889,11 +889,15 @@ pub(crate) struct DaemonCores {
 /// Always returns `Some` so HTTP routes are mounted even before `koi certmesh create`.
 /// If a CA is initialized, creates a locked core with the roster.
 /// If not initialized, creates an uninitialized core (routes are reachable for `/create`).
-pub(crate) fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
-    let paths = koi_certmesh::CertmeshPaths::default();
+pub(crate) fn init_certmesh_core(
+    data_dir: &std::path::Path,
+) -> Option<Arc<koi_certmesh::CertmeshCore>> {
+    let paths = koi_certmesh::CertmeshPaths::with_data_dir(data_dir.to_path_buf());
     if !paths.is_ca_initialized() {
         tracing::info!("Certmesh: CA not initialized - routes mounted for /create");
-        return Some(Arc::new(koi_certmesh::CertmeshCore::uninitialized()));
+        return Some(Arc::new(
+            koi_certmesh::CertmeshCore::uninitialized_with_paths(paths),
+        ));
     }
 
     let roster_path = paths.roster_path();
@@ -901,12 +905,14 @@ pub(crate) fn init_certmesh_core() -> Option<Arc<koi_certmesh::CertmeshCore>> {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to load certmesh roster - using uninitialized state");
-            return Some(Arc::new(koi_certmesh::CertmeshCore::uninitialized()));
+            return Some(Arc::new(
+                koi_certmesh::CertmeshCore::uninitialized_with_paths(paths),
+            ));
         }
     };
 
     let profile = roster.metadata.trust_profile;
-    let core = koi_certmesh::CertmeshCore::locked(roster, profile);
+    let core = koi_certmesh::CertmeshCore::locked_with_paths(roster, profile, paths);
     tracing::info!("Certmesh: CA initialized (locked, use `koi certmesh unlock` to decrypt)");
     Some(Arc::new(core))
 }
@@ -1146,7 +1152,7 @@ fn spawn_certmesh_background_tasks(
                     let pinned_fp = cm
                         .pinned_ca_fingerprint()
                         .await
-                        .or_else(|| koi_certmesh::ca::ca_fingerprint_from_disk(&koi_certmesh::CertmeshPaths::default()).ok());
+                        .or_else(|| koi_certmesh::ca::ca_fingerprint_from_disk(cm.paths()).ok());
 
                     let Some(pinned_fp) = pinned_fp else {
                         continue;
@@ -1214,7 +1220,8 @@ fn spawn_certmesh_background_tasks(
                                     match cm.promote_self_to_primary().await {
                                         Ok(true) => {
                                             primary_absent_since = None;
-                                            let _ = koi_certmesh::audit::append_entry(
+                                            let _ = koi_certmesh::audit::append_entry_to(
+                                                &cm.paths().audit_log_path(),
                                                 "failover_promoted",
                                                 &[("hostname", &hostname)],
                                             );
@@ -1233,7 +1240,8 @@ fn spawn_certmesh_background_tasks(
                                 match cm.demote_self_to_standby().await {
                                     Ok(true) => {
                                         primary_absent_since = None;
-                                        let _ = koi_certmesh::audit::append_entry(
+                                        let _ = koi_certmesh::audit::append_entry_to(
+                                            &cm.paths().audit_log_path(),
                                             "failover_demoted",
                                             &[("hostname", &hostname)],
                                         );

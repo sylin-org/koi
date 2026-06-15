@@ -45,6 +45,7 @@ pub fn service_log_dir() -> PathBuf {
     koi_common::paths::koi_log_dir()
 }
 
+#[allow(clippy::disallowed_methods)] // per-process service path resolution
 pub fn service_data_dir() -> PathBuf {
     koi_common::paths::koi_data_dir()
 }
@@ -446,7 +447,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         };
 
         let certmesh_core = if !config.no_certmesh {
-            crate::init_certmesh_core()
+            crate::init_certmesh_core(&config.data_dir)
         } else {
             tracing::info!("Certmesh capability disabled");
             None

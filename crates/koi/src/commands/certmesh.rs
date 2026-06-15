@@ -165,7 +165,12 @@ pub fn create(
     use koi_certmesh::pond_ceremony::PondCeremonyRules;
     use koi_common::ceremony::CeremonyHost;
 
-    let host = CeremonyHost::new(PondCeremonyRules);
+    // CLI composition root: resolve the local data dir once for the ceremony
+    // (the unlock ceremony reads the slot table from it).
+    #[allow(clippy::disallowed_methods)]
+    let ceremony_paths =
+        koi_certmesh::CertmeshPaths::with_data_dir(koi_common::paths::koi_data_dir());
+    let host = CeremonyHost::new(PondCeremonyRules::new(ceremony_paths.clone()));
 
     // Pre-fill initial data from CLI flags
     let mut initial_data = serde_json::Map::new();
@@ -272,9 +277,7 @@ pub fn create(
     }
 
     // ── Summary box ────────────────────────────────────────────────
-    let cert_path = koi_common::paths::koi_data_dir()
-        .join("certs")
-        .join(&hostname);
+    let cert_path = ceremony_paths.certs_dir().join(&hostname);
 
     println!();
     print_box(
@@ -738,8 +741,9 @@ pub async fn promote(
     let (ca_key, auth_state, roster) =
         koi_certmesh::failover::accept_promotion(&promote_response, client_kp)?;
 
-    // Save to local disk
-    let paths = koi_certmesh::CertmeshPaths::default();
+    // Save to local disk. CLI composition root: resolve the data dir once.
+    #[allow(clippy::disallowed_methods)]
+    let paths = koi_certmesh::CertmeshPaths::with_data_dir(koi_common::paths::koi_data_dir());
     let ca_dir = paths.ca_dir();
     std::fs::create_dir_all(&ca_dir)?;
 
@@ -773,7 +777,11 @@ pub async fn promote(
         koi_certmesh::roster::save_roster(&roster, &paths.roster_path())?;
     }
 
-    let _ = koi_certmesh::audit::append_entry("promoted_to_standby", &[("hostname", &hostname)]);
+    let _ = koi_certmesh::audit::append_entry_to(
+        &paths.audit_log_path(),
+        "promoted_to_standby",
+        &[("hostname", &hostname)],
+    );
 
     if json {
         println!(
