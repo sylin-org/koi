@@ -16,12 +16,11 @@ use crate::{CertmeshCore, CertmeshState};
 use koi_common::encoding::{hex_decode, hex_encode};
 
 use crate::protocol::{
-    AuditLogResponse, BackupRequest, BackupResponse, CertmeshStatus, ComplianceResponse,
-    CreateCaRequest, CreateCaResponse, DestroyResponse, HealthRequest, HealthResponse, JoinRequest,
-    JoinResponse, PolicyRequest, PolicySummary, PromoteRequest, PromoteResponse, RenewRequest,
-    RenewResponse, RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse,
-    RotateAuthRequest, RotateAuthResponse, SetHookRequest, SetHookResponse, UnlockRequest,
-    UnlockResponse,
+    AuditLogResponse, BackupRequest, BackupResponse, CertmeshStatus, CreateCaRequest,
+    CreateCaResponse, DestroyResponse, HealthRequest, HealthResponse, JoinRequest, JoinResponse,
+    PolicyRequest, PolicySummary, PromoteRequest, PromoteResponse, RenewRequest, RenewResponse,
+    RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse, RotateAuthRequest,
+    RotateAuthResponse, SetHookRequest, SetHookResponse, UnlockRequest, UnlockResponse,
 };
 
 /// Authenticated client certificate CN, injected by the mTLS adapter as an axum Extension.
@@ -51,7 +50,6 @@ pub mod paths {
     pub const BACKUP: &str = "/v1/certmesh/backup";
     pub const RESTORE: &str = "/v1/certmesh/restore";
     pub const REVOKE: &str = "/v1/certmesh/revoke";
-    pub const COMPLIANCE: &str = "/v1/certmesh/compliance";
     pub const OPEN_ENROLLMENT: &str = "/v1/certmesh/open-enrollment";
     pub const CLOSE_ENROLLMENT: &str = "/v1/certmesh/close-enrollment";
     pub const SET_POLICY: &str = "/v1/certmesh/set-policy";
@@ -82,7 +80,6 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::BACKUP), post(backup_handler))
         .route(rel(paths::RESTORE), post(restore_handler))
         .route(rel(paths::REVOKE), post(revoke_handler))
-        .route(rel(paths::COMPLIANCE), get(compliance_handler))
         // Phase 4 - Enrollment Policy
         .route(rel(paths::OPEN_ENROLLMENT), post(open_enrollment_handler))
         .route(rel(paths::CLOSE_ENROLLMENT), post(close_enrollment_handler))
@@ -858,40 +855,6 @@ async fn set_policy_handler(
     (StatusCode::OK, Json(body)).into_response()
 }
 
-/// GET /compliance - Return policy summary and audit log counts.
-#[utoipa::path(get, path = "/compliance", tag = "certmesh",
-    summary = "Compliance summary",
-    responses((status = 200, body = ComplianceResponse)))]
-async fn compliance_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
-    let roster = state.roster.lock().await;
-    let profile = roster.metadata.trust_profile;
-    let policy = PolicySummary {
-        enrollment_state: roster.metadata.enrollment_state.clone(),
-        enrollment_deadline: roster.metadata.enrollment_deadline.map(|d| d.to_rfc3339()),
-        allowed_domain: roster.metadata.allowed_domain.clone(),
-        allowed_subnet: roster.metadata.allowed_subnet.clone(),
-        profile,
-        requires_approval: roster.requires_approval(),
-    };
-    drop(roster);
-
-    let audit_entries = crate::audit::read_log_from(&state.paths.audit_log_path())
-        .map(|content| content.lines().filter(|l| !l.trim().is_empty()).count())
-        .unwrap_or(0);
-
-    let response = ComplianceResponse {
-        policy,
-        audit_entries,
-    };
-    match serde_json::to_value(&response) {
-        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &CertmeshError::Internal(format!("Serialization error: {e}")),
-        ),
-    }
-}
-
 // ── Phase 3 handlers ────────────────────────────────────────────────
 
 /// POST /promote - auth-verified CA key transfer to a standby.
@@ -1178,7 +1141,6 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
         backup_handler,
         restore_handler,
         revoke_handler,
-        compliance_handler,
         open_enrollment_handler,
         close_enrollment_handler,
         set_policy_handler,
@@ -1207,7 +1169,6 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
         crate::protocol::PolicyRequest,
         crate::protocol::OpenEnrollmentRequest,
         crate::protocol::PolicySummary,
-        crate::protocol::ComplianceResponse,
         crate::protocol::PromoteRequest,
         crate::protocol::PromoteResponse,
         crate::protocol::RenewRequest,

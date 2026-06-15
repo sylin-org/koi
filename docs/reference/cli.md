@@ -64,7 +64,6 @@ koi certmesh status                               # show mesh status
 koi certmesh join [ENDPOINT]                      # join existing mesh
 koi certmesh unlock                               # decrypt CA key
 koi certmesh log                                  # show audit log
-koi certmesh compliance                           # compliance summary
 koi certmesh set-hook --reload "COMMAND"          # set renewal hook
 koi certmesh promote [ENDPOINT]                   # promote standby CA
 koi certmesh open-enrollment [--until DURATION]   # open enrollment window

@@ -217,7 +217,6 @@ data: {"event":"removed","service":{"name":"...","type":"..."}}
 | POST   | `/v1/certmesh/unlock`     | Unlock a locked CA        |
 | GET    | `/v1/certmesh/status`     | Mesh status               |
 | GET    | `/v1/certmesh/log`        | Audit log                 |
-| GET    | `/v1/certmesh/compliance` | Compliance summary        |
 
 ### Enrollment management
 

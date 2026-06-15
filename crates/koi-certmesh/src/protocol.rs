@@ -236,7 +236,7 @@ pub struct OpenEnrollmentRequest {
     pub deadline: Option<String>,
 }
 
-/// Enrollment policy summary for compliance display.
+/// Enrollment policy summary (open/close-enrollment and set-policy responses).
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PolicySummary {
     pub enrollment_state: EnrollmentState,
@@ -248,13 +248,6 @@ pub struct PolicySummary {
     pub allowed_subnet: Option<String>,
     pub profile: TrustProfile,
     pub requires_approval: bool,
-}
-
-/// Compliance summary response.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ComplianceResponse {
-    pub policy: PolicySummary,
-    pub audit_entries: usize,
 }
 
 // ── Phase 3 - Failover + Lifecycle ──────────────────────────────────

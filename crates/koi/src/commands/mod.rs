@@ -1,7 +1,7 @@
 //! CLI command handlers, organized by domain.
 //!
 //! - `mdns` - mDNS commands (discover, announce, unregister, resolve, subscribe).
-//! - `certmesh` - Certificate mesh commands (create, join, status, log, compliance, unlock, set-hook).
+//! - `certmesh` - Certificate mesh commands (create, join, status, log, unlock, set-hook).
 //! - `dns` - DNS commands (serve, lookup, add/remove/list).
 //! - `health` - Health commands (status, watch, add/remove, log).
 //! - `proxy` - Proxy commands (add/remove/list/status).

@@ -104,9 +104,6 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     ),
                     Some(CertmeshSubcommand::Status) => commands::certmesh::status(cli.json, ep),
                     Some(CertmeshSubcommand::Log) => commands::certmesh::log(ep),
-                    Some(CertmeshSubcommand::Compliance) => {
-                        commands::certmesh::compliance(cli.json, ep)
-                    }
                     Some(CertmeshSubcommand::Unlock) => commands::certmesh::unlock(ep),
                     Some(CertmeshSubcommand::SetHook { reload }) => {
                         commands::certmesh::set_hook(reload, cli.json, ep)

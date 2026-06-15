@@ -233,7 +233,6 @@ All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 | `POST` | `/v1/certmesh/backup`           | Create an encrypted backup bundle     |
 | `POST` | `/v1/certmesh/restore`          | Restore from a backup bundle          |
 | `POST` | `/v1/certmesh/revoke`           | Revoke a member's certificate         |
-| `GET`  | `/v1/certmesh/compliance`       | Compliance summary                    |
 | `POST` | `/v1/certmesh/destroy`          | Destroy the CA and all state          |
 
 ### Join example
@@ -360,18 +359,6 @@ koi certmesh restore ./mesh-backup.tar.enc
 ```
 
 The backup is encrypted with the CA passphrase, so the same passphrase is required to restore.
-
----
-
-## Compliance
-
-For environments that need to demonstrate certificate management compliance:
-
-```
-koi certmesh compliance
-```
-
-This shows a summary of the mesh's security posture: key algorithm, cert lifetimes, enrollment policy, revocation state, and audit log integrity. Use `--json` for integration with compliance tooling.
 
 ---
 

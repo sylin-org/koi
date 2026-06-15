@@ -1086,7 +1086,7 @@ the enrollment window is open.",
                 description: "JSON for scripting",
             },
         ],
-        see_also: &["certmesh compliance", "certmesh log"],
+        see_also: &["certmesh log"],
         api: &[ApiEndpoint {
             method: "GET",
             path: koi_certmesh::http::paths::STATUS,
@@ -1107,31 +1107,10 @@ a timestamp and actor.",
             command: "koi certmesh log",
             description: "Show audit log",
         }],
-        see_also: &["certmesh status", "certmesh compliance"],
+        see_also: &["certmesh status"],
         api: &[ApiEndpoint {
             method: "GET",
             path: koi_certmesh::http::paths::LOG,
-        }],
-        confirmation: None,
-    })
-    .add(CommandDef {
-        name: "certmesh compliance",
-        summary: "Show compliance summary",
-        long_description: "\
-Checks the certificate mesh against best-practice compliance rules:
-certificate lifetimes, key strengths, renewal coverage, enrollment
-window state, and backup freshness. Useful for audits.",
-        category: KoiCategory::Trust,
-        tags: &[KoiTag::ReadOnly],
-        scope: KoiScope::Public,
-        examples: &[Example {
-            command: "koi certmesh compliance",
-            description: "Show compliance summary",
-        }],
-        see_also: &["certmesh status", "certmesh log"],
-        api: &[ApiEndpoint {
-            method: "GET",
-            path: koi_certmesh::http::paths::COMPLIANCE,
         }],
         confirmation: None,
     })
@@ -1333,7 +1312,7 @@ exists, the entire mesh must be recreated.",
                 description: "Date-stamped backup",
             },
         ],
-        see_also: &["certmesh restore", "certmesh compliance"],
+        see_also: &["certmesh restore"],
         api: &[ApiEndpoint {
             method: "POST",
             path: koi_certmesh::http::paths::BACKUP,
