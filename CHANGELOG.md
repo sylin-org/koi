@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-06-15
+
+A large lean-and-reach release: the certificate mesh is roughly halved, the CLI surface
+is unified on clap, and Koi gains four ways to feed the tools you already run — an MCP
+server for AI agents, an ACME server, Prometheus discovery, and label/DNS/trust doors.
+Many breaking changes (pre-1.0); existing certmesh `roster.json` files may need
+`koi certmesh create` re-run.
+
+### Added
+- **`koi mcp serve`** — an MCP server over stdio so AI agents get a first-class door into
+  the LAN (discover/announce/resolve/inventory/health/runtime tools, heartbeat-leased
+  announcements that clean up on agent crash). One-line config in any MCP client. New
+  `koi-mcp` crate; `docs/guides/mcp.md`.
+- **`koi certmesh acme enable`** — an RFC 8555 ACME server (dns-01, self-served in-process
+  through Koi's own DNS zone — wildcards + offline issuance, no propagation wait). Caddy,
+  Traefik, lego, acme.sh get certs from Koi's CA with one config line; `docs/guides/acme.md`.
+- **`GET /v1/sd/prometheus`** — Prometheus HTTP service discovery, including the unique
+  `__meta_koi_cert_expiry_days` per-service certificate-expiry label.
+- **Traefik / caddy-docker-proxy label ingestion** — a container labelled only for Traefik
+  or Caddy gets a Koi DNS name with zero relabeling.
+- **`GET /v1/dns/zone?format=hosts|dnsmasq|json`** + `docs/guides/dns-coexistence.md`
+  (conditional-forwarding recipes for AdGuard Home, Pi-hole, dnsmasq, Unbound, Technitium).
+- **`koi trust install|list|remove|export`** — install/track/remove any CA root (not just
+  certmesh's) in the OS trust store.
+- `koi-common::runtime_state::DomainRuntime` + `events` + an async `Capability` trait, and
+  `docs/reference/domain-template.md` — the documented contract for adding a domain.
+
+### Changed
+- **certmesh slimmed 18.7k → 9.4k source lines** with zero loss of the create / TOTP-join /
+  renew / unlock / backup / restore / revoke / manual-promote loop.
+- **CLI is now driven by clap as the single source of truth** — catalog drift is a build
+  failure; the generic `command-surface` crate is gone (folded into `koi/src/help/`).
+- Trust profiles collapse to two booleans (`enrollment_open`, `requires_approval`); the
+  named presets survive as ceremony/CLI UX labels only. `CertmeshStatus` drops `profile`
+  and gains the two booleans.
+- The CA boots auto-unlocked from the vault on auto-unlock profiles (the write path, latent
+  in 0.4.1, now functions).
+
+### Removed (breaking)
+- **FIDO2** (all three layers — the `AuthAdapter` trait stays as the re-entry path).
+- **Automatic CA failover** (the mDNS absence-watcher / tiebreaker / roster-sync); manual
+  `koi certmesh promote` remains.
+- The **certmesh compliance** endpoint + CLI (use `/status` + `/log`).
+- Enrollment **deadline** + **CIDR/domain scope** (`set-policy`).
+- `RuntimeBackendKind` **Systemd/Incus/Kubernetes** stubs — `koi --runtime k8s` is now a
+  clear parse error instead of a silent fallback.
+
+### Fixed
+- **Destructive commands no longer bypass confirmation in `--json` mode** — `koi --json
+  certmesh destroy` / `factory-reset` previously wiped data silently; they now refuse
+  without `--yes` (one shared confirmation gate).
+- **The `--endpoint` token leak**: an explicit remote endpoint no longer receives the local
+  daemon's breadcrumb token. New `--token` / `KOI_TOKEN`; a 401 prints an actionable hint.
+- Catalog/manifest drift (rotate-totp, phantom flags, wrong dns record types) — fixed by
+  construction via the clap conformance tests.
+
 ## [0.4.1] - 2026-06-15
 
 ### Added
