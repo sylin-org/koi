@@ -41,6 +41,9 @@ pub mod paths {
     /// In-process MCP server (Streamable HTTP / JSON-RPC). Token-authenticated for
     /// all methods (carved out of the GET exemption); not in `/openapi.json`.
     pub const MCP: &str = "/v1/mcp";
+    /// Public MCP discovery descriptor (the "Door"): an unauthenticated GET
+    /// describing the MCP endpoint, transport, and auth. No secrets.
+    pub const MCP_SERVER_CARD: &str = "/.well-known/mcp/server-card.json";
 }
 
 // ── App state ───────────────────────────────────────────────────────
@@ -109,6 +112,7 @@ pub async fn start(
         .route(paths::SHUTDOWN, post(shutdown_handler))
         .route(paths::HOST, get(host_handler))
         .route(paths::PROMETHEUS_SD, get(prometheus_sd_handler))
+        .route(paths::MCP_SERVER_CARD, get(mcp_server_card_handler))
         .route("/", get(koi_dashboard::dashboard::get_dashboard))
         .route(
             "/v1/dashboard/snapshot",
@@ -757,6 +761,36 @@ async fn shutdown_handler(Extension(state): Extension<AppState>) -> Json<serde_j
     Json(serde_json::json!({ "status": "shutting_down" }))
 }
 
+// ── MCP discovery descriptor (the public "Door") ─────────────────────
+
+/// Build the MCP server-card document — a public discovery descriptor (no secrets)
+/// describing the in-process MCP endpoint, its transport, and how to authenticate.
+/// Path-relative so it stays correct behind a proxy / under any host:port.
+fn build_server_card(version: &str, mcp_enabled: bool) -> serde_json::Value {
+    serde_json::json!({
+        "name": "koi",
+        "version": version,
+        "mcp": {
+            "enabled": mcp_enabled,
+            "transport": "streamable-http",
+            "path": paths::MCP,
+            "auth": { "scheme": "bearer", "header": DAT_HEADER },
+        }
+    })
+}
+
+/// `GET /.well-known/mcp/server-card.json` — unauthenticated discovery (the Door).
+async fn mcp_server_card_handler(Extension(state): Extension<AppState>) -> Response {
+    let card = build_server_card(env!("CARGO_PKG_VERSION"), state.mcp_http_enabled);
+    let body = serde_json::to_string(&card).unwrap_or_else(|_| "{}".to_string());
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response()
+}
+
 /// Returns a router that responds 503 for any request to a disabled capability.
 fn disabled_fallback_router(capability_name: &'static str) -> Router {
     Router::new().fallback(move || async move {
@@ -950,6 +984,35 @@ mod tests {
         let req = Request::post("/").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn server_card_describes_streamable_http() {
+        let card = build_server_card("9.9.9", true);
+        assert_eq!(card["mcp"]["transport"], "streamable-http");
+        assert_eq!(card["mcp"]["path"], "/v1/mcp");
+        assert_eq!(card["mcp"]["auth"]["header"], "x-koi-token");
+        assert_eq!(card["mcp"]["enabled"], true);
+        assert_eq!(card["version"], "9.9.9");
+    }
+
+    #[tokio::test]
+    async fn server_card_get_is_unauthenticated() {
+        // The Door is a public GET (NOT under /v1/mcp), so the auth carve-out must
+        // not catch it — discovery metadata carries no secrets.
+        let expected = Arc::new("secret-token".to_string());
+        let app = Router::new()
+            .route(paths::MCP_SERVER_CARD, get(mcp_server_card_handler))
+            .layer(Extension(empty_app_state()))
+            .layer(middleware::from_fn(move |req, next| {
+                let expected = expected.clone();
+                dat_auth_middleware(req, next, expected)
+            }));
+        let req = Request::get(paths::MCP_SERVER_CARD)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
     }
 
     #[test]

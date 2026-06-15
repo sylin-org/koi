@@ -254,6 +254,15 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         }
     }
 
+    // ── MCP endpoint discovery descriptors (one `_mcp._tcp` per host + in-zone TXT) ──
+    // Gated on the transport being mounted; withdrawn by the mDNS goodbye on shutdown.
+    let _mcp_announce_id = crate::infra::announce_mcp_endpoint(
+        &cores,
+        config.http_port,
+        &config.dns_zone,
+        !config.no_mcp_http && !config.no_http,
+    );
+
     // ── Enrollment-approval pump ──
     // The certmesh role loops are spawned by build_cores (shared with the Windows service).
     // Only the approval pump is wired here, because its decider is host-specific: the

@@ -636,6 +636,15 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             }
         }
 
+        // MCP endpoint discovery descriptors (one `_mcp._tcp` per host + in-zone TXT),
+        // gated on the transport; shared with the foreground daemon to avoid drift.
+        let _mcp_announce_id = crate::infra::announce_mcp_endpoint(
+            &cores,
+            config.http_port,
+            &config.dns_zone,
+            !config.no_mcp_http && !config.no_http,
+        );
+
         // Write breadcrumb for client discovery
         if !config.no_http {
             let endpoint = crate::infra::breadcrumb_endpoint(http_bind_ip, config.http_port);
