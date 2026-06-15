@@ -534,11 +534,18 @@ pub(crate) async fn dat_auth_middleware(
     // discovery descriptors (e.g. the server card) live outside /v1/mcp and stay
     // GET-exempt. OPTIONS preflight is still let through so CORS works.
     let method = req.method().clone();
-    let is_mcp = req.uri().path().starts_with(paths::MCP);
+    let path = req.uri().path();
+    let is_mcp = path.starts_with(paths::MCP);
+    // Certmesh enrollment is the one mutation that is NOT DAT-gated: a fresh node
+    // joining a remote CA has no way to know that host's local token, so it
+    // authorizes with a TOTP enrollment code in the request body instead. The
+    // join handler enforces that auth + the enrollment policy itself, so the DAT
+    // middleware must let the request reach it.
+    let is_enrollment = path == koi_certmesh::http::paths::JOIN;
     let exempt_method = method == axum::http::Method::GET
         || method == axum::http::Method::HEAD
         || method == axum::http::Method::OPTIONS;
-    if method == axum::http::Method::OPTIONS || (exempt_method && !is_mcp) {
+    if is_enrollment || method == axum::http::Method::OPTIONS || (exempt_method && !is_mcp) {
         return next.run(req).await;
     }
 
@@ -976,6 +983,49 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_ne!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    // ── Certmesh enrollment is DAT-exempt (TOTP-authorized bootstrap) ──
+    // A fresh node joining a remote CA can't know that host's token, so
+    // /v1/certmesh/join must reach its handler (which enforces TOTP) without one.
+
+    fn certmesh_auth_test_router(token: &str) -> Router {
+        let expected = Arc::new(token.to_string());
+        Router::new()
+            .route(koi_certmesh::http::paths::JOIN, post(|| async { "ok" }))
+            .route("/v1/certmesh/revoke", post(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let expected = expected.clone();
+                dat_auth_middleware(req, next, expected)
+            }))
+    }
+
+    #[tokio::test]
+    async fn certmesh_join_is_exempt_from_dat_auth() {
+        let app = certmesh_auth_test_router("secret-token");
+        let req = Request::post(koi_certmesh::http::paths::JOIN)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::OK,
+            "tokenless enrollment must pass the auth layer (TOTP is the gate)"
+        );
+    }
+
+    #[tokio::test]
+    async fn other_certmesh_mutations_still_require_token() {
+        let app = certmesh_auth_test_router("secret-token");
+        let req = Request::post("/v1/certmesh/revoke")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "non-enrollment certmesh writes still require the token"
+        );
     }
 
     #[tokio::test]

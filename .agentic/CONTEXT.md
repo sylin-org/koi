@@ -145,7 +145,7 @@ ErrorCode::NotFound → StatusCode::NOT_FOUND
 // Unix-only: Unix domain sockets, systemd
 #[cfg(unix)]
 
-// macOS-only: LaunchAgent
+// macOS-only: LaunchDaemon (system-wide, /Library/LaunchDaemons)
 #[cfg(target_os = "macos")]
 ```
 
