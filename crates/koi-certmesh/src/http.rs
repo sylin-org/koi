@@ -838,8 +838,15 @@ mod tests {
         use crate::certmesh_paths::CertmeshPaths;
         use crate::roster::{Roster, RosterMetadata};
         use koi_crypto::totp::RateLimiter;
+        use std::sync::atomic::{AtomicU64, Ordering};
 
-        let data_dir = koi_common::test::ensure_data_dir("koi-certmesh-http-tests");
+        // Each fixture gets its own subdir under the (process-wide) test base so handlers
+        // that persist the roster (open/close-enrollment, set-hook, …) never race on a
+        // shared roster.json when the suite runs in parallel (`cargo test`).
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let data_dir =
+            koi_common::test::ensure_data_dir("koi-certmesh-http-tests").join(format!("ext-{n}"));
         Arc::new(CertmeshState {
             paths: CertmeshPaths::with_data_dir(data_dir),
             ca: tokio::sync::Mutex::new(None),
