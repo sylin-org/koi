@@ -355,17 +355,7 @@ impl CertmeshCore {
             req.operator.clone(),
         );
         let roster_path = state.paths.roster_path();
-        {
-            let roster_clone = new_roster.clone();
-            let roster_path_clone = roster_path.clone();
-            tokio::task::spawn_blocking(move || {
-                roster::save_roster(&roster_clone, &roster_path_clone)
-            })
-            .await
-            .map_err(|e| std::io::Error::other(format!("roster save task: {e}")))
-            .and_then(|r| r)
-            .map_err(CertmeshError::Io)?;
-        }
+        roster::persist_roster(&new_roster, &roster_path).await?;
 
         // Self-enroll the CA node as the first (primary) member.
         // This issues a certificate for the local hostname so applications
@@ -417,18 +407,8 @@ impl CertmeshCore {
                 };
                 new_roster.members.push(member);
                 // Persist updated roster with the self-enrolled member
-                {
-                    let roster_clone = new_roster.clone();
-                    let roster_path_clone = roster_path.clone();
-                    if let Err(e) = tokio::task::spawn_blocking(move || {
-                        roster::save_roster(&roster_clone, &roster_path_clone)
-                    })
-                    .await
-                    .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
-                    .and_then(|r| r.map_err(CertmeshError::Io))
-                    {
-                        tracing::warn!(error = %e, "Could not save roster after self-enrollment");
-                    }
+                if let Err(e) = roster::persist_roster(&new_roster, &roster_path).await {
+                    tracing::warn!(error = %e, "Could not save roster after self-enrollment");
                 }
                 let _ = audit::append_entry_to(
                     &state.paths.audit_log_path(),
@@ -587,12 +567,7 @@ impl CertmeshCore {
         let roster_clone = roster.clone();
         let roster_path = self.state.paths.roster_path();
         drop(roster);
-        if let Err(e) =
-            tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
-                .await
-                .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
-                .and_then(|r| r.map_err(CertmeshError::Io))
-        {
+        if let Err(e) = roster::persist_roster(&roster_clone, &roster_path).await {
             tracing::warn!(error = %e, "Failed to save roster after enrollment");
         }
 
@@ -724,12 +699,7 @@ impl CertmeshCore {
         let roster_clone = roster.clone();
         let roster_path = self.state.paths.roster_path();
         drop(roster);
-        if let Err(e) =
-            tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
-                .await
-                .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
-                .and_then(|r| r.map_err(CertmeshError::Io))
-        {
+        if let Err(e) = roster::persist_roster(&roster_clone, &roster_path).await {
             tracing::warn!(error = %e, "Failed to save roster after self-enrollment");
         }
 
@@ -756,33 +726,21 @@ impl CertmeshCore {
         build_status(self.paths(), &ca_guard, &roster, auth_method)
     }
 
-    /// Forbidden characters in reload hooks — validated at domain boundary.
-    const HOOK_FORBIDDEN: &'static [char] = &[
-        ';', '|', '&', '$', '`', '>', '<', '(', ')', '\n', '\r', '\0', '*', '?', '[', ']', '{',
-        '}', '~', '%', '!',
-    ];
-
     /// Set the post-renewal reload hook for a member.
     pub async fn set_reload_hook(&self, hostname: &str, hook: &str) -> Result<(), CertmeshError> {
-        // Validate at domain boundary — all callers (HTTP, embedded, CLI) are protected.
-        if hook.contains(Self::HOOK_FORBIDDEN) {
-            return Err(CertmeshError::Internal(
-                "reload hook contains forbidden characters".into(),
-            ));
-        }
+        // Validate at domain boundary — all callers (HTTP, embedded, CLI) are
+        // protected by the single source of truth in `validate_reload_hook`.
+        validate_reload_hook(hook)?;
         let mut roster = self.state.roster.lock().await;
         let member = roster
             .find_member_mut(hostname)
-            .ok_or_else(|| CertmeshError::Internal("member not found".into()))?;
+            .ok_or_else(|| CertmeshError::NotFound(format!("member not found: {hostname}")))?;
         member.reload_hook = Some(hook.to_string());
 
         let roster_clone = roster.clone();
         let roster_path = self.state.paths.roster_path();
         drop(roster);
-        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
-            .map_err(CertmeshError::Io)?;
+        roster::persist_roster(&roster_clone, &roster_path).await?;
 
         tracing::info!(hostname, hook, "Reload hook set");
         Ok(())
@@ -803,10 +761,7 @@ impl CertmeshCore {
         let roster_clone = roster.clone();
         let roster_path = self.state.paths.roster_path();
         drop(roster);
-        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
-            .map_err(CertmeshError::Io)?;
+        roster::persist_roster(&roster_clone, &roster_path).await?;
 
         tracing::info!(hostname, role = ?role, "Member role updated");
         Ok(())
@@ -976,10 +931,7 @@ impl CertmeshCore {
         let roster_clone = roster.clone();
         let roster_path = self.state.paths.roster_path();
         drop(roster);
-        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
-            .map_err(CertmeshError::Io)?;
+        roster::persist_roster(&roster_clone, &roster_path).await?;
 
         tracing::info!("Enrollment window opened");
         let _ =
@@ -995,10 +947,7 @@ impl CertmeshCore {
         let roster_clone = roster.clone();
         let roster_path = self.state.paths.roster_path();
         drop(roster);
-        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
-            .map_err(CertmeshError::Io)?;
+        roster::persist_roster(&roster_clone, &roster_path).await?;
 
         tracing::info!("Enrollment window closed");
         let _ =
@@ -1184,10 +1133,7 @@ impl CertmeshCore {
         let roster_clone = roster.clone();
         let roster_path = self.state.paths.roster_path();
         drop(roster);
-        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
-            .map_err(CertmeshError::Io)?;
+        roster::persist_roster(&roster_clone, &roster_path).await?;
 
         let _ = self.state.event_tx.send(CertmeshEvent::MemberRevoked {
             hostname: hostname.to_string(),
@@ -1240,13 +1186,7 @@ impl CertmeshCore {
             let roster_clone = roster.clone();
             let roster_path = self.state.paths.roster_path();
             drop(roster);
-            if let Err(e) = tokio::task::spawn_blocking(move || {
-                roster::save_roster(&roster_clone, &roster_path)
-            })
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
-            .and_then(|r| r.map_err(CertmeshError::Io))
-            {
+            if let Err(e) = roster::persist_roster(&roster_clone, &roster_path).await {
                 tracing::warn!(error = %e, "Failed to save roster after batch renewal");
             }
         }
@@ -1331,12 +1271,7 @@ impl CertmeshCore {
         let roster_clone = roster.clone();
         let roster_path = self.state.paths.roster_path();
         drop(roster);
-        if let Err(e) =
-            tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
-                .await
-                .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
-                .and_then(|r| r.map_err(CertmeshError::Io))
-        {
+        if let Err(e) = roster::persist_roster(&roster_clone, &roster_path).await {
             tracing::warn!(error = %e, "Failed to save roster after health heartbeat");
         }
 
@@ -1389,10 +1324,7 @@ impl CertmeshCore {
         let roster_clone = roster.clone();
         let roster_path = self.state.paths.roster_path();
         drop(roster);
-        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
-            .map_err(CertmeshError::Io)?;
+        roster::persist_roster(&roster_clone, &roster_path).await?;
         Ok(true)
     }
 
@@ -1416,10 +1348,7 @@ impl CertmeshCore {
         let roster_clone = roster.clone();
         let roster_path = self.state.paths.roster_path();
         drop(roster);
-        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
-            .map_err(CertmeshError::Io)?;
+        roster::persist_roster(&roster_clone, &roster_path).await?;
         Ok(true)
     }
 
@@ -1448,10 +1377,7 @@ impl CertmeshCore {
             let roster_clone = roster.clone();
             let roster_path = self.state.paths.roster_path();
             drop(roster);
-            tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
-                .await
-                .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
-                .map_err(CertmeshError::Io)?;
+            roster::persist_roster(&roster_clone, &roster_path).await?;
         }
 
         Ok(changed)
@@ -1498,6 +1424,53 @@ impl CertmeshCore {
         let roster = self.state.roster.lock().await;
         failover::prepare_promotion(ca, auth_state, &roster, client_public_key)
     }
+}
+
+/// Shell metacharacters forbidden in reload hook commands.
+///
+/// Single source of truth for hook-command validation (the HTTP handler
+/// delegates to [`CertmeshCore::set_reload_hook`], which calls
+/// [`validate_reload_hook`]).
+const HOOK_FORBIDDEN: &[char] = &[
+    ';', '|', '&', '$', '`', '>', '<', '(', ')', '\n', '\r', '\0', '*', '?', '[', ']', '{', '}',
+    '~', '%', '!',
+];
+
+/// Validate a post-renewal reload hook command.
+///
+/// This is the **single source of truth** for hook validation — every caller
+/// (HTTP, embedded, CLI) is protected because they all route through
+/// [`CertmeshCore::set_reload_hook`], which calls this. The validation is the
+/// superset of all prior checks:
+///
+/// 1. No shell metacharacters ([`HOOK_FORBIDDEN`]).
+/// 2. The command must be an **absolute path** — on Unix it must start with
+///    `/`; on Windows it must begin with a drive-letter path (`X:\…`) or UNC
+///    path (`\\…`). This blocks `PATH`-relative command injection.
+pub(crate) fn validate_reload_hook(hook: &str) -> Result<(), CertmeshError> {
+    if hook.contains(HOOK_FORBIDDEN) {
+        return Err(CertmeshError::InvalidPayload(
+            "reload hook contains forbidden characters".into(),
+        ));
+    }
+    #[cfg(unix)]
+    if !hook.starts_with('/') {
+        return Err(CertmeshError::InvalidPayload(
+            "reload hook must be an absolute path".into(),
+        ));
+    }
+    #[cfg(windows)]
+    {
+        let bytes = hook.as_bytes();
+        let drive_letter = bytes.len() >= 3 && bytes[1] == b':';
+        let unc = hook.starts_with("\\\\");
+        if !(drive_letter || unc) {
+            return Err(CertmeshError::InvalidPayload(
+                "reload hook must be an absolute path".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Decode a hex string into bytes. Returns `None` on invalid hex or odd length.
@@ -2305,12 +2278,19 @@ mod tests {
 
     // ── set_reload_hook facade ─────────────────────────────────────────
 
+    /// An absolute reload-hook command valid for the host platform.
+    const ABS_HOOK: &str = if cfg!(windows) {
+        "C:\\Windows\\System32\\cmd.exe"
+    } else {
+        "/usr/bin/systemctl"
+    };
+
     #[tokio::test]
     async fn set_reload_hook_unknown_member_returns_error() {
         let ca = make_test_ca();
         let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
         let core = make_unlocked_core(ca, roster);
-        let result = core.set_reload_hook("nonexistent", "echo hi").await;
+        let result = core.set_reload_hook("nonexistent", ABS_HOOK).await;
         assert!(result.is_err());
     }
 
@@ -2319,14 +2299,41 @@ mod tests {
         let ca = make_test_ca();
         let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
-        core.set_reload_hook("stone-01", "systemctl restart nginx")
-            .await
-            .unwrap();
+        core.set_reload_hook("stone-01", ABS_HOOK).await.unwrap();
         let roster = core.state.roster.lock().await;
-        assert_eq!(
-            roster.members[0].reload_hook.as_deref(),
-            Some("systemctl restart nginx")
+        assert_eq!(roster.members[0].reload_hook.as_deref(), Some(ABS_HOOK));
+    }
+
+    /// The domain method (not just the HTTP facade) must reject a relative-path
+    /// hook. This is the intended strengthening: a direct library caller that
+    /// bypasses HTTP still gets the absolute-path check.
+    #[tokio::test]
+    async fn set_reload_hook_rejects_relative_path() {
+        let ca = make_test_ca();
+        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let core = make_unlocked_core(ca, roster);
+        // A bare command name with no path separator is PATH-relative.
+        let result = core
+            .set_reload_hook("stone-01", "systemctl restart nginx")
+            .await;
+        assert!(
+            result.is_err(),
+            "relative-path hook must be rejected by the core method"
         );
+        // And the member's hook must remain unset (validation runs before mutation).
+        let roster = core.state.roster.lock().await;
+        assert!(roster.members[0].reload_hook.is_none());
+    }
+
+    /// Forbidden shell metacharacters are rejected by the core method.
+    #[tokio::test]
+    async fn set_reload_hook_rejects_shell_metacharacters() {
+        let ca = make_test_ca();
+        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let core = make_unlocked_core(ca, roster);
+        let malicious = format!("{ABS_HOOK}; rm -rf /");
+        let result = core.set_reload_hook("stone-01", &malicious).await;
+        assert!(result.is_err());
     }
 
     // ── decode_hex (moved from http.rs) ──────────────────────────────

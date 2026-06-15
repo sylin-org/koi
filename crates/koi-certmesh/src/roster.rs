@@ -277,6 +277,35 @@ pub fn save_roster(roster: &Roster, path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+/// Persist the roster off the async executor.
+///
+/// This is the single mechanical home for the
+/// `clone → spawn_blocking(save_roster) → await` pattern used throughout the
+/// crate. It owns the roster clone, the `spawn_blocking` hop, and the error
+/// mapping; it does **not** touch the roster lock (callers clone under the lock
+/// and drop it before calling).
+///
+/// # Failure mode
+///
+/// Returns [`CertmeshError::Io`] whenever the save does not complete — whether
+/// the blocking task panicked (`JoinError`) or the underlying write failed
+/// (`std::io::Error`). Both are surfaced as `Io` so call sites have one error
+/// variant to handle. Callers decide the *policy*: propagate with `?`, or
+/// `if let Err(e) = persist_roster(..).await { tracing::warn!(..) }` to warn and
+/// continue.
+pub(crate) async fn persist_roster(
+    roster: &Roster,
+    path: &Path,
+) -> Result<(), crate::error::CertmeshError> {
+    let roster_clone = roster.clone();
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || save_roster(&roster_clone, &path))
+        .await
+        .map_err(|e| std::io::Error::other(format!("roster save task: {e}")))
+        .and_then(|r| r)
+        .map_err(crate::error::CertmeshError::Io)
+}
+
 /// Load the roster from disk.
 pub fn load_roster(path: &Path) -> Result<Roster, std::io::Error> {
     persist::read_json(path)

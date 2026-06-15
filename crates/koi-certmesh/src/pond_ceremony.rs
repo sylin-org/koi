@@ -91,14 +91,53 @@ fn eval_init(
     bag: &mut serde_json::Map<String, serde_json::Value>,
     render: &RenderHints,
 ) -> EvalResult {
-    // ── 1. Profile ──────────────────────────────────────────────────
+    // Each step helper returns `Some(result)` to stop the flow (need input,
+    // validation error, or a recursive restart) or `None` when the step is
+    // satisfied and the flow should continue. The final summary step is the
+    // only one that returns a terminal `EvalResult` directly. The observable
+    // prompt sequence is identical to the original monolithic evaluator.
+    if let Some(r) = eval_init_profile(bag) {
+        return r;
+    }
+    if let Some(r) = eval_init_operator(bag) {
+        return r;
+    }
+    if let Some(r) = eval_init_entropy(bag) {
+        return r;
+    }
+    if let Some(r) = eval_init_passphrase(bag, render) {
+        return r;
+    }
+    if let Some(r) = eval_init_unlock_method(bag) {
+        return r;
+    }
+    let auth_mode = match eval_init_auth_mode(bag) {
+        Ok(mode) => mode,
+        Err(r) => return r,
+    };
+    if let Some(r) = eval_init_totp(bag, render, &auth_mode) {
+        return r;
+    }
+    if let Some(r) = eval_init_token(bag, render) {
+        return r;
+    }
+    eval_init_summary(bag, &auth_mode)
+}
+
+/// Step 1: trust-profile / posture selection.
+///
+/// Resolves `profile` (preset or `custom`) into the effective posture booleans
+/// (`_enrollment_open`, `_requires_approval`, `_effective_profile`, and — for
+/// presets — `_unlock_method` / `_auto_unlock`). Custom profiles ask the
+/// enrollment and approval sub-prompts first.
+fn eval_init_profile(bag: &mut serde_json::Map<String, serde_json::Value>) -> Option<EvalResult> {
     let profile_raw = match bag
         .get("profile")
         .and_then(|v| v.as_str())
         .map(String::from)
     {
         None => {
-            return EvalResult::NeedInput {
+            return Some(EvalResult::NeedInput {
                 prompts: vec![Prompt::select_one(
                     "profile",
                     "Who is this pond for?",
@@ -133,139 +172,152 @@ fn eval_init(
                     "A pond is a private certificate authority for your garden. \
                      Choose a trust profile that matches how you'll use it.",
                 )],
-            };
+            });
         }
         Some(p) => p,
     };
 
-    // ── 1a. Custom profile sub-prompts ──────────────────────────────
     if profile_raw == "custom" {
-        // Enrollment policy
-        if !bag.contains_key("enrollment_open") {
-            return EvalResult::NeedInput {
-                prompts: vec![Prompt::select_one(
-                    "enrollment_open",
-                    "Enrollment when pond is created",
-                    vec![
-                        SelectOption::with_description(
-                            "open",
-                            "Open (default)",
-                            "Any machine with a valid TOTP code can join immediately. \
-                             You can close enrollment later.",
-                        ),
-                        SelectOption::with_description(
-                            "closed",
-                            "Closed",
-                            "Machines cannot join until you explicitly open enrollment.",
-                        ),
-                    ],
-                )],
-                messages: Vec::new(),
-            };
-        }
-
-        // Approval policy
-        if !bag.contains_key("requires_approval") {
-            return EvalResult::NeedInput {
-                prompts: vec![Prompt::select_one(
-                    "requires_approval",
-                    "Require approval for each join request?",
-                    vec![
-                        SelectOption::with_description(
-                            "no",
-                            "No (default)",
-                            "TOTP code is sufficient. Machine joins immediately after verification.",
-                        ),
-                        SelectOption::with_description(
-                            "yes",
-                            "Yes",
-                            "After TOTP verification, an operator must approve \
-                             the request before a certificate is issued.",
-                        ),
-                    ],
-                )],
-                messages: Vec::new(),
-            };
-        }
-
-        // Resolve custom → effective settings
-        let enroll_open = bag
-            .get("enrollment_open")
-            .and_then(|v| v.as_str())
-            .unwrap_or("open")
-            == "open";
-        let approval = bag
-            .get("requires_approval")
-            .and_then(|v| v.as_str())
-            .unwrap_or("no")
-            == "yes";
-
-        // Label the resulting posture with the nearest preset name (display only).
-        let baseline_label = match (enroll_open, approval) {
-            (true, false) => "Just Me",
-            (true, true) => "My Team",
-            (false, true) => "My Organization",
-            (false, false) => "Just Me",
-        };
-
-        bag.insert(
-            "_effective_profile".into(),
-            serde_json::json!(baseline_label),
-        );
-        bag.insert("_enrollment_open".into(), serde_json::json!(enroll_open));
-        bag.insert("_requires_approval".into(), serde_json::json!(approval));
-        // Custom profiles get auto_unlock from a separate prompt (handled below)
+        eval_init_custom_posture(bag)
     } else {
-        // Standard preset - resolve to the (enrollment_open, requires_approval,
-        // auto_unlock) booleans. The preset name survives only as a UX label.
-        let (enroll_open, approval, auto_unlock) = match preset_bools(&profile_raw) {
-            Some(bools) => bools,
-            None => {
-                bag.remove("profile");
-                return EvalResult::ValidationError {
-                    prompts: vec![profile_prompt()],
-                    messages: Vec::new(),
-                    error: format!(
-                        "Unknown profile: '{profile_raw}'. \
-                         Choose just_me, my_team, my_organization, or custom.",
+        eval_init_preset_posture(bag, &profile_raw)
+    }
+}
+
+/// Step 1a: custom-profile enrollment + approval sub-prompts → posture bools.
+fn eval_init_custom_posture(
+    bag: &mut serde_json::Map<String, serde_json::Value>,
+) -> Option<EvalResult> {
+    if !bag.contains_key("enrollment_open") {
+        return Some(EvalResult::NeedInput {
+            prompts: vec![Prompt::select_one(
+                "enrollment_open",
+                "Enrollment when pond is created",
+                vec![
+                    SelectOption::with_description(
+                        "open",
+                        "Open (default)",
+                        "Any machine with a valid TOTP code can join immediately. \
+                         You can close enrollment later.",
                     ),
-                };
-            }
-        };
-
-        let unlock_method = if auto_unlock { "auto" } else { "passphrase" };
-
-        bag.insert(
-            "_effective_profile".into(),
-            serde_json::json!(preset_label(&profile_raw)),
-        );
-        bag.insert("_enrollment_open".into(), serde_json::json!(enroll_open));
-        bag.insert("_requires_approval".into(), serde_json::json!(approval));
-        bag.insert("_unlock_method".into(), serde_json::json!(unlock_method));
-        bag.insert("_auto_unlock".into(), serde_json::json!(auto_unlock));
+                    SelectOption::with_description(
+                        "closed",
+                        "Closed",
+                        "Machines cannot join until you explicitly open enrollment.",
+                    ),
+                ],
+            )],
+            messages: Vec::new(),
+        });
     }
 
-    // ── 1b. Operator name (when approval is required) ───────────────
+    if !bag.contains_key("requires_approval") {
+        return Some(EvalResult::NeedInput {
+            prompts: vec![Prompt::select_one(
+                "requires_approval",
+                "Require approval for each join request?",
+                vec![
+                    SelectOption::with_description(
+                        "no",
+                        "No (default)",
+                        "TOTP code is sufficient. Machine joins immediately after verification.",
+                    ),
+                    SelectOption::with_description(
+                        "yes",
+                        "Yes",
+                        "After TOTP verification, an operator must approve \
+                         the request before a certificate is issued.",
+                    ),
+                ],
+            )],
+            messages: Vec::new(),
+        });
+    }
+
+    let enroll_open = bag
+        .get("enrollment_open")
+        .and_then(|v| v.as_str())
+        .unwrap_or("open")
+        == "open";
+    let approval = bag
+        .get("requires_approval")
+        .and_then(|v| v.as_str())
+        .unwrap_or("no")
+        == "yes";
+
+    // Label the resulting posture with the nearest preset name (display only).
+    let baseline_label = match (enroll_open, approval) {
+        (true, false) => "Just Me",
+        (true, true) => "My Team",
+        (false, true) => "My Organization",
+        (false, false) => "Just Me",
+    };
+
+    bag.insert(
+        "_effective_profile".into(),
+        serde_json::json!(baseline_label),
+    );
+    bag.insert("_enrollment_open".into(), serde_json::json!(enroll_open));
+    bag.insert("_requires_approval".into(), serde_json::json!(approval));
+    // Custom profiles get auto_unlock from a separate prompt (eval_init_unlock_method).
+    None
+}
+
+/// Step 1a': standard-preset posture resolution.
+fn eval_init_preset_posture(
+    bag: &mut serde_json::Map<String, serde_json::Value>,
+    profile_raw: &str,
+) -> Option<EvalResult> {
+    let (enroll_open, approval, auto_unlock) = match preset_bools(profile_raw) {
+        Some(bools) => bools,
+        None => {
+            bag.remove("profile");
+            return Some(EvalResult::ValidationError {
+                prompts: vec![profile_prompt()],
+                messages: Vec::new(),
+                error: format!(
+                    "Unknown profile: '{profile_raw}'. \
+                     Choose just_me, my_team, my_organization, or custom.",
+                ),
+            });
+        }
+    };
+
+    let unlock_method = if auto_unlock { "auto" } else { "passphrase" };
+
+    bag.insert(
+        "_effective_profile".into(),
+        serde_json::json!(preset_label(profile_raw)),
+    );
+    bag.insert("_enrollment_open".into(), serde_json::json!(enroll_open));
+    bag.insert("_requires_approval".into(), serde_json::json!(approval));
+    bag.insert("_unlock_method".into(), serde_json::json!(unlock_method));
+    bag.insert("_auto_unlock".into(), serde_json::json!(auto_unlock));
+    None
+}
+
+/// Step 1b: operator name prompt (only when approval is required).
+fn eval_init_operator(bag: &mut serde_json::Map<String, serde_json::Value>) -> Option<EvalResult> {
     let requires_approval = bag
         .get("_requires_approval")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
     if requires_approval && !bag.contains_key("operator") {
-        return EvalResult::NeedInput {
+        return Some(EvalResult::NeedInput {
             prompts: vec![Prompt::text("operator", "Operator name (for audit trails)")],
             messages: vec![Message::info(
                 "Operator",
                 "This name will be recorded in the audit log alongside \
                  administrative actions.",
             )],
-        };
+        });
     }
+    None
+}
 
-    // ── 2. Entropy ──────────────────────────────────────────────────
-    //
-    // "Mash the keyboard!" - collect raw entropy first, then derive
-    // a suggested XKCD-style passphrase from it.
+/// Step 2: entropy collection ("mash the keyboard") + seed derivation.
+fn eval_init_entropy(bag: &mut serde_json::Map<String, serde_json::Value>) -> Option<EvalResult> {
     if !bag.contains_key("entropy") {
         let server_entropy = generate_server_entropy_hex();
         bag.insert(
@@ -273,17 +325,16 @@ fn eval_init(
             serde_json::Value::String(server_entropy),
         );
 
-        return EvalResult::NeedInput {
+        return Some(EvalResult::NeedInput {
             prompts: vec![Prompt::entropy("entropy", "Mash your keyboard!")],
             messages: vec![Message::info(
                 "Entropy Collection",
                 "Type random characters - go wild! This will be mixed with \
                  server-generated randomness to create your passphrase.",
             )],
-        };
+        });
     }
 
-    // Combine server + client entropy → seed
     if !bag.contains_key("_entropy_seed") {
         let client_entropy = bag.get("entropy").and_then(|v| v.as_str()).unwrap_or("");
         let server_entropy = bag
@@ -297,86 +348,24 @@ fn eval_init(
             serde_json::Value::String(hex_encode(&seed)),
         );
     }
+    None
+}
 
-    // ── 3. Passphrase (suggest from entropy or manual) ──────────────
-    //
-    // Generate an XKCD-style passphrase from the entropy seed and
-    // present it. User can keep it, mash again, or type their own.
+/// Step 3: passphrase — suggest from entropy, choice (keep/again/own), manual
+/// entry, and minimum-length validation.
+fn eval_init_passphrase(
+    bag: &mut serde_json::Map<String, serde_json::Value>,
+    render: &RenderHints,
+) -> Option<EvalResult> {
     if !bag.contains_key("passphrase") {
-        // Generate suggestion from entropy seed
-        if !bag.contains_key("_suggested_passphrase") {
-            let seed_hex = bag["_entropy_seed"].as_str().unwrap_or("");
-            if let Ok(seed_bytes) = hex_decode(seed_hex) {
-                let mut seed_arr = [0u8; 32];
-                let len = seed_bytes.len().min(32);
-                seed_arr[..len].copy_from_slice(&seed_bytes[..len]);
-                let suggested = crate::entropy::generate_passphrase(&seed_arr);
-                let hint = crate::entropy::memorization_hint(&suggested);
-                bag.insert("_suggested_passphrase".into(), serde_json::json!(suggested));
-                if !hint.is_empty() {
-                    bag.insert("_passphrase_hint".into(), serde_json::json!(hint));
-                }
-            }
-        }
+        ensure_suggested_passphrase(bag);
 
-        // Show the suggestion and ask what to do
         match bag
             .get("passphrase_choice")
             .and_then(|v| v.as_str())
             .map(String::from)
         {
-            None => {
-                let suggested = bag
-                    .get("_suggested_passphrase")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("(generation failed)");
-                let hint = bag
-                    .get("_passphrase_hint")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                let mut hint_text = format!("Your suggested passphrase:\n\n## {}\n", suggested);
-                if !hint.is_empty() {
-                    hint_text.push_str(&format!("\nMemorization hint: *{hint}*"));
-                }
-                hint_text.push_str(
-                    "\n\nThis passphrase protects your pond's private key. \
-                     Write it down somewhere safe - you'll need it if the \
-                     keystone stone reboots.",
-                );
-
-                return EvalResult::NeedInput {
-                    prompts: vec![Prompt::select_one(
-                        "passphrase_choice",
-                        "What would you like to do?",
-                        vec![
-                            SelectOption::with_description(
-                                "keep",
-                                "Keep this passphrase",
-                                "Use the generated passphrase. Write it down!",
-                            ),
-                            SelectOption::with_description(
-                                "again",
-                                "Mash again",
-                                "Collect new entropy and generate a different passphrase.",
-                            ),
-                            SelectOption::with_description(
-                                "own",
-                                "Enter my own",
-                                "Type a custom passphrase (minimum 8 characters).",
-                            ),
-                        ],
-                    )],
-                    messages: vec![
-                        Message::info("Your Passphrase", &hint_text),
-                        Message::info(
-                            "⚠ No recovery",
-                            "If you lose this passphrase, the pond must be \
-                             recreated from scratch. There is no reset.",
-                        ),
-                    ],
-                };
-            }
+            None => return Some(passphrase_choice_prompt(bag)),
             Some(choice) => match choice.as_str() {
                 "keep" => {
                     let suggested = bag
@@ -387,28 +376,28 @@ fn eval_init(
                     bag.insert("passphrase".into(), serde_json::json!(suggested));
                 }
                 "again" => {
-                    // Clear entropy state and loop back to mashing
+                    // Clear entropy state and loop back to mashing.
                     bag.remove("entropy");
                     bag.remove("_server_entropy");
                     bag.remove("_entropy_seed");
                     bag.remove("_suggested_passphrase");
                     bag.remove("_passphrase_hint");
                     bag.remove("passphrase_choice");
-                    return eval_init(bag, render);
+                    return Some(eval_init(bag, render));
                 }
                 "own" => {
-                    // Will fall through to manual prompt below
+                    // Fall through to manual prompt below.
                 }
                 _ => {
                     bag.remove("passphrase_choice");
-                    return eval_init(bag, render);
+                    return Some(eval_init(bag, render));
                 }
             },
         }
 
-        // Manual passphrase entry ("own" choice)
+        // Manual passphrase entry ("own" choice).
         if !bag.contains_key("passphrase") {
-            return EvalResult::NeedInput {
+            return Some(EvalResult::NeedInput {
                 prompts: vec![Prompt::secret_confirm(
                     "passphrase",
                     "Enter your passphrase (minimum 8 characters)",
@@ -419,105 +408,186 @@ fn eval_init(
                      Write it down - you'll need it if the keystone stone reboots.\n\n\
                      Minimum 8 characters.",
                 )],
-            };
+            });
         }
     }
 
-    // Validate passphrase length
+    // Validate passphrase length.
     if let Some(pp) = bag.get("passphrase").and_then(|v| v.as_str()) {
         if pp.len() < 8 {
             bag.remove("passphrase");
             bag.remove("passphrase_choice");
-            return EvalResult::ValidationError {
+            return Some(EvalResult::ValidationError {
                 prompts: vec![Prompt::secret_confirm(
                     "passphrase",
                     "Enter your passphrase (minimum 8 characters)",
                 )],
                 messages: Vec::new(),
                 error: "Passphrase must be at least 8 characters.".into(),
+            });
+        }
+    }
+    None
+}
+
+/// Derive and store the XKCD-style suggested passphrase (and its memorization
+/// hint) from the entropy seed, if not already present. No-op on decode failure.
+fn ensure_suggested_passphrase(bag: &mut serde_json::Map<String, serde_json::Value>) {
+    if bag.contains_key("_suggested_passphrase") {
+        return;
+    }
+    let seed_hex = bag["_entropy_seed"].as_str().unwrap_or("");
+    if let Ok(seed_bytes) = hex_decode(seed_hex) {
+        let mut seed_arr = [0u8; 32];
+        let len = seed_bytes.len().min(32);
+        seed_arr[..len].copy_from_slice(&seed_bytes[..len]);
+        let suggested = crate::entropy::generate_passphrase(&seed_arr);
+        let hint = crate::entropy::memorization_hint(&suggested);
+        bag.insert("_suggested_passphrase".into(), serde_json::json!(suggested));
+        if !hint.is_empty() {
+            bag.insert("_passphrase_hint".into(), serde_json::json!(hint));
+        }
+    }
+}
+
+/// Build the keep/again/own passphrase-choice prompt with the suggested
+/// passphrase and memorization hint.
+fn passphrase_choice_prompt(bag: &serde_json::Map<String, serde_json::Value>) -> EvalResult {
+    let suggested = bag
+        .get("_suggested_passphrase")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(generation failed)");
+    let hint = bag
+        .get("_passphrase_hint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let mut hint_text = format!("Your suggested passphrase:\n\n## {}\n", suggested);
+    if !hint.is_empty() {
+        hint_text.push_str(&format!("\nMemorization hint: *{hint}*"));
+    }
+    hint_text.push_str(
+        "\n\nThis passphrase protects your pond's private key. \
+         Write it down somewhere safe - you'll need it if the \
+         keystone stone reboots.",
+    );
+
+    EvalResult::NeedInput {
+        prompts: vec![Prompt::select_one(
+            "passphrase_choice",
+            "What would you like to do?",
+            vec![
+                SelectOption::with_description(
+                    "keep",
+                    "Keep this passphrase",
+                    "Use the generated passphrase. Write it down!",
+                ),
+                SelectOption::with_description(
+                    "again",
+                    "Mash again",
+                    "Collect new entropy and generate a different passphrase.",
+                ),
+                SelectOption::with_description(
+                    "own",
+                    "Enter my own",
+                    "Type a custom passphrase (minimum 8 characters).",
+                ),
+            ],
+        )],
+        messages: vec![
+            Message::info("Your Passphrase", &hint_text),
+            Message::info(
+                "⚠ No recovery",
+                "If you lose this passphrase, the pond must be \
+                 recreated from scratch. There is no reset.",
+            ),
+        ],
+    }
+}
+
+/// Step 3b: unlock-method choice (custom profiles only).
+fn eval_init_unlock_method(
+    bag: &mut serde_json::Map<String, serde_json::Value>,
+) -> Option<EvalResult> {
+    if bag.contains_key("_unlock_method") {
+        return None;
+    }
+    match bag
+        .get("auto_unlock")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+    {
+        None => Some(EvalResult::NeedInput {
+            prompts: vec![Prompt::select_one(
+                "auto_unlock",
+                "Unlock behavior after reboot",
+                vec![
+                    SelectOption::with_description(
+                        "auto",
+                        "Auto-unlock (recommended)",
+                        "The passphrase is saved locally so the pond \
+                         unlocks automatically when the stone reboots. \
+                         Best for headless machines.",
+                    ),
+                    SelectOption::with_description(
+                        "token",
+                        "Token authentication",
+                        "Register an authenticator app or security key. \
+                         An operator authenticates to unlock after reboot.",
+                    ),
+                    SelectOption::with_description(
+                        "passphrase",
+                        "Manual passphrase",
+                        "Enter the passphrase on every boot. \
+                         Most secure, least convenient.",
+                    ),
+                ],
+            )],
+            messages: Vec::new(),
+        }),
+        Some(choice) => {
+            let method = match choice.as_str() {
+                "auto" | "yes" => "auto",
+                "token" => "token",
+                "passphrase" | "no" => "passphrase",
+                _ => "auto",
             };
+            bag.insert("_unlock_method".into(), serde_json::json!(method));
+            bag.insert("_auto_unlock".into(), serde_json::json!(method == "auto"));
+            None
         }
     }
+}
 
-    // ── 3b. Unlock method (custom profiles only) ────────────────────
-    //
-    // Standard profiles set _unlock_method from defaults above.
-    // Custom profiles ask the user to choose from three options.
-    if !bag.contains_key("_unlock_method") {
-        match bag
-            .get("auto_unlock")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-        {
-            None => {
-                return EvalResult::NeedInput {
-                    prompts: vec![Prompt::select_one(
-                        "auto_unlock",
-                        "Unlock behavior after reboot",
-                        vec![
-                            SelectOption::with_description(
-                                "auto",
-                                "Auto-unlock (recommended)",
-                                "The passphrase is saved locally so the pond \
-                                 unlocks automatically when the stone reboots. \
-                                 Best for headless machines.",
-                            ),
-                            SelectOption::with_description(
-                                "token",
-                                "Token authentication",
-                                "Register an authenticator app or security key. \
-                                 An operator authenticates to unlock after reboot.",
-                            ),
-                            SelectOption::with_description(
-                                "passphrase",
-                                "Manual passphrase",
-                                "Enter the passphrase on every boot. \
-                                 Most secure, least convenient.",
-                            ),
-                        ],
-                    )],
-                    messages: Vec::new(),
-                };
-            }
-            Some(choice) => {
-                let method = match choice.as_str() {
-                    "auto" | "yes" => "auto",
-                    "token" => "token",
-                    "passphrase" | "no" => "passphrase",
-                    _ => "auto",
-                };
-                bag.insert("_unlock_method".into(), serde_json::json!(method));
-                bag.insert("_auto_unlock".into(), serde_json::json!(method == "auto"));
-            }
-        }
-    }
-
-    // ── 4. Auth mode ────────────────────────────────────────────────
-    // (unchanged numbering - was 4, still 4)
-    let auth_mode = match bag
+/// Step 4: authentication mode (currently TOTP only).
+///
+/// Returns the resolved auth mode on success, or the stop `EvalResult` on a
+/// missing/invalid selection.
+fn eval_init_auth_mode(
+    bag: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<String, EvalResult> {
+    match bag
         .get("auth_mode")
         .and_then(|v| v.as_str())
         .map(String::from)
     {
-        None => {
-            return EvalResult::NeedInput {
-                prompts: vec![Prompt::select_one(
-                    "auth_mode",
-                    "Choose how stones will authenticate when joining the pond",
-                    vec![SelectOption::with_description(
-                        "totp",
-                        "TOTP (Authenticator App)",
-                        "6-digit codes from any TOTP-compatible app \
-                             (Google Authenticator, Authy, etc.)",
-                    )],
+        None => Err(EvalResult::NeedInput {
+            prompts: vec![Prompt::select_one(
+                "auth_mode",
+                "Choose how stones will authenticate when joining the pond",
+                vec![SelectOption::with_description(
+                    "totp",
+                    "TOTP (Authenticator App)",
+                    "6-digit codes from any TOTP-compatible app \
+                         (Google Authenticator, Authy, etc.)",
                 )],
-                messages: Vec::new(),
-            };
-        }
+            )],
+            messages: Vec::new(),
+        }),
         Some(mode) => {
             if mode != "totp" {
                 bag.remove("auth_mode");
-                return EvalResult::ValidationError {
+                return Err(EvalResult::ValidationError {
                     prompts: vec![Prompt::select_one(
                         "auth_mode",
                         "Choose how stones will authenticate when joining the pond",
@@ -527,190 +597,186 @@ fn eval_init(
                     error: format!(
                         "Unsupported auth mode: '{mode}'. Currently only TOTP is supported."
                     ),
-                };
+                });
             }
-            mode
-        }
-    };
-
-    // ── 5. TOTP setup + verification ────────────────────────────────
-    // (unchanged numbering - was 5, still 5)
-    if auth_mode == "totp" {
-        if !bag.contains_key("_totp_secret_hex") {
-            let secret = koi_crypto::totp::generate_secret();
-            let secret_hex = hex_encode(secret.as_bytes());
-
-            let account = bag
-                .get("_self_hostname")
-                .and_then(|v| v.as_str())
-                .unwrap_or("pond");
-            let uri = koi_crypto::totp::build_totp_uri(&secret, "ZenGarden", account);
-
-            bag.insert(
-                "_totp_secret_hex".into(),
-                serde_json::Value::String(secret_hex),
-            );
-            bag.insert("_totp_uri".into(), serde_json::Value::String(uri));
-        }
-
-        if !bag.contains_key("verification_code") {
-            let uri = bag["_totp_uri"].as_str().unwrap_or("");
-            let qr_content = render_qr(uri, render);
-
-            return EvalResult::NeedInput {
-                prompts: vec![Prompt::code(
-                    "verification_code",
-                    "Enter the 6-digit code from your authenticator app",
-                )],
-                messages: vec![
-                    Message::qr_code("Scan this QR code with your authenticator app", &qr_content),
-                    Message::info(
-                        "Save this now",
-                        "This secret will not be shown again after pond creation. \
-                         You can rotate it later with the rotate-auth command.",
-                    ),
-                ],
-            };
-        }
-
-        let code = bag
-            .get("verification_code")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let secret_hex = bag
-            .get("_totp_secret_hex")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        let valid = if let Ok(secret_bytes) = hex_decode(secret_hex) {
-            let secret = koi_crypto::totp::TotpSecret::from_bytes(secret_bytes);
-            koi_crypto::totp::verify_code(&secret, code)
-        } else {
-            false
-        };
-
-        if !valid {
-            bag.remove("verification_code");
-            let uri = bag.get("_totp_uri").and_then(|v| v.as_str()).unwrap_or("");
-            let qr_content = render_qr(uri, render);
-
-            return EvalResult::ValidationError {
-                prompts: vec![Prompt::code(
-                    "verification_code",
-                    "Enter the 6-digit code from your authenticator app",
-                )],
-                messages: vec![Message::qr_code(
-                    "Scan this QR code with your authenticator app",
-                    &qr_content,
-                )],
-                error: "Invalid verification code. Check your authenticator app and try again."
-                    .into(),
-            };
+            Ok(mode)
         }
     }
+}
 
-    // ── 6. Token registration sub-flow ─────────────────────────────
-    //
-    // When unlock_method == "token", the user registers an authenticator
-    // app or security key for use at boot time. This runs while the
-    // passphrase is still in the bag (not yet consumed).
+/// Step 5: TOTP enrollment-secret setup + 6-digit verification.
+fn eval_init_totp(
+    bag: &mut serde_json::Map<String, serde_json::Value>,
+    render: &RenderHints,
+    auth_mode: &str,
+) -> Option<EvalResult> {
+    if auth_mode != "totp" {
+        return None;
+    }
+    if !bag.contains_key("_totp_secret_hex") {
+        let secret = koi_crypto::totp::generate_secret();
+        let secret_hex = hex_encode(secret.as_bytes());
+
+        let account = bag
+            .get("_self_hostname")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pond");
+        let uri = koi_crypto::totp::build_totp_uri(&secret, "ZenGarden", account);
+
+        bag.insert(
+            "_totp_secret_hex".into(),
+            serde_json::Value::String(secret_hex),
+        );
+        bag.insert("_totp_uri".into(), serde_json::Value::String(uri));
+    }
+
+    if !bag.contains_key("verification_code") {
+        let uri = bag["_totp_uri"].as_str().unwrap_or("");
+        let qr_content = render_qr(uri, render);
+
+        return Some(EvalResult::NeedInput {
+            prompts: vec![Prompt::code(
+                "verification_code",
+                "Enter the 6-digit code from your authenticator app",
+            )],
+            messages: vec![
+                Message::qr_code("Scan this QR code with your authenticator app", &qr_content),
+                Message::info(
+                    "Save this now",
+                    "This secret will not be shown again after pond creation. \
+                     You can rotate it later with the rotate-auth command.",
+                ),
+            ],
+        });
+    }
+
+    let code = bag
+        .get("verification_code")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let secret_hex = bag
+        .get("_totp_secret_hex")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if !totp_code_valid(secret_hex, code) {
+        bag.remove("verification_code");
+        let uri = bag.get("_totp_uri").and_then(|v| v.as_str()).unwrap_or("");
+        return Some(totp_invalid_code_result(
+            "verification_code",
+            "Enter the 6-digit code from your authenticator app",
+            uri,
+            render,
+            "Scan this QR code with your authenticator app",
+            "Invalid verification code. Check your authenticator app and try again.",
+        ));
+    }
+    None
+}
+
+/// Step 6: token-registration sub-flow (only when `_unlock_method == "token"`).
+fn eval_init_token(
+    bag: &mut serde_json::Map<String, serde_json::Value>,
+    render: &RenderHints,
+) -> Option<EvalResult> {
     let unlock_method = bag
         .get("_unlock_method")
         .and_then(|v| v.as_str())
         .unwrap_or("auto")
         .to_string();
 
-    if unlock_method == "token" {
-        // The only supported unlock token type is TOTP. Record it so the
-        // completion summary can label the boot behavior.
-        bag.insert("unlock_token_type".into(), serde_json::json!("totp"));
-
-        // TOTP unlock token registration
-        if !bag.contains_key("_unlock_totp_secret") {
-            let secret = koi_crypto::totp::generate_secret();
-            let secret_hex = hex_encode(secret.as_bytes());
-
-            let account = bag
-                .get("_self_hostname")
-                .and_then(|v| v.as_str())
-                .unwrap_or("pond");
-            let uri = koi_crypto::totp::build_totp_uri(&secret, "ZenGarden-Unlock", account);
-
-            bag.insert(
-                "_unlock_totp_secret".into(),
-                serde_json::Value::String(secret_hex),
-            );
-            bag.insert("_unlock_totp_uri".into(), serde_json::Value::String(uri));
-        }
-
-        if !bag.contains_key("unlock_totp_code") {
-            let uri = bag["_unlock_totp_uri"].as_str().unwrap_or("");
-            let qr_content = render_qr(uri, render);
-
-            return EvalResult::NeedInput {
-                prompts: vec![Prompt::code(
-                    "unlock_totp_code",
-                    "Enter the 6-digit code to verify your unlock token",
-                )],
-                messages: vec![
-                    Message::qr_code(
-                        "Scan this QR code with your authenticator app (unlock token)",
-                        &qr_content,
-                    ),
-                    Message::info(
-                        "Separate Token",
-                        "This is a **separate** token from your enrollment code. \
-                         Add it as a second entry in your authenticator app. \
-                         It will be labeled 'ZenGarden-Unlock'.",
-                    ),
-                ],
-            };
-        }
-
-        // Verify the TOTP code
-        let code = bag
-            .get("unlock_totp_code")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let secret_hex = bag
-            .get("_unlock_totp_secret")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        let valid = if let Ok(secret_bytes) = hex_decode(secret_hex) {
-            let secret = koi_crypto::totp::TotpSecret::from_bytes(secret_bytes);
-            koi_crypto::totp::verify_code(&secret, code)
-        } else {
-            false
-        };
-
-        if !valid {
-            bag.remove("unlock_totp_code");
-            let uri = bag
-                .get("_unlock_totp_uri")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let qr_content = render_qr(uri, render);
-
-            return EvalResult::ValidationError {
-                prompts: vec![Prompt::code(
-                    "unlock_totp_code",
-                    "Enter the 6-digit code to verify your unlock token",
-                )],
-                messages: vec![Message::qr_code(
-                    "Scan this QR code with your authenticator app (unlock token)",
-                    &qr_content,
-                )],
-                error: "Invalid code. Check your authenticator app and try again.".into(),
-            };
-        }
+    if unlock_method != "token" {
+        return None;
     }
 
-    // ── Complete ────────────────────────────────────────────────────
+    // The only supported unlock token type is TOTP. Record it so the
+    // completion summary can label the boot behavior.
+    bag.insert("unlock_token_type".into(), serde_json::json!("totp"));
+
+    ensure_unlock_totp_secret(bag);
+
+    if !bag.contains_key("unlock_totp_code") {
+        let uri = bag["_unlock_totp_uri"].as_str().unwrap_or("");
+        let qr_content = render_qr(uri, render);
+
+        return Some(EvalResult::NeedInput {
+            prompts: vec![Prompt::code(
+                "unlock_totp_code",
+                "Enter the 6-digit code to verify your unlock token",
+            )],
+            messages: vec![
+                Message::qr_code(
+                    "Scan this QR code with your authenticator app (unlock token)",
+                    &qr_content,
+                ),
+                Message::info(
+                    "Separate Token",
+                    "This is a **separate** token from your enrollment code. \
+                     Add it as a second entry in your authenticator app. \
+                     It will be labeled 'ZenGarden-Unlock'.",
+                ),
+            ],
+        });
+    }
+
+    let code = bag
+        .get("unlock_totp_code")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let secret_hex = bag
+        .get("_unlock_totp_secret")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if !totp_code_valid(secret_hex, code) {
+        bag.remove("unlock_totp_code");
+        let uri = bag
+            .get("_unlock_totp_uri")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        return Some(totp_invalid_code_result(
+            "unlock_totp_code",
+            "Enter the 6-digit code to verify your unlock token",
+            uri,
+            render,
+            "Scan this QR code with your authenticator app (unlock token)",
+            "Invalid code. Check your authenticator app and try again.",
+        ));
+    }
+    None
+}
+
+/// Generate and store the unlock-token TOTP secret + QR URI, if not present.
+fn ensure_unlock_totp_secret(bag: &mut serde_json::Map<String, serde_json::Value>) {
+    if bag.contains_key("_unlock_totp_secret") {
+        return;
+    }
+    let secret = koi_crypto::totp::generate_secret();
+    let secret_hex = hex_encode(secret.as_bytes());
+
+    let account = bag
+        .get("_self_hostname")
+        .and_then(|v| v.as_str())
+        .unwrap_or("pond");
+    let uri = koi_crypto::totp::build_totp_uri(&secret, "ZenGarden-Unlock", account);
+
+    bag.insert(
+        "_unlock_totp_secret".into(),
+        serde_json::Value::String(secret_hex),
+    );
+    bag.insert("_unlock_totp_uri".into(), serde_json::Value::String(uri));
+}
+
+/// Final step: build the readiness summary and complete the ceremony.
+fn eval_init_summary(
+    bag: &serde_json::Map<String, serde_json::Value>,
+    auth_mode: &str,
+) -> EvalResult {
+    let profile_raw = bag.get("profile").and_then(|v| v.as_str()).unwrap_or("");
     let effective_profile = bag
         .get("_effective_profile")
         .and_then(|v| v.as_str())
-        .unwrap_or(&profile_raw);
+        .unwrap_or(profile_raw);
     let enrollment_label = if bag
         .get("_enrollment_open")
         .and_then(|v| v.as_bool())
@@ -720,13 +786,20 @@ fn eval_init(
     } else {
         "Closed"
     };
+    let requires_approval = bag
+        .get("_requires_approval")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let approval_label = if requires_approval {
         "Required"
     } else {
         "Not required"
     };
-
-    let unlock_label = match unlock_method.as_str() {
+    let unlock_method = bag
+        .get("_unlock_method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("auto");
+    let unlock_label = match unlock_method {
         "auto" => "Auto-unlock on boot",
         "token" => "Authenticator code (TOTP) required after reboot",
         _ => "Passphrase required after reboot",
@@ -750,7 +823,7 @@ fn eval_init(
     summary_lines.push(format!(
         "• {enrollment_label} enrollment for other machines"
     ));
-    match unlock_method.as_str() {
+    match unlock_method {
         "auto" => {
             summary_lines.push("• Save passphrase locally for auto-unlock on reboot".into());
         }
@@ -839,7 +912,33 @@ fn eval_unlock(
     _render: &RenderHints,
     paths: &crate::CertmeshPaths,
 ) -> EvalResult {
-    // Determine available unlock methods from the slot table
+    // Step 1: Choose unlock method (only when TOTP is also available).
+    if unlock_totp_available(paths) && !bag.contains_key("_unlock_choice") {
+        return eval_unlock_method_choice();
+    }
+
+    let method = bag
+        .get("_unlock_choice")
+        .and_then(|v| v.as_str())
+        .unwrap_or("passphrase");
+
+    // Step 2: Collect the credential for the chosen method.
+    if let Some(r) = eval_unlock_collect_credential(bag, method) {
+        return r;
+    }
+
+    let summary = match method {
+        "totp" => "The CA key will be decrypted using your authenticator code.",
+        _ => "The CA key will be decrypted and pond operations resumed.",
+    };
+
+    EvalResult::Complete {
+        messages: vec![Message::summary("Unlock ready", summary)],
+    }
+}
+
+/// Whether the slot table advertises a TOTP unlock method.
+fn unlock_totp_available(paths: &crate::CertmeshPaths) -> bool {
     let slot_table_path = paths.slot_table_path();
     let available_methods = if slot_table_path.exists() {
         match koi_crypto::unlock_slots::SlotTable::load(&slot_table_path) {
@@ -853,45 +952,42 @@ fn eval_unlock(
     } else {
         vec!["passphrase".to_string()]
     };
+    available_methods.contains(&"totp".to_string())
+}
 
-    let has_totp = available_methods.contains(&"totp".to_string());
-
-    // Step 1: Choose unlock method (if multiple are available)
-    if has_totp && !bag.contains_key("_unlock_choice") {
-        let mut options = vec![SelectOption::with_description(
-            "passphrase",
-            "Passphrase",
-            "Enter your pond passphrase",
-        )];
-        options.push(SelectOption::with_description(
+/// Build the passphrase-vs-TOTP unlock-method selection prompt.
+fn eval_unlock_method_choice() -> EvalResult {
+    let options = vec![
+        SelectOption::with_description("passphrase", "Passphrase", "Enter your pond passphrase"),
+        SelectOption::with_description(
             "totp",
             "Authenticator code",
             "Enter a code from your authenticator app",
-        ));
-
-        return EvalResult::NeedInput {
-            prompts: vec![Prompt::select_one(
-                "_unlock_choice",
-                "How do you want to unlock the pond?",
-                options,
-            )],
-            messages: vec![Message::info(
-                "Unlock Pond",
-                "The pond CA is locked. Choose how to unlock it.",
-            )],
-        };
+        ),
+    ];
+    EvalResult::NeedInput {
+        prompts: vec![Prompt::select_one(
+            "_unlock_choice",
+            "How do you want to unlock the pond?",
+            options,
+        )],
+        messages: vec![Message::info(
+            "Unlock Pond",
+            "The pond CA is locked. Choose how to unlock it.",
+        )],
     }
+}
 
-    let method = bag
-        .get("_unlock_choice")
-        .and_then(|v| v.as_str())
-        .unwrap_or("passphrase");
-
-    // Step 2: Collect the credential for the chosen method
+/// Collect the credential for the chosen unlock method. Returns `Some` when more
+/// input is needed, `None` once the credential is present.
+fn eval_unlock_collect_credential(
+    bag: &serde_json::Map<String, serde_json::Value>,
+    method: &str,
+) -> Option<EvalResult> {
     match method {
         "totp" => {
             if !bag.contains_key("_unlock_totp_input") {
-                return EvalResult::NeedInput {
+                return Some(EvalResult::NeedInput {
                     prompts: vec![Prompt::code(
                         "_unlock_totp_input",
                         "Enter the 6-digit code from your authenticator app",
@@ -901,13 +997,13 @@ fn eval_unlock(
                         "Enter the current code from the authenticator app you \
                          registered during pond setup.",
                     )],
-                };
+                });
             }
         }
         _ => {
-            // Passphrase path (original behavior)
+            // Passphrase path (original behavior).
             if !bag.contains_key("passphrase") {
-                return EvalResult::NeedInput {
+                return Some(EvalResult::NeedInput {
                     prompts: vec![Prompt::secret(
                         "passphrase",
                         "Enter the pond passphrase to unlock",
@@ -917,19 +1013,11 @@ fn eval_unlock(
                         "The pond CA is locked. Enter the passphrase to decrypt the CA key \
                          and resume operations.",
                     )],
-                };
+                });
             }
         }
     }
-
-    let summary = match method {
-        "totp" => "The CA key will be decrypted using your authenticator code.",
-        _ => "The CA key will be decrypted and pond operations resumed.",
-    };
-
-    EvalResult::Complete {
-        messages: vec![Message::summary("Unlock ready", summary)],
-    }
+    None
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -985,6 +1073,36 @@ fn render_qr(payload: &str, render: &RenderHints) -> String {
         QrFormat::PngBase64 => koi_crypto::totp::qr_code_png_base64_raw(payload),
         QrFormat::Utf8 => koi_crypto::totp::qr_code_unicode_raw(payload),
         QrFormat::UriOnly => payload.to_string(),
+    }
+}
+
+/// Verify a 6-digit `code` against a hex-encoded TOTP `secret_hex`.
+/// Returns `false` on any decoding failure.
+fn totp_code_valid(secret_hex: &str, code: &str) -> bool {
+    match hex_decode(secret_hex) {
+        Ok(secret_bytes) => {
+            let secret = koi_crypto::totp::TotpSecret::from_bytes(secret_bytes);
+            koi_crypto::totp::verify_code(&secret, code)
+        }
+        Err(_) => false,
+    }
+}
+
+/// Build the "invalid TOTP code" re-prompt (QR + code prompt) shared by the
+/// enrollment-secret and unlock-token verification steps.
+fn totp_invalid_code_result(
+    code_key: &str,
+    code_prompt: &str,
+    uri: &str,
+    render: &RenderHints,
+    qr_caption: &str,
+    error: &str,
+) -> EvalResult {
+    let qr_content = render_qr(uri, render);
+    EvalResult::ValidationError {
+        prompts: vec![Prompt::code(code_key, code_prompt)],
+        messages: vec![Message::qr_code(qr_caption, &qr_content)],
+        error: error.into(),
     }
 }
 

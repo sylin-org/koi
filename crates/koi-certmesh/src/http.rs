@@ -164,56 +164,15 @@ async fn set_hook_handler(
         }
     }
 
-    // Validate reload hook: absolute path + no shell metacharacters.
-    // Defense-in-depth: domain facade (CertmeshCore::set_reload_hook) also validates.
-    const HOOK_FORBIDDEN: &[char] = &[
-        ';', '|', '&', '$', '`', '>', '<', '(', ')', '\n', '\r', '\0', '*', '?', '[', ']', '{',
-        '}', '~', '%', '!',
-    ];
-    if request.reload.contains(HOOK_FORBIDDEN) {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            &CertmeshError::Internal("reload hook contains forbidden characters".into()),
-        );
-    }
-    #[cfg(unix)]
-    if !request.reload.starts_with('/') {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            &CertmeshError::Internal("reload hook must be an absolute path".into()),
-        );
-    }
-    #[cfg(windows)]
-    if !(request.reload.len() >= 3 && request.reload.as_bytes()[1] == b':') {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            &CertmeshError::Internal("reload hook must be an absolute path".into()),
-        );
-    }
-
-    // Verify the member exists
-    let mut roster = state.roster.lock().await;
-    match roster.find_member_mut(&request.hostname) {
-        Some(member) => {
-            member.reload_hook = Some(request.reload.clone());
-
-            let roster_clone = roster.clone();
-            let roster_path = state.paths.roster_path();
-            drop(roster);
-            if let Err(e) = tokio::task::spawn_blocking(move || {
-                crate::roster::save_roster(&roster_clone, &roster_path)
-            })
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
-            .and_then(|r| r.map_err(CertmeshError::Io))
-            {
-                tracing::warn!(error = %e, "Failed to save roster after set-hook");
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    &CertmeshError::Internal(format!("Failed to save roster: {e}")),
-                );
-            }
-
+    // Delegate to the domain facade, which is the single source of truth for
+    // hook validation (forbidden metacharacters + absolute-path requirement)
+    // and persistence.
+    let core = CertmeshCore::from_state(Arc::clone(&state));
+    match core
+        .set_reload_hook(&request.hostname, &request.reload)
+        .await
+    {
+        Ok(()) => {
             let resp = crate::protocol::SetHookResponse {
                 hostname: request.hostname,
                 reload: request.reload,
@@ -226,10 +185,12 @@ async fn set_hook_handler(
                 ),
             }
         }
-        None => error_response(
-            StatusCode::NOT_FOUND,
-            &CertmeshError::Internal("member not found".into()),
-        ),
+        Err(e) => {
+            let code = koi_common::error::ErrorCode::from(&e);
+            let status = StatusCode::from_u16(code.http_status())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            error_response(status, &e)
+        }
     }
 }
 
@@ -515,12 +476,7 @@ async fn save_and_summarize_enrollment(
     let roster_clone = roster.clone();
     let roster_path = state.paths.roster_path();
     drop(roster);
-    if let Err(e) =
-        tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path))
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
-            .and_then(|r| r.map_err(CertmeshError::Io))
-    {
+    if let Err(e) = crate::roster::persist_roster(&roster_clone, &roster_path).await {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &CertmeshError::Internal(format!("Failed to save roster: {e}")),
@@ -792,12 +748,7 @@ async fn health_handler(
     let roster_clone = roster.clone();
     let roster_path = state.paths.roster_path();
     drop(roster);
-    if let Err(e) =
-        tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path))
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
-            .and_then(|r| r.map_err(CertmeshError::Io))
-    {
+    if let Err(e) = crate::roster::persist_roster(&roster_clone, &roster_path).await {
         tracing::warn!(error = %e, "Failed to save roster after health heartbeat");
     }
 
