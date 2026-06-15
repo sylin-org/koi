@@ -115,6 +115,20 @@ pub struct DnsCore {
     alias_tx: Option<mpsc::Sender<AliasFeedback>>,
     rate_limiter: Arc<RateLimiter>,
     event_tx: broadcast::Sender<DnsEvent>,
+    /// Ephemeral TXT records (ACME `dns-01` challenges). Keyed by normalized
+    /// FQDN (lowercase, trailing dot). Deliberately in-memory only — challenge
+    /// tokens are short-lived and must NOT be persisted.
+    txt_records: Arc<RwLock<HashMap<String, Vec<String>>>>,
+}
+
+/// Normalize a name for the ephemeral TXT store and for matching incoming TXT
+/// queries: lowercase, trim whitespace, ensure exactly one trailing dot. This
+/// mirrors how hickory presents query names (`Name::to_string()` is lowercase,
+/// FQDN with a trailing dot) so an in-process `add_txt` and a real DNS TXT query
+/// resolve to the same key.
+fn normalize_txt_name(name: &str) -> String {
+    let trimmed = name.trim().trim_end_matches('.').to_lowercase();
+    format!("{trimmed}.")
 }
 
 impl DnsCore {
@@ -162,6 +176,7 @@ impl DnsCore {
             alias_tx,
             rate_limiter: Arc::new(RateLimiter::new(max_qps)),
             event_tx: koi_common::events::event_channel().0,
+            txt_records: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -214,6 +229,33 @@ impl DnsCore {
     /// List static DNS entries from the persisted state.
     pub fn list_entries(&self) -> Vec<DnsEntry> {
         self.state.load().entries
+    }
+
+    /// Publish an ephemeral TXT record value for `name` (ACME `dns-01`).
+    ///
+    /// The value is appended to any existing values for the name. TXT records
+    /// are in-memory only and are never persisted.
+    pub fn add_txt(&self, name: &str, value: &str) {
+        let key = normalize_txt_name(name);
+        let mut guard = self.txt_records.write().unwrap_or_else(|e| e.into_inner());
+        let values = guard.entry(key).or_default();
+        if !values.iter().any(|v| v == value) {
+            values.push(value.to_string());
+        }
+    }
+
+    /// Remove all ephemeral TXT record values for `name`.
+    pub fn remove_txt(&self, name: &str) {
+        let key = normalize_txt_name(name);
+        let mut guard = self.txt_records.write().unwrap_or_else(|e| e.into_inner());
+        guard.remove(&key);
+    }
+
+    /// Return the currently published TXT values for `name` (empty if none).
+    pub fn get_txt(&self, name: &str) -> Vec<String> {
+        let key = normalize_txt_name(name);
+        let guard = self.txt_records.read().unwrap_or_else(|e| e.into_inner());
+        guard.get(&key).cloned().unwrap_or_default()
     }
 
     pub fn snapshot(&self) -> RecordsSnapshot {
@@ -420,6 +462,7 @@ impl Clone for DnsCore {
             alias_tx: self.alias_tx.clone(),
             rate_limiter: Arc::clone(&self.rate_limiter),
             event_tx: self.event_tx.clone(),
+            txt_records: Arc::clone(&self.txt_records),
         }
     }
 }
@@ -550,7 +593,24 @@ impl RequestHandler for DnsHandler {
         let mut response_code = ResponseCode::NoError;
         let mut authoritative = false;
 
-        if self.core.zone.is_local_name(&query_str) {
+        // ── Ephemeral TXT (ACME dns-01) ──
+        // TXT queries are served from the in-memory challenge store before any
+        // A/AAAA zone logic. A/AAAA behavior below is unchanged.
+        let txt_values = if query_type == RecordType::TXT {
+            self.core.get_txt(&query_str)
+        } else {
+            Vec::new()
+        };
+        if query_type == RecordType::TXT && !txt_values.is_empty() {
+            authoritative = true;
+            let name = Name::from(query_name);
+            let record = Record::from_rdata(
+                name,
+                self.core.config.local_ttl,
+                RData::TXT(hickory_proto::rr::rdata::TXT::new(txt_values)),
+            );
+            answers.push(record);
+        } else if self.core.zone.is_local_name(&query_str) {
             // Primary zone (.zengarden / .lan): static + certmesh + mDNS aliases
             authoritative = true;
             match self.core.resolve_local(&query_str, query_type) {
@@ -799,6 +859,47 @@ mod tests {
             DnsEvent::EntryRemoved { name } => assert_eq!(name, "gone.lan."),
             other => panic!("expected EntryRemoved, got {other:?}"),
         }
+    }
+
+    /// add_txt → get_txt returns the published value.
+    #[tokio::test]
+    async fn add_txt_then_get_txt_returns_value() {
+        let core = test_core().await;
+        core.add_txt("_acme-challenge.host.lan", "token-abc");
+        assert_eq!(
+            core.get_txt("_acme-challenge.host.lan"),
+            vec!["token-abc".to_string()]
+        );
+    }
+
+    /// TXT name lookup is normalization-insensitive (case + trailing dot),
+    /// matching how a real DNS query name is presented.
+    #[tokio::test]
+    async fn get_txt_is_normalization_insensitive() {
+        let core = test_core().await;
+        core.add_txt("_acme-challenge.Host.LAN", "token-xyz");
+        // Trailing dot + different case must hit the same key.
+        assert_eq!(
+            core.get_txt("_acme-challenge.host.lan."),
+            vec!["token-xyz".to_string()]
+        );
+    }
+
+    /// remove_txt clears the published value.
+    #[tokio::test]
+    async fn remove_txt_clears_value() {
+        let core = test_core().await;
+        core.add_txt("_acme-challenge.gone.lan", "token-1");
+        assert!(!core.get_txt("_acme-challenge.gone.lan").is_empty());
+        core.remove_txt("_acme-challenge.gone.lan");
+        assert!(core.get_txt("_acme-challenge.gone.lan").is_empty());
+    }
+
+    /// get_txt on an unknown name returns empty.
+    #[tokio::test]
+    async fn get_txt_unknown_is_empty() {
+        let core = test_core().await;
+        assert!(core.get_txt("_acme-challenge.nobody.lan").is_empty());
     }
 
     /// Two subscribers to the same core each receive a core-emitted event.

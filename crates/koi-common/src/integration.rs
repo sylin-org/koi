@@ -83,3 +83,21 @@ pub trait AliasFeedback: Send + Sync {
     /// Record that `hostname` should have `alias` as a SAN.
     fn record_alias(&self, hostname: &str, alias: &str);
 }
+
+/// Publish/clear ephemeral DNS TXT records for ACME `dns-01` challenges.
+///
+/// certmesh's ACME module holds an `Arc<dyn AcmeDnsSolver>` and writes the
+/// `_acme-challenge.<name>` TXT value during validation, then clears it — it
+/// never imports `koi-dns`. The binary wires a bridge that delegates to
+/// `DnsCore`'s in-memory TXT store. TXT records here are short-lived challenge
+/// tokens and are deliberately NOT persisted.
+pub trait AcmeDnsSolver: Send + Sync {
+    /// Publish a TXT record value for `name` (e.g. `_acme-challenge.host.lan`).
+    fn set_txt(&self, name: &str, value: &str);
+
+    /// Remove all TXT record values for `name`.
+    fn clear_txt(&self, name: &str);
+
+    /// Return the currently published TXT values for `name` (empty if none).
+    fn get_txt(&self, name: &str) -> Vec<String>;
+}

@@ -147,6 +147,35 @@ impl integration::DnsProbe for DnsBridge {
     }
 }
 
+// ── AcmeDnsBridge ──────────────────────────────────────────────────
+
+/// Bridges certmesh's ACME `dns-01` solver to the DNS core's ephemeral TXT
+/// store. certmesh holds an `Arc<dyn AcmeDnsSolver>` and never imports koi-dns;
+/// the binary wires this bridge (same pattern as `DnsBridge`).
+pub struct AcmeDnsBridge {
+    runtime: Arc<koi_dns::DnsRuntime>,
+}
+
+impl AcmeDnsBridge {
+    pub fn new(runtime: Arc<koi_dns::DnsRuntime>) -> Arc<Self> {
+        Arc::new(Self { runtime })
+    }
+}
+
+impl integration::AcmeDnsSolver for AcmeDnsBridge {
+    fn set_txt(&self, name: &str, value: &str) {
+        self.runtime.core().add_txt(name, value);
+    }
+
+    fn clear_txt(&self, name: &str) {
+        self.runtime.core().remove_txt(name);
+    }
+
+    fn get_txt(&self, name: &str) -> Vec<String> {
+        self.runtime.core().get_txt(name)
+    }
+}
+
 // ── ProxyBridge ────────────────────────────────────────────────────
 
 pub struct ProxyBridge {
