@@ -422,181 +422,30 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let cancel = tokio_util::sync::CancellationToken::new();
+        let mut tasks = Vec::new();
 
-        // Conditionally create domain cores based on config
-        let mdns_core = if !config.no_mdns {
-            match koi_mdns::MdnsCore::with_cancel(cancel.clone()) {
-                Ok(c) => Some(std::sync::Arc::new(c)),
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to start mDNS core");
-                    let _ = status_handle.set_service_status(ServiceStatus {
-                        service_type: ServiceType::OWN_PROCESS,
-                        current_state: ServiceState::Stopped,
-                        controls_accepted: ServiceControlAccept::empty(),
-                        exit_code: ServiceExitCode::Win32(1),
-                        checkpoint: 0,
-                        wait_hint: Duration::default(),
-                        process_id: None,
-                    });
-                    return;
-                }
-            }
-        } else {
-            tracing::info!("mDNS capability disabled");
-            None
-        };
-
-        let certmesh_core = if !config.no_certmesh {
-            crate::init_certmesh_core(&config.data_dir)
-        } else {
-            tracing::info!("Certmesh capability disabled");
-            None
-        };
-
-        // Integration bridges
-        let mdns_bridge: Option<std::sync::Arc<dyn koi_common::integration::MdnsSnapshot>> =
-            if let Some(ref core) = mdns_core {
-                Some(crate::integrations::MdnsBridge::spawn(core.clone()).await)
-            } else {
-                None
-            };
-
-        let certmesh_bridge: Option<std::sync::Arc<dyn koi_common::integration::CertmeshSnapshot>> =
-            certmesh_core.as_ref().map(|core| {
-                crate::integrations::CertmeshBridge::new(core.clone())
-                    as std::sync::Arc<dyn koi_common::integration::CertmeshSnapshot>
-            });
-
-        let alias_feedback: Option<std::sync::Arc<dyn koi_common::integration::AliasFeedback>> =
-            certmesh_core.as_ref().map(|core| {
-                crate::integrations::AliasFeedbackBridge::new(core.clone())
-                    as std::sync::Arc<dyn koi_common::integration::AliasFeedback>
-            });
-
-        let dns_runtime = if !config.no_dns {
-            match koi_dns::DnsCore::new(
-                config.dns_config(),
-                mdns_bridge.clone(),
-                certmesh_bridge.clone(),
-                alias_feedback,
-            )
-            .await
-            {
-                Ok(core) => {
-                    let runtime = std::sync::Arc::new(koi_dns::DnsRuntime::new(core));
-                    if let Err(e) = runtime.start().await {
-                        tracing::error!(error = %e, "Failed to start DNS server");
-                    }
-                    Some(runtime)
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to initialize DNS core");
-                    None
-                }
-            }
-        } else {
-            tracing::info!("DNS capability disabled");
-            None
-        };
-
-        let proxy_runtime = if !config.no_proxy {
-            match koi_proxy::ProxyCore::new() {
-                Ok(core) => {
-                    let runtime = std::sync::Arc::new(koi_proxy::ProxyRuntime::new(
-                        std::sync::Arc::new(core),
-                    ));
-                    if let Err(e) = runtime.start_all().await {
-                        tracing::error!(error = %e, "Failed to start proxy listeners");
-                    }
-                    Some(runtime)
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to initialize proxy core");
-                    None
-                }
-            }
-        } else {
-            tracing::info!("Proxy capability disabled");
-            None
-        };
-
-        let dns_bridge: Option<std::sync::Arc<dyn koi_common::integration::DnsProbe>> =
-            dns_runtime.as_ref().map(|rt| {
-                crate::integrations::DnsBridge::new(rt.clone())
-                    as std::sync::Arc<dyn koi_common::integration::DnsProbe>
-            });
-
-        let proxy_bridge: Option<std::sync::Arc<dyn koi_common::integration::ProxySnapshot>> =
-            proxy_runtime.as_ref().map(|rt| {
-                crate::integrations::ProxyBridge::new(rt.core())
-                    as std::sync::Arc<dyn koi_common::integration::ProxySnapshot>
-            });
-
-        let health_runtime = if !config.no_health {
-            let core = std::sync::Arc::new(
-                koi_health::HealthCore::new(
-                    mdns_bridge.clone(),
-                    dns_bridge,
-                    certmesh_bridge,
-                    proxy_bridge,
-                )
-                .await,
-            );
-            let runtime = std::sync::Arc::new(koi_health::HealthRuntime::new(core));
-            if let Err(e) = runtime.start().await {
-                tracing::error!(error = %e, "Failed to start health checks");
-            }
-            Some(runtime)
-        } else {
-            tracing::info!("Health capability disabled");
-            None
-        };
-
-        let udp_runtime = if !config.no_udp {
-            Some(std::sync::Arc::new(koi_udp::UdpRuntime::new(
-                cancel.clone(),
-            )))
-        } else {
-            tracing::info!("UDP capability disabled");
-            None
-        };
-
-        let runtime_core = if !config.no_runtime {
-            let backend_kind =
-                koi_runtime::RuntimeBackendKind::from_str_loose(&config.runtime)
-                    .unwrap_or_else(|| {
-                        tracing::warn!(
-                            value = %config.runtime,
-                            "Unknown runtime backend, falling back to auto"
-                        );
-                        koi_runtime::RuntimeBackendKind::Auto
-                    });
-            let rt_config = koi_runtime::RuntimeConfig {
-                backend_kind,
-                socket_path: None,
-            };
-            let core = std::sync::Arc::new(koi_runtime::RuntimeCore::new(rt_config));
-            match core.start_watching(cancel.clone()).await {
-                Ok(()) => Some(core),
-                Err(e) => {
-                    tracing::warn!(error = %e, "Runtime adapter unavailable, continuing without it");
-                    None
-                }
-            }
-        } else {
-            tracing::info!("Runtime capability disabled");
-            None
-        };
-
-        let cores = crate::DaemonCores {
-            mdns: mdns_core,
-            certmesh: certmesh_core,
-            dns: dns_runtime.clone(),
-            health: health_runtime.clone(),
-            proxy: proxy_runtime.clone(),
-            udp: udp_runtime.clone(),
-            runtime: runtime_core.clone(),
-        };
+        // ── Build all domain cores + bridges + domain background tasks ──
+        // Shared with daemon_mode via koi-compose, so `koi install` constructs the identical
+        // daemon (P07) — the fix for the verified parity defect. (An mDNS init failure is now
+        // non-fatal, matching the foreground daemon, rather than stopping the service.)
+        let cores = koi_compose::cores::build_cores(
+            &koi_compose::cores::CoreSpec {
+                no_mdns: config.no_mdns,
+                no_certmesh: config.no_certmesh,
+                no_dns: config.no_dns,
+                no_health: config.no_health,
+                no_proxy: config.no_proxy,
+                no_udp: config.no_udp,
+                no_runtime: config.no_runtime,
+                data_dir: config.data_dir.clone(),
+                dns_config: config.dns_config(),
+                runtime: config.runtime.clone(),
+                http_port: config.http_port,
+            },
+            &cancel,
+            &mut tasks,
+        )
+        .await;
 
         // Generate a Daemon Access Token (DAT) for authenticating mutation requests
         let dat_token = {
@@ -627,29 +476,12 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         // Startup diagnostics (logged to file)
         crate::startup_diagnostics(&config, http_bind_ip);
 
-        let mut tasks = Vec::new();
         let started_at = std::time::Instant::now();
 
-        // ── Runtime orchestrator (parity with daemon_mode) ──
-        // Translates container lifecycle events into mDNS/DNS/health/proxy operations.
-        // Without this, containers discovered by `koi install` got no domain entries.
-        if let Some(ref rt) = cores.runtime {
-            tasks.push(crate::orchestrator::spawn_orchestrator(
-                rt,
-                crate::orchestrator::OrchestrationTargets {
-                    mdns: cores.mdns.clone(),
-                    dns: cores.dns.clone(),
-                    health: cores.health.clone(),
-                    proxy: cores.proxy.clone(),
-                },
-                cancel.clone(),
-            ));
-        }
-
-        // ── Certmesh background tasks (parity with daemon_mode) ──
-        // Renewal / roster sync / heartbeat / failover, previously absent under the SCM —
-        // the verified `koi install` defect. There is no interactive console under the
-        // service, so enrollment requests auto-deny (visibly logged), never block.
+        // ── Enrollment-approval pump ──
+        // The certmesh role loops + orchestrator are spawned by build_cores (shared with
+        // daemon_mode). Only the approval pump is host-specific: with no interactive console
+        // under the SCM, enrollment requests auto-deny (visibly logged), never block.
         if let Some(ref certmesh) = cores.certmesh {
             koi_compose::certmesh::spawn_enrollment_approval(
                 certmesh,
@@ -658,13 +490,6 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 &mut tasks,
             )
             .await;
-            koi_compose::certmesh::spawn_certmesh_background_tasks(
-                certmesh,
-                cores.mdns.clone(),
-                config.http_port,
-                &cancel,
-                &mut tasks,
-            );
         }
 
         // Dashboard state
@@ -840,48 +665,16 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             process_id: None,
         });
 
-        // Ordered shutdown: cancel → drain → wait tasks → core goodbye
-        let shutdown = async {
-            cancel.cancel();
-            tokio::time::sleep(SHUTDOWN_DRAIN).await;
-            for task in tasks {
-                let _ = task.await;
-            }
-            if let Some(ref id) = http_announce_id {
-                if let Some(mdns) = &cores.mdns {
-                    if let Err(e) = mdns.unregister(id) {
-                        tracing::warn!(error = %e, "Failed to withdraw HTTP mDNS announcement");
-                    }
-                }
-            }
-            if let Some(mdns) = &cores.mdns {
-                if let Err(e) = mdns.shutdown().await {
-                    tracing::warn!(error = %e, "mDNS shutdown error");
-                }
-            }
-            if let Some(dns) = dns_runtime {
-                dns.stop().await;
-            }
-            if let Some(health) = health_runtime {
-                let _ = health.stop().await;
-            }
-            if let Some(proxy) = proxy_runtime {
-                let _ = proxy.stop_all().await;
-            }
-            if let Some(udp) = udp_runtime {
-                udp.shutdown().await;
-            }
-        };
-
-        if tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown)
-            .await
-            .is_err()
-        {
-            tracing::warn!(
-                "Shutdown timed out after {:?} - forcing exit",
-                SHUTDOWN_TIMEOUT
-            );
-        }
+        // Ordered shutdown (shared with daemon_mode via koi-compose).
+        koi_compose::cores::ordered_shutdown(
+            &cancel,
+            tasks,
+            &cores,
+            http_announce_id,
+            SHUTDOWN_TIMEOUT,
+            SHUTDOWN_DRAIN,
+        )
+        .await;
 
         koi_config::breadcrumb::delete_breadcrumb();
     });

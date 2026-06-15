@@ -302,9 +302,11 @@ impl KoiEmbedded {
 
         let certmesh = if self.config.certmesh_enabled {
             let data_dir = self.config.data_dir.clone();
-            tokio::task::spawn_blocking(move || init_certmesh_core(data_dir.as_deref()))
-                .await
-                .map_err(|e| std::io::Error::other(format!("certmesh init: {e}")))?
+            tokio::task::spawn_blocking(move || {
+                koi_compose::cores::init_certmesh_core(data_dir.as_deref())
+            })
+            .await
+            .map_err(|e| std::io::Error::other(format!("certmesh init: {e}")))?
         } else {
             None
         };
@@ -763,82 +765,6 @@ impl KoiEmbedded {
     }
 }
 
-fn init_certmesh_core(
-    data_dir: Option<&std::path::Path>,
-) -> Option<Arc<koi_certmesh::CertmeshCore>> {
-    // Composition root: resolve the data dir once (Some -> injected dir,
-    // None -> the one embedded default) and thread it into every branch so a
-    // custom data_dir is honoured end-to-end, including the early returns.
-    let paths = koi_certmesh::CertmeshPaths::with_data_dir(
-        koi_common::paths::koi_data_dir_with_override(data_dir),
-    );
-    if !paths.is_ca_initialized() {
-        return Some(Arc::new(
-            koi_certmesh::CertmeshCore::uninitialized_with_paths(paths),
-        ));
-    }
-
-    let roster_path = paths.roster_path();
-    let roster = match koi_certmesh::roster::load_roster(&roster_path) {
-        Ok(r) => r,
-        Err(_) => {
-            return Some(Arc::new(
-                koi_certmesh::CertmeshCore::uninitialized_with_paths(paths),
-            ));
-        }
-    };
-
-    let profile = roster.metadata.trust_profile;
-
-    // ── Auto-unlock at init: single source of truth ─────────────
-    // The auto-unlock passphrase lives in the koi-crypto vault (written by
-    // CertmeshCore::save_auto_unlock_key_at, which deletes any legacy
-    // plaintext file). Retrieve it through the domain crate so this boot
-    // path can never drift from where the key is actually stored. When a
-    // key is present, boot the core already unlocked — collapsing the
-    // "create locked -> read key -> unlock" three-step into a single
-    // atomic construction.
-    if let Ok(Some(pp)) = koi_certmesh::CertmeshCore::read_auto_unlock_key(&paths) {
-        match koi_certmesh::ca::load_ca(&pp, &paths) {
-            Ok(ca_state) => {
-                // Reload roster (fresh copy for the new Arc)
-                if let Ok(fresh_roster) = koi_certmesh::roster::load_roster(&roster_path) {
-                    let auth_path = paths.auth_path();
-                    let auth = if auth_path.exists() {
-                        std::fs::read_to_string(&auth_path)
-                            .ok()
-                            .and_then(|json| {
-                                serde_json::from_str::<koi_crypto::auth::StoredAuth>(&json).ok()
-                            })
-                            .and_then(|stored| stored.unlock(&pp).ok())
-                    } else {
-                        None
-                    };
-
-                    tracing::info!("Certmesh CA auto-unlocked at init from vault");
-                    return Some(Arc::new(koi_certmesh::CertmeshCore::new_with_paths(
-                        ca_state,
-                        fresh_roster,
-                        auth,
-                        profile,
-                        paths,
-                    )));
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "Auto-unlock key exists in vault but CA decryption failed"
-                );
-            }
-        }
-    }
-
-    // No auto-unlock key - boot locked
-    let core = koi_certmesh::CertmeshCore::locked_with_paths(roster, profile, paths);
-    Some(Arc::new(core))
-}
-
 fn map_mdns_event(event: MdnsEvent) -> Option<KoiEvent> {
     match event {
         MdnsEvent::Found(record) => Some(KoiEvent::MdnsFound(record)),
@@ -1080,7 +1006,8 @@ mod tests {
         // Fresh machine: no CA yet. The uninitialized early-return must still
         // carry the injected paths — this is the regression the dropped-paths
         // bug (uninitialized branches dropping `paths`) used to fail.
-        let fresh = init_certmesh_core(Some(&data_dir)).expect("uninitialized core");
+        let fresh =
+            koi_compose::cores::init_certmesh_core(Some(&data_dir)).expect("uninitialized core");
         assert_eq!(
             fresh.paths().data_dir(),
             data_dir.as_path(),
@@ -1099,7 +1026,8 @@ mod tests {
 
         // Reopen on the same injected dir: the CA is discovered there and the
         // core unlocks from it — proving the data root is honored end-to-end.
-        let reopened = init_certmesh_core(Some(&data_dir)).expect("locked core");
+        let reopened =
+            koi_compose::cores::init_certmesh_core(Some(&data_dir)).expect("locked core");
         assert_eq!(reopened.paths().data_dir(), data_dir.as_path());
         reopened
             .unlock("pond-pass-strong")

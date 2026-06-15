@@ -5,7 +5,6 @@ mod client;
 mod commands;
 mod format;
 mod integrations;
-mod orchestrator;
 mod platform;
 mod surface;
 
@@ -493,181 +492,27 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     let mut tasks = Vec::new();
     let started_at = std::time::Instant::now();
 
-    // ── Create domain cores based on config ──
-    let mdns_core = if !config.no_mdns {
-        match koi_mdns::MdnsCore::with_cancel(cancel.clone()) {
-            Ok(core) => Some(Arc::new(core)),
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to initialize mDNS core");
-                None
-            }
-        }
-    } else {
-        tracing::info!("mDNS capability: disabled");
-        None
-    };
-
-    let certmesh_core = if !config.no_certmesh {
-        init_certmesh_core(&config.data_dir)
-    } else {
-        tracing::info!("Certmesh capability: disabled");
-        None
-    };
-
-    // ── Integration bridges ──
-    // These wrap domain cores and implement cross-domain traits from koi_common::integration.
-    let mdns_bridge: Option<Arc<dyn koi_common::integration::MdnsSnapshot>> =
-        if let Some(ref core) = mdns_core {
-            Some(integrations::MdnsBridge::spawn(core.clone()).await)
-        } else {
-            None
-        };
-
-    let certmesh_bridge: Option<Arc<dyn koi_common::integration::CertmeshSnapshot>> =
-        certmesh_core.as_ref().map(|core| {
-            integrations::CertmeshBridge::new(core.clone())
-                as Arc<dyn koi_common::integration::CertmeshSnapshot>
-        });
-
-    let alias_feedback: Option<Arc<dyn koi_common::integration::AliasFeedback>> =
-        certmesh_core.as_ref().map(|core| {
-            integrations::AliasFeedbackBridge::new(core.clone())
-                as Arc<dyn koi_common::integration::AliasFeedback>
-        });
-
-    let dns_runtime = if !config.no_dns {
-        let core = koi_dns::DnsCore::new(
-            config.dns_config(),
-            mdns_bridge.clone(),
-            certmesh_bridge.clone(),
-            alias_feedback,
-        )
-        .await;
-        match core {
-            Ok(core) => {
-                let runtime = Arc::new(koi_dns::DnsRuntime::new(core));
-                if let Err(e) = runtime.start().await {
-                    tracing::error!(error = %e, "Failed to start DNS server");
-                }
-                Some(runtime)
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to initialize DNS core");
-                None
-            }
-        }
-    } else {
-        tracing::info!("DNS capability: disabled");
-        None
-    };
-
-    let proxy_runtime = if !config.no_proxy {
-        match koi_proxy::ProxyCore::new() {
-            Ok(core) => {
-                let runtime = Arc::new(koi_proxy::ProxyRuntime::new(Arc::new(core)));
-                if let Err(e) = runtime.start_all().await {
-                    tracing::error!(error = %e, "Failed to start proxy listeners");
-                }
-                Some(runtime)
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to initialize proxy core");
-                None
-            }
-        }
-    } else {
-        tracing::info!("Proxy capability: disabled");
-        None
-    };
-
-    let dns_bridge: Option<Arc<dyn koi_common::integration::DnsProbe>> =
-        dns_runtime.as_ref().map(|rt| {
-            integrations::DnsBridge::new(rt.clone()) as Arc<dyn koi_common::integration::DnsProbe>
-        });
-
-    let proxy_bridge: Option<Arc<dyn koi_common::integration::ProxySnapshot>> =
-        proxy_runtime.as_ref().map(|rt| {
-            integrations::ProxyBridge::new(rt.core())
-                as Arc<dyn koi_common::integration::ProxySnapshot>
-        });
-
-    let health_runtime = if !config.no_health {
-        let core = Arc::new(
-            koi_health::HealthCore::new(
-                mdns_bridge.clone(),
-                dns_bridge,
-                certmesh_bridge,
-                proxy_bridge,
-            )
-            .await,
-        );
-        let runtime = Arc::new(koi_health::HealthRuntime::new(core));
-        if let Err(e) = runtime.start().await {
-            tracing::error!(error = %e, "Failed to start health checks");
-        }
-        Some(runtime)
-    } else {
-        tracing::info!("Health capability: disabled");
-        None
-    };
-
-    let udp_runtime = if !config.no_udp {
-        Some(Arc::new(koi_udp::UdpRuntime::new(cancel.clone())))
-    } else {
-        tracing::info!("UDP capability: disabled");
-        None
-    };
-
-    let runtime_core = if !config.no_runtime {
-        let backend_kind = koi_runtime::RuntimeBackendKind::from_str_loose(&config.runtime)
-            .unwrap_or_else(|| {
-                tracing::warn!(
-                    value = %config.runtime,
-                    "Unknown runtime backend, falling back to auto"
-                );
-                koi_runtime::RuntimeBackendKind::Auto
-            });
-        let rt_config = koi_runtime::RuntimeConfig {
-            backend_kind,
-            socket_path: None,
-        };
-        let core = Arc::new(koi_runtime::RuntimeCore::new(rt_config));
-        match core.start_watching(cancel.clone()).await {
-            Ok(()) => Some(core),
-            Err(e) => {
-                tracing::warn!(error = %e, "Runtime adapter unavailable, continuing without it");
-                None
-            }
-        }
-    } else {
-        tracing::info!("Runtime capability: disabled");
-        None
-    };
-
-    // ── Runtime orchestrator ──────────────────────────────────────────
-    // Translates container lifecycle events into mDNS/DNS/health/proxy operations.
-    if let Some(ref rt) = runtime_core {
-        tasks.push(orchestrator::spawn_orchestrator(
-            rt,
-            orchestrator::OrchestrationTargets {
-                mdns: mdns_core.clone(),
-                dns: dns_runtime.clone(),
-                health: health_runtime.clone(),
-                proxy: proxy_runtime.clone(),
-            },
-            cancel.clone(),
-        ));
-    }
-
-    let cores = DaemonCores {
-        mdns: mdns_core.clone(),
-        certmesh: certmesh_core,
-        dns: dns_runtime.clone(),
-        health: health_runtime.clone(),
-        proxy: proxy_runtime.clone(),
-        udp: udp_runtime.clone(),
-        runtime: runtime_core.clone(),
-    };
+    // ── Build all domain cores + bridges + domain background tasks ──
+    // The construction graph, the orchestrator, and the certmesh role loops live in
+    // koi-compose so the Windows service constructs the identical daemon (P07).
+    let cores = koi_compose::cores::build_cores(
+        &koi_compose::cores::CoreSpec {
+            no_mdns: config.no_mdns,
+            no_certmesh: config.no_certmesh,
+            no_dns: config.no_dns,
+            no_health: config.no_health,
+            no_proxy: config.no_proxy,
+            no_udp: config.no_udp,
+            no_runtime: config.no_runtime,
+            data_dir: config.data_dir.clone(),
+            dns_config: config.dns_config(),
+            runtime: config.runtime.clone(),
+            http_port: config.http_port,
+        },
+        &cancel,
+        &mut tasks,
+    )
+    .await;
 
     // ── Dashboard state ──
     let dashboard_state = adapters::dashboard::build_dashboard_state(&cores, started_at, "daemon");
@@ -688,7 +533,8 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     // The LAN-wide meta-browse worker is NOT started here: it starts on the first
     // browser request and idles out (koi_dashboard::meta_browse). Default daemon
     // startup performs no LAN-wide browsing.
-    let browser_state = mdns_core
+    let browser_state = cores
+        .mdns
         .as_ref()
         .map(|mdns| koi_dashboard::browser::build_state(mdns.clone(), cancel.clone()));
 
@@ -743,7 +589,7 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
 
     // ── IPC adapter (only if mDNS is enabled - IPC speaks mDNS NDJSON protocol) ──
     if !config.no_ipc {
-        if let Some(ref mdns) = mdns_core {
+        if let Some(ref mdns) = cores.mdns {
             let c = mdns.clone();
             let path = config.pipe_path.clone();
             let token = cancel.clone();
@@ -760,7 +606,7 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     // ── HTTP mDNS announcement (opt-in) ──
     let mut http_announce_id: Option<String> = None;
     if config.announce_http && !config.no_http {
-        if let Some(ref mdns) = mdns_core {
+        if let Some(ref mdns) = cores.mdns {
             let hostname = hostname::get()
                 .ok()
                 .and_then(|os| os.into_string().ok())
@@ -798,21 +644,14 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         }
     }
 
-    // ── Phase 3: Background tasks based on certmesh role ──
-    // The loops + approval pump live in koi-compose so the Windows service and embedded
-    // daemons run the identical machinery (P07). The foreground daemon injects an
-    // interactive stdin approver; consoleless hosts inject `deny_and_log_decider`.
+    // ── Enrollment-approval pump ──
+    // The certmesh role loops are spawned by build_cores (shared with the Windows service).
+    // Only the approval pump is wired here, because its decider is host-specific: the
+    // foreground daemon prompts on stdin; consoleless hosts use `deny_and_log_decider`.
     if let Some(ref certmesh) = cores.certmesh {
         let decider: koi_compose::certmesh::ApprovalDecider = Arc::new(prompt_enrollment_approval);
         koi_compose::certmesh::spawn_enrollment_approval(certmesh, decider, &cancel, &mut tasks)
             .await;
-        koi_compose::certmesh::spawn_certmesh_background_tasks(
-            certmesh,
-            mdns_core.clone(),
-            config.http_port,
-            &cancel,
-            &mut tasks,
-        );
     }
 
     if let Err(e) = platform::register_service() {
@@ -825,47 +664,16 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     shutdown_signal(cancel.clone()).await;
     tracing::info!("Shutting down...");
 
-    // Ordered shutdown with hard timeout
-    let shutdown = async {
-        cancel.cancel();
-        tokio::time::sleep(SHUTDOWN_DRAIN).await;
-        for task in tasks {
-            let _ = task.await;
-        }
-        if let Some(ref id) = http_announce_id {
-            if let Some(ref core) = mdns_core {
-                if let Err(e) = core.unregister(id) {
-                    tracing::warn!(error = %e, "Failed to withdraw HTTP mDNS announcement");
-                }
-            }
-        }
-        if let Some(ref core) = mdns_core {
-            if let Err(e) = core.shutdown().await {
-                tracing::warn!(error = %e, "Error during mDNS shutdown");
-            }
-        }
-        if let Some(dns) = dns_runtime {
-            dns.stop().await;
-        }
-        if let Some(health) = health_runtime {
-            let _ = health.stop().await;
-        }
-        if let Some(proxy) = proxy_runtime {
-            proxy.stop_all().await;
-        }
-        if let Some(ref udp) = udp_runtime {
-            udp.shutdown().await;
-        }
-    };
-    if tokio::time::timeout(SHUTDOWN_TIMEOUT, shutdown)
-        .await
-        .is_err()
-    {
-        tracing::warn!(
-            "Shutdown timed out after {:?} - forcing exit",
-            SHUTDOWN_TIMEOUT
-        );
-    }
+    // Ordered shutdown with hard timeout (shared with the Windows service via koi-compose).
+    koi_compose::cores::ordered_shutdown(
+        &cancel,
+        tasks,
+        &cores,
+        http_announce_id,
+        SHUTDOWN_TIMEOUT,
+        SHUTDOWN_DRAIN,
+    )
+    .await;
 
     koi_config::breadcrumb::delete_breadcrumb();
 
@@ -874,51 +682,10 @@ async fn daemon_mode(config: Config) -> anyhow::Result<()> {
 
 // ── Daemon cores ──────────────────────────────────────────────────────
 
-/// Runtime state for a running daemon. Each domain core is present
-/// only if its capability is enabled via Config.
-#[derive(Clone)]
-pub(crate) struct DaemonCores {
-    pub(crate) mdns: Option<Arc<koi_mdns::MdnsCore>>,
-    pub(crate) certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
-    pub(crate) dns: Option<Arc<koi_dns::DnsRuntime>>,
-    pub(crate) health: Option<Arc<koi_health::HealthRuntime>>,
-    pub(crate) proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
-    pub(crate) udp: Option<Arc<koi_udp::UdpRuntime>>,
-    pub(crate) runtime: Option<Arc<koi_runtime::RuntimeCore>>,
-}
-
-/// Initialize the certmesh core for daemon mode.
-///
-/// Always returns `Some` so HTTP routes are mounted even before `koi certmesh create`.
-/// If a CA is initialized, creates a locked core with the roster.
-/// If not initialized, creates an uninitialized core (routes are reachable for `/create`).
-pub(crate) fn init_certmesh_core(
-    data_dir: &std::path::Path,
-) -> Option<Arc<koi_certmesh::CertmeshCore>> {
-    let paths = koi_certmesh::CertmeshPaths::with_data_dir(data_dir.to_path_buf());
-    if !paths.is_ca_initialized() {
-        tracing::info!("Certmesh: CA not initialized - routes mounted for /create");
-        return Some(Arc::new(
-            koi_certmesh::CertmeshCore::uninitialized_with_paths(paths),
-        ));
-    }
-
-    let roster_path = paths.roster_path();
-    let roster = match koi_certmesh::roster::load_roster(&roster_path) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to load certmesh roster - using uninitialized state");
-            return Some(Arc::new(
-                koi_certmesh::CertmeshCore::uninitialized_with_paths(paths),
-            ));
-        }
-    };
-
-    let profile = roster.metadata.trust_profile;
-    let core = koi_certmesh::CertmeshCore::locked_with_paths(roster, profile, paths);
-    tracing::info!("Certmesh: CA initialized (locked, use `koi certmesh unlock` to decrypt)");
-    Some(Arc::new(core))
-}
+/// Runtime state for a running daemon — the set of constructed domain cores. Defined in
+/// koi-compose (built by `build_cores`); re-exported under the historical `DaemonCores`
+/// name so the binary's adapters keep their existing references.
+pub(crate) use koi_compose::cores::Cores as DaemonCores;
 
 fn prompt_enrollment_approval(
     hostname: &str,

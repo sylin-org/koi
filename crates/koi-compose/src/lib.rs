@@ -24,9 +24,12 @@ pub mod certmesh;
 /// Windows-service and embedded daemons can spawn it too.
 pub mod orchestrator;
 
+/// Daemon core composition: `build_cores` (the one core+bridge construction graph the
+/// daemon and the Windows service share), `init_certmesh_core`, and `ordered_shutdown`.
+pub mod cores;
+
 // Further modules are filled in across the remaining P07 checkpoint steps:
 //   status      — assemble_capabilities (the single capability-status source)
-//   cores       — init_cores + ordered_shutdown
 
 #[cfg(test)]
 mod parity_tests {
