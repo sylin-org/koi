@@ -54,7 +54,12 @@ if-addrs.workspace = true
 hickory-proto.workspace = true
 crossterm.workspace = true
 url.workspace = true
-command-surface = { workspace = true, features = ["render"] }
+# Terminal-profile-aware help rendering (folded in from the former command-surface
+# crate in P09; these were transitive via that crate's `render` feature).
+console.workspace = true
+is-terminal.workspace = true
+supports-color.workspace = true
+terminal_size.workspace = true
 utoipa.workspace = true
 utoipa-scalar = { workspace = true }
 open.workspace = true

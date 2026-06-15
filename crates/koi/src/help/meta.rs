@@ -1,231 +1,79 @@
-use command_surface::render::writers::{AnsiWriter, PlainWriter};
-use command_surface::render::{
-    write_catalog, write_command_detail, write_overview, CatalogOptions, ColorSupport,
-    OutputWriter, Segment, TerminalProfile, TextStyle,
-};
-use command_surface::{
-    ApiEndpoint, Category, Color, CommandDef, CommandManifest, Confirmation, Example, Glyph,
-    Presentation, Scope, Tag,
-};
-use std::io::{self};
+//! The `CommandMeta` map — the augmentation clap cannot express.
+//!
+//! Clap (`crate::cli`) is the single source of truth for the *command tree*:
+//! which leaf commands exist, their args, and their flags. This module carries the
+//! presentation/semantic metadata that clap does not model — glyphs, categories,
+//! long descriptions, curated examples, HTTP-API equivalents, and confirmation
+//! gates — keyed by the **clap moniker path** (e.g. `"certmesh rotate-auth"`).
+//!
+//! Drift between the two is a **test failure**: see the conformance tests in
+//! `super` (`meta_covers_every_clap_leaf` and `every_example_parses`). Migrated
+//! from the former `command-surface` crate's `build_manifest()` (P09).
+
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
-pub static MANIFEST: LazyLock<CommandManifest<KoiCategory, KoiTag, KoiScope>> =
-    LazyLock::new(build_manifest);
+use super::glyph::{Color, Glyph, Presentation};
 
-pub fn print_command_detail(def: &CommandDef<KoiCategory, KoiTag, KoiScope>) -> io::Result<()> {
-    let profile = TerminalProfile::detect_stdout();
-    let mut out = io::stdout();
-
-    if profile.color == ColorSupport::None || !profile.interactive {
-        let mut writer = PlainWriter::new(&mut out);
-        write_command_detail(def, &profile, &mut writer)
-    } else {
-        let mut writer = AnsiWriter::new(&mut out);
-        write_command_detail(def, &profile, &mut writer)
-    }
+#[derive(Clone, Copy, Debug)]
+pub struct Example {
+    pub command: &'static str,
+    pub description: &'static str,
 }
 
-pub fn print_catalog(api_endpoint: &str) -> io::Result<()> {
-    let profile = TerminalProfile::detect_stdout();
-    let mut out = io::stdout();
-
-    if profile.color == ColorSupport::None || !profile.interactive {
-        let mut writer = PlainWriter::new(&mut out);
-        write_overview(&MANIFEST, &profile, &mut writer)?;
-        write_quick_start(&mut writer, &profile)?;
-        writer.write_blank()?;
-        write_footer(&mut writer, &profile, "koi <group>", "koi <command>?")?;
-        write_api_docs_hint(&mut writer, &profile, api_endpoint)
-    } else {
-        let mut writer = AnsiWriter::new(&mut out);
-        write_overview(&MANIFEST, &profile, &mut writer)?;
-        write_quick_start(&mut writer, &profile)?;
-        writer.write_blank()?;
-        write_footer(&mut writer, &profile, "koi <group>", "koi <command>?")?;
-        write_api_docs_hint(&mut writer, &profile, api_endpoint)
-    }
+/// An HTTP API endpoint reference for CLI help display.
+///
+/// Shows the HTTP equivalent of a CLI command (e.g. `GET /v1/mdns/discover`).
+/// Full OpenAPI metadata is owned by the domain crates via `#[utoipa::path]`.
+#[derive(Clone, Copy, Debug)]
+pub struct ApiEndpoint {
+    pub method: &'static str,
+    pub path: &'static str,
 }
 
-pub fn print_category_catalog(category: KoiCategory, scope: Option<KoiScope>) -> io::Result<()> {
-    let profile = TerminalProfile::detect_stdout();
-    let mut out = io::stdout();
-    let manifest = filtered_manifest(category, scope);
-
-    let cli_name = category_cli_name(category);
-    let title = format!("koi {cli_name} \u{2014} available commands");
-    let help = format!("koi {cli_name} <command> --help");
-
-    let options = CatalogOptions {
-        include_tags: true,
-        include_scope: false,
-        highlight_only: true,
-        strip_prefix: true,
-        indent: 2,
-    };
-
-    if profile.color == ColorSupport::None || !profile.interactive {
-        let detail = format!("koi {cli_name} <command>?");
-        let mut writer = PlainWriter::new(&mut out);
-        write_title(&mut writer, &profile, &title)?;
-        writer.write_blank()?;
-        write_catalog(&manifest, &profile, &mut writer, options)?;
-        write_curated_examples(category, &mut writer, &profile)?;
-        writer.write_blank()?;
-        write_footer(&mut writer, &profile, &help, &detail)
-    } else {
-        let detail = format!("koi {cli_name} <command>?");
-        let mut writer = AnsiWriter::new(&mut out);
-        write_title(&mut writer, &profile, &title)?;
-        writer.write_blank()?;
-        write_catalog(&manifest, &profile, &mut writer, options)?;
-        write_curated_examples(category, &mut writer, &profile)?;
-        writer.write_blank()?;
-        write_footer(&mut writer, &profile, &help, &detail)
-    }
-}
-fn write_title<W: OutputWriter>(
-    writer: &mut W,
-    profile: &TerminalProfile,
-    title: &str,
-) -> io::Result<()> {
-    let mut style = TextStyle::plain();
-    style.bold = true;
-    if let Some(color) = profile.resolve_color(Color::Accent) {
-        style.fg = Some(color);
-    }
-    writer.write_line(&[Segment::new(title, style)])
+/// Pre-invocation confirmation gate metadata.
+///
+/// Declared here and (in P09 Stage B) checked by the CLI dispatch layer before
+/// the handler runs. Has no effect on HTTP endpoints — the API is not interactive.
+/// The fields are read by the Stage B confirmation gate; until then they are
+/// carried as forward-looking data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum Confirmation {
+    /// Prompt the user to type an exact token (e.g. `"RESET"`).
+    TypeToken {
+        message: &'static str,
+        token: &'static str,
+    },
 }
 
-fn write_curated_examples<W: OutputWriter>(
-    category: KoiCategory,
-    writer: &mut W,
-    profile: &TerminalProfile,
-) -> io::Result<()> {
-    let examples = curated_examples(category);
-    if examples.is_empty() {
-        return Ok(());
-    }
-
-    writer.write_blank()?;
-    let mut header_style = TextStyle::plain();
-    header_style.bold = true;
-    if let Some(color) = profile.resolve_color(Color::Info) {
-        header_style.fg = Some(color);
-    }
-    writer.write_line(&[Segment::new("Examples", header_style)])?;
-
-    let mut desc_style = TextStyle::plain();
-    desc_style.dim = true;
-
-    for example in examples {
-        writer.write_line(&[
-            Segment::new(format!("  {}", example.command), TextStyle::plain()),
-            Segment::new(format!("  # {}", example.description), desc_style),
-        ])?;
-    }
-
-    Ok(())
+/// Presentation + semantic metadata for one clap leaf command.
+///
+/// Everything here is what clap *cannot* express; the command tree itself
+/// (existence, args, flags) is owned by `crate::cli`.
+#[derive(Clone, Copy, Debug)]
+pub struct CommandMeta {
+    /// The clap moniker path, e.g. `"certmesh rotate-auth"` (the map key too).
+    pub name: &'static str,
+    pub summary: &'static str,
+    pub category: KoiCategory,
+    pub tags: &'static [KoiTag],
+    pub scope: KoiScope,
+    pub examples: &'static [Example],
+    pub see_also: &'static [&'static str],
+    /// Multi-paragraph explanation shown by the `?` detail view.
+    pub long_description: &'static str,
+    /// HTTP API equivalents. Empty slice means CLI-only.
+    pub api: &'static [ApiEndpoint],
+    /// Optional pre-invocation confirmation gate (CLI-only). Wired into dispatch
+    /// in P09 Stage B; carried as forward-looking data until then.
+    #[allow(dead_code)]
+    pub confirmation: Option<Confirmation>,
 }
 
-fn write_quick_start<W: OutputWriter>(writer: &mut W, profile: &TerminalProfile) -> io::Result<()> {
-    let examples: &[Example] = &[
-        Example {
-            command: "koi mdns discover",
-            description: "Find services on the network",
-        },
-        Example {
-            command: "koi certmesh status",
-            description: "Check certificate mesh health",
-        },
-        Example {
-            command: "koi health watch",
-            description: "Live health dashboard",
-        },
-    ];
+// ── Classification axes (concrete; no generic traits) ────────────────
 
-    writer.write_blank()?;
-    let mut header_style = TextStyle::plain();
-    header_style.bold = true;
-    if let Some(color) = profile.resolve_color(Color::Info) {
-        header_style.fg = Some(color);
-    }
-    writer.write_line(&[Segment::new("Quick start", header_style)])?;
-
-    let mut desc_style = TextStyle::plain();
-    desc_style.dim = true;
-
-    for example in examples {
-        writer.write_line(&[
-            Segment::new(format!("  {}", example.command), TextStyle::plain()),
-            Segment::new(format!("  # {}", example.description), desc_style),
-        ])?;
-    }
-
-    Ok(())
-}
-
-fn write_footer<W: OutputWriter>(
-    writer: &mut W,
-    profile: &TerminalProfile,
-    help: &str,
-    detail_hint: &str,
-) -> io::Result<()> {
-    let mut style = TextStyle::plain();
-    style.dim = true;
-    if let Some(color) = profile.resolve_color(Color::Muted) {
-        style.fg = Some(color);
-    }
-
-    writer.write_line(&[Segment::new(
-        format!("Run {help} for flags, or {detail_hint} for a guide"),
-        style,
-    )])
-}
-
-fn write_api_docs_hint<W: OutputWriter>(
-    writer: &mut W,
-    profile: &TerminalProfile,
-    api_endpoint: &str,
-) -> io::Result<()> {
-    let mut style = TextStyle::plain();
-    style.dim = true;
-    if let Some(color) = profile.resolve_color(Color::Muted) {
-        style.fg = Some(color);
-    }
-
-    writer.write_line(&[Segment::new(
-        format!("API docs:  {api_endpoint}/docs"),
-        style,
-    )])
-}
-
-fn filtered_manifest(
-    category: KoiCategory,
-    scope: Option<KoiScope>,
-) -> CommandManifest<KoiCategory, KoiTag, KoiScope> {
-    let mut manifest = CommandManifest::new();
-    for def in MANIFEST.by_category(category) {
-        if scope.is_none_or(|s| s == def.scope) {
-            manifest.add(*def);
-        }
-    }
-    manifest
-}
-
-fn category_cli_name(category: KoiCategory) -> &'static str {
-    match category {
-        KoiCategory::Core => "core",
-        KoiCategory::Discovery => "mdns",
-        KoiCategory::Trust => "certmesh",
-        KoiCategory::Dns => "dns",
-        KoiCategory::Health => "health",
-        KoiCategory::Proxy => "proxy",
-        KoiCategory::Udp => "udp",
-    }
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum KoiCategory {
     Core,
     Discovery,
@@ -236,8 +84,8 @@ pub enum KoiCategory {
     Udp,
 }
 
-impl Category for KoiCategory {
-    fn label(&self) -> &'static str {
+impl KoiCategory {
+    pub fn label(&self) -> &'static str {
         match self {
             Self::Core => "Core",
             Self::Discovery => "Discovery (mDNS)",
@@ -249,7 +97,7 @@ impl Category for KoiCategory {
         }
     }
 
-    fn order(&self) -> u8 {
+    pub fn order(&self) -> u8 {
         match self {
             Self::Core => 0,
             Self::Discovery => 1,
@@ -261,7 +109,7 @@ impl Category for KoiCategory {
         }
     }
 
-    fn cli_prefix(&self) -> &'static str {
+    pub fn cli_prefix(&self) -> &'static str {
         match self {
             Self::Core => "",
             Self::Discovery => "mdns ",
@@ -273,7 +121,7 @@ impl Category for KoiCategory {
         }
     }
 
-    fn cli_name(&self) -> &'static str {
+    pub fn cli_name(&self) -> &'static str {
         match self {
             Self::Core => "status",
             Self::Discovery => "mdns",
@@ -285,7 +133,7 @@ impl Category for KoiCategory {
         }
     }
 
-    fn description(&self) -> &'static str {
+    pub fn description(&self) -> &'static str {
         match self {
             Self::Core => "Service lifecycle and system info",
             Self::Discovery => "Discover and announce services on the local network",
@@ -316,7 +164,7 @@ impl Glyph for KoiCategory {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum KoiTag {
     Streaming,
     Destructive,
@@ -327,20 +175,10 @@ pub enum KoiTag {
     CliOnly,
 }
 
-impl Tag for KoiTag {
-    fn label(&self) -> &'static str {
-        match self {
-            Self::Streaming => "Streaming",
-            Self::Destructive => "Destructive",
-            Self::Mutating => "Mutating",
-            Self::ReadOnly => "Read-only",
-            Self::Elevated => "Elevated",
-            Self::Admin => "Admin",
-            Self::CliOnly => "CLI-only",
-        }
-    }
-
-    fn highlight(&self) -> bool {
+impl KoiTag {
+    /// Whether this tag conveys *actionable* information worth showing
+    /// prominently. Non-highlight tags are hidden in highlight-only modes.
+    pub fn highlight(&self) -> bool {
         matches!(
             self,
             Self::Destructive | Self::Elevated | Self::Streaming | Self::CliOnly
@@ -383,48 +221,57 @@ impl Glyph for KoiTag {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash)]
-#[allow(dead_code)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum KoiScope {
     Public,
     Admin,
-    Internal,
-}
-
-impl Scope for KoiScope {
-    fn label(&self) -> &'static str {
-        match self {
-            Self::Public => "Public",
-            Self::Admin => "Admin",
-            Self::Internal => "Internal",
-        }
-    }
-
-    fn is_default(&self) -> bool {
-        matches!(self, Self::Public)
-    }
 }
 
 impl Glyph for KoiScope {
     fn badge(&self) -> Option<&'static str> {
         match self {
             Self::Admin => Some("admin"),
-            Self::Internal => Some("internal"),
             _ => None,
         }
     }
 
     fn color(&self) -> Option<Color> {
-        match self {
-            Self::Internal => Some(Color::Muted),
-            _ => None,
+        None
+    }
+}
+
+// ── Lookup ───────────────────────────────────────────────────────────
+
+/// All command metadata, keyed by the clap moniker path.
+pub static META: LazyLock<HashMap<&'static str, CommandMeta>> = LazyLock::new(build_meta);
+
+/// Look up a command by its space-joined clap moniker (e.g. `"dns lookup"`).
+pub fn get(name: &str) -> Option<&'static CommandMeta> {
+    META.get(name)
+}
+
+/// All commands in a category, sorted by name (catalog order).
+pub fn by_category(cat: KoiCategory) -> Vec<&'static CommandMeta> {
+    let mut items: Vec<_> = META.values().filter(|m| m.category == cat).collect();
+    items.sort_by_key(|m| m.name);
+    items
+}
+
+/// Categories that appear in the map, in display order.
+pub fn categories_in_order() -> Vec<KoiCategory> {
+    let mut categories: Vec<KoiCategory> = Vec::new();
+    for m in META.values() {
+        if !categories.contains(&m.category) {
+            categories.push(m.category);
         }
     }
+    categories.sort_by_key(|c| c.order());
+    categories
 }
 
 /// Curated getting-started examples per category (3-5 each).
 /// These tell a workflow story, not an exhaustive command reference.
-fn curated_examples(category: KoiCategory) -> &'static [Example] {
+pub fn curated_examples(category: KoiCategory) -> &'static [Example] {
     match category {
         KoiCategory::Core => &[
             Example {
@@ -539,11 +386,38 @@ fn curated_examples(category: KoiCategory) -> &'static [Example] {
     }
 }
 
-fn build_manifest() -> CommandManifest<KoiCategory, KoiTag, KoiScope> {
-    let mut m = CommandManifest::new();
+/// Quick-start examples shown on the top-level catalog.
+pub fn quick_start_examples() -> &'static [Example] {
+    &[
+        Example {
+            command: "koi mdns discover",
+            description: "Find services on the network",
+        },
+        Example {
+            command: "koi certmesh status",
+            description: "Check certificate mesh health",
+        },
+        Example {
+            command: "koi health watch",
+            description: "Live health dashboard",
+        },
+    ]
+}
 
+fn build_meta() -> HashMap<&'static str, CommandMeta> {
+    let entries: &[CommandMeta] = COMMANDS;
+    let mut map = HashMap::with_capacity(entries.len());
+    for meta in entries {
+        let previous = map.insert(meta.name, *meta);
+        debug_assert!(previous.is_none(), "duplicate command meta: {}", meta.name);
+    }
+    map
+}
+
+/// The command metadata table. One entry per clap leaf command.
+static COMMANDS: &[CommandMeta] = &[
     // ── Core ─────────────────────────────────────────────────────────
-    m.add(CommandDef {
+    CommandMeta {
         name: "install",
         summary: "Install Koi as a system service",
         long_description: "\
@@ -566,8 +440,8 @@ Requires elevated privileges (Administrator / sudo).",
         see_also: &["uninstall"],
         api: &[],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "uninstall",
         summary: "Uninstall the Koi system service",
         long_description: "\
@@ -593,8 +467,8 @@ Requires elevated privileges (Administrator / sudo).",
         see_also: &["install", "factory-reset"],
         api: &[],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "version",
         summary: "Show version information",
         long_description: "\
@@ -619,8 +493,8 @@ output.",
             path: crate::adapters::http::paths::UNIFIED_STATUS,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "launch",
         summary: "Open the dashboard in a web browser",
         long_description: "\
@@ -641,15 +515,15 @@ The daemon must be running for the dashboard to load.",
                 description: "Open dashboard in the default browser",
             },
             Example {
-                command: "koi launch --port 8080",
+                command: "koi --port 8080 launch",
                 description: "Open dashboard on a custom port",
             },
         ],
         see_also: &["status"],
         api: &[],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "status",
         summary: "Show status of all capabilities",
         long_description: "\
@@ -678,8 +552,8 @@ mode, it reads local state files directly.",
             path: crate::adapters::http::paths::UNIFIED_STATUS,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "token show",
         summary: "Print the daemon access token",
         long_description: "\
@@ -706,8 +580,8 @@ container, prefer `koi token write`.",
         see_also: &["token write"],
         api: &[],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "token write",
         summary: "Write the daemon token to a 0600 file",
         long_description: "\
@@ -725,10 +599,9 @@ let containers authenticate their requests.",
         see_also: &["token show"],
         api: &[],
         confirmation: None,
-    });
-
+    },
     // ── Discovery (mDNS) ─────────────────────────────────────────────
-    m.add(CommandDef {
+    CommandMeta {
         name: "mdns discover",
         summary: "Discover services on the local network",
         long_description: "\
@@ -757,8 +630,8 @@ services until you press Ctrl+C or the --timeout expires.",
             path: koi_mdns::http::paths::DISCOVER,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "mdns announce",
         summary: "Announce a service on the local network",
         long_description: "\
@@ -766,10 +639,11 @@ Publishes a service on the local network via multicast DNS so that other
 devices can discover it. The service stays registered in the daemon until
 explicitly unregistered or the daemon shuts down.
 
-Arguments: <name> <service-type> <port> [--txt key=value ...]
+Arguments: <name> <service-type> <port> [key=value ...]
 
 The name is a human-readable label. The service type follows the mDNS
-convention (e.g. _http._tcp, _ssh._tcp). TXT records can carry metadata.",
+convention (e.g. _http._tcp, _ssh._tcp). Trailing key=value pairs become
+TXT records.",
         category: KoiCategory::Discovery,
         tags: &[KoiTag::Mutating],
         scope: KoiScope::Public,
@@ -779,7 +653,7 @@ convention (e.g. _http._tcp, _ssh._tcp). TXT records can carry metadata.",
                 description: "Announce an HTTP service",
             },
             Example {
-                command: "koi mdns announce \"NAS\" _smb._tcp 445 --txt version=3",
+                command: "koi mdns announce \"NAS\" _smb._tcp 445 version=3",
                 description: "With TXT record",
             },
         ],
@@ -789,8 +663,8 @@ convention (e.g. _http._tcp, _ssh._tcp). TXT records can carry metadata.",
             path: koi_mdns::http::paths::ANNOUNCE,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "mdns unregister",
         summary: "Unregister a previously announced service",
         long_description: "\
@@ -810,8 +684,8 @@ also be found via 'koi mdns admin ls'.",
             path: koi_mdns::http::paths::UNREGISTER,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "mdns resolve",
         summary: "Resolve a specific service instance",
         long_description: "\
@@ -833,8 +707,8 @@ The instance name is the full mDNS name including the service type and
             path: koi_mdns::http::paths::RESOLVE,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "mdns subscribe",
         summary: "Subscribe to lifecycle events for a service type",
         long_description: "\
@@ -862,8 +736,8 @@ as a line of JSON when --json is used, or as a formatted line otherwise.",
             path: koi_mdns::http::paths::SUBSCRIBE,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "mdns admin status",
         summary: "Show daemon status",
         long_description: "\
@@ -882,8 +756,8 @@ how many are alive vs draining, and whether the mDNS engine is running.",
             path: koi_mdns::http::paths::ADMIN_STATUS,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "mdns admin ls",
         summary: "List all registrations",
         long_description: "\
@@ -902,8 +776,8 @@ registration IDs, service types, ports, and current state (alive/draining).",
             path: koi_mdns::http::paths::ADMIN_LS,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "mdns admin inspect",
         summary: "Inspect a registration by ID or prefix",
         long_description: "\
@@ -923,8 +797,8 @@ You can use a full ID or a unique prefix.",
             path: koi_mdns::http::paths::ADMIN_INSPECT,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "mdns admin unregister",
         summary: "Force-unregister a registration",
         long_description: "\
@@ -944,8 +818,8 @@ instantly. Use 'mdns admin drain' for a graceful removal.",
             path: koi_mdns::http::paths::ADMIN_UNREGISTER,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "mdns admin drain",
         summary: "Force-drain a registration",
         long_description: "\
@@ -965,8 +839,8 @@ period expires, the registration is fully removed.",
             path: koi_mdns::http::paths::ADMIN_DRAIN,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "mdns admin revive",
         summary: "Revive a draining registration",
         long_description: "\
@@ -985,10 +859,9 @@ resumes normal mDNS announcements on the network.",
             path: koi_mdns::http::paths::ADMIN_REVIVE,
         }],
         confirmation: None,
-    });
-
+    },
     // ── Trust (Certmesh) ─────────────────────────────────────────────
-    m.add(CommandDef {
+    CommandMeta {
         name: "certmesh create",
         summary: "Create a new certificate mesh",
         long_description: "\
@@ -1034,8 +907,8 @@ Optional policy overrides:
             path: koi_certmesh::http::paths::CREATE,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "certmesh join",
         summary: "Join an existing certificate mesh",
         long_description: "\
@@ -1055,8 +928,8 @@ mesh's automatic renewal cycle.",
                 description: "Join a remote CA",
             },
             Example {
-                command: "koi certmesh join http://10.0.0.1:5641 --totp 123456",
-                description: "With TOTP auth",
+                command: "koi certmesh join",
+                description: "Discover a CA on the LAN via mDNS",
             },
         ],
         see_also: &["certmesh create", "certmesh status"],
@@ -1065,8 +938,8 @@ mesh's automatic renewal cycle.",
             path: koi_certmesh::http::paths::JOIN,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "certmesh status",
         summary: "Show certificate mesh status",
         long_description: "\
@@ -1092,8 +965,8 @@ the enrollment window is open.",
             path: koi_certmesh::http::paths::STATUS,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "certmesh log",
         summary: "Show the audit log",
         long_description: "\
@@ -1113,8 +986,8 @@ a timestamp and actor.",
             path: koi_certmesh::http::paths::LOG,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "certmesh unlock",
         summary: "Unlock the CA",
         long_description: "\
@@ -1134,8 +1007,8 @@ Unlocking requires the CA passphrase if one was set during creation.",
             path: koi_certmesh::http::paths::UNLOCK,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "certmesh set-hook",
         summary: "Set a post-renewal reload hook",
         long_description: "\
@@ -1143,29 +1016,23 @@ Configures a shell command that runs after each successful certificate
 renewal. Typically used to reload services that need to pick up the
 new certificate (e.g. nginx, HAProxy, Envoy).
 
-The hook runs as the Koi daemon user. Use --reload for a reload command
-or --exec for a custom script.",
+The hook runs as the Koi daemon user. Use --reload to set the reload
+command.",
         category: KoiCategory::Trust,
         tags: &[KoiTag::Mutating],
         scope: KoiScope::Admin,
-        examples: &[
-            Example {
-                command: "koi certmesh set-hook --reload \"systemctl restart nginx\"",
-                description: "Reload nginx after renewal",
-            },
-            Example {
-                command: "koi certmesh set-hook --exec /opt/hooks/on-renew.sh",
-                description: "Run a custom script",
-            },
-        ],
+        examples: &[Example {
+            command: "koi certmesh set-hook --reload \"systemctl restart nginx\"",
+            description: "Reload nginx after renewal",
+        }],
         see_also: &["certmesh status"],
         api: &[ApiEndpoint {
             method: "PUT",
             path: koi_certmesh::http::paths::SET_HOOK,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "certmesh promote",
         summary: "Promote a member to standby CA",
         long_description: "\
@@ -1189,8 +1056,8 @@ runway); it does not cause an outage.",
             path: koi_certmesh::http::paths::PROMOTE,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "certmesh open-enrollment",
         summary: "Open the enrollment window",
         long_description: "\
@@ -1212,8 +1079,8 @@ actively adding nodes to the mesh.",
             path: koi_certmesh::http::paths::OPEN_ENROLLMENT,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "certmesh close-enrollment",
         summary: "Close the enrollment window",
         long_description: "\
@@ -1232,8 +1099,8 @@ until enrollment is re-opened. Existing members are unaffected.",
             path: koi_certmesh::http::paths::CLOSE_ENROLLMENT,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "certmesh rotate-auth",
         summary: "Rotate the TOTP enrollment secret",
         long_description: "\
@@ -1253,8 +1120,8 @@ who need to enroll new nodes.",
             path: koi_certmesh::http::paths::ROTATE_AUTH,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "certmesh backup",
         summary: "Create an encrypted backup bundle",
         long_description: "\
@@ -1284,8 +1151,8 @@ exists, the entire mesh must be recreated.",
             path: koi_certmesh::http::paths::BACKUP,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "certmesh restore",
         summary: "Restore certmesh state from a backup bundle",
         long_description: "\
@@ -1307,8 +1174,8 @@ The restore will prompt for the backup passphrase.",
             path: koi_certmesh::http::paths::RESTORE,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "certmesh revoke",
         summary: "Revoke a member from the mesh",
         long_description: "\
@@ -1337,8 +1204,8 @@ compromised, superseded, departed.",
             path: koi_certmesh::http::paths::REVOKE,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "certmesh destroy",
         summary: "Destroy the certificate mesh",
         long_description: "\
@@ -1368,10 +1235,9 @@ If this node is the root CA, all mesh members will lose their\n\
 ability to renew certificates.",
             token: "DESTROY",
         }),
-    });
-
+    },
     // ── DNS ──────────────────────────────────────────────────────────
-    m.add(CommandDef {
+    CommandMeta {
         name: "dns serve",
         summary: "Start the DNS resolver",
         long_description: "\
@@ -1393,8 +1259,8 @@ Requires elevated privileges because port 53 is a privileged port.",
             path: koi_dns::http::paths::SERVE,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "dns stop",
         summary: "Stop the DNS resolver",
         long_description: "\
@@ -1413,8 +1279,8 @@ served again when the resolver is restarted.",
             path: koi_dns::http::paths::STOP,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "dns status",
         summary: "Show DNS resolver status",
         long_description: "\
@@ -1433,13 +1299,13 @@ configured for, and the number of static and mDNS-derived records.",
             path: koi_dns::http::paths::STATUS,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "dns lookup",
         summary: "Lookup a name through the resolver",
         long_description: "\
-Queries the local DNS resolver for a name. Supports A, AAAA, CNAME,
-TXT, and SRV record types via --record-type.
+Queries the local DNS resolver for a name. Supports A, AAAA, or ANY
+record types via --record-type.
 
 This is useful for testing that static records and mDNS-derived entries
 resolve correctly before pointing production traffic at the resolver.",
@@ -1462,8 +1328,8 @@ resolve correctly before pointing production traffic at the resolver.",
             path: koi_dns::http::paths::LOOKUP,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "dns add",
         summary: "Add a static DNS entry",
         long_description: "\
@@ -1492,8 +1358,8 @@ The name should be within the configured DNS zone (default: .lan).",
             path: koi_dns::http::paths::ADD,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "dns remove",
         summary: "Remove a static DNS entry",
         long_description: "\
@@ -1512,8 +1378,8 @@ immediately and is persisted to disk.",
             path: koi_dns::http::paths::REMOVE,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "dns list",
         summary: "List all resolvable names",
         long_description: "\
@@ -1532,15 +1398,14 @@ via 'dns add' and entries derived from mDNS service discovery.",
             path: koi_dns::http::paths::LIST,
         }],
         confirmation: None,
-    });
-
+    },
     // ── Health ────────────────────────────────────────────────────────
-    m.add(CommandDef {
+    CommandMeta {
         name: "health status",
         summary: "Show current health status",
         long_description: "\
 Shows the current state of all registered health checks: service name,
-check type (HTTP/TCP/process), last result, and last transition time.",
+check type (HTTP/TCP), last result, and last transition time.",
         category: KoiCategory::Health,
         tags: &[KoiTag::ReadOnly],
         scope: KoiScope::Public,
@@ -1560,8 +1425,8 @@ check type (HTTP/TCP/process), last result, and last transition time.",
             path: koi_health::http::paths::STATUS,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "health watch",
         summary: "Live terminal watch view",
         long_description: "\
@@ -1589,16 +1454,15 @@ Use --interval to control refresh rate.",
             path: koi_health::http::paths::STATUS,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "health add",
         summary: "Add a service health check",
         long_description: "\
 Registers a new health check with the daemon. Supported check types:
 
-  --http <url>     HTTP GET, expects 2xx response
+  --http <url>      HTTP GET, expects 2xx response
   --tcp <host:port> TCP connection check
-  --process <name>  Process existence check
 
 The check runs at the daemon's configured interval and reports state
 transitions (healthy → unhealthy and back).",
@@ -1621,8 +1485,8 @@ transitions (healthy → unhealthy and back).",
             path: koi_health::http::paths::ADD,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "health remove",
         summary: "Remove a service health check",
         long_description: "\
@@ -1641,8 +1505,8 @@ and its history is removed from the transition log.",
             path: koi_health::http::paths::REMOVE,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "health log",
         summary: "Show health transition log",
         long_description: "\
@@ -1662,10 +1526,9 @@ name, old state, new state, and reason.",
             path: koi_health::http::paths::STATUS,
         }],
         confirmation: None,
-    });
-
+    },
     // ── Proxy ─────────────────────────────────────────────────────────
-    m.add(CommandDef {
+    CommandMeta {
         name: "proxy add",
         summary: "Add or update a proxy entry",
         long_description: "\
@@ -1699,8 +1562,8 @@ If a proxy with the same name exists, it is updated in place.",
             path: koi_proxy::http::paths::ADD,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "proxy remove",
         summary: "Remove a proxy entry",
         long_description: "\
@@ -1719,8 +1582,8 @@ port is released.",
             path: koi_proxy::http::paths::REMOVE,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "proxy status",
         summary: "Show proxy status",
         long_description: "\
@@ -1740,8 +1603,8 @@ Shows all proxy listeners: name, listen port, backend, TLS certificate source
             path: koi_proxy::http::paths::STATUS,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "proxy list",
         summary: "List configured proxies",
         long_description: "\
@@ -1760,9 +1623,9 @@ and backends. Use 'proxy status' for runtime details.",
             path: koi_proxy::http::paths::LIST,
         }],
         confirmation: None,
-    })
+    },
     // ── UDP ───────────────────────────────────────────────────────────
-    .add(CommandDef {
+    CommandMeta {
         name: "udp bind",
         summary: "Bind a host UDP port",
         long_description: "\
@@ -1792,8 +1655,8 @@ through the binding ID.",
             path: koi_udp::http::paths::BIND,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "udp unbind",
         summary: "Unbind (close) a UDP binding",
         long_description: "\
@@ -1812,8 +1675,8 @@ in-progress recv streams are terminated.",
             path: koi_udp::http::paths::UNBIND,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "udp send",
         summary: "Send a datagram through a binding",
         long_description: "\
@@ -1833,8 +1696,8 @@ The destination is a host:port pair.",
             path: koi_udp::http::paths::SEND,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "udp status",
         summary: "Show active UDP bindings",
         long_description: "\
@@ -1853,8 +1716,8 @@ remaining lease times.",
             path: koi_udp::http::paths::STATUS,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    CommandMeta {
         name: "udp heartbeat",
         summary: "Renew a binding's lease",
         long_description: "\
@@ -1873,8 +1736,9 @@ expiring. The lease is reset to its original duration.",
             path: koi_udp::http::paths::HEARTBEAT,
         }],
         confirmation: None,
-    })
-    .add(CommandDef {
+    },
+    // ── factory-reset (Core; defined last to mirror the original manifest) ─
+    CommandMeta {
         name: "factory-reset",
         summary: "Wipe all state and restart the service",
         long_description: "\
@@ -1886,9 +1750,8 @@ then restarts the system service. This removes ALL local state:
   • DNS records
   • Health-check configurations
   • Proxy routes
+  • Log files
   • config.toml
-
-Log files are preserved by default. Use --include-logs to remove them too.
 
 This is irreversible. If this node is the certmesh CA root, every
 certificate it ever issued becomes unverifiable.
@@ -1902,16 +1765,10 @@ Requires elevated privileges (Administrator / sudo).",
             KoiTag::CliOnly,
         ],
         scope: KoiScope::Admin,
-        examples: &[
-            Example {
-                command: "koi factory-reset",
-                description: "Wipe all state and restart",
-            },
-            Example {
-                command: "koi factory-reset --include-logs",
-                description: "Wipe everything including logs",
-            },
-        ],
+        examples: &[Example {
+            command: "koi factory-reset",
+            description: "Wipe all state and restart",
+        }],
         see_also: &["uninstall", "install"],
         api: &[],
         confirmation: Some(Confirmation::TypeToken {
@@ -1922,7 +1779,5 @@ If this node is the certmesh CA root, all issued certificates\n\
 will become unverifiable.",
             token: "RESET",
         }),
-    });
-
-    m
-}
+    },
+];

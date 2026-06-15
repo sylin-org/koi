@@ -1,4 +1,10 @@
-use crate::{Color, Glyph, Presentation};
+//! Terminal capability detection + glyph/color resolution.
+//!
+//! Moved verbatim from the former `command-surface` crate (P09). Degrades
+//! gracefully: non-interactive stdout, `NO_COLOR`, and `TERM=dumb` all fall back
+//! to no-color / ASCII glyphs so the catalog stays readable when piped.
+
+use super::glyph::{Color, Glyph, Presentation};
 use is_terminal::IsTerminal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,7 +19,6 @@ pub enum ColorSupport {
 pub enum IconSupport {
     Ascii,
     Unicode,
-    NerdFont,
 }
 
 #[derive(Debug, Clone)]
@@ -43,14 +48,8 @@ impl TerminalProfile {
     pub fn resolve_glyph(&self, g: &dyn Glyph) -> Option<String> {
         for p in g.presentations() {
             match (p, self.icons) {
-                (Presentation::NerdFont(s), IconSupport::NerdFont) => {
-                    return Some((*s).to_string())
-                }
-                (Presentation::Emoji(s), IconSupport::Unicode | IconSupport::NerdFont) => {
-                    return Some((*s).to_string())
-                }
+                (Presentation::Emoji(s), IconSupport::Unicode) => return Some((*s).to_string()),
                 (Presentation::Ascii(s), _) => return Some((*s).to_string()),
-                (Presentation::None, _) => return None,
                 _ => continue,
             }
         }
@@ -58,11 +57,14 @@ impl TerminalProfile {
     }
 
     pub fn resolve_color(&self, c: Color) -> Option<console::Color> {
+        // Koi's palette has no RGB `Custom` colors, so every supported level maps
+        // through the basic-16 table (the 256/truecolor distinction only mattered
+        // for `Custom`). `None` support disables color entirely.
         match self.color {
             ColorSupport::None => None,
-            ColorSupport::Basic16 => Some(color_to_basic(c)),
-            ColorSupport::Ansi256 => Some(color_to_256(c)),
-            ColorSupport::TrueColor => Some(color_to_rgb(c)),
+            ColorSupport::Basic16 | ColorSupport::Ansi256 | ColorSupport::TrueColor => {
+                Some(color_to_basic(c))
+            }
         }
     }
 }
@@ -94,57 +96,15 @@ fn detect_icon_support(interactive: bool) -> IconSupport {
         return IconSupport::Ascii;
     }
 
-    let nerd = std::env::var("KOI_NERDFONT")
-        .or_else(|_| std::env::var("NERD_FONT"))
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
-    if nerd {
-        IconSupport::NerdFont
-    } else {
-        IconSupport::Unicode
-    }
+    IconSupport::Unicode
 }
 
 fn color_to_basic(color: Color) -> console::Color {
     match color {
         Color::Accent => console::Color::Blue,
-        Color::Success => console::Color::Green,
         Color::Warning => console::Color::Yellow,
         Color::Danger => console::Color::Red,
         Color::Muted => console::Color::White,
         Color::Info => console::Color::Cyan,
-        Color::Custom(_, _, _) => console::Color::White,
     }
-}
-
-fn color_to_256(color: Color) -> console::Color {
-    match color {
-        Color::Custom(r, g, b) => console::Color::Color256(rgb_to_ansi256(r, g, b)),
-        _ => color_to_basic(color),
-    }
-}
-
-fn color_to_rgb(color: Color) -> console::Color {
-    match color {
-        Color::Custom(r, g, b) => console::Color::Color256(rgb_to_ansi256(r, g, b)),
-        _ => color_to_basic(color),
-    }
-}
-
-fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
-    if r == g && g == b {
-        if r < 8 {
-            return 16;
-        }
-        if r > 248 {
-            return 231;
-        }
-        return 232 + ((r as u16 - 8) / 10) as u8;
-    }
-
-    let r = ((r as f32 / 255.0) * 5.0).round() as u8;
-    let g = ((g as f32 / 255.0) * 5.0).round() as u8;
-    let b = ((b as f32 / 255.0) * 5.0).round() as u8;
-    16 + (36 * r) + (6 * g) + b
 }

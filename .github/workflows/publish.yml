@@ -41,7 +41,6 @@ jobs:
 
           CRATES=(
             koi-common      # Layer 0: no internal deps
-            command-surface # Layer 0: command manifest helper
             koi-config      # Layer 1: depends on koi-common
             koi-crypto      # Layer 1: cryptographic primitives
             koi-truststore  # Layer 1: trust store helpers

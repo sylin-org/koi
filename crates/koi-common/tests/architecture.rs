@@ -37,7 +37,7 @@ fn classify(pkg: &str) -> Option<Class> {
         | "koi-certmesh" | "koi-client" => Class::Domain,
         // Wiring layer.
         "koi-dashboard" | "koi-compose" | "koi-embedded" | "koi-net" => Class::Composition,
-        _ => return None, // non-koi crates (e.g. command-surface) are out of scope
+        _ => return None, // non-koi crates are out of scope
     })
 }
 

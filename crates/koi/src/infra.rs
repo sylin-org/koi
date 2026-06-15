@@ -6,7 +6,7 @@ use clap::CommandFactory;
 use tokio_util::sync::CancellationToken;
 
 use crate::cli::{Cli, Config};
-use crate::{platform, surface};
+use crate::{help, platform};
 
 // ── Infrastructure helpers ──────────────────────────────────────────
 
@@ -18,7 +18,7 @@ pub(crate) fn is_piped_stdin() -> bool {
 
 /// Print the top-level help (command list) without exiting with an error.
 pub(crate) fn print_top_level_help(api_endpoint: &str) {
-    if let Err(err) = surface::print_catalog(api_endpoint) {
+    if let Err(err) = help::print_catalog(api_endpoint) {
         tracing::debug!(error = %err, "Failed to render catalog, falling back to clap help");
         // Clap prints to stdout by default; ignore errors because help display should be best-effort
         let mut cmd = Cli::command();

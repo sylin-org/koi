@@ -6,10 +6,10 @@ mod commands;
 mod daemon;
 mod dispatch;
 mod format;
+mod help;
 mod infra;
 mod integrations;
 mod platform;
-mod surface;
 
 use std::time::Duration;
 
@@ -47,8 +47,8 @@ fn main() -> anyhow::Result<()> {
     {
         let raw_args: Vec<String> = std::env::args().skip(1).collect();
         if let Some(cmd_name) = extract_help_query(&raw_args) {
-            if let Some(def) = surface::MANIFEST.get(&cmd_name) {
-                if let Err(e) = surface::print_command_detail(def) {
+            if let Some(meta) = help::get(&cmd_name) {
+                if let Err(e) = help::print_command_detail(meta) {
                     eprintln!("Error: {e}");
                 }
             } else {

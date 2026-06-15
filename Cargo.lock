@@ -539,16 +539,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "command-surface"
-version = "0.4.1"
-dependencies = [
- "console 0.15.11",
- "is-terminal",
- "supports-color",
- "terminal_size",
-]
-
-[[package]]
 name = "console"
 version = "0.15.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2017,12 +2007,13 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
- "command-surface",
+ "console 0.15.11",
  "crossterm",
  "hickory-proto",
  "hostname",
  "hyper-util",
  "if-addrs",
+ "is-terminal",
  "koi-certmesh",
  "koi-client",
  "koi-common",
@@ -2045,6 +2036,8 @@ dependencies = [
  "serde",
  "serde_json",
  "subtle",
+ "supports-color",
+ "terminal_size",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",

@@ -10,7 +10,7 @@ use crate::cli::{
 use crate::commands::status::try_daemon_status;
 use crate::daemon::daemon_mode;
 use crate::infra::{is_piped_stdin, print_top_level_help};
-use crate::{adapters, commands, format, surface};
+use crate::{adapters, commands, format, help};
 
 // ── Async entry point ────────────────────────────────────────────────
 
@@ -22,15 +22,15 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 config.require_capability("mdns")?;
                 match &mdns_cmd.command {
                     None => {
-                        surface::print_category_catalog(surface::KoiCategory::Discovery, None)?;
+                        help::print_category_catalog(help::KoiCategory::Discovery, None)?;
                         Ok(())
                     }
                     Some(MdnsSubcommand::Admin(admin_cmd)) => match &admin_cmd.command {
                         Some(admin) => commands::mdns::admin(admin, &cli),
                         None => {
-                            surface::print_category_catalog(
-                                surface::KoiCategory::Discovery,
-                                Some(surface::KoiScope::Admin),
+                            help::print_category_catalog(
+                                help::KoiCategory::Discovery,
+                                Some(help::KoiScope::Admin),
                             )?;
                             Ok(())
                         }
@@ -84,7 +84,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 let ep = cli.endpoint.as_deref();
                 match &cm_cmd.command {
                     None => {
-                        surface::print_category_catalog(surface::KoiCategory::Trust, None)?;
+                        help::print_category_catalog(help::KoiCategory::Trust, None)?;
                         Ok(())
                     }
                     Some(CertmeshSubcommand::Create {
@@ -140,7 +140,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 let mode = commands::detect_mode(&cli);
                 match &dns_cmd.command {
                     None => {
-                        surface::print_category_catalog(surface::KoiCategory::Dns, None)?;
+                        help::print_category_catalog(help::KoiCategory::Dns, None)?;
                         Ok(())
                     }
                     Some(DnsSubcommand::Serve) => commands::dns::serve(&config, mode).await,
@@ -165,7 +165,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 let mode = commands::detect_mode(&cli);
                 match &health_cmd.command {
                     None => {
-                        surface::print_category_catalog(surface::KoiCategory::Health, None)?;
+                        help::print_category_catalog(help::KoiCategory::Health, None)?;
                         Ok(())
                     }
                     Some(HealthSubcommand::Status) => {
@@ -204,7 +204,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 let mode = commands::detect_mode(&cli);
                 match &proxy_cmd.command {
                     None => {
-                        surface::print_category_catalog(surface::KoiCategory::Proxy, None)?;
+                        help::print_category_catalog(help::KoiCategory::Proxy, None)?;
                         Ok(())
                     }
                     Some(ProxySubcommand::Add {
@@ -235,7 +235,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 let mode = commands::detect_mode(&cli);
                 match &udp_cmd.command {
                     None => {
-                        surface::print_category_catalog(surface::KoiCategory::Udp, None)?;
+                        help::print_category_catalog(help::KoiCategory::Udp, None)?;
                         Ok(())
                     }
                     Some(UdpSubcommand::Bind { port, addr, lease }) => {
