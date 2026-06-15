@@ -114,23 +114,12 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     Some(CertmeshSubcommand::Promote { endpoint }) => {
                         commands::certmesh::promote(endpoint.as_deref(), cli.json, ep).await
                     }
-                    Some(CertmeshSubcommand::OpenEnrollment { until }) => {
-                        commands::certmesh::open_enrollment(until.as_deref(), cli.json, ep)
+                    Some(CertmeshSubcommand::OpenEnrollment) => {
+                        commands::certmesh::open_enrollment(cli.json, ep)
                     }
                     Some(CertmeshSubcommand::CloseEnrollment) => {
                         commands::certmesh::close_enrollment(cli.json, ep)
                     }
-                    Some(CertmeshSubcommand::SetPolicy {
-                        domain,
-                        subnet,
-                        clear,
-                    }) => commands::certmesh::set_policy(
-                        domain.as_deref(),
-                        subnet.as_deref(),
-                        *clear,
-                        cli.json,
-                        ep,
-                    ),
                     Some(CertmeshSubcommand::RotateAuth) => {
                         commands::certmesh::rotate_auth(cli.json, ep)
                     }

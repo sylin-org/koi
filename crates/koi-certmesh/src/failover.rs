@@ -114,9 +114,11 @@ pub fn accept_promotion(
 mod tests {
     use super::*;
     use crate::ca;
-    use crate::profiles::TrustProfile;
     use crate::roster::{MemberRole, MemberStatus, Roster, RosterMember};
     use chrono::Utc;
+
+    // Just Me posture: open enrollment, no approval.
+    const JUST_ME: (bool, bool) = (true, false);
 
     fn test_paths() -> crate::CertmeshPaths {
         crate::CertmeshPaths::with_data_dir(koi_common::test::ensure_data_dir(
@@ -131,7 +133,7 @@ mod tests {
     }
 
     fn make_test_roster() -> Roster {
-        let mut r = Roster::new(TrustProfile::JustMe, None);
+        let mut r = Roster::new(JUST_ME.0, JUST_ME.1, None);
         r.members.push(RosterMember {
             hostname: "stone-01".to_string(),
             role: MemberRole::Primary,
@@ -243,8 +245,12 @@ mod tests {
             Some("ops-team")
         );
         assert_eq!(
-            accepted_roster.metadata.trust_profile,
-            roster.metadata.trust_profile
+            accepted_roster.metadata.enrollment_open,
+            roster.metadata.enrollment_open
+        );
+        assert_eq!(
+            accepted_roster.metadata.requires_approval,
+            roster.metadata.requires_approval
         );
     }
 
@@ -253,7 +259,7 @@ mod tests {
         let ca = make_test_ca();
         let totp = koi_crypto::totp::generate_secret();
         let auth = koi_crypto::auth::AuthState::Totp(totp);
-        let roster = Roster::new(TrustProfile::JustMe, None);
+        let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
         assert!(roster.members.is_empty());
 
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();

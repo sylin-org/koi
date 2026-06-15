@@ -1777,7 +1777,6 @@ dependencies = [
  "crossterm",
  "hostname",
  "indicatif",
- "ipnet",
  "koi-common",
  "koi-crypto",
  "koi-truststore",

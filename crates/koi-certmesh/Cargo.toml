@@ -36,7 +36,6 @@ crossterm.workspace = true
 indicatif.workspace = true
 rand.workspace = true
 hostname.workspace = true
-ipnet.workspace = true
 
 [features]
 # Pass-through to koi-crypto's optional backends, default-on (standalone builds and the

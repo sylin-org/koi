@@ -330,7 +330,7 @@ No other module should contain `println!`-based presentation functions.
 | `RotateAuthResponse` | Auth credential rotation response (auth_setup)                    |
 | `AuditLogResponse`   | Audit log read response (entries)                                 |
 | `DestroyResponse`    | Certmesh destroy response (destroyed)                             |
-| `TrustProfile`       | CA policy (key size, validity, enrollment mode)                   |
+| `EnrollmentSummary`  | Open/close-enrollment response (enrollment_state)                 |
 
 ### Internal (not re-exported)
 

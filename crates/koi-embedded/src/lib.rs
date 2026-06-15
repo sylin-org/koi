@@ -916,10 +916,8 @@ mod tests {
         // Create a CA + roster UNDER the injected dir.
         koi_certmesh::ca::create_ca("pond-pass-strong", &[7u8; 32], &paths)
             .expect("create CA under injected dir");
-        let roster = koi_certmesh::roster::Roster::new(
-            koi_certmesh::profiles::TrustProfile::MyOrganization,
-            Some("ops".to_string()),
-        );
+        // My Organization posture: closed enrollment, approval required.
+        let roster = koi_certmesh::roster::Roster::new(false, true, Some("ops".to_string()));
         koi_certmesh::roster::save_roster(&roster, &paths.roster_path())
             .expect("save roster under injected dir");
 

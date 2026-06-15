@@ -176,7 +176,6 @@ pub fn renew_and_update_member(
 mod tests {
     use super::*;
     use crate::ca;
-    use crate::profiles::TrustProfile;
     use crate::roster::{MemberRole, MemberStatus, Roster, RosterMember};
     use chrono::{Duration, Utc};
 
@@ -212,7 +211,7 @@ mod tests {
 
     #[test]
     fn members_needing_renewal_filters_by_threshold() {
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(true, false, None);
         // Expires in 5 days - needs renewal (< 10 day threshold)
         roster.members.push(make_member("expiring-soon", 5));
         // Expires in 25 days - does not need renewal
@@ -228,7 +227,7 @@ mod tests {
 
     #[test]
     fn members_needing_renewal_skips_revoked() {
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(true, false, None);
         let mut member = make_member("revoked-host", 1);
         member.status = MemberStatus::Revoked;
         roster.members.push(member);
@@ -239,14 +238,14 @@ mod tests {
 
     #[test]
     fn members_needing_renewal_empty_roster() {
-        let roster = Roster::new(TrustProfile::JustMe, None);
+        let roster = Roster::new(true, false, None);
         let due = members_needing_renewal(&roster);
         assert!(due.is_empty());
     }
 
     #[test]
     fn already_expired_cert_needs_renewal() {
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(true, false, None);
         // Expired 2 days ago
         roster.members.push(make_member("already-expired", -2));
 
@@ -303,7 +302,7 @@ mod tests {
     #[test]
     fn renew_and_update_member_updates_roster() {
         let ca = make_test_ca();
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(true, false, None);
         roster.members.push(make_member("stone-05", 5));
 
         let old_fp = roster.members[0].cert_fingerprint.clone();
@@ -322,7 +321,7 @@ mod tests {
     #[test]
     fn renew_and_update_member_not_found() {
         let ca = make_test_ca();
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(true, false, None);
 
         let result = renew_and_update_member(&ca, &mut roster, "nonexistent", &test_paths());
         assert!(matches!(result, Err(CertmeshError::RenewalFailed { .. })));
@@ -331,7 +330,7 @@ mod tests {
     #[test]
     fn renew_and_update_member_with_hook() {
         let ca = make_test_ca();
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(true, false, None);
         let mut member = make_member("stone-05", 5);
         #[cfg(unix)]
         let cmd = "/bin/echo renewed";
@@ -352,7 +351,7 @@ mod tests {
 
     #[test]
     fn members_needing_renewal_all_members_due() {
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(true, false, None);
         roster.members.push(make_member("host-a", 1));
         roster.members.push(make_member("host-b", 3));
         roster.members.push(make_member("host-c", 9));
@@ -363,7 +362,7 @@ mod tests {
 
     #[test]
     fn members_needing_renewal_none_due() {
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(true, false, None);
         roster.members.push(make_member("fresh-a", 20));
         roster.members.push(make_member("fresh-b", 30));
 
@@ -373,7 +372,7 @@ mod tests {
 
     #[test]
     fn members_needing_renewal_mixed_roles() {
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(true, false, None);
         let mut primary = make_member("primary-host", 3);
         primary.role = MemberRole::Primary;
         let mut standby = make_member("standby-host", 3);
@@ -414,7 +413,7 @@ mod tests {
     #[test]
     fn renew_and_update_member_updates_cert_path() {
         let ca = make_test_ca();
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(true, false, None);
         let mut member = make_member("stone-07", 5);
         member.cert_path = "old/path".to_string();
         roster.members.push(member);
@@ -429,7 +428,7 @@ mod tests {
     #[test]
     fn renew_and_update_member_cert_expires_is_future() {
         let ca = make_test_ca();
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(true, false, None);
         roster.members.push(make_member("stone-08", 5));
 
         renew_and_update_member(&ca, &mut roster, "stone-08", &test_paths()).unwrap();
@@ -446,7 +445,7 @@ mod tests {
     #[test]
     fn renew_and_update_member_fingerprint_is_sha256() {
         let ca = make_test_ca();
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(true, false, None);
         roster.members.push(make_member("stone-09", 5));
 
         renew_and_update_member(&ca, &mut roster, "stone-09", &test_paths()).unwrap();
@@ -490,7 +489,7 @@ mod tests {
     #[test]
     fn renew_and_update_member_with_failing_hook_still_updates_roster() {
         let ca = make_test_ca();
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(true, false, None);
         let mut member = make_member("stone-12", 5);
         let cmd = if cfg!(windows) {
             "cmd /C exit 1"

@@ -15,7 +15,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use koi_certmesh::profiles::TrustProfile;
 use koi_certmesh::{ApprovalDecision, ApprovalRequest, CertmeshCore};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -23,19 +22,22 @@ use tokio_util::sync::CancellationToken;
 
 /// Decides one enrollment-approval request.
 ///
+/// The `bool` is the mesh's `requires_approval` flag (whether an operator name must
+/// accompany the approval).
+///
 /// Injected so the transport is the caller's choice: the foreground daemon supplies an
 /// interactive stdin prompt; the Windows service and embedded daemons (no console) supply
 /// [`deny_and_log_decider`], which never blocks and never silently approves.
 ///
 /// Called inside `spawn_blocking`, so a blocking implementation (stdin) is fine.
-pub type ApprovalDecider = Arc<dyn Fn(&str, TrustProfile) -> ApprovalDecision + Send + Sync>;
+pub type ApprovalDecider = Arc<dyn Fn(&str, bool) -> ApprovalDecision + Send + Sync>;
 
 /// An [`ApprovalDecider`] that denies every request and logs it.
 ///
 /// The safe default where there is no operator to ask (Windows service, embedded). The CA
 /// is never weakened silently: an enrollment that cannot be approved is refused, visibly.
 pub fn deny_and_log_decider() -> ApprovalDecider {
-    Arc::new(|hostname: &str, _profile: TrustProfile| {
+    Arc::new(|hostname: &str, _requires_approval: bool| {
         tracing::warn!(
             hostname,
             "Certmesh enrollment auto-denied (no interactive console to approve)"
@@ -80,10 +82,10 @@ pub async fn spawn_enrollment_approval(
 async fn dispatch_approval(request: ApprovalRequest, decider: ApprovalDecider) {
     let ApprovalRequest {
         hostname,
-        profile,
+        requires_approval,
         respond_to,
     } = request;
-    let decision = tokio::task::spawn_blocking(move || decider(&hostname, profile))
+    let decision = tokio::task::spawn_blocking(move || decider(&hostname, requires_approval))
         .await
         .unwrap_or(ApprovalDecision::Denied);
     let _ = respond_to.send(decision);
@@ -220,26 +222,26 @@ mod tests {
     use tokio::sync::oneshot;
 
     #[tokio::test]
-    async fn deny_and_log_decider_denies_every_profile() {
+    async fn deny_and_log_decider_denies_regardless_of_approval_flag() {
         let decider = deny_and_log_decider();
-        for profile in [
-            TrustProfile::JustMe,
-            TrustProfile::MyTeam,
-            TrustProfile::MyOrganization,
-        ] {
-            assert!(matches!(decider("host", profile), ApprovalDecision::Denied));
+        for requires_approval in [false, true] {
+            assert!(matches!(
+                decider("host", requires_approval),
+                ApprovalDecision::Denied
+            ));
         }
     }
 
     #[tokio::test]
     async fn dispatch_approval_routes_decider_approval() {
-        let decider: ApprovalDecider = Arc::new(|_hostname, _profile| ApprovalDecision::Approved {
-            operator: Some("alice".to_string()),
-        });
+        let decider: ApprovalDecider =
+            Arc::new(|_hostname, _requires_approval| ApprovalDecision::Approved {
+                operator: Some("alice".to_string()),
+            });
         let (tx, rx) = oneshot::channel();
         let request = ApprovalRequest {
             hostname: "node-1".to_string(),
-            profile: TrustProfile::MyTeam,
+            requires_approval: true,
             respond_to: tx,
         };
         dispatch_approval(request, decider).await;
@@ -256,7 +258,7 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         let request = ApprovalRequest {
             hostname: "node-2".to_string(),
-            profile: TrustProfile::JustMe,
+            requires_approval: false,
             respond_to: tx,
         };
         dispatch_approval(request, deny_and_log_decider()).await;

@@ -77,7 +77,6 @@ Route handlers: `crates/koi-certmesh/src/http.rs`
 | GET | `/v1/certmesh/compliance` | Compliance summary |
 | POST | `/v1/certmesh/open-enrollment` | Open enrollment window |
 | POST | `/v1/certmesh/close-enrollment` | Close enrollment window |
-| PUT | `/v1/certmesh/set-policy` | Set enrollment scope constraints |
 | POST | `/v1/certmesh/backup` | Create encrypted backup |
 | POST | `/v1/certmesh/restore` | Restore from backup |
 | POST | `/v1/certmesh/destroy` | Destroy all certmesh state (CA, certs, audit log) |
@@ -254,7 +253,6 @@ Streaming responses include a `status` field:
 | `koi certmesh promote [endpoint]` | Client | Promote standby CA |
 | `koi certmesh open-enrollment` | Client | Open enrollment window |
 | `koi certmesh close-enrollment` | Client | Close enrollment window |
-| `koi certmesh set-policy` | Client | Set enrollment scope constraints |
 | `koi certmesh rotate-auth` | Client | Rotate enrollment auth credential |
 | `koi certmesh backup <path>` | Client | Create encrypted backup |
 | `koi certmesh restore <path>` | Client | Restore from backup |

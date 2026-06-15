@@ -220,12 +220,11 @@ data: {"event":"removed","service":{"name":"...","type":"..."}}
 
 ### Enrollment management
 
-| Method | Path                            | Description                                                |
-| ------ | ------------------------------- | ---------------------------------------------------------- |
-| POST   | `/v1/certmesh/open-enrollment`  | Open enrollment window (optional `deadline` field)         |
-| POST   | `/v1/certmesh/close-enrollment` | Close enrollment                                           |
-| PUT    | `/v1/certmesh/set-policy`       | Set enrollment policy (`allowed_domain`, `allowed_subnet`) |
-| POST   | `/v1/certmesh/rotate-auth`      | Rotate enrollment auth credential                          |
+| Method | Path                            | Description                        |
+| ------ | ------------------------------- | ---------------------------------- |
+| POST   | `/v1/certmesh/open-enrollment`  | Open enrollment window             |
+| POST   | `/v1/certmesh/close-enrollment` | Close enrollment                   |
+| POST   | `/v1/certmesh/rotate-auth`      | Rotate enrollment auth credential  |
 
 ### Lifecycle
 
@@ -277,7 +276,8 @@ Response:
   "ca_locked": false,
   "ca_fingerprint": "AB:CD:...",
   "auth_method": "totp",
-  "profile": "just_me",
+  "enrollment_open": true,
+  "requires_approval": false,
   "enrollment_state": "open",
   "member_count": 3,
   "members": [

@@ -173,7 +173,7 @@ koi certmesh log
 ```
 
 ```
-2026-02-11T10:00:00Z pond_initialized profile=just_me operator=self hostname=stone-01
+2026-02-11T10:00:00Z pond_initialized enrollment_open=open requires_approval=no operator=none
 2026-02-11T10:05:00Z member_joined hostname=stone-02 fingerprint=b2c3d4e5... role=member
 ```
 
@@ -229,7 +229,6 @@ All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 | `GET`  | `/v1/certmesh/log`              | Audit log                             |
 | `POST` | `/v1/certmesh/open-enrollment`  | Re-open enrollment                    |
 | `POST` | `/v1/certmesh/close-enrollment` | Close enrollment                      |
-| `PUT`  | `/v1/certmesh/set-policy`       | Update trust policy                   |
 | `POST` | `/v1/certmesh/backup`           | Create an encrypted backup bundle     |
 | `POST` | `/v1/certmesh/restore`          | Restore from a backup bundle          |
 | `POST` | `/v1/certmesh/revoke`           | Revoke a member's certificate         |

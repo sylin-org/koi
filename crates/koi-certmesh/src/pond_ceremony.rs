@@ -23,7 +23,7 @@
 //!   - `unlock_totp_code`     - 6-digit code to verify unlock TOTP registration
 //!
 //! **Internal** (underscore prefix, set by rules):
-//!   - `_effective_profile`   – resolved TrustProfile after custom→baseline mapping
+//!   - `_effective_profile`   – preset display label after custom→baseline mapping
 //!   - `_enrollment_open`     – bool (effective enrollment state)
 //!   - `_requires_approval`   – bool (effective approval state)
 //!   - `_auto_unlock`         – bool (auto-unlock CA on boot - derived from _unlock_method)
@@ -39,7 +39,7 @@
 use koi_common::ceremony::{CeremonyRules, EvalResult, Message, Prompt, RenderHints, SelectOption};
 use koi_common::encoding::{hex_decode, hex_encode};
 
-use crate::profiles::TrustProfile;
+use crate::profiles::preset_bools;
 
 // ── Pond rules ──────────────────────────────────────────────────────
 
@@ -200,24 +200,26 @@ fn eval_init(
             .unwrap_or("no")
             == "yes";
 
-        let baseline = match (enroll_open, approval) {
-            (true, false) => TrustProfile::JustMe,
-            (true, true) => TrustProfile::MyTeam,
-            (false, true) => TrustProfile::MyOrganization,
-            (false, false) => TrustProfile::JustMe,
+        // Label the resulting posture with the nearest preset name (display only).
+        let baseline_label = match (enroll_open, approval) {
+            (true, false) => "Just Me",
+            (true, true) => "My Team",
+            (false, true) => "My Organization",
+            (false, false) => "Just Me",
         };
 
         bag.insert(
             "_effective_profile".into(),
-            serde_json::json!(baseline.to_string()),
+            serde_json::json!(baseline_label),
         );
         bag.insert("_enrollment_open".into(), serde_json::json!(enroll_open));
         bag.insert("_requires_approval".into(), serde_json::json!(approval));
         // Custom profiles get auto_unlock from a separate prompt (handled below)
     } else {
-        // Standard profile - validate and resolve defaults
-        let trust = match TrustProfile::from_str_loose(&profile_raw) {
-            Some(t) => t,
+        // Standard preset - resolve to the (enrollment_open, requires_approval,
+        // auto_unlock) booleans. The preset name survives only as a UX label.
+        let (enroll_open, approval, auto_unlock) = match preset_bools(&profile_raw) {
+            Some(bools) => bools,
             None => {
                 bag.remove("profile");
                 return EvalResult::ValidationError {
@@ -231,25 +233,16 @@ fn eval_init(
             }
         };
 
-        let enroll_open = trust != TrustProfile::MyOrganization;
-        let approval = trust.requires_approval();
-        let unlock_method = if trust == TrustProfile::MyOrganization {
-            "passphrase"
-        } else {
-            "auto"
-        };
+        let unlock_method = if auto_unlock { "auto" } else { "passphrase" };
 
         bag.insert(
             "_effective_profile".into(),
-            serde_json::json!(trust.to_string()),
+            serde_json::json!(preset_label(&profile_raw)),
         );
         bag.insert("_enrollment_open".into(), serde_json::json!(enroll_open));
         bag.insert("_requires_approval".into(), serde_json::json!(approval));
         bag.insert("_unlock_method".into(), serde_json::json!(unlock_method));
-        bag.insert(
-            "_auto_unlock".into(),
-            serde_json::json!(unlock_method == "auto"),
-        );
+        bag.insert("_auto_unlock".into(), serde_json::json!(auto_unlock));
     }
 
     // ── 1b. Operator name (when approval is required) ───────────────
@@ -940,6 +933,18 @@ fn eval_unlock(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/// Human-readable display label for a preset name (UX only).
+fn preset_label(profile_raw: &str) -> &'static str {
+    match profile_raw.to_lowercase().as_str() {
+        "my_team" | "my-team" | "myteam" | "team" | "2" => "My Team",
+        "my_organization" | "my-organization" | "myorganization" | "organization" | "org" | "3" => {
+            "My Organization"
+        }
+        // just_me and anything else that resolved as a preset defaults to Just Me
+        _ => "Just Me",
+    }
+}
 
 fn profile_prompt() -> Prompt {
     Prompt::select_one(

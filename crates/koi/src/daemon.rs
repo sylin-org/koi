@@ -236,15 +236,16 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
 
 fn prompt_enrollment_approval(
     hostname: &str,
-    profile: koi_certmesh::profiles::TrustProfile,
+    requires_approval: bool,
 ) -> koi_certmesh::ApprovalDecision {
-    eprintln!("Enrollment approval requested for '{hostname}' (profile: {profile})");
+    eprintln!("Enrollment approval requested for '{hostname}'");
     let approve = read_yes_no("Approve enrollment? [y/N]: ");
     if !approve {
         return koi_certmesh::ApprovalDecision::Denied;
     }
 
-    let operator = if profile.requires_operator() {
+    // When approval is required, an accountable operator name must accompany it.
+    let operator = if requires_approval {
         let operator = read_line("Operator name: ");
         if operator.is_empty() {
             return koi_certmesh::ApprovalDecision::Denied;

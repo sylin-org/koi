@@ -231,7 +231,6 @@ koi certmesh set-hook            # Set reload hook
 koi certmesh promote [endpoint]  # Promote standby CA
 koi certmesh open-enrollment     # Open enrollment window
 koi certmesh close-enrollment    # Close enrollment window
-koi certmesh set-policy          # Set scope constraints
 koi certmesh rotate-auth         # Rotate enrollment auth
 koi certmesh backup <path>       # Create encrypted backup
 koi certmesh restore <path>      # Restore from backup

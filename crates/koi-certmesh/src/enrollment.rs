@@ -12,62 +12,13 @@ use crate::ca::{self, CaState, IssuedCert};
 use crate::certfiles;
 use crate::error::CertmeshError;
 use crate::protocol::{JoinRequest, JoinResponse};
-use crate::roster::{MemberRole, MemberStatus, Roster, RosterMember, RosterMetadata};
-
-/// Validate hostname against scope constraints (domain and subnet).
-///
-/// If `allowed_domain` is set, the hostname must end with that domain suffix
-/// (or match exactly). If `allowed_subnet` is set, the caller IP would be
-/// checked (subnet validation is deferred to the HTTP layer where IP is
-/// available - see `validate_subnet()`).
-pub fn validate_scope(hostname: &str, metadata: &RosterMetadata) -> Result<(), CertmeshError> {
-    if let Some(ref domain) = metadata.allowed_domain {
-        let domain_lower = domain.to_lowercase();
-        let host_lower = hostname.to_lowercase();
-        // Hostname must either match the domain exactly or end with ".domain"
-        if host_lower != domain_lower && !host_lower.ends_with(&format!(".{domain_lower}")) {
-            let reason = format!("hostname '{}' outside domain '{}'", hostname, domain);
-            // The caller (which holds the resolved paths) records the audit entry.
-            return Err(CertmeshError::ScopeViolation(reason));
-        }
-    }
-    Ok(())
-}
-
-/// Validate an IP address against a CIDR subnet constraint.
-///
-/// Returns `Ok(())` if no subnet constraint is set or the IP is within range.
-/// Uses `ipnet::IpNet` for correct CIDR parsing and containment checks.
-pub fn validate_subnet(ip: &str, metadata: &RosterMetadata) -> Result<(), CertmeshError> {
-    if let Some(ref cidr) = metadata.allowed_subnet {
-        let network: ipnet::IpNet = cidr
-            .parse()
-            .map_err(|_| CertmeshError::ScopeViolation(format!("invalid subnet CIDR: {cidr}")))?;
-        let client_ip: std::net::IpAddr = ip
-            .parse()
-            .map_err(|_| CertmeshError::ScopeViolation(format!("invalid IP address: {ip}")))?;
-        if !network.contains(&client_ip) {
-            let reason = format!("IP '{}' outside subnet '{}'", ip, cidr);
-            // The caller (which holds the resolved paths) records the audit entry.
-            return Err(CertmeshError::ScopeViolation(reason));
-        }
-    }
-    Ok(())
-}
-
-/// Parse and validate a CIDR string. Returns the canonical form.
-///
-/// Used at policy-set time so invalid CIDRs are rejected early.
-pub fn parse_cidr(cidr: &str) -> Result<ipnet::IpNet, CertmeshError> {
-    cidr.parse()
-        .map_err(|_| CertmeshError::ScopeViolation(format!("invalid CIDR format: {cidr}")))
-}
+use crate::roster::{MemberRole, MemberStatus, Roster, RosterMember};
 
 /// Process an enrollment request from a joining member.
 ///
-/// 1. Check enrollment is open (including deadline)
+/// 1. Check enrollment is open
 /// 2. Verify auth response (TOTP)
-/// 3. Validate scope constraints
+/// 3. Reject revoked members
 /// 4. Check not already enrolled
 /// 5. Approval (handled by caller)
 /// 6. Issue certificate
@@ -87,7 +38,7 @@ pub fn process_enrollment(
     approved_by: Option<String>,
     paths: &crate::CertmeshPaths,
 ) -> Result<(JoinResponse, IssuedCert), CertmeshError> {
-    // 1. Check enrollment is open (includes deadline auto-close)
+    // 1. Check enrollment is open
     if !roster.is_enrollment_open() {
         return Err(CertmeshError::EnrollmentClosed);
     }
@@ -108,19 +59,7 @@ pub fn process_enrollment(
         }
     }
 
-    // 3. Validate scope constraints
-    if let Err(e) = validate_scope(hostname, &roster.metadata) {
-        if let CertmeshError::ScopeViolation(reason) = &e {
-            let _ = audit::append_entry_to(
-                &paths.audit_log_path(),
-                "scope_violation",
-                &[("hostname", hostname), ("reason", reason)],
-            );
-        }
-        return Err(e);
-    }
-
-    // 3b. Reject revoked members
+    // 3. Reject revoked members
     if roster.is_revoked(hostname) {
         return Err(CertmeshError::Revoked(hostname.to_string()));
     }
@@ -203,9 +142,11 @@ pub fn process_enrollment(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profiles::TrustProfile;
-    use crate::roster::EnrollmentState;
     use koi_crypto::totp;
+
+    // Posture booleans for the named presets (UX labels only).
+    const JUST_ME: (bool, bool) = (true, false);
+    const MY_ORG: (bool, bool) = (false, true);
 
     fn test_paths() -> crate::CertmeshPaths {
         crate::CertmeshPaths::with_data_dir(koi_common::test::ensure_data_dir(
@@ -242,7 +183,7 @@ mod tests {
     #[test]
     fn enrollment_with_invalid_totp_fails() {
         let ca = make_test_ca();
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
         let secret = totp::generate_secret();
         let mut rl = RateLimiter::new();
 
@@ -277,10 +218,10 @@ mod tests {
     #[test]
     fn enrollment_closed_rejects() {
         let ca = make_test_ca();
-        let mut roster = Roster::new(TrustProfile::MyOrganization, Some("Admin".into()));
-        // Explicitly close enrollment so the test doesn't depend on constructor defaults
-        roster.metadata.enrollment_state = EnrollmentState::Closed;
-        assert_eq!(roster.metadata.enrollment_state, EnrollmentState::Closed);
+        let mut roster = Roster::new(MY_ORG.0, MY_ORG.1, Some("Admin".into()));
+        // My Organization starts closed; assert it so the test is explicit.
+        roster.close_enrollment();
+        assert!(!roster.is_enrollment_open());
 
         let secret = totp::generate_secret();
         let mut rl = RateLimiter::new();
@@ -313,7 +254,7 @@ mod tests {
     #[test]
     fn rate_limit_after_failures() {
         let ca = make_test_ca();
-        let mut roster = Roster::new(TrustProfile::JustMe, None);
+        let mut roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
         let secret = totp::generate_secret();
         let mut rl = RateLimiter::new();
 
@@ -357,230 +298,5 @@ mod tests {
         );
 
         assert!(matches!(result, Err(CertmeshError::RateLimited { .. })));
-    }
-
-    // ── Scope validation tests ──────────────────────────────────────
-
-    #[test]
-    fn validate_scope_no_constraints_allows_any() {
-        let metadata = RosterMetadata {
-            created_at: chrono::Utc::now(),
-            trust_profile: TrustProfile::JustMe,
-            operator: None,
-            requires_approval: Some(false),
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: None,
-            allowed_subnet: None,
-        };
-        assert!(validate_scope("anything.example.com", &metadata).is_ok());
-    }
-
-    #[test]
-    fn validate_scope_domain_exact_match() {
-        let metadata = RosterMetadata {
-            created_at: chrono::Utc::now(),
-            trust_profile: TrustProfile::MyTeam,
-            operator: None,
-            requires_approval: Some(false),
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: Some("lab.local".to_string()),
-            allowed_subnet: None,
-        };
-        assert!(validate_scope("lab.local", &metadata).is_ok());
-    }
-
-    #[test]
-    fn validate_scope_domain_suffix_match() {
-        let metadata = RosterMetadata {
-            created_at: chrono::Utc::now(),
-            trust_profile: TrustProfile::MyTeam,
-            operator: None,
-            requires_approval: Some(false),
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: Some("lab.local".to_string()),
-            allowed_subnet: None,
-        };
-        assert!(validate_scope("host-01.lab.local", &metadata).is_ok());
-        assert!(validate_scope("deep.nest.lab.local", &metadata).is_ok());
-    }
-
-    #[test]
-    fn validate_scope_domain_case_insensitive() {
-        let metadata = RosterMetadata {
-            created_at: chrono::Utc::now(),
-            trust_profile: TrustProfile::MyTeam,
-            operator: None,
-            requires_approval: Some(false),
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: Some("Lab.Local".to_string()),
-            allowed_subnet: None,
-        };
-        assert!(validate_scope("HOST.lab.local", &metadata).is_ok());
-    }
-
-    #[test]
-    fn validate_scope_domain_rejects_outside() {
-        let metadata = RosterMetadata {
-            created_at: chrono::Utc::now(),
-            trust_profile: TrustProfile::MyOrganization,
-            operator: None,
-            requires_approval: Some(false),
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: Some("school.local".to_string()),
-            allowed_subnet: None,
-        };
-        let result = validate_scope("attacker.evil.com", &metadata);
-        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
-    }
-
-    #[test]
-    fn validate_scope_domain_rejects_partial_suffix() {
-        // "notschool.local" should NOT match "school.local"
-        let metadata = RosterMetadata {
-            created_at: chrono::Utc::now(),
-            trust_profile: TrustProfile::MyOrganization,
-            operator: None,
-            requires_approval: Some(false),
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: Some("school.local".to_string()),
-            allowed_subnet: None,
-        };
-        let result = validate_scope("notschool.local", &metadata);
-        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
-    }
-
-    #[test]
-    fn validate_subnet_allows_in_range() {
-        let metadata = RosterMetadata {
-            created_at: chrono::Utc::now(),
-            trust_profile: TrustProfile::JustMe,
-            operator: None,
-            requires_approval: Some(false),
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: None,
-            allowed_subnet: Some("192.168.1.0/24".to_string()),
-        };
-        assert!(validate_subnet("192.168.1.42", &metadata).is_ok());
-        assert!(validate_subnet("192.168.1.255", &metadata).is_ok());
-    }
-
-    #[test]
-    fn validate_subnet_rejects_outside() {
-        let metadata = RosterMetadata {
-            created_at: chrono::Utc::now(),
-            trust_profile: TrustProfile::JustMe,
-            operator: None,
-            requires_approval: Some(false),
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: None,
-            allowed_subnet: Some("192.168.1.0/24".to_string()),
-        };
-        let result = validate_subnet("10.0.0.1", &metadata);
-        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
-    }
-
-    #[test]
-    fn validate_subnet_no_constraint_allows_any() {
-        let metadata = RosterMetadata {
-            created_at: chrono::Utc::now(),
-            trust_profile: TrustProfile::JustMe,
-            operator: None,
-            requires_approval: Some(false),
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: None,
-            allowed_subnet: None,
-        };
-        assert!(validate_subnet("10.0.0.1", &metadata).is_ok());
-    }
-
-    #[test]
-    fn validate_subnet_rejects_invalid_cidr() {
-        let metadata = RosterMetadata {
-            created_at: chrono::Utc::now(),
-            trust_profile: TrustProfile::JustMe,
-            operator: None,
-            requires_approval: Some(false),
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: None,
-            allowed_subnet: Some("not-a-cidr".to_string()),
-        };
-        // ipnet rejects malformed CIDR strings
-        let result = validate_subnet("10.0.0.1", &metadata);
-        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
-    }
-
-    #[test]
-    fn validate_subnet_ipv6() {
-        let metadata = RosterMetadata {
-            created_at: chrono::Utc::now(),
-            trust_profile: TrustProfile::JustMe,
-            operator: None,
-            requires_approval: Some(false),
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: None,
-            allowed_subnet: Some("fd00::/16".to_string()),
-        };
-        assert!(validate_subnet("fd00::1", &metadata).is_ok());
-        let result = validate_subnet("fe80::1", &metadata);
-        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
-    }
-
-    #[test]
-    fn validate_subnet_prefix_32_exact_match() {
-        let metadata = RosterMetadata {
-            created_at: chrono::Utc::now(),
-            trust_profile: TrustProfile::JustMe,
-            operator: None,
-            requires_approval: Some(false),
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: None,
-            allowed_subnet: Some("10.0.0.1/32".to_string()),
-        };
-        assert!(validate_subnet("10.0.0.1", &metadata).is_ok());
-        let result = validate_subnet("10.0.0.2", &metadata);
-        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
-    }
-
-    #[test]
-    fn validate_subnet_mixed_versions_rejects() {
-        let metadata = RosterMetadata {
-            created_at: chrono::Utc::now(),
-            trust_profile: TrustProfile::JustMe,
-            operator: None,
-            requires_approval: Some(false),
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: None,
-            allowed_subnet: Some("10.0.0.0/8".to_string()),
-        };
-        // IPv6 address should not match IPv4 CIDR
-        let result = validate_subnet("fd00::1", &metadata);
-        assert!(matches!(result, Err(CertmeshError::ScopeViolation(_))));
-    }
-
-    #[test]
-    fn parse_cidr_valid() {
-        assert!(parse_cidr("192.168.1.0/24").is_ok());
-        assert!(parse_cidr("fd00::/16").is_ok());
-        assert!(parse_cidr("10.0.0.0/8").is_ok());
-    }
-
-    #[test]
-    fn parse_cidr_invalid() {
-        assert!(parse_cidr("not-a-cidr").is_err());
-        assert!(parse_cidr("300.0.0.0/24").is_err());
-        assert!(parse_cidr("10.0.0.0/99").is_err());
     }
 }

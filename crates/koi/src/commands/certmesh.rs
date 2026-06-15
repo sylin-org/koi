@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use koi_certmesh::entropy;
-use koi_certmesh::profiles::TrustProfile;
+use koi_certmesh::profiles::preset_bools;
 use koi_common::encoding::{hex_decode, hex_encode};
 use koi_mdns::events::MdnsEvent;
 
@@ -119,27 +119,34 @@ pub fn create(
 
     // ── Fully non-interactive JSON mode ────────────────────────────
     if json {
-        let trust_profile = profile
-            .and_then(TrustProfile::from_str_loose)
-            .ok_or_else(|| anyhow::anyhow!("--profile is required with --json"))?;
+        let preset_name =
+            profile.ok_or_else(|| anyhow::anyhow!("--profile is required with --json"))?;
+        // Resolve the named preset to its (enrollment_open, requires_approval,
+        // auto_unlock) tuple. CLI flags override the preset defaults.
+        let (preset_open, preset_approval, preset_auto_unlock) = preset_bools(preset_name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Unknown --profile '{preset_name}'. \
+                     Choose just-me, team, or organization."
+                )
+            })?;
         let ca_passphrase = passphrase
             .map(ToString::to_string)
             .ok_or_else(|| anyhow::anyhow!("--passphrase is required with --json"))?;
-        validate_operator(
-            require_approval.unwrap_or_else(|| trust_profile.requires_approval()),
-            operator,
-        )?;
+
+        let requires_approval = require_approval.unwrap_or(preset_approval);
+        let enrollment_open = parse_enrollment_open(enrollment)?.unwrap_or(preset_open);
+        validate_operator(requires_approval, operator)?;
         let entropy_seed =
             entropy::collect_entropy(entropy::EntropyMode::Manual(ca_passphrase.clone()))?;
 
-        let enrollment_open = parse_enrollment_open(enrollment)?;
         let body = serde_json::json!({
             "passphrase": ca_passphrase,
             "entropy_hex": hex_encode(&entropy_seed),
-            "profile": trust_profile,
             "operator": operator,
             "enrollment_open": enrollment_open,
-            "requires_approval": require_approval,
+            "requires_approval": requires_approval,
+            "auto_unlock": preset_auto_unlock,
         });
         let resp = client.post_json("/v1/certmesh/create", &body)?;
         let ca_fingerprint = resp
@@ -150,7 +157,9 @@ pub fn create(
             "{}",
             serde_json::json!({
                 "created": true,
-                "profile": trust_profile.to_string(),
+                "profile": preset_label(preset_name),
+                "enrollment_open": enrollment_open,
+                "requires_approval": requires_approval,
                 "ca_fingerprint": ca_fingerprint,
             })
         );
@@ -200,19 +209,23 @@ pub fn create(
     let result_bag = super::ceremony_cli::run_ceremony(&host, "init", initial_data)?;
 
     // ── Map ceremony result → certmesh create API body ─────────────
+    //
+    // The ceremony already resolved the chosen preset (or custom answers) to
+    // the three booleans. We forward those verbatim — the preset name survives
+    // only as the display label `_effective_profile`.
     let effective_profile = result_bag
         .get("_effective_profile")
         .and_then(|v| v.as_str())
-        .and_then(TrustProfile::from_str_loose)
-        .unwrap_or(TrustProfile::JustMe);
+        .unwrap_or("Just Me")
+        .to_string();
 
     let body = serde_json::json!({
         "passphrase": result_bag.get("passphrase").and_then(|v| v.as_str()).unwrap_or(""),
         "entropy_hex": result_bag.get("_entropy_seed").and_then(|v| v.as_str()).unwrap_or(""),
-        "profile": effective_profile,
         "operator": result_bag.get("operator").and_then(|v| v.as_str()),
-        "enrollment_open": result_bag.get("_enrollment_open").and_then(|v| v.as_bool()),
-        "requires_approval": result_bag.get("_requires_approval").and_then(|v| v.as_bool()),
+        "enrollment_open": result_bag.get("_enrollment_open").and_then(|v| v.as_bool()).unwrap_or(true),
+        "requires_approval": result_bag.get("_requires_approval").and_then(|v| v.as_bool()).unwrap_or(false),
+        "auto_unlock": result_bag.get("_auto_unlock").and_then(|v| v.as_bool()).unwrap_or(false),
         "totp_secret_hex": result_bag.get("_totp_secret_hex").and_then(|v| v.as_str()),
     });
 
@@ -419,10 +432,10 @@ fn preflight_ca_exists(client: &KoiClient) -> anyhow::Result<bool> {
         return Ok(false);
     }
 
-    let profile = status
-        .get("profile")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
+    let enrollment_open = status
+        .get("enrollment_open")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let fingerprint = status
         .get("ca_fingerprint")
         .and_then(|v| v.as_str())
@@ -438,7 +451,10 @@ fn preflight_ca_exists(client: &KoiClient) -> anyhow::Result<bool> {
         color::yellow("⚠")
     );
     println!();
-    println!("     Profile:        {profile}");
+    println!(
+        "     Enrollment:     {}",
+        if enrollment_open { "open" } else { "closed" }
+    );
     println!("     CA fingerprint: {fingerprint}");
     println!("     Members:        {member_count} active");
     println!();
@@ -447,6 +463,17 @@ fn preflight_ca_exists(client: &KoiClient) -> anyhow::Result<bool> {
     println!();
     println!("  No changes made.");
     Ok(true)
+}
+
+/// Human-readable display label for a preset name (UX only).
+fn preset_label(preset_name: &str) -> &'static str {
+    match preset_name.to_lowercase().as_str() {
+        "my_team" | "my-team" | "myteam" | "team" | "2" => "My Team",
+        "my_organization" | "my-organization" | "myorganization" | "organization" | "org" | "3" => {
+            "My Organization"
+        }
+        _ => "Just Me",
+    }
 }
 
 fn parse_enrollment_open(enrollment: Option<&str>) -> anyhow::Result<Option<bool>> {
@@ -525,9 +552,16 @@ pub fn status(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
             match serde_json::from_value::<koi_certmesh::protocol::CertmeshStatus>(resp.clone()) {
                 Ok(s) => {
                     println!("Certificate mesh: active");
-                    println!("  Profile:    {}", s.profile);
                     println!("  CA locked:  {}", s.ca_locked);
-                    println!("  Enrollment: {:?}", s.enrollment_state);
+                    println!(
+                        "  Enrollment: {} ({})",
+                        if s.enrollment_open { "open" } else { "closed" },
+                        if s.requires_approval {
+                            "approval required"
+                        } else {
+                            "no approval"
+                        }
+                    );
                     println!("  Members:    {}", s.member_count);
                     for m in &s.members {
                         println!("    {} ({}) - {}", m.hostname, m.role, m.status);
@@ -756,18 +790,9 @@ pub async fn promote(
 
 // ── Open Enrollment ─────────────────────────────────────────────────
 
-pub fn open_enrollment(
-    until: Option<&str>,
-    json: bool,
-    endpoint: Option<&str>,
-) -> anyhow::Result<()> {
+pub fn open_enrollment(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
     let client = require_daemon(endpoint)?;
-    let deadline = until.map(parse_deadline).transpose()?;
-
-    let body = serde_json::json!({
-        "deadline": deadline.map(|d| d.to_rfc3339()),
-    });
-    let resp = client.post_json("/v1/certmesh/open-enrollment", &body)?;
+    let resp = client.post_json("/v1/certmesh/open-enrollment", &serde_json::json!({}))?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -777,9 +802,6 @@ pub fn open_enrollment(
             .and_then(|v| v.as_str())
             .unwrap_or("open");
         println!("Enrollment: {state}");
-        if let Some(d) = resp.get("deadline").and_then(|v| v.as_str()) {
-            println!("Deadline:   {d}");
-        }
     }
     Ok(())
 }
@@ -796,58 +818,6 @@ pub fn close_enrollment(json: bool, endpoint: Option<&str>) -> anyhow::Result<()
         println!("Enrollment: closed");
     }
     Ok(())
-}
-
-// ── Set Policy ──────────────────────────────────────────────────────
-
-pub fn set_policy(
-    domain: Option<&str>,
-    subnet: Option<&str>,
-    clear: bool,
-    json: bool,
-    endpoint: Option<&str>,
-) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint)?;
-    let allowed_domain = if clear {
-        None
-    } else {
-        domain.map(String::from)
-    };
-    let allowed_subnet = if clear {
-        None
-    } else {
-        subnet.map(String::from)
-    };
-
-    let body = serde_json::json!({
-        "allowed_domain": allowed_domain,
-        "allowed_subnet": allowed_subnet,
-    });
-    let resp = client.put_json("/v1/certmesh/set-policy", &body)?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&resp)?);
-    } else {
-        print_policy_result(&allowed_domain, &allowed_subnet, clear);
-    }
-    Ok(())
-}
-
-fn print_policy_result(domain: &Option<String>, subnet: &Option<String>, clear: bool) {
-    if clear {
-        println!("Enrollment policy: all constraints cleared");
-    } else {
-        println!("Enrollment policy updated:");
-        if let Some(d) = domain {
-            println!("  Domain:  {d}");
-        }
-        if let Some(s) = subnet {
-            println!("  Subnet:  {s}");
-        }
-        if domain.is_none() && subnet.is_none() {
-            println!("  (no constraints)");
-        }
-    }
 }
 
 // ── Rotate Auth ─────────────────────────────────────────────────────
@@ -1088,46 +1058,6 @@ fn confirm_action(message: &str, token: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ── Deadline Parsing ────────────────────────────────────────────────
-
-/// Parse a deadline string - supports RFC 3339 timestamps or durations.
-///
-/// Duration formats: "30m", "2h", "1d", "12h30m"
-fn parse_deadline(s: &str) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
-    // Try RFC 3339 first
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
-        return Ok(dt.with_timezone(&chrono::Utc));
-    }
-
-    // Try duration format
-    let mut total_secs: u64 = 0;
-    let mut num_buf = String::new();
-    for ch in s.chars() {
-        if ch.is_ascii_digit() {
-            num_buf.push(ch);
-        } else {
-            let n: u64 = num_buf
-                .parse()
-                .map_err(|_| anyhow::anyhow!("invalid deadline format: {s}"))?;
-            num_buf.clear();
-            match ch {
-                'm' => total_secs += n * 60,
-                'h' => total_secs += n * 3600,
-                'd' => total_secs += n * 86400,
-                _ => anyhow::bail!("invalid deadline unit '{ch}' in: {s}"),
-            }
-        }
-    }
-    if total_secs == 0 {
-        anyhow::bail!(
-            "invalid deadline format: {s}\n\
-             Expected RFC 3339 (e.g. 2026-02-12T00:00:00Z) or duration (e.g. 2h, 1d, 30m)"
-        );
-    }
-
-    Ok(chrono::Utc::now() + chrono::Duration::seconds(total_secs as i64))
-}
-
 /// Discover a certmesh CA on the local network via mDNS.
 ///
 /// Browses for `_certmesh._tcp` services for 5 seconds, collects
@@ -1191,62 +1121,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_deadline_rfc3339() {
-        let result = parse_deadline("2026-03-01T00:00:00Z");
-        assert!(result.is_ok());
-        let dt = result.unwrap();
-        assert_eq!(dt.year(), 2026);
-        assert_eq!(dt.month(), 3);
-    }
-
-    #[test]
-    fn parse_deadline_duration_hours() {
-        let before = chrono::Utc::now();
-        let result = parse_deadline("2h").unwrap();
-        let expected_min = before + chrono::Duration::hours(2);
-        assert!(result >= expected_min - chrono::Duration::seconds(1));
-    }
-
-    #[test]
-    fn parse_deadline_duration_days() {
-        let before = chrono::Utc::now();
-        let result = parse_deadline("1d").unwrap();
-        let expected_min = before + chrono::Duration::days(1);
-        assert!(result >= expected_min - chrono::Duration::seconds(1));
-    }
-
-    #[test]
-    fn parse_deadline_duration_minutes() {
-        let before = chrono::Utc::now();
-        let result = parse_deadline("30m").unwrap();
-        let expected_min = before + chrono::Duration::minutes(30);
-        assert!(result >= expected_min - chrono::Duration::seconds(1));
-    }
-
-    #[test]
-    fn parse_deadline_combined_duration() {
-        let before = chrono::Utc::now();
-        let result = parse_deadline("1h30m").unwrap();
-        let expected_min = before + chrono::Duration::minutes(90);
-        assert!(result >= expected_min - chrono::Duration::seconds(1));
-    }
-
-    #[test]
-    fn parse_deadline_invalid_format() {
-        let result = parse_deadline("invalid");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn parse_deadline_invalid_unit() {
-        let result = parse_deadline("5x");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn parse_deadline_empty_fails() {
-        let result = parse_deadline("");
-        assert!(result.is_err());
+    fn preset_labels_match_names() {
+        assert_eq!(preset_label("just_me"), "Just Me");
+        assert_eq!(preset_label("team"), "My Team");
+        assert_eq!(preset_label("org"), "My Organization");
+        assert_eq!(preset_label("unknown"), "Just Me");
     }
 
     #[test]
@@ -1298,6 +1177,4 @@ mod tests {
         // We just verify it doesn't panic.
         let _ = result;
     }
-
-    use chrono::Datelike;
 }

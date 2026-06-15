@@ -476,7 +476,7 @@ fn curated_examples(category: KoiCategory) -> &'static [Example] {
                 description: "Create an encrypted backup",
             },
             Example {
-                command: "koi certmesh open-enrollment --until 2h",
+                command: "koi certmesh open-enrollment",
                 description: "Let new members join",
             },
         ],
@@ -1191,25 +1191,18 @@ This is the key operation for high-availability certmesh deployments.",
         name: "certmesh open-enrollment",
         summary: "Open the enrollment window",
         long_description: "\
-Opens a time-limited window during which new nodes can join the mesh.
-The window closes automatically after the specified duration or when
-explicitly closed with 'certmesh close-enrollment'.
+Opens the window during which new nodes can join the mesh. The window
+stays open until explicitly closed with 'certmesh close-enrollment'.
 
 This is a security gate: enrollment should only be open when you are
 actively adding nodes to the mesh.",
         category: KoiCategory::Trust,
         tags: &[KoiTag::Mutating],
         scope: KoiScope::Admin,
-        examples: &[
-            Example {
-                command: "koi certmesh open-enrollment --until 2h",
-                description: "Open enrollment for 2 hours",
-            },
-            Example {
-                command: "koi certmesh open-enrollment --until 15m",
-                description: "15-minute window",
-            },
-        ],
+        examples: &[Example {
+            command: "koi certmesh open-enrollment",
+            description: "Open enrollment",
+        }],
         see_also: &["certmesh close-enrollment", "certmesh join"],
         api: &[ApiEndpoint {
             method: "POST",
@@ -1234,36 +1227,6 @@ until enrollment is re-opened. Existing members are unaffected.",
         api: &[ApiEndpoint {
             method: "POST",
             path: koi_certmesh::http::paths::CLOSE_ENROLLMENT,
-        }],
-        confirmation: None,
-    })
-    .add(CommandDef {
-        name: "certmesh set-policy",
-        summary: "Set enrollment scope constraints",
-        long_description: "\
-Restricts which nodes can enroll based on domain name, IP range, or
-other criteria. Policies are checked at enrollment time - existing
-members are not retroactively affected.
-
-Use --domain to restrict enrollment to a specific domain suffix.
-Use --cidr to restrict by IP range.",
-        category: KoiCategory::Trust,
-        tags: &[KoiTag::Mutating],
-        scope: KoiScope::Admin,
-        examples: &[
-            Example {
-                command: "koi certmesh set-policy --domain lab.local",
-                description: "Restrict enrollment to a domain",
-            },
-            Example {
-                command: "koi certmesh set-policy --cidr 10.0.0.0/24",
-                description: "Restrict by network",
-            },
-        ],
-        see_also: &["certmesh open-enrollment"],
-        api: &[ApiEndpoint {
-            method: "PUT",
-            path: koi_certmesh::http::paths::SET_POLICY,
         }],
         confirmation: None,
     })

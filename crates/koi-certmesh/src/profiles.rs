@@ -1,78 +1,37 @@
-//! Trust profile definitions.
+//! Trust-profile presets.
 //!
-//! Three profiles drive security defaults for the entire mesh lifecycle.
-//! Selected once at `koi certmesh create` time and stored in roster metadata.
+//! The mesh's security posture is two real booleans — `enrollment_open`
+//! and `requires_approval` — stored in the roster. The named presets
+//! ("Just Me" / "My Team" / "My Organization") survive only as **UX labels**
+//! in the ceremony and the CLI: each maps to a `(enrollment_open,
+//! requires_approval, auto_unlock)` tuple. There is no `TrustProfile` enum
+//! and nothing about presets is persisted — only the booleans are.
+//!
+//! `auto_unlock` is a creation-time decision (whether to save the passphrase
+//! to the koi-crypto vault so the daemon boots unlocked). It is **not** stored
+//! in the roster; it is threaded from create-time into the vault writer.
 
-use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+/// Resolved preset booleans: `(enrollment_open, requires_approval, auto_unlock)`.
+pub type PresetBools = (bool, bool, bool);
 
-/// Trust profile - drives security posture for the mesh.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum TrustProfile {
-    /// Personal homelab. No approval required, enrollment always open.
-    #[default]
-    JustMe,
-    /// Small office/lab. Approval required, operator tracked.
-    MyTeam,
-    /// Institution. Strict controls, enrollment closed by default.
-    MyOrganization,
-}
-
-impl TrustProfile {
-    /// Whether enrollment requires two-party approval at the CA.
-    pub fn requires_approval(&self) -> bool {
-        matches!(self, Self::MyTeam | Self::MyOrganization)
-    }
-
-    /// Whether operator name is required and logged.
-    pub fn requires_operator(&self) -> bool {
-        matches!(self, Self::MyTeam | Self::MyOrganization)
-    }
-
-    /// Whether enrollment is open by default after CA creation.
-    pub fn enrollment_default_open(&self) -> bool {
-        matches!(self, Self::JustMe | Self::MyTeam)
-    }
-
-    /// Default certificate lifetime in days (30 for all profiles).
-    pub fn cert_lifetime_days(&self) -> u32 {
-        30
-    }
-
-    /// Whether this profile auto-unlocks the CA on boot.
-    ///
-    /// JustMe and MyTeam profiles save the passphrase locally so the
-    /// pond unlocks automatically after a reboot.  MyOrganization
-    /// requires a manual unlock (passphrase / TOTP).
-    pub fn should_auto_unlock(&self) -> bool {
-        matches!(self, Self::JustMe | Self::MyTeam)
-    }
-
-    /// Parse from CLI string input.
-    pub fn from_str_loose(s: &str) -> Option<Self> {
-        // Try serde snake_case first (just_me, my_team, my_organization)
-        if let Ok(p) = serde_json::from_value(serde_json::Value::String(s.to_string())) {
-            return Some(p);
+/// Resolve a preset name to its `(enrollment_open, requires_approval, auto_unlock)`
+/// tuple. Accepts the canonical snake_case keys plus common CLI aliases.
+///
+/// | Preset            | enrollment_open | requires_approval | auto_unlock |
+/// |-------------------|-----------------|-------------------|-------------|
+/// | Just Me           | true            | false             | true        |
+/// | My Team           | true            | true              | true        |
+/// | My Organization   | false           | true              | false       |
+///
+/// Returns `None` for an unknown name (caller decides how to reprompt).
+pub fn preset_bools(name: &str) -> Option<PresetBools> {
+    match name.to_lowercase().as_str() {
+        "just_me" | "just-me" | "justme" | "personal" | "1" => Some((true, false, true)),
+        "my_team" | "my-team" | "myteam" | "team" | "2" => Some((true, true, true)),
+        "my_organization" | "my-organization" | "myorganization" | "organization" | "org" | "3" => {
+            Some((false, true, false))
         }
-        match s.to_lowercase().as_str() {
-            "just-me" | "justme" | "personal" | "1" => Some(Self::JustMe),
-            "team" | "my-team" | "myteam" | "2" => Some(Self::MyTeam),
-            "organization" | "org" | "my-organization" | "myorganization" | "3" => {
-                Some(Self::MyOrganization)
-            }
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Display for TrustProfile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::JustMe => write!(f, "Just Me"),
-            Self::MyTeam => write!(f, "My Team"),
-            Self::MyOrganization => write!(f, "My Organization"),
-        }
+        _ => None,
     }
 }
 
@@ -81,85 +40,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn just_me_no_approval() {
-        let p = TrustProfile::JustMe;
-        assert!(!p.requires_approval());
-        assert!(!p.requires_operator());
-        assert!(p.enrollment_default_open());
-        assert_eq!(p.cert_lifetime_days(), 30);
+    fn preset_tuples_match_the_diet_table() {
+        // Just Me: open, no approval, auto-unlock
+        assert_eq!(preset_bools("just_me"), Some((true, false, true)));
+        // My Team: open, approval, auto-unlock
+        assert_eq!(preset_bools("my_team"), Some((true, true, true)));
+        // My Organization: closed, approval, manual unlock
+        assert_eq!(preset_bools("my_organization"), Some((false, true, false)));
     }
 
     #[test]
-    fn my_team_requires_approval() {
-        let p = TrustProfile::MyTeam;
-        assert!(p.requires_approval());
-        assert!(p.requires_operator());
-        assert!(p.enrollment_default_open());
+    fn preset_aliases_resolve() {
+        assert_eq!(preset_bools("just-me"), Some((true, false, true)));
+        assert_eq!(preset_bools("team"), Some((true, true, true)));
+        assert_eq!(preset_bools("org"), Some((false, true, false)));
+        assert_eq!(preset_bools("1"), Some((true, false, true)));
+        assert_eq!(preset_bools("3"), Some((false, true, false)));
     }
 
     #[test]
-    fn my_organization_strict() {
-        let p = TrustProfile::MyOrganization;
-        assert!(p.requires_approval());
-        assert!(p.requires_operator());
-        assert!(!p.enrollment_default_open());
-    }
-
-    #[test]
-    fn auto_unlock_policy() {
-        assert!(TrustProfile::JustMe.should_auto_unlock());
-        assert!(TrustProfile::MyTeam.should_auto_unlock());
-        assert!(!TrustProfile::MyOrganization.should_auto_unlock());
-    }
-
-    #[test]
-    fn profile_serde_round_trip() {
-        let profiles = vec![
-            TrustProfile::JustMe,
-            TrustProfile::MyTeam,
-            TrustProfile::MyOrganization,
-        ];
-        for p in profiles {
-            let json = serde_json::to_string(&p).unwrap();
-            let deserialized: TrustProfile = serde_json::from_str(&json).unwrap();
-            assert_eq!(p, deserialized);
-        }
-    }
-
-    #[test]
-    fn profile_serializes_to_snake_case() {
-        assert_eq!(
-            serde_json::to_value(TrustProfile::JustMe).unwrap(),
-            "just_me"
-        );
-        assert_eq!(
-            serde_json::to_value(TrustProfile::MyTeam).unwrap(),
-            "my_team"
-        );
-        assert_eq!(
-            serde_json::to_value(TrustProfile::MyOrganization).unwrap(),
-            "my_organization"
-        );
-    }
-
-    #[test]
-    fn parse_from_string() {
-        assert_eq!(
-            TrustProfile::from_str_loose("just-me"),
-            Some(TrustProfile::JustMe)
-        );
-        assert_eq!(
-            TrustProfile::from_str_loose("team"),
-            Some(TrustProfile::MyTeam)
-        );
-        assert_eq!(
-            TrustProfile::from_str_loose("org"),
-            Some(TrustProfile::MyOrganization)
-        );
-        assert_eq!(
-            TrustProfile::from_str_loose("1"),
-            Some(TrustProfile::JustMe)
-        );
-        assert_eq!(TrustProfile::from_str_loose("invalid"), None);
+    fn unknown_preset_is_none() {
+        assert_eq!(preset_bools("invalid"), None);
+        assert_eq!(preset_bools(""), None);
     }
 }

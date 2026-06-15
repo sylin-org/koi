@@ -17,8 +17,8 @@ use koi_common::encoding::{hex_decode, hex_encode};
 
 use crate::protocol::{
     AuditLogResponse, BackupRequest, BackupResponse, CertmeshStatus, CreateCaRequest,
-    CreateCaResponse, DestroyResponse, HealthRequest, HealthResponse, JoinRequest, JoinResponse,
-    PolicyRequest, PolicySummary, PromoteRequest, PromoteResponse, RenewRequest, RenewResponse,
+    CreateCaResponse, DestroyResponse, EnrollmentSummary, HealthRequest, HealthResponse,
+    JoinRequest, JoinResponse, PromoteRequest, PromoteResponse, RenewRequest, RenewResponse,
     RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse, RotateAuthRequest,
     RotateAuthResponse, SetHookRequest, SetHookResponse, UnlockRequest, UnlockResponse,
 };
@@ -52,7 +52,6 @@ pub mod paths {
     pub const REVOKE: &str = "/v1/certmesh/revoke";
     pub const OPEN_ENROLLMENT: &str = "/v1/certmesh/open-enrollment";
     pub const CLOSE_ENROLLMENT: &str = "/v1/certmesh/close-enrollment";
-    pub const SET_POLICY: &str = "/v1/certmesh/set-policy";
 
     /// Strip the crate nest prefix to get the relative path for axum routing.
     pub fn rel(full: &str) -> &str {
@@ -80,10 +79,9 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::BACKUP), post(backup_handler))
         .route(rel(paths::RESTORE), post(restore_handler))
         .route(rel(paths::REVOKE), post(revoke_handler))
-        // Phase 4 - Enrollment Policy
+        // Enrollment toggle
         .route(rel(paths::OPEN_ENROLLMENT), post(open_enrollment_handler))
         .route(rel(paths::CLOSE_ENROLLMENT), post(close_enrollment_handler))
-        .route(rel(paths::SET_POLICY), put(set_policy_handler))
         .layer(Extension(state))
 }
 
@@ -137,10 +135,9 @@ async fn join_handler(
 async fn status_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
     let ca_guard = state.ca.lock().await;
     let roster = state.roster.lock().await;
-    let profile = state.profile.lock().await;
     let auth_guard = state.auth.lock().await;
     let auth_method = auth_guard.as_ref().map(|a| a.method_name());
-    let status = crate::build_status(&state.paths, &ca_guard, &roster, &profile, auth_method);
+    let status = crate::build_status(&state.paths, &ca_guard, &roster, auth_method);
     Json(status)
 }
 
@@ -339,12 +336,12 @@ async fn create_handler(
 
     let totp_uri = koi_crypto::totp::build_totp_uri(&totp_secret, "Koi Certmesh", "enrollment");
 
-    // Create roster
-    let mut new_roster = crate::roster::Roster::new_with_policy(
-        request.profile,
-        request.operator.clone(),
+    // Create roster from the two posture booleans (the named preset, if any,
+    // was already resolved to these by the ceremony/CLI).
+    let mut new_roster = crate::roster::Roster::new(
         request.enrollment_open,
         request.requires_approval,
+        request.operator.clone(),
     );
     let roster_path = state.paths.roster_path();
     {
@@ -445,22 +442,53 @@ async fn create_handler(
         tracing::warn!(error = %e, "Could not install CA cert in trust store");
     }
 
+    // Configure auto-unlock from the create-time decision (single source of
+    // truth: CertmeshCore::configure_auto_unlock). When `auto_unlock` is true,
+    // the passphrase is saved to the koi-crypto vault so the daemon boots
+    // unlocked; the slot table is marked. This is what keeps the boot-unlocked
+    // path (koi-compose init_certmesh_core) working.
+    {
+        let core = CertmeshCore::from_state(Arc::clone(&state));
+        if let Err(e) = core.configure_auto_unlock(request.auto_unlock, &request.passphrase) {
+            tracing::warn!(error = %e, "Could not configure auto-unlock");
+        }
+    }
+
     // Update in-memory state
     *state.ca.lock().await = Some(ca_state);
     *state.auth.lock().await = Some(koi_crypto::auth::AuthState::Totp(totp_secret));
     *state.roster.lock().await = new_roster;
-    *state.profile.lock().await = request.profile;
 
     let _ = crate::audit::append_entry_to(
         &state.paths.audit_log_path(),
         "pond_initialized",
         &[
-            ("profile", &request.profile.to_string()),
+            (
+                "enrollment_open",
+                if request.enrollment_open {
+                    "open"
+                } else {
+                    "closed"
+                },
+            ),
+            (
+                "requires_approval",
+                if request.requires_approval {
+                    "yes"
+                } else {
+                    "no"
+                },
+            ),
             ("operator", request.operator.as_deref().unwrap_or("none")),
         ],
     );
 
-    tracing::info!(profile = %request.profile, "CA initialized via service");
+    tracing::info!(
+        enrollment_open = request.enrollment_open,
+        requires_approval = request.requires_approval,
+        auto_unlock = request.auto_unlock,
+        "CA initialized via service"
+    );
 
     let response = CreateCaResponse {
         auth_setup: koi_crypto::auth::AuthSetup::Totp { totp_uri },
@@ -716,24 +744,15 @@ async fn revoke_handler(
     }
 }
 
-// ── Phase 4 handlers ────────────────────────────────────────────────
+// ── Enrollment toggle handlers ──────────────────────────────────────
 
-/// POST /enrollment/open - Open the enrollment window.
-#[utoipa::path(post, path = "/open-enrollment", tag = "certmesh",
-    summary = "Open enrollment window",
-    responses((status = 200, body = PolicySummary)))]
-async fn open_enrollment_handler(
-    Extension(state): Extension<Arc<CertmeshState>>,
-    body: Option<Json<serde_json::Value>>,
-) -> impl IntoResponse {
-    let deadline = body
-        .and_then(|Json(v)| v.get("deadline")?.as_str().map(String::from))
-        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
-        .map(|dt| dt.with_timezone(&chrono::Utc));
-
-    let mut roster = state.roster.lock().await;
-    roster.open_enrollment(deadline);
-
+/// Persist the roster and return an [`EnrollmentSummary`] (shared by the
+/// open/close toggles).
+async fn save_and_summarize_enrollment(
+    state: &Arc<CertmeshState>,
+    open: bool,
+) -> axum::response::Response {
+    let roster = state.roster.lock().await;
     let roster_clone = roster.clone();
     let roster_path = state.paths.roster_path();
     drop(roster);
@@ -749,110 +768,40 @@ async fn open_enrollment_handler(
         );
     }
 
-    let _ = crate::audit::append_entry_to(
-        &state.paths.audit_log_path(),
-        "enrollment_opened",
-        &[(
-            "deadline",
-            &deadline
-                .map(|d| d.to_rfc3339())
-                .unwrap_or_else(|| "none".to_string()),
-        )],
-    );
-
-    let body = serde_json::json!({
-        "enrollment_state": "open",
-        "deadline": deadline.map(|d| d.to_rfc3339()),
-    });
-    (StatusCode::OK, Json(body)).into_response()
+    let summary = EnrollmentSummary {
+        enrollment_state: crate::roster::EnrollmentState::from_open(open),
+    };
+    match serde_json::to_value(&summary) {
+        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CertmeshError::Internal(format!("Serialization error: {e}")),
+        ),
+    }
 }
 
-/// POST /enrollment/close - Close the enrollment window.
+/// POST /open-enrollment - Open the enrollment window (until explicitly closed).
+#[utoipa::path(post, path = "/open-enrollment", tag = "certmesh",
+    summary = "Open enrollment window",
+    responses((status = 200, body = EnrollmentSummary)))]
+async fn open_enrollment_handler(
+    Extension(state): Extension<Arc<CertmeshState>>,
+) -> impl IntoResponse {
+    state.roster.lock().await.open_enrollment();
+    let _ = crate::audit::append_entry_to(&state.paths.audit_log_path(), "enrollment_opened", &[]);
+    save_and_summarize_enrollment(&state, true).await
+}
+
+/// POST /close-enrollment - Close the enrollment window.
 #[utoipa::path(post, path = "/close-enrollment", tag = "certmesh",
     summary = "Close enrollment window",
-    responses((status = 200, body = PolicySummary)))]
+    responses((status = 200, body = EnrollmentSummary)))]
 async fn close_enrollment_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
 ) -> impl IntoResponse {
-    let mut roster = state.roster.lock().await;
-    roster.close_enrollment();
-
-    let roster_clone = roster.clone();
-    let roster_path = state.paths.roster_path();
-    drop(roster);
-    if let Err(e) =
-        tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path))
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
-            .and_then(|r| r.map_err(CertmeshError::Io))
-    {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &CertmeshError::Internal(format!("Failed to save roster: {e}")),
-        );
-    }
-
+    state.roster.lock().await.close_enrollment();
     let _ = crate::audit::append_entry_to(&state.paths.audit_log_path(), "enrollment_closed", &[]);
-
-    let body = serde_json::json!({ "enrollment_state": "closed" });
-    (StatusCode::OK, Json(body)).into_response()
-}
-
-/// PUT /policy - Set enrollment scope constraints.
-#[utoipa::path(put, path = "/set-policy", tag = "certmesh",
-    summary = "Set enrollment scope constraints",
-    request_body = PolicyRequest,
-    responses((status = 200, body = PolicySummary)))]
-async fn set_policy_handler(
-    Extension(state): Extension<Arc<CertmeshState>>,
-    Json(request): Json<PolicyRequest>,
-) -> impl IntoResponse {
-    // Validate subnet CIDR format if provided (rejects malformed early)
-    if let Some(ref cidr) = request.allowed_subnet {
-        if let Err(e) = crate::enrollment::parse_cidr(cidr) {
-            return error_response(StatusCode::BAD_REQUEST, &e);
-        }
-    }
-
-    let mut roster = state.roster.lock().await;
-    roster.metadata.allowed_domain = request.allowed_domain.clone();
-    roster.metadata.allowed_subnet = request.allowed_subnet.clone();
-
-    let roster_clone = roster.clone();
-    let roster_path = state.paths.roster_path();
-    drop(roster);
-    if let Err(e) =
-        tokio::task::spawn_blocking(move || crate::roster::save_roster(&roster_clone, &roster_path))
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
-            .and_then(|r| r.map_err(CertmeshError::Io))
-    {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &CertmeshError::Internal(format!("Failed to save roster: {e}")),
-        );
-    }
-
-    let _ = crate::audit::append_entry_to(
-        &state.paths.audit_log_path(),
-        "policy_updated",
-        &[
-            (
-                "allowed_domain",
-                request.allowed_domain.as_deref().unwrap_or("none"),
-            ),
-            (
-                "allowed_subnet",
-                request.allowed_subnet.as_deref().unwrap_or("none"),
-            ),
-        ],
-    );
-
-    let body = serde_json::json!({
-        "allowed_domain": request.allowed_domain,
-        "allowed_subnet": request.allowed_subnet,
-    });
-    (StatusCode::OK, Json(body)).into_response()
+    save_and_summarize_enrollment(&state, false).await
 }
 
 // ── Phase 3 handlers ────────────────────────────────────────────────
@@ -1143,7 +1092,6 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
         revoke_handler,
         open_enrollment_handler,
         close_enrollment_handler,
-        set_policy_handler,
     ),
     components(schemas(
         crate::protocol::JoinRequest,
@@ -1166,9 +1114,7 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
         crate::protocol::RestoreResponse,
         crate::protocol::RevokeRequest,
         crate::protocol::RevokeResponse,
-        crate::protocol::PolicyRequest,
-        crate::protocol::OpenEnrollmentRequest,
-        crate::protocol::PolicySummary,
+        crate::protocol::EnrollmentSummary,
         crate::protocol::PromoteRequest,
         crate::protocol::PromoteResponse,
         crate::protocol::RenewRequest,
@@ -1176,7 +1122,6 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
         crate::protocol::HookResult,
         crate::protocol::HealthRequest,
         crate::protocol::HealthResponse,
-        crate::profiles::TrustProfile,
         crate::roster::EnrollmentState,
         koi_crypto::keys::EncryptedKey,
     ))
@@ -1192,8 +1137,7 @@ mod tests {
 
     fn test_extension() -> Arc<CertmeshState> {
         use crate::certmesh_paths::CertmeshPaths;
-        use crate::profiles::TrustProfile;
-        use crate::roster::{EnrollmentState, Roster, RosterMetadata};
+        use crate::roster::{Roster, RosterMetadata};
         use koi_crypto::totp::RateLimiter;
 
         let data_dir = koi_common::test::ensure_data_dir("koi-certmesh-http-tests");
@@ -1203,13 +1147,9 @@ mod tests {
             roster: tokio::sync::Mutex::new(Roster {
                 metadata: RosterMetadata {
                     created_at: chrono::Utc::now(),
-                    trust_profile: TrustProfile::JustMe,
+                    enrollment_open: false,
+                    requires_approval: false,
                     operator: None,
-                    requires_approval: Some(false),
-                    enrollment_state: EnrollmentState::Closed,
-                    enrollment_deadline: None,
-                    allowed_domain: None,
-                    allowed_subnet: None,
                 },
                 members: vec![],
                 revocation_list: vec![],
@@ -1217,7 +1157,6 @@ mod tests {
             auth: tokio::sync::Mutex::new(None),
             pending_challenge: tokio::sync::Mutex::new(None),
             rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
-            profile: tokio::sync::Mutex::new(TrustProfile::JustMe),
             approval_tx: tokio::sync::Mutex::new(None),
             event_tx: tokio::sync::broadcast::channel(16).0,
         })
@@ -1404,7 +1343,14 @@ mod tests {
             "missing ca_initialized"
         );
         assert!(json.get("ca_locked").is_some(), "missing ca_locked");
-        assert!(json.get("profile").is_some(), "missing profile");
+        assert!(
+            json.get("enrollment_open").is_some(),
+            "missing enrollment_open"
+        );
+        assert!(
+            json.get("requires_approval").is_some(),
+            "missing requires_approval"
+        );
         assert!(
             json.get("enrollment_state").is_some(),
             "missing enrollment_state"
@@ -1452,14 +1398,13 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
-    // ── Phase 4 - Enrollment policy endpoint tests ──────────────────
+    // ── Enrollment toggle endpoint tests ────────────────────────────
 
     #[tokio::test]
     async fn open_enrollment_returns_200() {
         let app = routes(test_extension());
         let req = Request::post("/open-enrollment")
-            .header("content-type", "application/json")
-            .body(Body::from("{}"))
+            .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1471,32 +1416,6 @@ mod tests {
             json.get("enrollment_state").unwrap().as_str().unwrap(),
             "open"
         );
-    }
-
-    #[tokio::test]
-    async fn open_enrollment_with_deadline() {
-        let app = routes(test_extension());
-        let req = Request::post("/open-enrollment")
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"deadline":"2026-12-31T23:59:59Z"}"#))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json.get("deadline").unwrap().as_str().is_some());
-    }
-
-    #[tokio::test]
-    async fn open_enrollment_accepts_empty_body() {
-        let app = routes(test_extension());
-        let req = Request::post("/open-enrollment")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -1517,70 +1436,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn set_policy_returns_200() {
-        let app = routes(test_extension());
-        let req = Request::put("/set-policy")
-            .header("content-type", "application/json")
-            .body(Body::from(
-                r#"{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}"#,
-            ))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            json.get("allowed_domain").unwrap().as_str().unwrap(),
-            "lab.local"
-        );
-        assert_eq!(
-            json.get("allowed_subnet").unwrap().as_str().unwrap(),
-            "192.168.1.0/24"
-        );
-    }
-
-    #[tokio::test]
-    async fn set_policy_invalid_cidr_returns_400() {
-        let app = routes(test_extension());
-        let req = Request::put("/set-policy")
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"allowed_subnet":"not-a-cidr"}"#))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn set_policy_invalid_cidr_ip_returns_400() {
-        let app = routes(test_extension());
-        let req = Request::put("/set-policy")
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"allowed_subnet":"xyz.abc/24"}"#))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn set_policy_clears_with_nulls() {
-        let app = routes(test_extension());
-        let req = Request::put("/set-policy")
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{}"#))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(json.get("allowed_domain").unwrap().is_null());
-        assert!(json.get("allowed_subnet").unwrap().is_null());
-    }
-
     // ── Service delegation endpoint tests ────────────────────────────
 
     #[tokio::test]
@@ -1589,7 +1444,7 @@ mod tests {
         let req = Request::post("/create")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"passphrase":"test","entropy_hex":"bad","profile":"just_me"}"#,
+                r#"{"passphrase":"test","entropy_hex":"bad","enrollment_open":true,"requires_approval":false}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1602,7 +1457,7 @@ mod tests {
         // 16 bytes (32 hex chars) instead of required 32 bytes (64 hex chars)
         let req = Request::post("/create")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"passphrase":"test","entropy_hex":"00112233445566778899aabbccddeeff","profile":"just_me"}"#))
+            .body(Body::from(r#"{"passphrase":"test","entropy_hex":"00112233445566778899aabbccddeeff","enrollment_open":true,"requires_approval":false}"#))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

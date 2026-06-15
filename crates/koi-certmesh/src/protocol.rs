@@ -6,7 +6,6 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::profiles::TrustProfile;
 use crate::roster::EnrollmentState;
 
 /// Client request to join the mesh.
@@ -38,6 +37,10 @@ pub struct JoinResponse {
 }
 
 /// Certmesh status overview (returned by GET /status).
+///
+/// The security posture is reported as the two real booleans
+/// (`enrollment_open`, `requires_approval`); `enrollment_state` is the
+/// open/closed wire enum derived from `enrollment_open`.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CertmeshStatus {
     pub ca_initialized: bool,
@@ -47,14 +50,11 @@ pub struct CertmeshStatus {
     /// Active authentication method ("totp", or absent if uninitialized).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<String>,
-    pub profile: TrustProfile,
+    /// Whether the mesh is currently accepting new members.
+    pub enrollment_open: bool,
+    /// Whether joins require operator approval at the CA.
+    pub requires_approval: bool,
     pub enrollment_state: EnrollmentState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enrollment_deadline: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_domain: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_subnet: Option<String>,
     pub member_count: usize,
     pub members: Vec<MemberSummary>,
 }
@@ -88,28 +88,30 @@ pub struct SetHookResponse {
 // ── Service Delegation - CA management via HTTP ─────────────────────
 
 /// POST /create request - initialize a new CA via the running service.
+///
+/// The security posture is carried as the two real booleans the roster
+/// stores (`enrollment_open`, `requires_approval`) plus `auto_unlock`, the
+/// create-time decision of whether to save the passphrase to the vault so
+/// the daemon boots unlocked. The named presets are resolved to these
+/// booleans by the ceremony/CLI before this request is built.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateCaRequest {
     /// Passphrase for encrypting the CA key.
     pub passphrase: String,
     /// Hex-encoded 32-byte entropy seed (collected locally by CLI).
     pub entropy_hex: String,
-    /// Trust profile for the CA.
-    pub profile: TrustProfile,
-    /// Optional operator name (required for Organization profile).
+    /// Optional operator name (recorded in the audit log).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operator: Option<String>,
-    /// Optional override for initial enrollment state.
-    ///
-    /// `Some(true)` opens enrollment immediately, `Some(false)` starts closed.
-    /// `None` uses the trust profile default.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enrollment_open: Option<bool>,
-    /// Optional override for whether joins require operator approval.
-    ///
-    /// `None` uses the trust profile default.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub requires_approval: Option<bool>,
+    /// Whether the mesh starts accepting new members.
+    #[serde(default)]
+    pub enrollment_open: bool,
+    /// Whether joins require operator approval at the CA.
+    #[serde(default)]
+    pub requires_approval: bool,
+    /// Whether to save the passphrase to the vault for automatic unlock on boot.
+    #[serde(default)]
+    pub auto_unlock: bool,
     /// Optional hex-encoded TOTP secret.
     ///
     /// When provided by a ceremony-driven client, the server uses this
@@ -215,39 +217,10 @@ pub struct RevokeResponse {
     pub revoked: bool,
 }
 
-// ── Phase 4 - Enrollment Policy ─────────────────────────────────────
-
-/// Request to set enrollment scope constraints.
+/// Enrollment toggle summary (open/close-enrollment responses).
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct PolicyRequest {
-    /// Domain scope constraint (e.g. "lincoln-elementary.local").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_domain: Option<String>,
-    /// Subnet scope constraint as CIDR (e.g. "192.168.1.0/24").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_subnet: Option<String>,
-}
-
-/// Request to open the enrollment window.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct OpenEnrollmentRequest {
-    /// Optional deadline (RFC 3339). After this time, enrollment auto-closes.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deadline: Option<String>,
-}
-
-/// Enrollment policy summary (open/close-enrollment and set-policy responses).
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct PolicySummary {
+pub struct EnrollmentSummary {
     pub enrollment_state: EnrollmentState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enrollment_deadline: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_domain: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_subnet: Option<String>,
-    pub profile: TrustProfile,
-    pub requires_approval: bool,
 }
 
 // ── Phase 3 - Failover + Lifecycle ──────────────────────────────────
@@ -611,11 +584,9 @@ mod tests {
             ca_locked: false,
             ca_fingerprint: Some("abc123".to_string()),
             auth_method: None,
-            profile: TrustProfile::JustMe,
+            enrollment_open: true,
+            requires_approval: false,
             enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: None,
-            allowed_subnet: None,
             member_count: 1,
             members: vec![MemberSummary {
                 hostname: "stone-01".to_string(),
@@ -628,83 +599,27 @@ mod tests {
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("\"ca_initialized\":true"));
         assert!(json.contains("\"member_count\":1"));
+        assert!(json.contains("\"enrollment_open\":true"));
+        assert!(json.contains("\"requires_approval\":false"));
     }
 
     #[test]
-    fn certmesh_status_omits_none_policy_fields() {
-        let status = CertmeshStatus {
-            ca_initialized: true,
-            ca_locked: false,
-            ca_fingerprint: None,
-            auth_method: None,
-            profile: TrustProfile::JustMe,
-            enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: None,
-            allowed_domain: None,
-            allowed_subnet: None,
-            member_count: 0,
-            members: vec![],
-        };
-        let json = serde_json::to_string(&status).unwrap();
-        assert!(!json.contains("enrollment_deadline"));
-        assert!(!json.contains("allowed_domain"));
-        assert!(!json.contains("allowed_subnet"));
-    }
-
-    #[test]
-    fn certmesh_status_includes_policy_when_set() {
+    fn certmesh_status_reports_posture_booleans() {
         let status = CertmeshStatus {
             ca_initialized: true,
             ca_locked: false,
             ca_fingerprint: Some("fp-org".to_string()),
             auth_method: None,
-            profile: TrustProfile::MyOrganization,
+            enrollment_open: false,
+            requires_approval: true,
             enrollment_state: EnrollmentState::Closed,
-            enrollment_deadline: Some("2026-03-01T00:00:00Z".to_string()),
-            allowed_domain: Some("school.local".to_string()),
-            allowed_subnet: Some("10.0.0.0/8".to_string()),
             member_count: 0,
             members: vec![],
         };
         let json = serde_json::to_string(&status).unwrap();
-        assert!(json.contains("enrollment_deadline"));
-        assert!(json.contains("school.local"));
-        assert!(json.contains("10.0.0.0/8"));
-    }
-
-    // ── Phase 4 serde tests ──────────────────────────────────────────
-
-    #[test]
-    fn policy_request_serde_round_trip() {
-        let req = PolicyRequest {
-            allowed_domain: Some("lab.local".to_string()),
-            allowed_subnet: Some("192.168.1.0/24".to_string()),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        let parsed: PolicyRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.allowed_domain.as_deref(), Some("lab.local"));
-        assert_eq!(parsed.allowed_subnet.as_deref(), Some("192.168.1.0/24"));
-    }
-
-    #[test]
-    fn policy_request_omits_none_fields() {
-        let req = PolicyRequest {
-            allowed_domain: None,
-            allowed_subnet: None,
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        assert!(!json.contains("allowed_domain"));
-        assert!(!json.contains("allowed_subnet"));
-    }
-
-    #[test]
-    fn open_enrollment_request_serde_round_trip() {
-        let req = OpenEnrollmentRequest {
-            deadline: Some("2026-03-01T00:00:00Z".to_string()),
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        let parsed: OpenEnrollmentRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.deadline.as_deref(), Some("2026-03-01T00:00:00Z"));
+        assert!(json.contains("\"enrollment_open\":false"));
+        assert!(json.contains("\"requires_approval\":true"));
+        assert!(json.contains("\"enrollment_state\":\"closed\""));
     }
 
     // ── Service delegation serde tests ──────────────────────────────
@@ -714,20 +629,20 @@ mod tests {
         let req = CreateCaRequest {
             passphrase: "hunter2".to_string(),
             entropy_hex: "0a1b2c3d".to_string(),
-            profile: TrustProfile::JustMe,
             operator: None,
-            enrollment_open: None,
-            requires_approval: None,
+            enrollment_open: true,
+            requires_approval: false,
+            auto_unlock: true,
             totp_secret_hex: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: CreateCaRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.passphrase, "hunter2");
         assert_eq!(parsed.entropy_hex, "0a1b2c3d");
-        assert_eq!(parsed.profile, TrustProfile::JustMe);
         assert!(parsed.operator.is_none());
-        assert!(parsed.enrollment_open.is_none());
-        assert!(parsed.requires_approval.is_none());
+        assert!(parsed.enrollment_open);
+        assert!(!parsed.requires_approval);
+        assert!(parsed.auto_unlock);
     }
 
     #[test]
@@ -735,18 +650,18 @@ mod tests {
         let req = CreateCaRequest {
             passphrase: "pass".to_string(),
             entropy_hex: "ff".to_string(),
-            profile: TrustProfile::MyOrganization,
             operator: Some("ops@acme.com".to_string()),
-            enrollment_open: Some(false),
-            requires_approval: Some(true),
+            enrollment_open: false,
+            requires_approval: true,
+            auto_unlock: false,
             totp_secret_hex: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: CreateCaRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.operator.as_deref(), Some("ops@acme.com"));
-        assert_eq!(parsed.profile, TrustProfile::MyOrganization);
-        assert_eq!(parsed.enrollment_open, Some(false));
-        assert_eq!(parsed.requires_approval, Some(true));
+        assert!(!parsed.enrollment_open);
+        assert!(parsed.requires_approval);
+        assert!(!parsed.auto_unlock);
     }
 
     #[test]
@@ -754,16 +669,14 @@ mod tests {
         let req = CreateCaRequest {
             passphrase: "p".to_string(),
             entropy_hex: "aa".to_string(),
-            profile: TrustProfile::JustMe,
             operator: None,
-            enrollment_open: None,
-            requires_approval: None,
+            enrollment_open: false,
+            requires_approval: false,
+            auto_unlock: false,
             totp_secret_hex: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("operator"));
-        assert!(!json.contains("enrollment_open"));
-        assert!(!json.contains("requires_approval"));
     }
 
     #[test]
@@ -846,11 +759,9 @@ mod tests {
             ca_locked: false,
             ca_fingerprint: Some("fp-round-trip".to_string()),
             auth_method: None,
-            profile: TrustProfile::MyTeam,
+            enrollment_open: true,
+            requires_approval: true,
             enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: Some("2026-03-01T00:00:00Z".to_string()),
-            allowed_domain: None,
-            allowed_subnet: None,
             member_count: 2,
             members: vec![
                 MemberSummary {
@@ -873,7 +784,8 @@ mod tests {
         let parsed: CertmeshStatus = serde_json::from_str(&json).unwrap();
         assert!(parsed.ca_initialized);
         assert!(!parsed.ca_locked);
-        assert_eq!(parsed.profile, TrustProfile::MyTeam);
+        assert!(parsed.enrollment_open);
+        assert!(parsed.requires_approval);
         assert_eq!(parsed.member_count, 2);
         assert_eq!(parsed.members.len(), 2);
         assert_eq!(parsed.members[0].hostname, "stone-01");
@@ -887,11 +799,9 @@ mod tests {
             ca_locked: false,
             ca_fingerprint: None,
             auth_method: None,
-            profile: TrustProfile::JustMe,
+            enrollment_open: false,
+            requires_approval: false,
             enrollment_state: EnrollmentState::Closed,
-            enrollment_deadline: None,
-            allowed_domain: None,
-            allowed_subnet: None,
             member_count: 0,
             members: vec![],
         };
@@ -903,18 +813,11 @@ mod tests {
     }
 
     #[test]
-    fn policy_summary_serializes() {
-        let summary = PolicySummary {
+    fn enrollment_summary_serializes() {
+        let summary = EnrollmentSummary {
             enrollment_state: EnrollmentState::Open,
-            enrollment_deadline: Some("2026-03-01T00:00:00Z".to_string()),
-            allowed_domain: Some("school.local".to_string()),
-            allowed_subnet: None,
-            profile: TrustProfile::MyOrganization,
-            requires_approval: true,
         };
         let json = serde_json::to_string(&summary).unwrap();
-        assert!(json.contains("requires_approval"));
-        assert!(json.contains("school.local"));
-        assert!(!json.contains("allowed_subnet"));
+        assert!(json.contains("\"enrollment_state\":\"open\""));
     }
 }

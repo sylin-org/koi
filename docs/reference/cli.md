@@ -66,9 +66,8 @@ koi certmesh unlock                               # decrypt CA key
 koi certmesh log                                  # show audit log
 koi certmesh set-hook --reload "COMMAND"          # set renewal hook
 koi certmesh promote [ENDPOINT]                   # promote standby CA
-koi certmesh open-enrollment [--until DURATION]   # open enrollment window
+koi certmesh open-enrollment                      # open enrollment window
 koi certmesh close-enrollment                     # close enrollment
-koi certmesh set-policy [--domain ...] [--subnet ...] [--clear]
 koi certmesh rotate-auth                          # rotate auth credential
 koi certmesh backup PATH                          # encrypted backup
 koi certmesh restore PATH                         # restore from backup

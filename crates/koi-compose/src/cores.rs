@@ -90,8 +90,6 @@ pub fn init_certmesh_core(data_dir: Option<&Path>) -> Option<Arc<koi_certmesh::C
         }
     };
 
-    let profile = roster.metadata.trust_profile;
-
     // ── Auto-unlock at init: single source of truth ─────────────
     // The auto-unlock passphrase lives in the koi-crypto vault (written by
     // CertmeshCore::save_auto_unlock_key_at, which deletes any legacy plaintext file).
@@ -119,7 +117,6 @@ pub fn init_certmesh_core(data_dir: Option<&Path>) -> Option<Arc<koi_certmesh::C
                         ca_state,
                         fresh_roster,
                         auth,
-                        profile,
                         paths,
                     )));
                 }
@@ -135,7 +132,7 @@ pub fn init_certmesh_core(data_dir: Option<&Path>) -> Option<Arc<koi_certmesh::C
 
     // No auto-unlock key - boot locked
     tracing::info!("Certmesh: CA initialized (locked, use `koi certmesh unlock` to decrypt)");
-    let core = koi_certmesh::CertmeshCore::locked_with_paths(roster, profile, paths);
+    let core = koi_certmesh::CertmeshCore::locked_with_paths(roster, paths);
     Some(Arc::new(core))
 }
 
