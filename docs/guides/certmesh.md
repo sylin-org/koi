@@ -200,7 +200,7 @@ The daemon listens on two ports with different security postures:
 
 | Port | Default | Bind address | Auth | Purpose |
 |------|---------|-------------|------|---------|
-| **5641** | `--port` | `127.0.0.1` (loopback) | DAT header (`x-koi-token`, enforced on all non-GET requests) | Local CLI, dashboard, management API |
+| **5641** | `--port` | `127.0.0.1` (loopback) | DAT header (`x-koi-token`, enforced on all non-GET requests except `/v1/certmesh/join`) | Local CLI, dashboard, management API |
 | **5642** | `--mtls-port` | `0.0.0.0` (all interfaces) | mTLS client certificate | Inter-node communication (promote, health heartbeat, set-hook, renew) |
 | **5643** | `--acme-port` | `0.0.0.0` (all interfaces) | JWS (server-auth TLS) | [ACME (RFC 8555) facade](acme.md) — standard ACME clients get certs from the CA |
 

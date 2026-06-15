@@ -38,7 +38,19 @@ firewall rule. `0.0.0.0` exposes `GET` endpoints to any device on the network.
 
 Every daemon start generates a fresh random token. **All HTTP requests except
 `GET`/`HEAD`/`OPTIONS` must carry it** in the `x-koi-token` header, or they receive
-`401 {"error": "unauthorized", ...}`. Comparison is constant-time.
+`401 {"error": "unauthorized", ...}`. Comparison is constant-time. The header value is
+the **bare token** — the breadcrumb file stores it with a `dat:` line prefix, but that
+prefix is not part of the header value.
+
+Two carve-outs to that rule:
+
+- **`/v1/mcp`** (the in-process MCP transport) requires the token on *every* method —
+  including its `GET` server→client SSE stream, which is a live channel, not a read.
+- **`POST /v1/certmesh/join`** does *not* require the token. A node enrolling against a
+  remote CA has no way to know that host's local token, so enrollment is authorized by
+  the TOTP code in the request body instead — the join handler verifies it along with
+  the open/closed enrollment policy and rate limiting. This is the one mutation the DAT
+  layer deliberately lets through.
 
 The token is distributed via the **breadcrumb file**, written at daemon startup
 (owner-only permissions on Unix):

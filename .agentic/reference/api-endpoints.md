@@ -75,7 +75,7 @@ Route handlers: `crates/koi-certmesh/src/http.rs`
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | POST | `/v1/certmesh/create` | Initialize CA (create key, cert, auth credential) |
-| POST | `/v1/certmesh/join` | Join the certificate mesh (auth-verified enrollment) |
+| POST | `/v1/certmesh/join` | Join the certificate mesh (TOTP-authorized enrollment; the one mutation exempt from the `x-koi-token` requirement — a joining node can't know the CA host's local token) |
 | GET | `/v1/certmesh/status` | Mesh status overview |
 | POST | `/v1/certmesh/unlock` | Decrypt CA key with passphrase |
 | PUT | `/v1/certmesh/set-hook` | Set reload hook for a member |

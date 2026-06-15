@@ -61,6 +61,12 @@ and *Changed* below — existing certmesh `roster.json` files may need a
   daemon's breadcrumb token. New `--token` / `KOI_TOKEN`; a 401 prints an actionable hint.
 - Catalog/manifest drift (rotate-totp, phantom flags, wrong dns record types) — fixed by
   construction via the clap conformance tests.
+- **Certmesh enrollment was blocked by the DAT token.** `POST /v1/certmesh/join` is
+  TOTP-authorized (a joining node can't know the CA host's local token), but the DAT
+  auth middleware required the token on every mutation, so a tokenless `koi certmesh
+  join` was rejected with 401 by the daemon. `/v1/certmesh/join` is now exempt from the
+  token requirement (the handler still enforces the TOTP code + enrollment policy);
+  every other certmesh write remains token-gated.
 
 ## [0.4.1] - 2026-06-15
 
