@@ -15,6 +15,10 @@
 /// The cross-domain integration-trait bridges (moved from the binary's `integrations.rs`).
 pub mod bridges;
 
+/// Certmesh role-driven background loops + the enrollment-approval pump (moved from the
+/// binary's `main.rs`). Shared so Windows-service and embedded daemons reach parity.
+pub mod certmesh;
+
 // Further modules are filled in across the remaining P07 checkpoint steps:
 //   orchestrator— the container-runtime orchestrator (moved from the binary)
 //   status      — assemble_capabilities (the single capability-status source)
