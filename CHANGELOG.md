@@ -5,12 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - 2026-06-15
+## [0.4.2] - 2026-06-15
 
 A large lean-and-reach release: the certificate mesh is roughly halved, the CLI surface
 is unified on clap, and Koi gains four ways to feed the tools you already run — an MCP
 server for AI agents, an ACME server, Prometheus discovery, and label/DNS/trust doors.
-Many breaking changes (pre-1.0); existing certmesh `roster.json` files may need
+It carries **breaking changes** despite the patch version (pre-1.0, 0.x): see *Removed*
+and *Changed* below — existing certmesh `roster.json` files may need a
 `koi certmesh create` re-run.
 
 ### Added
