@@ -230,11 +230,16 @@ On Windows, manage with `sc stop koi` / `sc start koi`; on Linux, `systemctl`.
 
 ## What's next
 
+- **[Documentation hub](docs/index.md)** — the goal-keyed map of every guide and
+  reference; start here when you're not sure where to look
+- **[Trusted HTTPS in ~10 minutes](docs/tutorials/trusted-https.md)** — the headline
+  end-to-end journey: a private CA to a green browser across two machines
 - **[Container Guide](CONTAINERS.md)** — the host-daemon pattern, label-driven
   runtime adapter, and current limitations
-- **[Certmesh guide](docs/guides/certmesh.md)** — TLS on your LAN without browser
-  warnings, in minutes
+- **[Certmesh guide](docs/guides/certmesh.md)** · **[ACME guide](docs/guides/acme.md)** —
+  TLS on your LAN without browser warnings; issue certs to Caddy/Traefik/lego
+- **[MCP guide](docs/guides/mcp.md)** — expose the LAN to AI agents
+- **[DNS coexistence](docs/guides/dns-coexistence.md)** — run alongside Pi-hole / AdGuard /
+  dnsmasq / Unbound
 - **[Security model](docs/reference/security-model.md)** — exactly what listens
   where, and what the token protects
-- **[Assessment & roadmap](docs/assessment/README.md)** — where the project is and
-  where it's going

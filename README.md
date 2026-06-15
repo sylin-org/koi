@@ -216,15 +216,22 @@ issues when reality disagrees with the docs.
 
 ## Documentation
 
+**Start here:** the [documentation hub](docs/index.md) is the goal-keyed map of every
+guide and reference. New to Koi? The [Getting started](docs/tutorials/getting-started.md)
+tutorial goes from install to a visible result in about a minute, and
+[Trusted HTTPS across two machines](docs/tutorials/trusted-https.md) is the headline
+end-to-end journey.
+
 **Using Koi:** [User Guide](GUIDE.md) ·
 [Container Guide](CONTAINERS.md) ·
 [Security model](docs/reference/security-model.md)
 
 **Capability deep-dives:** [mDNS](docs/guides/mdns.md) ·
-[DNS](docs/guides/dns.md) · [Certmesh](docs/guides/certmesh.md) ·
+[DNS](docs/guides/dns.md) · [DNS coexistence](docs/guides/dns-coexistence.md) ·
+[Certmesh](docs/guides/certmesh.md) · [ACME](docs/guides/acme.md) ·
 [Runtime](docs/guides/runtime.md) · [Proxy](docs/guides/proxy.md) ·
 [Health](docs/guides/health.md) · [UDP](docs/guides/udp.md) ·
-[MCP](docs/guides/mcp.md) ·
+[MCP](docs/guides/mcp.md) · [Integrations](docs/guides/integrations.md) ·
 [System](docs/guides/system.md) · [Embedded (Rust)](docs/guides/embedded.md)
 
 **For AI agents:** `koi mcp serve` runs a [Model Context Protocol](docs/guides/mcp.md)
