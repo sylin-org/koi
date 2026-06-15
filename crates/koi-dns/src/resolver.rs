@@ -113,7 +113,6 @@ pub struct DnsCore {
     alias_feedback: Option<Arc<dyn AliasFeedbackTrait>>,
     upstream: Option<TokioResolver>,
     alias_tx: Option<mpsc::Sender<AliasFeedback>>,
-    started_at: std::time::Instant,
     rate_limiter: Arc<RateLimiter>,
     event_tx: broadcast::Sender<DnsEvent>,
 }
@@ -161,7 +160,6 @@ impl DnsCore {
             alias_feedback,
             upstream,
             alias_tx,
-            started_at: std::time::Instant::now(),
             rate_limiter: Arc::new(RateLimiter::new(max_qps)),
             event_tx: koi_common::events::event_channel().0,
         })
@@ -420,7 +418,6 @@ impl Clone for DnsCore {
             alias_feedback: self.alias_feedback.clone(),
             upstream: self.upstream.clone(),
             alias_tx: self.alias_tx.clone(),
-            started_at: self.started_at,
             rate_limiter: Arc::clone(&self.rate_limiter),
             event_tx: self.event_tx.clone(),
         }
@@ -741,54 +738,82 @@ async fn alias_feedback_loop(
 mod tests {
     use super::*;
 
-    #[test]
-    fn subscribe_receives_emitted_entry_updated() {
-        let (tx, _) = broadcast::channel::<DnsEvent>(16);
-        let mut rx = tx.subscribe();
+    /// Build a DnsCore backed by a throwaway state file so tests never touch
+    /// real on-disk state.
+    async fn test_core() -> DnsCore {
+        let tmp = std::env::temp_dir().join(format!(
+            "koi-dns-test-{}.json",
+            koi_common::id::generate_short_id()
+        ));
+        let config = DnsConfig {
+            state_path: Some(tmp),
+            ..DnsConfig::default()
+        };
+        DnsCore::new(config, None, None, None)
+            .await
+            .expect("core should build")
+    }
 
-        let _ = tx.send(DnsEvent::EntryUpdated {
-            name: "test.lan".to_string(),
+    /// Drives the real DnsCore command path: subscribe → add_entry → assert the
+    /// EntryUpdated event is broadcast through the core's own channel. Fails if
+    /// `add_entry` stops emitting (i.e. tests Koi wiring, not tokio).
+    #[tokio::test]
+    async fn add_entry_emits_entry_updated_through_core() {
+        let core = test_core().await;
+        let mut rx = core.subscribe();
+
+        core.add_entry(DnsEntry {
+            name: "test.lan.".to_string(),
             ip: "10.0.0.1".to_string(),
-        });
+            ttl: None,
+        })
+        .expect("add_entry should succeed");
 
-        let event = rx.try_recv().expect("should receive event");
-        match event {
+        match rx.try_recv().expect("should receive event") {
             DnsEvent::EntryUpdated { name, ip } => {
-                assert_eq!(name, "test.lan");
+                assert_eq!(name, "test.lan.");
                 assert_eq!(ip, "10.0.0.1");
             }
             other => panic!("expected EntryUpdated, got {other:?}"),
         }
     }
 
-    #[test]
-    fn subscribe_receives_emitted_entry_removed() {
-        let (tx, _) = broadcast::channel::<DnsEvent>(16);
-        let mut rx = tx.subscribe();
+    /// remove_entry on an existing entry emits EntryRemoved through the core.
+    #[tokio::test]
+    async fn remove_entry_emits_entry_removed_through_core() {
+        let core = test_core().await;
+        core.add_entry(DnsEntry {
+            name: "gone.lan.".to_string(),
+            ip: "10.0.0.9".to_string(),
+            ttl: None,
+        })
+        .expect("add_entry should succeed");
 
-        let _ = tx.send(DnsEvent::EntryRemoved {
-            name: "gone.lan".to_string(),
-        });
+        let mut rx = core.subscribe();
+        let removed = core
+            .remove_entry("gone.lan.")
+            .expect("remove_entry should succeed");
+        assert!(removed.is_some(), "entry should have been present");
 
-        let event = rx.try_recv().expect("should receive event");
-        match event {
-            DnsEvent::EntryRemoved { name } => {
-                assert_eq!(name, "gone.lan");
-            }
+        match rx.try_recv().expect("should receive event") {
+            DnsEvent::EntryRemoved { name } => assert_eq!(name, "gone.lan."),
             other => panic!("expected EntryRemoved, got {other:?}"),
         }
     }
 
-    #[test]
-    fn multiple_subscribers_each_receive_event() {
-        let (tx, _) = broadcast::channel::<DnsEvent>(16);
-        let mut rx1 = tx.subscribe();
-        let mut rx2 = tx.subscribe();
+    /// Two subscribers to the same core each receive a core-emitted event.
+    #[tokio::test]
+    async fn multiple_subscribers_each_receive_core_event() {
+        let core = test_core().await;
+        let mut rx1 = core.subscribe();
+        let mut rx2 = core.subscribe();
 
-        let _ = tx.send(DnsEvent::EntryUpdated {
-            name: "multi.lan".to_string(),
+        core.add_entry(DnsEntry {
+            name: "multi.lan.".to_string(),
             ip: "10.0.0.2".to_string(),
-        });
+            ttl: None,
+        })
+        .expect("add_entry should succeed");
 
         assert!(rx1.try_recv().is_ok());
         assert!(rx2.try_recv().is_ok());

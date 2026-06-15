@@ -1,8 +1,8 @@
 //! Koi Runtime Adapter — container/service lifecycle integration.
 //!
-//! Watches runtime APIs (Docker, Podman, systemd, Incus, Kubernetes) for
-//! lifecycle events and drives Koi capabilities: mDNS announce, DNS entry,
-//! health check, proxy configuration.
+//! Watches container runtime APIs (Docker, Podman) for lifecycle events and
+//! drives Koi capabilities: mDNS announce, DNS entry, health check, proxy
+//! configuration.
 //!
 //! The adapter uses a trait-based backend system. Each runtime implements
 //! [`RuntimeBackend`] to provide normalized lifecycle events and instance
@@ -11,8 +11,8 @@
 //!
 //! The `docker` feature (default-on) compiles the bollard-backed Docker/Podman backend.
 //! With it off, the runtime capability stays available but Docker/Podman/Auto resolve to
-//! [`RuntimeError::BackendUnavailable`] — like the not-yet-implemented systemd/incus/k8s
-//! backends.
+//! [`RuntimeError::BackendUnavailable`]. The selectable backends are Auto/Docker/Podman;
+//! other runtimes can be added by implementing [`RuntimeBackend`].
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 pub mod backend;
@@ -244,15 +244,6 @@ impl RuntimeCore {
                         .into(),
                 ))
             }
-            RuntimeBackendKind::Systemd => Err(RuntimeError::BackendUnavailable(
-                "systemd backend not yet implemented".into(),
-            )),
-            RuntimeBackendKind::Incus => Err(RuntimeError::BackendUnavailable(
-                "incus backend not yet implemented".into(),
-            )),
-            RuntimeBackendKind::Kubernetes => Err(RuntimeError::BackendUnavailable(
-                "kubernetes backend not yet implemented".into(),
-            )),
         }
     }
 
@@ -362,9 +353,17 @@ mod tests {
             Some(RuntimeBackendKind::Docker)
         );
         assert_eq!(
-            RuntimeBackendKind::from_str_loose("k8s"),
-            Some(RuntimeBackendKind::Kubernetes)
+            RuntimeBackendKind::from_str_loose("podman"),
+            Some(RuntimeBackendKind::Podman)
         );
+        assert_eq!(
+            RuntimeBackendKind::from_str_loose("auto"),
+            Some(RuntimeBackendKind::Auto)
+        );
+        // Removed stub backends are now rejected (no silent fallback).
+        assert_eq!(RuntimeBackendKind::from_str_loose("k8s"), None);
+        assert_eq!(RuntimeBackendKind::from_str_loose("systemd"), None);
+        assert_eq!(RuntimeBackendKind::from_str_loose("incus"), None);
         assert_eq!(RuntimeBackendKind::from_str_loose("unknown"), None);
     }
 }

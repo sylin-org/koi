@@ -448,8 +448,7 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
         TagBuilder::new()
             .name("runtime")
             .description(Some(
-                "Runtime adapter - container and service lifecycle \
-                 integration (Docker, Podman, systemd, Incus, Kubernetes).",
+                "Runtime adapter - container lifecycle integration (Docker, Podman).",
             ))
             .external_docs(Some(ExternalDocs::new(format!("{base}/guide-runtime.md"))))
             .build(),

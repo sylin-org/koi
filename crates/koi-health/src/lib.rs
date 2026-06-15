@@ -250,51 +250,52 @@ impl HealthCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::ServiceCheckKind;
+    use crate::state::HealthCheckConfig;
 
-    #[test]
-    fn subscribe_receives_emitted_status_changed() {
-        let (tx, _) = broadcast::channel::<HealthEvent>(16);
-        let mut rx = tx.subscribe();
+    /// Drives a real status transition through HealthCore: subscribe → add a TCP
+    /// check pointing at a closed local port → run_checks_once() (real TCP attempt
+    /// fails) → the Unknown→Down transition emits StatusChanged through the core's
+    /// own channel. Fails if the checker stops emitting (tests Koi, not tokio).
+    #[tokio::test]
+    async fn run_checks_emits_status_changed_through_core() {
+        let _ = koi_common::test::ensure_data_dir("koi-health-event-tests");
 
-        let _ = tx.send(HealthEvent::StatusChanged {
-            name: "my-tcp".to_string(),
-            status: ServiceStatus::Up,
-        });
+        let core = HealthCore::new(None, None, None, None).await;
+        let mut rx = core.subscribe();
 
-        let event = rx.try_recv().expect("should receive event");
-        match event {
-            HealthEvent::StatusChanged { name, status } => {
-                assert_eq!(name, "my-tcp");
-                assert!(matches!(status, ServiceStatus::Up));
-            }
-        }
-    }
+        // Unique name so concurrent / repeated tests in the same process don't
+        // collide on the persisted check list. Port 1 is effectively never
+        // listening, so the TCP connect fails fast on localhost (no network).
+        let name = format!("evt-{}", koi_common::id::generate_short_id());
+        core.add_check(HealthCheckConfig {
+            name: name.clone(),
+            kind: ServiceCheckKind::Tcp,
+            target: "127.0.0.1:1".to_string(),
+            interval_secs: 1,
+            timeout_secs: 1,
+        })
+        .await
+        .expect("add_check should succeed");
 
-    #[test]
-    fn subscribe_receives_status_down() {
-        let (tx, _) = broadcast::channel::<HealthEvent>(16);
-        let mut rx = tx.subscribe();
+        // First run: Unknown -> Down, which emits a StatusChanged for our check.
+        core.run_checks_once().await;
 
-        let _ = tx.send(HealthEvent::StatusChanged {
-            name: "my-http".to_string(),
-            status: ServiceStatus::Down,
-        });
+        let event = rx
+            .try_recv()
+            .expect("a StatusChanged should have been emitted");
+        let HealthEvent::StatusChanged {
+            name: evt_name,
+            status,
+        } = event;
+        assert_eq!(evt_name, name);
+        assert!(
+            matches!(status, ServiceStatus::Down),
+            "closed local port should report Down, got {status:?}"
+        );
 
-        let event = rx.try_recv().expect("should receive event");
-        match event {
-            HealthEvent::StatusChanged { name, status } => {
-                assert_eq!(name, "my-http");
-                assert!(matches!(status, ServiceStatus::Down));
-            }
-        }
-    }
-
-    #[test]
-    fn no_event_when_no_send() {
-        let (tx, _) = broadcast::channel::<HealthEvent>(16);
-        let mut rx = tx.subscribe();
-        assert!(rx.try_recv().is_err());
-        drop(tx);
+        // Cleanup the persisted check so the shared state file stays tidy.
+        let _ = core.remove_check(&name).await;
     }
 }
 

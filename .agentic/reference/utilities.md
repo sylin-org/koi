@@ -359,7 +359,7 @@ No other module should contain `println!`-based presentation functions.
 | `RuntimeCore`        | Main domain facade (instance tracking, backend lifecycle)    |
 | `RuntimeConfig`      | Configuration (backend_kind, optional socket_path)           |
 | `RuntimeBackend`     | Trait: connect, list_instances, watch lifecycle events        |
-| `RuntimeBackendKind` | Backend selector enum (Auto, Docker, Podman, Systemd, Incus, Kubernetes) |
+| `RuntimeBackendKind` | Backend selector enum (Auto, Docker, Podman)                 |
 | `RuntimeEvent`       | Domain event enum (Started, Stopped, Updated, BackendDisconnected, BackendReconnected) |
 | `RuntimeError`       | Domain error enum (BackendUnavailable, Connection, EventStream, NotFound, Io, Internal) |
 | `Instance`           | Normalized instance (id, name, ports, ips, metadata, state)  |

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use koi_common::error::ErrorCode;
+use koi_common::http::error_response;
 use koi_config::state::DnsEntry;
 
 use crate::runtime::DnsRuntime;
@@ -133,17 +134,12 @@ async fn lookup_handler(
 ) -> impl IntoResponse {
     let record_type = match parse_record_type(params.record_type.as_deref()) {
         Ok(rt) => rt,
-        Err(resp) => return resp.into_response(),
+        Err(code) => return error_response(code, "invalid_record_type").into_response(),
     };
 
     let core = runtime.core();
     let Some(result) = core.lookup(&params.name, record_type).await else {
-        return error_response(
-            axum::http::StatusCode::NOT_FOUND,
-            ErrorCode::NotFound,
-            "record_not_found",
-        )
-        .into_response();
+        return error_response(ErrorCode::NotFound, "record_not_found").into_response();
     };
 
     let ips = result.ips.into_iter().map(|ip| ip.to_string()).collect();
@@ -184,34 +180,19 @@ async fn add_entry_handler(
     let zone = match DnsZone::new(&runtime.core().config().zone) {
         Ok(zone) => zone,
         Err(e) => {
-            return error_response(
-                axum::http::StatusCode::BAD_REQUEST,
-                ErrorCode::InvalidName,
-                &e.to_string(),
-            )
-            .into_response();
+            return error_response(ErrorCode::InvalidName, e.to_string()).into_response();
         }
     };
 
     let name = match zone.normalize_name(&payload.name) {
         Some(name) => name,
         None => {
-            return error_response(
-                axum::http::StatusCode::BAD_REQUEST,
-                ErrorCode::InvalidName,
-                "name_outside_zone",
-            )
-            .into_response();
+            return error_response(ErrorCode::InvalidName, "name_outside_zone").into_response();
         }
     };
 
     if payload.ip.parse::<std::net::IpAddr>().is_err() {
-        return error_response(
-            axum::http::StatusCode::BAD_REQUEST,
-            ErrorCode::InvalidPayload,
-            "invalid_ip",
-        )
-        .into_response();
+        return error_response(ErrorCode::InvalidPayload, "invalid_ip").into_response();
     }
 
     let entry = DnsEntry {
@@ -222,12 +203,7 @@ async fn add_entry_handler(
 
     match runtime.core().add_entry(entry) {
         Ok(entries) => Json(EntriesResponse { entries }).into_response(),
-        Err(e) => error_response(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ErrorCode::IoError,
-            &e.to_string(),
-        )
-        .into_response(),
+        Err(e) => error_response(ErrorCode::IoError, e.to_string()).into_response(),
     }
 }
 
@@ -242,41 +218,21 @@ async fn remove_entry_handler(
     let zone = match DnsZone::new(&runtime.core().config().zone) {
         Ok(zone) => zone,
         Err(e) => {
-            return error_response(
-                axum::http::StatusCode::BAD_REQUEST,
-                ErrorCode::InvalidName,
-                &e.to_string(),
-            )
-            .into_response();
+            return error_response(ErrorCode::InvalidName, e.to_string()).into_response();
         }
     };
 
     let name = match zone.normalize_name(&name) {
         Some(name) => name,
         None => {
-            return error_response(
-                axum::http::StatusCode::BAD_REQUEST,
-                ErrorCode::InvalidName,
-                "name_outside_zone",
-            )
-            .into_response();
+            return error_response(ErrorCode::InvalidName, "name_outside_zone").into_response();
         }
     };
 
     match runtime.core().remove_entry(&name) {
         Ok(Some(entries)) => Json(EntriesResponse { entries }).into_response(),
-        Ok(None) => error_response(
-            axum::http::StatusCode::NOT_FOUND,
-            ErrorCode::NotFound,
-            "entry_not_found",
-        )
-        .into_response(),
-        Err(e) => error_response(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ErrorCode::IoError,
-            &e.to_string(),
-        )
-        .into_response(),
+        Ok(None) => error_response(ErrorCode::NotFound, "entry_not_found").into_response(),
+        Err(e) => error_response(ErrorCode::IoError, e.to_string()).into_response(),
     }
 }
 
@@ -286,12 +242,7 @@ async fn remove_entry_handler(
 async fn start_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl IntoResponse {
     match runtime.start().await {
         Ok(started) => Json(serde_json::json!({ "started": started })).into_response(),
-        Err(e) => error_response(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            ErrorCode::Internal,
-            &e.to_string(),
-        )
-        .into_response(),
+        Err(e) => error_response(ErrorCode::Internal, e.to_string()).into_response(),
     }
 }
 
@@ -303,32 +254,16 @@ async fn stop_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl In
     Json(serde_json::json!({ "stopped": stopped }))
 }
 
-fn parse_record_type(input: Option<&str>) -> Result<RecordType, impl IntoResponse> {
-    let record_type = match input.unwrap_or("A").to_ascii_uppercase().as_str() {
-        "A" => RecordType::A,
-        "AAAA" => RecordType::AAAA,
-        "ANY" => RecordType::ANY,
-        _ => {
-            return Err(error_response(
-                axum::http::StatusCode::BAD_REQUEST,
-                ErrorCode::InvalidPayload,
-                "invalid_record_type",
-            ))
-        }
-    };
-    Ok(record_type)
-}
-
-fn error_response(
-    status: axum::http::StatusCode,
-    code: ErrorCode,
-    message: &str,
-) -> impl IntoResponse {
-    let body = serde_json::json!({
-        "error": code,
-        "message": message,
-    });
-    (status, Json(body))
+/// Parse the `type` query param. On an unrecognized value, returns the
+/// `ErrorCode` so the caller can build the shared error response (keeping the
+/// `Err` variant small — see clippy `result_large_err`).
+fn parse_record_type(input: Option<&str>) -> Result<RecordType, ErrorCode> {
+    match input.unwrap_or("A").to_ascii_uppercase().as_str() {
+        "A" => Ok(RecordType::A),
+        "AAAA" => Ok(RecordType::AAAA),
+        "ANY" => Ok(RecordType::ANY),
+        _ => Err(ErrorCode::InvalidPayload),
+    }
 }
 
 /// OpenAPI documentation for the DNS domain.

@@ -271,23 +271,30 @@ pub async fn build_cores(
 
     // ── Runtime adapter ──
     let runtime_core = if !spec.no_runtime {
-        let backend_kind = koi_runtime::RuntimeBackendKind::from_str_loose(&spec.runtime)
-            .unwrap_or_else(|| {
-                tracing::warn!(
+        // No silent fallback: an unrecognized backend selector disables the
+        // runtime adapter rather than quietly running Auto. The CLI rejects bad
+        // values at parse time; this guards the service/env path.
+        match koi_runtime::RuntimeBackendKind::from_str_loose(&spec.runtime) {
+            Some(backend_kind) => {
+                let rt_config = koi_runtime::RuntimeConfig {
+                    backend_kind,
+                    socket_path: None,
+                };
+                let core = Arc::new(koi_runtime::RuntimeCore::new(rt_config));
+                match core.start_watching(cancel.clone()).await {
+                    Ok(()) => Some(core),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Runtime adapter unavailable, continuing without it");
+                        None
+                    }
+                }
+            }
+            None => {
+                tracing::error!(
                     value = %spec.runtime,
-                    "Unknown runtime backend, falling back to auto"
+                    accepted = ?koi_runtime::RuntimeBackendKind::ACCEPTED,
+                    "Unknown runtime backend; disabling runtime adapter"
                 );
-                koi_runtime::RuntimeBackendKind::Auto
-            });
-        let rt_config = koi_runtime::RuntimeConfig {
-            backend_kind,
-            socket_path: None,
-        };
-        let core = Arc::new(koi_runtime::RuntimeCore::new(rt_config));
-        match core.start_watching(cancel.clone()).await {
-            Ok(()) => Some(core),
-            Err(e) => {
-                tracing::warn!(error = %e, "Runtime adapter unavailable, continuing without it");
                 None
             }
         }

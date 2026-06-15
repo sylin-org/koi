@@ -16,6 +16,21 @@ const UNIX_SOCKET_FILENAME: &str = "koi.sock";
 #[cfg(unix)]
 const UNIX_FALLBACK_RUNTIME_DIR: &str = "/var/run";
 
+/// Validate the `--runtime` / `KOI_RUNTIME` value at parse time.
+///
+/// Rejects unknown backends with a helpful error instead of letting the daemon
+/// silently fall back to auto-detection. The accepted set is the single source
+/// of truth in `koi_runtime::RuntimeBackendKind`.
+fn parse_runtime_backend(value: &str) -> Result<String, String> {
+    match koi_runtime::RuntimeBackendKind::from_str_loose(value) {
+        Some(_) => Ok(value.to_string()),
+        None => Err(format!(
+            "unknown runtime backend '{value}' (expected: {})",
+            koi_runtime::RuntimeBackendKind::ACCEPTED.join(", ")
+        )),
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "koi", version, about = "Local service discovery for everyone")]
 pub struct Cli {
@@ -89,8 +104,8 @@ pub struct Cli {
     #[arg(long, env = "KOI_NO_RUNTIME")]
     pub no_runtime: bool,
 
-    /// Runtime backend to use (auto, docker, podman, systemd, incus, kubernetes)
-    #[arg(long, env = "KOI_RUNTIME", default_value = "auto")]
+    /// Runtime backend to use (auto, docker, podman)
+    #[arg(long, env = "KOI_RUNTIME", default_value = "auto", value_parser = parse_runtime_backend)]
     pub runtime: String,
 
     /// DNS port for the local resolver
