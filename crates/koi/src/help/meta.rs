@@ -33,12 +33,11 @@ pub struct ApiEndpoint {
 
 /// Pre-invocation confirmation gate metadata.
 ///
-/// Declared here and (in P09 Stage B) checked by the CLI dispatch layer before
-/// the handler runs. Has no effect on HTTP endpoints — the API is not interactive.
-/// The fields are read by the Stage B confirmation gate; until then they are
-/// carried as forward-looking data.
+/// Checked by the CLI dispatch layer before the handler runs, via
+/// [`super::confirm::gate_meta`]. Has no effect on HTTP endpoints — the API is
+/// not interactive. The token + message here are the single source of truth
+/// for a command's confirmation prompt (no hardcoded tokens at the call site).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Confirmation {
     /// Prompt the user to type an exact token (e.g. `"RESET"`).
     TypeToken {
@@ -65,9 +64,8 @@ pub struct CommandMeta {
     pub long_description: &'static str,
     /// HTTP API equivalents. Empty slice means CLI-only.
     pub api: &'static [ApiEndpoint],
-    /// Optional pre-invocation confirmation gate (CLI-only). Wired into dispatch
-    /// in P09 Stage B; carried as forward-looking data until then.
-    #[allow(dead_code)]
+    /// Optional pre-invocation confirmation gate (CLI-only). Consulted by
+    /// dispatch via [`super::confirm::gate_meta`] before the handler runs.
     pub confirmation: Option<Confirmation>,
 }
 

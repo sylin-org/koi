@@ -82,6 +82,9 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             Command::Certmesh(cm_cmd) => {
                 config.require_capability("certmesh")?;
                 let ep = cli.endpoint.as_deref();
+                // Explicit access token for an explicit --endpoint (flag or
+                // KOI_TOKEN). Never the breadcrumb token — see commands::cli_token.
+                let tok = commands::cli_token(&cli);
                 match &cm_cmd.command {
                     None => {
                         help::print_category_catalog(help::KoiCategory::Trust, None)?;
@@ -101,38 +104,43 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         passphrase.as_deref(),
                         cli.json,
                         ep,
+                        tok,
                     ),
-                    Some(CertmeshSubcommand::Status) => commands::certmesh::status(cli.json, ep),
-                    Some(CertmeshSubcommand::Log) => commands::certmesh::log(ep),
-                    Some(CertmeshSubcommand::Unlock) => commands::certmesh::unlock(ep),
+                    Some(CertmeshSubcommand::Status) => {
+                        commands::certmesh::status(cli.json, ep, tok)
+                    }
+                    Some(CertmeshSubcommand::Log) => commands::certmesh::log(ep, tok),
+                    Some(CertmeshSubcommand::Unlock) => commands::certmesh::unlock(ep, tok),
                     Some(CertmeshSubcommand::SetHook { reload }) => {
-                        commands::certmesh::set_hook(reload, cli.json, ep)
+                        commands::certmesh::set_hook(reload, cli.json, ep, tok)
                     }
                     Some(CertmeshSubcommand::Join { endpoint }) => {
-                        commands::certmesh::join(endpoint.as_deref(), cli.json, ep).await
+                        commands::certmesh::join(endpoint.as_deref(), cli.json, ep, tok).await
                     }
                     Some(CertmeshSubcommand::Promote { endpoint }) => {
-                        commands::certmesh::promote(endpoint.as_deref(), cli.json, ep).await
+                        commands::certmesh::promote(endpoint.as_deref(), cli.json, ep, tok).await
                     }
                     Some(CertmeshSubcommand::OpenEnrollment) => {
-                        commands::certmesh::open_enrollment(cli.json, ep)
+                        commands::certmesh::open_enrollment(cli.json, ep, tok)
                     }
                     Some(CertmeshSubcommand::CloseEnrollment) => {
-                        commands::certmesh::close_enrollment(cli.json, ep)
+                        commands::certmesh::close_enrollment(cli.json, ep, tok)
                     }
                     Some(CertmeshSubcommand::RotateAuth) => {
-                        commands::certmesh::rotate_auth(cli.json, ep)
+                        commands::certmesh::rotate_auth(cli.json, ep, tok)
                     }
                     Some(CertmeshSubcommand::Backup { path }) => {
-                        commands::certmesh::backup(path, cli.json, ep)
+                        commands::certmesh::backup(path, cli.json, ep, tok)
                     }
                     Some(CertmeshSubcommand::Restore { path }) => {
-                        commands::certmesh::restore(path, cli.json, ep)
+                        commands::certmesh::restore(path, cli.json, ep, tok)
                     }
                     Some(CertmeshSubcommand::Revoke { hostname, reason }) => {
-                        commands::certmesh::revoke(hostname, reason.as_deref(), cli.json, ep)
+                        commands::certmesh::revoke(hostname, reason.as_deref(), cli.json, ep, tok)
                     }
-                    Some(CertmeshSubcommand::Destroy) => commands::certmesh::destroy(cli.json, ep),
+                    Some(CertmeshSubcommand::Destroy) => {
+                        commands::certmesh::destroy(cli.json, cli.yes, ep, tok)
+                    }
                 }
             }
             Command::Dns(dns_cmd) => {

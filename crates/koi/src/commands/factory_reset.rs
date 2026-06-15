@@ -3,47 +3,28 @@
 //! Destroys the entire Koi data directory and recreates it from scratch.
 //! If a daemon is running, attempts graceful shutdown first.
 
-use std::io::IsTerminal;
-
 use crate::client::KoiClient;
 
 /// Execute the factory-reset command.
 ///
-/// 1. Prompt for confirmation (unless `--json` mode, which expects scripted use).
+/// 1. Run the single destructive-confirmation gate (token word + danger line
+///    come from the `factory-reset` CommandMeta). `--json`/non-tty without
+///    `--yes` refuses; `--yes` skips the prompt.
 /// 2. If a daemon is running (breadcrumb exists), shut it down gracefully.
 /// 3. Remove the entire data directory.
 /// 4. Print success message.
-pub fn run(json: bool) -> anyhow::Result<()> {
+pub fn run(json: bool, yes: bool) -> anyhow::Result<()> {
     // Per-process composition root: this CLI command has no running core.
     #[allow(clippy::disallowed_methods)]
     let data_dir = koi_common::paths::koi_data_dir();
 
     // ── Confirmation gate ───────────────────────────────────────────
-    if !json {
-        println!();
-        println!("  This will permanently delete all Koi data:");
-        println!("    {}", data_dir.display());
-        println!();
-        println!("  This includes certificates, CA keys, DNS entries,");
-        println!("  health checks, proxy config, and all audit logs.");
-        println!();
-
-        if !std::io::stdin().is_terminal() {
-            anyhow::bail!(
-                "factory-reset requires interactive confirmation.\n\
-                 Use --json mode for scripted execution."
-            );
-        }
-
-        eprint!("  Type RESET to confirm: ");
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        if answer.trim() != "RESET" {
-            println!("  Aborted. No changes made.");
-            return Ok(());
-        }
-        println!();
-    }
+    // The one gate. Runs before any destructive action: a non-interactive
+    // invocation (`--json` / piped) without `--yes` refuses up front, so
+    // `koi --json factory-reset` no longer silently wipes data.
+    let meta = crate::help::get("factory-reset")
+        .ok_or_else(|| anyhow::anyhow!("internal: missing meta for 'factory-reset'"))?;
+    crate::help::confirm::gate_meta(meta, json, yes)?;
 
     // ── Shut down running daemon if reachable ───────────────────────
     let daemon_was_running = try_shutdown_daemon();

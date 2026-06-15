@@ -121,9 +121,17 @@ pub struct Cli {
     #[arg(long, env = "KOI_ENDPOINT", global = true)]
     pub endpoint: Option<String>,
 
+    /// Daemon access token for an explicit --endpoint (overrides KOI_TOKEN)
+    #[arg(long, env = "KOI_TOKEN", global = true)]
+    pub token: Option<String>,
+
     /// Force standalone mode (skip daemon detection)
     #[arg(long, global = true)]
     pub standalone: bool,
+
+    /// Skip confirmation prompts for destructive commands
+    #[arg(long, global = true)]
+    pub yes: bool,
 
     #[command(subcommand)]
     pub command: Option<Command>,

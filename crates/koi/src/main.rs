@@ -143,7 +143,7 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             Command::FactoryReset => {
-                return commands::factory_reset::run(cli.json);
+                return commands::factory_reset::run(cli.json, cli.yes);
             }
             _ => {} // All other commands go through the runtime
         }

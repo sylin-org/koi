@@ -85,14 +85,24 @@ mod color {
 // ── Shared helper ────────────────────────────────────────────────────
 
 /// Resolve the daemon endpoint or bail with a clear message.
-fn require_daemon(endpoint: Option<&str>) -> anyhow::Result<KoiClient> {
-    let bc = koi_config::breadcrumb::read_breadcrumb();
+///
+/// Token-selection follows the uniform rule in
+/// [`crate::commands::token_for_explicit_endpoint`]:
+///
+/// - **Explicit `endpoint`** → use the explicit `--token`/`KOI_TOKEN` value if
+///   set, else **tokenless**. NEVER the local breadcrumb token — pairing it
+///   with a remote URL would leak the local daemon's token to that host.
+/// - **No explicit endpoint** → use the breadcrumb endpoint + its matching
+///   token (the local, trusted daemon).
+fn require_daemon(
+    endpoint: Option<&str>,
+    explicit_token: Option<&str>,
+) -> anyhow::Result<KoiClient> {
     if let Some(ep) = endpoint {
-        // Explicit endpoint: use breadcrumb token if available, otherwise tokenless
-        let token = bc.map(|b| b.token).unwrap_or_default();
+        let token = crate::commands::token_for_explicit_endpoint(explicit_token);
         return Ok(KoiClient::with_token(ep, &token));
     }
-    let info = bc.ok_or_else(|| {
+    let info = koi_config::breadcrumb::read_breadcrumb().ok_or_else(|| {
         anyhow::anyhow!(
             "No running Koi service found.\n\
              Install and start the service first: koi install"
@@ -103,6 +113,10 @@ fn require_daemon(endpoint: Option<&str>) -> anyhow::Result<KoiClient> {
 
 // ── Create ──────────────────────────────────────────────────────────
 
+// `create` mirrors the clap `Create` subcommand's flags one-to-one plus the
+// shared json/endpoint/token plumbing; grouping them into a struct would only
+// move the argument list elsewhere without improving clarity.
+#[allow(clippy::too_many_arguments)]
 pub fn create(
     profile: Option<&str>,
     operator: Option<&str>,
@@ -111,8 +125,9 @@ pub fn create(
     passphrase: Option<&str>,
     json: bool,
     endpoint: Option<&str>,
+    token: Option<&str>,
 ) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint)?;
+    let client = require_daemon(endpoint, token)?;
     if preflight_ca_exists(&client)? {
         return Ok(());
     }
@@ -487,16 +502,6 @@ fn parse_enrollment_open(enrollment: Option<&str>) -> anyhow::Result<Option<bool
     }
 }
 
-fn prompt_line(prompt: &str) -> anyhow::Result<String> {
-    use std::io::Write;
-
-    print!("{prompt}");
-    std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    Ok(line.trim_end().to_string())
-}
-
 /// Extract the TOTP secret from an otpauth:// URI and reconstruct a TotpSecret.
 fn extract_totp_secret_from_uri(uri: &str) -> Option<koi_crypto::totp::TotpSecret> {
     let query = uri.split('?').nth(1)?;
@@ -533,8 +538,8 @@ fn base32_decode(input: &str) -> Option<Vec<u8>> {
 
 // ── Status ──────────────────────────────────────────────────────────
 
-pub fn status(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint)?;
+pub fn status(json: bool, endpoint: Option<&str>, token: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint, token)?;
     let resp = client.get_json("/v1/certmesh/status")?;
 
     if json {
@@ -580,8 +585,8 @@ pub fn status(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
 
 // ── Log ─────────────────────────────────────────────────────────────
 
-pub fn log(endpoint: Option<&str>) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint)?;
+pub fn log(endpoint: Option<&str>, token: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint, token)?;
     let resp = client.get_json("/v1/certmesh/log")?;
 
     let entries = resp.get("entries").and_then(|v| v.as_str()).unwrap_or("");
@@ -595,8 +600,8 @@ pub fn log(endpoint: Option<&str>) -> anyhow::Result<()> {
 
 // ── Unlock ──────────────────────────────────────────────────────────
 
-pub fn unlock(endpoint: Option<&str>) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint)?;
+pub fn unlock(endpoint: Option<&str>, token: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint, token)?;
 
     eprintln!("Enter the CA passphrase:");
     let mut passphrase = String::new();
@@ -615,8 +620,13 @@ pub fn unlock(endpoint: Option<&str>) -> anyhow::Result<()> {
 
 // ── Set Hook ────────────────────────────────────────────────────────
 
-pub fn set_hook(reload: &str, json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint)?;
+pub fn set_hook(
+    reload: &str,
+    json: bool,
+    endpoint: Option<&str>,
+    token: Option<&str>,
+) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint, token)?;
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "localhost".to_string());
@@ -641,9 +651,10 @@ pub async fn join(
     endpoint: Option<&str>,
     json: bool,
     cli_endpoint: Option<&str>,
+    cli_token: Option<&str>,
 ) -> anyhow::Result<()> {
     // The local daemon must be running to handle cert file writes
-    let _local = require_daemon(cli_endpoint)?;
+    let _local = require_daemon(cli_endpoint, cli_token)?;
 
     let resolved_endpoint = match endpoint {
         Some(ep) => ep.to_string(),
@@ -688,9 +699,10 @@ pub async fn promote(
     endpoint: Option<&str>,
     json: bool,
     cli_endpoint: Option<&str>,
+    cli_token: Option<&str>,
 ) -> anyhow::Result<()> {
     // The local daemon must be running
-    let _local = require_daemon(cli_endpoint)?;
+    let _local = require_daemon(cli_endpoint, cli_token)?;
 
     let resolved_endpoint = match endpoint {
         Some(ep) => ep.to_string(),
@@ -790,8 +802,12 @@ pub async fn promote(
 
 // ── Open Enrollment ─────────────────────────────────────────────────
 
-pub fn open_enrollment(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint)?;
+pub fn open_enrollment(
+    json: bool,
+    endpoint: Option<&str>,
+    token: Option<&str>,
+) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint, token)?;
     let resp = client.post_json("/v1/certmesh/open-enrollment", &serde_json::json!({}))?;
 
     if json {
@@ -808,8 +824,12 @@ pub fn open_enrollment(json: bool, endpoint: Option<&str>) -> anyhow::Result<()>
 
 // ── Close Enrollment ────────────────────────────────────────────────
 
-pub fn close_enrollment(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint)?;
+pub fn close_enrollment(
+    json: bool,
+    endpoint: Option<&str>,
+    token: Option<&str>,
+) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint, token)?;
     let resp = client.post_json("/v1/certmesh/close-enrollment", &serde_json::json!({}))?;
 
     if json {
@@ -822,8 +842,8 @@ pub fn close_enrollment(json: bool, endpoint: Option<&str>) -> anyhow::Result<()
 
 // ── Rotate Auth ─────────────────────────────────────────────────────
 
-pub fn rotate_auth(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint)?;
+pub fn rotate_auth(json: bool, endpoint: Option<&str>, token: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint, token)?;
 
     eprintln!("Enter the CA passphrase:");
     let mut passphrase = String::new();
@@ -867,14 +887,19 @@ pub fn rotate_auth(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
 
 // ── Backup ─────────────────────────────────────────────────────────
 
-pub fn backup(path: &std::path::Path, json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint)?;
+pub fn backup(
+    path: &std::path::Path,
+    json: bool,
+    endpoint: Option<&str>,
+    token: Option<&str>,
+) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint, token)?;
 
-    confirm_action(
-        "This will export the CA private key and enrollment secret.",
-        "BACKUP",
-    )?;
-
+    // Backup is non-destructive (it only *reads* the CA key into an encrypted
+    // bundle), so there is no DESTROY-style confirmation gate. The former
+    // courtesy "Type BACKUP" prompt was dropped: it did a bare stdin read with
+    // no TTY check and so hung on piped stdin. The passphrase prompts below are
+    // genuine secret inputs, not a confirmation, and can be fed via piped lines.
     let ca_passphrase = read_non_empty_line("Enter the CA passphrase:")?;
     let backup_passphrase = read_non_empty_line("Enter a backup passphrase:")?;
     confirm_passphrase("Confirm the backup passphrase:", &backup_passphrase)?;
@@ -908,11 +933,18 @@ pub fn backup(path: &std::path::Path, json: bool, endpoint: Option<&str>) -> any
 
 // ── Restore ────────────────────────────────────────────────────────
 
-pub fn restore(path: &std::path::Path, json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint)?;
+pub fn restore(
+    path: &std::path::Path,
+    json: bool,
+    endpoint: Option<&str>,
+    token: Option<&str>,
+) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint, token)?;
 
-    confirm_action("This will overwrite the local certmesh state.", "RESTORE")?;
-
+    // The former courtesy "Type RESTORE" prompt was dropped: it did a bare
+    // stdin read with no TTY check and so hung on piped stdin. The passphrase
+    // prompts below are genuine secret inputs (the backup + new CA passphrase),
+    // not a confirmation, and can be supplied via piped lines.
     let backup_bytes = std::fs::read(path)?;
     let backup_hex = hex_encode(&backup_bytes);
 
@@ -949,8 +981,9 @@ pub fn revoke(
     reason: Option<&str>,
     json: bool,
     endpoint: Option<&str>,
+    token: Option<&str>,
 ) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint)?;
+    let client = require_daemon(endpoint, token)?;
 
     let body = serde_json::json!({
         "hostname": hostname,
@@ -977,38 +1010,21 @@ pub fn revoke(
 
 // ── Destroy ─────────────────────────────────────────────────────────
 
-pub fn destroy(json: bool, endpoint: Option<&str>) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint)?;
+pub fn destroy(
+    json: bool,
+    yes: bool,
+    endpoint: Option<&str>,
+    token: Option<&str>,
+) -> anyhow::Result<()> {
+    // The single confirmation gate (token word + danger line come from the
+    // `certmesh destroy` CommandMeta). Runs BEFORE any network call so a
+    // non-interactive invocation (`--json` / piped) refuses up front instead of
+    // contacting the daemon and silently wiping state.
+    let meta = crate::help::get("certmesh destroy")
+        .ok_or_else(|| anyhow::anyhow!("internal: missing meta for 'certmesh destroy'"))?;
+    crate::help::confirm::gate_meta(meta, json, yes)?;
 
-    // Interactive confirmation gate - skip in --json (scripting) mode
-    if !json {
-        println!();
-        println!(
-            "  {}  This will {} all certmesh state:",
-            color::yellow("⚠"),
-            color::yellow("permanently delete")
-        );
-        println!(
-            "     {}",
-            color::dim("CA keys, certificates, enrollments, and audit logs.")
-        );
-        println!(
-            "     {}",
-            color::dim("If this node is the root CA, all mesh members will")
-        );
-        println!(
-            "     {}",
-            color::dim("lose their ability to renew certificates.")
-        );
-        println!();
-        let answer = prompt_line(&format!("  Type {} to confirm: ", color::red("DESTROY")))?;
-        if answer.trim() != "DESTROY" {
-            println!("  Aborted. No changes made.");
-            return Ok(());
-        }
-        println!();
-    }
-
+    let client = require_daemon(endpoint, token)?;
     let resp = client.post_json("/v1/certmesh/destroy", &serde_json::json!({}))?;
 
     let destroyed = resp
@@ -1043,17 +1059,6 @@ fn confirm_passphrase(prompt: &str, expected: &str) -> anyhow::Result<()> {
     let confirm = read_non_empty_line(prompt)?;
     if confirm != expected {
         anyhow::bail!("Passphrases do not match.");
-    }
-    Ok(())
-}
-
-fn confirm_action(message: &str, token: &str) -> anyhow::Result<()> {
-    eprintln!("{message}");
-    eprintln!("Type {token} to continue:");
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    if line.trim() != token {
-        anyhow::bail!("Confirmation failed.");
     }
     Ok(())
 }
@@ -1172,9 +1177,22 @@ mod tests {
     #[test]
     fn require_daemon_fails_without_endpoint() {
         // No breadcrumb file, no endpoint - should fail
-        let result = require_daemon(None);
+        let result = require_daemon(None, None);
         // This may succeed if there IS a breadcrumb; if not, it fails.
         // We just verify it doesn't panic.
         let _ = result;
+    }
+
+    #[test]
+    fn require_daemon_explicit_endpoint_does_not_require_breadcrumb() {
+        // An explicit endpoint must succeed regardless of breadcrumb state and
+        // must NOT read the local breadcrumb token (token-selection is covered
+        // directly by commands::token_for_explicit_endpoint tests). Here we just
+        // assert the explicit-endpoint path builds a client without bailing.
+        let client = require_daemon(Some("http://10.0.0.1:5641"), None);
+        assert!(client.is_ok());
+
+        let client = require_daemon(Some("http://10.0.0.1:5641"), Some("remote-token"));
+        assert!(client.is_ok());
     }
 }

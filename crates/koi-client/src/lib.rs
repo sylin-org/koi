@@ -29,6 +29,12 @@ pub enum ClientError {
     #[error("Daemon not reachable: {0}")]
     Unreachable(String),
 
+    /// HTTP 401 from the daemon: the request needs a Daemon Access Token.
+    /// Surfaced distinctly (instead of a generic `Api`) so the CLI can print an
+    /// actionable hint when talking to an explicit `--endpoint`.
+    #[error("remote daemon requires a token (pass --token or set KOI_TOKEN)")]
+    Unauthorized,
+
     #[error("{error}: {message}")]
     Api { error: String, message: String },
 
@@ -37,6 +43,13 @@ pub enum ClientError {
 
     #[error("Invalid response: {0}")]
     Decode(String),
+}
+
+impl ClientError {
+    /// Whether this error is an HTTP 401 (missing/invalid token).
+    pub fn is_unauthorized(&self) -> bool {
+        matches!(self, ClientError::Unauthorized)
+    }
 }
 
 pub type Result<T> = std::result::Result<T, ClientError>;
@@ -531,6 +544,7 @@ impl Iterator for SseStream {
 
 fn map_error(e: ureq::Error) -> ClientError {
     match e {
+        ureq::Error::Status(401, _resp) => ClientError::Unauthorized,
         ureq::Error::Status(_status, resp) => {
             let body = resp.into_string().unwrap_or_default();
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -598,6 +612,27 @@ mod tests {
     fn cursor_stream(input: &str) -> SseStream {
         let cursor = std::io::Cursor::new(input.as_bytes().to_vec());
         SseStream::new(Box::new(cursor))
+    }
+
+    // ── Unauthorized (401) hint tests ───────────────────────────────
+
+    #[test]
+    fn unauthorized_displays_actionable_hint() {
+        let err = ClientError::Unauthorized;
+        assert_eq!(
+            err.to_string(),
+            "remote daemon requires a token (pass --token or set KOI_TOKEN)"
+        );
+        assert!(err.is_unauthorized());
+    }
+
+    #[test]
+    fn non_401_api_error_is_not_unauthorized() {
+        let err = ClientError::Api {
+            error: "not_found".into(),
+            message: "nope".into(),
+        };
+        assert!(!err.is_unauthorized());
     }
 
     // ── KoiClient::new() tests ──────────────────────────────────────

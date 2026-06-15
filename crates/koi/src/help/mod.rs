@@ -9,6 +9,7 @@
 //! conformance tests below (P09). The renderer was folded in from the former
 //! standalone `command-surface` crate, specialized to Koi's concrete enums.
 
+pub mod confirm;
 mod glyph;
 mod meta;
 mod profile;
