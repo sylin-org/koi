@@ -226,3 +226,116 @@ impl KoiSource for CoreSource {
         serde_json::to_value(instances).map_err(|e| SourceError(e.to_string()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    /// A trivial `KoiSource` — `tools/list` and `initialize` never touch it, so the
+    /// reads return empty and the writes error. This proves the HTTP transport wiring
+    /// independently of any live core.
+    struct MockSource;
+
+    #[async_trait]
+    impl KoiSource for MockSource {
+        async fn is_available(&self) -> bool {
+            true
+        }
+        async fn browse(
+            &self,
+            _service_type: Option<String>,
+            _window: Duration,
+        ) -> Result<Vec<ServiceRecord>, SourceError> {
+            Ok(Vec::new())
+        }
+        async fn resolve(&self, _instance: String) -> Result<ServiceRecord, SourceError> {
+            Err(SourceError("not found".into()))
+        }
+        async fn register(
+            &self,
+            _payload: RegisterPayload,
+        ) -> Result<RegistrationResult, SourceError> {
+            Err(SourceError("mock".into()))
+        }
+        async fn unregister(&self, _id: String) -> Result<(), SourceError> {
+            Ok(())
+        }
+        async fn heartbeat(&self, _id: String) -> Result<(), SourceError> {
+            Ok(())
+        }
+        async fn unified_status(&self) -> Result<Value, SourceError> {
+            Ok(json!({}))
+        }
+        async fn health_status(&self) -> Result<Value, SourceError> {
+            Ok(json!({}))
+        }
+        async fn dns_list(&self) -> Result<Value, SourceError> {
+            Ok(json!({ "names": [] }))
+        }
+        async fn dns_lookup(
+            &self,
+            _name: String,
+            _record_type: RecordType,
+        ) -> Result<Value, SourceError> {
+            Err(SourceError("not found".into()))
+        }
+        async fn dns_add(
+            &self,
+            _name: String,
+            _ip: String,
+            _ttl: Option<u32>,
+        ) -> Result<Value, SourceError> {
+            Err(SourceError("mock".into()))
+        }
+        async fn dns_remove(&self, _name: String) -> Result<Value, SourceError> {
+            Err(SourceError("mock".into()))
+        }
+        async fn runtime_instances(&self) -> Result<Value, SourceError> {
+            Ok(json!([]))
+        }
+    }
+
+    /// Drive a real MCP `initialize` over the in-process Streamable HTTP transport
+    /// (mounted exactly as the daemon mounts it) and assert the handshake succeeds:
+    /// 200, a session id, and the koi-mcp server identity in the body. This is the
+    /// tripwire for the `/v1/mcp` HTTP surface.
+    #[tokio::test]
+    async fn initialize_over_streamable_http() {
+        let service = koi_mcp::streamable_http_service(
+            std::sync::Arc::new(MockSource),
+            vec!["localhost".to_string()],
+        );
+        let app = axum::Router::new().nest_service("/v1/mcp", service);
+
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"itest","version":"0.0.0"}}}"#;
+        let req = Request::post("/v1/mcp")
+            // rmcp validates the Host header (DNS-rebinding defense); supply one.
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "initialize should return 200"
+        );
+        assert!(
+            resp.headers().get("mcp-session-id").is_some(),
+            "stateful transport must assign an mcp-session-id"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("koi-mcp"),
+            "initialize result must carry the koi-mcp serverInfo; body was: {text}"
+        );
+    }
+}
