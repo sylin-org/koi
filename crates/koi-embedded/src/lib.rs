@@ -39,6 +39,8 @@ pub type Result<T> = std::result::Result<T, KoiError>;
 pub enum KoiError {
     #[error("capability disabled: {0}")]
     DisabledCapability(&'static str),
+    #[error("not available in client (remote) mode: {0}")]
+    RemoteUnsupported(&'static str),
     #[error("mdns error: {0}")]
     Mdns(#[from] koi_mdns::MdnsError),
     #[error("dns error: {0}")]
@@ -575,129 +577,69 @@ impl KoiEmbedded {
                 None
             };
 
+        // ── Domain event → host KoiEvent forwarders ──
+        // One shared spawn helper instead of six copies of the streaming select! skeleton.
+        // Each domain core is present only when its capability is enabled, so `if let Some`
+        // is the only gate needed.
         if let Some(core) = &mdns {
-            let mut rx = core.subscribe();
-            let tx = event_tx.clone();
-            let token = cancel.clone();
-            let handler = self.event_handler.clone();
-            tasks.push(tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = token.cancelled() => break,
-                        msg = rx.recv() => {
-                            let Ok(event) = msg else { continue; };
-                            let mapped = map_mdns_event(event);
-                            if let Some(mapped) = mapped {
-                                emit_event(&tx, handler.as_ref(), mapped);
-                            }
-                        }
-                    }
-                }
-            }));
+            spawn_event_mapper(
+                core.subscribe(),
+                map_mdns_event,
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
         }
-
-        if self.config.health_enabled {
-            if let Some(runtime) = &health {
-                let mut rx = runtime.core().subscribe();
-                let tx = event_tx.clone();
-                let token = cancel.clone();
-                let handler = self.event_handler.clone();
-                tasks.push(tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            _ = token.cancelled() => break,
-                            msg = rx.recv() => {
-                                let Ok(event) = msg else { continue; };
-                                let mapped = map_health_event(event);
-                                emit_event(&tx, handler.as_ref(), mapped);
-                            }
-                        }
-                    }
-                }));
-            }
+        if let Some(runtime) = &health {
+            spawn_event_mapper(
+                runtime.core().subscribe(),
+                |e| Some(map_health_event(e)),
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
         }
-
-        if self.config.dns_enabled {
-            if let Some(runtime) = &dns {
-                let mut rx = runtime.core().subscribe();
-                let tx = event_tx.clone();
-                let token = cancel.clone();
-                let handler = self.event_handler.clone();
-                tasks.push(tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            _ = token.cancelled() => break,
-                            msg = rx.recv() => {
-                                let Ok(event) = msg else { continue; };
-                                let mapped = map_dns_event(event);
-                                emit_event(&tx, handler.as_ref(), mapped);
-                            }
-                        }
-                    }
-                }));
-            }
+        if let Some(runtime) = &dns {
+            spawn_event_mapper(
+                runtime.core().subscribe(),
+                |e| Some(map_dns_event(e)),
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
         }
-
-        if self.config.certmesh_enabled {
-            if let Some(core) = &certmesh {
-                let mut rx = core.subscribe();
-                let tx = event_tx.clone();
-                let token = cancel.clone();
-                let handler = self.event_handler.clone();
-                tasks.push(tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            _ = token.cancelled() => break,
-                            msg = rx.recv() => {
-                                let Ok(event) = msg else { continue; };
-                                let mapped = map_certmesh_event(event);
-                                emit_event(&tx, handler.as_ref(), mapped);
-                            }
-                        }
-                    }
-                }));
-            }
+        if let Some(core) = &certmesh {
+            spawn_event_mapper(
+                core.subscribe(),
+                |e| Some(map_certmesh_event(e)),
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
         }
-
-        if self.config.proxy_enabled {
-            if let Some(runtime_proxy) = &proxy {
-                let mut rx = runtime_proxy.core().subscribe();
-                let tx = event_tx.clone();
-                let token = cancel.clone();
-                let handler = self.event_handler.clone();
-                tasks.push(tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            _ = token.cancelled() => break,
-                            msg = rx.recv() => {
-                                let Ok(event) = msg else { continue; };
-                                let mapped = map_proxy_event(event);
-                                emit_event(&tx, handler.as_ref(), mapped);
-                            }
-                        }
-                    }
-                }));
-            }
+        if let Some(runtime_proxy) = &proxy {
+            spawn_event_mapper(
+                runtime_proxy.core().subscribe(),
+                |e| Some(map_proxy_event(e)),
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
         }
-
-        if let Some(ref runtime_core) = runtime {
-            let mut rx = runtime_core.subscribe();
-            let tx = event_tx.clone();
-            let token = cancel.clone();
-            let handler = self.event_handler.clone();
-            tasks.push(tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = token.cancelled() => break,
-                        msg = rx.recv() => {
-                            let Ok(event) = msg else { continue; };
-                            if let Some(mapped) = map_runtime_event(event) {
-                                emit_event(&tx, handler.as_ref(), mapped);
-                            }
-                        }
-                    }
-                }
-            }));
+        if let Some(runtime_core) = &runtime {
+            spawn_event_mapper(
+                runtime_core.subscribe(),
+                map_runtime_event,
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
         }
 
         // ── Runtime orchestrator (opt-in) ──
@@ -826,6 +768,38 @@ fn map_runtime_event(event: koi_runtime::RuntimeEvent) -> Option<KoiEvent> {
         // not surfaced as KoiEvents (dashboard SSE covers them)
         _ => None,
     }
+}
+
+/// Spawn a task that maps a domain's broadcast events into the host `KoiEvent` stream until
+/// cancellation. One shared skeleton replaces the six near-identical per-domain `select!`
+/// loops that `start()` used to inline (the charter calls out duplicating that skeleton).
+///
+/// `map` returns `None` to drop an event (e.g. mDNS `Found`, which has no host-facing
+/// variant); event types that always map wrap their mapper as `|e| Some(map_x(e))`.
+fn spawn_event_mapper<E, F>(
+    mut rx: broadcast::Receiver<E>,
+    map: F,
+    tx: broadcast::Sender<KoiEvent>,
+    handler: Option<Arc<dyn Fn(KoiEvent) + Send + Sync>>,
+    cancel: CancellationToken,
+    tasks: &mut Vec<JoinHandle<()>>,
+) where
+    E: Clone + Send + 'static,
+    F: Fn(E) -> Option<KoiEvent> + Send + 'static,
+{
+    tasks.push(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                msg = rx.recv() => {
+                    let Ok(event) = msg else { continue; };
+                    if let Some(mapped) = map(event) {
+                        emit_event(&tx, handler.as_ref(), mapped);
+                    }
+                }
+            }
+        }
+    }));
 }
 
 fn emit_event(
