@@ -630,6 +630,43 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         let mut tasks = Vec::new();
         let started_at = std::time::Instant::now();
 
+        // ── Runtime orchestrator (parity with daemon_mode) ──
+        // Translates container lifecycle events into mDNS/DNS/health/proxy operations.
+        // Without this, containers discovered by `koi install` got no domain entries.
+        if let Some(ref rt) = cores.runtime {
+            tasks.push(crate::orchestrator::spawn_orchestrator(
+                rt,
+                crate::orchestrator::OrchestrationTargets {
+                    mdns: cores.mdns.clone(),
+                    dns: cores.dns.clone(),
+                    health: cores.health.clone(),
+                    proxy: cores.proxy.clone(),
+                },
+                cancel.clone(),
+            ));
+        }
+
+        // ── Certmesh background tasks (parity with daemon_mode) ──
+        // Renewal / roster sync / heartbeat / failover, previously absent under the SCM —
+        // the verified `koi install` defect. There is no interactive console under the
+        // service, so enrollment requests auto-deny (visibly logged), never block.
+        if let Some(ref certmesh) = cores.certmesh {
+            koi_compose::certmesh::spawn_enrollment_approval(
+                certmesh,
+                koi_compose::certmesh::deny_and_log_decider(),
+                &cancel,
+                &mut tasks,
+            )
+            .await;
+            koi_compose::certmesh::spawn_certmesh_background_tasks(
+                certmesh,
+                cores.mdns.clone(),
+                config.http_port,
+                &cancel,
+                &mut tasks,
+            );
+        }
+
         // Dashboard state
         let dashboard_state =
             crate::adapters::dashboard::build_dashboard_state(&cores, started_at, "daemon");

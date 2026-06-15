@@ -163,6 +163,23 @@ impl Builder {
         self
     }
 
+    /// Translate discovered runtime (container) lifecycle events into mDNS/DNS/health/proxy
+    /// entries — the same orchestrator the daemon runs. Opt-in; requires the runtime
+    /// adapter (`runtime`/`runtime_auto`) to be enabled to have any effect.
+    pub fn orchestrator(mut self, enabled: bool) -> Self {
+        self.config.orchestrator_enabled = enabled;
+        self
+    }
+
+    /// Run the certmesh role-driven background loops (renewal, standby roster sync, member
+    /// heartbeat, failover/announce) — the same loops the daemon runs. Opt-in; requires
+    /// certmesh (`certmesh`) to be enabled. A clustered embedded CA host wants this; a leaf
+    /// does not. Enrollment approval auto-denies (no interactive console).
+    pub fn certmesh_background(mut self, enabled: bool) -> Self {
+        self.config.certmesh_background_enabled = enabled;
+        self
+    }
+
     pub fn http_port(mut self, port: u16) -> Self {
         self.config.http_port = port;
         self
@@ -679,6 +696,54 @@ impl KoiEmbedded {
                     }
                 }
             }));
+        }
+
+        // ── Runtime orchestrator (opt-in) ──
+        // Translate container lifecycle events into mDNS/DNS/health/proxy entries — the
+        // same orchestrator the daemon runs. Off by default; a leaf host only wants events.
+        if self.config.orchestrator_enabled {
+            if let Some(ref runtime_core) = runtime {
+                tasks.push(koi_compose::orchestrator::spawn_orchestrator(
+                    runtime_core,
+                    koi_compose::orchestrator::OrchestrationTargets {
+                        mdns: mdns.clone(),
+                        dns: dns.clone(),
+                        health: health.clone(),
+                        proxy: proxy.clone(),
+                    },
+                    cancel.clone(),
+                ));
+            } else {
+                tracing::warn!(
+                    "orchestrator enabled but the runtime adapter is not — skipping orchestrator"
+                );
+            }
+        }
+
+        // ── Certmesh background tasks (opt-in) ──
+        // Renewal / roster sync / heartbeat / failover, same as the daemon. Off by default;
+        // a clustered embedded CA host opts in. No console, so enrollment auto-denies.
+        if self.config.certmesh_background_enabled {
+            if let Some(ref certmesh_core) = certmesh {
+                koi_compose::certmesh::spawn_enrollment_approval(
+                    certmesh_core,
+                    koi_compose::certmesh::deny_and_log_decider(),
+                    &cancel,
+                    &mut tasks,
+                )
+                .await;
+                koi_compose::certmesh::spawn_certmesh_background_tasks(
+                    certmesh_core,
+                    mdns.clone(),
+                    self.config.http_port,
+                    &cancel,
+                    &mut tasks,
+                );
+            } else {
+                tracing::warn!(
+                    "certmesh_background enabled but certmesh is not — skipping certmesh loops"
+                );
+            }
         }
 
         Ok(KoiHandle::new_embedded(
@@ -1308,6 +1373,25 @@ mod tests {
             embedded.config.data_dir,
             Some(std::path::PathBuf::from("/tmp/koi-test"))
         );
+    }
+
+    #[test]
+    fn orchestrator_and_certmesh_background_are_opt_in() {
+        // Default: both off (a leaf embedded host only wants the event stream).
+        let default_cfg = Builder::new().build().expect("build should succeed");
+        assert!(!default_cfg.config.orchestrator_enabled);
+        assert!(!default_cfg.config.certmesh_background_enabled);
+
+        // Opt-in: both on when requested.
+        let opted = Builder::new()
+            .runtime_auto()
+            .orchestrator(true)
+            .certmesh(true)
+            .certmesh_background(true)
+            .build()
+            .expect("build should succeed");
+        assert!(opted.config.orchestrator_enabled);
+        assert!(opted.config.certmesh_background_enabled);
     }
 
     #[test]
