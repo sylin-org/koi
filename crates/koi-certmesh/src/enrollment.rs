@@ -1,6 +1,6 @@
 //! Enrollment flow logic.
 //!
-//! Processes join requests: verifies auth (TOTP/FIDO2), issues certificate,
+//! Processes join requests: verifies auth (TOTP), issues certificate,
 //! adds member to roster, writes cert files, appends audit log.
 
 use chrono::Utc;
@@ -66,7 +66,7 @@ pub fn parse_cidr(cidr: &str) -> Result<ipnet::IpNet, CertmeshError> {
 /// Process an enrollment request from a joining member.
 ///
 /// 1. Check enrollment is open (including deadline)
-/// 2. Verify auth response (TOTP or FIDO2)
+/// 2. Verify auth response (TOTP)
 /// 3. Validate scope constraints
 /// 4. Check not already enrolled
 /// 5. Approval (handled by caller)

@@ -755,12 +755,8 @@ pub async fn promote(
     std::fs::write(paths.ca_cert_path(), &promote_response.ca_cert_pem)?;
 
     // Persist auth credential to auth.json
-    let stored = match &auth_state {
-        koi_crypto::auth::AuthState::Totp(secret) => {
-            koi_crypto::auth::store_totp(secret, &passphrase)?
-        }
-        koi_crypto::auth::AuthState::Fido2(cred) => koi_crypto::auth::store_fido2(cred.clone()),
-    };
+    let koi_crypto::auth::AuthState::Totp(secret) = &auth_state;
+    let stored = koi_crypto::auth::store_totp(secret, &passphrase)?;
     let auth_json = serde_json::to_string_pretty(&stored)?;
     std::fs::write(paths.auth_path(), auth_json)?;
 

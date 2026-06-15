@@ -20,7 +20,7 @@ use crate::roster::EnrollmentState;
 pub struct JoinRequest {
     /// Hostname of the machine requesting to join.
     pub hostname: String,
-    /// Auth response (TOTP code or FIDO2 assertion).
+    /// Auth response (TOTP code).
     pub auth: koi_crypto::auth::AuthResponse,
     /// Optional extra SANs the joiner wants (IP addresses, aliases).
     /// The server always includes `[hostname, hostname.local]`.
@@ -46,7 +46,7 @@ pub struct CertmeshStatus {
     pub ca_locked: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ca_fingerprint: Option<String>,
-    /// Active authentication method ("totp", "fido2", or absent if uninitialized).
+    /// Active authentication method ("totp", or absent if uninitialized).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<String>,
     pub profile: TrustProfile,
@@ -139,7 +139,7 @@ pub struct CreateCaRequest {
 /// POST /create response.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateCaResponse {
-    /// Auth setup info (TOTP URI or FIDO2 registration result).
+    /// Auth setup info (TOTP URI).
     pub auth_setup: koi_crypto::auth::AuthSetup,
     /// SHA-256 fingerprint of the CA certificate.
     pub ca_fingerprint: String,

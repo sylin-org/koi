@@ -220,7 +220,7 @@ pub fn load_ca(passphrase: &str, paths: &crate::CertmeshPaths) -> Result<CaState
 
 /// Load an existing CA using a pre-unwrapped master key.
 ///
-/// Used when the master key was obtained via TOTP, FIDO2, or auto-unlock
+/// Used when the master key was obtained via TOTP or auto-unlock
 /// rather than passphrase.
 pub fn load_ca_with_master_key(
     master_key: &[u8; 32],

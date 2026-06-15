@@ -44,7 +44,7 @@ impl TrustProfile {
     ///
     /// JustMe and MyTeam profiles save the passphrase locally so the
     /// pond unlocks automatically after a reboot.  MyOrganization
-    /// requires a manual unlock (passphrase / TOTP / FIDO2).
+    /// requires a manual unlock (passphrase / TOTP).
     pub fn should_auto_unlock(&self) -> bool {
         matches!(self, Self::JustMe | Self::MyTeam)
     }

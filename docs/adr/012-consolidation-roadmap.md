@@ -268,10 +268,12 @@ Replace `CorsLayer::permissive()` with:
 
 `koi factory-reset` with RESET confirmation, daemon shutdown, full data dir wipe.
 
-### 7.2 FIDO2 CLI input support — DEFERRED
+### 7.2 FIDO2 CLI input support — REMOVED (P08 certmesh-diet)
 
-Requires platform authenticator library (ctap-hid-fido2 or webauthn-authenticator-rs).
-Rust ecosystem support is immature. Remains behind `bail!()` in ceremony_cli.rs.
+No longer deferred: FIDO2 was **removed entirely** in P08, not kept behind a
+`bail!()`. The `InputType::Fido2` ceremony variant, `Prompt::fido2()`, and the
+ceremony_cli bail arm are gone. The pluggable `AuthAdapter` trait is retained as
+the documented re-entry path if a hardened authenticator integration is ever built.
 
 ### 7.3 SelectMany ceremony input — DONE (commit 1d02de4)
 
@@ -282,10 +284,12 @@ Numbered options with comma-separated selection, "all", empty, dedup, validation
 New feature work, not consolidation debt. Requires bounded ring buffer in
 broadcast system + `Last-Event-ID` header parsing in SSE handlers.
 
-### 7.5 FIDO2 unlock redesign (ADR-011 WS-3) — DEFERRED
+### 7.5 FIDO2 unlock redesign (ADR-011 WS-3) — REMOVED (P08 certmesh-diet)
 
-Same platform authenticator dependency as 7.2. Gated behind
-`#[cfg(feature = "fido2-unlock")]` (off by default).
+No longer deferred or redesigned: the FIDO2 unlock slot, the `Fido2Adapter`, the
+`fido2-unlock` feature flag, and all associated wire/state variants were **removed**
+in P08. The `AuthAdapter` trait stays as the re-entry path; re-adding a hardened
+FIDO2 implementation would mean implementing the trait again, not un-gating dead code.
 
 ### 7.6 Auto-unlock via vault — DONE (commit 1d02de4)
 
@@ -313,7 +317,7 @@ New feature work: browser actions, additional pages, WebSocket upgrade.
 
 - Blocks 5–6 introduce serde breaking changes with no migration path (acceptable for pre-1.0 project)
 - Block 4 (trait boundaries) is a large refactor with no visible user impact — motivation must be architectural clarity, not feature delivery
-- FIDO2 (7.2, 7.5) remains gated/broken until platform authenticator integration is solved — this is an unsolved problem across the Rust ecosystem
+- FIDO2 (7.2, 7.5) was removed entirely in P08 rather than carried as gated/broken debt; re-introduction is a future trait implementation, not an un-gating, and depends on platform authenticator support maturing across the Rust ecosystem
 
 ### Risks
 

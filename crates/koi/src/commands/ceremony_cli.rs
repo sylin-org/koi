@@ -274,9 +274,6 @@ fn collect_single_prompt(prompt: &Prompt) -> anyhow::Result<String> {
         InputType::SecretConfirm => collect_secret_confirm(prompt),
         InputType::Code => collect_code(prompt),
         InputType::Entropy => collect_entropy(prompt),
-        InputType::Fido2 => {
-            anyhow::bail!("FIDO2 hardware key input is not yet supported in this CLI.");
-        }
         InputType::SelectMany => collect_select_many(prompt),
     }
 }

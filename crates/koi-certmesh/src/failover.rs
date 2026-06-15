@@ -58,16 +58,13 @@ pub fn prepare_promotion(
     // Auth data is encrypted with the DH-derived shared key (same key
     // that protects the CA key). The standby derives the same shared key
     // from the DH exchange and decrypts both CA key and auth state.
-    let auth_data = match auth_state {
-        AuthState::Totp(secret) => {
-            let encrypted_totp = koi_crypto::totp::encrypt_secret(secret, shared_key_hex.as_ref())?;
-            serde_json::to_value(&koi_crypto::auth::StoredAuth::Totp {
-                encrypted_secret: encrypted_totp,
-            })
-            .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?
-        }
-        AuthState::Fido2(cred) => serde_json::to_value(koi_crypto::auth::store_fido2(cred.clone()))
-            .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?,
+    let auth_data = {
+        let AuthState::Totp(secret) = auth_state;
+        let encrypted_totp = koi_crypto::totp::encrypt_secret(secret, shared_key_hex.as_ref())?;
+        serde_json::to_value(&koi_crypto::auth::StoredAuth::Totp {
+            encrypted_secret: encrypted_totp,
+        })
+        .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?
     };
 
     let roster_json = serde_json::to_string(roster)

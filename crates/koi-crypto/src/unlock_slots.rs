@@ -11,7 +11,6 @@
 //! | Passphrase | Argon2id KDF | Derived from passphrase + salt |
 //! | Auto-unlock | None | Stored as plaintext in local file |
 //! | TOTP | Valid 6-digit code | Derived from TOTP shared_secret via HKDF |
-//! | FIDO2 | Assertion verified | Stored on disk, gated by assertion check |
 //!
 //! # File layout
 //!
@@ -90,28 +89,6 @@ pub enum UnlockSlot {
         encrypted_secret: Option<EncryptedKey>,
         /// Master key wrapped with HKDF(shared_secret, TOTP_SLOT_HKDF_INFO).
         wrapped_master_key: EncryptedKey,
-    },
-
-    // TODO(ADR-011): FIDO2 unlock slot is experimental — credential_id-derived
-    // storage key is insecure. Gate behind `fido2-unlock` feature when the
-    // authenticator integration is hardened.
-    /// FIDO2-based unlock slot.
-    /// The slot_kek is stored encrypted, released only after assertion verification.
-    #[serde(rename = "fido2")]
-    Fido2 {
-        /// WebAuthn credential ID (base64).
-        credential_id: String,
-        /// COSE public key (base64) for assertion verification.
-        public_key: String,
-        /// Relying Party ID.
-        rp_id: String,
-        /// Sign count for clone detection.
-        sign_count: u32,
-        /// Master key wrapped with a random slot_kek.
-        wrapped_master_key: EncryptedKey,
-        /// The slot_kek, encrypted with a key derived from the credential_id.
-        /// This is a software gate - assertion verification is the real gate.
-        encrypted_slot_kek: EncryptedKey,
     },
 }
 
@@ -289,150 +266,6 @@ impl SlotTable {
             .any(|s| matches!(s, UnlockSlot::Totp { .. }))
     }
 
-    /// Add a FIDO2 unlock slot.
-    pub fn add_fido2_slot(
-        &mut self,
-        master_key: &[u8; MASTER_KEY_LEN],
-        credential_id: &[u8],
-        public_key: &[u8],
-        rp_id: &str,
-    ) -> Result<(), CryptoError> {
-        use base64::Engine;
-        let b64 = base64::engine::general_purpose::STANDARD;
-
-        // Remove existing FIDO2 slot if present
-        self.slots
-            .retain(|s| !matches!(s, UnlockSlot::Fido2 { .. }));
-
-        // Generate a random slot_kek and wrap the master key
-        let mut slot_kek = Zeroizing::new([0u8; 32]);
-        rand::rng().fill_bytes(slot_kek.as_mut());
-        let slot_kek_hex = Zeroizing::new(hex_encode(slot_kek.as_ref()));
-        let wrapped = encrypt_bytes(master_key, &slot_kek_hex)?;
-
-        // Encrypt the slot_kek with a key derived from credential_id
-        // This is a software gate - the real gate is assertion verification
-        let cred_derived_key = derive_fido2_storage_key(credential_id);
-        let cred_derived_hex = Zeroizing::new(hex_encode(&*cred_derived_key));
-        let encrypted_slot_kek = encrypt_bytes(&*slot_kek, &cred_derived_hex)?;
-
-        self.slots.push(UnlockSlot::Fido2 {
-            credential_id: b64.encode(credential_id),
-            public_key: b64.encode(public_key),
-            rp_id: rp_id.to_string(),
-            sign_count: 0,
-            wrapped_master_key: wrapped,
-            encrypted_slot_kek,
-        });
-
-        Ok(())
-    }
-
-    /// Unwrap the master key after FIDO2 assertion has been verified externally.
-    ///
-    /// The caller is responsible for verifying the WebAuthn assertion before
-    /// calling this. This function just unwraps the cryptographic material.
-    pub fn unwrap_with_fido2(
-        &self,
-        credential_id: &[u8],
-    ) -> Result<Zeroizing<[u8; MASTER_KEY_LEN]>, CryptoError> {
-        use base64::Engine;
-        let b64 = base64::engine::general_purpose::STANDARD;
-        let target_id = b64.encode(credential_id);
-
-        for slot in &self.slots {
-            if let UnlockSlot::Fido2 {
-                credential_id: stored_id,
-                encrypted_slot_kek,
-                wrapped_master_key,
-                ..
-            } = slot
-            {
-                if stored_id == &target_id {
-                    // Derive storage key from credential_id, decrypt slot_kek
-                    let cred_derived_key = derive_fido2_storage_key(credential_id);
-                    let cred_derived_hex = Zeroizing::new(hex_encode(&*cred_derived_key));
-                    let slot_kek =
-                        Zeroizing::new(decrypt_bytes(encrypted_slot_kek, &cred_derived_hex)?);
-                    let slot_kek_hex = Zeroizing::new(hex_encode(&slot_kek));
-
-                    // Unwrap master key
-                    let bytes = decrypt_bytes(wrapped_master_key, &slot_kek_hex)?;
-                    return bytes_to_master_key(&bytes);
-                }
-            }
-        }
-        Err(CryptoError::Decryption(
-            "no matching FIDO2 slot found".into(),
-        ))
-    }
-
-    /// Get the FIDO2 credential info for challenge generation.
-    pub fn fido2_credential(&self) -> Option<Fido2SlotInfo> {
-        use base64::Engine;
-        let b64 = base64::engine::general_purpose::STANDARD;
-
-        for slot in &self.slots {
-            if let UnlockSlot::Fido2 {
-                credential_id,
-                public_key,
-                rp_id,
-                sign_count,
-                ..
-            } = slot
-            {
-                let cred_bytes = match b64.decode(credential_id) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "FIDO2 credential_id base64 decode failed");
-                        return None;
-                    }
-                };
-                let pk_bytes = match b64.decode(public_key) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "FIDO2 public_key base64 decode failed");
-                        return None;
-                    }
-                };
-                return Some(Fido2SlotInfo {
-                    credential_id: cred_bytes,
-                    public_key: pk_bytes,
-                    rp_id: rp_id.clone(),
-                    sign_count: *sign_count,
-                });
-            }
-        }
-        None
-    }
-
-    /// Check if a FIDO2 slot exists.
-    pub fn has_fido2_slot(&self) -> bool {
-        self.slots
-            .iter()
-            .any(|s| matches!(s, UnlockSlot::Fido2 { .. }))
-    }
-
-    /// Update the FIDO2 sign count after successful assertion.
-    pub fn update_fido2_sign_count(&mut self, credential_id: &[u8], new_count: u32) {
-        use base64::Engine;
-        let b64 = base64::engine::general_purpose::STANDARD;
-        let target_id = b64.encode(credential_id);
-
-        for slot in &mut self.slots {
-            if let UnlockSlot::Fido2 {
-                credential_id: stored_id,
-                sign_count,
-                ..
-            } = slot
-            {
-                if stored_id == &target_id {
-                    *sign_count = new_count;
-                }
-            }
-        }
-    }
-
     /// Describe available unlock methods for status/UI.
     pub fn available_methods(&self) -> Vec<&'static str> {
         let mut methods = Vec::new();
@@ -441,7 +274,6 @@ impl SlotTable {
                 UnlockSlot::Passphrase { .. } => methods.push("passphrase"),
                 UnlockSlot::AutoUnlock => methods.push("auto_unlock"),
                 UnlockSlot::Totp { .. } => methods.push("totp"),
-                UnlockSlot::Fido2 { .. } => methods.push("fido2"),
             }
         }
         methods
@@ -466,15 +298,6 @@ impl SlotTable {
             serde_json::from_str(&json).map_err(|e| CryptoError::Serialization(e.to_string()))?;
         Ok(table)
     }
-}
-
-/// FIDO2 credential info extracted from a slot (for challenge generation).
-#[derive(Debug, Clone)]
-pub struct Fido2SlotInfo {
-    pub credential_id: Vec<u8>,
-    pub public_key: Vec<u8>,
-    pub rp_id: String,
-    pub sign_count: u32,
 }
 
 // ── Key derivation helpers ──────────────────────────────────────────
@@ -538,22 +361,6 @@ fn get_or_create_fallback_key() -> Result<Zeroizing<[u8; 32]>, CryptoError> {
     } else {
         Ok(key)
     }
-}
-
-/// Derive a storage key from a FIDO2 credential ID for encrypting
-/// the slot_kek at rest. This is a software gate - the real security
-/// comes from assertion verification.
-// TODO(ADR-011): credential_id is not secret material — deriving a storage
-// key from it provides no real confidentiality. Replace with a proper
-// key agreement when the FIDO2 integration is hardened.
-fn derive_fido2_storage_key(credential_id: &[u8]) -> Zeroizing<[u8; 32]> {
-    let mut hasher = Sha256::new();
-    hasher.update(b"pond-fido2-storage-key-v1");
-    hasher.update(credential_id);
-    let result = hasher.finalize();
-    let mut key = Zeroizing::new([0u8; 32]);
-    key.copy_from_slice(&result);
-    key
 }
 
 /// Convert a Vec<u8> to a fixed-size master key array.
@@ -674,33 +481,6 @@ mod tests {
     }
 
     #[test]
-    fn fido2_slot_round_trip() {
-        let master_key = generate_master_key();
-        let mut table = SlotTable::new_with_passphrase(&master_key, "pass").unwrap();
-
-        let cred_id = b"test-credential-id-12345";
-        let pub_key = b"fake-cose-public-key-data";
-        table
-            .add_fido2_slot(&master_key, cred_id, pub_key, "garden.local")
-            .unwrap();
-
-        let recovered = table.unwrap_with_fido2(cred_id).unwrap();
-        assert_eq!(master_key, recovered);
-    }
-
-    #[test]
-    fn fido2_wrong_credential_fails() {
-        let master_key = generate_master_key();
-        let mut table = SlotTable::new_with_passphrase(&master_key, "pass").unwrap();
-
-        table
-            .add_fido2_slot(&master_key, b"real-cred", b"pub-key", "garden.local")
-            .unwrap();
-
-        assert!(table.unwrap_with_fido2(b"wrong-cred").is_err());
-    }
-
-    #[test]
     fn envelope_encrypt_new_round_trip() {
         let plaintext = b"test CA private key DER bytes";
         let (encrypted, table, master_key) =
@@ -758,15 +538,11 @@ mod tests {
         table.add_auto_unlock();
         let secret = crate::totp::generate_secret();
         table.add_totp_slot(&master_key, secret.as_bytes()).unwrap();
-        table
-            .add_fido2_slot(&master_key, b"cred", b"pk", "rp")
-            .unwrap();
 
         let methods = table.available_methods();
         assert!(methods.contains(&"passphrase"));
         assert!(methods.contains(&"auto_unlock"));
         assert!(methods.contains(&"totp"));
-        assert!(methods.contains(&"fido2"));
     }
 
     // Builds a TOTP slot (credential-store-backed) → requires `keyring`.

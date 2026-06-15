@@ -1,7 +1,7 @@
 //! Koi Certmesh - certificate mesh with pluggable enrollment auth (Phase 2+).
 //!
 //! Provides a private Certificate Authority that mints ECDSA P-256 certificates,
-//! pluggable enrollment authentication (TOTP or FIDO2), trust store installation,
+//! pluggable enrollment authentication (TOTP), trust store installation,
 //! and a roster of enrolled members. Two machines on the same LAN can establish
 //! mutual TLS trust without external infrastructure.
 
@@ -640,7 +640,7 @@ impl CertmeshCore {
         Ok(())
     }
 
-    /// Unlock the CA with a pre-unwrapped master key (TOTP, FIDO2, or auto-unlock).
+    /// Unlock the CA with a pre-unwrapped master key (TOTP or auto-unlock).
     ///
     /// This bypasses passphrase-based auth.json decryption. The auth
     /// credential (for API gating) is not loaded - callers should use
@@ -679,32 +679,6 @@ impl CertmeshCore {
                 CertmeshError::Crypto(msg)
             }
         })?;
-
-        self.unlock_with_master_key(&master_key).await
-    }
-
-    /// Unlock the CA using a FIDO2 credential (after assertion verification).
-    ///
-    /// The caller is responsible for verifying the WebAuthn assertion.
-    /// This function performs the cryptographic unwrap using the
-    /// credential ID.
-    pub async fn unlock_with_fido2(&self, credential_id: &[u8]) -> Result<(), CertmeshError> {
-        let slot_table =
-            ca::load_slot_table(&self.state.paths.slot_table_path())?.ok_or_else(|| {
-                CertmeshError::NoSlotFound(
-                    "no slot table found - pond may use legacy passphrase format".into(),
-                )
-            })?;
-
-        if slot_table.fido2_credential().is_none() {
-            return Err(CertmeshError::NoSlotFound(
-                "FIDO2 unlock is not configured for this pond".into(),
-            ));
-        }
-
-        let master_key = slot_table
-            .unwrap_with_fido2(credential_id)
-            .map_err(|e| CertmeshError::Crypto(e.to_string()))?;
 
         self.unlock_with_master_key(&master_key).await
     }
@@ -909,8 +883,8 @@ impl CertmeshCore {
 
     /// Rotate the auth credential - generates new credential, persists, returns setup info.
     ///
-    /// If `method` is `None`, keeps the current method. If `Some("totp")` or
-    /// `Some("fido2")`, switches to that method.
+    /// If `method` is `None`, keeps the current method. If `Some("totp")`,
+    /// switches to that method.
     pub async fn rotate_auth(
         &self,
         passphrase: &str,
@@ -945,14 +919,6 @@ impl CertmeshCore {
                     koi_crypto::totp::build_totp_uri(&new_secret, "Koi Certmesh", "enrollment");
                 let setup = koi_crypto::auth::AuthSetup::Totp { totp_uri: uri };
                 (AuthState::Totp(new_secret), stored, setup)
-            }
-            "fido2" => {
-                // FIDO2 rotation requires re-registration via the CLI.
-                // For now, return an error - the full flow is wired through the
-                // /auth/challenge + /auth/register endpoints (future).
-                return Err(CertmeshError::Internal(
-                    "FIDO2 rotation requires re-registration via CLI".into(),
-                ));
             }
             other => {
                 return Err(CertmeshError::Internal(format!(
@@ -1051,10 +1017,8 @@ impl CertmeshCore {
             .map_err(|e| CertmeshError::Internal(format!("auth restore failed: {e}")))?;
 
         // Persist restored auth credential
-        let stored = match &auth_state {
-            AuthState::Totp(secret) => koi_crypto::auth::store_totp(secret, new_passphrase)?,
-            AuthState::Fido2(cred) => koi_crypto::auth::store_fido2(cred.clone()),
-        };
+        let AuthState::Totp(secret) = &auth_state;
+        let stored = koi_crypto::auth::store_totp(secret, new_passphrase)?;
         let auth_json = serde_json::to_string_pretty(&stored)
             .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?;
         std::fs::write(self.state.paths.auth_path(), auth_json)?;
