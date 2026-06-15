@@ -19,6 +19,8 @@ struct ProxySection {
     entries: Vec<ProxyEntry>,
 }
 
+// Phase 2: migrate onto an injected data root like certmesh did.
+#[allow(clippy::disallowed_methods)]
 pub fn config_path() -> std::path::PathBuf {
     paths::koi_data_dir().join("config.toml")
 }

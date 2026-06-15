@@ -27,6 +27,8 @@ const DEFAULT_CONFIG_TOML: &str = "\
 /// Errors are logged but not fatal - the daemon can run without
 /// a data directory.
 pub fn ensure_data_dir() {
+    // Phase 2: migrate onto an injected data root like certmesh did.
+    #[allow(clippy::disallowed_methods)]
     let data_dir = paths::koi_data_dir();
 
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
