@@ -132,6 +132,7 @@ Supporting cast:
 | **Proxy** | TLS endpoint for certmesh certs | `koi proxy …` | [Proxy guide](docs/guides/proxy.md) |
 | **Health** | HTTP/TCP checks feeding status & dashboard | `koi health …` | [Health guide](docs/guides/health.md) |
 | **UDP** | Host UDP sockets for bridge-networked containers | `koi udp …` | [UDP guide](docs/guides/udp.md) |
+| **MCP** | Expose the LAN to AI agents over Model Context Protocol (stdio) | `koi mcp serve` | [MCP guide](docs/guides/mcp.md) |
 
 Every capability is runtime-toggleable (`--no-dns`, `KOI_NO_DNS=1`, …). The daemon
 also serves the **dashboard** (`/`), the **mDNS network browser** (`/mdns-browser`),
@@ -219,7 +220,14 @@ issues when reality disagrees with the docs.
 [DNS](docs/guides/dns.md) · [Certmesh](docs/guides/certmesh.md) ·
 [Runtime](docs/guides/runtime.md) · [Proxy](docs/guides/proxy.md) ·
 [Health](docs/guides/health.md) · [UDP](docs/guides/udp.md) ·
+[MCP](docs/guides/mcp.md) ·
 [System](docs/guides/system.md) · [Embedded (Rust)](docs/guides/embedded.md)
+
+**For AI agents:** `koi mcp serve` runs a [Model Context Protocol](docs/guides/mcp.md)
+server over stdio, turning the LAN into a substrate an agent can read and act on —
+discover services, resolve and add names, take inventory, and announce the agent's
+own service (auto-heartbeated, auto-retracted on exit). See the [MCP guide](docs/guides/mcp.md)
+for the copy-paste client config.
 
 **Reference:** [Architecture](docs/reference/architecture.md) ·
 [HTTP API](docs/reference/http-api.md) · [CLI](docs/reference/cli.md) ·

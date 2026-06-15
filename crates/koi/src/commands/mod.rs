@@ -13,6 +13,7 @@ pub mod certmesh;
 pub mod dns;
 pub mod factory_reset;
 pub mod health;
+pub mod mcp;
 pub mod mdns;
 pub mod proxy;
 pub mod status;

@@ -80,6 +80,7 @@ pub enum KoiCategory {
     Health,
     Proxy,
     Udp,
+    Mcp,
 }
 
 impl KoiCategory {
@@ -92,6 +93,7 @@ impl KoiCategory {
             Self::Health => "Health",
             Self::Proxy => "Proxy",
             Self::Udp => "UDP",
+            Self::Mcp => "MCP",
         }
     }
 
@@ -104,6 +106,7 @@ impl KoiCategory {
             Self::Health => 4,
             Self::Proxy => 5,
             Self::Udp => 6,
+            Self::Mcp => 7,
         }
     }
 
@@ -116,6 +119,7 @@ impl KoiCategory {
             Self::Health => "health ",
             Self::Proxy => "proxy ",
             Self::Udp => "udp ",
+            Self::Mcp => "mcp ",
         }
     }
 
@@ -128,6 +132,7 @@ impl KoiCategory {
             Self::Health => "health",
             Self::Proxy => "proxy",
             Self::Udp => "udp",
+            Self::Mcp => "mcp",
         }
     }
 
@@ -140,6 +145,7 @@ impl KoiCategory {
             Self::Health => "Service health checks and monitoring",
             Self::Proxy => "TLS-terminating reverse proxy",
             Self::Udp => "UDP datagram bridging for containers",
+            Self::Mcp => "Expose the LAN to AI agents over MCP",
         }
     }
 }
@@ -154,6 +160,7 @@ impl Glyph for KoiCategory {
             Self::Health => &[Presentation::Emoji("💓"), Presentation::Ascii("[health]")],
             Self::Proxy => &[Presentation::Emoji("🔀"), Presentation::Ascii("[proxy]")],
             Self::Udp => &[Presentation::Emoji("📡"), Presentation::Ascii("[udp]")],
+            Self::Mcp => &[Presentation::Emoji("🤖"), Presentation::Ascii("[mcp]")],
         }
     }
 
@@ -381,6 +388,10 @@ pub fn curated_examples(category: KoiCategory) -> &'static [Example] {
                 description: "Send a datagram",
             },
         ],
+        KoiCategory::Mcp => &[Example {
+            command: "koi mcp serve",
+            description: "Serve MCP over stdio for an AI agent host",
+        }],
     }
 }
 
@@ -1733,6 +1744,35 @@ expiring. The lease is reset to its original duration.",
             method: "PUT",
             path: koi_udp::http::paths::HEARTBEAT,
         }],
+        confirmation: None,
+    },
+    // ── MCP ───────────────────────────────────────────────────────────
+    CommandMeta {
+        name: "mcp serve",
+        summary: "Serve the MCP protocol over stdio",
+        long_description: "\
+Runs a Model Context Protocol (MCP) server on stdin/stdout so an AI agent
+host (Claude Code, Claude Desktop, or any MCP client) can use Koi's local
+network as a substrate: discover, name, and announce LAN services.
+
+The server talks to a running Koi daemon (discovered via the breadcrumb,
+or KOI_ENDPOINT/KOI_TOKEN). It exposes read tools (lan_discover,
+lan_resolve, dns_lookup, lan_inventory, health_snapshot, runtime_instances,
+mcp_servers_on_lan) and write tools (lan_announce, lan_unregister, dns_add,
+dns_remove). Services announced via lan_announce are auto-heartbeated and
+unregistered when the server stops. CA-admin operations are not exposed.
+
+This command is launched by the MCP host, not run interactively. See
+docs/guides/mcp.md for client configuration.",
+        category: KoiCategory::Mcp,
+        tags: &[KoiTag::Streaming, KoiTag::CliOnly],
+        scope: KoiScope::Public,
+        examples: &[Example {
+            command: "koi mcp serve",
+            description: "Serve MCP over stdio for an AI agent host",
+        }],
+        see_also: &["mdns discover", "mdns announce", "dns add"],
+        api: &[],
         confirmation: None,
     },
     // ── factory-reset (Core; defined last to mirror the original manifest) ─

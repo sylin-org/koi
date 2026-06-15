@@ -46,6 +46,7 @@ Koi is a single binary with a layered architecture. Three adapter layers sit on 
 | `crates/koi-embedded/`    | `koi-embedded`    | In-process facade - builder, handles, events                       | ~5,227 |
 | `crates/koi-udp/`         | `koi-udp`         | UDP datagram bridging - bind, relay, lease reaper, HTTP routes     | ~589   |
 | `crates/koi-runtime/`     | `koi-runtime`     | Container/service runtime adapter - Docker/Podman lifecycle events | ~1,641 |
+| `crates/koi-mcp/`         | `koi-mcp`         | MCP server over stdio - exposes the LAN substrate to AI agents     | ~620   |
 
 ---
 
@@ -65,6 +66,7 @@ koi (bin)
 ├── koi-udp         → koi-common, axum, tokio
 ├── koi-runtime     → koi-common, bollard, axum, utoipa, tokio, chrono
 ├── koi-client      → koi-common, ureq (blocking)
+├── koi-mcp         → koi-common, koi-client, koi-config, rmcp, tokio
 ├── koi-dashboard   → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-runtime, axum, tokio
 └── koi-embedded    → koi-common, koi-dashboard, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, tokio
 ```

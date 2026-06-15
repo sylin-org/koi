@@ -35,8 +35,11 @@ fn classify(pkg: &str) -> Option<Class> {
         // Domains + the lean blocking client (must not re-acquire a domain dependency).
         "koi-mdns" | "koi-dns" | "koi-health" | "koi-proxy" | "koi-udp" | "koi-runtime"
         | "koi-certmesh" | "koi-client" => Class::Domain,
-        // Wiring layer.
-        "koi-dashboard" | "koi-compose" | "koi-embedded" | "koi-net" => Class::Composition,
+        // Wiring layer. `koi-mcp` composes the koi-client surface into an MCP adapter,
+        // so it is composition (it depends on koi-client, a domain-class crate).
+        "koi-dashboard" | "koi-compose" | "koi-embedded" | "koi-net" | "koi-mcp" => {
+            Class::Composition
+        }
         _ => return None, // non-koi crates are out of scope
     })
 }

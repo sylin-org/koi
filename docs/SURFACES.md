@@ -45,6 +45,7 @@ guessed "works".
 | dashboard + mDNS browser | koi-dashboard tests | 2026-06-13 | koi-dashboard tests (ci.yml) | XSS closed structurally (DOM render + http/https launch allowlist) + CSP header; lazy meta-browse; lives in koi-dashboard crate, not the koi-common kernel (P06) |
 | CLI command manifest (surface.rs) | none | unknown since 2026-06-13 | none | Hand-written manifest; seven user-visible drift bugs; zero tests |
 | embedded / client API | koi-embedded + koi-client | 2026-05-10 | koi build (ci.yml); examples untested | Non-compiling README examples; remote mode degrades silently |
+| mcp (stdio MCP server for AI agents) | koi-mcp suite (unit + stdio integration test) | 2026-06-15 | koi-mcp tests (ci.yml) | tools/list + schemas/annotations guarded without a daemon; live tool calls against a running daemon are NOT exercised end-to-end. HTTP transport + daemon self-announce of `_mcp._tcp` are documented follow-ups |
 
 ---
 

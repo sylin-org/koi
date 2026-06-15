@@ -34,6 +34,7 @@ koi-proxy.workspace = true
 koi-udp.workspace = true
 koi-runtime = { workspace = true, features = ["docker"] }
 koi-client.workspace = true
+koi-mcp.workspace = true
 chrono.workspace = true
 clap.workspace = true
 tokio.workspace = true

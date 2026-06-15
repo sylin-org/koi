@@ -176,6 +176,8 @@ pub enum Command {
     Proxy(ProxyCommand),
     /// UDP datagram bridging
     Udp(UdpCommand),
+    /// Model Context Protocol server for AI agents
+    Mcp(McpCommand),
     /// Manage the daemon access token (show, write to a file for containers)
     Token(TokenCommand),
     /// Destroy all Koi data and start fresh
@@ -314,6 +316,18 @@ pub struct ProxyCommand {
 pub struct UdpCommand {
     #[command(subcommand)]
     pub command: Option<UdpSubcommand>,
+}
+
+#[derive(Args, Debug)]
+pub struct McpCommand {
+    #[command(subcommand)]
+    pub command: Option<McpSubcommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum McpSubcommand {
+    /// Serve the MCP protocol over stdio (for AI agent hosts)
+    Serve,
 }
 
 #[derive(Subcommand, Debug)]

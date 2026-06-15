@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use crate::cli::{
-    CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, HealthSubcommand, MdnsSubcommand,
-    ProxySubcommand, UdpSubcommand,
+    CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, HealthSubcommand, McpSubcommand,
+    MdnsSubcommand, ProxySubcommand, UdpSubcommand,
 };
 use crate::commands::status::try_daemon_status;
 use crate::daemon::daemon_mode;
@@ -261,6 +261,13 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     }
                 }
             }
+            Command::Mcp(mcp_cmd) => match &mcp_cmd.command {
+                None => {
+                    help::print_category_catalog(help::KoiCategory::Mcp, None)?;
+                    Ok(())
+                }
+                Some(McpSubcommand::Serve) => commands::mcp::serve(&cli).await,
+            },
             Command::Token(token_cmd) => commands::token::run(token_cmd, cli.json),
             // Install, Uninstall, Version, Launch, FactoryReset handled before runtime
             Command::Install

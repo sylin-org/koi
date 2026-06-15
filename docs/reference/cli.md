@@ -135,6 +135,21 @@ koi --daemon --no-runtime                         # disable
 
 ---
 
+## MCP (AI agents)
+
+```
+koi mcp serve                                     # serve MCP over stdio for an agent host
+```
+
+Launched by an MCP host (Claude Code/Desktop, or any stdio MCP client), not run
+interactively. Talks to a running daemon via the breadcrumb, or `KOI_ENDPOINT` /
+`KOI_TOKEN`. Exposes read tools (`lan_discover`, `lan_resolve`, `dns_lookup`,
+`lan_inventory`, `health_snapshot`, `runtime_instances`, `mcp_servers_on_lan`) and
+write tools (`lan_announce`, `lan_unregister`, `dns_add`, `dns_remove`). CA-admin
+operations are not exposed. See the [MCP guide](../guides/mcp.md).
+
+---
+
 ## System
 
 ```
