@@ -244,262 +244,21 @@ async fn create_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
     Json(request): Json<CreateCaRequest>,
 ) -> impl IntoResponse {
-    // Decode hex entropy
-    let entropy = match decode_hex(&request.entropy_hex) {
-        Some(bytes) if bytes.len() == 32 => bytes,
-        Some(bytes) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                &CertmeshError::Internal(format!(
-                    "entropy must be exactly 32 bytes, got {}",
-                    bytes.len()
-                )),
-            );
-        }
-        None => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                &CertmeshError::Internal("invalid hex entropy".to_string()),
-            );
-        }
-    };
-
-    // Reject if CA already initialized
-    if state.paths.is_ca_initialized() {
-        return error_response(
-            StatusCode::CONFLICT,
-            &CertmeshError::Internal("CA is already initialized".to_string()),
-        );
-    }
-
-    // Create CA (blocking I/O: key gen, file writes, slot table save)
-    let passphrase_clone = request.passphrase.clone();
-    let paths_clone = state.paths.clone();
-    let (ca_state, _master_key) = match tokio::task::spawn_blocking(move || {
-        crate::ca::create_ca(&passphrase_clone, &entropy, &paths_clone)
-    })
-    .await
-    .map_err(|e| CertmeshError::Internal(format!("CA creation task: {e}")))
-    .and_then(|r| r)
-    {
-        Ok(ca) => ca,
-        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
-    };
-    let ca_fingerprint = crate::ca::ca_fingerprint(&ca_state);
-
-    // Generate auth credential (default=TOTP).
-    // If the client provided a ceremony-verified secret, use it;
-    // otherwise generate a fresh one.
-    let totp_secret = if let Some(ref hex) = request.totp_secret_hex {
-        match koi_common::encoding::hex_decode(hex) {
-            Ok(bytes) => koi_crypto::totp::TotpSecret::from_bytes(bytes),
-            Err(_) => {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    &CertmeshError::Internal("totp_secret_hex: invalid hex encoding".into()),
-                );
-            }
-        }
-    } else {
-        koi_crypto::totp::generate_secret()
-    };
-    let stored = match koi_crypto::auth::store_totp(&totp_secret, &request.passphrase) {
-        Ok(s) => s,
-        Err(e) => {
-            return error_response(
+    let core = CertmeshCore::from_state(Arc::clone(&state));
+    match core.create(request).await {
+        Ok(response) => match serde_json::to_value(&response) {
+            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+            Err(e) => error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &CertmeshError::Internal(format!("auth store: {e}")),
-            )
-        }
-    };
-    let auth_json = match serde_json::to_string_pretty(&stored) {
-        Ok(j) => j,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &CertmeshError::Internal(format!("auth serialize: {e}")),
-            )
-        }
-    };
-    {
-        let auth_path = state.paths.auth_path();
-        let auth_json_clone = auth_json.clone();
-        if let Err(e) =
-            tokio::task::spawn_blocking(move || std::fs::write(&auth_path, &auth_json_clone))
-                .await
-                .map_err(|e| std::io::Error::other(format!("file I/O: {e}")))
-                .and_then(|r| r)
-        {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::Io(e));
-        }
-    }
-
-    let totp_uri = koi_crypto::totp::build_totp_uri(&totp_secret, "Koi Certmesh", "enrollment");
-
-    // Create roster from the two posture booleans (the named preset, if any,
-    // was already resolved to these by the ceremony/CLI).
-    let mut new_roster = crate::roster::Roster::new(
-        request.enrollment_open,
-        request.requires_approval,
-        request.operator.clone(),
-    );
-    let roster_path = state.paths.roster_path();
-    {
-        let roster_clone = new_roster.clone();
-        let roster_path_clone = roster_path.clone();
-        if let Err(e) = tokio::task::spawn_blocking(move || {
-            crate::roster::save_roster(&roster_clone, &roster_path_clone)
-        })
-        .await
-        .map_err(|e| std::io::Error::other(format!("roster save task: {e}")))
-        .and_then(|r| r)
-        {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &CertmeshError::Io(e));
-        }
-    }
-
-    // Self-enroll the CA node as the first (primary) member.
-    // This issues a certificate for the local hostname so applications
-    // on this machine can use TLS immediately.
-    let local_hostname = hostname::get()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "localhost".to_string());
-    let sans = vec![
-        local_hostname.clone(),
-        "localhost".to_string(),
-        "127.0.0.1".to_string(),
-        "::1".to_string(),
-    ];
-    match crate::ca::issue_certificate(&ca_state, &local_hostname, &sans) {
-        Ok(issued) => {
-            let cert_dir_base = state.paths.certs_dir().join(&local_hostname);
-            let cert_dir_base_clone = cert_dir_base.clone();
-            let issued_for_write = issued.clone();
-            let cert_dir = match tokio::task::spawn_blocking(move || {
-                crate::certfiles::write_cert_files_to(&cert_dir_base_clone, &issued_for_write)
-            })
-            .await
-            {
-                Ok(Ok(dir)) => dir,
-                Ok(Err(e)) => {
-                    tracing::warn!(error = %e, "Could not write CA node cert files");
-                    cert_dir_base
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Cert file write task panicked");
-                    cert_dir_base
-                }
-            };
-            let ca_fp = crate::ca::ca_fingerprint(&ca_state);
-            let member = crate::roster::RosterMember {
-                hostname: local_hostname.clone(),
-                role: crate::roster::MemberRole::Primary,
-                enrolled_at: chrono::Utc::now(),
-                enrolled_by: request.operator.clone(),
-                cert_fingerprint: issued.fingerprint,
-                cert_expires: issued.expires,
-                cert_sans: sans,
-                cert_path: cert_dir.display().to_string(),
-                status: crate::roster::MemberStatus::Active,
-                reload_hook: None,
-                last_seen: Some(chrono::Utc::now()),
-                pinned_ca_fingerprint: Some(ca_fp),
-                proxy_entries: Vec::new(),
-            };
-            new_roster.members.push(member);
-            // Persist updated roster with the self-enrolled member
-            {
-                let roster_clone = new_roster.clone();
-                let roster_path_clone = roster_path.clone();
-                if let Err(e) = tokio::task::spawn_blocking(move || {
-                    crate::roster::save_roster(&roster_clone, &roster_path_clone)
-                })
-                .await
-                .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))
-                .and_then(|r| r.map_err(CertmeshError::Io))
-                {
-                    tracing::warn!(error = %e, "Could not save roster after self-enrollment");
-                }
-            }
-            let _ = crate::audit::append_entry_to(
-                &state.paths.audit_log_path(),
-                "member_joined",
-                &[
-                    ("hostname", local_hostname.as_str()),
-                    ("role", "primary"),
-                    ("approved_by", "self-enroll"),
-                ],
-            );
-            tracing::info!(hostname = %local_hostname, "CA node self-enrolled as primary");
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Could not self-enroll CA node - roster will be empty");
-        }
-    }
-
-    // Install CA cert in OS trust store (best-effort)
-    if let Err(e) = koi_truststore::install_ca_cert(&ca_state.cert_pem, "koi-certmesh") {
-        tracing::warn!(error = %e, "Could not install CA cert in trust store");
-    }
-
-    // Configure auto-unlock from the create-time decision (single source of
-    // truth: CertmeshCore::configure_auto_unlock). When `auto_unlock` is true,
-    // the passphrase is saved to the koi-crypto vault so the daemon boots
-    // unlocked; the slot table is marked. This is what keeps the boot-unlocked
-    // path (koi-compose init_certmesh_core) working.
-    {
-        let core = CertmeshCore::from_state(Arc::clone(&state));
-        if let Err(e) = core.configure_auto_unlock(request.auto_unlock, &request.passphrase) {
-            tracing::warn!(error = %e, "Could not configure auto-unlock");
-        }
-    }
-
-    // Update in-memory state
-    *state.ca.lock().await = Some(ca_state);
-    *state.auth.lock().await = Some(koi_crypto::auth::AuthState::Totp(totp_secret));
-    *state.roster.lock().await = new_roster;
-
-    let _ = crate::audit::append_entry_to(
-        &state.paths.audit_log_path(),
-        "pond_initialized",
-        &[
-            (
-                "enrollment_open",
-                if request.enrollment_open {
-                    "open"
-                } else {
-                    "closed"
-                },
+                &CertmeshError::Internal(format!("Serialization error: {e}")),
             ),
-            (
-                "requires_approval",
-                if request.requires_approval {
-                    "yes"
-                } else {
-                    "no"
-                },
-            ),
-            ("operator", request.operator.as_deref().unwrap_or("none")),
-        ],
-    );
-
-    tracing::info!(
-        enrollment_open = request.enrollment_open,
-        requires_approval = request.requires_approval,
-        auto_unlock = request.auto_unlock,
-        "CA initialized via service"
-    );
-
-    let response = CreateCaResponse {
-        auth_setup: koi_crypto::auth::AuthSetup::Totp { totp_uri },
-        ca_fingerprint,
-    };
-    match serde_json::to_value(&response) {
-        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &CertmeshError::Internal(format!("Serialization error: {e}")),
-        ),
+        },
+        Err(e) => {
+            let code = koi_common::error::ErrorCode::from(&e);
+            let status = StatusCode::from_u16(code.http_status())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            error_response(status, &e)
+        }
     }
 }
 
@@ -1056,17 +815,6 @@ async fn health_handler(
     }
 }
 
-/// Decode a hex string into bytes. Returns `None` on invalid hex.
-fn decode_hex(hex: &str) -> Option<Vec<u8>> {
-    if !hex.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
-        .collect()
-}
-
 fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::Response {
     let code = koi_common::error::ErrorCode::from(error);
     koi_common::http::error_response_with_status(status, code, error.to_string())
@@ -1521,20 +1269,5 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.get("destroyed").unwrap().as_bool().unwrap());
-    }
-
-    #[tokio::test]
-    async fn decode_hex_valid() {
-        assert_eq!(decode_hex("0011ff"), Some(vec![0x00, 0x11, 0xff]));
-    }
-
-    #[tokio::test]
-    async fn decode_hex_invalid() {
-        assert_eq!(decode_hex("zz"), None);
-    }
-
-    #[tokio::test]
-    async fn decode_hex_odd_length() {
-        assert_eq!(decode_hex("abc"), None);
     }
 }

@@ -13,6 +13,12 @@ pub enum CertmeshError {
     #[error("invalid auth credential")]
     InvalidAuth,
 
+    #[error("invalid payload: {0}")]
+    InvalidPayload(String),
+
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     #[error("rate limited - try again in {remaining_secs} seconds")]
     RateLimited { remaining_secs: u64 },
 
@@ -97,6 +103,8 @@ impl From<&CertmeshError> for ErrorCode {
             CertmeshError::CaNotInitialized => ErrorCode::CaNotInitialized,
             CertmeshError::CaLocked => ErrorCode::CaLocked,
             CertmeshError::InvalidAuth => ErrorCode::InvalidAuth,
+            CertmeshError::InvalidPayload(_) => ErrorCode::InvalidPayload,
+            CertmeshError::Conflict(_) => ErrorCode::Conflict,
             CertmeshError::RateLimited { .. } => ErrorCode::RateLimited,
             CertmeshError::EnrollmentClosed => ErrorCode::EnrollmentClosed,
             CertmeshError::AlreadyEnrolled(_) => ErrorCode::Conflict,
@@ -136,6 +144,16 @@ mod tests {
             ),
             (CertmeshError::CaLocked, ErrorCode::CaLocked, 503),
             (CertmeshError::InvalidAuth, ErrorCode::InvalidAuth, 401),
+            (
+                CertmeshError::InvalidPayload("bad entropy".into()),
+                ErrorCode::InvalidPayload,
+                400,
+            ),
+            (
+                CertmeshError::Conflict("already initialized".into()),
+                ErrorCode::Conflict,
+                409,
+            ),
             (
                 CertmeshError::RateLimited { remaining_secs: 60 },
                 ErrorCode::RateLimited,
