@@ -462,10 +462,22 @@ mod tests {
         let secret = crate::totp::generate_secret();
         table.add_totp_slot(&master_key, secret.as_bytes()).unwrap();
 
-        // Generate a valid TOTP code
-        let code = crate::totp::current_code(&secret).unwrap();
-        let recovered = table.unwrap_with_totp(&code).unwrap();
-        assert_eq!(master_key, recovered);
+        // Generate a valid TOTP code and unwrap with it. TOTP codes roll over every 30s,
+        // so a single generate→verify can straddle a step boundary and spuriously fail;
+        // retry a bounded number of times (two consecutive attempts cannot both straddle
+        // a 30s boundary in the milliseconds between them).
+        let mut recovered = None;
+        for _ in 0..3 {
+            let code = crate::totp::current_code(&secret).unwrap();
+            if let Ok(key) = table.unwrap_with_totp(&code) {
+                recovered = Some(key);
+                break;
+            }
+        }
+        assert_eq!(
+            master_key,
+            recovered.expect("TOTP unwrap should succeed within 3 tries")
+        );
     }
 
     #[cfg(feature = "keyring")]
