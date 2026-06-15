@@ -67,6 +67,12 @@ and *Changed* below — existing certmesh `roster.json` files may need a
   join` was rejected with 401 by the daemon. `/v1/certmesh/join` is now exempt from the
   token requirement (the handler still enforces the TOTP code + enrollment policy);
   every other certmesh write remains token-gated.
+- **The ACME server-auth TLS listener would panic on start.** `adapters::acme::build_tls_config`
+  used a bare `rustls::ServerConfig::builder()`; with both aws-lc-rs (rustls) and ring
+  (koi-crypto) linked there is no process-level default crypto provider, so the listener's
+  spawned task panicked and the ACME port silently failed to come up. It now resolves the
+  provider explicitly (aws-lc-rs via `builder_with_provider`), matching `koi_certmesh::mtls`
+  and koi-proxy. Guarded by a new unit test.
 
 ## [0.4.1] - 2026-06-15
 
