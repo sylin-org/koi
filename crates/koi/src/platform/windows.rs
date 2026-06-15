@@ -384,7 +384,8 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         std::env::var("KOI_LOG").unwrap_or_else(|_| "info".to_string()),
     )
     .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let _log_guards = crate::init_logging(env_filter, Some(&log_path)).unwrap_or_else(|_| vec![]); // Fall back to no logging rather than crashing
+    let _log_guards =
+        crate::infra::init_logging(env_filter, Some(&log_path)).unwrap_or_else(|_| vec![]); // Fall back to no logging rather than crashing
 
     let config = crate::cli::Config::from_env();
 
@@ -464,7 +465,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         let http_bind_ip = if config.no_http {
             None
         } else {
-            match crate::resolve_http_bind_ip(&config.http_bind) {
+            match crate::infra::resolve_http_bind_ip(&config.http_bind) {
                 Ok(ip) => Some(ip),
                 Err(e) => {
                     tracing::error!(error = %e, "Invalid KOI_HTTP_BIND; falling back to loopback");
@@ -474,7 +475,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         };
 
         // Startup diagnostics (logged to file)
-        crate::startup_diagnostics(&config, http_bind_ip);
+        crate::infra::startup_diagnostics(&config, http_bind_ip);
 
         let started_at = std::time::Instant::now();
 
@@ -633,7 +634,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
 
         // Write breadcrumb for client discovery
         if !config.no_http {
-            let endpoint = crate::breadcrumb_endpoint(http_bind_ip, config.http_port);
+            let endpoint = crate::infra::breadcrumb_endpoint(http_bind_ip, config.http_port);
             koi_config::breadcrumb::write_breadcrumb(&endpoint, &dat_token);
         }
 
