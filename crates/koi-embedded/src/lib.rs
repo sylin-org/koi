@@ -853,102 +853,29 @@ async fn build_embedded_snapshot(
     udp: Option<Arc<koi_udp::UdpRuntime>>,
     runtime: Option<Arc<koi_runtime::RuntimeCore>>,
 ) -> serde_json::Value {
-    use koi_common::capability::Capability;
-
-    let mut capabilities = Vec::new();
-
-    if let Some(ref core) = mdns {
-        let s = core.status();
-        capabilities.push(serde_json::json!({
-            "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
-        }));
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "mdns", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
-    if let Some(ref core) = certmesh {
-        let s = core.status();
-        capabilities.push(serde_json::json!({
-            "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
-        }));
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "certmesh", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
-    if let Some(ref runtime) = dns {
-        let running = runtime.status().await.running;
-        if running {
-            let s = runtime.core().status();
-            capabilities.push(serde_json::json!({
-                "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
-            }));
-        } else {
-            capabilities.push(serde_json::json!({
-                "name": "dns", "enabled": true, "healthy": false, "summary": "stopped",
-            }));
-        }
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "dns", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
-    if let Some(ref runtime) = health {
-        let running = runtime.status().await.running;
-        if running {
-            let s = runtime.core().status();
-            capabilities.push(serde_json::json!({
-                "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
-            }));
-        } else {
-            capabilities.push(serde_json::json!({
-                "name": "health", "enabled": true, "healthy": false, "summary": "stopped",
-            }));
-        }
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "health", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
-    if let Some(ref runtime) = proxy {
-        let status = runtime.status().await;
-        capabilities.push(serde_json::json!({
-            "name": "proxy", "enabled": true, "healthy": true,
-            "summary": if status.is_empty() { "no listeners".to_string() } else { format!("{} listeners", status.len()) },
-        }));
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "proxy", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
-    if let Some(ref runtime) = udp {
-        let s = Capability::status(runtime.as_ref());
-        capabilities.push(serde_json::json!({
-            "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
-        }));
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "udp", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
-    if let Some(ref rt) = runtime {
-        let s = rt.capability_status().await;
-        capabilities.push(serde_json::json!({
-            "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
-        }));
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "runtime", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
+    // The capability ladder is assembled once in koi-compose, shared with `/v1/status` and
+    // the dashboard snapshot. The embedded snapshot includes `enabled` like the dashboard.
+    let cores = koi_compose::cores::Cores {
+        mdns,
+        certmesh,
+        dns,
+        health,
+        proxy,
+        udp,
+        runtime,
+    };
+    let capabilities: Vec<serde_json::Value> = koi_compose::status::assemble_capabilities(&cores)
+        .await
+        .into_iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.status.name,
+                "enabled": c.enabled,
+                "healthy": c.status.healthy,
+                "summary": c.status.summary,
+            })
+        })
+        .collect();
     serde_json::json!({ "capabilities": capabilities })
 }
 

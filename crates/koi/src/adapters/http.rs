@@ -12,7 +12,6 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
-use koi_common::capability::Capability;
 use serde::Serialize;
 use subtle::ConstantTimeEq;
 use tokio_util::sync::CancellationToken;
@@ -521,110 +520,23 @@ async fn health() -> &'static str {
     summary = "Unified capability status",
     responses((status = 200, body = UnifiedStatusResponse)))]
 async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<serde_json::Value> {
-    use koi_common::capability::CapabilityStatus;
-
-    let mut capabilities = Vec::new();
-
-    if let Some(ref core) = state.mdns {
-        capabilities.push(core.status());
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "mdns".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
-
-    if let Some(ref core) = state.certmesh {
-        capabilities.push(core.status());
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "certmesh".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
-
-    if let Some(ref runtime) = state.dns {
-        let running = runtime.status().await.running;
-        if running {
-            capabilities.push(runtime.core().status());
-        } else {
-            capabilities.push(CapabilityStatus {
-                name: "dns".to_string(),
-                summary: "stopped".to_string(),
-                healthy: false,
-            });
-        }
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "dns".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
-
-    if let Some(ref runtime) = state.health {
-        let running = runtime.status().await.running;
-        if running {
-            capabilities.push(runtime.core().status());
-        } else {
-            capabilities.push(CapabilityStatus {
-                name: "health".to_string(),
-                summary: "stopped".to_string(),
-                healthy: false,
-            });
-        }
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "health".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
-
-    if let Some(ref runtime) = state.proxy {
-        let status = runtime.status().await;
-        if status.is_empty() {
-            capabilities.push(CapabilityStatus {
-                name: "proxy".to_string(),
-                summary: "no listeners".to_string(),
-                healthy: true,
-            });
-        } else {
-            capabilities.push(CapabilityStatus {
-                name: "proxy".to_string(),
-                summary: format!("{} listeners", status.len()),
-                healthy: true,
-            });
-        }
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "proxy".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
-
-    if let Some(ref runtime) = state.udp {
-        capabilities.push(koi_common::capability::Capability::status(runtime.as_ref()));
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "udp".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
-
-    if let Some(ref runtime_core) = state.runtime {
-        capabilities.push(runtime_core.capability_status().await);
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "runtime".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
+    // The capability ladder is assembled once in koi-compose, shared with the dashboard and
+    // embedded snapshots. `/v1/status` emits just the status (no `enabled` field).
+    let cores = crate::DaemonCores {
+        mdns: state.mdns.clone(),
+        certmesh: state.certmesh.clone(),
+        dns: state.dns.clone(),
+        health: state.health.clone(),
+        proxy: state.proxy.clone(),
+        udp: state.udp.clone(),
+        runtime: state.runtime.clone(),
+    };
+    let capabilities: Vec<koi_common::capability::CapabilityStatus> =
+        koi_compose::status::assemble_capabilities(&cores)
+            .await
+            .into_iter()
+            .map(|c| c.status)
+            .collect();
 
     let uptime_secs = state.started_at.elapsed().as_secs();
     Json(serde_json::json!({

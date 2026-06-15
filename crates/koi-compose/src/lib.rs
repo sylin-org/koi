@@ -28,8 +28,9 @@ pub mod orchestrator;
 /// daemon and the Windows service share), `init_certmesh_core`, and `ordered_shutdown`.
 pub mod cores;
 
-// Further modules are filled in across the remaining P07 checkpoint steps:
-//   status      — assemble_capabilities (the single capability-status source)
+/// Unified capability-status assembly (`assemble_capabilities`) — the single capability
+/// ladder shared by `/v1/status`, the dashboard snapshot, and the embedded snapshot.
+pub mod status;
 
 #[cfg(test)]
 mod parity_tests {
