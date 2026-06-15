@@ -8,22 +8,38 @@
 //! writers carry `destructive_hint = false`; removers carry `destructive_hint = true`.
 //! The token is never echoed in any tool output.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::{
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
-    tool, tool_handler, tool_router, ErrorData, ServerHandler,
+    model::{
+        AnnotateAble, CallToolResult, Content, Implementation, ListResourcesResult,
+        PaginatedRequestParams, RawResource, ReadResourceRequestParams, ReadResourceResult,
+        Resource, ResourceContents, ResourceUpdatedNotificationParam, ServerCapabilities,
+        ServerInfo, SubscribeRequestParams, UnsubscribeRequestParams,
+    },
+    service::RequestContext,
+    tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler,
 };
+use tokio::sync::{broadcast, Mutex};
+use tokio::task::JoinHandle;
 
 use crate::client::NO_DAEMON_MSG;
 use crate::heartbeat::Registry;
-use crate::source::{KoiSource, SourceError};
+use crate::source::{KoiSource, ResourceChange, SourceError};
 use crate::tools::{
     self, AnnounceReq, DiscoverReq, DnsAddReq, DnsLookupReq, DnsRemoveReq, InventoryReq,
     ResolveReq, UnregisterReq,
 };
+
+/// MCP resource URIs Koi exposes. `read` returns a current snapshot; `subscribe`
+/// adds `resources/updated` deltas (in-process transport only — see `KoiSource::change_stream`).
+const URI_INVENTORY: &str = "koi://lan/inventory";
+const URI_HEALTH: &str = "koi://health";
+const URI_DNS: &str = "koi://dns/zone";
+const URI_MDNS: &str = "koi://mdns/services";
 
 /// Koi's mDNS convention for advertising an MCP server endpoint on the LAN.
 /// No DNS-SD standard for MCP exists yet — see `docs/guides/mcp.md`.
@@ -38,6 +54,9 @@ const DEFAULT_DISCOVER_SECS: u64 = 5;
 pub struct Server<S> {
     source: Arc<S>,
     registry: Registry,
+    /// Live resource subscriptions for this session: uri → the task that forwards
+    /// `resources/updated` notifications to the peer. Aborted on unsubscribe.
+    subs: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
 }
 
 // Hand-written so `Server<S>` is `Clone` without forcing `S: Clone` (the source is
@@ -47,6 +66,7 @@ impl<S> Clone for Server<S> {
         Self {
             source: Arc::clone(&self.source),
             registry: self.registry.clone(),
+            subs: Arc::clone(&self.subs),
         }
     }
 }
@@ -59,6 +79,7 @@ impl<S: KoiSource> Server<S> {
         Self {
             source,
             registry: Registry::new(),
+            subs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -407,7 +428,11 @@ impl<S: KoiSource> ServerHandler for Server<S> {
 
         let mut info = ServerInfo::default();
         info.server_info = implementation;
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .enable_resources_subscribe()
+            .build();
         info.instructions = Some(
             "Koi exposes the local network as a substrate for agents: discover, name, and \
              announce LAN services. Tools prefixed `lan_`/`dns_` operate against a running Koi \
@@ -417,6 +442,122 @@ impl<S: KoiSource> ServerHandler for Server<S> {
                 .to_string(),
         );
         info
+    }
+
+    // ── Resources: snapshot-on-read + (in-process) resources/updated deltas ──
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult::with_all_items(vec![
+            resource_descriptor(
+                URI_INVENTORY,
+                "LAN inventory",
+                "Joined capability status, service health, and the DNS name table.",
+            ),
+            resource_descriptor(
+                URI_HEALTH,
+                "Service health",
+                "Snapshot of every machine/service health check.",
+            ),
+            resource_descriptor(
+                URI_DNS,
+                "DNS names",
+                "All names resolvable by the local DNS resolver.",
+            ),
+            resource_descriptor(
+                URI_MDNS,
+                "Discovered LAN services",
+                "Cached mDNS-discovered services on the network.",
+            ),
+        ]))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        let uri = request.uri;
+        let value = match uri.as_str() {
+            URI_INVENTORY => {
+                // Same failure-tolerant join as the `lan_inventory` tool.
+                let status = self.source.unified_status().await.ok();
+                let health = self.source.health_status().await.ok();
+                let dns = self.source.dns_list().await.ok();
+                serde_json::json!({ "status": status, "health": health, "dns": dns })
+            }
+            URI_HEALTH => self.source.health_status().await.map_err(resource_err)?,
+            URI_DNS => self.source.dns_list().await.map_err(resource_err)?,
+            URI_MDNS => self.source.mdns_snapshot().await.map_err(resource_err)?,
+            other => {
+                return Err(ErrorData::invalid_params(
+                    format!("unknown resource: {other}"),
+                    None,
+                ))
+            }
+        };
+        let text = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string());
+        let contents = ResourceContents::text(text, &uri).with_mime_type("application/json");
+        Ok(ReadResourceResult::new(vec![contents]))
+    }
+
+    async fn subscribe(
+        &self,
+        request: SubscribeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        let uri = request.uri;
+        if !is_known_resource(&uri) {
+            return Err(ErrorData::invalid_params(
+                format!("unknown resource: {uri}"),
+                None,
+            ));
+        }
+        // Live deltas need a change stream — only the in-process transport has one.
+        // Over stdio the subscription is accepted but only the snapshot (read) is
+        // available; this is documented behavior, not an error.
+        if let Some(mut rx) = self.source.change_stream() {
+            let peer = context.peer.clone();
+            let watched = uri.clone();
+            let task = tokio::spawn(async move {
+                loop {
+                    let changed = match rx.recv().await {
+                        Ok(change) => change_matches(&watched, change),
+                        // Lagged: we missed events — assume the resource changed.
+                        Err(broadcast::error::RecvError::Lagged(_)) => true,
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    };
+                    if changed
+                        && peer
+                            .notify_resource_updated(ResourceUpdatedNotificationParam::new(
+                                watched.clone(),
+                            ))
+                            .await
+                            .is_err()
+                    {
+                        break; // peer/session gone
+                    }
+                }
+            });
+            if let Some(previous) = self.subs.lock().await.insert(uri, task) {
+                previous.abort();
+            }
+        }
+        Ok(())
+    }
+
+    async fn unsubscribe(
+        &self,
+        request: UnsubscribeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        if let Some(task) = self.subs.lock().await.remove(&request.uri) {
+            task.abort();
+        }
+        Ok(())
     }
 }
 
@@ -435,4 +576,68 @@ fn text_error(message: &str) -> CallToolResult {
 /// Map a source error to a tool error result. Never leaks the token.
 fn source_error_result(err: &SourceError) -> CallToolResult {
     text_error(&err.to_string())
+}
+
+/// Map a source error to an MCP resource error (used by `read_resource`).
+fn resource_err(err: SourceError) -> ErrorData {
+    ErrorData::internal_error(err.to_string(), None)
+}
+
+/// Build a resource descriptor for `list_resources`.
+fn resource_descriptor(uri: &str, name: &str, description: &str) -> Resource {
+    let mut raw = RawResource::new(uri, name);
+    raw.description = Some(description.to_string());
+    raw.mime_type = Some("application/json".to_string());
+    raw.no_annotation()
+}
+
+/// Whether `uri` is one of Koi's exposed MCP resources.
+fn is_known_resource(uri: &str) -> bool {
+    matches!(uri, URI_INVENTORY | URI_HEALTH | URI_DNS | URI_MDNS)
+}
+
+/// Whether a `ResourceChange` should trigger a `resources/updated` for `uri`.
+/// The joined inventory reflects any domain change; the rest match one domain.
+fn change_matches(uri: &str, change: ResourceChange) -> bool {
+    match uri {
+        URI_INVENTORY => true,
+        URI_HEALTH => change == ResourceChange::Health,
+        URI_DNS => change == ResourceChange::Dns,
+        URI_MDNS => change == ResourceChange::Mdns,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inventory_reflects_every_domain_change() {
+        for change in [
+            ResourceChange::Inventory,
+            ResourceChange::Health,
+            ResourceChange::Dns,
+            ResourceChange::Mdns,
+        ] {
+            assert!(change_matches(URI_INVENTORY, change));
+        }
+    }
+
+    #[test]
+    fn domain_resources_match_only_their_domain() {
+        assert!(change_matches(URI_HEALTH, ResourceChange::Health));
+        assert!(!change_matches(URI_HEALTH, ResourceChange::Dns));
+        assert!(change_matches(URI_DNS, ResourceChange::Dns));
+        assert!(!change_matches(URI_DNS, ResourceChange::Mdns));
+        assert!(change_matches(URI_MDNS, ResourceChange::Mdns));
+        assert!(!change_matches(URI_MDNS, ResourceChange::Health));
+    }
+
+    #[test]
+    fn known_resources_are_recognized() {
+        assert!(is_known_resource(URI_INVENTORY));
+        assert!(is_known_resource(URI_MDNS));
+        assert!(!is_known_resource("koi://nope"));
+    }
 }

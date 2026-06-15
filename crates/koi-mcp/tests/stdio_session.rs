@@ -80,6 +80,10 @@ async fn initialize_then_tools_list() {
         init["result"]["capabilities"]["tools"].is_object(),
         "server must advertise tools capability"
     );
+    assert!(
+        init["result"]["capabilities"]["resources"].is_object(),
+        "server must advertise resources capability"
+    );
 
     // The spec requires a `notifications/initialized` after initialize.
     send(
@@ -165,6 +169,36 @@ async fn initialize_then_tools_list() {
             tool["name"]
         );
     }
+
+    // ── resources/list ──
+    send(
+        &mut write_half,
+        r#"{"jsonrpc":"2.0","id":3,"method":"resources/list","params":{}}"#,
+    )
+    .await;
+    let listed_res = tokio::time::timeout(Duration::from_secs(5), recv(&mut reader))
+        .await
+        .expect("timed out waiting for resources/list response");
+    assert_eq!(listed_res["id"], 3);
+    let resources = listed_res["result"]["resources"]
+        .as_array()
+        .expect("resources/list must return an array");
+    let uris: Vec<&str> = resources.iter().filter_map(|r| r["uri"].as_str()).collect();
+    for uri in [
+        "koi://lan/inventory",
+        "koi://health",
+        "koi://dns/zone",
+        "koi://mdns/services",
+    ] {
+        assert!(
+            uris.contains(&uri),
+            "resources/list is missing `{uri}`; got: {uris:?}"
+        );
+    }
+
+    // (resources/read snapshot *content* is asserted deterministically in the binary's
+    // HTTP session test against a mock source — here a read would hit the dead-port
+    // client. `resources/list` above needs no source, so it is exercised over stdio.)
 
     // Closing the writer ends the server's input stream.
     drop(write_half);

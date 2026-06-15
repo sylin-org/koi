@@ -93,6 +93,10 @@ pub trait KoiSource: Send + Sync + 'static {
 
     async fn runtime_instances(&self) -> Result<Value, SourceError>;
 
+    /// A point-in-time snapshot of mDNS-discovered services (the browse cache) for
+    /// the `koi://mdns/services` resource — fast and lock-free, NOT a timed browse.
+    async fn mdns_snapshot(&self) -> Result<Value, SourceError>;
+
     /// A live stream of resource-change signals for MCP subscriptions. Returns
     /// `None` when the source cannot push deltas (the stdio client path) — those
     /// resources are then snapshot-only.
@@ -204,6 +208,12 @@ impl KoiSource for ClientSource {
 
     async fn runtime_instances(&self) -> Result<Value, SourceError> {
         call(&self.client, |c| c.get_json("/v1/runtime/instances"))
+            .await
+            .map_err(SourceError::from)
+    }
+
+    async fn mdns_snapshot(&self) -> Result<Value, SourceError> {
+        call(&self.client, |c| c.get_json("/v1/mdns/browser/snapshot"))
             .await
             .map_err(SourceError::from)
     }

@@ -215,6 +215,7 @@ pub async fn start(
             cores.clone(),
             started_at,
             bind_ip.to_string(),
+            cancel.clone(),
         ));
         // A loopback bind keeps rmcp's default Host allowlist; a deliberately
         // exposed bind disables it (the DAT token + TLS are the boundary). MCP
