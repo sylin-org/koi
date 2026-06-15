@@ -26,6 +26,7 @@ koi-proxy.workspace = true
 koi-udp.workspace = true
 koi-runtime.workspace = true
 koi-dashboard.workspace = true
+hickory-proto.workspace = true
 
 tokio.workspace = true
 tokio-util.workspace = true

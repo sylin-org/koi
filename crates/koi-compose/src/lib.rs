@@ -12,8 +12,10 @@
 //! wires. Nothing depends on it except the top-level consumers, so the `koi-common`
 //! kernel and the domain crates keep clean dependency closures.
 
-// Modules are filled in across the P07 checkpoint steps:
-//   bridges     — the integration-trait bridges (moved from the binary's integrations.rs)
+/// The cross-domain integration-trait bridges (moved from the binary's `integrations.rs`).
+pub mod bridges;
+
+// Further modules are filled in across the remaining P07 checkpoint steps:
 //   orchestrator— the container-runtime orchestrator (moved from the binary)
 //   status      — assemble_capabilities (the single capability-status source)
 //   cores       — init_cores + ordered_shutdown

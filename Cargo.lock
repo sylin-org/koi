@@ -1827,6 +1827,7 @@ dependencies = [
 name = "koi-compose"
 version = "0.4.0"
 dependencies = [
+ "hickory-proto",
  "koi-certmesh",
  "koi-common",
  "koi-config",
