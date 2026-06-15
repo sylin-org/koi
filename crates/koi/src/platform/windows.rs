@@ -527,6 +527,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             let bs = browser_state.clone();
             let dat = dat_token.clone();
             let mdns_snap = cores.mdns_snapshot.clone();
+            let mcp_http = !config.no_mcp_http;
             tasks.push(tokio::spawn(async move {
                 if let Err(e) = crate::adapters::http::start(
                     c,
@@ -538,6 +539,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                     bs,
                     dat,
                     mdns_snap,
+                    mcp_http,
                 )
                 .await
                 {

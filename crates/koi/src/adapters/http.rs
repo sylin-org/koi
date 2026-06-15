@@ -38,6 +38,9 @@ pub mod paths {
     pub const HOST: &str = "/v1/host";
     /// Prometheus HTTP service discovery (their format — see Door 1 / integrations.md).
     pub const PROMETHEUS_SD: &str = "/v1/sd/prometheus";
+    /// In-process MCP server (Streamable HTTP / JSON-RPC). Token-authenticated for
+    /// all methods (carved out of the GET exemption); not in `/openapi.json`.
+    pub const MCP: &str = "/v1/mcp";
 }
 
 // ── App state ───────────────────────────────────────────────────────
@@ -60,6 +63,9 @@ struct AppState {
     /// Cached-mDNS snapshot used only by the Prometheus `?include=discovered` slice.
     /// `None` when mDNS is disabled — the managed slice never touches it.
     mdns_snapshot: Option<Arc<dyn koi_common::integration::MdnsSnapshot>>,
+    /// Whether the in-process MCP HTTP transport (`/v1/mcp`) is mounted. Reported
+    /// on `/v1/status` as a field (MCP-HTTP is a transport, not a domain rung).
+    mcp_http_enabled: bool,
 }
 
 // ── Entrypoint ──────────────────────────────────────────────────────
@@ -78,6 +84,7 @@ pub async fn start(
     browser_state: Option<BrowserState>,
     dat_token: String,
     mdns_snapshot: Option<Arc<dyn koi_common::integration::MdnsSnapshot>>,
+    mcp_http_enabled: bool,
 ) -> anyhow::Result<()> {
     let app_state = AppState {
         mdns: cores.mdns.clone(),
@@ -92,6 +99,7 @@ pub async fn start(
         http_bind: bind_ip.to_string(),
         mdns_browse: browser_state.as_ref().map(|b| b.meta.clone()),
         mdns_snapshot,
+        mcp_http_enabled,
     };
 
     // ── Dashboard (always mounted) ──
@@ -197,6 +205,35 @@ pub async fn start(
             koi_runtime::http::paths::PREFIX,
             disabled_fallback_router("runtime"),
         );
+    }
+
+    // ── MCP over Streamable HTTP (in-process, mounted on this adapter) ──
+    // A tower Service (rmcp), so use nest_service. Token-authenticated for all
+    // methods via the dat_auth_middleware carve-out below. Not in /openapi.json.
+    if mcp_http_enabled {
+        let source = Arc::new(crate::adapters::mcp_http::CoreSource::new(
+            cores.clone(),
+            started_at,
+            bind_ip.to_string(),
+        ));
+        // A loopback bind keeps rmcp's default Host allowlist; a deliberately
+        // exposed bind disables it (the DAT token + TLS are the boundary). MCP
+        // requests are token-authenticated regardless.
+        let allowed_hosts = if bind_ip.is_loopback() {
+            vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "::1".to_string(),
+            ]
+        } else {
+            Vec::new()
+        };
+        app = app.nest_service(
+            paths::MCP,
+            koi_mcp::streamable_http_service(source, allowed_hosts),
+        );
+    } else {
+        app = app.nest(paths::MCP, disabled_fallback_router("mcp-http"));
     }
 
     // OpenAPI spec - composed from domain-owned specs via nest()
@@ -486,13 +523,17 @@ async fn dat_auth_middleware(
     next: Next,
     expected_token: Arc<String>,
 ) -> Response {
-    // GET, HEAD, and OPTIONS are exempt from auth.
-    // HEAD is auto-matched to GET handlers by axum, so it must follow the same policy.
+    // GET, HEAD, and OPTIONS are exempt from auth — EXCEPT under /v1/mcp. MCP
+    // Streamable HTTP uses GET for its server→client SSE stream (a live channel,
+    // not a read), so every method on /v1/mcp must carry the token. The public
+    // discovery descriptors (e.g. the server card) live outside /v1/mcp and stay
+    // GET-exempt. OPTIONS preflight is still let through so CORS works.
     let method = req.method().clone();
-    if method == axum::http::Method::GET
+    let is_mcp = req.uri().path().starts_with(paths::MCP);
+    let exempt_method = method == axum::http::Method::GET
         || method == axum::http::Method::HEAD
-        || method == axum::http::Method::OPTIONS
-    {
+        || method == axum::http::Method::OPTIONS;
+    if method == axum::http::Method::OPTIONS || (exempt_method && !is_mcp) {
         return next.run(req).await;
     }
 
@@ -561,6 +602,7 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
         "daemon": true,
         "http_bind": state.http_bind,
         "mdns_browse_active": state.mdns_browse.as_ref().map(|m| m.is_active()),
+        "mcp_http": state.mcp_http_enabled,
         "capabilities": capabilities,
     }))
 }
@@ -835,6 +877,80 @@ mod tests {
         assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
 
+    // ── MCP auth carve-out: /v1/mcp is authenticated for ALL methods ──
+    // MCP Streamable HTTP uses GET for its server→client SSE stream, so unlike
+    // the rest of the API a GET under /v1/mcp must still carry the token.
+
+    /// Router with a non-MCP GET and an MCP route, behind the production middleware.
+    fn mcp_auth_test_router(token: &str) -> Router {
+        let expected = Arc::new(token.to_string());
+        Router::new()
+            .route("/healthz", get(|| async { "ok" }))
+            .route(paths::MCP, get(|| async { "ok" }).post(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let expected = expected.clone();
+                dat_auth_middleware(req, next, expected)
+            }))
+    }
+
+    #[tokio::test]
+    async fn mcp_get_without_token_is_rejected() {
+        let app = mcp_auth_test_router("secret-token");
+        let req = Request::get(paths::MCP).body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn mcp_get_with_token_is_accepted() {
+        let app = mcp_auth_test_router("secret-token");
+        let req = Request::get(paths::MCP)
+            .header(DAT_HEADER, "secret-token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn mcp_post_without_token_is_rejected() {
+        let app = mcp_auth_test_router("secret-token");
+        let req = Request::post(paths::MCP).body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn non_mcp_get_stays_exempt() {
+        // The carve-out must not change the rest of the API: /healthz GET is still free.
+        let app = mcp_auth_test_router("secret-token");
+        let req = Request::get("/healthz").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn mcp_options_preflight_is_not_blocked() {
+        // OPTIONS is always let through so CORS preflight works (the handler has no
+        // OPTIONS method → 405, but crucially NOT 401).
+        let app = mcp_auth_test_router("secret-token");
+        let req = Request::builder()
+            .method("OPTIONS")
+            .uri(paths::MCP)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn mcp_http_disabled_fallback_is_503() {
+        let app = disabled_fallback_router("mcp-http");
+        let req = Request::post("/").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     #[test]
     fn openapi_spec_contains_system_paths() {
         let spec = build_openapi();
@@ -845,6 +961,12 @@ mod tests {
             "missing /v1/status: {paths:?}"
         );
         assert!(paths.contains(&"/v1/host"), "missing /v1/host: {paths:?}");
+        // MCP is JSON-RPC over Streamable HTTP, not a utoipa surface — like ACME it
+        // is deliberately excluded from /openapi.json.
+        assert!(
+            !paths.contains(&"/v1/mcp"),
+            "/v1/mcp must NOT be in OpenAPI: {paths:?}"
+        );
         assert!(
             paths.contains(&"/v1/admin/shutdown"),
             "missing /v1/admin/shutdown: {paths:?}"
@@ -903,6 +1025,7 @@ mod tests {
             http_bind: "127.0.0.1".to_string(),
             mdns_browse: None,
             mdns_snapshot: None,
+            mcp_http_enabled: false,
         }
     }
 

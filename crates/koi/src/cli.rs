@@ -108,6 +108,10 @@ pub struct Cli {
     #[arg(long, env = "KOI_NO_ACME")]
     pub no_acme: bool,
 
+    /// Disable the in-process MCP HTTP transport (/v1/mcp)
+    #[arg(long, env = "KOI_NO_MCP_HTTP")]
+    pub no_mcp_http: bool,
+
     /// Port for the ACME (RFC 8555) server-auth TLS listener
     #[arg(long, env = "KOI_ACME_PORT", default_value = "5643")]
     pub acme_port: u16,
@@ -608,6 +612,7 @@ pub struct Config {
     pub no_udp: bool,
     pub no_runtime: bool,
     pub no_acme: bool,
+    pub no_mcp_http: bool,
     pub runtime: String,
     pub announce_http: bool,
     pub dns_port: u16,
@@ -644,6 +649,7 @@ impl Config {
             no_udp: cli.no_udp,
             no_runtime: cli.no_runtime,
             no_acme: cli.no_acme,
+            no_mcp_http: cli.no_mcp_http,
             runtime: cli.runtime.clone(),
             announce_http: cli.announce_http,
             dns_port: cli.dns_port,
@@ -663,6 +669,7 @@ impl Config {
             "udp" => self.no_udp,
             "runtime" => self.no_runtime,
             "acme" => self.no_acme,
+            "mcp-http" => self.no_mcp_http,
             _ => false,
         };
         if disabled {
@@ -758,6 +765,11 @@ impl Config {
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let no_mcp_http = std::env::var("KOI_NO_MCP_HTTP")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
         let runtime = std::env::var("KOI_RUNTIME").unwrap_or_else(|_| "auto".to_string());
 
         let announce_http = std::env::var("KOI_ANNOUNCE_HTTP")
@@ -800,6 +812,7 @@ impl Config {
             no_udp,
             no_runtime,
             no_acme,
+            no_mcp_http,
             runtime,
             announce_http,
             dns_port,
@@ -830,6 +843,7 @@ impl Default for Config {
             no_udp: false,
             no_runtime: false,
             no_acme: false,
+            no_mcp_http: false,
             runtime: "auto".to_string(),
             announce_http: false,
             dns_port: 53,

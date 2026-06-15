@@ -21,6 +21,10 @@ mod tools;
 use std::sync::Arc;
 
 use koi_client::KoiClient;
+use rmcp::transport::streamable_http_server::{
+    session::local::LocalSessionManager,
+    tower::{StreamableHttpServerConfig, StreamableHttpService},
+};
 use rmcp::{transport::stdio, ServiceExt};
 
 pub use client::build_client;
@@ -29,6 +33,33 @@ pub use source::{ClientSource, KoiSource, ResourceChange, SourceError};
 
 /// The stdio server type: a [`Server`] backed by the blocking [`ClientSource`].
 pub type StdioServer = Server<ClientSource>;
+
+/// The in-process HTTP transport: a stateful Streamable-HTTP service whose handler
+/// is a fresh [`Server`] per session (so each session's announcements drain when it
+/// ends), all sharing the one `Arc<S>` source.
+pub type McpHttpService<S> = StreamableHttpService<Server<S>, LocalSessionManager>;
+
+/// Build the Streamable-HTTP MCP service to mount at `/v1/mcp` on the daemon's
+/// existing axum adapter (via `.nest_service`).
+///
+/// Stateful mode keeps a per-session SSE stream alive (required for
+/// `resources/updated` deltas). `allowed_hosts` is the rmcp `Host`-header
+/// allowlist (DNS-rebinding defense): pass the loopback set for a loopback bind,
+/// or an **empty** vec to disable the check when the operator has deliberately
+/// exposed the daemon (the DAT token + TLS are then the boundary).
+pub fn streamable_http_service<S: KoiSource>(
+    source: Arc<S>,
+    allowed_hosts: Vec<String>,
+) -> McpHttpService<S> {
+    // `StreamableHttpServerConfig` is #[non_exhaustive]; build via Default (which
+    // already sets stateful_mode = true) + the host-allowlist builder.
+    let config = StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts);
+    StreamableHttpService::new(
+        move || Ok(Server::new(Arc::clone(&source))),
+        Arc::new(LocalSessionManager::default()),
+        config,
+    )
+}
 
 /// Run the MCP server over stdio against the given Koi daemon client.
 ///

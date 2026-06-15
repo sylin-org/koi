@@ -122,6 +122,11 @@ hkdf = "0.12"
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }
 utoipa-scalar = { version = "0.3", features = ["axum"] }
 
-# MCP (Model Context Protocol) — server over stdio. schemars is RE-EXPORTED by rmcp
-# (rmcp::schemars); do NOT add schemars directly.
-rmcp = { version = "1.7", features = ["server", "transport-io", "macros"] }
+# MCP (Model Context Protocol) — stdio + in-process Streamable HTTP server. schemars
+# is RE-EXPORTED by rmcp (rmcp::schemars); do NOT add schemars directly.
+rmcp = { version = "1.7", features = [
+    "server",
+    "transport-io",
+    "transport-streamable-http-server",
+    "macros",
+] }

@@ -102,6 +102,7 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         let bs = browser_state.clone();
         let dat = dat_token.clone();
         let mdns_snap = cores.mdns_snapshot.clone();
+        let mcp_http = !config.no_mcp_http;
         tasks.push(tokio::spawn(async move {
             if let Err(e) = adapters::http::start(
                 c,
@@ -113,6 +114,7 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
                 bs,
                 dat,
                 mdns_snap,
+                mcp_http,
             )
             .await
             {
