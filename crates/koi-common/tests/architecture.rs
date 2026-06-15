@@ -36,7 +36,7 @@ fn classify(pkg: &str) -> Option<Class> {
         "koi-mdns" | "koi-dns" | "koi-health" | "koi-proxy" | "koi-udp" | "koi-runtime"
         | "koi-certmesh" | "koi-client" => Class::Domain,
         // Wiring layer.
-        "koi-dashboard" | "koi-embedded" | "koi-net" => Class::Composition,
+        "koi-dashboard" | "koi-compose" | "koi-embedded" | "koi-net" => Class::Composition,
         _ => return None, // non-koi crates (e.g. command-surface) are out of scope
     })
 }

@@ -54,7 +54,8 @@ jobs:
             koi-health      # Layer 4: system health check engine
             koi-dashboard   # Layer 5: dashboard + mDNS browser presentation (deps: mdns/certmesh/dns/health/proxy/runtime)
             koi-client      # Layer 5: CLI client API communication
-            koi-embedded    # Layer 6: embedded engine facade (deps koi-dashboard)
+            koi-compose     # Layer 5: composition layer (deps: all domains + dashboard + client)
+            koi-embedded    # Layer 6: embedded engine facade (deps koi-dashboard, koi-compose)
             koi-net         # Layer 6: main daemon entrypoint (folder crates/koi)
           )
 

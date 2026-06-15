@@ -1824,6 +1824,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "koi-compose"
+version = "0.4.0"
+dependencies = [
+ "koi-certmesh",
+ "koi-common",
+ "koi-config",
+ "koi-dashboard",
+ "koi-dns",
+ "koi-health",
+ "koi-mdns",
+ "koi-proxy",
+ "koi-runtime",
+ "koi-udp",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "koi-config"
 version = "0.4.0"
 dependencies = [
@@ -2003,6 +2022,7 @@ dependencies = [
  "koi-certmesh",
  "koi-client",
  "koi-common",
+ "koi-compose",
  "koi-config",
  "koi-crypto",
  "koi-dashboard",

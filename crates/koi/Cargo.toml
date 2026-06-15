@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 koi-common.workspace = true
 koi-dashboard.workspace = true
+koi-compose.workspace = true
 koi-mdns.workspace = true
 koi-certmesh.workspace = true
 # The batteries-included binary ships every optional backend. Request the leaf features

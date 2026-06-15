@@ -1,0 +1,32 @@
+[package]
+name = "koi-compose"
+description = "Composition layer for Koi: the single source for constructing cores, wiring cross-domain bridges, the runtime orchestrator, capability status, and ordered shutdown"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["koi", "composition", "orchestrator", "networking"]
+categories = ["network-programming"]
+
+[dependencies]
+# Composition crate: depends on every domain it wires + koi-dashboard + koi-client.
+# Nothing depends on koi-compose except the top-level consumers (the koi binary and
+# koi-embedded), so the kernel and domain closures stay clean.
+koi-common.workspace = true
+koi-mdns.workspace = true
+koi-certmesh.workspace = true
+koi-config.workspace = true
+koi-dns.workspace = true
+koi-health.workspace = true
+koi-proxy.workspace = true
+koi-udp.workspace = true
+koi-runtime.workspace = true
+koi-dashboard.workspace = true
+
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
