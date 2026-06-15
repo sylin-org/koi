@@ -101,13 +101,14 @@ fn offline_capabilities(config: &Config) -> Vec<CapabilityStatus> {
             healthy: false,
         });
     } else {
-        let certmesh_summary = if koi_certmesh::CertmeshPaths::with_data_dir(config.data_dir.clone())
-            .is_ca_initialized()
-        {
-            "CA initialized (daemon not running)".to_string()
-        } else {
-            "CA not initialized".to_string()
-        };
+        let certmesh_summary =
+            if koi_certmesh::CertmeshPaths::with_data_dir(config.data_dir.clone())
+                .is_ca_initialized()
+            {
+                "CA initialized (daemon not running)".to_string()
+            } else {
+                "CA not initialized".to_string()
+            };
         caps.push(CapabilityStatus {
             name: "certmesh".to_string(),
             summary: certmesh_summary,

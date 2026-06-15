@@ -20,6 +20,7 @@ koi-common.workspace = true
 # keychain / D-Bus stack, or the image PNG codec. The features below re-arm them
 # default-on, so a default `koi-embedded = "0.4"` is byte-identical to today.
 koi-dashboard = { workspace = true, default-features = false }
+koi-compose.workspace = true
 koi-crypto = { workspace = true, default-features = false }
 koi-mdns.workspace = true
 koi-dns.workspace = true
