@@ -104,6 +104,14 @@ pub struct Cli {
     #[arg(long, env = "KOI_NO_RUNTIME")]
     pub no_runtime: bool,
 
+    /// Disable the ACME (RFC 8555) server capability
+    #[arg(long, env = "KOI_NO_ACME")]
+    pub no_acme: bool,
+
+    /// Port for the ACME (RFC 8555) server-auth TLS listener
+    #[arg(long, env = "KOI_ACME_PORT", default_value = "5643")]
+    pub acme_port: u16,
+
     /// Runtime backend to use (auto, docker, podman)
     #[arg(long, env = "KOI_RUNTIME", default_value = "auto", value_parser = parse_runtime_backend)]
     pub runtime: String,
@@ -535,12 +543,30 @@ pub enum CertmeshSubcommand {
     },
     /// Destroy the certificate mesh (removes all CA data, certs, and audit log)
     Destroy,
+    /// ACME (RFC 8555) server — let standard ACME clients get certs from the CA
+    Acme(AcmeCommand),
+}
+
+/// `koi certmesh acme <subcommand>` — the RFC 8555 ACME facade.
+#[derive(clap::Args, Debug)]
+pub struct AcmeCommand {
+    #[command(subcommand)]
+    pub command: Option<AcmeSubcommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AcmeSubcommand {
+    /// Show the ACME directory URL + the client bootstrap recipe
+    Enable,
+    /// Show ACME server status (directory URL, account/issuance counts)
+    Status,
 }
 
 /// Resolved configuration used at runtime.
 pub struct Config {
     pub http_port: u16,
     pub mtls_port: u16,
+    pub acme_port: u16,
     pub pipe_path: PathBuf,
     pub no_http: bool,
     pub no_ipc: bool,
@@ -551,6 +577,7 @@ pub struct Config {
     pub no_proxy: bool,
     pub no_udp: bool,
     pub no_runtime: bool,
+    pub no_acme: bool,
     pub runtime: String,
     pub announce_http: bool,
     pub dns_port: u16,
@@ -574,6 +601,7 @@ impl Config {
             data_dir,
             http_port: cli.port,
             mtls_port: cli.mtls_port,
+            acme_port: cli.acme_port,
             pipe_path,
             http_bind: cli.http_bind.clone(),
             no_http: cli.no_http,
@@ -585,6 +613,7 @@ impl Config {
             no_proxy: cli.no_proxy,
             no_udp: cli.no_udp,
             no_runtime: cli.no_runtime,
+            no_acme: cli.no_acme,
             runtime: cli.runtime.clone(),
             announce_http: cli.announce_http,
             dns_port: cli.dns_port,
@@ -603,6 +632,7 @@ impl Config {
             "proxy" => self.no_proxy,
             "udp" => self.no_udp,
             "runtime" => self.no_runtime,
+            "acme" => self.no_acme,
             _ => false,
         };
         if disabled {
@@ -637,6 +667,11 @@ impl Config {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(crate::adapters::mtls::DEFAULT_MTLS_PORT);
+
+        let acme_port = std::env::var("KOI_ACME_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(crate::adapters::acme::DEFAULT_ACME_PORT);
 
         let pipe_path = std::env::var("KOI_PIPE")
             .ok()
@@ -688,6 +723,11 @@ impl Config {
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let no_acme = std::env::var("KOI_NO_ACME")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
         let runtime = std::env::var("KOI_RUNTIME").unwrap_or_else(|_| "auto".to_string());
 
         let announce_http = std::env::var("KOI_ANNOUNCE_HTTP")
@@ -717,6 +757,7 @@ impl Config {
             data_dir,
             http_port,
             mtls_port,
+            acme_port,
             pipe_path,
             http_bind,
             no_http,
@@ -728,6 +769,7 @@ impl Config {
             no_proxy,
             no_udp,
             no_runtime,
+            no_acme,
             runtime,
             announce_http,
             dns_port,
@@ -745,6 +787,7 @@ impl Default for Config {
             data_dir,
             http_port: DEFAULT_HTTP_PORT,
             mtls_port: crate::adapters::mtls::DEFAULT_MTLS_PORT,
+            acme_port: crate::adapters::acme::DEFAULT_ACME_PORT,
             pipe_path: default_pipe_path(),
             http_bind: "loopback".to_string(),
             no_http: false,
@@ -756,6 +799,7 @@ impl Default for Config {
             no_proxy: false,
             no_udp: false,
             no_runtime: false,
+            no_acme: false,
             runtime: "auto".to_string(),
             announce_http: false,
             dns_port: 53,

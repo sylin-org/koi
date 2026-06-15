@@ -46,6 +46,7 @@ guessed "works".
 | CLI command manifest (surface.rs) | none | unknown since 2026-06-13 | none | Hand-written manifest; seven user-visible drift bugs; zero tests |
 | embedded / client API | koi-embedded + koi-client | 2026-05-10 | koi build (ci.yml); examples untested | Non-compiling README examples; remote mode degrades silently |
 | mcp (stdio MCP server for AI agents) | koi-mcp suite (unit + stdio integration test) | 2026-06-15 | koi-mcp tests (ci.yml) | tools/list + schemas/annotations guarded without a daemon; live tool calls against a running daemon are NOT exercised end-to-end. HTTP transport + daemon self-announce of `_mcp._tcp` are documented follow-ups |
+| acme (RFC 8555 facade over the CA) | koi-certmesh acme suite (6 security-gate tests + instant-acme conformance, all un-ignored) | 2026-06-15 | koi-certmesh tests (ci.yml) | dns-01 only, EC/ES256 only, in-zone-only issuance. JWS verify assembled from p256 (no josekit). Conformance: instant-acme 0.8.5 issues a cert end-to-end via dns-01 over TLS, chain validates to the CA. The dns-01 solver is exercised via an in-test MemSolver mirroring DnsCore's TXT contract (the real AcmeDnsBridge→DnsCore path is guarded by koi-dns tests, not wired end-to-end here). EAB closed-mode rejects unbound new-accounts but the HMAC verify path is not yet exercised |
 
 ---
 

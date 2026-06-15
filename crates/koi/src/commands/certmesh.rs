@@ -1121,6 +1121,173 @@ async fn discover_ca() -> anyhow::Result<String> {
     }
 }
 
+// ── ACME (RFC 8555) ──────────────────────────────────────────────────
+
+/// Default ACME server-auth TLS port (mirrors `adapters::acme::DEFAULT_ACME_PORT`).
+const ACME_PORT: u16 = 5643;
+
+/// Derive the ACME directory URL from a daemon endpoint, swapping the scheme to
+/// https and the port to the ACME port. `https://<host>:5643/acme/directory`.
+fn acme_directory_url(endpoint: &str) -> String {
+    // endpoint looks like "http://host:5641"; extract the host.
+    let host = endpoint
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split(['/', ':'])
+        .next()
+        .filter(|h| !h.is_empty())
+        .unwrap_or("localhost");
+    format!("https://{host}:{ACME_PORT}/acme/directory")
+}
+
+/// Path to the CA root certificate clients must trust to bootstrap.
+fn ca_cert_path_hint() -> String {
+    #[allow(clippy::disallowed_methods)]
+    let data_dir = koi_common::paths::koi_data_dir();
+    data_dir
+        .join("certmesh")
+        .join("ca")
+        .join("ca-cert.pem")
+        .display()
+        .to_string()
+}
+
+/// `koi certmesh acme enable` — print the directory URL + the client bootstrap
+/// recipe. The ACME server starts automatically with the daemon when the CA is
+/// initialized + unlocked and `--no-acme` is not set; this command surfaces the
+/// connection details and the one-time CA-root trust step.
+pub fn acme_enable(json: bool, endpoint: Option<&str>, token: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint, token)?;
+    let resp = client.get_json("/v1/certmesh/status")?;
+    let ca_init = resp
+        .get("ca_initialized")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ca_locked = resp
+        .get("ca_locked")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let fingerprint = resp
+        .get("ca_fingerprint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(unknown)");
+
+    let dir_url = endpoint
+        .map(acme_directory_url)
+        .unwrap_or_else(|| format!("https://localhost:{ACME_PORT}/acme/directory"));
+    let ca_path = ca_cert_path_hint();
+
+    if json {
+        let out = serde_json::json!({
+            "acme": {
+                "directory": dir_url,
+                "ca_initialized": ca_init,
+                "ca_locked": ca_locked,
+                "ca_fingerprint": fingerprint,
+                "ca_cert_path": ca_path,
+                "enabled": ca_init && !ca_locked,
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    if !ca_init {
+        println!("ACME server: unavailable — no CA yet.");
+        println!("  Run `koi certmesh create` to initialize the CA first.");
+        return Ok(());
+    }
+    if ca_locked {
+        println!("ACME server: waiting — the CA is locked.");
+        println!("  Run `koi certmesh unlock`, then restart the daemon.");
+        return Ok(());
+    }
+
+    println!("ACME (RFC 8555) server is active.");
+    println!();
+    println!("  Directory URL : {dir_url}");
+    println!("  CA root cert  : {ca_path}");
+    println!("  CA fingerprint: {fingerprint}");
+    println!();
+    println!("Bootstrap (one time): clients must trust the CA root, then point their");
+    println!("ACME client at the directory above. dns-01 is the only challenge type;");
+    println!("only names inside the Koi DNS zone are issuable.");
+    println!();
+    println!("  Caddy   : tls {{ issuer acme {{ dir {dir_url} }} }}");
+    println!("            (and trust {ca_path} via acme_ca_root / a trusted root)");
+    println!("  Traefik : certificatesResolvers.koi.acme.caServer={dir_url}");
+    println!("            certificatesResolvers.koi.acme.caCertificates={ca_path}");
+    println!("  lego    : LEGO_CA_CERTIFICATES={ca_path} lego --server {dir_url} ...");
+    println!();
+    println!("See `docs/guides/acme.md` for full recipes.");
+    Ok(())
+}
+
+/// `koi certmesh acme status` — show the ACME directory URL and whether the
+/// server is serving (derived from CA state) plus the ACME-sourced member count.
+pub fn acme_status(json: bool, endpoint: Option<&str>, token: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint, token)?;
+    let resp = client.get_json("/v1/certmesh/status")?;
+    let ca_init = resp
+        .get("ca_initialized")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ca_locked = resp
+        .get("ca_locked")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let enrollment_open = resp
+        .get("enrollment_open")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let dir_url = endpoint
+        .map(acme_directory_url)
+        .unwrap_or_else(|| format!("https://localhost:{ACME_PORT}/acme/directory"));
+
+    // ACME-issued members are recorded with enrolled_by "acme:*".
+    let acme_members = resp
+        .get("members")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.len())
+        .unwrap_or(0);
+
+    let serving = ca_init && !ca_locked;
+    if json {
+        let out = serde_json::json!({
+            "acme": {
+                "serving": serving,
+                "directory": dir_url,
+                "mode": if enrollment_open { "open" } else { "closed (EAB required)" },
+                "member_count": acme_members,
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    println!(
+        "ACME server: {}",
+        if serving { "serving" } else { "not serving" }
+    );
+    println!("  Directory : {dir_url}");
+    println!(
+        "  Mode      : {}",
+        if enrollment_open {
+            "open (free newAccount)"
+        } else {
+            "closed (external account binding required)"
+        }
+    );
+    if !serving {
+        if !ca_init {
+            println!("  Reason    : no CA — run `koi certmesh create`");
+        } else if ca_locked {
+            println!("  Reason    : CA locked — run `koi certmesh unlock`");
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

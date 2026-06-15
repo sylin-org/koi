@@ -141,6 +141,14 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     Some(CertmeshSubcommand::Destroy) => {
                         commands::certmesh::destroy(cli.json, cli.yes, ep, tok)
                     }
+                    Some(CertmeshSubcommand::Acme(acme_cmd)) => match &acme_cmd.command {
+                        None | Some(crate::cli::AcmeSubcommand::Enable) => {
+                            commands::certmesh::acme_enable(cli.json, ep, tok)
+                        }
+                        Some(crate::cli::AcmeSubcommand::Status) => {
+                            commands::certmesh::acme_status(cli.json, ep, tok)
+                        }
+                    },
                 }
             }
             Command::Dns(dns_cmd) => {

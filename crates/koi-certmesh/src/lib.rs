@@ -5,6 +5,7 @@
 //! and a roster of enrolled members. Two machines on the same LAN can establish
 //! mutual TLS trust without external infrastructure.
 
+pub mod acme;
 pub mod audit;
 pub mod backup;
 pub mod ca;
@@ -94,7 +95,10 @@ const APPROVAL_TIMEOUT_SECS: u64 = 300;
 
 /// Result of daemon self-enrollment for the mTLS listener.
 ///
-/// Contains all PEM material needed to configure TLS with client cert verification.
+/// Contains all PEM material needed to configure TLS with client cert
+/// verification. Cloneable so the same leaf can configure both the mTLS and the
+/// ACME server-auth listeners.
+#[derive(Clone)]
 pub struct SelfEnrollment {
     /// The daemon's certificate (signed by the CA).
     pub cert_pem: String,
@@ -159,6 +163,11 @@ impl CertmeshState {
 ///
 /// Wraps the shared certmesh state and exposes commands,
 /// status, and HTTP routes to the binary crate.
+///
+/// `Clone` is a cheap `Arc` bump — every clone shares the same underlying
+/// `CertmeshState` (CA, roster, auth). This lets the composition layer hold a
+/// facade while also building an `AcmeState` over the same state.
+#[derive(Clone)]
 pub struct CertmeshCore {
     state: Arc<CertmeshState>,
 }
@@ -264,6 +273,17 @@ impl CertmeshCore {
     /// Subscribe to certmesh events.
     pub fn subscribe(&self) -> broadcast::Receiver<CertmeshEvent> {
         self.state.event_tx.subscribe()
+    }
+
+    /// Build the RFC 8555 ACME server state over this CA.
+    ///
+    /// The binary calls this when starting the dedicated server-auth TLS
+    /// listener, passing the ACME base URL, the Koi DNS zone, and the
+    /// `AcmeDnsSolver` bridge. The returned `AcmeState` shares this core's CA and
+    /// roster (so ACME issuance lands in the same roster as TOTP enrollment), and
+    /// is mounted via [`acme::routes`].
+    pub fn acme_state(&self, config: acme::AcmeStateConfig) -> std::sync::Arc<acme::AcmeState> {
+        acme::AcmeState::new(Arc::clone(&self.state), config)
     }
 
     /// Initialize a new CA and self-enroll this node as the primary member.

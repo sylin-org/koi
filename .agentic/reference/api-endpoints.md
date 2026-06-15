@@ -138,6 +138,26 @@ Route handlers: `crates/koi-runtime/src/http.rs`
 | GET | `/v1/runtime/status` | Runtime adapter status (active, backend, instance count) |
 | GET | `/v1/runtime/instances` | List all tracked runtime instances |
 
+### ACME Operations (`/acme`, separate TLS port 5643)
+
+Route handlers: `crates/koi-certmesh/src/acme/router.rs`. **NOT** on the main HTTP adapter
+and **not** in `/openapi.json` — RFC 8555 wire format (`application/jose+json` requests,
+`application/problem+json` errors). Server-auth TLS listener (default 5643, `--acme-port`),
+gated by `--no-acme` / `KOI_NO_ACME`; starts only when the CA is initialized + unlocked and
+DNS is enabled. dns-01 only, EC/ES256 only, in-zone names only.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/acme/directory` | Directory (endpoint URLs + `meta.externalAccountRequired`) |
+| HEAD/GET | `/acme/new-nonce` | Fresh `Replay-Nonce` (200/204) |
+| POST | `/acme/new-account` | Register account (JWS + jwk; EAB in closed mode) |
+| POST | `/acme/new-order` | Create order (in-zone identifiers only → else `rejectedIdentifier`) |
+| POST | `/acme/authz/{id}` | Authorization (POST-as-GET) |
+| POST | `/acme/chall/{id}` | Trigger dns-01 validation (in-process TXT check) |
+| POST | `/acme/order/{id}/finalize` | Submit CSR → issue (every CSR SAN must be authorized) |
+| POST | `/acme/cert/{id}` | Download leaf + CA chain (`application/pem-certificate-chain`) |
+| POST | `/acme/revoke-cert` | Revoke an issued certificate |
+
 ---
 
 ## Query Parameters

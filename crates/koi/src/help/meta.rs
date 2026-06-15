@@ -1245,6 +1245,53 @@ ability to renew certificates.",
             token: "DESTROY",
         }),
     },
+    CommandMeta {
+        name: "certmesh acme enable",
+        summary: "Show the ACME (RFC 8555) directory URL + client recipe",
+        long_description: "\
+The ACME server lets any standard ACME client (Caddy, Traefik, lego,
+certbot) obtain certificates from the Koi CA with zero Koi knowledge. It
+serves dns-01 self-served in-process over a dedicated server-auth TLS
+listener (default :5643) and issues ONLY for names inside the Koi DNS zone.
+
+The server starts automatically with the daemon when the CA is initialized
+and unlocked (disable with --no-acme / KOI_NO_ACME). This command prints
+the directory URL and the one-time CA-root trust step clients need.",
+        category: KoiCategory::Trust,
+        tags: &[KoiTag::ReadOnly, KoiTag::CliOnly],
+        scope: KoiScope::Public,
+        examples: &[Example {
+            command: "koi certmesh acme enable",
+            description: "Show the ACME directory URL + bootstrap recipe",
+        }],
+        see_also: &["certmesh acme status", "certmesh status"],
+        api: &[],
+        confirmation: None,
+    },
+    CommandMeta {
+        name: "certmesh acme status",
+        summary: "Show ACME server status",
+        long_description: "\
+Reports whether the ACME (RFC 8555) server is serving (it serves when the
+CA is initialized and unlocked), the directory URL, and the enrollment mode
+(open = free newAccount; closed = external account binding required).",
+        category: KoiCategory::Trust,
+        tags: &[KoiTag::ReadOnly, KoiTag::CliOnly],
+        scope: KoiScope::Public,
+        examples: &[
+            Example {
+                command: "koi certmesh acme status",
+                description: "Show ACME server status",
+            },
+            Example {
+                command: "koi certmesh acme status --json",
+                description: "JSON for scripting",
+            },
+        ],
+        see_also: &["certmesh acme enable"],
+        api: &[],
+        confirmation: None,
+    },
     // ── DNS ──────────────────────────────────────────────────────────
     CommandMeta {
         name: "dns serve",

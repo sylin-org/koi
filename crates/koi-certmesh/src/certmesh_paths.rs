@@ -17,6 +17,8 @@ const AUTH_FILENAME: &str = "auth.json";
 const ROSTER_FILENAME: &str = "roster.json";
 const AUDIT_FILENAME: &str = "certmesh-audit.log";
 const AUTO_UNLOCK_KEY_FILENAME: &str = "auto-unlock-key";
+const ACME_SUBDIR: &str = "acme";
+const ACME_ACCOUNTS_FILENAME: &str = "accounts.json";
 
 /// Resolved filesystem paths for all certmesh operations.
 ///
@@ -92,6 +94,20 @@ impl CertmeshPaths {
     /// Auto-unlock key file.
     pub fn auto_unlock_key_path(&self) -> PathBuf {
         self.certmesh_dir().join(AUTO_UNLOCK_KEY_FILENAME)
+    }
+
+    /// ACME state directory (`data_dir/certmesh/acme/`).
+    ///
+    /// Holds the persisted ACME account registrations. A real ACME client caches
+    /// its account URL + key and renews after a daemon restart, so accounts MUST
+    /// survive restarts (an `accountDoesNotExist` on restart would break renewals).
+    pub fn acme_dir(&self) -> PathBuf {
+        self.certmesh_dir().join(ACME_SUBDIR)
+    }
+
+    /// ACME accounts file (`data_dir/certmesh/acme/accounts.json`).
+    pub fn acme_accounts_path(&self) -> PathBuf {
+        self.acme_dir().join(ACME_ACCOUNTS_FILENAME)
     }
 
     /// Check if CA has been initialized (encrypted key file exists on disk).

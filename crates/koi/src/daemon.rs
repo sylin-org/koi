@@ -111,31 +111,74 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     }
 
     // ── mTLS adapter (only if certmesh CA is initialized and unlocked) ──
+    // The daemon self-enrollment also produces the server leaf the ACME listener
+    // reuses, so it's done once here and shared.
     if let Some(ref certmesh) = cores.certmesh {
         match certmesh.self_enroll().await {
             Ok(enrollment) => {
-                let cm = certmesh.clone();
-                let port = config.mtls_port;
-                let token = cancel.clone();
-                tasks.push(tokio::spawn(async move {
-                    if let Err(e) = adapters::mtls::start(
-                        port,
-                        cm,
-                        &enrollment.cert_pem,
-                        &enrollment.key_pem,
-                        &enrollment.ca_cert_pem,
-                        token,
-                    )
-                    .await
-                    {
-                        tracing::error!(error = %e, "mTLS adapter failed");
+                // mTLS inter-node listener.
+                {
+                    let cm = certmesh.clone();
+                    let port = config.mtls_port;
+                    let token = cancel.clone();
+                    let enr = enrollment.clone();
+                    tasks.push(tokio::spawn(async move {
+                        if let Err(e) = adapters::mtls::start(
+                            port,
+                            cm,
+                            &enr.cert_pem,
+                            &enr.key_pem,
+                            &enr.ca_cert_pem,
+                            token,
+                        )
+                        .await
+                        {
+                            tracing::error!(error = %e, "mTLS adapter failed");
+                        }
+                    }));
+                }
+
+                // ── ACME (RFC 8555) server-auth TLS listener ──
+                // Requires the DNS capability (the dns-01 solver writes TXT into
+                // the DNS core) and the certmesh CA. Skipped when --no-acme,
+                // --no-dns, or the CA is unavailable.
+                if !config.no_acme {
+                    if let Some(ref dns) = cores.dns {
+                        let base_url = format!("https://{}:{}", local_fqdn(), config.acme_port);
+                        let dns_solver: std::sync::Arc<dyn koi_common::integration::AcmeDnsSolver> =
+                            koi_compose::bridges::AcmeDnsBridge::new(dns.clone());
+                        let acme_state = certmesh.acme_state(koi_certmesh::acme::AcmeStateConfig {
+                            base_url,
+                            zone: config.dns_zone.clone(),
+                            dns: dns_solver,
+                        });
+                        let port = config.acme_port;
+                        let token = cancel.clone();
+                        let enr = enrollment.clone();
+                        tasks.push(tokio::spawn(async move {
+                            if let Err(e) = adapters::acme::start(
+                                port,
+                                acme_state,
+                                &enr.cert_pem,
+                                &enr.key_pem,
+                                token,
+                            )
+                            .await
+                            {
+                                tracing::error!(error = %e, "ACME adapter failed");
+                            }
+                        }));
+                    } else {
+                        tracing::info!(
+                            "ACME adapter: skipped (DNS capability disabled; dns-01 needs the DNS core)"
+                        );
                     }
-                }));
+                }
             }
             Err(e) => {
                 tracing::info!(
                     reason = %e,
-                    "mTLS adapter: skipped (CA not available for self-enrollment)"
+                    "mTLS + ACME adapters: skipped (CA not available for self-enrollment)"
                 );
             }
         }
@@ -232,6 +275,17 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     koi_config::breadcrumb::delete_breadcrumb();
 
     Ok(())
+}
+
+/// Best-effort local hostname for building the ACME base URL. ACME clients
+/// reach the listener at this name; the daemon leaf's SAN covers
+/// `<hostname>`/`<hostname>.local`/`localhost`, so any of those resolves.
+fn local_fqdn() -> String {
+    hostname::get()
+        .ok()
+        .and_then(|os| os.into_string().ok())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "localhost".to_string())
 }
 
 fn prompt_enrollment_approval(

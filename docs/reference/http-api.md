@@ -542,6 +542,34 @@ Returns all instances currently tracked by the adapter. Each includes resolved p
 
 ---
 
+## ACME (RFC 8555) — separate TLS port
+
+The ACME facade is **not** part of the main HTTP adapter or its OpenAPI spec. It runs on a
+dedicated server-auth TLS listener (default port **5643**, `--acme-port` / `KOI_ACME_PORT`),
+gated by `--no-acme` / `KOI_NO_ACME`, and only when the certmesh CA is initialized + unlocked
+and the DNS capability is enabled. Endpoints follow the RFC 8555 wire format
+(`application/jose+json` requests, `application/problem+json` errors) — a different content
+model from the Koi pipeline shapes, which is why they are documented here rather than in the
+utoipa-generated `/openapi.json`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/acme/directory` | Directory: endpoint URLs + `meta.externalAccountRequired` |
+| HEAD/GET | `/acme/new-nonce` | Fresh `Replay-Nonce` (200/204) |
+| POST | `/acme/new-account` | Register account (JWS + embedded jwk; EAB in closed mode) |
+| POST | `/acme/new-order` | Create an order (identifiers must be in the DNS zone) |
+| POST | `/acme/authz/{id}` | Authorization object (POST-as-GET) |
+| POST | `/acme/chall/{id}` | Trigger dns-01 validation (in-process TXT check) |
+| POST | `/acme/order/{id}/finalize` | Submit CSR → issue (SAN-authorization enforced) |
+| POST | `/acme/cert/{id}` | Download leaf + CA chain (`application/pem-certificate-chain`) |
+| POST | `/acme/revoke-cert` | Revoke an issued certificate |
+
+Scope: dns-01 only, EC/ES256 only, in-zone names only. Errors use the ACME problem registry
+(`urn:ietf:params:acme:error:*`). Every response carries a fresh `Replay-Nonce`. See
+[guides/acme.md](../guides/acme.md) for client recipes and the security model.
+
+---
+
 ## Pipeline properties
 
 Status, warnings, and errors are operational metadata attached alongside responses. Their absence is the happy path.

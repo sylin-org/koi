@@ -106,6 +106,7 @@ sha2 = "0.10"
 rand = "0.9"
 zeroize = { version = "1", features = ["derive"] }
 subtle = "2"
+hmac = "0.12"
 totp-rs = { version = "5", features = ["gen_secret"] }
 qrcode = { version = "0.14", default-features = false, features = ["image"] }
 pem = "3"

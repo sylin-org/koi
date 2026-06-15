@@ -8,7 +8,7 @@ It is a **passthrough**, not an application proxy. Once TLS is terminated, Koi c
 
 **When to use the proxy**: you have a local TCP service that doesn't speak TLS natively and you want clients to reach it over HTTPS with a trusted cert. A homelab service that should open in a browser without certificate warnings. A backend that needs to present a valid cert to other certmesh members.
 
-**When to reach for something else**: if you need path-based routing (`/api` → one service, `/` → another), header rewriting, redirects, or ACME — run [Caddy](https://caddyserver.com/) or [Traefik](https://traefik.io/) and point Koi's proxy (or a certmesh cert) at it. Koi is the substrate; it's meant to sit under the tools you already use, not replace them.
+**When to reach for something else**: if you need path-based routing (`/api` → one service, `/` → another), header rewriting, or redirects — run [Caddy](https://caddyserver.com/) or [Traefik](https://traefik.io/). And you don't have to hand them a certificate by hand: **bring your own proxy via ACME**. Koi runs an [RFC 8555 ACME server](acme.md) in front of its CA, so Caddy/Traefik/lego can request and auto-renew trusted certs for your zone the same way they'd talk to Let's Encrypt — no Koi-specific config on the proxy. Koi's built-in passthrough proxy and the ACME facade are two first-class paths to the same trusted cert: use the passthrough when you just need a TLS endpoint for one backend, and ACME when you're already running a full reverse proxy. Koi is the substrate; it's meant to sit under the tools you already use, not replace them.
 
 All CLI commands use the `koi proxy` prefix. All HTTP endpoints live under `/v1/proxy/`. Proxy commands require a running daemon - use `koi install` or `koi --daemon` first.
 

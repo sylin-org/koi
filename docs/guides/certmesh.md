@@ -202,10 +202,11 @@ The daemon listens on two ports with different security postures:
 |------|---------|-------------|------|---------|
 | **5641** | `--port` | `127.0.0.1` (loopback) | DAT header (planned, ADR-011) | Local CLI, dashboard, management API |
 | **5642** | `--mtls-port` | `0.0.0.0` (all interfaces) | mTLS client certificate | Inter-node communication (promote, health heartbeat, set-hook, renew) |
+| **5643** | `--acme-port` | `0.0.0.0` (all interfaces) | JWS (server-auth TLS) | [ACME (RFC 8555) facade](acme.md) — standard ACME clients get certs from the CA |
 
 The mTLS port only starts when the CA is initialized and the daemon has self-enrolled. Client certificates must be signed by the certmesh CA. The authenticated Common Name (CN) from the client certificate is used for per-caller authorization — a member can only set hooks for its own hostname, report its own health, and receive its own renewals.
 
-If certmesh is disabled (`--no-certmesh`), the mTLS port is not opened.
+If certmesh is disabled (`--no-certmesh`), the mTLS port is not opened. The ACME port (5643) starts on the same self-enrollment, gated by `--no-acme` / `KOI_NO_ACME`; it lets any standard ACME client (Caddy, Traefik, lego) obtain certs from the CA without Koi-specific config — see the [ACME guide](acme.md).
 
 ---
 
