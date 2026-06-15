@@ -658,7 +658,7 @@ impl CertmeshHandle {
 
     pub async fn status(&self) -> koi_common::capability::CapabilityStatus {
         match &self.backend {
-            CertmeshBackend::Embedded { core } => core.status(),
+            CertmeshBackend::Embedded { core } => core.status().await,
             CertmeshBackend::Remote { client } => {
                 let client = Arc::clone(client);
                 let json = tokio::task::spawn_blocking(move || client.unified_status())

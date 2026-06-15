@@ -36,9 +36,6 @@ use crate::protocol::{
     AdminRegistration, DaemonStatus, LeaseMode, RegisterPayload, RegistrationResult,
 };
 
-/// Capacity for the broadcast channel used by service event subscribers.
-const BROADCAST_CHANNEL_CAPACITY: usize = 256;
-
 /// How often the reaper sweeps for expired registrations.
 const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -67,7 +64,7 @@ impl MdnsCore {
     /// Create a new core with a shared cancellation token.
     /// Used by daemon mode for ordered shutdown.
     pub fn with_cancel(cancel: CancellationToken) -> Result<Self> {
-        let (event_tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
+        let (event_tx, _) = koi_common::events::event_channel();
         let daemon = Arc::new(MdnsDaemon::new(event_tx)?);
         let registry = Arc::new(Registry::new());
         let started_at = Instant::now();
@@ -302,12 +299,13 @@ impl MdnsCore {
     }
 }
 
+#[async_trait::async_trait]
 impl Capability for MdnsCore {
     fn name(&self) -> &str {
         "mdns"
     }
 
-    fn status(&self) -> CapabilityStatus {
+    async fn status(&self) -> CapabilityStatus {
         let counts = self.registry.counts();
         let summary = format!(
             "{} registered ({} alive, {} draining)",

@@ -10,9 +10,13 @@ pub struct CapabilityStatus {
 }
 
 /// Trait implemented by each domain to participate in `koi status`.
+///
+/// `status` is async so cores can read their internal `tokio` locks directly (the runtime
+/// adapter needs this; the others read sync locks but stay uniform). `name` is sync.
+#[async_trait::async_trait]
 pub trait Capability: Send + Sync {
     fn name(&self) -> &str;
-    fn status(&self) -> CapabilityStatus;
+    async fn status(&self) -> CapabilityStatus;
 }
 
 #[cfg(test)]

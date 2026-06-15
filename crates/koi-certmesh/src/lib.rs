@@ -41,9 +41,6 @@ use roster::Roster;
 /// Used by the binary crate to announce the CA via koi-mdns.
 pub const CERTMESH_SERVICE_TYPE: &str = "_certmesh._tcp";
 
-/// Capacity for the certmesh event broadcast channel.
-const BROADCAST_CHANNEL_CAPACITY: usize = 256;
-
 /// Events emitted by the certmesh subsystem when roster membership changes.
 #[derive(Debug, Clone)]
 pub enum CertmeshEvent {
@@ -195,7 +192,7 @@ impl CertmeshCore {
                 pending_challenge: tokio::sync::Mutex::new(None),
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
                 approval_tx: tokio::sync::Mutex::new(None),
-                event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
+                event_tx: koi_common::events::event_channel().0,
             }),
         }
     }
@@ -211,7 +208,7 @@ impl CertmeshCore {
                 pending_challenge: tokio::sync::Mutex::new(None),
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
                 approval_tx: tokio::sync::Mutex::new(None),
-                event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
+                event_tx: koi_common::events::event_channel().0,
             }),
         }
     }
@@ -230,7 +227,7 @@ impl CertmeshCore {
                 pending_challenge: tokio::sync::Mutex::new(None),
                 rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
                 approval_tx: tokio::sync::Mutex::new(None),
-                event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
+                event_tx: koi_common::events::event_channel().0,
             }),
         }
     }
@@ -1531,12 +1528,13 @@ async fn request_approval(
     }
 }
 
+#[async_trait::async_trait]
 impl Capability for CertmeshCore {
     fn name(&self) -> &str {
         "certmesh"
     }
 
-    fn status(&self) -> CapabilityStatus {
+    async fn status(&self) -> CapabilityStatus {
         // Use try_lock for sync Capability trait - best effort
         let ca_initialized = self.state.paths.is_ca_initialized();
         let ca_locked = self
@@ -2212,10 +2210,10 @@ mod tests {
 
     // ── Capability::status() ───────────────────────────────────────────
 
-    #[test]
-    fn capability_status_uninitialised() {
+    #[tokio::test]
+    async fn capability_status_uninitialised() {
         let core = CertmeshCore::uninitialized_with_paths(test_paths());
-        let status = core.status();
+        let status = core.status().await;
         assert_eq!(status.name, "certmesh");
         // When no CA files exist on disk this is a healthy "ready" state.
         // On a dev machine with existing CA files it appears as "CA locked"
@@ -2237,21 +2235,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn capability_status_locked() {
+    #[tokio::test]
+    async fn capability_status_locked() {
         let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
         let core = make_locked_core(roster);
-        let status = core.status();
+        let status = core.status().await;
         assert_eq!(status.name, "certmesh");
         assert!(!status.healthy);
     }
 
-    #[test]
-    fn capability_status_unlocked() {
+    #[tokio::test]
+    async fn capability_status_unlocked() {
         let ca = make_test_ca();
         let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
-        let status = core.status();
+        let status = core.status().await;
         assert_eq!(status.name, "certmesh");
         assert!(status.healthy);
         assert!(

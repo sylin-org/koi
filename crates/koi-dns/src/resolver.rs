@@ -36,9 +36,6 @@ const TCP_RESPONSE_BUFFER: usize = 32;
 /// Alias feedback flush interval.
 const FEEDBACK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Capacity for the DNS event broadcast channel.
-const BROADCAST_CHANNEL_CAPACITY: usize = 256;
-
 /// Events emitted by the DNS subsystem when static entries change.
 #[derive(Debug, Clone)]
 pub enum DnsEvent {
@@ -166,7 +163,7 @@ impl DnsCore {
             alias_tx,
             started_at: std::time::Instant::now(),
             rate_limiter: Arc::new(RateLimiter::new(max_qps)),
-            event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
+            event_tx: koi_common::events::event_channel().0,
         })
     }
 
@@ -389,12 +386,13 @@ impl DnsCore {
     }
 }
 
+#[async_trait::async_trait]
 impl Capability for DnsCore {
     fn name(&self) -> &str {
         "dns"
     }
 
-    fn status(&self) -> CapabilityStatus {
+    async fn status(&self) -> CapabilityStatus {
         let snapshot = self.snapshot();
         let summary = format!(
             "{} static, {} certmesh, {} mdns",

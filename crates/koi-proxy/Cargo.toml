@@ -15,6 +15,7 @@ categories = ["network-programming", "web-programming"]
 [dependencies]
 koi-common.workspace = true
 koi-config.workspace = true
+async-trait.workspace = true
 utoipa.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

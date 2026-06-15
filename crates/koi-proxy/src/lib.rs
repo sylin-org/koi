@@ -22,9 +22,6 @@ use listener::{spawn_listener, ListenerStatus};
 pub use config::ProxyEntry;
 pub use safety::{ensure_backend_allowed, parse_backend};
 
-/// Capacity for the proxy event broadcast channel.
-const BROADCAST_CHANNEL_CAPACITY: usize = 256;
-
 /// Events emitted by the proxy subsystem when entries change.
 #[derive(Debug, Clone)]
 pub enum ProxyEvent {
@@ -80,7 +77,7 @@ impl ProxyCore {
         let entries = config::load_entries()?;
         Ok(Self {
             entries: Arc::new(Mutex::new(entries)),
-            event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
+            event_tx: koi_common::events::event_channel().0,
             data_dir: None,
         })
     }
@@ -90,7 +87,7 @@ impl ProxyCore {
         let entries = config::load_entries_with_data_dir(Some(data_dir))?;
         Ok(Self {
             entries: Arc::new(Mutex::new(entries)),
-            event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
+            event_tx: koi_common::events::event_channel().0,
             data_dir: Some(data_dir.to_path_buf()),
         })
     }
@@ -147,12 +144,13 @@ impl ProxyCore {
     }
 }
 
+#[async_trait::async_trait]
 impl Capability for ProxyCore {
     fn name(&self) -> &str {
         "proxy"
     }
 
-    fn status(&self) -> CapabilityStatus {
+    async fn status(&self) -> CapabilityStatus {
         CapabilityStatus {
             name: "proxy".to_string(),
             summary: "configured".to_string(),

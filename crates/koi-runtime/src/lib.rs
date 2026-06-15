@@ -27,16 +27,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Router;
-use koi_common::capability::CapabilityStatus;
+use koi_common::capability::{Capability, CapabilityStatus};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 pub use backend::{RuntimeBackend, RuntimeBackendKind, RuntimeEvent};
 pub use error::RuntimeError;
 pub use instance::{Instance, InstanceState, KoiMetadata, PortMapping};
-
-/// Capacity for the runtime event broadcast channel.
-const BROADCAST_CHANNEL_CAPACITY: usize = 256;
 
 /// Configuration for the runtime adapter.
 #[derive(Debug, Clone)]
@@ -88,7 +85,7 @@ impl RuntimeCore {
                 instances: Mutex::new(HashMap::new()),
                 backend_name: Mutex::new(None),
                 active: Mutex::new(false),
-                event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
+                event_tx: koi_common::events::event_channel().0,
             }),
             config,
         }
@@ -215,27 +212,6 @@ impl RuntimeCore {
         Ok(())
     }
 
-    /// Capability status for the unified status endpoint.
-    pub async fn capability_status(&self) -> CapabilityStatus {
-        let instances = self.state.instances.lock().await;
-        let backend = self.state.backend_name.lock().await;
-        let active = *self.state.active.lock().await;
-
-        CapabilityStatus {
-            name: "runtime".to_string(),
-            healthy: active,
-            summary: if active {
-                format!(
-                    "{}: {} instances",
-                    backend.as_deref().unwrap_or("none"),
-                    instances.len()
-                )
-            } else {
-                "inactive".to_string()
-            },
-        }
-    }
-
     /// Create a backend based on the configured kind.
     fn create_backend(&self) -> Result<Box<dyn RuntimeBackend>, RuntimeError> {
         match self.config.backend_kind {
@@ -304,6 +280,35 @@ impl RuntimeCore {
             }
             .into(),
         ))
+    }
+}
+
+#[async_trait::async_trait]
+impl Capability for RuntimeCore {
+    fn name(&self) -> &str {
+        "runtime"
+    }
+
+    /// Capability status for the unified status endpoint. (Was the bespoke
+    /// `capability_status`; folded into the trait in P10.)
+    async fn status(&self) -> CapabilityStatus {
+        let instances = self.state.instances.lock().await;
+        let backend = self.state.backend_name.lock().await;
+        let active = *self.state.active.lock().await;
+
+        CapabilityStatus {
+            name: "runtime".to_string(),
+            healthy: active,
+            summary: if active {
+                format!(
+                    "{}: {} instances",
+                    backend.as_deref().unwrap_or("none"),
+                    instances.len()
+                )
+            } else {
+                "inactive".to_string()
+            },
+        }
     }
 }
 

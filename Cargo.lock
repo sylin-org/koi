@@ -1762,6 +1762,7 @@ dependencies = [
 name = "koi-certmesh"
 version = "0.4.1"
 dependencies = [
+ "async-trait",
  "axum",
  "chrono",
  "crossterm",
@@ -1802,11 +1803,14 @@ dependencies = [
 name = "koi-common"
 version = "0.4.1"
 dependencies = [
+ "async-trait",
  "axum",
  "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
  "tracing",
  "utoipa",
  "uuid",
@@ -1962,6 +1966,7 @@ dependencies = [
 name = "koi-health"
 version = "0.4.1"
 dependencies = [
+ "async-trait",
  "axum",
  "chrono",
  "koi-common",
@@ -1980,6 +1985,7 @@ name = "koi-mdns"
 version = "0.4.1"
 dependencies = [
  "async-stream",
+ "async-trait",
  "axum",
  "hostname",
  "if-addrs",
@@ -2059,6 +2065,7 @@ dependencies = [
 name = "koi-proxy"
 version = "0.4.1"
 dependencies = [
+ "async-trait",
  "axum",
  "hostname",
  "koi-common",
@@ -2113,6 +2120,7 @@ name = "koi-udp"
 version = "0.4.1"
 dependencies = [
  "async-stream",
+ "async-trait",
  "axum",
  "base64",
  "chrono",

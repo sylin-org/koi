@@ -12,11 +12,19 @@ Existing constants and types - don't reinvent these.
 | -------------- | ----- | -------------------------------- |
 | `SHORT_ID_LEN` | 8     | UUID prefix for registration IDs |
 
+### koi-common -- Events (`crates/koi-common/src/events.rs`)
+
+| Constant                     | Value | Purpose                                              |
+| ---------------------------- | ----- | ---------------------------------------------------- |
+| `BROADCAST_CHANNEL_CAPACITY` | 256   | Event subscriber channel size (single source, P10)   |
+
+The matching `event_channel<E: Clone>()` helper builds a `broadcast::channel` sized at this
+const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were removed in P10.
+
 ### koi-mdns -- Core (`crates/koi-mdns/src/lib.rs`)
 
 | Constant                     | Value | Purpose                       |
 | ---------------------------- | ----- | ----------------------------- |
-| `BROADCAST_CHANNEL_CAPACITY` | 256   | Event subscriber channel size |
 | `REAPER_INTERVAL`            | 5s    | Lease expiry sweep frequency  |
 
 ### koi-mdns -- Daemon (`crates/koi-mdns/src/daemon.rs`)
@@ -373,12 +381,6 @@ No other module should contain `println!`-based presentation functions.
 | `RuntimeState`   | `lib.rs`         | Internal shared state (instances, backend, event_tx)  |
 | `DockerBackend`  | `docker.rs`      | Docker/Podman backend (bollard client)               |
 | `ComposeInfo`    | `instance.rs`    | Docker Compose label extraction (project, service)   |
-
-### `koi_runtime` constants (`lib.rs`)
-
-| Constant                     | Value | Purpose                       |
-| ---------------------------- | ----- | ----------------------------- |
-| `BROADCAST_CHANNEL_CAPACITY` | 256   | Event subscriber channel size |
 
 ### `koi_runtime::heuristics` constants
 

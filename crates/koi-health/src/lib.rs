@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use tokio::sync::{broadcast, RwLock};
-use tokio_util::sync::CancellationToken;
 
 use koi_common::capability::{Capability, CapabilityStatus};
 use koi_common::integration::{CertmeshSnapshot, DnsProbe, MdnsSnapshot, ProxySnapshot};
+use koi_common::runtime_state::DomainRuntime;
 
 use crate::checker::{run_checks_loop, run_checks_once, ServiceCheckState};
 use crate::machine::{collect_machine_health, MdnsTracker};
@@ -31,9 +31,6 @@ pub use state::HealthCheckConfig as HealthCheck;
 
 /// Default machine health threshold (seconds since last seen).
 pub const DEFAULT_MACHINE_THRESHOLD_SECS: u64 = 60;
-
-/// Capacity for the health event broadcast channel.
-const BROADCAST_CHANNEL_CAPACITY: usize = 256;
 
 /// Events emitted by the health subsystem when service status changes.
 #[derive(Debug, Clone)]
@@ -109,7 +106,7 @@ impl HealthCore {
             None => None,
         };
 
-        let (event_tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
+        let (event_tx, _) = koi_common::events::event_channel();
 
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(HTTP_CLIENT_TIMEOUT_SECS))
@@ -301,12 +298,13 @@ mod tests {
     }
 }
 
+#[async_trait::async_trait]
 impl Capability for HealthCore {
     fn name(&self) -> &str {
         "health"
     }
 
-    fn status(&self) -> CapabilityStatus {
+    async fn status(&self) -> CapabilityStatus {
         let (total, up) = match self.service_states.try_read() {
             Ok(services) => {
                 let total = services.len();
@@ -328,9 +326,12 @@ impl Capability for HealthCore {
 }
 
 /// Runtime controller for the background service checks.
+///
+/// A thin wrapper over the shared [`DomainRuntime`] start/stop machine; the only
+/// health-specific piece is the spawned loop (`run_checks_loop(core, token)`).
+#[derive(Clone)]
 pub struct HealthRuntime {
-    core: Arc<HealthCore>,
-    state: Arc<tokio::sync::Mutex<RuntimeState>>,
+    inner: DomainRuntime<HealthCore>,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
@@ -338,63 +339,36 @@ pub struct HealthRuntimeStatus {
     pub running: bool,
 }
 
-struct RuntimeState {
-    running: bool,
-    cancel: Option<CancellationToken>,
-}
-
 impl HealthRuntime {
     pub fn new(core: Arc<HealthCore>) -> Self {
         Self {
-            core,
-            state: Arc::new(tokio::sync::Mutex::new(RuntimeState {
-                running: false,
-                cancel: None,
-            })),
+            inner: DomainRuntime::new(core),
         }
     }
 
     pub fn core(&self) -> Arc<HealthCore> {
-        Arc::clone(&self.core)
+        self.inner.core()
     }
 
     pub async fn start(&self) -> Result<bool, HealthError> {
-        let mut state = self.state.lock().await;
-        if state.running {
-            return Ok(false);
-        }
-        let token = CancellationToken::new();
-        state.cancel = Some(token.clone());
-        state.running = true;
-        drop(state);
-
-        let core = Arc::clone(&self.core);
-        let state = Arc::clone(&self.state);
-        tokio::spawn(async move {
-            run_checks_loop(core, token).await;
-            let mut guard = state.lock().await;
-            guard.running = false;
-            guard.cancel = None;
-        });
-
-        Ok(true)
+        let core = self.inner.core();
+        // DomainRuntime::start signals already-running via Ok(false) and never yields
+        // AlreadyRunning for this launcher; the Result<_, HealthError> shape is preserved.
+        let started = self
+            .inner
+            .start(move |token| tokio::spawn(run_checks_loop(core, token)))
+            .await
+            .unwrap_or(false);
+        Ok(started)
     }
 
     pub async fn stop(&self) -> bool {
-        let mut state = self.state.lock().await;
-        if let Some(token) = state.cancel.take() {
-            token.cancel();
-            state.running = false;
-            true
-        } else {
-            false
-        }
+        self.inner.stop().await
     }
 
     pub async fn status(&self) -> HealthRuntimeStatus {
-        let state = self.state.lock().await;
         HealthRuntimeStatus {
-            running: state.running,
+            running: self.inner.status().await.running,
         }
     }
 }
