@@ -38,6 +38,7 @@ Interactive API docs are available at `GET /docs` (Scalar UI).
 | GET    | `/v1/status`         | Unified capability status                  |
 | POST   | `/v1/admin/shutdown` | Initiate graceful shutdown                 |
 | GET    | `/v1/host`           | Host identity and network interfaces       |
+| GET    | `/v1/sd/prometheus`  | Prometheus HTTP service discovery (target groups) |
 | GET    | `/openapi.json`      | OpenAPI specification                      |
 | GET    | `/docs`              | Interactive API documentation              |
 
@@ -69,6 +70,35 @@ Interactive API docs are available at `GET /docs` (Scalar UI).
 ```
 
 LAN interfaces exclude loopback and link-local addresses.
+
+### GET /v1/sd/prometheus
+
+Prometheus [HTTP service discovery](https://prometheus.io/docs/prometheus/latest/http_sd/)
+endpoint. Returns **200** with `Content-Type: application/json` and a JSON array of
+target groups; the full list is returned on every poll (Prometheus does not diff),
+and an empty result is `[]`. Unauthenticated like `/healthz` (it is a `GET`).
+
+Query: `?include=discovered` also emits LAN-discovered mDNS `_http._tcp` services.
+By default only **Koi-managed** targets are returned (health checks + runtime
+instances with a published port).
+
+```json
+[
+  {
+    "targets": ["10.0.0.5:3000"],
+    "labels": {
+      "__meta_koi_name": "grafana",
+      "__meta_koi_source": "health",
+      "__meta_koi_health": "up",
+      "__meta_koi_cert_expiry_days": "30"
+    }
+  }
+]
+```
+
+See [`docs/guides/integrations.md`](../guides/integrations.md#prometheus) for the
+`prometheus.yml` snippet and the full label table. `__meta_koi_cert_expiry_days`
+is unique to Koi — no other LAN SD source exposes certificate expiry.
 
 ### GET /v1/status
 
@@ -300,6 +330,7 @@ Response:
 | GET    | `/v1/dns/lookup?name=grafana&type=A` | Resolve a local name                                 |
 | GET    | `/v1/dns/list`                       | List all resolvable names                            |
 | GET    | `/v1/dns/entries`                    | List static entries with details                     |
+| GET    | `/v1/dns/zone?format=hosts\|dnsmasq\|json` | Export the resolvable zone for an incumbent resolver |
 | POST   | `/v1/dns/add`                        | Add static entry (`name`, `ip`, optional `ttl`)      |
 | DELETE | `/v1/dns/remove/{name}`              | Remove static entry                                  |
 | POST   | `/v1/dns/serve`                      | Start the DNS resolver                               |
@@ -311,6 +342,22 @@ Response:
 | --------- | ----- | -------- | ---------------------------------- |
 | `name`    | query | required | Name to resolve                    |
 | `type`    | query | `A`      | Record type: `A`, `AAAA`, or `ANY` |
+
+### GET /v1/dns/zone
+
+Export the full resolvable zone (static + certmesh + mDNS-derived records) so an
+*incumbent* resolver can conditionally forward to or import from Koi. The `format`
+query param selects the shape:
+
+| `format`  | Content-Type | Body |
+| --------- | ------------ | ---- |
+| `hosts`   | `text/plain` | `<ip> <name>` lines (trailing dot stripped) |
+| `dnsmasq` | `text/plain` | `address=/<name>/<ip>` lines (trailing dot stripped) |
+| `json` (default) | `application/json` | `{ static_entries, certmesh_entries, mdns_entries }`, each a map of FQDN → IPs |
+
+See [`docs/guides/dns-coexistence.md`](../guides/dns-coexistence.md) for the
+conditional-forwarding recipes (AdGuard Home, Pi-hole, dnsmasq, Unbound,
+Technitium) that let Koi sit alongside your existing resolver.
 
 ```json
 { "name": "grafana.lan.", "ips": ["192.168.1.42"], "source": "static" }

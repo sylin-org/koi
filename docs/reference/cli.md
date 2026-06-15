@@ -150,6 +150,23 @@ operations are not exposed. See the [MCP guide](../guides/mcp.md).
 
 ---
 
+## Trust store
+
+```
+koi trust install ./root.pem                      # install a CA root into the OS store
+koi trust list                                    # list Koi-installed roots
+koi trust remove NAME                             # remove a Koi-installed root
+koi trust export --ca                             # print the certmesh root CA (PEM)
+```
+
+Local-only (touches the OS certificate store directly; no daemon). `install`
+validates that the PEM is a real CA certificate and rejects a server/leaf cert.
+Koi tracks only the roots it installed (`state/trust.json`) and never enumerates
+or mutates the rest of the OS store. `install`/`remove` require elevated
+privileges. See the [integrations guide](../guides/integrations.md#trust-root-distribution).
+
+---
+
 ## System
 
 ```

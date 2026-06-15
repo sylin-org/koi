@@ -78,6 +78,7 @@ When the daemon is running, DNS endpoints live under `/v1/dns/`:
 | `GET`    | `/v1/dns/lookup?name=grafana&type=A` | Query a name                 |
 | `GET`    | `/v1/dns/list`                       | All entries from all sources |
 | `GET`    | `/v1/dns/entries`                    | Static entries only          |
+| `GET`    | `/v1/dns/zone?format=hosts\|dnsmasq\|json` | Export the zone for another resolver |
 | `POST`   | `/v1/dns/add`                        | Add a static entry           |
 | `DELETE` | `/v1/dns/remove/{name}`              | Remove a static entry        |
 | `POST`   | `/v1/dns/serve`                      | Start the resolver           |
@@ -91,6 +92,23 @@ Content-Type: application/json
 
 {"name": "grafana", "ip": "10.0.0.42"}
 ```
+
+---
+
+## Coexisting with an existing resolver
+
+Koi's resolver is meant to sit *alongside* the DNS server you already run, not
+replace it. Point your incumbent resolver (AdGuard Home, Pi-hole, dnsmasq,
+Unbound, Technitium) at Koi for just the Koi zone via **conditional forwarding**,
+and export the zone for resolvers that want a static file:
+
+```sh
+curl -s "http://<koi-ip>:5641/v1/dns/zone?format=hosts"
+curl -s "http://<koi-ip>:5641/v1/dns/zone?format=dnsmasq"
+```
+
+See the [DNS coexistence guide](./dns-coexistence.md) for copy-paste
+conditional-forwarding recipes (one per incumbent) with a `dig` test each.
 
 ---
 
