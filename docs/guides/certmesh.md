@@ -371,7 +371,11 @@ To restore on a new machine (or after data loss):
 koi certmesh restore ./mesh-backup.tar.enc
 ```
 
-The backup is encrypted with the CA passphrase, so the same passphrase is required to restore.
+`backup` prompts for the **CA passphrase** (to read the current state) and a **separate
+backup passphrase** (to encrypt the bundle); `restore` prompts for that backup passphrase
+and a new CA passphrase to re-protect the restored key. Keep the backup passphrase with
+the bundle — it is what decrypts it, independent of the CA passphrase. See the
+[HA & recovery runbook](certmesh-ha-recovery.md) for the full backup/restore + standby-promote procedure.
 
 ---
 

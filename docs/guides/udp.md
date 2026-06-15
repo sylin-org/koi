@@ -73,7 +73,7 @@ curl -X POST -H "x-koi-token: $TOKEN" http://localhost:5641/v1/udp/send/01958f2a
 ```
 
 ```json
-{ "bytes_sent": 102 }
+{ "sent": 102 }
 ```
 
 The payload is base64-encoded. The datagram is sent from the bound socket, so the source address will be the binding's local address.
@@ -85,7 +85,7 @@ curl -X PUT -H "x-koi-token: $TOKEN" http://localhost:5641/v1/udp/heartbeat/0195
 ```
 
 ```json
-{ "status": "ok" }
+{ "renewed": "01958f2a-..." }
 ```
 
 Send heartbeats at roughly half the lease interval. If you set `lease_secs: 300`, heartbeat every ~150 seconds. Note: UDP heartbeat uses `PUT` rather than `POST`.
@@ -117,7 +117,7 @@ curl -X DELETE -H "x-koi-token: $TOKEN" http://localhost:5641/v1/udp/bind/01958f
 ```
 
 ```json
-{ "status": "unbound" }
+{ "unbound": "01958f2a-..." }
 ```
 
 The socket is closed immediately and the relay task stops.
