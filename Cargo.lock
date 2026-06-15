@@ -2352,8 +2352,11 @@ name = "koi-truststore"
 version = "0.4.1"
 dependencies = [
  "koi-common",
+ "pem",
+ "rcgen 0.13.2",
  "thiserror 2.0.18",
  "tracing",
+ "x509-parser 0.16.0",
 ]
 
 [[package]]

@@ -42,3 +42,22 @@ pub fn is_installed(name: &str) -> bool {
         Err(_) => false,
     }
 }
+
+pub fn remove(name: &str) -> Result<(), TrustStoreError> {
+    let output = Command::new("certutil")
+        .args(["-delstore", "Root", name])
+        .output()?;
+
+    if output.status.success() {
+        tracing::info!(name, "Root CA removed from Windows certificate store");
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(name, stderr = %stderr, "certutil -delstore failed");
+        Err(TrustStoreError::CommandFailed(format!(
+            "certutil -delstore exit code {}: {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        )))
+    }
+}

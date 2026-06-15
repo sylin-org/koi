@@ -16,3 +16,8 @@ categories = ["cryptography", "os"]
 koi-common.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+pem.workspace = true
+x509-parser.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true

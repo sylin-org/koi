@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::cli::{
     CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, HealthSubcommand, McpSubcommand,
-    MdnsSubcommand, ProxySubcommand, UdpSubcommand,
+    MdnsSubcommand, ProxySubcommand, TrustSubcommand, UdpSubcommand,
 };
 use crate::commands::status::try_daemon_status;
 use crate::daemon::daemon_mode;
@@ -267,6 +267,23 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     Some(UdpSubcommand::Heartbeat { id }) => {
                         commands::udp::heartbeat(id, mode, cli.json).await
                     }
+                }
+            }
+            Command::Trust(trust_cmd) => {
+                // Trust operations are local (OS cert store) — no daemon capability.
+                match &trust_cmd.command {
+                    None => {
+                        help::print_category_catalog(help::KoiCategory::TrustStore, None)?;
+                        Ok(())
+                    }
+                    Some(TrustSubcommand::Install { pem_path }) => {
+                        commands::trust::install(pem_path, cli.json)
+                    }
+                    Some(TrustSubcommand::List) => commands::trust::list(cli.json),
+                    Some(TrustSubcommand::Remove { name }) => {
+                        commands::trust::remove(name, cli.json)
+                    }
+                    Some(TrustSubcommand::Export { ca }) => commands::trust::export(*ca, cli.json),
                 }
             }
             Command::Mcp(mcp_cmd) => match &mcp_cmd.command {

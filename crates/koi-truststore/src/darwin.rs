@@ -44,3 +44,30 @@ pub fn is_installed(_name: &str) -> bool {
     // Best-effort: try to find it via security command.
     false
 }
+
+pub fn remove(name: &str) -> Result<(), TrustStoreError> {
+    // `security delete-certificate -c <common-name>` removes by certificate common
+    // name from the System keychain. The cert was installed under `name`, which Koi
+    // uses as the common-name marker for its own roots.
+    let output = Command::new("security")
+        .args([
+            "delete-certificate",
+            "-c",
+            name,
+            "/Library/Keychains/System.keychain",
+        ])
+        .output()?;
+
+    if output.status.success() {
+        tracing::info!(name, "Root CA removed from macOS System Keychain");
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(name, stderr = %stderr, "security delete-certificate failed");
+        Err(TrustStoreError::CommandFailed(format!(
+            "security delete-certificate exit code {}: {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        )))
+    }
+}

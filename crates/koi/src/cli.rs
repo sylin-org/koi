@@ -184,6 +184,8 @@ pub enum Command {
     Proxy(ProxyCommand),
     /// UDP datagram bridging
     Udp(UdpCommand),
+    /// OS trust store — install/remove/list CA roots, export the certmesh root
+    Trust(TrustCommand),
     /// Model Context Protocol server for AI agents
     Mcp(McpCommand),
     /// Manage the daemon access token (show, write to a file for containers)
@@ -324,6 +326,34 @@ pub struct ProxyCommand {
 pub struct UdpCommand {
     #[command(subcommand)]
     pub command: Option<UdpSubcommand>,
+}
+
+#[derive(Args, Debug)]
+pub struct TrustCommand {
+    #[command(subcommand)]
+    pub command: Option<TrustSubcommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TrustSubcommand {
+    /// Install a CA certificate (PEM) into the OS trust store
+    Install {
+        /// Path to a PEM-encoded CA certificate
+        pem_path: PathBuf,
+    },
+    /// List the CA roots Koi installed
+    List,
+    /// Remove a Koi-installed CA root by name
+    Remove {
+        /// The name shown by `koi trust list`
+        name: String,
+    },
+    /// Export a CA certificate (PEM) to stdout
+    Export {
+        /// Export the certmesh root CA (for ACME bootstrap recipes)
+        #[arg(long)]
+        ca: bool,
+    },
 }
 
 #[derive(Args, Debug)]

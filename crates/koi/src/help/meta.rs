@@ -76,6 +76,9 @@ pub enum KoiCategory {
     Core,
     Discovery,
     Trust,
+    /// Generic OS trust-store management (`koi trust`), distinct from the certmesh
+    /// CA (`KoiCategory::Trust`). Installs/exports arbitrary roots.
+    TrustStore,
     Dns,
     Health,
     Proxy,
@@ -89,6 +92,7 @@ impl KoiCategory {
             Self::Core => "Core",
             Self::Discovery => "Discovery (mDNS)",
             Self::Trust => "Trust (Certmesh)",
+            Self::TrustStore => "Trust store",
             Self::Dns => "DNS",
             Self::Health => "Health",
             Self::Proxy => "Proxy",
@@ -102,11 +106,12 @@ impl KoiCategory {
             Self::Core => 0,
             Self::Discovery => 1,
             Self::Trust => 2,
-            Self::Dns => 3,
-            Self::Health => 4,
-            Self::Proxy => 5,
-            Self::Udp => 6,
-            Self::Mcp => 7,
+            Self::TrustStore => 3,
+            Self::Dns => 4,
+            Self::Health => 5,
+            Self::Proxy => 6,
+            Self::Udp => 7,
+            Self::Mcp => 8,
         }
     }
 
@@ -115,6 +120,7 @@ impl KoiCategory {
             Self::Core => "",
             Self::Discovery => "mdns ",
             Self::Trust => "certmesh ",
+            Self::TrustStore => "trust ",
             Self::Dns => "dns ",
             Self::Health => "health ",
             Self::Proxy => "proxy ",
@@ -128,6 +134,7 @@ impl KoiCategory {
             Self::Core => "status",
             Self::Discovery => "mdns",
             Self::Trust => "certmesh",
+            Self::TrustStore => "trust",
             Self::Dns => "dns",
             Self::Health => "health",
             Self::Proxy => "proxy",
@@ -141,6 +148,7 @@ impl KoiCategory {
             Self::Core => "Service lifecycle and system info",
             Self::Discovery => "Discover and announce services on the local network",
             Self::Trust => "Zero-config TLS certificate mesh",
+            Self::TrustStore => "Install and export CA roots in the OS trust store",
             Self::Dns => "Local DNS resolver with static records",
             Self::Health => "Service health checks and monitoring",
             Self::Proxy => "TLS-terminating reverse proxy",
@@ -156,6 +164,7 @@ impl Glyph for KoiCategory {
             Self::Core => &[Presentation::Emoji("⚙"), Presentation::Ascii("[core]")],
             Self::Discovery => &[Presentation::Emoji("🐠"), Presentation::Ascii("[koi]")],
             Self::Trust => &[Presentation::Emoji("🔐"), Presentation::Ascii("[trust]")],
+            Self::TrustStore => &[Presentation::Emoji("🪪"), Presentation::Ascii("[root]")],
             Self::Dns => &[Presentation::Emoji("🌐"), Presentation::Ascii("[dns]")],
             Self::Health => &[Presentation::Emoji("💓"), Presentation::Ascii("[health]")],
             Self::Proxy => &[Presentation::Emoji("🔀"), Presentation::Ascii("[proxy]")],
@@ -392,6 +401,20 @@ pub fn curated_examples(category: KoiCategory) -> &'static [Example] {
             command: "koi mcp serve",
             description: "Serve MCP over stdio for an AI agent host",
         }],
+        KoiCategory::TrustStore => &[
+            Example {
+                command: "koi trust install ./step-ca-root.pem",
+                description: "Trust a step-ca root system-wide",
+            },
+            Example {
+                command: "koi trust list",
+                description: "Show the roots Koi installed",
+            },
+            Example {
+                command: "koi trust export --ca",
+                description: "Print the certmesh root (for ACME bootstrap)",
+            },
+        ],
     }
 }
 
@@ -1819,6 +1842,103 @@ docs/guides/mcp.md for client configuration.",
             description: "Serve MCP over stdio for an AI agent host",
         }],
         see_also: &["mdns discover", "mdns announce", "dns add"],
+        api: &[],
+        confirmation: None,
+    },
+    // ── Trust store (generic OS root distribution) ─────────────────────
+    CommandMeta {
+        name: "trust install",
+        summary: "Install a CA certificate into the OS trust store",
+        long_description: "\
+Reads a PEM-encoded CA certificate and installs it into the operating system's
+trusted-root store, so browsers and HTTP clients trust everything that root
+signs — no per-app configuration.
+
+Koi validates the input first: it must be a real X.509 certificate AND a CA
+(it has the CA basic constraint). A server/leaf certificate is rejected with
+\"not a CA certificate\". The root is recorded in state/trust.json so `koi trust
+list` and `koi trust remove` can manage exactly the roots Koi installed — Koi
+never enumerates or mutates the rest of the OS store.
+
+Works with any CA root: step-ca, mkcert, Caddy's local CA, a corporate root, or
+Koi's own certmesh root (see `koi trust export --ca`).
+
+Requires elevated privileges (Administrator / sudo).",
+        category: KoiCategory::TrustStore,
+        tags: &[KoiTag::Elevated, KoiTag::Mutating, KoiTag::CliOnly],
+        scope: KoiScope::Admin,
+        examples: &[Example {
+            command: "koi trust install ./step-ca-root.pem",
+            description: "Trust a step-ca root system-wide",
+        }],
+        see_also: &["trust list", "trust remove", "trust export"],
+        api: &[],
+        confirmation: None,
+    },
+    CommandMeta {
+        name: "trust list",
+        summary: "List the CA roots Koi installed",
+        long_description: "\
+Lists the CA roots that Koi installed into the OS trust store, with their
+fingerprints and install timestamps. This shows only Koi's own footprint
+(tracked in state/trust.json) — not the entire OS trust store.",
+        category: KoiCategory::TrustStore,
+        tags: &[KoiTag::ReadOnly, KoiTag::CliOnly],
+        scope: KoiScope::Public,
+        examples: &[
+            Example {
+                command: "koi trust list",
+                description: "Show the roots Koi installed",
+            },
+            Example {
+                command: "koi trust list --json",
+                description: "Machine-readable output",
+            },
+        ],
+        see_also: &["trust install", "trust remove"],
+        api: &[],
+        confirmation: None,
+    },
+    CommandMeta {
+        name: "trust remove",
+        summary: "Remove a Koi-installed CA root",
+        long_description: "\
+Removes a CA root that Koi installed, by the name shown in `koi trust list`.
+The certificate is removed from the OS trust store and its entry is dropped
+from state/trust.json. Roots Koi did not install are never touched.
+
+Requires elevated privileges (Administrator / sudo).",
+        category: KoiCategory::TrustStore,
+        tags: &[KoiTag::Elevated, KoiTag::Mutating, KoiTag::CliOnly],
+        scope: KoiScope::Admin,
+        examples: &[Example {
+            command: "koi trust remove koi-step-ca-root",
+            description: "Untrust a previously installed root",
+        }],
+        see_also: &["trust list", "trust install"],
+        api: &[],
+        confirmation: None,
+    },
+    CommandMeta {
+        name: "trust export",
+        summary: "Export the certmesh root CA to stdout",
+        long_description: "\
+Prints the certmesh root CA certificate (PEM) to stdout, so you can hand it to
+tools that bootstrap their own trust — for example seeding an ACME client or a
+container's CA bundle:
+
+  koi trust export --ca > koi-root.pem
+
+The certmesh CA must exist (run `koi certmesh create` first). See the ACME
+guide for how this fits the ACME bootstrap recipes.",
+        category: KoiCategory::TrustStore,
+        tags: &[KoiTag::ReadOnly, KoiTag::CliOnly],
+        scope: KoiScope::Public,
+        examples: &[Example {
+            command: "koi trust export --ca",
+            description: "Print the certmesh root (for ACME bootstrap)",
+        }],
+        see_also: &["trust install", "certmesh create"],
         api: &[],
         confirmation: None,
     },
