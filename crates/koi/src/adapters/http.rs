@@ -523,7 +523,7 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
 /// GET and OPTIONS requests are exempt (read-only, CORS preflight).
 /// All other methods require a valid `x-koi-token` header.
 /// Uses constant-time comparison to prevent timing attacks.
-async fn dat_auth_middleware(
+pub(crate) async fn dat_auth_middleware(
     req: Request<Body>,
     next: Next,
     expected_token: Arc<String>,

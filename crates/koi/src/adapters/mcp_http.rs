@@ -466,4 +466,86 @@ mod tests {
             "resources/read must return contents for the uri: {body}"
         );
     }
+
+    /// True end-to-end: bind the MCP service behind the REAL DAT auth middleware on
+    /// a real TCP listener (exactly how the daemon mounts it), then drive it with a
+    /// real rmcp MCP client over the wire — with the token (full surface works) and
+    /// without (the auth layer rejects). This is the "bring the service up and hit
+    /// it from an MCP client" tripwire.
+    #[tokio::test]
+    async fn mcp_client_over_tcp_through_auth_layer() {
+        use axum::http::{HeaderName, HeaderValue};
+        use rmcp::transport::streamable_http_client::{
+            StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
+        };
+        use rmcp::ServiceExt as _;
+
+        let token = "itest-token";
+        // Mount exactly as adapters::http::start does: the rmcp service nested at
+        // /v1/mcp, behind the production dat_auth_middleware. Empty allowed_hosts
+        // disables rmcp's Host check (the client sends Host: 127.0.0.1:<port>).
+        let service = koi_mcp::streamable_http_service(std::sync::Arc::new(MockSource), Vec::new());
+        let expected = std::sync::Arc::new(token.to_string());
+        let app =
+            axum::Router::new()
+                .nest_service("/v1/mcp", service)
+                .layer(axum::middleware::from_fn(move |req, next| {
+                    let expected = expected.clone();
+                    crate::adapters::http::dat_auth_middleware(req, next, expected)
+                }));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let url = format!("http://127.0.0.1:{port}/v1/mcp");
+
+        // ── With the token: a real MCP client completes the surface. ──
+        let mut headers = HashMap::new();
+        headers.insert(
+            HeaderName::from_static("x-koi-token"),
+            HeaderValue::from_str(token).unwrap(),
+        );
+        let config =
+            StreamableHttpClientTransportConfig::with_uri(url.clone()).custom_headers(headers);
+        let transport = StreamableHttpClientTransport::from_config(config);
+        let client = ().serve(transport).await.expect("authenticated client should initialize");
+
+        let tools = client.list_tools(None).await.expect("list_tools");
+        assert_eq!(
+            tools.tools.len(),
+            11,
+            "expected the 11 v1 tools over the wire"
+        );
+        let resources = client.list_resources(None).await.expect("list_resources");
+        assert!(
+            resources
+                .resources
+                .iter()
+                .any(|r| r.uri == "koi://lan/inventory"),
+            "resources/list over the wire must include the inventory resource"
+        );
+        let read = client
+            .read_resource(rmcp::model::ReadResourceRequestParams::new("koi://health"))
+            .await
+            .expect("read_resource");
+        assert!(!read.contents.is_empty(), "read must return contents");
+        let _ = client.cancel().await;
+
+        // ── Without the token: the real auth layer rejects it. ──
+        let config = StreamableHttpClientTransportConfig::with_uri(url);
+        let transport = StreamableHttpClientTransport::from_config(config);
+        match ().serve(transport).await {
+            Err(_) => {} // rejected at initialize — the expected path
+            Ok(client) => {
+                assert!(
+                    client.list_tools(None).await.is_err(),
+                    "a tokenless client must be rejected by the auth layer"
+                );
+                let _ = client.cancel().await;
+            }
+        }
+
+        server.abort();
+    }
 }

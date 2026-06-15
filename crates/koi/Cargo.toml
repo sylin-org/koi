@@ -76,6 +76,11 @@ x509-parser.workspace = true
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 rcgen.workspace = true
+# A real MCP client (over a bound TCP listener) for the /v1/mcp e2e test.
+rmcp = { workspace = true, features = [
+    "client",
+    "transport-streamable-http-client-reqwest",
+] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
