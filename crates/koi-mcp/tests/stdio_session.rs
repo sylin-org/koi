@@ -12,15 +12,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use koi_client::KoiClient;
-use koi_mcp::Server;
+use koi_mcp::{ClientSource, StdioServer};
 use rmcp::ServiceExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// Build a `Server` with a client pointed at an unused loopback port. `tools/list`
 /// never touches the daemon, so the port need not be live.
-fn test_server() -> Server {
+fn test_server() -> StdioServer {
     let client = Arc::new(KoiClient::new("http://127.0.0.1:1"));
-    Server::new(client)
+    StdioServer::new(Arc::new(ClientSource::new(client)))
 }
 
 /// Write one JSON-RPC line and flush.

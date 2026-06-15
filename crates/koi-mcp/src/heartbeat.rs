@@ -16,11 +16,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use koi_client::KoiClient;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::client::call;
+use crate::source::KoiSource;
 
 /// Lower bound on the heartbeat interval, so a tiny lease cannot create a
 /// busy-loop of renewals.
@@ -39,10 +38,11 @@ impl Registry {
 
     /// Spawn a heartbeat task for `id` that renews the lease at ~1/3 of
     /// `lease_secs`, and record its handle. Replaces (and aborts) any prior task
-    /// for the same id.
-    pub async fn track(&self, client: &Arc<KoiClient>, id: String, lease_secs: u64) {
+    /// for the same id. Renewal goes through the [`KoiSource`] so it works for
+    /// both the stdio client and the in-process cores.
+    pub async fn track<S: KoiSource>(&self, source: &Arc<S>, id: String, lease_secs: u64) {
         let interval = heartbeat_interval(lease_secs);
-        let task = spawn_heartbeat(Arc::clone(client), id.clone(), interval);
+        let task = spawn_heartbeat(Arc::clone(source), id.clone(), interval);
         let mut map = self.inner.lock().await;
         if let Some(previous) = map.insert(id, task) {
             previous.abort();
@@ -64,15 +64,14 @@ impl Registry {
 
     /// Cancel every heartbeat task and best-effort unregister every tracked id.
     /// Called on server shutdown so no announced service is left to go stale.
-    pub async fn shutdown(&self, client: &Arc<KoiClient>) {
+    pub async fn shutdown<S: KoiSource>(&self, source: &Arc<S>) {
         let drained: Vec<(String, JoinHandle<()>)> = {
             let mut map = self.inner.lock().await;
             map.drain().collect()
         };
         for (id, task) in drained {
             task.abort();
-            let id_for_call = id.clone();
-            if let Err(e) = call(client, move |c| c.unregister(&id_for_call)).await {
+            if let Err(e) = source.unregister(id.clone()).await {
                 tracing::warn!(id = %id, error = %e, "failed to unregister on shutdown");
             } else {
                 tracing::debug!(id = %id, "unregistered on shutdown");
@@ -91,14 +90,13 @@ fn heartbeat_interval(lease_secs: u64) -> Duration {
     }
 }
 
-/// Spawn the renewal loop for one registration. Stops itself if the daemon
+/// Spawn the renewal loop for one registration. Stops itself if the source
 /// reports the id is gone (renewal error), letting the lease drain naturally.
-fn spawn_heartbeat(client: Arc<KoiClient>, id: String, interval: Duration) -> JoinHandle<()> {
+fn spawn_heartbeat<S: KoiSource>(source: Arc<S>, id: String, interval: Duration) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(interval).await;
-            let id_for_call = id.clone();
-            match call(&client, move |c| c.heartbeat(&id_for_call)).await {
+            match source.heartbeat(id.clone()).await {
                 Ok(_) => tracing::trace!(id = %id, "heartbeat renewed"),
                 Err(e) => {
                     tracing::debug!(id = %id, error = %e, "heartbeat failed; stopping renewal");

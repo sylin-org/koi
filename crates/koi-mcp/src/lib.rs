@@ -15,6 +15,7 @@
 mod client;
 mod heartbeat;
 mod server;
+mod source;
 mod tools;
 
 use std::sync::Arc;
@@ -24,6 +25,10 @@ use rmcp::{transport::stdio, ServiceExt};
 
 pub use client::build_client;
 pub use server::Server;
+pub use source::{ClientSource, KoiSource, ResourceChange, SourceError};
+
+/// The stdio server type: a [`Server`] backed by the blocking [`ClientSource`].
+pub type StdioServer = Server<ClientSource>;
 
 /// Run the MCP server over stdio against the given Koi daemon client.
 ///
@@ -31,8 +36,8 @@ pub use server::Server;
 /// stdin). On completion, every service announced during the session is
 /// unregistered so nothing is left to go stale.
 pub async fn serve(client: KoiClient) -> anyhow::Result<()> {
-    let client = Arc::new(client);
-    let server = Server::new(client);
+    let source = Arc::new(ClientSource::new(Arc::new(client)));
+    let server = Server::new(source);
 
     tracing::info!("koi-mcp serving over stdio");
     let service = server.clone().serve(stdio()).await?;

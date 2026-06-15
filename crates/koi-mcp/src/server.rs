@@ -1,22 +1,25 @@
 //! The MCP `Server`: tool router, tool handlers, and the `ServerHandler` info.
 //!
-//! Every tool delegates to a blocking `KoiClient` call via
-//! [`crate::client::call`] (spawn_blocking). Read tools carry `read_only_hint`;
-//! additive writers carry `destructive_hint = false`; removers carry
-//! `destructive_hint = true`. The token is never echoed in any tool output.
+//! `Server<S>` is generic over a [`KoiSource`] data backing, so the same tool
+//! surface serves both the stdio transport (backed by [`crate::ClientSource`], a
+//! blocking `KoiClient`) and the in-process HTTP transport (backed by the binary's
+//! `CoreSource`, the live domain cores). Handlers call `self.source.<method>()` —
+//! they never touch a concrete client. Read tools carry `read_only_hint`; additive
+//! writers carry `destructive_hint = false`; removers carry `destructive_hint = true`.
+//! The token is never echoed in any tool output.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use koi_client::{ClientError, KoiClient};
 use rmcp::{
     handler::server::wrapper::Parameters,
     model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router, ErrorData, ServerHandler,
 };
 
-use crate::client::{call, NO_DAEMON_MSG};
+use crate::client::NO_DAEMON_MSG;
 use crate::heartbeat::Registry;
+use crate::source::{KoiSource, SourceError};
 use crate::tools::{
     self, AnnounceReq, DiscoverReq, DnsAddReq, DnsLookupReq, DnsRemoveReq, InventoryReq,
     ResolveReq, UnregisterReq,
@@ -32,19 +35,29 @@ const MAX_DISCOVER_SECS: u64 = 10;
 /// Default `lan_discover` collection window.
 const DEFAULT_DISCOVER_SECS: u64 = 5;
 
-#[derive(Clone)]
-pub struct Server {
-    client: Arc<KoiClient>,
+pub struct Server<S> {
+    source: Arc<S>,
     registry: Registry,
 }
 
-#[tool_router]
-impl Server {
-    /// Build a server bound to `client`, with a fresh (empty) announcement
-    /// registry. The registry tracks heartbeat tasks for `lan_announce`.
-    pub fn new(client: Arc<KoiClient>) -> Self {
+// Hand-written so `Server<S>` is `Clone` without forcing `S: Clone` (the source is
+// shared behind an `Arc`). The stdio path clones the server before serving.
+impl<S> Clone for Server<S> {
+    fn clone(&self) -> Self {
         Self {
-            client,
+            source: Arc::clone(&self.source),
+            registry: self.registry.clone(),
+        }
+    }
+}
+
+#[tool_router]
+impl<S: KoiSource> Server<S> {
+    /// Build a server bound to `source`, with a fresh (empty) announcement
+    /// registry. The registry tracks heartbeat tasks for `lan_announce`.
+    pub fn new(source: Arc<S>) -> Self {
+        Self {
+            source,
             registry: Registry::new(),
         }
     }
@@ -76,14 +89,9 @@ impl Server {
                 .unwrap_or(DEFAULT_DISCOVER_SECS)
                 .clamp(1, MAX_DISCOVER_SECS),
         );
-        let browse_type = req.service_type.clone();
-        let records = call(&self.client, move |c| {
-            tools::collect_browse(c, browse_type.as_deref(), window)
-        })
-        .await;
-        match records {
+        match self.source.browse(req.service_type.clone(), window).await {
             Ok(records) => Ok(structured(serde_json::json!({ "services": records }))),
-            Err(e) => Ok(client_error_result(&e)),
+            Err(e) => Ok(source_error_result(&e)),
         }
     }
 
@@ -105,12 +113,11 @@ impl Server {
         if let Err(result) = self.require_daemon().await {
             return Ok(result);
         }
-        let instance = req.instance.clone();
-        match call(&self.client, move |c| c.resolve(&instance)).await {
+        match self.source.resolve(req.instance.clone()).await {
             Ok(record) => Ok(structured(
                 serde_json::to_value(record).unwrap_or(serde_json::Value::Null),
             )),
-            Err(e) => Ok(client_error_result(&e)),
+            Err(e) => Ok(source_error_result(&e)),
         }
     }
 
@@ -135,12 +142,12 @@ impl Server {
             return Ok(result);
         }
         let payload = tools::announce_payload(&req);
-        match call(&self.client, move |c| c.register(&payload)).await {
+        match self.source.register(payload).await {
             Ok(result) => {
                 let lease_secs = result.lease_secs.unwrap_or(0);
                 if lease_secs > 0 {
                     self.registry
-                        .track(&self.client, result.id.clone(), lease_secs)
+                        .track(&self.source, result.id.clone(), lease_secs)
                         .await;
                 }
                 Ok(structured(serde_json::json!({
@@ -151,7 +158,7 @@ impl Server {
                     "lease_secs": lease_secs,
                 })))
             }
-            Err(e) => Ok(client_error_result(&e)),
+            Err(e) => Ok(source_error_result(&e)),
         }
     }
 
@@ -174,10 +181,9 @@ impl Server {
             return Ok(result);
         }
         self.registry.untrack(&req.id).await;
-        let id = req.id.clone();
-        match call(&self.client, move |c| c.unregister(&id)).await {
+        match self.source.unregister(req.id.clone()).await {
             Ok(()) => Ok(structured(serde_json::json!({ "unregistered": req.id }))),
-            Err(e) => Ok(client_error_result(&e)),
+            Err(e) => Ok(source_error_result(&e)),
         }
     }
 
@@ -201,10 +207,9 @@ impl Server {
             return Ok(result);
         }
         let record_type = tools::parse_record_type(req.record_type.as_deref());
-        let name = req.name.clone();
-        match call(&self.client, move |c| c.dns_lookup(&name, record_type)).await {
+        match self.source.dns_lookup(req.name.clone(), record_type).await {
             Ok(value) => Ok(structured(value)),
-            Err(e) => Ok(client_error_result(&e)),
+            Err(e) => Ok(source_error_result(&e)),
         }
     }
 
@@ -230,11 +235,9 @@ impl Server {
             Ok(ip) => ip,
             Err(msg) => return Ok(text_error(&msg)),
         };
-        let name = req.name.clone();
-        let ttl = req.ttl;
-        match call(&self.client, move |c| c.dns_add(&name, &ip, ttl)).await {
+        match self.source.dns_add(req.name.clone(), ip, req.ttl).await {
             Ok(value) => Ok(structured(value)),
-            Err(e) => Ok(client_error_result(&e)),
+            Err(e) => Ok(source_error_result(&e)),
         }
     }
 
@@ -254,10 +257,9 @@ impl Server {
         if let Err(result) = self.require_daemon().await {
             return Ok(result);
         }
-        let name = req.name.clone();
-        match call(&self.client, move |c| c.dns_remove(&name)).await {
+        match self.source.dns_remove(req.name.clone()).await {
             Ok(value) => Ok(structured(value)),
-            Err(e) => Ok(client_error_result(&e)),
+            Err(e) => Ok(source_error_result(&e)),
         }
     }
 
@@ -285,17 +287,17 @@ impl Server {
         // does not blank the whole inventory. `include` optionally narrows the set.
         let want = |source: &str| tools::inventory_includes(req.include.as_deref(), source);
         let status = if want("status") {
-            call(&self.client, |c| c.unified_status()).await.ok()
+            self.source.unified_status().await.ok()
         } else {
             None
         };
         let health = if want("health") {
-            call(&self.client, |c| c.health_status()).await.ok()
+            self.source.health_status().await.ok()
         } else {
             None
         };
         let dns = if want("dns") {
-            call(&self.client, |c| c.dns_list()).await.ok()
+            self.source.dns_list().await.ok()
         } else {
             None
         };
@@ -320,9 +322,9 @@ impl Server {
         if let Err(result) = self.require_daemon().await {
             return Ok(result);
         }
-        match call(&self.client, |c| c.health_status()).await {
+        match self.source.health_status().await {
             Ok(value) => Ok(structured(value)),
-            Err(e) => Ok(client_error_result(&e)),
+            Err(e) => Ok(source_error_result(&e)),
         }
     }
 
@@ -340,9 +342,9 @@ impl Server {
         if let Err(result) = self.require_daemon().await {
             return Ok(result);
         }
-        match call(&self.client, |c| c.get_json("/v1/runtime/instances")).await {
+        match self.source.runtime_instances().await {
             Ok(value) => Ok(structured(value)),
-            Err(e) => Ok(client_error_result(&e)),
+            Err(e) => Ok(source_error_result(&e)),
         }
     }
 
@@ -362,25 +364,26 @@ impl Server {
             return Ok(result);
         }
         let window = Duration::from_secs(DEFAULT_DISCOVER_SECS);
-        match call(&self.client, move |c| {
-            tools::collect_browse(c, Some(MCP_SERVICE_TYPE), window)
-        })
-        .await
+        match self
+            .source
+            .browse(Some(MCP_SERVICE_TYPE.to_string()), window)
+            .await
         {
             Ok(records) => {
                 let servers = tools::to_mcp_endpoints(&records);
                 Ok(structured(serde_json::json!({ "servers": servers })))
             }
-            Err(e) => Ok(client_error_result(&e)),
+            Err(e) => Ok(source_error_result(&e)),
         }
     }
 
     // ── Shared guard ────────────────────────────────────────────────
 
-    /// Probe the daemon; on failure return a ready-made actionable error result.
+    /// Probe the source; on failure return a ready-made actionable error result.
+    /// The in-process `CoreSource` is always available; the stdio `ClientSource`
+    /// probes the daemon over HTTP.
     async fn require_daemon(&self) -> Result<(), CallToolResult> {
-        let probe = call(&self.client, |c| c.health()).await;
-        if probe.is_ok() {
+        if self.source.is_available().await {
             Ok(())
         } else {
             Err(text_error(NO_DAEMON_MSG))
@@ -389,12 +392,12 @@ impl Server {
 
     /// Unregister every tracked announcement. Call on shutdown.
     pub async fn shutdown(&self) {
-        self.registry.shutdown(&self.client).await;
+        self.registry.shutdown(&self.source).await;
     }
 }
 
 #[tool_handler]
-impl ServerHandler for Server {
+impl<S: KoiSource> ServerHandler for Server<S> {
     fn get_info(&self) -> ServerInfo {
         // ServerInfo and Implementation are both #[non_exhaustive] — build via
         // default() and mutate rather than a struct literal.
@@ -429,7 +432,7 @@ fn text_error(message: &str) -> CallToolResult {
     CallToolResult::error(vec![Content::text(message.to_string())])
 }
 
-/// Map a `KoiClient` error to a tool error result. Never leaks the token.
-fn client_error_result(err: &ClientError) -> CallToolResult {
+/// Map a source error to a tool error result. Never leaks the token.
+fn source_error_result(err: &SourceError) -> CallToolResult {
     text_error(&err.to_string())
 }

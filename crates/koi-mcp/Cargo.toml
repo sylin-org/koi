@@ -20,6 +20,8 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
 tracing.workspace = true
 # Record-type parsing for dns_lookup and local-IP detection for dns_add.
 hickory-proto.workspace = true
