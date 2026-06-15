@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-06-15
+
+### Added
+- New `koi-compose` composition crate — the single place the daemon, the Windows service, and `koi-embedded` construct a running daemon (domain cores, cross-domain bridges, the container orchestrator, the certmesh role loops, capability status, and ordered shutdown). It is a composition crate consumed only by the binary and `koi-embedded`, so the kernel and domain crates keep clean dependency closures.
+- A workspace dependency-graph architecture guard (`koi-common/tests/architecture.rs`) that fails the build if any domain crate depends on another domain crate.
+- `koi-embedded` builder opt-ins (default-off): `.orchestrator(true)` (translate container lifecycle events into mDNS/DNS/health/proxy entries) and `.certmesh_background(true)` (run the certmesh renewal / roster-sync / heartbeat / failover loops).
+
+### Fixed
+- **Windows `koi install` parity:** the Windows service now spawns the runtime orchestrator and the certmesh background loops (renewal, roster sync, member heartbeat, failover) that the foreground daemon runs. Previously `koi install` produced a structurally weaker daemon that silently let certificates expire and never wired discovered containers into the domains. The three daemon entry points now share one construction path, so this cannot drift again.
+- **Embedded remote `MdnsHandle::subscribe`** no longer returns a silently dead receiver in client (remote) mode — see the breaking note below.
+
+### Changed
+- The certificate-authority data paths now have a single source of truth, and on auto-unlock profiles (`JustMe` / `MyTeam`) the CA boots **already unlocked from the vault** at daemon/service startup instead of requiring `koi certmesh unlock`. `MyOrganization` still boots locked.
+- Under the Windows service, an mDNS initialization failure is now non-fatal (the service starts degraded with mDNS disabled), matching the foreground daemon, instead of aborting startup.
+- `koi-client` no longer depends on `mdns-sd`: the shared wire types moved to the `koi-common` kernel.
+- `main.rs` slimmed from ~1300 to ~156 lines (CLI dispatch, daemon wiring, and infrastructure helpers split into focused modules). No behavior change.
+
+### Breaking
+- `koi-embedded`: `MdnsHandle::subscribe()` now returns `Result<broadcast::Receiver<MdnsEvent>, KoiError>`. In embedded mode it returns `Ok(..)` as before; in client (remote) mode it returns `Err(KoiError::RemoteUnsupported)` — there is no all-types lifecycle stream to forward remotely (the daemon's `/v1/mdns/subscribe` requires a service type), so use `MdnsHandle::browse(service_type)` for a remote event stream. Previously it returned a receiver that silently yielded nothing.
+
 ## [0.4.0] - 2026-06-13
 
 ### Added
