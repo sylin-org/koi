@@ -13,7 +13,6 @@ use std::time::Instant;
 
 use tokio::sync::broadcast;
 
-use koi_common::capability::Capability;
 use koi_dashboard::dashboard::{DashboardIdentity, DashboardState};
 
 // ── Snapshot detail types (private — serialized into opaque JSON) ────
@@ -104,157 +103,28 @@ struct DomainCores {
 // ── Build snapshot (domain-specific) ────────────────────────────────
 
 async fn build_snapshot_value(cores: &DomainCores) -> serde_json::Value {
-    let mut capabilities = Vec::with_capacity(7);
-
-    // mDNS
-    if let Some(ref core) = cores.mdns {
-        let s = core.status();
-        capabilities.push(CapabilityCard {
-            name: s.name,
-            enabled: true,
-            healthy: s.healthy,
-            summary: s.summary,
-        });
-    } else {
-        capabilities.push(CapabilityCard {
-            name: "mdns".to_string(),
-            enabled: false,
-            healthy: false,
-            summary: "disabled".to_string(),
-        });
-    }
-
-    // Certmesh
-    if let Some(ref core) = cores.certmesh {
-        let s = core.status();
-        capabilities.push(CapabilityCard {
-            name: s.name,
-            enabled: true,
-            healthy: s.healthy,
-            summary: s.summary,
-        });
-    } else {
-        capabilities.push(CapabilityCard {
-            name: "certmesh".to_string(),
-            enabled: false,
-            healthy: false,
-            summary: "disabled".to_string(),
-        });
-    }
-
-    // DNS
-    if let Some(ref runtime) = cores.dns {
-        let running = runtime.status().await.running;
-        if running {
-            let s = runtime.core().status();
-            capabilities.push(CapabilityCard {
-                name: s.name,
-                enabled: true,
-                healthy: s.healthy,
-                summary: s.summary,
-            });
-        } else {
-            capabilities.push(CapabilityCard {
-                name: "dns".to_string(),
-                enabled: true,
-                healthy: false,
-                summary: "stopped".to_string(),
-            });
-        }
-    } else {
-        capabilities.push(CapabilityCard {
-            name: "dns".to_string(),
-            enabled: false,
-            healthy: false,
-            summary: "disabled".to_string(),
-        });
-    }
-
-    // Health
-    if let Some(ref runtime) = cores.health {
-        let running = runtime.status().await.running;
-        if running {
-            let s = runtime.core().status();
-            capabilities.push(CapabilityCard {
-                name: s.name,
-                enabled: true,
-                healthy: s.healthy,
-                summary: s.summary,
-            });
-        } else {
-            capabilities.push(CapabilityCard {
-                name: "health".to_string(),
-                enabled: true,
-                healthy: false,
-                summary: "stopped".to_string(),
-            });
-        }
-    } else {
-        capabilities.push(CapabilityCard {
-            name: "health".to_string(),
-            enabled: false,
-            healthy: false,
-            summary: "disabled".to_string(),
-        });
-    }
-
-    // Proxy
-    if let Some(ref runtime) = cores.proxy {
-        let status = runtime.status().await;
-        capabilities.push(CapabilityCard {
-            name: "proxy".to_string(),
-            enabled: true,
-            healthy: true,
-            summary: if status.is_empty() {
-                "no listeners".to_string()
-            } else {
-                format!("{} listeners", status.len())
-            },
-        });
-    } else {
-        capabilities.push(CapabilityCard {
-            name: "proxy".to_string(),
-            enabled: false,
-            healthy: false,
-            summary: "disabled".to_string(),
-        });
-    }
-
-    // UDP
-    if let Some(ref runtime) = cores.udp {
-        let s = Capability::status(runtime.as_ref());
-        capabilities.push(CapabilityCard {
-            name: s.name,
-            enabled: true,
-            healthy: s.healthy,
-            summary: s.summary,
-        });
-    } else {
-        capabilities.push(CapabilityCard {
-            name: "udp".to_string(),
-            enabled: false,
-            healthy: false,
-            summary: "disabled".to_string(),
-        });
-    }
-
-    // Runtime
-    if let Some(ref runtime_core) = cores.runtime {
-        let s = runtime_core.capability_status().await;
-        capabilities.push(CapabilityCard {
-            name: s.name,
-            enabled: true,
-            healthy: s.healthy,
-            summary: s.summary,
-        });
-    } else {
-        capabilities.push(CapabilityCard {
-            name: "runtime".to_string(),
-            enabled: false,
-            healthy: false,
-            summary: "disabled".to_string(),
-        });
-    }
+    // The capability ladder is assembled once in koi-compose, shared with `/v1/status` and
+    // the embedded snapshot. The dashboard card adds `enabled` (false only when disabled).
+    let domain_cores = koi_compose::cores::Cores {
+        mdns: cores.mdns.clone(),
+        certmesh: cores.certmesh.clone(),
+        dns: cores.dns.clone(),
+        health: cores.health.clone(),
+        proxy: cores.proxy.clone(),
+        udp: cores.udp.clone(),
+        runtime: cores.runtime.clone(),
+    };
+    let capabilities: Vec<CapabilityCard> =
+        koi_compose::status::assemble_capabilities(&domain_cores)
+            .await
+            .into_iter()
+            .map(|c| CapabilityCard {
+                name: c.status.name,
+                enabled: c.enabled,
+                healthy: c.status.healthy,
+                summary: c.status.summary,
+            })
+            .collect();
 
     // Domain details
     let health = if let Some(ref runtime) = cores.health {

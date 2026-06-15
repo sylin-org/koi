@@ -10,6 +10,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use koi_client::KoiClient;
+use koi_compose::bridges::{
+    AliasFeedbackBridge, CertmeshBridge, DnsBridge, MdnsBridge, ProxyBridge,
+};
 
 pub use config::{DnsConfigBuilder, KoiConfig, ServiceMode};
 pub use events::KoiEvent;
@@ -36,6 +39,8 @@ pub type Result<T> = std::result::Result<T, KoiError>;
 pub enum KoiError {
     #[error("capability disabled: {0}")]
     DisabledCapability(&'static str),
+    #[error("not available in client (remote) mode: {0}")]
+    RemoteUnsupported(&'static str),
     #[error("mdns error: {0}")]
     Mdns(#[from] koi_mdns::MdnsError),
     #[error("dns error: {0}")]
@@ -157,6 +162,23 @@ impl Builder {
     pub fn runtime_auto(mut self) -> Self {
         self.config.runtime_enabled = true;
         self.config.runtime_backend = koi_runtime::RuntimeBackendKind::Auto;
+        self
+    }
+
+    /// Translate discovered runtime (container) lifecycle events into mDNS/DNS/health/proxy
+    /// entries — the same orchestrator the daemon runs. Opt-in; requires the runtime
+    /// adapter (`runtime`/`runtime_auto`) to be enabled to have any effect.
+    pub fn orchestrator(mut self, enabled: bool) -> Self {
+        self.config.orchestrator_enabled = enabled;
+        self
+    }
+
+    /// Run the certmesh role-driven background loops (renewal, standby roster sync, member
+    /// heartbeat, failover/announce) — the same loops the daemon runs. Opt-in; requires
+    /// certmesh (`certmesh`) to be enabled. A clustered embedded CA host wants this; a leaf
+    /// does not. Enrollment approval auto-denies (no interactive console).
+    pub fn certmesh_background(mut self, enabled: bool) -> Self {
+        self.config.certmesh_background_enabled = enabled;
         self
     }
 
@@ -282,9 +304,11 @@ impl KoiEmbedded {
 
         let certmesh = if self.config.certmesh_enabled {
             let data_dir = self.config.data_dir.clone();
-            tokio::task::spawn_blocking(move || init_certmesh_core(data_dir.as_deref()))
-                .await
-                .map_err(|e| std::io::Error::other(format!("certmesh init: {e}")))?
+            tokio::task::spawn_blocking(move || {
+                koi_compose::cores::init_certmesh_core(data_dir.as_deref())
+            })
+            .await
+            .map_err(|e| std::io::Error::other(format!("certmesh init: {e}")))?
         } else {
             None
         };
@@ -292,20 +316,20 @@ impl KoiEmbedded {
         // Integration bridges for cross-domain communication
         let mdns_bridge: Option<Arc<dyn koi_common::integration::MdnsSnapshot>> =
             if let Some(ref core) = mdns {
-                Some(MdnsBridgeEmbedded::spawn(core.clone()).await)
+                Some(MdnsBridge::spawn(core.clone()).await)
             } else {
                 None
             };
 
         let certmesh_bridge: Option<Arc<dyn koi_common::integration::CertmeshSnapshot>> =
             certmesh.as_ref().map(|core| {
-                CertmeshBridgeEmbedded::new(core.clone())
+                CertmeshBridge::new(core.clone())
                     as Arc<dyn koi_common::integration::CertmeshSnapshot>
             });
 
         let alias_feedback: Option<Arc<dyn koi_common::integration::AliasFeedback>> =
             certmesh.as_ref().map(|core| {
-                AliasFeedbackBridgeEmbedded::new(core.clone())
+                AliasFeedbackBridge::new(core.clone())
                     as Arc<dyn koi_common::integration::AliasFeedback>
             });
 
@@ -339,15 +363,13 @@ impl KoiEmbedded {
             None
         };
 
-        let dns_bridge: Option<Arc<dyn koi_common::integration::DnsProbe>> =
-            dns.as_ref().map(|rt| {
-                DnsBridgeEmbedded::new(rt.clone()) as Arc<dyn koi_common::integration::DnsProbe>
-            });
+        let dns_bridge: Option<Arc<dyn koi_common::integration::DnsProbe>> = dns
+            .as_ref()
+            .map(|rt| DnsBridge::new(rt.clone()) as Arc<dyn koi_common::integration::DnsProbe>);
 
         let proxy_bridge: Option<Arc<dyn koi_common::integration::ProxySnapshot>> =
             proxy.as_ref().map(|rt| {
-                ProxyBridgeEmbedded::new(rt.core())
-                    as Arc<dyn koi_common::integration::ProxySnapshot>
+                ProxyBridge::new(rt.core()) as Arc<dyn koi_common::integration::ProxySnapshot>
             });
 
         let health = if self.config.health_enabled {
@@ -555,129 +577,117 @@ impl KoiEmbedded {
                 None
             };
 
+        // ── Domain event → host KoiEvent forwarders ──
+        // One shared spawn helper instead of six copies of the streaming select! skeleton.
+        // Each domain core is present only when its capability is enabled, so `if let Some`
+        // is the only gate needed.
         if let Some(core) = &mdns {
-            let mut rx = core.subscribe();
-            let tx = event_tx.clone();
-            let token = cancel.clone();
-            let handler = self.event_handler.clone();
-            tasks.push(tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = token.cancelled() => break,
-                        msg = rx.recv() => {
-                            let Ok(event) = msg else { continue; };
-                            let mapped = map_mdns_event(event);
-                            if let Some(mapped) = mapped {
-                                emit_event(&tx, handler.as_ref(), mapped);
-                            }
-                        }
-                    }
-                }
-            }));
+            spawn_event_mapper(
+                core.subscribe(),
+                map_mdns_event,
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
+        }
+        if let Some(runtime) = &health {
+            spawn_event_mapper(
+                runtime.core().subscribe(),
+                |e| Some(map_health_event(e)),
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
+        }
+        if let Some(runtime) = &dns {
+            spawn_event_mapper(
+                runtime.core().subscribe(),
+                |e| Some(map_dns_event(e)),
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
+        }
+        if let Some(core) = &certmesh {
+            spawn_event_mapper(
+                core.subscribe(),
+                |e| Some(map_certmesh_event(e)),
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
+        }
+        if let Some(runtime_proxy) = &proxy {
+            spawn_event_mapper(
+                runtime_proxy.core().subscribe(),
+                |e| Some(map_proxy_event(e)),
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
+        }
+        if let Some(runtime_core) = &runtime {
+            spawn_event_mapper(
+                runtime_core.subscribe(),
+                map_runtime_event,
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
         }
 
-        if self.config.health_enabled {
-            if let Some(runtime) = &health {
-                let mut rx = runtime.core().subscribe();
-                let tx = event_tx.clone();
-                let token = cancel.clone();
-                let handler = self.event_handler.clone();
-                tasks.push(tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            _ = token.cancelled() => break,
-                            msg = rx.recv() => {
-                                let Ok(event) = msg else { continue; };
-                                let mapped = map_health_event(event);
-                                emit_event(&tx, handler.as_ref(), mapped);
-                            }
-                        }
-                    }
-                }));
+        // ── Runtime orchestrator (opt-in) ──
+        // Translate container lifecycle events into mDNS/DNS/health/proxy entries — the
+        // same orchestrator the daemon runs. Off by default; a leaf host only wants events.
+        if self.config.orchestrator_enabled {
+            if let Some(ref runtime_core) = runtime {
+                tasks.push(koi_compose::orchestrator::spawn_orchestrator(
+                    runtime_core,
+                    koi_compose::orchestrator::OrchestrationTargets {
+                        mdns: mdns.clone(),
+                        dns: dns.clone(),
+                        health: health.clone(),
+                        proxy: proxy.clone(),
+                    },
+                    cancel.clone(),
+                ));
+            } else {
+                tracing::warn!(
+                    "orchestrator enabled but the runtime adapter is not — skipping orchestrator"
+                );
             }
         }
 
-        if self.config.dns_enabled {
-            if let Some(runtime) = &dns {
-                let mut rx = runtime.core().subscribe();
-                let tx = event_tx.clone();
-                let token = cancel.clone();
-                let handler = self.event_handler.clone();
-                tasks.push(tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            _ = token.cancelled() => break,
-                            msg = rx.recv() => {
-                                let Ok(event) = msg else { continue; };
-                                let mapped = map_dns_event(event);
-                                emit_event(&tx, handler.as_ref(), mapped);
-                            }
-                        }
-                    }
-                }));
+        // ── Certmesh background tasks (opt-in) ──
+        // Renewal / roster sync / heartbeat / failover, same as the daemon. Off by default;
+        // a clustered embedded CA host opts in. No console, so enrollment auto-denies.
+        if self.config.certmesh_background_enabled {
+            if let Some(ref certmesh_core) = certmesh {
+                koi_compose::certmesh::spawn_enrollment_approval(
+                    certmesh_core,
+                    koi_compose::certmesh::deny_and_log_decider(),
+                    &cancel,
+                    &mut tasks,
+                )
+                .await;
+                koi_compose::certmesh::spawn_certmesh_background_tasks(
+                    certmesh_core,
+                    mdns.clone(),
+                    self.config.http_port,
+                    &cancel,
+                    &mut tasks,
+                );
+            } else {
+                tracing::warn!(
+                    "certmesh_background enabled but certmesh is not — skipping certmesh loops"
+                );
             }
-        }
-
-        if self.config.certmesh_enabled {
-            if let Some(core) = &certmesh {
-                let mut rx = core.subscribe();
-                let tx = event_tx.clone();
-                let token = cancel.clone();
-                let handler = self.event_handler.clone();
-                tasks.push(tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            _ = token.cancelled() => break,
-                            msg = rx.recv() => {
-                                let Ok(event) = msg else { continue; };
-                                let mapped = map_certmesh_event(event);
-                                emit_event(&tx, handler.as_ref(), mapped);
-                            }
-                        }
-                    }
-                }));
-            }
-        }
-
-        if self.config.proxy_enabled {
-            if let Some(runtime_proxy) = &proxy {
-                let mut rx = runtime_proxy.core().subscribe();
-                let tx = event_tx.clone();
-                let token = cancel.clone();
-                let handler = self.event_handler.clone();
-                tasks.push(tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            _ = token.cancelled() => break,
-                            msg = rx.recv() => {
-                                let Ok(event) = msg else { continue; };
-                                let mapped = map_proxy_event(event);
-                                emit_event(&tx, handler.as_ref(), mapped);
-                            }
-                        }
-                    }
-                }));
-            }
-        }
-
-        if let Some(ref runtime_core) = runtime {
-            let mut rx = runtime_core.subscribe();
-            let tx = event_tx.clone();
-            let token = cancel.clone();
-            let handler = self.event_handler.clone();
-            tasks.push(tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = token.cancelled() => break,
-                        msg = rx.recv() => {
-                            let Ok(event) = msg else { continue; };
-                            if let Some(mapped) = map_runtime_event(event) {
-                                emit_event(&tx, handler.as_ref(), mapped);
-                            }
-                        }
-                    }
-                }
-            }));
         }
 
         Ok(KoiHandle::new_embedded(
@@ -695,75 +705,6 @@ impl KoiEmbedded {
             http_announce_id,
         ))
     }
-}
-
-fn init_certmesh_core(
-    data_dir: Option<&std::path::Path>,
-) -> Option<Arc<koi_certmesh::CertmeshCore>> {
-    let paths = match data_dir {
-        Some(dir) => koi_certmesh::CertmeshPaths::with_data_dir(dir.to_path_buf()),
-        None => koi_certmesh::CertmeshPaths::default(),
-    };
-    if !paths.is_ca_initialized() {
-        return Some(Arc::new(koi_certmesh::CertmeshCore::uninitialized()));
-    }
-
-    let roster_path = paths.roster_path();
-    let roster = match koi_certmesh::roster::load_roster(&roster_path) {
-        Ok(r) => r,
-        Err(_) => {
-            return Some(Arc::new(koi_certmesh::CertmeshCore::uninitialized()));
-        }
-    };
-
-    let profile = roster.metadata.trust_profile;
-
-    // ── Auto-unlock at init: single source of truth ─────────────
-    // If the auto-unlock key file exists, boot the core already
-    // unlocked.  This collapses the "create locked -> read key ->
-    // unlock" three-step into a single atomic construction.
-    let resolved_data_dir = koi_common::paths::koi_data_dir_with_override(data_dir);
-    let auto_key_path = resolved_data_dir.join("auto-unlock-key");
-    if let Ok(pp) = std::fs::read_to_string(&auto_key_path) {
-        if !pp.is_empty() {
-            match koi_certmesh::ca::load_ca(&pp, &paths) {
-                Ok(ca_state) => {
-                    // Reload roster (fresh copy for the new Arc)
-                    if let Ok(fresh_roster) = koi_certmesh::roster::load_roster(&roster_path) {
-                        let auth_path = paths.auth_path();
-                        let auth = if auth_path.exists() {
-                            std::fs::read_to_string(&auth_path)
-                                .ok()
-                                .and_then(|json| {
-                                    serde_json::from_str::<koi_crypto::auth::StoredAuth>(&json).ok()
-                                })
-                                .and_then(|stored| stored.unlock(&pp).ok())
-                        } else {
-                            None
-                        };
-
-                        tracing::info!("Certmesh CA auto-unlocked at init");
-                        return Some(Arc::new(koi_certmesh::CertmeshCore::new(
-                            ca_state,
-                            fresh_roster,
-                            auth,
-                            profile,
-                        )));
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "Auto-unlock key exists but decryption failed"
-                    );
-                }
-            }
-        }
-    }
-
-    // No auto-unlock key - boot locked
-    let core = koi_certmesh::CertmeshCore::locked(roster, profile);
-    Some(Arc::new(core))
 }
 
 fn map_mdns_event(event: MdnsEvent) -> Option<KoiEvent> {
@@ -829,6 +770,38 @@ fn map_runtime_event(event: koi_runtime::RuntimeEvent) -> Option<KoiEvent> {
     }
 }
 
+/// Spawn a task that maps a domain's broadcast events into the host `KoiEvent` stream until
+/// cancellation. One shared skeleton replaces the six near-identical per-domain `select!`
+/// loops that `start()` used to inline (the charter calls out duplicating that skeleton).
+///
+/// `map` returns `None` to drop an event (e.g. mDNS `Found`, which has no host-facing
+/// variant); event types that always map wrap their mapper as `|e| Some(map_x(e))`.
+fn spawn_event_mapper<E, F>(
+    mut rx: broadcast::Receiver<E>,
+    map: F,
+    tx: broadcast::Sender<KoiEvent>,
+    handler: Option<Arc<dyn Fn(KoiEvent) + Send + Sync>>,
+    cancel: CancellationToken,
+    tasks: &mut Vec<JoinHandle<()>>,
+) where
+    E: Clone + Send + 'static,
+    F: Fn(E) -> Option<KoiEvent> + Send + 'static,
+{
+    tasks.push(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                msg = rx.recv() => {
+                    let Ok(event) = msg else { continue; };
+                    if let Some(mapped) = map(event) {
+                        emit_event(&tx, handler.as_ref(), mapped);
+                    }
+                }
+            }
+        }
+    }));
+}
+
 fn emit_event(
     tx: &broadcast::Sender<KoiEvent>,
     handler: Option<&Arc<dyn Fn(KoiEvent) + Send + Sync>>,
@@ -854,306 +827,30 @@ async fn build_embedded_snapshot(
     udp: Option<Arc<koi_udp::UdpRuntime>>,
     runtime: Option<Arc<koi_runtime::RuntimeCore>>,
 ) -> serde_json::Value {
-    use koi_common::capability::Capability;
-
-    let mut capabilities = Vec::new();
-
-    if let Some(ref core) = mdns {
-        let s = core.status();
-        capabilities.push(serde_json::json!({
-            "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
-        }));
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "mdns", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
-    if let Some(ref core) = certmesh {
-        let s = core.status();
-        capabilities.push(serde_json::json!({
-            "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
-        }));
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "certmesh", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
-    if let Some(ref runtime) = dns {
-        let running = runtime.status().await.running;
-        if running {
-            let s = runtime.core().status();
-            capabilities.push(serde_json::json!({
-                "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
-            }));
-        } else {
-            capabilities.push(serde_json::json!({
-                "name": "dns", "enabled": true, "healthy": false, "summary": "stopped",
-            }));
-        }
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "dns", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
-    if let Some(ref runtime) = health {
-        let running = runtime.status().await.running;
-        if running {
-            let s = runtime.core().status();
-            capabilities.push(serde_json::json!({
-                "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
-            }));
-        } else {
-            capabilities.push(serde_json::json!({
-                "name": "health", "enabled": true, "healthy": false, "summary": "stopped",
-            }));
-        }
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "health", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
-    if let Some(ref runtime) = proxy {
-        let status = runtime.status().await;
-        capabilities.push(serde_json::json!({
-            "name": "proxy", "enabled": true, "healthy": true,
-            "summary": if status.is_empty() { "no listeners".to_string() } else { format!("{} listeners", status.len()) },
-        }));
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "proxy", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
-    if let Some(ref runtime) = udp {
-        let s = Capability::status(runtime.as_ref());
-        capabilities.push(serde_json::json!({
-            "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
-        }));
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "udp", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
-    if let Some(ref rt) = runtime {
-        let s = rt.capability_status().await;
-        capabilities.push(serde_json::json!({
-            "name": s.name, "enabled": true, "healthy": s.healthy, "summary": s.summary,
-        }));
-    } else {
-        capabilities.push(serde_json::json!({
-            "name": "runtime", "enabled": false, "healthy": false, "summary": "disabled",
-        }));
-    }
-
+    // The capability ladder is assembled once in koi-compose, shared with `/v1/status` and
+    // the dashboard snapshot. The embedded snapshot includes `enabled` like the dashboard.
+    let cores = koi_compose::cores::Cores {
+        mdns,
+        certmesh,
+        dns,
+        health,
+        proxy,
+        udp,
+        runtime,
+    };
+    let capabilities: Vec<serde_json::Value> = koi_compose::status::assemble_capabilities(&cores)
+        .await
+        .into_iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.status.name,
+                "enabled": c.enabled,
+                "healthy": c.status.healthy,
+                "summary": c.status.summary,
+            })
+        })
+        .collect();
     serde_json::json!({ "capabilities": capabilities })
-}
-
-// ── Embedded integration bridges ───────────────────────────────────
-// Duplicated from the binary crate's integrations.rs because koi-embedded
-// is a separate crate that directly imports all domain crates.
-
-struct CertmeshBridgeEmbedded(#[allow(dead_code)] Arc<koi_certmesh::CertmeshCore>);
-
-impl CertmeshBridgeEmbedded {
-    fn new(core: Arc<koi_certmesh::CertmeshCore>) -> Arc<Self> {
-        Arc::new(Self(core))
-    }
-}
-
-impl koi_common::integration::CertmeshSnapshot for CertmeshBridgeEmbedded {
-    fn active_members(&self) -> Vec<koi_common::integration::MemberSummary> {
-        let roster_path = koi_certmesh::CertmeshPaths::default().roster_path();
-        let Ok(roster) = koi_certmesh::roster::load_roster(&roster_path) else {
-            return Vec::new();
-        };
-        roster
-            .members
-            .into_iter()
-            .filter(|m| m.status == koi_certmesh::roster::MemberStatus::Active)
-            .map(|m| koi_common::integration::MemberSummary {
-                hostname: m.hostname,
-                sans: m.cert_sans,
-                cert_expires: Some(m.cert_expires),
-                last_seen: m.last_seen,
-                status: "active".to_string(),
-                proxy_entries: m
-                    .proxy_entries
-                    .into_iter()
-                    .map(|p| koi_common::integration::ProxyConfigSummary {
-                        name: p.name,
-                        listen_port: p.listen_port,
-                        backend: p.backend,
-                        allow_remote: p.allow_remote,
-                    })
-                    .collect(),
-            })
-            .collect()
-    }
-}
-
-struct MdnsBridgeEmbedded {
-    records: Arc<
-        std::sync::RwLock<
-            std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>,
-        >,
-    >,
-    cancel: CancellationToken,
-}
-
-impl MdnsBridgeEmbedded {
-    async fn spawn(core: Arc<koi_mdns::MdnsCore>) -> Arc<Self> {
-        use koi_common::types::META_QUERY;
-        let records = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
-        let cancel = CancellationToken::new();
-
-        let meta_core = Arc::clone(&core);
-        let meta_records = Arc::clone(&records);
-        let meta_cancel = cancel.clone();
-        tokio::spawn(async move {
-            if let Ok(handle) = meta_core.subscribe_type(META_QUERY).await {
-                run_meta_browse_embedded(meta_core, handle, meta_records, meta_cancel).await;
-            }
-        });
-
-        Arc::new(Self { records, cancel })
-    }
-}
-
-impl Drop for MdnsBridgeEmbedded {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-    }
-}
-
-impl koi_common::integration::MdnsSnapshot for MdnsBridgeEmbedded {
-    fn host_ips(&self) -> std::collections::HashMap<String, std::net::IpAddr> {
-        let guard = self.records.read().unwrap_or_else(|e| e.into_inner());
-        let mut map = std::collections::HashMap::new();
-        for type_map in guard.values() {
-            for record in type_map.values() {
-                let Some(host) = record.host.as_deref() else {
-                    continue;
-                };
-                let Some(ip) = record.ip.as_deref().and_then(|ip| ip.parse().ok()) else {
-                    continue;
-                };
-                let hostname = host.trim_end_matches('.').trim_end_matches(".local");
-                if !hostname.is_empty() {
-                    map.insert(hostname.to_string(), ip);
-                }
-            }
-        }
-        map
-    }
-
-    fn cached_records(&self) -> Vec<ServiceRecord> {
-        let guard = self.records.read().unwrap_or_else(|e| e.into_inner());
-        guard.values().flat_map(|m| m.values().cloned()).collect()
-    }
-}
-
-struct DnsBridgeEmbedded(Arc<koi_dns::DnsRuntime>);
-
-impl DnsBridgeEmbedded {
-    fn new(runtime: Arc<koi_dns::DnsRuntime>) -> Arc<Self> {
-        Arc::new(Self(runtime))
-    }
-}
-
-impl koi_common::integration::DnsProbe for DnsBridgeEmbedded {
-    fn resolve_local(&self, name: &str) -> Option<Vec<std::net::IpAddr>> {
-        use hickory_proto::rr::RecordType;
-        let core = self.0.core();
-        let result = core
-            .resolve_local(name, RecordType::A)
-            .or_else(|| core.resolve_local(name, RecordType::AAAA));
-        result.map(|r| r.ips)
-    }
-}
-
-struct ProxyBridgeEmbedded(#[allow(dead_code)] Arc<koi_proxy::ProxyCore>);
-
-impl ProxyBridgeEmbedded {
-    fn new(core: Arc<koi_proxy::ProxyCore>) -> Arc<Self> {
-        Arc::new(Self(core))
-    }
-}
-
-impl koi_common::integration::ProxySnapshot for ProxyBridgeEmbedded {
-    fn entries(&self) -> Vec<koi_common::integration::ProxyEntrySummary> {
-        let Ok(entries) = koi_proxy::config::load_entries() else {
-            return Vec::new();
-        };
-        entries
-            .into_iter()
-            .map(|e| koi_common::integration::ProxyEntrySummary {
-                name: e.name,
-                listen_port: e.listen_port,
-                backend: e.backend,
-            })
-            .collect()
-    }
-}
-
-struct AliasFeedbackBridgeEmbedded(Arc<koi_certmesh::CertmeshCore>);
-
-impl AliasFeedbackBridgeEmbedded {
-    fn new(core: Arc<koi_certmesh::CertmeshCore>) -> Arc<Self> {
-        Arc::new(Self(core))
-    }
-}
-
-impl koi_common::integration::AliasFeedback for AliasFeedbackBridgeEmbedded {
-    fn record_alias(&self, hostname: &str, alias: &str) {
-        let core = Arc::clone(&self.0);
-        let hostname = hostname.to_string();
-        let alias = alias.to_string();
-        tokio::spawn(async move {
-            let _ = core.add_alias_sans(&hostname, &[alias]).await;
-        });
-    }
-}
-
-async fn run_meta_browse_embedded(
-    core: Arc<koi_mdns::MdnsCore>,
-    handle: koi_mdns::BrowseSubscription,
-    records: Arc<
-        std::sync::RwLock<
-            std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>,
-        >,
-    >,
-    cancel: CancellationToken,
-) {
-    // Dedup: browse each discovered service type once. Plain bookkeeping now —
-    // concurrent subscriptions share one real browse and survive churn.
-    let mut seen = std::collections::HashSet::<String>::new();
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            event = handle.recv() => {
-                let Some(event) = event else { break; };
-                if let koi_mdns::events::MdnsEvent::Found(record) = event {
-                    let service_type = record.name;
-                    if seen.insert(service_type.clone()) {
-                        let c = Arc::clone(&core);
-                        let r = Arc::clone(&records);
-                        let t = service_type.clone();
-                        let cancel_child = cancel.clone();
-                        tokio::spawn(async move {
-                            if let Ok(handle) = c.subscribe_type(&t).await {
-                                run_type_browse_embedded(handle, r, cancel_child).await;
-                            }
-                        });
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1194,6 +891,49 @@ mod tests {
         let err = KoiError::DisabledCapability("proxy");
         let debug = format!("{err:?}");
         assert!(debug.contains("DisabledCapability"));
+    }
+
+    // ── certmesh data-dir SSOT (custom data_dir honored end-to-end) ──
+
+    #[tokio::test]
+    async fn init_certmesh_core_honors_custom_data_dir_end_to_end() {
+        // The point of the path-SSOT refactor: a host that injects its own
+        // data_dir gets the CA created, discovered, and unlocked under THAT
+        // dir — never a split between the injected dir and an ambient default.
+        let base = koi_common::test::ensure_data_dir("koi-embedded-datadir-tests");
+        let data_dir = base.join("custom-pond");
+        let paths = koi_certmesh::CertmeshPaths::with_data_dir(data_dir.clone());
+
+        // Fresh machine: no CA yet. The uninitialized early-return must still
+        // carry the injected paths — this is the regression the dropped-paths
+        // bug (uninitialized branches dropping `paths`) used to fail.
+        let fresh =
+            koi_compose::cores::init_certmesh_core(Some(&data_dir)).expect("uninitialized core");
+        assert_eq!(
+            fresh.paths().data_dir(),
+            data_dir.as_path(),
+            "uninitialized core must keep the injected data_dir"
+        );
+
+        // Create a CA + roster UNDER the injected dir.
+        koi_certmesh::ca::create_ca("pond-pass-strong", &[7u8; 32], &paths)
+            .expect("create CA under injected dir");
+        let roster = koi_certmesh::roster::Roster::new(
+            koi_certmesh::profiles::TrustProfile::MyOrganization,
+            Some("ops".to_string()),
+        );
+        koi_certmesh::roster::save_roster(&roster, &paths.roster_path())
+            .expect("save roster under injected dir");
+
+        // Reopen on the same injected dir: the CA is discovered there and the
+        // core unlocks from it — proving the data root is honored end-to-end.
+        let reopened =
+            koi_compose::cores::init_certmesh_core(Some(&data_dir)).expect("locked core");
+        assert_eq!(reopened.paths().data_dir(), data_dir.as_path());
+        reopened
+            .unlock("pond-pass-strong")
+            .await
+            .expect("unlock CA from the injected data_dir");
     }
 
     // ── map_mdns_event ─────────────────────────────────────────────
@@ -1465,6 +1205,25 @@ mod tests {
     }
 
     #[test]
+    fn orchestrator_and_certmesh_background_are_opt_in() {
+        // Default: both off (a leaf embedded host only wants the event stream).
+        let default_cfg = Builder::new().build().expect("build should succeed");
+        assert!(!default_cfg.config.orchestrator_enabled);
+        assert!(!default_cfg.config.certmesh_background_enabled);
+
+        // Opt-in: both on when requested.
+        let opted = Builder::new()
+            .runtime_auto()
+            .orchestrator(true)
+            .certmesh(true)
+            .certmesh_background(true)
+            .build()
+            .expect("build should succeed");
+        assert!(opted.config.orchestrator_enabled);
+        assert!(opted.config.certmesh_background_enabled);
+    }
+
+    #[test]
     fn builder_dns_configure_closure() {
         let embedded = Builder::new()
             .dns(|b| b.port(5353).zone("home").local_ttl(120))
@@ -1512,43 +1271,5 @@ mod tests {
     fn result_type_works_with_err() {
         let result: Result<i32> = Err(KoiError::DisabledCapability("test"));
         assert!(result.is_err());
-    }
-}
-
-async fn run_type_browse_embedded(
-    handle: koi_mdns::BrowseSubscription,
-    records: Arc<
-        std::sync::RwLock<
-            std::collections::HashMap<String, std::collections::HashMap<String, ServiceRecord>>,
-        >,
-    >,
-    cancel: CancellationToken,
-) {
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            event = handle.recv() => {
-                let Some(event) = event else { break; };
-                match event {
-                    koi_mdns::events::MdnsEvent::Resolved(record) => {
-                        let mut guard = records.write().unwrap_or_else(|e| e.into_inner());
-                        let entry = guard.entry(record.service_type.clone()).or_default();
-                        entry.insert(record.name.clone(), record);
-                    }
-                    // Removed events carry the instance + type parsed at the
-                    // mDNS boundary — no string re-parsing here.
-                    koi_mdns::events::MdnsEvent::Removed { name, service_type } => {
-                        if service_type.is_empty() {
-                            continue;
-                        }
-                        let mut guard = records.write().unwrap_or_else(|e| e.into_inner());
-                        if let Some(map) = guard.get_mut(&service_type) {
-                            map.remove(&name);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
     }
 }

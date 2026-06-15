@@ -18,17 +18,28 @@ reacting to system-wide events.
 ## Usage
 
 ```rust
-use koi_embedded::{Builder, ServiceMode};
+use koi_embedded::{Builder, RegisterPayload};
 
+// Build the embedded stack, then start it. `build()` is sync and returns a
+// `KoiEmbedded`; `start()` is async and returns the running `KoiHandle`.
 let koi = Builder::new()
-    .mode(ServiceMode::Standalone)
-    .build()
+    .mdns(true)
+    .build()?
+    .start()
     .await?;
 
-// Register a service
-koi.mdns().register(payload).await?;
+// Register a service through the mDNS handle (`mdns()` returns a `Result`;
+// `register` is synchronous).
+koi.mdns()?.register(RegisterPayload {
+    name: "My Service".to_string(),
+    service_type: "_http._tcp".to_string(),
+    port: 8080,
+    ip: None,
+    lease_secs: None,
+    txt: Default::default(),
+})?;
 
-// Subscribe to events
+// Subscribe to the system-wide event stream.
 let mut rx = koi.subscribe();
 while let Ok(event) = rx.recv().await {
     println!("{event:?}");

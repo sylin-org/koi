@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "command-surface"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "console 0.15.11",
  "is-terminal",
@@ -1770,7 +1770,7 @@ dependencies = [
 
 [[package]]
 name = "koi-certmesh"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "axum",
  "chrono",
@@ -1798,13 +1798,11 @@ dependencies = [
 
 [[package]]
 name = "koi-client"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "hickory-proto",
  "koi-common",
  "koi-config",
- "koi-health",
- "koi-mdns",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -1813,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "koi-common"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "axum",
  "chrono",
@@ -1826,8 +1824,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "koi-compose"
+version = "0.4.1"
+dependencies = [
+ "hickory-proto",
+ "koi-certmesh",
+ "koi-client",
+ "koi-common",
+ "koi-config",
+ "koi-crypto",
+ "koi-dashboard",
+ "koi-dns",
+ "koi-health",
+ "koi-mdns",
+ "koi-proxy",
+ "koi-runtime",
+ "koi-udp",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "koi-config"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "koi-common",
  "serde",
@@ -1839,7 +1860,7 @@ dependencies = [
 
 [[package]]
 name = "koi-crypto"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1868,7 +1889,7 @@ dependencies = [
 
 [[package]]
 name = "koi-dashboard"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-stream",
  "axum",
@@ -1894,7 +1915,7 @@ dependencies = [
 
 [[package]]
 name = "koi-dns"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -1914,7 +1935,7 @@ dependencies = [
 
 [[package]]
 name = "koi-embedded"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "axum",
  "base64",
@@ -1925,6 +1946,7 @@ dependencies = [
  "koi-certmesh",
  "koi-client",
  "koi-common",
+ "koi-compose",
  "koi-config",
  "koi-crypto",
  "koi-dashboard",
@@ -1949,7 +1971,7 @@ dependencies = [
 
 [[package]]
 name = "koi-health"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "axum",
  "chrono",
@@ -1966,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "koi-mdns"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-stream",
  "axum",
@@ -1988,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "koi-net"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2005,6 +2027,7 @@ dependencies = [
  "koi-certmesh",
  "koi-client",
  "koi-common",
+ "koi-compose",
  "koi-config",
  "koi-crypto",
  "koi-dashboard",
@@ -2042,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "koi-proxy"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "axum",
  "hostname",
@@ -2065,7 +2088,7 @@ dependencies = [
 
 [[package]]
 name = "koi-runtime"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -2086,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "koi-truststore"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "koi-common",
  "thiserror 2.0.18",
@@ -2095,7 +2118,7 @@ dependencies = [
 
 [[package]]
 name = "koi-udp"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-stream",
  "axum",

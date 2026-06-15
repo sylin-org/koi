@@ -217,9 +217,14 @@ mod tests {
     use chrono::Utc;
     use std::collections::HashMap;
 
+    fn test_paths() -> crate::CertmeshPaths {
+        crate::CertmeshPaths::with_data_dir(koi_common::test::ensure_data_dir(
+            "koi-certmesh-failover-tests",
+        ))
+    }
+
     fn make_test_ca() -> CaState {
-        let _ = koi_common::test::ensure_data_dir("koi-certmesh-failover-tests");
-        ca::create_ca("test-pass", &[42u8; 32], &crate::CertmeshPaths::default())
+        ca::create_ca("test-pass", &[42u8; 32], &test_paths())
             .unwrap()
             .0
     }
@@ -349,8 +354,7 @@ mod tests {
     #[test]
     fn wrong_key_manifest_fails_verification() {
         let ca1 = make_test_ca();
-        let (ca2, _) =
-            ca::create_ca("other-pass", &[99u8; 32], &crate::CertmeshPaths::default()).unwrap();
+        let (ca2, _) = ca::create_ca("other-pass", &[99u8; 32], &test_paths()).unwrap();
         let roster = make_test_roster();
 
         let mut manifest = build_signed_manifest(&ca1, &roster).unwrap();

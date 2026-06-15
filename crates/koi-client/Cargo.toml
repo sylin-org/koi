@@ -13,9 +13,9 @@ keywords = ["koi", "client", "http", "daemon", "api"]
 categories = ["network-programming", "api-bindings"]
 
 [dependencies]
+# Wire-contract types live in the kernel, so the blocking HTTP client no longer pulls
+# the mDNS engine (mdns-sd) or the async health crate — just the types + breadcrumb.
 koi-common.workspace = true
-koi-mdns.workspace = true
-koi-health.workspace = true
 koi-config.workspace = true
 hickory-proto.workspace = true
 serde.workspace = true

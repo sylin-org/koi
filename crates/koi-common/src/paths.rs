@@ -3,6 +3,7 @@ use std::path::PathBuf;
 /// Resolve the data directory with an explicit override, falling back to
 /// the env-var / platform default.  Use this in contexts where
 /// `std::env::set_var` would be unsound (e.g. multi-threaded embedded).
+#[allow(clippy::disallowed_methods)] // sanctioned composition-root resolver
 pub fn koi_data_dir_with_override(override_dir: Option<&std::path::Path>) -> PathBuf {
     if let Some(dir) = override_dir {
         return dir.to_path_buf();
@@ -44,22 +45,26 @@ pub fn koi_data_dir() -> PathBuf {
 }
 
 /// Runtime state directory.
+#[allow(clippy::disallowed_methods)] // sanctioned sub-dir derivation helper
 pub fn koi_state_dir() -> PathBuf {
     koi_data_dir().join("state")
 }
 
 /// Log directory.
+#[allow(clippy::disallowed_methods)] // sanctioned sub-dir derivation helper
 pub fn koi_log_dir() -> PathBuf {
     koi_data_dir().join("logs")
 }
 
 /// Certificate directory (used by certmesh).
+#[allow(clippy::disallowed_methods)] // sanctioned sub-dir derivation helper
 pub fn koi_certs_dir() -> PathBuf {
     koi_data_dir().join("certs")
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)] // these tests exercise the resolver itself
     use super::*;
     use std::sync::Mutex;
 

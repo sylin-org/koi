@@ -16,25 +16,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::ServiceRecord;
 
-// ── Status reporter ────────────────────────────────────────────────
-
-/// Trait for types that can report a capability status summary.
-///
-/// Each domain core implements this so the binary crate can
-/// build a unified status view without coupling domains.
-pub trait StatusReporter: Send + Sync {
-    /// Machine-readable capability name (e.g. "mdns", "dns", "health").
-    fn capability_name(&self) -> &'static str;
-
-    /// Whether the capability is currently operational.
-    fn is_running(&self) -> bool;
-
-    /// Optional human-readable status detail.
-    fn status_detail(&self) -> Option<String> {
-        None
-    }
-}
-
 // ── Summary types ──────────────────────────────────────────────────
 
 /// Summary of a certmesh member, projected through the trait boundary.

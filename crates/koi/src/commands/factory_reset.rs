@@ -14,6 +14,8 @@ use crate::client::KoiClient;
 /// 3. Remove the entire data directory.
 /// 4. Print success message.
 pub fn run(json: bool) -> anyhow::Result<()> {
+    // Per-process composition root: this CLI command has no running core.
+    #[allow(clippy::disallowed_methods)]
     let data_dir = koi_common::paths::koi_data_dir();
 
     // ── Confirmation gate ───────────────────────────────────────────

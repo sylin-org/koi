@@ -539,12 +539,20 @@ pub struct Config {
     pub dns_public: bool,
     /// HTTP bind mode: loopback (default), bridge, <ip>, or 0.0.0.0.
     pub http_bind: String,
+    /// Machine-scoped data root, resolved once at the daemon composition root
+    /// and injected into the domain cores (no ambient re-resolution).
+    pub data_dir: PathBuf,
 }
 
 impl Config {
     pub fn from_cli(cli: &Cli) -> Self {
         let pipe_path = cli.pipe.clone().unwrap_or_else(default_pipe_path);
+        // Composition root: resolve the data dir once (honours KOI_DATA_DIR)
+        // and thread it everywhere instead of re-resolving ad hoc.
+        #[allow(clippy::disallowed_methods)]
+        let data_dir = koi_common::paths::koi_data_dir();
         Self {
+            data_dir,
             http_port: cli.port,
             mtls_port: cli.mtls_port,
             pipe_path,
@@ -682,7 +690,12 @@ impl Config {
 
         let http_bind = std::env::var("KOI_HTTP_BIND").unwrap_or_else(|_| "loopback".to_string());
 
+        // Composition root: resolve the data dir once (honours KOI_DATA_DIR).
+        #[allow(clippy::disallowed_methods)]
+        let data_dir = koi_common::paths::koi_data_dir();
+
         Self {
+            data_dir,
             http_port,
             mtls_port,
             pipe_path,
@@ -707,7 +720,10 @@ impl Config {
 
 impl Default for Config {
     fn default() -> Self {
+        #[allow(clippy::disallowed_methods)]
+        let data_dir = koi_common::paths::koi_data_dir();
         Self {
+            data_dir,
             http_port: DEFAULT_HTTP_PORT,
             mtls_port: crate::adapters::mtls::DEFAULT_MTLS_PORT,
             pipe_path: default_pipe_path(),

@@ -367,13 +367,22 @@ impl MdnsHandle {
         }
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<MdnsEvent> {
+    /// Subscribe to the live mDNS lifecycle-event stream (Found / Resolved / Removed).
+    ///
+    /// Available only in **embedded** mode, where there is a local `MdnsCore` to subscribe
+    /// to. In **client (remote)** mode there is no all-types lifecycle stream to forward —
+    /// the daemon's `/v1/mdns/subscribe` requires a service type — so this returns
+    /// [`KoiError::RemoteUnsupported`]. For a remote event stream, use
+    /// [`MdnsHandle::browse`] with a specific service type (it forwards the daemon's SSE).
+    ///
+    /// Previously this silently returned a dead receiver in remote mode (it yielded nothing,
+    /// forever); the typed error makes the limitation visible instead of swallowing it.
+    pub fn subscribe(&self) -> Result<broadcast::Receiver<MdnsEvent>, KoiError> {
         match &self.backend {
-            MdnsBackend::Embedded { core } => core.subscribe(),
-            MdnsBackend::Remote { .. } => {
-                let (_tx, rx) = broadcast::channel(1);
-                rx
-            }
+            MdnsBackend::Embedded { core } => Ok(core.subscribe()),
+            MdnsBackend::Remote { .. } => Err(KoiError::RemoteUnsupported(
+                "mdns subscribe — use mdns.browse(service_type) for a remote event stream",
+            )),
         }
     }
 

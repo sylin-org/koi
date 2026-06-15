@@ -1,0 +1,15 @@
+# Single source of truth for the data path.
+#
+# The machine-scoped data root must be resolved ONCE at a composition root
+# (Config::from_cli, the embedded builder, or a per-process CLI command) and
+# wrapped as a `CertmeshPaths` value object that is injected everywhere — no
+# operational code re-resolves it ad hoc.
+#
+# The sanctioned derivation helpers in `koi-common` (koi_data_dir_with_override,
+# koi_state_dir, koi_log_dir, koi_certs_dir) and the genuine per-process
+# composition roots carry an explicit `#[allow(clippy::disallowed_methods)]`.
+# Phase 2 migrates the remaining proxy/dns/health/config roots onto injected
+# paths and drops their allows.
+disallowed-methods = [
+    { path = "koi_common::paths::koi_data_dir", reason = "resolve the data dir once at a composition root and inject CertmeshPaths instead of re-resolving ad hoc" },
+]

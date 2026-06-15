@@ -40,7 +40,7 @@ struct OrchestratedResources {
 
 /// Optional references to domain cores. Each may be `None` if the
 /// capability is disabled via `--no-*` flags.
-pub(crate) struct OrchestrationTargets {
+pub struct OrchestrationTargets {
     pub mdns: Option<Arc<koi_mdns::MdnsCore>>,
     pub dns: Option<Arc<koi_dns::DnsRuntime>>,
     pub health: Option<Arc<koi_health::HealthRuntime>>,
@@ -53,7 +53,7 @@ pub(crate) struct OrchestrationTargets {
 ///
 /// Returns a `JoinHandle` that runs until the cancellation token fires.
 /// On cancellation, all orchestrated resources are cleaned up before exit.
-pub(crate) fn spawn_orchestrator(
+pub fn spawn_orchestrator(
     runtime: &Arc<RuntimeCore>,
     targets: OrchestrationTargets,
     cancel: CancellationToken,

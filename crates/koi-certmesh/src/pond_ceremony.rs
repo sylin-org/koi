@@ -45,10 +45,21 @@ use crate::profiles::TrustProfile;
 
 /// Ceremony rules for pond operations.
 ///
-/// Stateless - all state lives in the session bag. The host (and the
-/// HTTP handler above it) hold the `CertmeshCore` needed to execute
-/// the terminal action.
-pub struct PondCeremonyRules;
+/// Session state lives in the bag; the only instance state is the resolved
+/// data `paths`, injected once at the composition root (the CLI entry) so the
+/// unlock ceremony reads the slot table from the right place with no ambient
+/// default. The host (and the HTTP handler above it) hold the `CertmeshCore`
+/// needed to execute the terminal action.
+pub struct PondCeremonyRules {
+    paths: crate::CertmeshPaths,
+}
+
+impl PondCeremonyRules {
+    /// Construct the rules with the resolved data paths.
+    pub fn new(paths: crate::CertmeshPaths) -> Self {
+        Self { paths }
+    }
+}
 
 impl CeremonyRules for PondCeremonyRules {
     fn validate_ceremony_type(&self, ceremony: &str) -> Result<(), String> {
@@ -68,7 +79,7 @@ impl CeremonyRules for PondCeremonyRules {
             "init" => eval_init(bag, render),
             "join" => eval_join(bag, render),
             "invite" => eval_invite(bag, render),
-            "unlock" => eval_unlock(bag, render),
+            "unlock" => eval_unlock(bag, render, &self.paths),
             _ => EvalResult::Fatal(format!("unhandled ceremony: {ceremony_type}")),
         }
     }
@@ -899,9 +910,10 @@ fn eval_invite(
 fn eval_unlock(
     bag: &mut serde_json::Map<String, serde_json::Value>,
     _render: &RenderHints,
+    paths: &crate::CertmeshPaths,
 ) -> EvalResult {
     // Determine available unlock methods from the slot table
-    let slot_table_path = crate::CertmeshPaths::default().slot_table_path();
+    let slot_table_path = paths.slot_table_path();
     let available_methods = if slot_table_path.exists() {
         match koi_crypto::unlock_slots::SlotTable::load(&slot_table_path) {
             Ok(table) => table
@@ -1070,7 +1082,10 @@ mod tests {
     use koi_common::ceremony::{CeremonyHost, CeremonyRequest, InputType};
 
     fn make_host() -> CeremonyHost<PondCeremonyRules> {
-        CeremonyHost::new(PondCeremonyRules)
+        let paths = crate::CertmeshPaths::with_data_dir(koi_common::test::ensure_data_dir(
+            "koi-certmesh-ceremony-tests",
+        ));
+        CeremonyHost::new(PondCeremonyRules::new(paths))
     }
 
     #[test]

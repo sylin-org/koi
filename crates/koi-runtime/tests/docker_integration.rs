@@ -202,11 +202,9 @@ async fn lifecycle_watch_detects_start_and_stop() {
     // Wait for the Started event
     let started = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(event) = events.recv().await {
-                if let koi_runtime::RuntimeEvent::Started(inst) = &event {
-                    if inst.name.contains("koi-runtime-test") {
-                        return inst.clone();
-                    }
+            if let Ok(koi_runtime::RuntimeEvent::Started(inst)) = events.recv().await {
+                if inst.name.contains("koi-runtime-test") {
+                    return inst;
                 }
             }
         }
@@ -246,11 +244,9 @@ async fn lifecycle_watch_detects_start_and_stop() {
     // Wait for the Stopped event
     let stopped = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(event) = events.recv().await {
-                if let koi_runtime::RuntimeEvent::Stopped { name, .. } = &event {
-                    if name.contains("koi-runtime-test") {
-                        return name.clone();
-                    }
+            if let Ok(koi_runtime::RuntimeEvent::Stopped { name, .. }) = events.recv().await {
+                if name.contains("koi-runtime-test") {
+                    return name;
                 }
             }
         }

@@ -43,10 +43,12 @@ pub fn renew_member_cert(ca: &CaState, member: &RosterMember) -> Result<IssuedCe
 ///
 /// Returns the directory path where the files were written.
 pub fn write_renewed_cert_files(
+    paths: &crate::CertmeshPaths,
     hostname: &str,
     issued: &IssuedCert,
 ) -> Result<std::path::PathBuf, CertmeshError> {
-    certfiles::write_cert_files(hostname, issued).map_err(CertmeshError::Io)
+    certfiles::write_cert_files_to(&paths.certs_dir().join(hostname), issued)
+        .map_err(CertmeshError::Io)
 }
 
 /// Execute a reload hook command after cert renewal.
@@ -101,6 +103,7 @@ pub fn renew_and_update_member(
     ca: &CaState,
     roster: &mut Roster,
     hostname: &str,
+    paths: &crate::CertmeshPaths,
 ) -> Result<Option<HookResult>, CertmeshError> {
     let member = roster
         .find_member(hostname)
@@ -117,7 +120,7 @@ pub fn renew_and_update_member(
     let issued = ca::issue_certificate(ca, hostname, &sans)?;
 
     // Write cert files (overwrites existing)
-    let cert_dir = certfiles::write_cert_files(hostname, &issued)?;
+    let cert_dir = certfiles::write_cert_files_to(&paths.certs_dir().join(hostname), &issued)?;
 
     // Update roster member
     let member = roster
@@ -131,7 +134,8 @@ pub fn renew_and_update_member(
     member.cert_path = cert_dir.display().to_string();
 
     // Audit log
-    let _ = audit::append_entry(
+    let _ = audit::append_entry_to(
+        &paths.audit_log_path(),
         "cert_renewed",
         &[
             ("hostname", hostname),
@@ -153,7 +157,8 @@ pub fn renew_and_update_member(
                 "Reload hook failed (cert files remain updated)"
             );
         }
-        let _ = audit::append_entry(
+        let _ = audit::append_entry_to(
+            &paths.audit_log_path(),
             "reload_hook_executed",
             &[
                 ("hostname", hostname),
@@ -175,9 +180,14 @@ mod tests {
     use crate::roster::{MemberRole, MemberStatus, Roster, RosterMember};
     use chrono::{Duration, Utc};
 
+    fn test_paths() -> crate::CertmeshPaths {
+        crate::CertmeshPaths::with_data_dir(koi_common::test::ensure_data_dir(
+            "koi-certmesh-lifecycle-tests",
+        ))
+    }
+
     fn make_test_ca() -> CaState {
-        let _ = koi_common::test::ensure_data_dir("koi-certmesh-lifecycle-tests");
-        ca::create_ca("test-pass", &[42u8; 32], &crate::CertmeshPaths::default())
+        ca::create_ca("test-pass", &[42u8; 32], &test_paths())
             .unwrap()
             .0
     }
@@ -299,7 +309,8 @@ mod tests {
         let old_fp = roster.members[0].cert_fingerprint.clone();
         let old_expires = roster.members[0].cert_expires;
 
-        let hook_result = renew_and_update_member(&ca, &mut roster, "stone-05").unwrap();
+        let hook_result =
+            renew_and_update_member(&ca, &mut roster, "stone-05", &test_paths()).unwrap();
         assert!(hook_result.is_none()); // No hook set
 
         // Roster should be updated
@@ -313,7 +324,7 @@ mod tests {
         let ca = make_test_ca();
         let mut roster = Roster::new(TrustProfile::JustMe, None);
 
-        let result = renew_and_update_member(&ca, &mut roster, "nonexistent");
+        let result = renew_and_update_member(&ca, &mut roster, "nonexistent", &test_paths());
         assert!(matches!(result, Err(CertmeshError::RenewalFailed { .. })));
     }
 
@@ -329,7 +340,8 @@ mod tests {
         member.reload_hook = Some(cmd.to_string());
         roster.members.push(member);
 
-        let hook_result = renew_and_update_member(&ca, &mut roster, "stone-05").unwrap();
+        let hook_result =
+            renew_and_update_member(&ca, &mut roster, "stone-05", &test_paths()).unwrap();
         assert!(hook_result.is_some());
         let hr = hook_result.unwrap();
         assert!(hr.success);
@@ -407,7 +419,7 @@ mod tests {
         member.cert_path = "old/path".to_string();
         roster.members.push(member);
 
-        renew_and_update_member(&ca, &mut roster, "stone-07").unwrap();
+        renew_and_update_member(&ca, &mut roster, "stone-07", &test_paths()).unwrap();
 
         let member = roster.find_member("stone-07").unwrap();
         // cert_path should be updated to the actual write location
@@ -420,7 +432,7 @@ mod tests {
         let mut roster = Roster::new(TrustProfile::JustMe, None);
         roster.members.push(make_member("stone-08", 5));
 
-        renew_and_update_member(&ca, &mut roster, "stone-08").unwrap();
+        renew_and_update_member(&ca, &mut roster, "stone-08", &test_paths()).unwrap();
 
         let member = roster.find_member("stone-08").unwrap();
         // New cert should expire ~30 days from now
@@ -437,7 +449,7 @@ mod tests {
         let mut roster = Roster::new(TrustProfile::JustMe, None);
         roster.members.push(make_member("stone-09", 5));
 
-        renew_and_update_member(&ca, &mut roster, "stone-09").unwrap();
+        renew_and_update_member(&ca, &mut roster, "stone-09", &test_paths()).unwrap();
 
         let member = roster.find_member("stone-09").unwrap();
         // SHA-256 fingerprints are 64 lowercase hex characters
@@ -489,7 +501,8 @@ mod tests {
         roster.members.push(member);
 
         let old_fp = roster.members[0].cert_fingerprint.clone();
-        let hook_result = renew_and_update_member(&ca, &mut roster, "stone-12").unwrap();
+        let hook_result =
+            renew_and_update_member(&ca, &mut roster, "stone-12", &test_paths()).unwrap();
 
         // Hook failed but cert was still renewed
         assert!(hook_result.is_some());

@@ -3,26 +3,15 @@
 //! Every security-relevant action is logged with a timestamp and metadata.
 //! The log is human-readable and append-only (no edits, no deletes).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::Utc;
 
-const AUDIT_FILENAME: &str = "certmesh-audit.log";
-
-/// Path to the audit log file.
-pub fn audit_log_path() -> PathBuf {
-    koi_common::paths::koi_log_dir().join(AUDIT_FILENAME)
-}
-
-/// Append an audit entry with the given event name and key=value fields.
+/// Append an audit entry to the audit log at `path`.
 ///
-/// Format: `2026-02-11T10:30:00Z | pond_initialized | operator=Maria | profile=just_me`
-pub fn append_entry(event: &str, fields: &[(&str, &str)]) -> Result<(), std::io::Error> {
-    let path = audit_log_path();
-    append_entry_to(&path, event, fields)
-}
-
-/// Append an audit entry to a specific path (for testing).
+/// Format: `2026-02-11T10:30:00Z | pond_initialized | operator=Maria | profile=just_me`.
+/// The path comes from the injected `CertmeshPaths::audit_log_path()` — there
+/// is no ambient default.
 pub fn append_entry_to(
     path: &Path,
     event: &str,
@@ -49,11 +38,6 @@ pub fn append_entry_to(
 
     tracing::debug!(event, "Audit log entry written");
     Ok(())
-}
-
-/// Read all audit log entries from the default path.
-pub fn read_log() -> Result<String, std::io::Error> {
-    read_log_from(&audit_log_path())
 }
 
 /// Read all audit log entries from an explicit path.

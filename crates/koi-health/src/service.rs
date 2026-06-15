@@ -13,13 +13,9 @@ pub enum ServiceStatus {
     Unknown,
 }
 
-/// Supported service check kinds.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum ServiceCheckKind {
-    Http,
-    Tcp,
-}
+/// Supported service check kinds. The wire-contract definition lives in the kernel
+/// (`koi_common::types::ServiceCheckKind`); re-exported here for the existing path.
+pub use koi_common::types::ServiceCheckKind;
 
 #[derive(Debug, Clone)]
 pub struct ServiceCheckOutcome {

@@ -28,6 +28,16 @@ pub enum EventKind {
     Removed,
 }
 
+/// Supported health service-check kinds (wire contract). Lives in the kernel so a
+/// client can request a check without depending on the `koi-health` engine;
+/// `koi-health` re-exports it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceCheckKind {
+    Http,
+    Tcp,
+}
+
 /// Unique identifier for a connection/session.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionId(String);

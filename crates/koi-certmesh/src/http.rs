@@ -146,7 +146,7 @@ async fn status_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl
     let profile = state.profile.lock().await;
     let auth_guard = state.auth.lock().await;
     let auth_method = auth_guard.as_ref().map(|a| a.method_name());
-    let status = crate::build_status(&ca_guard, &roster, &profile, auth_method);
+    let status = crate::build_status(&state.paths, &ca_guard, &roster, &profile, auth_method);
     Json(status)
 }
 
