@@ -89,9 +89,12 @@ When the daemon is running, DNS endpoints live under `/v1/dns/`:
 ```
 POST /v1/dns/add
 Content-Type: application/json
+x-koi-token: <daemon access token>
 
 {"name": "grafana", "ip": "10.0.0.42"}
 ```
+
+Mutating endpoints (`POST`/`DELETE` — `add`, `remove`, `serve`, `stop`) require the daemon access token in the `x-koi-token` header — see the [security model](../reference/security-model.md) for how to read it from the breadcrumb. `GET` reads (status, lookup, list, entries, zone) are unauthenticated.
 
 ---
 

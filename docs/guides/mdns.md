@@ -223,9 +223,12 @@ GET /v1/mdns/discover?type=_http._tcp&idle_for=15    # 15 seconds idle timeout
 ```
 POST /v1/mdns/announce
 Content-Type: application/json
+x-koi-token: <daemon access token>
 
 {"name": "My App", "type": "_http._tcp", "port": 8080, "txt": {"version": "2.1"}}
 ```
+
+Mutating endpoints (`POST`/`PUT`/`DELETE`) require the daemon access token in the `x-koi-token` header — see the [security model](../reference/security-model.md) for how to read it from the breadcrumb. `GET` reads (browse, resolve, subscribe) are unauthenticated.
 
 Response:
 
@@ -260,6 +263,7 @@ For a custom heartbeat interval:
 
 ```
 PUT /v1/mdns/heartbeat/a1b2c3d4
+x-koi-token: <daemon access token>
 ```
 
 ```json
@@ -272,6 +276,7 @@ Send at half the `lease_secs` interval. A heartbeat also revives a draining regi
 
 ```
 DELETE /v1/mdns/unregister/a1b2c3d4
+x-koi-token: <daemon access token>
 ```
 
 ### Resolve an instance

@@ -9,11 +9,15 @@ Global flags work with any subcommand:
 | `--json`          | -                 | off              | JSON output (NDJSON for streaming) |
 | `--timeout SECS`  | -                 | varies           | Auto-exit (0 = run forever)        |
 | `--endpoint URL`  | -                 | auto-detect      | Connect to specific daemon         |
+| `--token TOKEN`   | `KOI_TOKEN`       | -                | Auth token for an explicit `--endpoint` |
 | `--standalone`    | -                 | off              | Skip daemon detection              |
+| `--yes`           | -                 | off              | Skip confirmation prompts for destructive commands |
 | `-v`, `-vv`       | -                 | off              | Increase verbosity (debug, trace)  |
 | `--log-file PATH` | `KOI_LOG_FILE`    | -                | Write logs to file                 |
 | `--port PORT`     | `KOI_PORT`        | `5641`           | HTTP API port                      |
 | `--http-bind`     | `KOI_HTTP_BIND`   | `loopback`       | HTTP bind: loopback / bridge / `<ip>` / 0.0.0.0 |
+| `--announce-http` | `KOI_ANNOUNCE_HTTP` | false          | Announce the HTTP server via mDNS (`_http._tcp`) |
+| `--mtls-port`     | `KOI_MTLS_PORT`   | `5642`           | mTLS port for certmesh inter-node traffic |
 | `--pipe PATH`     | `KOI_PIPE`        | platform default | IPC socket/pipe path               |
 | `--log-level`     | `KOI_LOG`         | `info`           | Log level                          |
 | `--no-http`       | `KOI_NO_HTTP`     | false            | Disable HTTP adapter               |
@@ -74,7 +78,12 @@ koi certmesh backup PATH                          # encrypted backup
 koi certmesh restore PATH                         # restore from backup
 koi certmesh revoke HOSTNAME [--reason REASON]    # revoke a member
 koi certmesh destroy                              # destroy all state (requires typing DESTROY)
+koi certmesh acme enable                          # open the ACME (RFC 8555) server + show client recipe
+koi certmesh acme status                          # ACME server status (directory URL, counts)
 ```
+
+The ACME server (dns-01 only) listens on its own server-auth TLS port `5643`
+(`--acme-port` / `KOI_ACME_PORT`). Disable it with `--no-acme` / `KOI_NO_ACME`.
 
 ---
 

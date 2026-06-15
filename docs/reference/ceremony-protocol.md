@@ -81,7 +81,6 @@ First request uses `"data": {}` to begin a session.
 | `secret_confirm` | Masked with confirmation         |
 | `code`           | Short code (e.g., TOTP 6-digit)  |
 | `entropy`        | Raw keyboard mashing for entropy |
-| `fido2`          | FIDO2 assertion                  |
 
 ## Message types
 
@@ -114,9 +113,9 @@ First request uses `"data": {}` to begin a session.
 | `invite` | Generate invitation       | passphrase, invite token                                          |
 | `unlock` | Unlock a locked CA        | method selection, credential                                      |
 
-The `init` ceremony supports three built-in trust profiles and a custom interactive config:
+The mesh's security posture is just two booleans — `enrollment_open` and `requires_approval` — stored in the roster. There is no trust-profile enum. The named presets below are labels only: each maps to a `(enrollment_open, requires_approval, auto_unlock)` tuple, and `custom` asks for the two booleans directly:
 
-| Profile           | Enrollment   | Approval     | Unlock       |
+| Preset            | Enrollment   | Approval     | Unlock       |
 | ----------------- | ------------ | ------------ | ------------ |
 | `just_me`         | Open         | No           | Auto-unlock  |
 | `my_team`         | Open         | Yes          | Auto-unlock  |

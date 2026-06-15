@@ -137,7 +137,7 @@ All labels are optional. Without any `koi.*` labels or `KOI_MDNS_ANNOUNCE` env v
 | `koi.health.timeout` | Check timeout in seconds (default: 5) | `koi.health.timeout=10` |
 | `koi.proxy.port` | Enable TLS proxy on this listen port | `koi.proxy.port=443` |
 | `koi.proxy.remote` | Allow remote proxy connections | `koi.proxy.remote=true` |
-| `koi.certmesh` | Enable certmesh cert injection | `koi.certmesh=true` |
+| `koi.certmesh` | Reserved — parsed but inert (no per-container cert is issued; the proxy uses the host member cert) | `koi.certmesh=true` |
 
 Environment variable alternative:
 

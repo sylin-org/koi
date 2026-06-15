@@ -10,8 +10,6 @@ here has an easy exit: stop pointing the tool at Koi and nothing breaks.
   already wrote.
 - [Trust (root distribution)](#trust-root-distribution) — install any CA root into
   the OS trust store, and export the certmesh root for ACME bootstrap.
-- [Traefik & Caddy labels](#traefik--caddy-labels) — Koi reads the routing labels
-  you already wrote for your reverse proxy.
 
 ---
 
