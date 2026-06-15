@@ -71,7 +71,6 @@ subtle.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 hyper-util.workspace = true
-x509-parser.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

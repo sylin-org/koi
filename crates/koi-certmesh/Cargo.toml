@@ -48,8 +48,16 @@ base64.workspace = true
 hmac.workspace = true
 subtle.workspace = true
 # Parse the ACME finalize CSR to enforce that every requested SAN is an
-# authorized order identifier before the CA signs anything.
+# authorized order identifier before the CA signs anything. Also used by the
+# mtls module to read the peer certificate's CN.
 x509-parser.workspace = true
+# mTLS server primitive (`koi_certmesh::mtls`): a tokio-rustls listener that requires
+# client certs verified against the CA and surfaces the peer CN. Promoted out of the
+# koi binary so consumers reuse the CA/trust wiring instead of duplicating it.
+tokio-util = { workspace = true }
+tokio-rustls.workspace = true
+rustls.workspace = true
+hyper-util.workspace = true
 
 [features]
 # Pass-through to koi-crypto's optional backends, default-on (standalone builds and the
@@ -65,10 +73,9 @@ tower = { version = "0.5", features = ["util"] }
 # conformance test also stands up a rustls TLS server with the daemon leaf. `rcgen`
 # lets instant-acme auto-generate the order's key + CSR at finalize.
 instant-acme = { version = "0.8.5", features = ["hyper-rustls", "rcgen"] }
-tokio-rustls.workspace = true
-rustls.workspace = true
+# tokio-rustls / rustls / hyper-util are now normal deps (the mtls module); the
+# ACME conformance test reuses them. `hyper` stays dev-only (used directly there).
 hyper.workspace = true
-hyper-util.workspace = true
 tempfile = "3"
 # Raw-JWS security tests POST flattened JWS over plain HTTP (no TLS); reqwest is
 # the simplest async client. The conformance test reuses it for nothing — it goes
