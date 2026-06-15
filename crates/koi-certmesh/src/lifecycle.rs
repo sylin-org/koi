@@ -309,7 +309,8 @@ mod tests {
         let old_fp = roster.members[0].cert_fingerprint.clone();
         let old_expires = roster.members[0].cert_expires;
 
-        let hook_result = renew_and_update_member(&ca, &mut roster, "stone-05", &test_paths()).unwrap();
+        let hook_result =
+            renew_and_update_member(&ca, &mut roster, "stone-05", &test_paths()).unwrap();
         assert!(hook_result.is_none()); // No hook set
 
         // Roster should be updated
@@ -339,7 +340,8 @@ mod tests {
         member.reload_hook = Some(cmd.to_string());
         roster.members.push(member);
 
-        let hook_result = renew_and_update_member(&ca, &mut roster, "stone-05", &test_paths()).unwrap();
+        let hook_result =
+            renew_and_update_member(&ca, &mut roster, "stone-05", &test_paths()).unwrap();
         assert!(hook_result.is_some());
         let hr = hook_result.unwrap();
         assert!(hr.success);
@@ -499,7 +501,8 @@ mod tests {
         roster.members.push(member);
 
         let old_fp = roster.members[0].cert_fingerprint.clone();
-        let hook_result = renew_and_update_member(&ca, &mut roster, "stone-12", &test_paths()).unwrap();
+        let hook_result =
+            renew_and_update_member(&ca, &mut roster, "stone-12", &test_paths()).unwrap();
 
         // Hook failed but cert was still renewed
         assert!(hook_result.is_some());

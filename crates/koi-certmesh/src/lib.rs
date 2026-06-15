@@ -1679,11 +1679,9 @@ mod tests {
 
         // A data dir with no stored key reads back as None (boots locked).
         let empty = CertmeshPaths::with_data_dir(base.join("autounlock-empty"));
-        assert!(
-            CertmeshCore::read_auto_unlock_key(&empty)
-                .unwrap()
-                .is_none()
-        );
+        assert!(CertmeshCore::read_auto_unlock_key(&empty)
+            .unwrap()
+            .is_none());
     }
 
     // ── renew_all_due ────────────────────────────────────────────────
@@ -2103,7 +2101,13 @@ mod tests {
     fn build_status_unlocked_ca() {
         let ca = make_test_ca();
         let roster = Roster::new(TrustProfile::JustMe, None);
-        let status = build_status(&test_paths(), &Some(ca), &roster, &TrustProfile::JustMe, None);
+        let status = build_status(
+            &test_paths(),
+            &Some(ca),
+            &roster,
+            &TrustProfile::JustMe,
+            None,
+        );
         assert!(!status.ca_locked);
         assert_eq!(status.member_count, 0);
     }
@@ -2248,8 +2252,13 @@ mod tests {
         roster.metadata.allowed_subnet = Some("10.0.0.0/8".to_string());
         roster.metadata.enrollment_deadline = Some(Utc::now() + Duration::hours(1));
 
-        let status =
-            build_status(&test_paths(), &Some(ca), &roster, &TrustProfile::MyOrganization, None);
+        let status = build_status(
+            &test_paths(),
+            &Some(ca),
+            &roster,
+            &TrustProfile::MyOrganization,
+            None,
+        );
         assert_eq!(status.allowed_domain.as_deref(), Some("school.local"));
         assert_eq!(status.allowed_subnet.as_deref(), Some("10.0.0.0/8"));
         assert!(status.enrollment_deadline.is_some());
@@ -2451,8 +2460,13 @@ mod tests {
         let roster = Roster::new(TrustProfile::MyOrganization, Some("ops".to_string()));
         let totp = koi_crypto::totp::generate_secret();
         let auth = koi_crypto::auth::AuthState::Totp(totp);
-        let core =
-            CertmeshCore::new_with_paths(ca, roster, Some(auth), TrustProfile::MyOrganization, test_paths());
+        let core = CertmeshCore::new_with_paths(
+            ca,
+            roster,
+            Some(auth),
+            TrustProfile::MyOrganization,
+            test_paths(),
+        );
         let status = core.certmesh_status().await;
         assert_eq!(status.profile, TrustProfile::MyOrganization);
     }
