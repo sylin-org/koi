@@ -16,7 +16,7 @@ containers or other hosts, start the daemon with `--http-bind bridge` / `<ip>` /
 
 **Daemon Access Token (DAT):**
 At startup, the daemon generates a fresh random token and writes it to the breadcrumb file (`koi.endpoint`) with owner-only permissions.
-- **GET / HEAD / OPTIONS** requests are unauthenticated (exempt from token checks).
+- **GET / HEAD / OPTIONS** requests are unauthenticated (exempt from token checks) — **except `/v1/mcp`**, which requires the token on *every* method (including its server→client SSE GET); see the MCP note below.
 - **All mutations (POST, PUT, DELETE)** require the token to be sent in the `x-koi-token` header (except `/v1/certmesh/join`, which uses standard TOTP credentials during bootstrap).
 - **Server-Sent Events (SSE)** endpoints (which cannot set custom headers) accept the token in the `?token=` query parameter.
 
@@ -39,8 +39,14 @@ Interactive API docs are available at `GET /docs` (Scalar UI).
 | POST   | `/v1/admin/shutdown` | Initiate graceful shutdown                 |
 | GET    | `/v1/host`           | Host identity and network interfaces       |
 | GET    | `/v1/sd/prometheus`  | Prometheus HTTP service discovery (target groups) |
+| GET/POST | `/v1/mcp`          | MCP server (Streamable HTTP / JSON-RPC) — token-required on all methods; **not** in `/openapi.json` (see below) |
+| GET    | `/.well-known/mcp/server-card.json` | Public MCP discovery descriptor (unauthenticated) |
 | GET    | `/openapi.json`      | OpenAPI specification                      |
 | GET    | `/docs`              | Interactive API documentation              |
+
+### MCP over Streamable HTTP (not in OpenAPI)
+
+`/v1/mcp` speaks the Model Context Protocol over the **Streamable HTTP** transport (JSON-RPC 2.0, single endpoint, optional SSE upgrade) — it is **not** part of the utoipa-generated `/openapi.json`, the same way the ACME facade is documented separately. POST carries JSON-RPC requests; a bare GET opens the server→client SSE stream. Both require the `x-koi-token` header (the GET is carved out of the usual GET-exemption — it is a live channel, not a read). Enabled by default; disable with `--no-mcp-http` / `KOI_NO_MCP_HTTP` (then `/v1/mcp` returns `503 capability_disabled`), and `/v1/status` reports the state as the `mcp_http` field. The endpoint exposes the same tools as `koi mcp serve` plus MCP **resources** (`koi://lan/inventory`, `koi://health`, `koi://dns/zone`, `koi://mdns/services`). See [the MCP guide](../guides/mcp.md).
 
 ### Dashboard & Browser
 

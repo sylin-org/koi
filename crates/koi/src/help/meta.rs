@@ -1832,8 +1832,11 @@ mcp_servers_on_lan) and write tools (lan_announce, lan_unregister, dns_add,
 dns_remove). Services announced via lan_announce are auto-heartbeated and
 unregistered when the server stops. CA-admin operations are not exposed.
 
-This command is launched by the MCP host, not run interactively. See
-docs/guides/mcp.md for client configuration.",
+This command is launched by the MCP host, not run interactively. The daemon
+ALSO serves the same MCP surface (tools + resources) over Streamable HTTP at
+/v1/mcp on port 5641 (token-authenticated; enable/disable with --no-mcp-http
+/ KOI_NO_MCP_HTTP), so a host without Koi installed can reach a remote Koi
+host's MCP server by URL. See docs/guides/mcp.md for client configuration.",
         category: KoiCategory::Mcp,
         tags: &[KoiTag::Streaming, KoiTag::CliOnly],
         scope: KoiScope::Public,

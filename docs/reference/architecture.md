@@ -46,7 +46,7 @@ Koi is a single binary with a layered architecture. Three adapter layers sit on 
 | `crates/koi-embedded/`    | `koi-embedded`    | In-process facade - builder, handles, events                       | ~5,227 |
 | `crates/koi-udp/`         | `koi-udp`         | UDP datagram bridging - bind, relay, lease reaper, HTTP routes     | ~589   |
 | `crates/koi-runtime/`     | `koi-runtime`     | Container/service runtime adapter - Docker/Podman lifecycle events | ~1,641 |
-| `crates/koi-mcp/`         | `koi-mcp`         | MCP server over stdio - exposes the LAN substrate to AI agents     | ~620   |
+| `crates/koi-mcp/`         | `koi-mcp`         | MCP server (stdio + in-process Streamable HTTP) - exposes the LAN substrate to AI agents | ~900   |
 
 ---
 
@@ -66,7 +66,7 @@ koi (bin)
 ├── koi-udp         → koi-common, axum, tokio
 ├── koi-runtime     → koi-common, bollard, axum, utoipa, tokio, chrono
 ├── koi-client      → koi-common, ureq (blocking)
-├── koi-mcp         → koi-common, koi-client, koi-config, rmcp, tokio
+├── koi-mcp         → koi-common, koi-client, koi-config, rmcp (+ transport-streamable-http-server), thiserror, async-trait, tokio
 ├── koi-dashboard   → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-runtime, axum, tokio
 └── koi-embedded    → koi-common, koi-dashboard, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, tokio
 ```
@@ -74,6 +74,10 @@ koi (bin)
 Terminal-profile-aware help rendering (the former standalone `command-surface` crate)
 was folded into the binary's `crates/koi/src/help/` module in P09; it is no longer a
 workspace crate.
+
+`koi-mcp` still depends on **no domain crate** — the in-process Streamable HTTP transport
+serves MCP resources against the live cores via a `CoreSource` bridge that lives in the
+binary crate, not in `koi-mcp` itself.
 
 **Domain** crates depend on `koi-common` but **never on each other**. Cross-domain wiring
 happens in the binary crate and in `koi-dashboard`. `koi-dashboard` is a **composition/

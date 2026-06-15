@@ -74,6 +74,13 @@ const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were remov
 | ------------------- | ----- | ---------------------------------- |
 | `DEFAULT_HTTP_PORT` | 5641  | Default daemon port ("KOI" keypad) |
 
+### koi -- HTTP Adapter paths (`crates/koi/src/adapters/http.rs` `paths` module)
+
+| Constant                 | Value                                | Purpose                                          |
+| ------------------------ | ------------------------------------ | ------------------------------------------------ |
+| `MCP`                    | `/v1/mcp`                            | In-process MCP server (Streamable HTTP / JSON-RPC); shares port 5641 |
+| `MCP_SERVER_CARD`        | `/.well-known/mcp/server-card.json`  | Public MCP discovery descriptor (unauthenticated) |
+
 ### koi -- Client (`crates/koi/src/client.rs`)
 
 | Constant         | Value | Purpose                   |

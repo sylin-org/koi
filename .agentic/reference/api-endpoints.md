@@ -18,8 +18,20 @@ Interactive API docs: `GET /docs` (Scalar UI). OpenAPI spec: `GET /openapi.json`
 | GET | `/v1/status` | Unified capability status (version, uptime, capabilities) |
 | POST | `/v1/admin/shutdown` | Initiate graceful shutdown |
 | GET | `/v1/host` | Host identity (hostname, FQDN, OS, arch, network interfaces) |
+| GET/POST | `/v1/mcp` | MCP server over Streamable HTTP (JSON-RPC; token-authenticated) |
+| GET | `/.well-known/mcp/server-card.json` | Public MCP discovery descriptor (unauthenticated) |
 | GET | `/openapi.json` | OpenAPI specification |
 | GET | `/docs` | Interactive API documentation (Scalar UI) |
+
+`/v1/mcp` is MCP JSON-RPC over Streamable HTTP (in-process, against the live cores) —
+like the ACME facade it is **NOT** in `/openapi.json`. Every method, including the GET
+SSE stream, requires the `x-koi-token` header (carved out of the usual GET auth
+exemption). It is a transport, not a domain capability rung: gated by `--no-mcp-http` /
+`KOI_NO_MCP_HTTP` (default enabled; disabled → 503 `capability_disabled`) and reported on
+`/v1/status` as an `mcp_http` boolean. It exposes MCP resources (`koi://lan/inventory`,
+`koi://health`, `koi://dns/zone`, `koi://mdns/services`) with live `resources/updated`
+deltas, and advertises a single `_mcp._tcp` mDNS record, an in-zone `_mcp.<host>.<zone>`
+DNS TXT, and the public server-card above. Port is unchanged (5641, no new port).
 
 ### Dashboard & Browser
 

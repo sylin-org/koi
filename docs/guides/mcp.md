@@ -4,6 +4,8 @@ AI agents are good at reasoning and bad at knowing what is actually on your netw
 
 `koi mcp serve` runs an MCP server over **stdio**. The MCP host launches it as a subprocess and speaks JSON-RPC over the pipe; you never run it interactively. Under the hood it is a thin adapter over the same daemon HTTP API the CLI uses — so the agent gets exactly the surface a script would, with descriptions and annotations written for a model audience.
 
+The daemon **also** serves that same MCP surface over **Streamable HTTP** at `/v1/mcp` (the daemon's HTTP port, default 5641) — so a host on a machine *without* Koi installed can reach a remote Koi host's MCP server with one URL, instead of spawning a local subprocess. Same tools, same resources. See [HTTP transport](#http-transport) below.
+
 **When to use it**: you want an agent to orient itself on a local network ("what is running here, and is it healthy?"), give a service a stable name, or publish its own endpoint so peers can find it.
 
 **When not to**: certificate-authority administration. The MCP server intentionally does **not** expose `certmesh create/promote/destroy/unlock` — CA operations stay on the human-driven CLI.
@@ -66,6 +68,24 @@ To target a non-default daemon (e.g. a remote one), pass an endpoint and token t
 
 ---
 
+## HTTP transport
+
+Besides stdio, the daemon serves MCP over **Streamable HTTP** at `/v1/mcp` on its HTTP port (default 5641), backed by the live cores. This is how an MCP host on a machine **without** Koi reaches a remote Koi host — no local subprocess:
+
+```bash
+# on any machine with an MCP-capable client (no Koi install needed):
+claude mcp add --transport http koi https://koi-host.lan/v1/mcp --header "x-koi-token: <token>"
+```
+
+- **Authenticated.** Every request to `/v1/mcp` — including the server→client SSE stream (a GET) — requires the `x-koi-token` header. (`koi token show` prints it; `koi token write <path>` writes a 0600 file for containers.)
+- **Enabled by default**, on the existing HTTP listener (no separate port). Disable with `--no-mcp-http` / `KOI_NO_MCP_HTTP`; `/v1/status` reports it as `mcp_http`. When disabled, `/v1/mcp` returns `503 capability_disabled`.
+- **Loopback by default.** `/v1/mcp` rides the daemon's `--http-bind` (loopback unless you expose it). For cross-host reach, front it with Koi's TLS proxy + a certmesh/ACME-issued in-zone cert so it is real HTTPS with a verifiable Origin and the token travels inside TLS.
+- **Not** in `/openapi.json` — MCP is JSON-RPC, not a REST surface (like the ACME facade).
+
+stdio remains the universal baseline; the HTTP transport is purely additive.
+
+---
+
 ## Tools
 
 All tools operate against the running daemon. Read tools are marked read-only; writers that only add are marked non-destructive; removers are marked destructive — so a host can apply its own confirmation policy.
@@ -91,6 +111,21 @@ If no daemon is reachable, every tool returns a clear text error instead of a cr
 > `no Koi daemon reachable — start one with `koi --daemon` (or set KOI_ENDPOINT/KOI_TOKEN)`
 
 `tools/list` always works without a daemon — the schema is static — so a host can introspect the surface before anything is running.
+
+---
+
+## Resources
+
+Alongside tools, the server exposes Koi's live state as MCP **resources** — a host reads a resource for a snapshot and may **subscribe** for live `resources/updated` notifications:
+
+| Resource URI | What it is |
+| --- | --- |
+| `koi://lan/inventory` | The joined view (status + health + DNS) — same as `lan_inventory`. |
+| `koi://health` | All health checks. |
+| `koi://dns/zone` | All names resolvable by the local DNS resolver. |
+| `koi://mdns/services` | Cached mDNS-discovered services on the network. |
+
+`resources/read` returns the current snapshot on **both** transports. Live `resources/updated` deltas require the in-process HTTP transport (the cores' event bus is in the same process); over stdio a subscription is accepted but only the snapshot is available.
 
 ---
 
@@ -126,13 +161,13 @@ The point of `lan_announce` + `dns_add` together is a **stable, discoverable nam
 
 **This is Koi's convention, not a standard.** There is no DNS-SD standard for MCP today — the two IETF drafts that exist describe *unicast* `_mcp.<domain>` TXT records, not multicast DNS. Koi uses `_mcp._tcp` on the LAN as a pragmatic stand-in until a discovery standard lands; expect this to track whatever the ecosystem settles on.
 
-**Daemon self-announce is deferred.** A stdio MCP server has no network endpoint to advertise — there is nothing for a peer to connect to. Self-announcing Koi's own MCP server only becomes meaningful with an **HTTP transport**, which is a documented follow-up (along with daemon self-announce of that HTTP endpoint). For now, `mcp_servers_on_lan` finds *other* hosts that already advertise `_mcp._tcp`.
+**Koi self-announces, once per host.** Now that the HTTP transport gives the daemon a real endpoint, the daemon publishes exactly **one** `_mcp._tcp` mDNS record per host (never one per service — that would flood the link), advertising its `/v1/mcp` endpoint with TXT `transport=streamable-http; path=/v1/mcp`. It also publishes an in-zone `_mcp.<host>.<zone>` unicast DNS TXT (when DNS serves the zone) and a public `GET /.well-known/mcp/server-card.json` discovery descriptor. All three are gated on the transport being enabled and the mDNS record is withdrawn (goodbye) on shutdown — so `mcp_servers_on_lan` now finds Koi hosts too, not just other advertisers.
 
 ---
 
-## Follow-ups (not yet implemented)
+## Follow-ups
 
-- **HTTP / Streamable-HTTP transport** for the MCP server, so remote hosts can connect without spawning a local subprocess.
-- **Daemon self-announce** of that HTTP MCP endpoint over `_mcp._tcp`, closing the discovery loop with `mcp_servers_on_lan`.
+The HTTP transport, resources, and LAN discovery shipped (above). What remains:
 
-These are deliberately out of v1; stdio is the transport every MCP host supports today.
+- **mTLS auth tier** via certmesh client certs, for host-to-host agent meshes. Today's editor clients (Claude Code/Cursor/VS Code) speak header auth, not client certs, so the DAT token is the default.
+- **Editor auto-discovery.** No shipping MCP host yet auto-resolves the `_mcp._tcp` record, the in-zone TXT, or the server-card — these are *publish* formats ahead of a consumption standard, tracking the in-flight IETF/registry work. For now a host is still pointed at the URL explicitly.

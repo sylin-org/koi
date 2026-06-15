@@ -25,6 +25,7 @@ Global flags work with any subcommand:
 | `--no-proxy`      | `KOI_NO_PROXY`    | false            | Disable proxy                      |
 | `--no-udp`        | `KOI_NO_UDP`      | false            | Disable UDP bridging               |
 | `--no-runtime`    | `KOI_NO_RUNTIME`  | false            | Disable runtime adapter            |
+| `--no-mcp-http`   | `KOI_NO_MCP_HTTP` | false            | Disable the in-process MCP HTTP transport (`/v1/mcp`) |
 | `--runtime KIND`  | `KOI_RUNTIME`     | `auto`           | Runtime backend (docker/podman/auto) |
 | `--dns-port`      | `KOI_DNS_PORT`    | `53`             | DNS server port                    |
 | `--dns-zone`      | `KOI_DNS_ZONE`    | `lan`            | Local DNS zone                     |
@@ -147,6 +148,15 @@ interactively. Talks to a running daemon via the breadcrumb, or `KOI_ENDPOINT` /
 `lan_inventory`, `health_snapshot`, `runtime_instances`, `mcp_servers_on_lan`) and
 write tools (`lan_announce`, `lan_unregister`, `dns_add`, `dns_remove`). CA-admin
 operations are not exposed. See the [MCP guide](../guides/mcp.md).
+
+The daemon **also** serves MCP over Streamable HTTP at `/v1/mcp` on port `5641`
+(running against the live cores), alongside the stdio transport. Enabled by default;
+disable with `--no-mcp-http` / `KOI_NO_MCP_HTTP`. It exposes MCP resources
+(`koi://lan/inventory`, `koi://health`, `koi://dns/zone`, `koi://mdns/services`) with
+live subscription deltas, and advertises itself for LAN discovery (a single
+`_mcp._tcp` mDNS record, an in-zone `_mcp.<host>.<zone>` DNS TXT, and a public
+`GET /.well-known/mcp/server-card.json` card). Every method on `/v1/mcp` — including
+the GET SSE stream — requires the `x-koi-token` header.
 
 ---
 

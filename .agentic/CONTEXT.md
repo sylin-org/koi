@@ -164,6 +164,7 @@ All domain capabilities are compiled into a **single binary**. Enable/disable at
 | `--no-runtime`  | `KOI_NO_RUNTIME=1`  | Disable runtime adapter      |
 | `--no-http`     | `KOI_NO_HTTP=1`     | Disable the HTTP adapter     |
 | `--no-ipc`      | `KOI_NO_IPC=1`      | Disable the IPC adapter      |
+| `--no-mcp-http` | `KOI_NO_MCP_HTTP=1` | Disable the in-process MCP HTTP transport (`/v1/mcp`) |
 
 Additional runtime adapter flags:
 
