@@ -388,7 +388,9 @@ mod tests {
     #[test]
     fn full_ca_and_issue_round_trip() {
         let entropy = test_entropy();
-        let paths = crate::CertmeshPaths::default();
+        let paths = crate::CertmeshPaths::with_data_dir(koi_common::test::ensure_data_dir(
+            "koi-certmesh-ca-tests",
+        ));
         let (ca, _master_key) = create_ca("test-pass", &entropy, &paths).unwrap();
         assert!(ca.cert_pem.contains("BEGIN CERTIFICATE"));
         assert!(!ca.cert_der.is_empty());

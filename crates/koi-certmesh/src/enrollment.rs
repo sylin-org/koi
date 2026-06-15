@@ -27,10 +27,7 @@ pub fn validate_scope(hostname: &str, metadata: &RosterMetadata) -> Result<(), C
         // Hostname must either match the domain exactly or end with ".domain"
         if host_lower != domain_lower && !host_lower.ends_with(&format!(".{domain_lower}")) {
             let reason = format!("hostname '{}' outside domain '{}'", hostname, domain);
-            let _ = audit::append_entry(
-                "scope_violation",
-                &[("hostname", hostname), ("reason", &reason)],
-            );
+            // The caller (which holds the resolved paths) records the audit entry.
             return Err(CertmeshError::ScopeViolation(reason));
         }
     }
@@ -51,7 +48,7 @@ pub fn validate_subnet(ip: &str, metadata: &RosterMetadata) -> Result<(), Certme
             .map_err(|_| CertmeshError::ScopeViolation(format!("invalid IP address: {ip}")))?;
         if !network.contains(&client_ip) {
             let reason = format!("IP '{}' outside subnet '{}'", ip, cidr);
-            let _ = audit::append_entry("scope_violation", &[("ip", ip), ("reason", &reason)]);
+            // The caller (which holds the resolved paths) records the audit entry.
             return Err(CertmeshError::ScopeViolation(reason));
         }
     }
@@ -88,6 +85,7 @@ pub fn process_enrollment(
     hostname: &str,
     sans: &[String],
     approved_by: Option<String>,
+    paths: &crate::CertmeshPaths,
 ) -> Result<(JoinResponse, IssuedCert), CertmeshError> {
     // 1. Check enrollment is open (includes deadline auto-close)
     if !roster.is_enrollment_open() {
@@ -111,7 +109,16 @@ pub fn process_enrollment(
     }
 
     // 3. Validate scope constraints
-    validate_scope(hostname, &roster.metadata)?;
+    if let Err(e) = validate_scope(hostname, &roster.metadata) {
+        if let CertmeshError::ScopeViolation(reason) = &e {
+            let _ = audit::append_entry_to(
+                &paths.audit_log_path(),
+                "scope_violation",
+                &[("hostname", hostname), ("reason", reason)],
+            );
+        }
+        return Err(e);
+    }
 
     // 3b. Reject revoked members
     if roster.is_revoked(hostname) {
@@ -132,7 +139,7 @@ pub fn process_enrollment(
     let issued = ca::issue_certificate(ca, hostname, sans)?;
 
     // 6. Write cert files
-    let cert_dir = certfiles::write_cert_files(hostname, &issued)?;
+    let cert_dir = certfiles::write_cert_files_to(&paths.certs_dir().join(hostname), &issued)?;
 
     // 7. Add to roster
     let is_primary = roster.members.is_empty();
@@ -168,7 +175,8 @@ pub fn process_enrollment(
         .as_deref()
         .or(roster.metadata.operator.as_deref())
         .unwrap_or("self");
-    let _ = audit::append_entry(
+    let _ = audit::append_entry_to(
+        &paths.audit_log_path(),
         "member_joined",
         &[
             ("hostname", hostname),
@@ -199,9 +207,14 @@ mod tests {
     use crate::roster::EnrollmentState;
     use koi_crypto::totp;
 
+    fn test_paths() -> crate::CertmeshPaths {
+        crate::CertmeshPaths::with_data_dir(koi_common::test::ensure_data_dir(
+            "koi-certmesh-enrollment-tests",
+        ))
+    }
+
     fn make_test_ca() -> CaState {
-        let _ = koi_common::test::ensure_data_dir("koi-certmesh-enrollment-tests");
-        ca::create_ca("test-pass", &[42u8; 32], &crate::CertmeshPaths::default())
+        ca::create_ca("test-pass", &[42u8; 32], &test_paths())
             .unwrap()
             .0
     }
@@ -251,6 +264,7 @@ mod tests {
             "stone-05",
             &["stone-05".to_string(), "stone-05.local".to_string()],
             None,
+            &test_paths(),
         );
 
         assert!(result.is_err());
@@ -290,6 +304,7 @@ mod tests {
             "stone-05",
             &["stone-05".to_string()],
             None,
+            &test_paths(),
         );
 
         assert!(matches!(result, Err(CertmeshError::EnrollmentClosed)));
@@ -323,6 +338,7 @@ mod tests {
                 "stone-05",
                 &["stone-05".to_string()],
                 None,
+                &test_paths(),
             );
         }
 
@@ -337,6 +353,7 @@ mod tests {
             "stone-05",
             &["stone-05".to_string()],
             None,
+            &test_paths(),
         );
 
         assert!(matches!(result, Err(CertmeshError::RateLimited { .. })));

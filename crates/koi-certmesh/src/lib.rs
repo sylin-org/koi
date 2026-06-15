@@ -171,14 +171,13 @@ impl CertmeshCore {
         Self { state }
     }
 
-    /// Create a new CertmeshCore with an unlocked (decrypted) CA.
-    pub fn new(
-        ca: ca::CaState,
-        roster: Roster,
-        auth_state: Option<AuthState>,
-        profile: TrustProfile,
-    ) -> Self {
-        Self::new_with_paths(ca, roster, auth_state, profile, CertmeshPaths::default())
+    /// The resolved filesystem paths this core operates on.
+    ///
+    /// The data root is resolved once at the composition root and injected
+    /// via the `*_with_paths` constructors; every operation reads it from
+    /// here. There is no ambient fallback.
+    pub fn paths(&self) -> &CertmeshPaths {
+        &self.state.paths
     }
 
     /// Create a new CertmeshCore with an unlocked CA and explicit paths.
@@ -204,11 +203,6 @@ impl CertmeshCore {
         }
     }
 
-    /// Create a CertmeshCore in locked state (CA initialized but not unlocked).
-    pub fn locked(roster: Roster, profile: TrustProfile) -> Self {
-        Self::locked_with_paths(roster, profile, CertmeshPaths::default())
-    }
-
     /// Create a CertmeshCore in locked state with explicit paths.
     pub fn locked_with_paths(roster: Roster, profile: TrustProfile, paths: CertmeshPaths) -> Self {
         Self {
@@ -226,15 +220,10 @@ impl CertmeshCore {
         }
     }
 
-    /// Create a CertmeshCore in uninitialized state (no CA created yet).
+    /// Create a CertmeshCore in uninitialized state with explicit paths.
     ///
     /// HTTP routes are still mounted so `/create` is reachable on a fresh install.
     /// All operations that require an initialized CA will return `CaNotInitialized`.
-    pub fn uninitialized() -> Self {
-        Self::uninitialized_with_paths(CertmeshPaths::default())
-    }
-
-    /// Create a CertmeshCore in uninitialized state with explicit paths.
     pub fn uninitialized_with_paths(paths: CertmeshPaths) -> Self {
         Self {
             state: Arc::new(CertmeshState {
@@ -371,6 +360,7 @@ impl CertmeshCore {
             hostname,
             &sans,
             approved_by,
+            &self.state.paths,
         )?;
 
         // Save roster after successful enrollment
@@ -544,7 +534,7 @@ impl CertmeshCore {
         let profile = self.state.profile.lock().await;
         let auth_guard = self.state.auth.lock().await;
         let auth_method = auth_guard.as_ref().map(|a| a.method_name());
-        build_status(&ca_guard, &roster, &profile, auth_method)
+        build_status(self.paths(), &ca_guard, &roster, &profile, auth_method)
     }
 
     /// Produce an mDNS announcement descriptor if this node is an unlocked primary.
@@ -724,33 +714,47 @@ impl CertmeshCore {
     /// Vault key under which the auto-unlock passphrase is stored.
     const VAULT_AUTO_UNLOCK_KEY: &'static str = "certmesh-auto-unlock";
 
-    /// Save a passphrase for automatic unlock on reboot.
+    /// Save a passphrase for automatic unlock on reboot, rooted at explicit
+    /// paths so the vault is co-located with the CA it unlocks.
     ///
     /// Uses the koi-crypto vault which automatically selects the strongest
     /// available backend: platform credential store (DPAPI, Keychain,
     /// Secret Service) first, machine-bound Argon2id derivation as fallback.
-    pub fn save_auto_unlock_key(passphrase: &str) -> Result<(), CertmeshError> {
-        let vault = koi_crypto::vault::Vault::open(CertmeshPaths::default().data_dir())?;
+    /// The counterpart reader is [`Self::read_auto_unlock_key`].
+    pub fn save_auto_unlock_key_at(
+        paths: &CertmeshPaths,
+        passphrase: &str,
+    ) -> Result<(), CertmeshError> {
+        let vault = koi_crypto::vault::Vault::open(paths.data_dir())?;
         vault.store(Self::VAULT_AUTO_UNLOCK_KEY, passphrase)?;
         tracing::info!(
             backend = vault.backend_name(),
             "Auto-unlock key saved to vault"
         );
         // Remove any legacy file/credential store entries
-        let _ = std::fs::remove_file(CertmeshPaths::default().auto_unlock_key_path());
+        let _ = std::fs::remove_file(paths.auto_unlock_key_path());
         let _ = koi_crypto::tpm::delete_key_material("koi-auto-unlock");
         Ok(())
     }
 
-    /// Delete the auto-unlock key from the vault (idempotent).
-    pub fn delete_auto_unlock_key() {
-        let data_dir = CertmeshPaths::default().data_dir().to_path_buf();
-        if let Ok(vault) = koi_crypto::vault::Vault::open(&data_dir) {
-            let _ = vault.delete(Self::VAULT_AUTO_UNLOCK_KEY);
-        }
-        // Clean up legacy stores
-        let _ = std::fs::remove_file(CertmeshPaths::default().auto_unlock_key_path());
-        let _ = koi_crypto::tpm::delete_key_material("koi-auto-unlock");
+    /// Read the stored auto-unlock passphrase from the vault, if any.
+    ///
+    /// The auto-unlock passphrase lives in the koi-crypto vault (written by
+    /// [`Self::save_auto_unlock_key_at`], which deletes any legacy plaintext
+    /// file). This is the **single source of truth** for that location:
+    /// boot paths that need to unlock the CA at construction time call this
+    /// instead of reading a plaintext file that no longer exists.
+    ///
+    /// Returns `Ok(None)` when no key is stored, `Ok(Some(pp))` when one is
+    /// found, and `Err` when the vault cannot be opened or read.
+    pub fn read_auto_unlock_key(
+        paths: &CertmeshPaths,
+    ) -> Result<Option<Zeroizing<String>>, CertmeshError> {
+        let vault = koi_crypto::vault::Vault::open(paths.data_dir())?;
+        Ok(match vault.retrieve(Self::VAULT_AUTO_UNLOCK_KEY)? {
+            Some(pp) if !pp.is_empty() => Some(Zeroizing::new(pp)),
+            _ => None,
+        })
     }
 
     /// Try to auto-unlock the CA from the vault.
@@ -759,16 +763,12 @@ impl CertmeshCore {
     /// stored key exists, and `Err` if the key exists but decryption
     /// failed (corrupt key, changed passphrase, etc.).
     pub async fn try_auto_unlock(&self) -> Result<bool, CertmeshError> {
-        let vault = koi_crypto::vault::Vault::open(self.state.paths.data_dir())?;
-        let passphrase = match vault.retrieve(Self::VAULT_AUTO_UNLOCK_KEY)? {
-            Some(pp) if !pp.is_empty() => Zeroizing::new(pp),
-            _ => return Ok(false),
+        let passphrase = match Self::read_auto_unlock_key(&self.state.paths)? {
+            Some(pp) => pp,
+            None => return Ok(false),
         };
         self.unlock(&passphrase).await?;
-        tracing::info!(
-            backend = vault.backend_name(),
-            "Pond auto-unlocked via vault"
-        );
+        tracing::info!("Pond auto-unlocked via vault");
         Ok(true)
     }
 
@@ -778,14 +778,15 @@ impl CertmeshCore {
     /// mode decision.  Call it after CA creation from any init path
     /// (direct API or ceremony) and the right thing happens.
     pub fn configure_auto_unlock_for_profile(
+        &self,
         profile: profiles::TrustProfile,
         passphrase: &str,
     ) -> Result<(), CertmeshError> {
         if profile.should_auto_unlock() && !passphrase.is_empty() {
-            Self::save_auto_unlock_key(passphrase)?;
+            let paths = self.paths();
+            Self::save_auto_unlock_key_at(paths, passphrase)?;
 
             // Mark auto-unlock in the slot table (if it exists)
-            let paths = CertmeshPaths::default();
             let slot_path = paths.slot_table_path();
             if let Some(mut table) = ca::load_slot_table(&slot_path)? {
                 table.add_auto_unlock();
@@ -1141,7 +1142,8 @@ impl CertmeshCore {
 
         let mut results = Vec::new();
         for hostname in &hostnames {
-            let result = lifecycle::renew_and_update_member(ca, &mut roster, hostname);
+            let result =
+                lifecycle::renew_and_update_member(ca, &mut roster, hostname, &self.state.paths);
             results.push((hostname.clone(), result));
         }
 
@@ -1561,15 +1563,15 @@ impl Capability for CertmeshCore {
 /// Build a CertmeshStatus from locked guards. Used by both the facade
 /// method and the HTTP handler to avoid duplicating the mapping logic.
 pub(crate) fn build_status(
+    paths: &CertmeshPaths,
     ca_guard: &Option<ca::CaState>,
     roster: &Roster,
     profile: &TrustProfile,
     auth_method: Option<&str>,
 ) -> protocol::CertmeshStatus {
-    let paths = CertmeshPaths::default();
     let ca_fingerprint = match ca_guard {
         Some(ca) => Some(ca::ca_fingerprint(ca)),
-        None => ca::ca_fingerprint_from_disk(&paths).ok(),
+        None => ca::ca_fingerprint_from_disk(paths).ok(),
     };
 
     protocol::CertmeshStatus {
@@ -1603,9 +1605,12 @@ mod tests {
     use crate::roster::{MemberRole, MemberStatus, RosterMember};
     use chrono::{Duration, Utc};
 
+    fn test_paths() -> CertmeshPaths {
+        CertmeshPaths::with_data_dir(koi_common::test::ensure_data_dir("koi-certmesh-core-tests"))
+    }
+
     fn make_test_ca() -> ca::CaState {
-        let _ = koi_common::test::ensure_data_dir("koi-certmesh-core-tests");
-        ca::create_ca("test-pass", &[42u8; 32], &CertmeshPaths::default())
+        ca::create_ca("test-pass", &[42u8; 32], &test_paths())
             .unwrap()
             .0
     }
@@ -1631,14 +1636,54 @@ mod tests {
     }
 
     fn make_unlocked_core(ca: ca::CaState, roster: Roster) -> CertmeshCore {
-        let _ = koi_common::test::ensure_data_dir("koi-certmesh-core-tests");
         let totp = koi_crypto::totp::generate_secret();
         let auth_state = koi_crypto::auth::AuthState::Totp(totp);
-        CertmeshCore::new(ca, roster, Some(auth_state), TrustProfile::JustMe)
+        CertmeshCore::new_with_paths(
+            ca,
+            roster,
+            Some(auth_state),
+            TrustProfile::JustMe,
+            test_paths(),
+        )
     }
 
     fn make_locked_core(roster: Roster) -> CertmeshCore {
-        CertmeshCore::locked(roster, TrustProfile::JustMe)
+        CertmeshCore::locked_with_paths(roster, TrustProfile::JustMe, test_paths())
+    }
+
+    // ── auto-unlock vault round-trip ─────────────────────────────────
+    #[test]
+    fn auto_unlock_key_round_trips_through_vault() {
+        // `save_auto_unlock_key_at` persists the passphrase in the koi-crypto
+        // vault and deletes the legacy plaintext file; `read_auto_unlock_key`
+        // must read it back from that same vault. This is the contract the
+        // embedded boot path relies on. Regression guard: the boot reader
+        // used to read the (now deleted) plaintext file and boot LOCKED.
+        let base = koi_common::test::ensure_data_dir("koi-certmesh-autounlock-tests");
+        let paths = CertmeshPaths::with_data_dir(base.join("autounlock-roundtrip"));
+
+        CertmeshCore::save_auto_unlock_key_at(&paths, "pond-secret-pass").unwrap();
+
+        // The plaintext key file must not be the source of truth.
+        assert!(
+            !paths.auto_unlock_key_path().exists(),
+            "save_auto_unlock_key_at must not leave a plaintext key file behind"
+        );
+
+        let recovered = CertmeshCore::read_auto_unlock_key(&paths).unwrap();
+        assert_eq!(
+            recovered.as_ref().map(|z| z.as_str()),
+            Some("pond-secret-pass"),
+            "the auto-unlock passphrase must round-trip through the vault"
+        );
+
+        // A data dir with no stored key reads back as None (boots locked).
+        let empty = CertmeshPaths::with_data_dir(base.join("autounlock-empty"));
+        assert!(
+            CertmeshCore::read_auto_unlock_key(&empty)
+                .unwrap()
+                .is_none()
+        );
     }
 
     // ── renew_all_due ────────────────────────────────────────────────
@@ -2046,7 +2091,7 @@ mod tests {
     #[test]
     fn build_status_locked_ca() {
         let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let status = build_status(&None, &roster, &TrustProfile::JustMe, None);
+        let status = build_status(&test_paths(), &None, &roster, &TrustProfile::JustMe, None);
         assert!(status.ca_locked);
         assert_eq!(status.member_count, 1);
         assert_eq!(status.members.len(), 1);
@@ -2058,7 +2103,7 @@ mod tests {
     fn build_status_unlocked_ca() {
         let ca = make_test_ca();
         let roster = Roster::new(TrustProfile::JustMe, None);
-        let status = build_status(&Some(ca), &roster, &TrustProfile::JustMe, None);
+        let status = build_status(&test_paths(), &Some(ca), &roster, &TrustProfile::JustMe, None);
         assert!(!status.ca_locked);
         assert_eq!(status.member_count, 0);
     }
@@ -2081,7 +2126,7 @@ mod tests {
             pinned_ca_fingerprint: None,
             proxy_entries: Vec::new(),
         });
-        let status = build_status(&None, &roster, &TrustProfile::JustMe, None);
+        let status = build_status(&test_paths(), &None, &roster, &TrustProfile::JustMe, None);
         assert_eq!(status.members[0].role, "standby");
         assert_eq!(status.members[0].status, "active");
     }
@@ -2203,17 +2248,18 @@ mod tests {
         roster.metadata.allowed_subnet = Some("10.0.0.0/8".to_string());
         roster.metadata.enrollment_deadline = Some(Utc::now() + Duration::hours(1));
 
-        let status = build_status(&Some(ca), &roster, &TrustProfile::MyOrganization, None);
+        let status =
+            build_status(&test_paths(), &Some(ca), &roster, &TrustProfile::MyOrganization, None);
         assert_eq!(status.allowed_domain.as_deref(), Some("school.local"));
         assert_eq!(status.allowed_subnet.as_deref(), Some("10.0.0.0/8"));
         assert!(status.enrollment_deadline.is_some());
     }
 
-    // ── CertmeshCore::uninitialized() state ─────────────────────────
+    // ── CertmeshCore::uninitialized_with_paths(test_paths()) state ─────────────────────────
 
     #[tokio::test]
     async fn uninitialized_core_status_shows_empty_roster() {
-        let core = CertmeshCore::uninitialized();
+        let core = CertmeshCore::uninitialized_with_paths(test_paths());
         let status = core.certmesh_status().await;
         // ca_initialized reflects filesystem state, not in-memory state.
         // ca_locked is false because we have no CA at all (not locked, just absent).
@@ -2226,7 +2272,7 @@ mod tests {
 
     #[tokio::test]
     async fn uninitialized_core_enroll_returns_error() {
-        let core = CertmeshCore::uninitialized();
+        let core = CertmeshCore::uninitialized_with_paths(test_paths());
         let request = protocol::JoinRequest {
             hostname: "stone-05".to_string(),
             auth: koi_crypto::auth::AuthResponse::Totp {
@@ -2240,7 +2286,7 @@ mod tests {
 
     #[tokio::test]
     async fn uninitialized_core_promote_returns_error() {
-        let core = CertmeshCore::uninitialized();
+        let core = CertmeshCore::uninitialized_with_paths(test_paths());
         let dummy_pk = [0u8; 32];
         let result = core.promote(&dummy_pk).await;
         assert!(result.is_err());
@@ -2248,21 +2294,21 @@ mod tests {
 
     #[tokio::test]
     async fn uninitialized_core_roster_manifest_returns_error() {
-        let core = CertmeshCore::uninitialized();
+        let core = CertmeshCore::uninitialized_with_paths(test_paths());
         let result = core.roster_manifest().await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn uninitialized_core_renew_all_due_returns_empty() {
-        let core = CertmeshCore::uninitialized();
+        let core = CertmeshCore::uninitialized_with_paths(test_paths());
         let results = core.renew_all_due().await;
         assert!(results.is_empty());
     }
 
     #[tokio::test]
     async fn uninitialized_core_rotate_auth_returns_error() {
-        let core = CertmeshCore::uninitialized();
+        let core = CertmeshCore::uninitialized_with_paths(test_paths());
         let result = core.rotate_auth("passphrase", None).await;
         assert!(result.is_err());
     }
@@ -2350,13 +2396,13 @@ mod tests {
 
     #[test]
     fn capability_status_uninitialised() {
-        let core = CertmeshCore::uninitialized();
+        let core = CertmeshCore::uninitialized_with_paths(test_paths());
         let status = core.status();
         assert_eq!(status.name, "certmesh");
         // When no CA files exist on disk this is a healthy "ready" state.
         // On a dev machine with existing CA files it appears as "CA locked"
         // because the filesystem check sees them but the core has no loaded CA.
-        if CertmeshPaths::default().is_ca_initialized() {
+        if test_paths().is_ca_initialized() {
             assert!(!status.healthy);
             assert!(
                 status.summary.contains("locked"),
@@ -2405,7 +2451,8 @@ mod tests {
         let roster = Roster::new(TrustProfile::MyOrganization, Some("ops".to_string()));
         let totp = koi_crypto::totp::generate_secret();
         let auth = koi_crypto::auth::AuthState::Totp(totp);
-        let core = CertmeshCore::new(ca, roster, Some(auth), TrustProfile::MyOrganization);
+        let core =
+            CertmeshCore::new_with_paths(ca, roster, Some(auth), TrustProfile::MyOrganization, test_paths());
         let status = core.certmesh_status().await;
         assert_eq!(status.profile, TrustProfile::MyOrganization);
     }

@@ -105,14 +105,6 @@ impl CertmeshPaths {
     }
 }
 
-impl Default for CertmeshPaths {
-    fn default() -> Self {
-        Self {
-            data_dir: koi_common::paths::koi_data_dir(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,21 +7,18 @@ use std::path::{Path, PathBuf};
 
 use crate::ca::IssuedCert;
 
-/// Write all certificate files for a host to the standard path.
+/// Write certificate files for a host to `cert_dir`.
 ///
-/// Creates the directory `~/.koi/certs/<hostname>/` and writes:
+/// Creates the directory and writes:
 /// - `cert.pem` - service certificate
 /// - `key.pem` - service private key (0600 on Unix)
 /// - `ca.pem` - root CA public certificate
 /// - `fullchain.pem` - cert.pem + ca.pem concatenated
 ///
+/// The directory comes from the injected `CertmeshPaths::certs_dir()` joined
+/// with the hostname — there is no ambient default.
+///
 /// Returns the directory path where files were written.
-pub fn write_cert_files(hostname: &str, issued: &IssuedCert) -> Result<PathBuf, std::io::Error> {
-    let cert_dir = koi_common::paths::koi_certs_dir().join(hostname);
-    write_cert_files_to(&cert_dir, issued)
-}
-
-/// Write certificate files to a specific directory (for testing).
 pub fn write_cert_files_to(
     cert_dir: &Path,
     issued: &IssuedCert,
