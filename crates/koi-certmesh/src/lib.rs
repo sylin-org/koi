@@ -537,31 +537,6 @@ impl CertmeshCore {
         build_status(self.paths(), &ca_guard, &roster, &profile, auth_method)
     }
 
-    /// Produce an mDNS announcement descriptor if this node is an unlocked primary.
-    ///
-    /// Returns `None` if the CA is locked or this node is not primary.
-    /// The binary crate translates this into an mDNS `RegisterPayload`.
-    pub async fn ca_announcement(&self, http_port: u16) -> Option<protocol::CaAnnouncement> {
-        let ca_guard = self.state.ca.lock().await;
-        let ca = ca_guard.as_ref()?;
-
-        let roster = self.state.roster.lock().await;
-        let primary = roster.primary()?;
-
-        let mut txt = std::collections::HashMap::new();
-        txt.insert("role".to_string(), "primary".to_string());
-        txt.insert("fingerprint".to_string(), ca::ca_fingerprint(ca));
-        let profile = self.state.profile.lock().await;
-        txt.insert("profile".to_string(), profile.to_string());
-        txt.insert("auth".to_string(), "totp".to_string());
-
-        Some(protocol::CaAnnouncement {
-            name: format!("koi-ca-{}", primary.hostname),
-            port: http_port,
-            txt,
-        })
-    }
-
     /// Forbidden characters in reload hooks — validated at domain boundary.
     const HOOK_FORBIDDEN: &'static [char] = &[
         ';', '|', '&', '$', '`', '>', '<', '(', ')', '\n', '\r', '\0', '*', '?', '[', ']', '{',
@@ -1222,45 +1197,6 @@ impl CertmeshCore {
         })
     }
 
-    /// Build a signed roster manifest for standby sync.
-    pub async fn roster_manifest(&self) -> Result<protocol::RosterManifest, CertmeshError> {
-        let ca_guard = self.state.ca.lock().await;
-        let ca = ca_guard.as_ref().ok_or_else(|| {
-            if self.state.paths.is_ca_initialized() {
-                CertmeshError::CaLocked
-            } else {
-                CertmeshError::CaNotInitialized
-            }
-        })?;
-
-        let roster = self.state.roster.lock().await;
-        failover::build_signed_manifest(ca, &roster)
-    }
-
-    /// Accept a roster sync from the primary (standby-side).
-    ///
-    /// Verifies the manifest signature and replaces the local roster.
-    pub async fn accept_roster_sync(
-        &self,
-        manifest: &protocol::RosterManifest,
-    ) -> Result<(), CertmeshError> {
-        let verified_roster = failover::verify_manifest(manifest)?;
-
-        let mut roster = self.state.roster.lock().await;
-        *roster = verified_roster;
-
-        let roster_clone = roster.clone();
-        let roster_path = self.state.paths.roster_path();
-        drop(roster);
-        tokio::task::spawn_blocking(move || roster::save_roster(&roster_clone, &roster_path))
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("roster save task: {e}")))?
-            .map_err(CertmeshError::Io)?;
-
-        tracing::info!("Roster synced from primary");
-        Ok(())
-    }
-
     /// Get the current node's roster role (if any).
     ///
     /// Returns `None` if the roster has no entry matching the local hostname.
@@ -1270,16 +1206,6 @@ impl CertmeshCore {
             .ok()?;
         let roster = self.state.roster.lock().await;
         roster.find_member(&hostname).map(|m| m.role.clone())
-    }
-
-    /// List hostnames of active standby members.
-    pub async fn standby_hostnames(&self) -> Vec<String> {
-        let roster = self.state.roster.lock().await;
-        roster
-            .standbys()
-            .iter()
-            .map(|m| m.hostname.clone())
-            .collect()
     }
 
     /// Promote the local member to primary and demote any existing primary.
@@ -1803,91 +1729,6 @@ mod tests {
         assert!(roster.members[0].last_seen.is_some());
     }
 
-    // ── roster_manifest ──────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn roster_manifest_returns_error_when_ca_locked() {
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let core = make_locked_core(roster);
-        let result = core.roster_manifest().await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn roster_manifest_returns_signed_manifest() {
-        let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let core = make_unlocked_core(ca, roster);
-
-        let manifest = core.roster_manifest().await.unwrap();
-        assert!(!manifest.roster_json.is_empty());
-        assert!(!manifest.signature.is_empty());
-        assert!(!manifest.ca_public_key.is_empty());
-    }
-
-    #[tokio::test]
-    async fn roster_manifest_is_verifiable() {
-        let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let core = make_unlocked_core(ca, roster);
-
-        let manifest = core.roster_manifest().await.unwrap();
-        // The manifest should pass verification
-        let verified = failover::verify_manifest(&manifest);
-        assert!(verified.is_ok());
-        assert_eq!(verified.unwrap().members.len(), 1);
-    }
-
-    // ── accept_roster_sync ───────────────────────────────────────────
-
-    #[tokio::test]
-    async fn accept_roster_sync_replaces_roster() {
-        let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let core = make_unlocked_core(ca, roster);
-
-        // Build a manifest with a different roster
-        let ca2 = make_test_ca();
-        let mut roster2 = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        roster2.members.push(RosterMember {
-            hostname: "stone-02".to_string(),
-            role: MemberRole::Member,
-            enrolled_at: Utc::now(),
-            enrolled_by: None,
-            cert_fingerprint: "fp-2".to_string(),
-            cert_expires: Utc::now() + Duration::days(25),
-            cert_sans: vec!["stone-02".to_string()],
-            cert_path: String::new(),
-            status: MemberStatus::Active,
-            reload_hook: None,
-            last_seen: None,
-            pinned_ca_fingerprint: None,
-            proxy_entries: Vec::new(),
-        });
-        let manifest = failover::build_signed_manifest(&ca2, &roster2).unwrap();
-
-        core.accept_roster_sync(&manifest).await.unwrap();
-
-        let roster = core.state.roster.lock().await;
-        assert_eq!(roster.members.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn accept_roster_sync_rejects_invalid_manifest() {
-        let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let core = make_unlocked_core(ca, roster);
-
-        let manifest = protocol::RosterManifest {
-            roster_json: "{}".to_string(),
-            signature: vec![0u8; 64],
-            ca_public_key: "bad-pem".to_string(),
-        };
-
-        let result = core.accept_roster_sync(&manifest).await;
-        assert!(matches!(result, Err(CertmeshError::InvalidManifest)));
-    }
-
     // ── promote ──────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -2266,13 +2107,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uninitialized_core_roster_manifest_returns_error() {
-        let core = CertmeshCore::uninitialized_with_paths(test_paths());
-        let result = core.roster_manifest().await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
     async fn uninitialized_core_renew_all_due_returns_empty() {
         let core = CertmeshCore::uninitialized_with_paths(test_paths());
         let results = core.renew_all_due().await;
@@ -2331,38 +2165,6 @@ mod tests {
         let core = make_unlocked_core(ca, roster);
         let fp = core.pinned_ca_fingerprint().await;
         assert_eq!(fp.as_deref(), Some("test-pinned-fp"));
-    }
-
-    // ── ca_announcement ────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn ca_announcement_returns_none_when_ca_locked() {
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let core = make_locked_core(roster);
-        let ann = core.ca_announcement(5641).await;
-        assert!(ann.is_none());
-    }
-
-    #[tokio::test]
-    async fn ca_announcement_returns_none_when_no_primary() {
-        let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Member);
-        let core = make_unlocked_core(ca, roster);
-        let ann = core.ca_announcement(5641).await;
-        assert!(ann.is_none());
-    }
-
-    #[tokio::test]
-    async fn ca_announcement_returns_descriptor_for_primary() {
-        let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let core = make_unlocked_core(ca, roster);
-        let ann = core.ca_announcement(5641).await.unwrap();
-        assert!(ann.name.contains("koi-ca-"));
-        assert_eq!(ann.port, 5641);
-        assert_eq!(ann.txt.get("role").unwrap(), "primary");
-        assert!(ann.txt.contains_key("fingerprint"));
-        assert!(ann.txt.contains_key("profile"));
     }
 
     // ── Capability::status() ───────────────────────────────────────────

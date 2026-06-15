@@ -3,8 +3,6 @@
 //! These types define the JSON shapes for join requests/responses
 //! and status queries. They are the public API contract.
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -69,21 +67,6 @@ pub struct MemberSummary {
     pub status: String,
     pub cert_fingerprint: String,
     pub cert_expires: String,
-}
-
-/// Descriptor for mDNS self-announcement of the CA.
-///
-/// Produced by CertmeshCore, consumed by the binary crate to
-/// create an mDNS registration via MdnsCore. This avoids a
-/// direct dependency between koi-certmesh and koi-mdns.
-#[derive(Debug, Clone)]
-pub struct CaAnnouncement {
-    /// mDNS instance name (e.g. "koi-ca-stone-01").
-    pub name: String,
-    /// Port the CA is listening on.
-    pub port: u16,
-    /// TXT record key/value pairs (role, fingerprint, profile).
-    pub txt: HashMap<String, String>,
 }
 
 /// Request to set a post-renewal reload hook for this host.
@@ -346,14 +329,6 @@ pub struct HookResult {
     pub output: Option<String>,
 }
 
-/// GET /roster response - signed manifest for standby sync.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct RosterManifest {
-    pub roster_json: String,
-    pub signature: Vec<u8>,
-    pub ca_public_key: String,
-}
-
 /// POST /health request - member heartbeat.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct HealthRequest {
@@ -478,23 +453,6 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("stone-01"));
         assert!(json.contains("systemctl restart nginx"));
-    }
-
-    #[test]
-    fn ca_announcement_has_correct_fields() {
-        use std::collections::HashMap;
-        let mut txt = HashMap::new();
-        txt.insert("role".to_string(), "primary".to_string());
-        txt.insert("profile".to_string(), "just_me".to_string());
-
-        let ann = CaAnnouncement {
-            name: "koi-ca-stone-01".to_string(),
-            port: 5641,
-            txt,
-        };
-        assert_eq!(ann.name, "koi-ca-stone-01");
-        assert_eq!(ann.port, 5641);
-        assert_eq!(ann.txt.get("role").unwrap(), "primary");
     }
 
     // ── Phase 3 serde tests ──────────────────────────────────────────
@@ -625,19 +583,6 @@ mod tests {
         };
         let json = serde_json::to_string(&hr).unwrap();
         assert!(!json.contains("output"));
-    }
-
-    #[test]
-    fn roster_manifest_serde_round_trip() {
-        let manifest = RosterManifest {
-            roster_json: r#"{"members":[]}"#.to_string(),
-            signature: vec![1, 2, 3, 4, 5],
-            ca_public_key: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----\n"
-                .to_string(),
-        };
-        let json = serde_json::to_string(&manifest).unwrap();
-        let parsed: RosterManifest = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.signature, vec![1, 2, 3, 4, 5]);
     }
 
     #[test]

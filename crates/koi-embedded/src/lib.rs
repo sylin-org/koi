@@ -678,8 +678,6 @@ impl KoiEmbedded {
                 .await;
                 koi_compose::certmesh::spawn_certmesh_background_tasks(
                     certmesh_core,
-                    mdns.clone(),
-                    self.config.http_port,
                     &cancel,
                     &mut tasks,
                 );

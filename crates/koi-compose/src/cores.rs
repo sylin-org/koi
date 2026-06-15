@@ -327,13 +327,7 @@ pub async fn build_cores(
     // ── Certmesh role background loops (caller-invariant) ──
     // The approval pump is spawned by the caller (its decider differs by host).
     if let Some(ref certmesh) = cores.certmesh {
-        crate::certmesh::spawn_certmesh_background_tasks(
-            certmesh,
-            cores.mdns.clone(),
-            spec.http_port,
-            cancel,
-            tasks,
-        );
+        crate::certmesh::spawn_certmesh_background_tasks(certmesh, cancel, tasks);
     }
 
     tracing::debug!("Domain cores built");

@@ -19,7 +19,7 @@ use crate::protocol::{
     AuditLogResponse, BackupRequest, BackupResponse, CertmeshStatus, ComplianceResponse,
     CreateCaRequest, CreateCaResponse, DestroyResponse, HealthRequest, HealthResponse, JoinRequest,
     JoinResponse, PolicyRequest, PolicySummary, PromoteRequest, PromoteResponse, RenewRequest,
-    RenewResponse, RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse, RosterManifest,
+    RenewResponse, RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse,
     RotateAuthRequest, RotateAuthResponse, SetHookRequest, SetHookResponse, UnlockRequest,
     UnlockResponse,
 };
@@ -42,7 +42,6 @@ pub mod paths {
     pub const SET_HOOK: &str = "/v1/certmesh/set-hook";
     pub const PROMOTE: &str = "/v1/certmesh/promote";
     pub const RENEW: &str = "/v1/certmesh/renew";
-    pub const ROSTER: &str = "/v1/certmesh/roster";
     pub const HEALTH: &str = "/v1/certmesh/health";
     pub const CREATE: &str = "/v1/certmesh/create";
     pub const UNLOCK: &str = "/v1/certmesh/unlock";
@@ -73,7 +72,6 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::STATUS), get(status_handler))
         .route(rel(paths::SET_HOOK), put(set_hook_handler))
         .route(rel(paths::RENEW), post(renew_handler))
-        .route(rel(paths::ROSTER), get(roster_handler))
         .route(rel(paths::HEALTH), post(health_handler))
         // Service delegation - CA management
         .route(rel(paths::CREATE), post(create_handler))
@@ -95,7 +93,7 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
 /// Build the inter-node router for the mTLS listener.
 ///
 /// Contains only routes that require mutual TLS between mesh members:
-/// promote, health, renew, roster, set-hook.
+/// promote, health, renew, set-hook.
 /// Mounted by the binary crate on the mTLS port (5642).
 pub(crate) fn inter_node_routes(state: Arc<CertmeshState>) -> Router {
     use paths::rel;
@@ -103,7 +101,6 @@ pub(crate) fn inter_node_routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::PROMOTE), post(promote_handler))
         .route(rel(paths::HEALTH), post(health_handler))
         .route(rel(paths::RENEW), post(renew_handler))
-        .route(rel(paths::ROSTER), get(roster_handler))
         .route(rel(paths::SET_HOOK), put(set_hook_handler))
         .layer(Extension(state))
 }
@@ -1074,52 +1071,6 @@ async fn renew_handler(
     }
 }
 
-/// GET /roster - Return a signed roster manifest for standby sync.
-#[utoipa::path(get, path = "/roster", tag = "certmesh",
-    summary = "Get signed roster manifest",
-    responses((status = 200, body = RosterManifest)))]
-async fn roster_handler(
-    Extension(state): Extension<Arc<CertmeshState>>,
-    client_cn: Option<Extension<ClientCn>>,
-) -> impl IntoResponse {
-    if let Some(Extension(ClientCn(ref caller))) = client_cn {
-        tracing::debug!(%caller, "roster requested by authenticated member");
-    }
-
-    let ca_guard = state.ca.lock().await;
-    let ca = match ca_guard.as_ref() {
-        Some(ca) => ca,
-        None => {
-            return if state.paths.is_ca_initialized() {
-                error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
-            } else {
-                error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    &CertmeshError::CaNotInitialized,
-                )
-            };
-        }
-    };
-
-    let roster = state.roster.lock().await;
-
-    match crate::failover::build_signed_manifest(ca, &roster) {
-        Ok(manifest) => match serde_json::to_value(&manifest) {
-            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-            Err(e) => error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &CertmeshError::Internal(format!("Serialization error: {e}")),
-            ),
-        },
-        Err(e) => {
-            let code = koi_common::error::ErrorCode::from(&e);
-            let status = StatusCode::from_u16(code.http_status())
-                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            error_response(status, &e)
-        }
-    }
-}
-
 /// POST /health - Member heartbeat with pinned CA fingerprint validation.
 #[utoipa::path(post, path = "/health", tag = "certmesh",
     summary = "Member health heartbeat",
@@ -1218,7 +1169,6 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
         set_hook_handler,
         promote_handler,
         renew_handler,
-        roster_handler,
         health_handler,
         create_handler,
         unlock_handler,
@@ -1263,7 +1213,6 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
         crate::protocol::RenewRequest,
         crate::protocol::RenewResponse,
         crate::protocol::HookResult,
-        crate::protocol::RosterManifest,
         crate::protocol::HealthRequest,
         crate::protocol::HealthResponse,
         crate::profiles::TrustProfile,
@@ -1366,14 +1315,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn roster_without_ca_returns_503() {
-        let app = routes(test_extension());
-        let req = Request::get("/roster").body(Body::empty()).unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-    }
-
-    #[tokio::test]
     async fn health_without_ca_returns_503() {
         let app = routes(test_extension());
         let req = Request::post("/health")
@@ -1463,18 +1404,6 @@ mod tests {
             .header("content-type", "application/json")
             .body(Body::from(r#"{"auth":{"method":"totp","code":"654321"}}"#))
             .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_ca_unavailable_error(&json);
-    }
-
-    #[tokio::test]
-    async fn roster_without_ca_body_has_error_code() {
-        let app = routes(test_extension());
-        let req = Request::get("/roster").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await

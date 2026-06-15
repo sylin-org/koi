@@ -442,14 +442,6 @@ impl KoiClient {
 
     // ── Certmesh operations (Phase 3) ──────────────────────────────
 
-    /// GET /v1/certmesh/roster - fetch signed roster manifest.
-    pub fn get_roster_manifest(&self) -> Result<serde_json::Value> {
-        let url = format!("{}/v1/certmesh/roster", self.endpoint);
-        let resp = self.auth_get(&url).call().map_err(map_error)?;
-        resp.into_json()
-            .map_err(|e| ClientError::Decode(e.to_string()))
-    }
-
     /// POST /v1/certmesh/renew - push renewed cert to a member.
     ///
     /// `member_endpoint` is the member's HTTP endpoint, not the CA's.

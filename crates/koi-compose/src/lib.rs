@@ -62,17 +62,15 @@ mod parity_tests {
     }
 
     #[tokio::test]
-    async fn certmesh_role_loops_spawn_four_tasks_regardless_of_mdns() {
-        // renewal + roster sync + heartbeat + failover = 4, whether or not mDNS is present
-        // (failover is still spawned with mDNS=None; it exits early internally).
+    async fn certmesh_role_loops_spawn_two_tasks() {
+        // renewal + heartbeat = 2. CA failover is manual (`koi certmesh promote`), so there
+        // is no roster-sync or failover-detection loop, and neither remaining loop needs mDNS.
         let certmesh = test_certmesh();
         let cancel = CancellationToken::new();
         let mut tasks: Vec<JoinHandle<()>> = Vec::new();
 
-        crate::certmesh::spawn_certmesh_background_tasks(
-            &certmesh, None, 5641, &cancel, &mut tasks,
-        );
-        assert_eq!(tasks.len(), 4, "expected the 4 certmesh role loops");
+        crate::certmesh::spawn_certmesh_background_tasks(&certmesh, &cancel, &mut tasks);
+        assert_eq!(tasks.len(), 2, "expected the 2 certmesh role loops");
 
         cancel.cancel();
         for task in tasks {
@@ -83,7 +81,7 @@ mod parity_tests {
     #[tokio::test]
     async fn windows_parity_full_task_inventory() {
         // Mirror the exact spawn sequence windows.rs run_service now uses with certmesh +
-        // runtime enabled: 1 approval pump + 4 certmesh role loops + 1 orchestrator = 6.
+        // runtime enabled: 1 approval pump + 2 certmesh role loops + 1 orchestrator = 4.
         let certmesh = test_certmesh();
         let runtime = test_runtime();
         let cancel = CancellationToken::new();
@@ -96,9 +94,7 @@ mod parity_tests {
             &mut tasks,
         )
         .await;
-        crate::certmesh::spawn_certmesh_background_tasks(
-            &certmesh, None, 5641, &cancel, &mut tasks,
-        );
+        crate::certmesh::spawn_certmesh_background_tasks(&certmesh, &cancel, &mut tasks);
         tasks.push(crate::orchestrator::spawn_orchestrator(
             &runtime,
             crate::orchestrator::OrchestrationTargets {
@@ -112,8 +108,8 @@ mod parity_tests {
 
         assert_eq!(
             tasks.len(),
-            6,
-            "Windows parity: 1 approval + 4 certmesh loops + 1 orchestrator"
+            4,
+            "Windows parity: 1 approval + 2 certmesh loops + 1 orchestrator"
         );
 
         cancel.cancel();
