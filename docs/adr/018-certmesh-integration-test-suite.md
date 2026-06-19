@@ -1,6 +1,6 @@
 # ADR-018: Certmesh Cross-Participant Integration Test Suite
 
-**Status:** Accepted — **Tier 1 implemented** (2026-06-19); Tiers 2–4 planned
+**Status:** Accepted — **Tiers 1–2 implemented** (2026-06-19); Tiers 3–4 planned
 **Date:** 2026-06-19
 **Builds on:** ADR-015 (Certmesh Enrollment Hardening — F1 CSR custody, F2 invites) and ADR-017 (Certmesh Trust Lifecycle — all four phases **Implemented**). Their *logic* is densely unit- and in-process-tested, but the cross-participant *exchange* those features exist for is verified only by hand. This ADR closes that verification gap.
 **Constrained by:** STACK-0001 (the certmesh contract surface — mdns/dns/certmesh/udp/truststore — is the thing under test; the harness must not introduce consumer-name leakage and must keep the SURFACES ledger honest). Pre-1.0: on-disk and wire formats may still change, so tests assert behavior, not byte layouts.
@@ -85,7 +85,7 @@ Each tier is independently shippable; the gate `cargo fmt --check && cargo clipp
 | Tier | Deliverable | Gate | Closes |
 |---|---|---|---|
 | **1** ✅ | `koi-embedded/tests/whole_story.rs` two-process whole-story (real HTTP+mTLS) — **implemented 2026-06-19** (the `mtls_port` builder knob proved unnecessary — see Implementation notes) | `cargo test --locked` on the existing 3-OS matrix (no workflow edit) | #1, #3, #4 |
-| **2** | second-daemon successful join/renew/revoke in the real-daemon harness; promote it to a gate | `ci.yml`/gated `qa.yml` | #5, #7 |
+| **2** ✅ | two real `koi` binary daemons; successful join + revoke over DAT-gated HTTP — **implemented 2026-06-19** as a pure-Rust child-process driver (`crates/koi/tests/two_daemon_certmesh.rs`), not a `qa.yml` promotion (see Implementation notes) | `cargo test --locked` on the existing 3-OS matrix (no workflow edit) | #5, #7 |
 | **3** | docker-compose two-node cross-host job | `ci.yml` (linux) | #2 (cross-host) |
 | **4** | Windows↔Linux runner-pair job | scheduled or self-hosted | #2 (cross-platform) |
 | **0** | determinism fixes (`--test-threads=1`, de-flake) | folded into Tier 1 | QA-grade prerequisite |
@@ -156,3 +156,45 @@ up so the suite is green under the stricter `clippy --all-targets -D warnings` (
 **Closes** gaps #1 (two-process join over HTTP), #3 (boundary revocation over live mTLS),
 #4 (certmesh HTTP success paths). Gaps #2 (cross-host / cross-platform) and #5/#7
 (binary + DAT middleware + adapters; cron-only real-daemon harness) remain for Tiers 2–4.
+
+## Implementation notes — Tier 2 (2026-06-19)
+
+`crates/koi/tests/two_daemon_certmesh.rs` (the koi-net crate's **first** integration test)
+spawns **two real `koi` binary daemons** as child processes (`koi --daemon`, certmesh+HTTP
+only, isolated data dirs + ephemeral ports, Drop-guarded so a panic still kills them) and
+drives a certmesh exchange over **real cross-process HTTP** (reqwest). One `#[tokio::test]`:
+
+- **DAT middleware** — `GET /status` succeeds tokenless (GET-exempt); `POST /create` and
+  `POST /invite` without `x-koi-token` return **401** (asserted to be the middleware's
+  `unauthorized`, not a handler-level auth error); with A's token they succeed.
+- **`/join` exemption** — B generates its own CSR via **its own daemon's** `/member-csr`
+  (DAT-gated, B's token; key never leaves B), then **joins A over real HTTP with NO token**
+  → success (the one exempt mutation), no PEM key in the response.
+- **Successful two-process join** — A's `/status` then lists B with a non-empty fingerprint
+  (replacing the prior harness's negative-only invalid-TOTP `/join`). B installs the signed
+  leaf via its own daemon's `/member-cert` (the pin-checked custody adapter).
+- **Cross-process revocation boundary** — A revokes B (DAT-gated); a fresh re-join is
+  refused with **403, typed error code `revoked`** (`process_enrollment` rejects a revoked
+  member before the already-enrolled check).
+
+**Decisions / deviations.** Driven over **raw HTTP, not the `koi certmesh` CLI**: the CLI
+`join` takes the member hostname from `hostname::get()` with no override, so two daemons on
+one host would collide on a single roster hostname (A self-enrolls its Primary under that
+name) — raw HTTP lets B join under an explicit hostname. Each daemon's DAT token is random
+per boot and persisted only to the **machine-global breadcrumb** (not under `KOI_DATA_DIR`),
+so each child gets its own `XDG_RUNTIME_DIR` (Unix) / `ProgramData` (Windows) to isolate it,
+and the test reads each token from its own breadcrumb. The revocation boundary is proved
+over the **enrollment path** rather than ADR's literal "mTLS-renew": the binary starts its
+mTLS listener only at boot-with-CA (`daemon.rs` self-enroll), so a CA created post-boot via
+HTTP `/create` would need a daemon restart to bring the listener up — and the mTLS `/renew`
+403 boundary is already covered in-process by Tier 1. This was **not** a `qa.yml` promotion
+(the cron PowerShell harness): a pure-Rust child-process test auto-gates per-PR on all three
+OSes via `cargo test --locked` with no workflow change and no added CI minutes on a separate
+job. Validated green on Windows locally (confirming the `ProgramData` breadcrumb isolation,
+the largest cross-platform risk). Reviewed (security + rust); the 401-is-DAT and
+403-is-`revoked` assertions were tightened from substring to typed checks.
+
+**Closes** gaps #5 (DAT `x-koi-token` middleware + `/join` exemption + the member-csr /
+member-cert custody adapters, now tested against the real binary) and #7 (a successful
+two-process exchange is now a per-PR gate, not a weekly-cron negative-only check). Gaps #2
+(cross-host / cross-platform) remain for Tiers 3–4.

@@ -80,6 +80,10 @@ rmcp = { workspace = true, features = [
     "client",
     "transport-streamable-http-client-reqwest",
 ] }
+# Async HTTP client for the ADR-018 Tier-2 two-daemon integration test
+# (crates/koi/tests/two_daemon_certmesh.rs). Already in the lockfile via rmcp's
+# reqwest transport, so `--locked` is unaffected.
+reqwest = { workspace = true, features = ["json"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
