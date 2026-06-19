@@ -27,6 +27,34 @@ pub struct Roster {
 ///
 /// The named presets ("Just Me" / "My Team" / "My Organization") are UX labels
 /// only; they are resolved to these booleans at create time and never persisted.
+/// CA-held certificate lifecycle policy (ADR-017).
+///
+/// The CA owns the lifecycle: it applies `leaf_lifetime_days` when it signs, and
+/// distributes the policy to members (via `/status` today; via the signed trust
+/// bundle in a later phase) so they drive pull-renewal on the CA's schedule and
+/// know how long past expiry they may still renew before they must re-enroll.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct CertPolicy {
+    /// Issued-leaf validity, in days.
+    pub leaf_lifetime_days: u32,
+    /// Renew when fewer than this many days remain before expiry.
+    pub renew_threshold_days: u32,
+    /// Days past expiry a member may still pull-renew before re-enrollment.
+    pub grace_days: u32,
+}
+
+impl Default for CertPolicy {
+    /// Operator-ratified default: 90-day leaves, renew at 30 days remaining,
+    /// 14-day post-expiry grace (ADR-017).
+    fn default() -> Self {
+        Self {
+            leaf_lifetime_days: 90,
+            renew_threshold_days: 30,
+            grace_days: 14,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RosterMetadata {
     pub created_at: DateTime<Utc>,
@@ -39,6 +67,10 @@ pub struct RosterMetadata {
     /// Operator name recorded in the audit log (independent of any preset).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub operator: Option<String>,
+    /// CA-held certificate lifecycle policy (ADR-017). Defaults to 90/30/14 for
+    /// rosters created before the policy existed.
+    #[serde(default)]
+    pub policy: CertPolicy,
 }
 
 /// Whether the mesh is accepting new members.
@@ -142,6 +174,7 @@ impl Roster {
                 enrollment_open: false,
                 requires_approval: false,
                 operator: None,
+                policy: CertPolicy::default(),
             },
             members: Vec::new(),
             revocation_list: Vec::new(),
@@ -156,6 +189,7 @@ impl Roster {
                 enrollment_open,
                 requires_approval,
                 operator,
+                policy: CertPolicy::default(),
             },
             members: Vec::new(),
             revocation_list: Vec::new(),

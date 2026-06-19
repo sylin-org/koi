@@ -94,6 +94,10 @@ pub fn sign_csr(
     // signature verification — they never reach the issued certificate.
     csr_params.params.subject_alt_names = build_san_list(sans);
 
+    // Least-privilege leaf profile (ADR-017 F10) — same as the CA self-enroll
+    // path. A CSR cannot smuggle in CA capability or extra key usages.
+    crate::ca::apply_leaf_profile(&mut csr_params.params);
+
     // Leaf validity window.
     let days = if validity_days == 0 {
         DEFAULT_CSR_VALIDITY_DAYS
@@ -268,6 +272,40 @@ mod tests {
         // validity_days = 0 → 30-day default; just assert it issues successfully.
         let leaf_pem = sign_csr(&ca, &csr_pem, &["host-d.lan".to_string()], 0).unwrap();
         assert!(leaf_pem.contains("BEGIN CERTIFICATE"));
+    }
+
+    #[test]
+    fn sign_csr_applies_least_privilege_leaf_profile() {
+        let ca = test_ca();
+        let (csr_pem, _key) = make_csr(&["host-prof.internal"]);
+        let leaf_pem = sign_csr(&ca, &csr_pem, &["host-prof.internal".to_string()], 30).unwrap();
+        let der = pem::parse(&leaf_pem).unwrap();
+        let (_, cert) =
+            x509_parser::certificate::X509Certificate::from_der(der.contents()).unwrap();
+
+        // BasicConstraints: CA:FALSE — a leaf can never act as a CA.
+        let bc = cert
+            .basic_constraints()
+            .unwrap()
+            .expect("BasicConstraints present");
+        assert!(!bc.value.ca, "issued leaf must be CA:FALSE");
+
+        // ExtendedKeyUsage: serverAuth + clientAuth (mesh peers are both).
+        let eku = cert
+            .extended_key_usage()
+            .unwrap()
+            .expect("ExtendedKeyUsage present");
+        assert!(
+            eku.value.server_auth && eku.value.client_auth,
+            "leaf EKU must include serverAuth + clientAuth"
+        );
+
+        // KeyUsage: digitalSignature present.
+        let ku = cert.key_usage().unwrap().expect("KeyUsage present");
+        assert!(
+            ku.value.digital_signature(),
+            "leaf KU must allow digitalSignature"
+        );
     }
 
     #[test]

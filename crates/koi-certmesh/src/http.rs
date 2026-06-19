@@ -981,6 +981,7 @@ mod tests {
                     enrollment_open: false,
                     requires_approval: false,
                     operator: None,
+                    policy: crate::roster::CertPolicy::default(),
                 },
                 members: vec![],
                 revocation_list: vec![],

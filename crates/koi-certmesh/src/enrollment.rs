@@ -97,14 +97,16 @@ pub fn process_enrollment(
             "a CSR is required to enroll; the CA does not generate member keys".to_string(),
         )
     })?;
-    let leaf_pem = crate::csr::sign_csr(ca, csr_pem, sans, 0)?;
+    // Leaf lifetime is the CA-held policy (ADR-017), not a hardcoded constant.
+    let lifetime_days = roster.metadata.policy.leaf_lifetime_days;
+    let leaf_pem = crate::csr::sign_csr(ca, csr_pem, sans, lifetime_days)?;
 
     // Fingerprint + expiry derived from the issued leaf. The member persists its
     // own cert files locally; the CA records membership only (no cert_path here).
     let leaf_der = pem::parse(&leaf_pem)
         .map_err(|e| CertmeshError::Certificate(format!("issued leaf parse: {e}")))?;
     let fingerprint = koi_crypto::pinning::fingerprint_sha256(leaf_der.contents());
-    let expires = Utc::now() + Duration::days(i64::from(crate::csr::DEFAULT_CSR_VALIDITY_DAYS));
+    let expires = Utc::now() + Duration::days(i64::from(lifetime_days));
 
     // 7. Add to roster (cert_path empty — the member holds the files, not the CA).
     let is_primary = roster.members.is_empty();
@@ -388,12 +390,18 @@ mod tests {
             None,
             &paths,
         );
-        let (resp, _issued) = result.expect("invite enrollment should succeed");
+        let (resp, issued) = result.expect("invite enrollment should succeed");
         assert!(
             resp.service_key.is_empty(),
             "CSR flow: the CA must NOT return a member private key"
         );
         assert!(resp.service_cert.contains("BEGIN CERTIFICATE"));
+        // Leaf lifetime comes from the CA-held policy default (90 days, ADR-017).
+        let days = (issued.expires - Utc::now()).num_days();
+        assert!(
+            (89..=90).contains(&days),
+            "expected ~90-day leaf, got {days}"
+        );
 
         // Single-use: the now-spent token is rejected on a second attempt.
         let mut roster2 = Roster::new(JUST_ME.0, JUST_ME.1, None);
