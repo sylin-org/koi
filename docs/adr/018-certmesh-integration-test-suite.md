@@ -1,6 +1,6 @@
 # ADR-018: Certmesh Cross-Participant Integration Test Suite
 
-**Status:** Accepted — **Tiers 1–3 implemented** (2026-06-19); Tier 4 planned
+**Status:** Accepted — **Tiers 1–3 CI-gated + Tier 4 validated locally** (2026-06-19). All four tiers landed.
 **Date:** 2026-06-19
 **Builds on:** ADR-015 (Certmesh Enrollment Hardening — F1 CSR custody, F2 invites) and ADR-017 (Certmesh Trust Lifecycle — all four phases **Implemented**). Their *logic* is densely unit- and in-process-tested, but the cross-participant *exchange* those features exist for is verified only by hand. This ADR closes that verification gap.
 **Constrained by:** STACK-0001 (the certmesh contract surface — mdns/dns/certmesh/udp/truststore — is the thing under test; the harness must not introduce consumer-name leakage and must keep the SURFACES ledger honest). Pre-1.0: on-disk and wire formats may still change, so tests assert behavior, not byte layouts.
@@ -87,7 +87,7 @@ Each tier is independently shippable; the gate `cargo fmt --check && cargo clipp
 | **1** ✅ | `koi-embedded/tests/whole_story.rs` two-process whole-story (real HTTP+mTLS) — **implemented 2026-06-19** (the `mtls_port` builder knob proved unnecessary — see Implementation notes) | `cargo test --locked` on the existing 3-OS matrix (no workflow edit) | #1, #3, #4 |
 | **2** ✅ | two real `koi` binary daemons; successful join + revoke over DAT-gated HTTP — **implemented 2026-06-19** as a pure-Rust child-process driver (`crates/koi/tests/two_daemon_certmesh.rs`), not a `qa.yml` promotion (see Implementation notes) | `cargo test --locked` on the existing 3-OS matrix (no workflow edit) | #5, #7 |
 | **3** ✅ | docker-compose two-node cross-host job — **implemented 2026-06-19**; immediately surfaced + fixed a real CLI bug (join key-custody misroute) | `ci.yml` `cross-host` (linux, gated on test+clippy) | #2 (cross-host) |
-| **4** | Windows↔Linux runner-pair job | scheduled or self-hosted | #2 (cross-platform) |
+| **4** ✅ | Windows↔Linux cross-platform exchange — **validated 2026-06-19** via `scripts/cross-platform-certmesh.ps1` (native Windows `koi.exe` member ↔ Linux container CA) | local / self-hosted (GitHub-hosted runners can't pair OSes) | #2 (cross-platform) |
 | **0** | determinism fixes (`--test-threads=1`, de-flake) | folded into Tier 1 | QA-grade prerequisite |
 
 ---
@@ -230,4 +230,34 @@ ADR's premise made concrete — the cross-participant exchange was untested, and
 of it found a defect.
 
 **Closes** gap #2's cross-**host** axis (distinct-IP exchange). The cross-**platform**
-(Windows↔Linux) axis remains for Tier 4.
+(Windows↔Linux) axis is Tier 4.
+
+## Implementation notes — Tier 4 (2026-06-19)
+
+`scripts/cross-platform-certmesh.ps1` drives a genuine **Windows↔Linux** exchange on a
+single host that has both a native Windows `koi.exe` and Docker (Linux containers): a
+**Linux container CA** (the Tier-3 musl image, published to `127.0.0.1`) and a **native
+Windows `koi.exe` member** that **joins the Linux CA across platforms** — create → mint
+invite for the Windows host's reported hostname (read from the member's `/v1/host`, so the
+invite binds to exactly what the join presents) → `koi certmesh join` over the
+loopback-published CA port → assert the Windows member is enrolled in the Linux CA's roster.
+The member dials *out* to the published loopback port (no inbound-firewall dependency); its
+own data dir + breadcrumb are isolated via `KOI_DATA_DIR` + `ProgramData`. Validated green
+on a Windows 11 + Docker-Desktop host (a Windows member enrolled in a Linux CA); it also
+confirms the Tier-3 join bugfix works **across platforms**.
+
+**Why not a GitHub-hosted CI gate.** A hosted GitHub runner is a single OS and cannot pair
+a Windows and a Linux participant, and `windows-latest` cannot reliably run Linux
+containers. So Tier 4 is, by design (as the ADR anticipated), a **local / self-hosted**
+validation — runnable on any Windows+Docker workstation or a self-hosted runner. The
+reserved `stone-granite-spring` box stays the manual cross-platform smoke target; this
+script makes that exchange reproducible. **Closes** gap #2's cross-platform axis.
+
+## Outcome — all four tiers landed
+
+Tiers 1–3 are per-PR CI gates (Tiers 1–2 via `cargo test --locked` on the 3-OS matrix;
+Tier 3 via the `cross-host` job); Tier 4 is a scripted local/self-hosted validation. The
+suite covers the certmesh exchange from in-process (T1) → real-binary same-host (T2) →
+cross-host containers (T3) → cross-platform Windows↔Linux (T4), and **earned its keep on
+day one** by catching the explicit-endpoint `join` key-custody-misroute bug (fixed +
+regression-tested + re-validated by T3). All seven audit gaps are addressed.
