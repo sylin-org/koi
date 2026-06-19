@@ -531,7 +531,13 @@ pub enum CertmeshSubcommand {
     /// Join an existing certificate mesh
     Join {
         /// CA endpoint (e.g. "http://ca-host:5641"). Omit to discover via mDNS.
-        endpoint: Option<String>,
+        ///
+        /// Field name is `ca_endpoint` (not `endpoint`) on purpose: a positional named
+        /// `endpoint` shares clap's arg id with the global `--endpoint`, so the CA address
+        /// would leak into `--endpoint` — which `join` then used to resolve its LOCAL
+        /// key-custody daemon, misrouting member-csr/member-cert to the remote CA
+        /// (ADR-018 Tier 3 found this).
+        ca_endpoint: Option<String>,
         /// Single-use invite token (from `certmesh invite`). Skips the TOTP prompt.
         #[arg(long)]
         invite: Option<String>,
@@ -559,7 +565,9 @@ pub enum CertmeshSubcommand {
     /// Promote a member to standby CA (transfers encrypted CA key)
     Promote {
         /// CA endpoint (e.g. "http://ca-host:5641"). Omit to discover via mDNS.
-        endpoint: Option<String>,
+        /// Named `ca_endpoint` (not `endpoint`) to avoid the global `--endpoint`
+        /// clap arg-id collision — see `Join`.
+        ca_endpoint: Option<String>,
     },
     // Enrollment toggle
     /// Open the enrollment window
@@ -996,9 +1004,9 @@ mod tests {
         let cli = Cli::try_parse_from(["koi", "certmesh", "promote"]).unwrap();
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
-                command: Some(CertmeshSubcommand::Promote { endpoint }),
+                command: Some(CertmeshSubcommand::Promote { ca_endpoint }),
             })) => {
-                assert!(endpoint.is_none());
+                assert!(ca_endpoint.is_none());
             }
             other => panic!("Expected Certmesh Promote, got: {other:?}"),
         }
@@ -1007,13 +1015,54 @@ mod tests {
     #[test]
     fn parse_certmesh_promote_with_endpoint() {
         let cli = Cli::try_parse_from(["koi", "certmesh", "promote", "http://ca:5641"]).unwrap();
+        // The positional CA endpoint must NOT leak into the global --endpoint (clap
+        // arg-id collision — see the join regression below).
+        assert!(
+            cli.endpoint.is_none(),
+            "promote positional must not populate the global --endpoint"
+        );
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
-                command: Some(CertmeshSubcommand::Promote { endpoint }),
+                command: Some(CertmeshSubcommand::Promote { ca_endpoint }),
             })) => {
-                assert_eq!(endpoint.as_deref(), Some("http://ca:5641"));
+                assert_eq!(ca_endpoint.as_deref(), Some("http://ca:5641"));
             }
             other => panic!("Expected Certmesh Promote, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_join_positional_is_not_global_endpoint() {
+        // Regression (ADR-018 Tier 3): the join CA positional shared clap's "endpoint"
+        // arg id with the global `--endpoint`, so it leaked into `--endpoint` — which
+        // `join` used to resolve its LOCAL key-custody daemon, misrouting member-csr /
+        // member-cert to the remote CA (→ 401). Renaming the positional to `ca_endpoint`
+        // breaks the collision; assert the global endpoint stays unset.
+        let cli = Cli::try_parse_from([
+            "koi",
+            "certmesh",
+            "join",
+            "http://ca-host:5641",
+            "--invite",
+            "secret.fp",
+        ])
+        .unwrap();
+        assert!(
+            cli.endpoint.is_none(),
+            "join positional must not populate the global --endpoint"
+        );
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command:
+                    Some(CertmeshSubcommand::Join {
+                        ca_endpoint,
+                        invite,
+                    }),
+            })) => {
+                assert_eq!(ca_endpoint.as_deref(), Some("http://ca-host:5641"));
+                assert_eq!(invite.as_deref(), Some("secret.fp"));
+            }
+            other => panic!("Expected Certmesh Join, got: {other:?}"),
         }
     }
 
@@ -1059,9 +1108,13 @@ mod tests {
         .unwrap();
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
-                command: Some(CertmeshSubcommand::Join { endpoint, invite }),
+                command:
+                    Some(CertmeshSubcommand::Join {
+                        ca_endpoint,
+                        invite,
+                    }),
             })) => {
-                assert_eq!(endpoint.as_deref(), Some("http://ca:5641"));
+                assert_eq!(ca_endpoint.as_deref(), Some("http://ca:5641"));
                 assert_eq!(invite.as_deref(), Some("deadbeef"));
             }
             other => panic!("Expected Certmesh Join, got: {other:?}"),

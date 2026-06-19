@@ -114,21 +114,28 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     Some(CertmeshSubcommand::SetHook { reload }) => {
                         commands::certmesh::set_hook(reload, cli.json, ep, tok)
                     }
-                    Some(CertmeshSubcommand::Join { endpoint, invite }) => {
+                    Some(CertmeshSubcommand::Join {
+                        ca_endpoint,
+                        invite,
+                    }) => {
+                        // No `ep`/`tok` (global --endpoint/--token): `join` resolves its
+                        // LOCAL key-custody daemon from the breadcrumb itself, and the CA
+                        // is `ca_endpoint` (or mDNS). Threading the global endpoint here is
+                        // what misrouted key custody to the CA (ADR-018 Tier 3).
                         commands::certmesh::join(
-                            endpoint.as_deref(),
+                            ca_endpoint.as_deref(),
                             invite.as_deref(),
                             cli.json,
-                            ep,
-                            tok,
                         )
                         .await
                     }
                     Some(CertmeshSubcommand::Invite { hostname, ttl }) => {
                         commands::certmesh::invite(hostname, *ttl, cli.json, ep, tok)
                     }
-                    Some(CertmeshSubcommand::Promote { endpoint }) => {
-                        commands::certmesh::promote(endpoint.as_deref(), cli.json, ep, tok).await
+                    Some(CertmeshSubcommand::Promote { ca_endpoint }) => {
+                        // Local standby daemon resolved from the breadcrumb inside
+                        // `promote`; the CA is `ca_endpoint` (or mDNS). See `Join`.
+                        commands::certmesh::promote(ca_endpoint.as_deref(), cli.json).await
                     }
                     Some(CertmeshSubcommand::OpenEnrollment) => {
                         commands::certmesh::open_enrollment(cli.json, ep, tok)

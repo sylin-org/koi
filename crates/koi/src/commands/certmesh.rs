@@ -647,17 +647,15 @@ pub fn set_hook(
 
 // ── Join ────────────────────────────────────────────────────────────
 
-pub async fn join(
-    endpoint: Option<&str>,
-    invite: Option<&str>,
-    json: bool,
-    cli_endpoint: Option<&str>,
-    cli_token: Option<&str>,
-) -> anyhow::Result<()> {
+pub async fn join(endpoint: Option<&str>, invite: Option<&str>, json: bool) -> anyhow::Result<()> {
     // The local daemon owns key custody (ADR-015 F1): it generates the member
     // keypair, persists the private key, and installs the signed cert. The CLI
     // only carries public material (CSR out, cert back).
-    let local = require_daemon(cli_endpoint, cli_token)?;
+    //
+    // It is ALWAYS the local breadcrumb daemon — never a global `--endpoint`. Key custody
+    // must stay on THIS host; routing member-csr/member-cert to a remote (e.g. the CA)
+    // would request the joiner's CSR off-box. The CA is the `endpoint` arg / mDNS only.
+    let local = require_daemon(None, None)?;
 
     // ADR-017 F3: an invite is a *code* `<secret>.<ca_fingerprint>`. Split it so we
     // can pin the CA fingerprint and preflight the endpoint before sending our CSR.
@@ -854,14 +852,10 @@ pub fn invite(
 
 // ── Promote ─────────────────────────────────────────────────────────
 
-pub async fn promote(
-    endpoint: Option<&str>,
-    json: bool,
-    cli_endpoint: Option<&str>,
-    cli_token: Option<&str>,
-) -> anyhow::Result<()> {
-    // The local daemon must be running
-    let _local = require_daemon(cli_endpoint, cli_token)?;
+pub async fn promote(endpoint: Option<&str>, json: bool) -> anyhow::Result<()> {
+    // The local (standby) daemon must be running — always the local breadcrumb daemon,
+    // never a global `--endpoint`. The CA being promoted from is the `endpoint` arg / mDNS.
+    let _local = require_daemon(None, None)?;
 
     let resolved_endpoint = match endpoint {
         Some(ep) => ep.to_string(),

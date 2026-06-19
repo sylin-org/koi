@@ -73,6 +73,14 @@ and *Changed* below — existing certmesh `roster.json` files may need a
   spawned task panicked and the ACME port silently failed to come up. It now resolves the
   provider explicitly (aws-lc-rs via `builder_with_provider`), matching `koi_certmesh::mtls`
   and koi-proxy. Guarded by a new unit test.
+- **`koi certmesh join <endpoint>` misrouted the joiner's key custody to the CA.** The
+  global `--endpoint` and the `join` / `promote` positional CA endpoint collided on clap's
+  arg id, so passing a CA positionally silently populated `--endpoint`; `join` then resolved
+  its LOCAL key-custody daemon (the `member-csr` / `member-cert` calls that generate and
+  keep the member private key) from that and sent them to the remote CA, which rejected
+  them with 401. The positional is now `ca_endpoint` (no id collision) and `join` / `promote`
+  always resolve the local daemon from the breadcrumb. Found by the new ADR-018 cross-host
+  integration test.
 
 ## [0.4.1] - 2026-06-15
 
