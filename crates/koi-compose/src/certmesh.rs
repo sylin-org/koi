@@ -105,10 +105,12 @@ pub fn spawn_certmesh_background_tasks(
     cancel: &CancellationToken,
     tasks: &mut Vec<JoinHandle<()>>,
 ) {
-    // ── Member-pull renewal loop ────────────────────────────────────
-    // A joined member renews its own cert before expiry by generating a fresh
-    // keypair + CSR and pulling a CA signature over mTLS (the key never leaves the
-    // member). No-op on the CA / unconfigured nodes.
+    // ── Member trust-bundle + renewal loop ──────────────────────────
+    // A joined member (a) pulls the CA's signed trust bundle to refresh its policy
+    // and pick up revocations (anti-rollback), then (b) renews its own cert before
+    // expiry by generating a fresh keypair + CSR and pulling a CA signature over
+    // mTLS (the key never leaves the member). Both are no-ops on the CA /
+    // unconfigured nodes.
     let cm = Arc::clone(certmesh);
     let token = cancel.clone();
     tasks.push(tokio::spawn(async move {
@@ -117,6 +119,20 @@ pub fn spawn_certmesh_background_tasks(
             tokio::select! {
                 _ = token.cancelled() => break,
                 _ = tokio::time::sleep(interval) => {
+                    // (a) Refresh trust (policy + revocations) before renewing.
+                    match cm.pull_trust_bundle().await {
+                        Ok(koi_certmesh::BundleOutcome::Updated { seq, self_revoked }) => {
+                            if self_revoked {
+                                tracing::error!(seq, "Trust bundle marks this node REVOKED");
+                            } else {
+                                tracing::info!(seq, "Trust bundle updated");
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::debug!(error = %e, "Trust bundle pull skipped"),
+                    }
+
+                    // (b) Renew the local cert if it is within the policy threshold.
                     match cm.renew_self_if_due().await {
                         Ok(koi_certmesh::RenewOutcome::Renewed { expires, hook }) => {
                             let hook_ok = hook.as_ref().map(|h| h.success).unwrap_or(true);

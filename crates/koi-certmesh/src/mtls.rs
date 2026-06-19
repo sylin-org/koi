@@ -177,6 +177,11 @@ pub async fn serve(
     }
 }
 
+/// Upper bound on a client response body (renewal leaf / trust bundle). Both are
+/// small in practice; the cap stops an unbounded buffer on a compromised or
+/// MITM'd channel from amplifying memory use.
+const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
 // ── mTLS CLIENT primitive (ADR-017 F6 member-pull renewal) ──────────
 
 /// A rustls server-cert verifier that **pins the CA** but does not require the
@@ -351,8 +356,46 @@ pub async fn post_json(
         .await
         .map_err(|e| CertmeshError::Internal(format!("send request: {e}")))?;
     let status = resp.status().as_u16();
-    let body = resp
-        .into_body()
+    let body = http_body_util::Limited::new(resp.into_body(), MAX_RESPONSE_BYTES)
+        .collect()
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("read body: {e}")))?
+        .to_bytes();
+    Ok((status, String::from_utf8_lossy(&body).into_owned()))
+}
+
+/// Plain-HTTP GET of `host:port`+`path` (no TLS) — the companion to [`post_json`]
+/// used to pull the **self-verifying** trust bundle (ADR-017 P1).
+///
+/// The bundle is integrity-protected by its own CA signature, so it needs no
+/// transport security; a plain GET (which the daemon's DAT middleware exempts)
+/// keeps the pull simple. Returns `(status_code, body)`.
+pub async fn get(host: &str, port: u16, path: &str) -> Result<(u16, String), CertmeshError> {
+    let tcp = TcpStream::connect((host, port)).await?;
+    let io = TokioIo::new(tcp);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("http handshake: {e}")))?;
+    tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            tracing::debug!(error = %e, "plain-HTTP client connection driver error");
+        }
+    });
+
+    let req = hyper::Request::builder()
+        .method(hyper::Method::GET)
+        .uri(path)
+        .header(hyper::header::HOST, format!("{host}:{port}"))
+        .header(hyper::header::CONNECTION, "close")
+        .body(http_body_util::Empty::<Bytes>::new())
+        .map_err(|e| CertmeshError::Internal(format!("build request: {e}")))?;
+
+    let resp = sender
+        .send_request(req)
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("send request: {e}")))?;
+    let status = resp.status().as_u16();
+    let body = http_body_util::Limited::new(resp.into_body(), MAX_RESPONSE_BYTES)
         .collect()
         .await
         .map_err(|e| CertmeshError::Internal(format!("read body: {e}")))?

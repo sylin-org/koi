@@ -45,6 +45,9 @@ pub mod paths {
     /// Local: install a CA-signed cert next to the member key.
     pub const MEMBER_CERT: &str = "/v1/certmesh/member-cert";
     pub const STATUS: &str = "/v1/certmesh/status";
+    /// Signed, monotonic trust bundle (ADR-017 P1). A GET, so the DAT middleware
+    /// exempts it — it is integrity-protected by its own signature, like a CRL.
+    pub const TRUST_BUNDLE: &str = "/v1/certmesh/trust-bundle";
     pub const SET_HOOK: &str = "/v1/certmesh/set-hook";
     pub const PROMOTE: &str = "/v1/certmesh/promote";
     pub const RENEW: &str = "/v1/certmesh/renew";
@@ -77,6 +80,7 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::MEMBER_CSR), post(member_csr_handler))
         .route(rel(paths::MEMBER_CERT), post(member_cert_handler))
         .route(rel(paths::STATUS), get(status_handler))
+        .route(rel(paths::TRUST_BUNDLE), get(trust_bundle_handler))
         .route(rel(paths::SET_HOOK), put(set_hook_handler))
         // NOTE: /renew is intentionally NOT on the plain-HTTP router. Renewal is
         // member-initiated over mTLS only (ADR-017 F6) — it lives on
@@ -252,6 +256,50 @@ async fn member_cert_handler(
                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             error_response(status, &e)
         }
+    }
+}
+
+/// GET /trust-bundle - the signed, monotonic mesh-truth bundle (ADR-017 P1/F4).
+///
+/// Self-verifying (detached ES256 signature by the CA key over canonical bytes),
+/// so it is a DAT-exempt read like a CRL. Members pull it on an interval, verify
+/// the signature against their **pinned** CA fingerprint, and reject any bundle
+/// with `seq <= last_seen` (anti-rollback).
+#[utoipa::path(get, path = "/trust-bundle", tag = "certmesh",
+    summary = "Signed, monotonic trust bundle (membership, revocation, policy)",
+    responses((status = 200, body = crate::bundle::SignedBundle)))]
+async fn trust_bundle_handler(
+    Extension(state): Extension<Arc<CertmeshState>>,
+) -> impl IntoResponse {
+    let ca_guard = state.ca.lock().await;
+    let ca = match ca_guard.as_ref() {
+        Some(ca) => ca,
+        None => {
+            return if state.paths.is_ca_initialized() {
+                error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
+            } else {
+                error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &CertmeshError::CaNotInitialized,
+                )
+            };
+        }
+    };
+    let signed = {
+        let roster = state.roster.lock().await;
+        crate::bundle::sign(&roster, ca, chrono::Utc::now().to_rfc3339())
+    };
+    drop(ca_guard);
+    let signed = match signed {
+        Ok(s) => s,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    };
+    match serde_json::to_value(&signed) {
+        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CertmeshError::Internal(format!("Serialization error: {e}")),
+        ),
     }
 }
 
@@ -593,17 +641,25 @@ async fn revoke_handler(
 
 // ── Enrollment toggle handlers ──────────────────────────────────────
 
-/// Persist the roster and return an [`EnrollmentSummary`] (shared by the
-/// open/close toggles).
+/// Toggle the enrollment window and return an [`EnrollmentSummary`] (shared by the
+/// open/close handlers). The mutation + persist happen in **one** single-writer
+/// commit (F8), so a concurrent enroll can't overwrite the posture with a stale
+/// snapshot. Posture is not bundle content, so no `seq` bump.
 async fn save_and_summarize_enrollment(
     state: &Arc<CertmeshState>,
     open: bool,
 ) -> axum::response::Response {
-    let roster = state.roster.lock().await;
-    let roster_clone = roster.clone();
-    let roster_path = state.paths.roster_path();
-    drop(roster);
-    if let Err(e) = crate::roster::persist_roster(&roster_clone, &roster_path).await {
+    let committed = state
+        .touch_roster(|roster| {
+            if open {
+                roster.open_enrollment();
+            } else {
+                roster.close_enrollment();
+            }
+            Ok(())
+        })
+        .await;
+    if let Err(e) = committed {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &CertmeshError::Internal(format!("Failed to save roster: {e}")),
@@ -629,7 +685,6 @@ async fn save_and_summarize_enrollment(
 async fn open_enrollment_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
 ) -> impl IntoResponse {
-    state.roster.lock().await.open_enrollment();
     let _ = crate::audit::append_entry_to(&state.paths.audit_log_path(), "enrollment_opened", &[]);
     save_and_summarize_enrollment(&state, true).await
 }
@@ -641,7 +696,6 @@ async fn open_enrollment_handler(
 async fn close_enrollment_handler(
     Extension(state): Extension<Arc<CertmeshState>>,
 ) -> impl IntoResponse {
-    state.roster.lock().await.close_enrollment();
     let _ = crate::audit::append_entry_to(&state.paths.audit_log_path(), "enrollment_closed", &[]);
     save_and_summarize_enrollment(&state, false).await
 }
@@ -856,20 +910,20 @@ async fn renew_handler(
     };
     let expires = chrono::Utc::now() + chrono::Duration::days(i64::from(lifetime_days));
 
-    // Update the roster member's fingerprint/expiry/last_seen (rotation tracked).
+    // Update the roster member's fingerprint/expiry/last_seen and bump `seq`
+    // (a rotation is a membership change the trust bundle must reflect — F8).
+    if let Err(e) = state
+        .commit_roster(|roster| {
+            if let Some(member) = roster.find_member_mut(&request.hostname) {
+                member.cert_fingerprint = fingerprint.clone();
+                member.cert_expires = expires;
+                member.last_seen = Some(chrono::Utc::now());
+            }
+            Ok(())
+        })
+        .await
     {
-        let mut roster = state.roster.lock().await;
-        if let Some(member) = roster.find_member_mut(&request.hostname) {
-            member.cert_fingerprint = fingerprint.clone();
-            member.cert_expires = expires;
-            member.last_seen = Some(chrono::Utc::now());
-        }
-        let roster_clone = roster.clone();
-        let roster_path = state.paths.roster_path();
-        drop(roster);
-        if let Err(e) = crate::roster::persist_roster(&roster_clone, &roster_path).await {
-            tracing::warn!(error = %e, "Failed to save roster after renewal");
-        }
+        tracing::warn!(error = %e, "Failed to save roster after renewal");
     }
 
     let _ = crate::audit::append_entry_to(
@@ -940,17 +994,22 @@ async fn health_handler(
     let current_fp = crate::ca::ca_fingerprint(ca);
     let valid =
         crate::health::validate_pinned_fingerprint(&current_fp, &request.pinned_ca_fingerprint);
+    drop(ca_guard); // release the CA lock before the roster commit (no lock held across disk I/O)
 
-    // Update last_seen timestamp
-    let mut roster = state.roster.lock().await;
-    roster.touch_member(&request.hostname);
-
-    // Save roster with updated last_seen
-    let roster_clone = roster.clone();
-    let roster_path = state.paths.roster_path();
-    drop(roster);
-    if let Err(e) = crate::roster::persist_roster(&roster_clone, &roster_path).await {
-        tracing::warn!(error = %e, "Failed to save roster after health heartbeat");
+    // Boundary enforcement (ADR-017 F4): a revoked member's heartbeat is refused
+    // here at the CA, not merely recorded. Otherwise record last_seen (no seq
+    // bump — liveness is not part of the trust bundle).
+    if let Err(e) = state
+        .touch_roster(|roster| {
+            if roster.is_revoked(&request.hostname) {
+                return Err(CertmeshError::Revoked(request.hostname.clone()));
+            }
+            roster.touch_member(&request.hostname);
+            Ok(())
+        })
+        .await
+    {
+        return error_response(StatusCode::FORBIDDEN, &e);
     }
 
     let response = HealthResponse {
@@ -981,6 +1040,7 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
         member_csr_handler,
         member_cert_handler,
         status_handler,
+        trust_bundle_handler,
         set_hook_handler,
         promote_handler,
         renew_handler,
@@ -1007,6 +1067,11 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
         crate::protocol::InstallCertResponse,
         crate::protocol::CertmeshStatus,
         crate::protocol::MemberSummary,
+        crate::bundle::SignedBundle,
+        crate::bundle::TrustBundle,
+        crate::bundle::BundleMember,
+        crate::bundle::BundleRevoked,
+        crate::roster::CertPolicy,
         crate::protocol::SetHookRequest,
         crate::protocol::SetHookResponse,
         crate::protocol::CreateCaRequest,
@@ -1067,6 +1132,7 @@ mod tests {
                     requires_approval: false,
                     operator: None,
                     policy: crate::roster::CertPolicy::default(),
+                    seq: 0,
                 },
                 members: vec![],
                 revocation_list: vec![],

@@ -160,6 +160,12 @@ pub struct CertmeshStatus {
     pub requires_approval: bool,
     pub enrollment_state: EnrollmentState,
     pub member_count: usize,
+    /// Monotonic roster sequence (ADR-017 F8) — the trust bundle's `seq`.
+    #[serde(default)]
+    pub seq: u64,
+    /// CA-held certificate lifecycle policy (ADR-017).
+    #[serde(default)]
+    pub policy: CertPolicy,
     pub members: Vec<MemberSummary>,
 }
 
@@ -780,6 +786,8 @@ mod tests {
             requires_approval: false,
             enrollment_state: EnrollmentState::Open,
             member_count: 1,
+            seq: 0,
+            policy: CertPolicy::default(),
             members: vec![MemberSummary {
                 hostname: "stone-01".to_string(),
                 role: "primary".to_string(),
@@ -806,6 +814,8 @@ mod tests {
             requires_approval: true,
             enrollment_state: EnrollmentState::Closed,
             member_count: 0,
+            seq: 0,
+            policy: CertPolicy::default(),
             members: vec![],
         };
         let json = serde_json::to_string(&status).unwrap();
@@ -955,6 +965,8 @@ mod tests {
             requires_approval: true,
             enrollment_state: EnrollmentState::Open,
             member_count: 2,
+            seq: 5,
+            policy: CertPolicy::default(),
             members: vec![
                 MemberSummary {
                     hostname: "stone-01".to_string(),
@@ -995,6 +1007,8 @@ mod tests {
             requires_approval: false,
             enrollment_state: EnrollmentState::Closed,
             member_count: 0,
+            seq: 0,
+            policy: CertPolicy::default(),
             members: vec![],
         };
         let json = serde_json::to_string(&status).unwrap();

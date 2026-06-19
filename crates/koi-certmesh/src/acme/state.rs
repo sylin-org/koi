@@ -187,37 +187,41 @@ impl AcmeState {
         let Some(primary) = names.first() else {
             return;
         };
-        let mut roster = self.certmesh.roster.lock().await;
-        if let Some(existing) = roster.find_member_mut(primary) {
-            // Update the existing acme member (renewal).
-            existing.cert_fingerprint = fingerprint.to_string();
-            existing.cert_expires = expires;
-            existing.cert_sans = names.to_vec();
-            existing.last_seen = Some(Utc::now());
-            existing.status = MemberStatus::Active;
-        } else {
-            roster.members.push(RosterMember {
-                hostname: primary.clone(),
-                role: MemberRole::Client,
-                enrolled_at: Utc::now(),
-                enrolled_by: Some(format!("acme:{account_id}")),
-                cert_fingerprint: fingerprint.to_string(),
-                cert_expires: expires,
-                cert_sans: names.to_vec(),
-                // ACME clients hold their own key; certmesh does not store the
-                // cert on disk. An empty cert_path marks an external holder.
-                cert_path: String::new(),
-                status: MemberStatus::Active,
-                reload_hook: None,
-                last_seen: Some(Utc::now()),
-                pinned_ca_fingerprint: None,
-                proxy_entries: Vec::new(),
-            });
-        }
-        let roster_clone = roster.clone();
-        let roster_path = self.certmesh.paths.roster_path();
-        drop(roster);
-        if let Err(e) = crate::roster::persist_roster(&roster_clone, &roster_path).await {
+        // Membership change (a new/renewed cert fingerprint) → single-writer commit
+        // bumps `seq` so the issuance propagates in the trust bundle (F8/F4).
+        let committed = self
+            .certmesh
+            .commit_roster(|roster| {
+                if let Some(existing) = roster.find_member_mut(primary) {
+                    // Update the existing acme member (renewal).
+                    existing.cert_fingerprint = fingerprint.to_string();
+                    existing.cert_expires = expires;
+                    existing.cert_sans = names.to_vec();
+                    existing.last_seen = Some(Utc::now());
+                    existing.status = MemberStatus::Active;
+                } else {
+                    roster.members.push(RosterMember {
+                        hostname: primary.clone(),
+                        role: MemberRole::Client,
+                        enrolled_at: Utc::now(),
+                        enrolled_by: Some(format!("acme:{account_id}")),
+                        cert_fingerprint: fingerprint.to_string(),
+                        cert_expires: expires,
+                        cert_sans: names.to_vec(),
+                        // ACME clients hold their own key; certmesh does not store
+                        // the cert on disk. An empty cert_path marks an external holder.
+                        cert_path: String::new(),
+                        status: MemberStatus::Active,
+                        reload_hook: None,
+                        last_seen: Some(Utc::now()),
+                        pinned_ca_fingerprint: None,
+                        proxy_entries: Vec::new(),
+                    });
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(e) = committed {
             tracing::warn!(error = %e, "Failed to persist roster after ACME issuance");
         }
     }
@@ -225,23 +229,36 @@ impl AcmeState {
     /// Revoke an ACME-issued certificate by its leaf fingerprint, reflecting the
     /// revocation in the roster. Returns whether a member was revoked.
     pub async fn revoke_by_fingerprint(&self, fingerprint: &str) -> bool {
-        let mut roster = self.certmesh.roster.lock().await;
-        let hostname = roster
-            .members
-            .iter()
-            .find(|m| m.cert_fingerprint == fingerprint && m.status == MemberStatus::Active)
-            .map(|m| m.hostname.clone());
-        let Some(hostname) = hostname else {
-            return false;
-        };
-        let _ = roster.revoke_member(&hostname, Some("acme".into()), Some("revokeCert".into()));
-        let roster_clone = roster.clone();
-        let roster_path = self.certmesh.paths.roster_path();
-        drop(roster);
-        if let Err(e) = crate::roster::persist_roster(&roster_clone, &roster_path).await {
-            tracing::warn!(error = %e, "Failed to persist roster after ACME revoke");
+        // Revocation is a membership change → commit_roster bumps `seq` so the
+        // revocation propagates + is enforced mesh-wide (F4/F8). Returns Ok(false)
+        // (no commit) when no active member matches the fingerprint.
+        let fingerprint = fingerprint.to_string();
+        let outcome = self
+            .certmesh
+            .commit_roster(move |roster| {
+                let hostname = roster
+                    .members
+                    .iter()
+                    .find(|m| m.cert_fingerprint == fingerprint && m.status == MemberStatus::Active)
+                    .map(|m| m.hostname.clone());
+                let Some(hostname) = hostname else {
+                    // Signal "no match" so the caller doesn't bump seq for nothing.
+                    return Err(crate::error::CertmeshError::NotFound(fingerprint.clone()));
+                };
+                let _ =
+                    roster.revoke_member(&hostname, Some("acme".into()), Some("revokeCert".into()));
+                Ok(true)
+            })
+            .await;
+        match outcome {
+            Ok(revoked) => revoked,
+            // NotFound is the "no active member with that fingerprint" signal.
+            Err(crate::error::CertmeshError::NotFound(_)) => false,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to persist roster after ACME revoke");
+                false
+            }
         }
-        true
     }
 
     /// The CA certificate PEM, for the certificate chain and bootstrap.

@@ -71,6 +71,12 @@ pub struct RosterMetadata {
     /// rosters created before the policy existed.
     #[serde(default)]
     pub policy: CertPolicy,
+    /// Monotonic sequence number, bumped on every **membership** mutation (enroll,
+    /// revoke, renew, role change) — not on liveness touches. The signed trust
+    /// bundle (ADR-017 P1) carries it for anti-rollback; members reject a bundle
+    /// whose `seq` is not strictly greater than the last they accepted.
+    #[serde(default)]
+    pub seq: u64,
 }
 
 /// Whether the mesh is accepting new members.
@@ -175,6 +181,7 @@ impl Roster {
                 requires_approval: false,
                 operator: None,
                 policy: CertPolicy::default(),
+                seq: 0,
             },
             members: Vec::new(),
             revocation_list: Vec::new(),
@@ -190,6 +197,7 @@ impl Roster {
                 requires_approval,
                 operator,
                 policy: CertPolicy::default(),
+                seq: 0,
             },
             members: Vec::new(),
             revocation_list: Vec::new(),

@@ -27,8 +27,7 @@ const CA_VALIDITY_YEARS: i64 = 10;
 /// Holds the decrypted CA state in memory.
 pub struct CaState {
     /// The CA's cryptographic key pair (koi-crypto type, zeroized on drop).
-    /// Kept alive for its Drop impl and potential re-encryption.
-    #[allow(dead_code)]
+    /// Used to sign the trust bundle (ADR-017 P1) and kept alive for its Drop impl.
     pub(crate) key: CaKeyPair,
     /// The CA's rcgen KeyPair for signing operations.
     pub(crate) rcgen_key: KeyPair,

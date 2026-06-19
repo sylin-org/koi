@@ -9,7 +9,7 @@ koi_version: v0.4.2
 validation:
   date_last_tested: 2026-06-18
   status: verified
-  scope: "unit + integration (csr::tests incl. least-privilege leaf profile, invite::tests, enrollment::tests {invite_token_succeeds (~90d leaf), without_csr_is_rejected}, mtls::tests {client post_json authenticates + reads CN, rejects server not signed by pinned CA}, lib::member_pull_renewal_round_trip (end-to-end rotate-key renewal over real mTLS), member::tests, http member-csr/invite tests, protocol round-trips) + adversarial security review (key-custody invariant holds on enroll AND renew; 0 critical/high) + live on the Linux test host. ADR-017 phase 1a (cert profiles F10 + CA-held 90/30/14 policy) AND phase 1b (F6 member-pull rotate-key renewal) shipped."
+  scope: "unit + integration (csr::tests incl. least-privilege leaf profile, invite::tests, enrollment::tests, mtls::tests {client post_json + pinned-CA reject}, bundle::tests {sign/verify, pin reject, tamper reject, rollback reject, revoked-in-bundle}, lib::member_pull_renewal_round_trip (rotate-key renewal over real mTLS), lib::trust_bundle_pull_round_trip (signed-bundle pull over HTTP: accept newer seq, no-op on equal, detect self-revocation), member::tests, protocol round-trips) + two adversarial reviews (key-custody invariant holds on enroll AND renew; trust-bundle canonicalization/pin/anti-rollback sound; single-writer commit deadlock-free; 0 critical/high) + live on the Linux test host. ADR-017 phase 1 (1a cert profiles + 1b member-pull renewal) AND phase 2 (F4 signed trust bundle + F8 sequenced single-writer roster + boundary revocation) shipped."
 ---
 
 # Certmesh enrollment — capability card
@@ -73,10 +73,21 @@ The CA's `renew_handler` is **mTLS-only** (removed from the plain-HTTP router): 
 # The loop pulls a fresh rotated cert from the CA over mTLS and reloads in place.
 ```
 
+## Trust bundle — signed mesh truth + revocation propagation (ADR-017 P1/F4 + F8, phase 2, shipped)
+
+The CA serves a **signed, monotonic trust bundle** at `GET /v1/certmesh/trust-bundle` — a single integrity-protected document (`{seq, issued_at, ca_fingerprint, ca_cert_pem, policy, members[], revoked[]}`) with a detached **ES256 signature** by the CA key. It is a DAT-exempt read (self-verifying, like a CRL). Every roster membership change (enroll, renew, revoke, ACME issue/revoke) goes through a **single-writer, atomic, sequence-bumping commit** (F8 — the lock is held across the write, so concurrent changes can't lose updates), and bumps `seq`.
+
+Members pull the bundle on the background loop, **verify the signature against their pinned CA fingerprint**, and **reject any bundle whose `seq` is older than the last they accepted** (anti-rollback — a replayed snapshot can't hide a revocation). An accepted bundle refreshes the member's cached `CertPolicy` and flags whether the member itself has been revoked. The CA **enforces revocation at the mTLS boundary**: a revoked member's `/renew` and `/health` requests are refused (not merely recorded). `koi certmesh status` now reports `seq` + the policy.
+
+```bash
+# Inspect the signed bundle (self-verifying; no token needed for the GET):
+curl -s http://ca-host:5641/v1/certmesh/trust-bundle | jq '.bundle | {seq, members: [.members[].hostname], revoked: [.revoked[].hostname]}'
+```
+
 ## Not yet covered (tracked in [ADR-017](../../adr/017-certmesh-trust-lifecycle.md))
 
-- **Plain-HTTP join is TOFU.** The initial CSR/cert exchange rides plain HTTP; a LAN MITM of mDNS discovery is a documented residual until pinned-fingerprint bootstrap (**ADR-017 F3**, phase 3). *(Renewal, by contrast, is already mTLS + fingerprint-pinned.)*
-- **Revocation isn't propagated/enforced at the boundary.** It's CA-local only today (enforced at enroll/renew, not yet at the mTLS/health boundary mesh-wide); the signed monotonic trust bundle (**ADR-017 F4**, phase 2) fixes propagation + anti-rollback + boundary enforcement.
+- **Plain-HTTP join is TOFU.** The initial CSR/cert exchange rides plain HTTP; a LAN MITM of mDNS discovery is a documented residual until pinned-fingerprint bootstrap (**ADR-017 F3**, phase 3). *(Renewal and the trust-bundle pull, by contrast, are already fingerprint-pinned.)*
+- **Peer-to-peer revocation enforcement.** The CA enforces revocation at its own boundary and propagates it in the signed bundle; members consume it (self-revocation detection + anti-rollback). Member-to-member mTLS peers don't yet cross-check each other against the bundle's `revoked[]` — members don't dial peers today (only the CA). Tightened as the mesh grows peer traffic.
 - **The CA's own leaf renews only at restart.** A long-running CA refreshes its mTLS/ACME listener cert on the next daemon restart (no live in-process reload yet); members renew continuously via the pull loop.
 
 ## The proof it works

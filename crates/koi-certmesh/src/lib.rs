@@ -8,6 +8,7 @@
 pub mod acme;
 pub mod audit;
 pub mod backup;
+pub mod bundle;
 pub mod ca;
 pub mod certfiles;
 pub mod certmesh_paths;
@@ -162,6 +163,51 @@ impl CertmeshState {
 
         tracing::info!("Certmesh state destroyed");
         Ok(())
+    }
+
+    /// Single-writer commit of a **membership** change (ADR-017 F8).
+    ///
+    /// Holds the roster lock for the entire read-modify-write, bumps `seq`, and
+    /// persists atomically *while still holding the lock* — so concurrent commits
+    /// serialize in `seq` order and can never lose an update (the old
+    /// `clone → drop → write` pattern could). Persists only when `mutate` returns
+    /// `Ok`; the closure must not leave the roster mutated on `Err`.
+    pub(crate) async fn commit_roster<F, R>(&self, mutate: F) -> Result<R, CertmeshError>
+    where
+        F: FnOnce(&mut Roster) -> Result<R, CertmeshError>,
+    {
+        self.commit_inner(true, mutate).await
+    }
+
+    /// Persist a **non-membership** change (e.g. `last_seen`) without bumping
+    /// `seq`, still holding the lock across the atomic write. The trust bundle is
+    /// unaffected (it does not carry liveness), so its `seq`/cache stay stable.
+    pub(crate) async fn touch_roster<F, R>(&self, mutate: F) -> Result<R, CertmeshError>
+    where
+        F: FnOnce(&mut Roster) -> Result<R, CertmeshError>,
+    {
+        self.commit_inner(false, mutate).await
+    }
+
+    async fn commit_inner<F, R>(&self, bump_seq: bool, mutate: F) -> Result<R, CertmeshError>
+    where
+        F: FnOnce(&mut Roster) -> Result<R, CertmeshError>,
+    {
+        let mut roster = self.roster.lock().await;
+        let out = mutate(&mut roster)?;
+        if bump_seq {
+            roster.metadata.seq = roster.metadata.seq.saturating_add(1);
+        }
+        let snapshot = roster.clone();
+        let path = self.paths.roster_path();
+        // Persist off the executor but keep the roster lock held so writes
+        // serialize in seq order (single writer).
+        tokio::task::spawn_blocking(move || roster::save_roster(&snapshot, &path))
+            .await
+            .map_err(|e| std::io::Error::other(format!("roster save task: {e}")))
+            .and_then(|r| r)
+            .map_err(CertmeshError::Io)?;
+        Ok(out)
     }
 }
 
@@ -584,28 +630,27 @@ impl CertmeshCore {
             fallback_operator
         };
 
-        let mut roster = self.state.roster.lock().await;
-
-        let (response, _issued) = enrollment::process_enrollment(
-            ca,
-            &mut roster,
-            auth_state,
-            &challenge,
-            &mut rate_limiter,
-            request,
-            hostname,
-            &sans,
-            approved_by,
-            &self.state.paths,
-        )?;
-
-        // Save roster after successful enrollment
-        let roster_clone = roster.clone();
-        let roster_path = self.state.paths.roster_path();
-        drop(roster);
-        if let Err(e) = roster::persist_roster(&roster_clone, &roster_path).await {
-            tracing::warn!(error = %e, "Failed to save roster after enrollment");
-        }
+        // Single-writer commit (ADR-017 F8): process_enrollment validates, signs,
+        // and pushes the member under the lock; commit_roster bumps `seq` and
+        // persists atomically. On any error it errors *before* mutating, so the
+        // roster is left unchanged and nothing is persisted.
+        let (response, _issued) = self
+            .state
+            .commit_roster(|roster| {
+                enrollment::process_enrollment(
+                    ca,
+                    roster,
+                    auth_state,
+                    &challenge,
+                    &mut rate_limiter,
+                    request,
+                    hostname,
+                    &sans,
+                    approved_by,
+                    &self.state.paths,
+                )
+            })
+            .await?;
 
         let _ = self.state.event_tx.send(CertmeshEvent::MemberJoined {
             hostname: response.hostname.clone(),
@@ -725,34 +770,37 @@ impl CertmeshCore {
         .await
         .map_err(|e| CertmeshError::Internal(format!("cert write task: {e}")))??;
 
-        // Update the existing self entry in place, or insert as primary. The
-        // update path covers both restart-renewal and concurrent self_enroll.
-        let mut roster = self.state.roster.lock().await;
-        if let Some(member) = roster.find_member_mut(&hostname) {
-            member.cert_fingerprint = issued.fingerprint.clone();
-            member.cert_expires = issued.expires;
-            member.cert_path = cert_dir.display().to_string();
-        } else {
-            roster.members.push(roster::RosterMember {
-                hostname: hostname.clone(),
-                role: roster::MemberRole::Primary,
-                enrolled_at: chrono::Utc::now(),
-                enrolled_by: Some("self-enrollment".to_string()),
-                cert_fingerprint: issued.fingerprint.clone(),
-                cert_expires: issued.expires,
-                cert_sans: sans,
-                cert_path: cert_dir.display().to_string(),
-                status: roster::MemberStatus::Active,
-                reload_hook: None,
-                last_seen: Some(chrono::Utc::now()),
-                pinned_ca_fingerprint: None,
-                proxy_entries: Vec::new(),
-            });
-        }
-        let roster_clone = roster.clone();
-        let roster_path = self.state.paths.roster_path();
-        drop(roster);
-        if let Err(e) = roster::persist_roster(&roster_clone, &roster_path).await {
+        // Update the existing self entry in place, or insert as primary, then
+        // commit (ADR-017 F8). The update path covers both restart-renewal and
+        // concurrent self_enroll.
+        if let Err(e) = self
+            .state
+            .commit_roster(|roster| {
+                if let Some(member) = roster.find_member_mut(&hostname) {
+                    member.cert_fingerprint = issued.fingerprint.clone();
+                    member.cert_expires = issued.expires;
+                    member.cert_path = cert_dir.display().to_string();
+                } else {
+                    roster.members.push(roster::RosterMember {
+                        hostname: hostname.clone(),
+                        role: roster::MemberRole::Primary,
+                        enrolled_at: chrono::Utc::now(),
+                        enrolled_by: Some("self-enrollment".to_string()),
+                        cert_fingerprint: issued.fingerprint.clone(),
+                        cert_expires: issued.expires,
+                        cert_sans: sans.clone(),
+                        cert_path: cert_dir.display().to_string(),
+                        status: roster::MemberStatus::Active,
+                        reload_hook: None,
+                        last_seen: Some(chrono::Utc::now()),
+                        pinned_ca_fingerprint: None,
+                        proxy_entries: Vec::new(),
+                    });
+                }
+                Ok(())
+            })
+            .await
+        {
             tracing::warn!(error = %e, "Failed to save roster after self-enrollment");
         }
 
@@ -784,16 +832,17 @@ impl CertmeshCore {
         // Validate at domain boundary — all callers (HTTP, embedded, CLI) are
         // protected by the single source of truth in `validate_reload_hook`.
         validate_reload_hook(hook)?;
-        let mut roster = self.state.roster.lock().await;
-        let member = roster
-            .find_member_mut(hostname)
-            .ok_or_else(|| CertmeshError::NotFound(format!("member not found: {hostname}")))?;
-        member.reload_hook = Some(hook.to_string());
-
-        let roster_clone = roster.clone();
-        let roster_path = self.state.paths.roster_path();
-        drop(roster);
-        roster::persist_roster(&roster_clone, &roster_path).await?;
+        // touch_roster: reload_hook is not bundle content, so no seq bump — but
+        // the write still serializes behind the single writer (F8).
+        self.state
+            .touch_roster(|roster| {
+                let member = roster.find_member_mut(hostname).ok_or_else(|| {
+                    CertmeshError::NotFound(format!("member not found: {hostname}"))
+                })?;
+                member.reload_hook = Some(hook.to_string());
+                Ok(())
+            })
+            .await?;
 
         tracing::info!(hostname, hook, "Reload hook set");
         Ok(())
@@ -805,16 +854,15 @@ impl CertmeshCore {
         hostname: &str,
         role: roster::MemberRole,
     ) -> Result<(), CertmeshError> {
-        let mut roster = self.state.roster.lock().await;
-        let member = roster
-            .find_member_mut(hostname)
-            .ok_or_else(|| CertmeshError::Internal(format!("member not found: {hostname}")))?;
-        member.role = role.clone();
-
-        let roster_clone = roster.clone();
-        let roster_path = self.state.paths.roster_path();
-        drop(roster);
-        roster::persist_roster(&roster_clone, &roster_path).await?;
+        self.state
+            .touch_roster(|roster| {
+                let member = roster.find_member_mut(hostname).ok_or_else(|| {
+                    CertmeshError::Internal(format!("member not found: {hostname}"))
+                })?;
+                member.role = role.clone();
+                Ok(())
+            })
+            .await?;
 
         tracing::info!(hostname, role = ?role, "Member role updated");
         Ok(())
@@ -978,13 +1026,14 @@ impl CertmeshCore {
 
     /// Open the enrollment window. Stays open until explicitly closed.
     pub async fn open_enrollment(&self) -> Result<(), CertmeshError> {
-        let mut roster = self.state.roster.lock().await;
-        roster.open_enrollment();
-
-        let roster_clone = roster.clone();
-        let roster_path = self.state.paths.roster_path();
-        drop(roster);
-        roster::persist_roster(&roster_clone, &roster_path).await?;
+        // Posture change → single-writer commit so a concurrent enroll can't
+        // overwrite it with a stale snapshot (F8). Not bundle content → no bump.
+        self.state
+            .touch_roster(|roster| {
+                roster.open_enrollment();
+                Ok(())
+            })
+            .await?;
 
         tracing::info!("Enrollment window opened");
         let _ =
@@ -994,13 +1043,12 @@ impl CertmeshCore {
 
     /// Close the enrollment window.
     pub async fn close_enrollment(&self) -> Result<(), CertmeshError> {
-        let mut roster = self.state.roster.lock().await;
-        roster.close_enrollment();
-
-        let roster_clone = roster.clone();
-        let roster_path = self.state.paths.roster_path();
-        drop(roster);
-        roster::persist_roster(&roster_clone, &roster_path).await?;
+        self.state
+            .touch_roster(|roster| {
+                roster.close_enrollment();
+                Ok(())
+            })
+            .await?;
 
         tracing::info!("Enrollment window closed");
         let _ =
@@ -1150,9 +1198,11 @@ impl CertmeshCore {
                         hostname: hostname.to_string(),
                         ca_host: member::host_from_endpoint(endpoint),
                         ca_mtls_port: member::DEFAULT_CA_MTLS_PORT,
+                        ca_http_port: member::port_from_endpoint(endpoint),
                         ca_fingerprint: fingerprint.to_string(),
                         sans: sans.to_vec(),
                         policy: policy.unwrap_or_default(),
+                        last_bundle_seq: 0,
                         reload_hook: None,
                     };
                     if let Err(e) = member::save(&self.state.paths.member_state_path(), &state) {
@@ -1344,15 +1394,15 @@ impl CertmeshCore {
         operator: Option<String>,
         reason: Option<String>,
     ) -> Result<(), CertmeshError> {
-        let mut roster = self.state.roster.lock().await;
-        roster
-            .revoke_member(hostname, operator.clone(), reason.clone())
-            .map_err(CertmeshError::NotFound)?;
-
-        let roster_clone = roster.clone();
-        let roster_path = self.state.paths.roster_path();
-        drop(roster);
-        roster::persist_roster(&roster_clone, &roster_path).await?;
+        // Membership change → commit_roster bumps `seq` so the revocation
+        // propagates in the next trust bundle (ADR-017 F4/F8).
+        self.state
+            .commit_roster(|roster| {
+                roster
+                    .revoke_member(hostname, operator.clone(), reason.clone())
+                    .map_err(CertmeshError::NotFound)
+            })
+            .await?;
 
         let _ = self.state.event_tx.send(CertmeshEvent::MemberRevoked {
             hostname: hostname.to_string(),
@@ -1509,6 +1559,66 @@ impl CertmeshCore {
         })
     }
 
+    /// Pull, verify, and apply the CA's signed trust bundle (ADR-017 P1/F4).
+    ///
+    /// A no-op ([`BundleOutcome::NotApplicable`]) unless this node joined a mesh.
+    /// Fetches the self-verifying bundle over plain HTTP, verifies the ES256
+    /// signature against the **pinned** CA fingerprint, and rejects a strictly
+    /// older `seq` (anti-rollback). On a newer bundle it refreshes the member's
+    /// cached `policy` and `last_bundle_seq`, and flags whether this node has been
+    /// revoked mesh-wide.
+    pub async fn pull_trust_bundle(&self) -> Result<BundleOutcome, CertmeshError> {
+        let member_path = self.state.paths.member_state_path();
+        let Some(mut state) = member::load(&member_path) else {
+            return Ok(BundleOutcome::NotApplicable);
+        };
+
+        let (host, port) = (state.ca_host.clone(), state.ca_http_port);
+        let (status, body) = tokio::time::timeout(
+            RENEWAL_REQUEST_TIMEOUT,
+            mtls::get(&host, port, http::paths::TRUST_BUNDLE),
+        )
+        .await
+        .map_err(|_| {
+            CertmeshError::Internal(format!("trust-bundle pull from {host}:{port} timed out"))
+        })??;
+
+        if status != 200 {
+            return Err(CertmeshError::Internal(format!(
+                "CA returned HTTP {status} for trust-bundle"
+            )));
+        }
+        let signed: bundle::SignedBundle = serde_json::from_str(&body)
+            .map_err(|e| CertmeshError::Internal(format!("malformed trust bundle: {e}")))?;
+
+        // Verify signature against the pinned CA + anti-rollback floor.
+        bundle::verify(&signed, &state.ca_fingerprint, Some(state.last_bundle_seq))
+            .map_err(|e| CertmeshError::Internal(format!("trust bundle rejected: {e}")))?;
+
+        let seq = signed.bundle.seq;
+        if seq == state.last_bundle_seq {
+            return Ok(BundleOutcome::NoChange { seq });
+        }
+
+        let hostname = state.hostname.clone();
+        let self_revoked = signed.bundle.is_revoked(&hostname);
+        state.last_bundle_seq = seq;
+        state.policy = signed.bundle.policy.clone();
+        tokio::task::spawn_blocking(move || member::save(&member_path, &state))
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("member state save task: {e}")))??;
+
+        if self_revoked {
+            tracing::error!(
+                %hostname,
+                "This node has been REVOKED in the mesh trust bundle (seq {seq}); renewal will be refused by the CA"
+            );
+        } else {
+            tracing::debug!(seq, "Trust bundle updated");
+        }
+        Ok(BundleOutcome::Updated { seq, self_revoked })
+    }
+
     /// Validate a member's health heartbeat.
     pub async fn health_check(
         &self,
@@ -1526,19 +1636,19 @@ impl CertmeshCore {
         let current_fp = ca::ca_fingerprint(ca);
         let valid =
             health::validate_pinned_fingerprint(&current_fp, &request.pinned_ca_fingerprint);
+        drop(ca_guard); // release the CA lock before the roster commit (no lock held across disk I/O)
 
-        let mut roster = self.state.roster.lock().await;
-        if roster.is_revoked(&request.hostname) {
-            return Err(CertmeshError::Revoked(request.hostname.clone()));
-        }
-        roster.touch_member(&request.hostname);
-
-        let roster_clone = roster.clone();
-        let roster_path = self.state.paths.roster_path();
-        drop(roster);
-        if let Err(e) = roster::persist_roster(&roster_clone, &roster_path).await {
-            tracing::warn!(error = %e, "Failed to save roster after health heartbeat");
-        }
+        // Touch last_seen (no seq bump — liveness is not in the bundle); reject a
+        // revoked member at the boundary before recording the heartbeat.
+        self.state
+            .touch_roster(|roster| {
+                if roster.is_revoked(&request.hostname) {
+                    return Err(CertmeshError::Revoked(request.hostname.clone()));
+                }
+                roster.touch_member(&request.hostname);
+                Ok(())
+            })
+            .await?;
 
         Ok(protocol::HealthResponse {
             valid,
@@ -1564,33 +1674,30 @@ impl CertmeshCore {
             .map(|h| h.to_string_lossy().to_string())
             .map_err(|_| CertmeshError::Internal("hostname unavailable".to_string()))?;
 
-        let mut roster = self.state.roster.lock().await;
-        let already_primary = roster
-            .find_member(&hostname)
-            .map(|m| m.role == roster::MemberRole::Primary)
-            .ok_or_else(|| CertmeshError::NotFound(hostname.clone()))?;
-
-        if already_primary {
-            return Ok(false);
-        }
-
-        for m in roster.members.iter_mut() {
-            if m.role == roster::MemberRole::Primary {
-                m.role = roster::MemberRole::Standby;
-            }
-        }
-
-        if let Some(member) = roster.find_member_mut(&hostname) {
-            member.role = roster::MemberRole::Primary;
-        } else {
-            return Err(CertmeshError::NotFound(hostname.clone()));
-        }
-
-        let roster_clone = roster.clone();
-        let roster_path = self.state.paths.roster_path();
-        drop(roster);
-        roster::persist_roster(&roster_clone, &roster_path).await?;
-        Ok(true)
+        // Role changes are not bundle content → touch_roster (no seq bump), but the
+        // write still serializes behind the single writer (F8).
+        self.state
+            .touch_roster(|roster| {
+                let already_primary = roster
+                    .find_member(&hostname)
+                    .map(|m| m.role == roster::MemberRole::Primary)
+                    .ok_or_else(|| CertmeshError::NotFound(hostname.clone()))?;
+                if already_primary {
+                    return Ok(false);
+                }
+                for m in roster.members.iter_mut() {
+                    if m.role == roster::MemberRole::Primary {
+                        m.role = roster::MemberRole::Standby;
+                    }
+                }
+                if let Some(member) = roster.find_member_mut(&hostname) {
+                    member.role = roster::MemberRole::Primary;
+                } else {
+                    return Err(CertmeshError::NotFound(hostname.clone()));
+                }
+                Ok(true)
+            })
+            .await
     }
 
     /// Demote the local member to standby. Returns true if the roster changed.
@@ -1599,22 +1706,18 @@ impl CertmeshCore {
             .map(|h| h.to_string_lossy().to_string())
             .map_err(|_| CertmeshError::Internal("hostname unavailable".to_string()))?;
 
-        let mut roster = self.state.roster.lock().await;
-        let member = roster
-            .find_member_mut(&hostname)
-            .ok_or_else(|| CertmeshError::NotFound(hostname.clone()))?;
-
-        if member.role == roster::MemberRole::Standby {
-            return Ok(false);
-        }
-
-        member.role = roster::MemberRole::Standby;
-
-        let roster_clone = roster.clone();
-        let roster_path = self.state.paths.roster_path();
-        drop(roster);
-        roster::persist_roster(&roster_clone, &roster_path).await?;
-        Ok(true)
+        self.state
+            .touch_roster(|roster| {
+                let member = roster
+                    .find_member_mut(&hostname)
+                    .ok_or_else(|| CertmeshError::NotFound(hostname.clone()))?;
+                if member.role == roster::MemberRole::Standby {
+                    return Ok(false);
+                }
+                member.role = roster::MemberRole::Standby;
+                Ok(true)
+            })
+            .await
     }
 
     /// Add alias SANs to a member's roster entry (used by DNS alias feedback).
@@ -1625,27 +1728,21 @@ impl CertmeshCore {
         hostname: &str,
         sans: &[String],
     ) -> Result<bool, CertmeshError> {
-        let mut roster = self.state.roster.lock().await;
-        let member = roster
-            .find_member_mut(hostname)
-            .ok_or_else(|| CertmeshError::NotFound(hostname.to_string()))?;
-
-        let mut changed = false;
-        for san in sans {
-            if !member.cert_sans.iter().any(|s| s == san) {
-                member.cert_sans.push(san.clone());
-                changed = true;
-            }
-        }
-
-        if changed {
-            let roster_clone = roster.clone();
-            let roster_path = self.state.paths.roster_path();
-            drop(roster);
-            roster::persist_roster(&roster_clone, &roster_path).await?;
-        }
-
-        Ok(changed)
+        self.state
+            .touch_roster(|roster| {
+                let member = roster
+                    .find_member_mut(hostname)
+                    .ok_or_else(|| CertmeshError::NotFound(hostname.to_string()))?;
+                let mut changed = false;
+                for san in sans {
+                    if !member.cert_sans.iter().any(|s| s == san) {
+                        member.cert_sans.push(san.clone());
+                        changed = true;
+                    }
+                }
+                Ok(changed)
+            })
+            .await
     }
 
     /// Get the local hostname.
@@ -1736,6 +1833,17 @@ pub(crate) fn validate_reload_hook(hook: &str) -> Result<(), CertmeshError> {
         }
     }
     Ok(())
+}
+
+/// Outcome of a member trust-bundle pull ([`CertmeshCore::pull_trust_bundle`]).
+#[derive(Debug)]
+pub enum BundleOutcome {
+    /// This node has no member state — it never joined a mesh. Nothing to pull.
+    NotApplicable,
+    /// The bundle verified but its `seq` matches what we already have.
+    NoChange { seq: u64 },
+    /// A newer, verified bundle was accepted; policy + `last_bundle_seq` updated.
+    Updated { seq: u64, self_revoked: bool },
 }
 
 /// Outcome of a member-pull renewal attempt ([`CertmeshCore::renew_self_if_due`]).
@@ -1932,6 +2040,8 @@ pub(crate) fn build_status(
         enrollment_state: roster.enrollment_state(),
         auth_method: auth_method.map(|s| s.to_string()),
         member_count: roster.active_count(),
+        seq: roster.metadata.seq,
+        policy: roster.metadata.policy.clone(),
         members: roster
             .members
             .iter()
@@ -2165,6 +2275,105 @@ mod tests {
 
         cancel.cancel();
         let _ = server.await;
+        let _ = std::fs::remove_dir_all(base.join("ca"));
+        let _ = std::fs::remove_dir_all(base.join("member"));
+    }
+
+    /// End-to-end trust-bundle pull (ADR-017 P1/F4): the CA serves a signed bundle
+    /// over HTTP; a member pulls it, verifies the signature against its pin,
+    /// accepts a newer `seq`, no-ops on an unchanged one, rejects a rollback, and
+    /// detects its own revocation.
+    #[tokio::test]
+    async fn trust_bundle_pull_round_trip() {
+        let base = koi_common::test::ensure_data_dir("koi-certmesh-bundle-e2e");
+        let ca_paths = CertmeshPaths::with_data_dir(base.join("ca"));
+        let member_paths = CertmeshPaths::with_data_dir(base.join("member"));
+        let _ = std::fs::remove_dir_all(ca_paths.data_dir());
+        let _ = std::fs::remove_dir_all(member_paths.data_dir());
+
+        // CA with one enrolled member (enroll bumps seq to >= 1).
+        let (ca_state, _m) = ca::create_ca("be2e", &[5u8; 32], &ca_paths).unwrap();
+        let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+        let auth = koi_crypto::auth::AuthState::Totp(koi_crypto::totp::generate_secret());
+        let ca_core = CertmeshCore::new_with_paths(ca_state, roster, Some(auth), ca_paths.clone());
+        let (_k, csr) =
+            csr::generate_keypair_and_csr("bundle-host", &["bundle-host".to_string()]).unwrap();
+        let invite = ca_core.mint_invite("bundle-host", 60).await.unwrap().token;
+        ca_core
+            .enroll(&protocol::JoinRequest {
+                hostname: "bundle-host".to_string(),
+                auth: None,
+                invite_token: Some(invite),
+                csr: Some(csr),
+                sans: vec!["bundle-host".to_string()],
+            })
+            .await
+            .unwrap();
+        let pin = ca::ca_fingerprint_from_disk(&ca_paths).unwrap();
+
+        // Serve the certmesh routes (incl. GET /trust-bundle) over plain HTTP,
+        // nested under the crate prefix exactly as the binary mounts them.
+        let app = Router::new().nest("/v1/certmesh", crate::http::routes(ca_core.state.clone()));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+        // Arm the member with a pin and a fresh (seq 0) anti-rollback floor.
+        member::save(
+            &member_paths.member_state_path(),
+            &member::MemberState {
+                hostname: "bundle-host".to_string(),
+                ca_host: "127.0.0.1".to_string(),
+                ca_mtls_port: 5642,
+                ca_http_port: port,
+                ca_fingerprint: pin.clone(),
+                sans: vec!["bundle-host".to_string()],
+                policy: crate::roster::CertPolicy::default(),
+                last_bundle_seq: 0,
+                reload_hook: None,
+            },
+        )
+        .unwrap();
+        let member_core = CertmeshCore::uninitialized_with_paths(member_paths.clone());
+
+        // First pull → Updated (the CA's seq is >= 1 after the enroll).
+        match member_core.pull_trust_bundle().await.expect("pull ok") {
+            BundleOutcome::Updated { seq, self_revoked } => {
+                assert!(seq >= 1, "expected a bumped seq, got {seq}");
+                assert!(!self_revoked);
+            }
+            other => panic!("expected Updated, got {other:?}"),
+        }
+        let stored = member::load(&member_paths.member_state_path()).unwrap();
+        assert!(
+            stored.last_bundle_seq >= 1,
+            "member persisted the bundle seq"
+        );
+
+        // Second pull, no roster change → NoChange (idempotent).
+        assert!(matches!(
+            member_core.pull_trust_bundle().await.unwrap(),
+            BundleOutcome::NoChange { .. }
+        ));
+
+        // Revoke the member on the CA → next pull sees self_revoked + a higher seq.
+        ca_core
+            .revoke_member("bundle-host", Some("op".into()), Some("test".into()))
+            .await
+            .unwrap();
+        match member_core.pull_trust_bundle().await.expect("pull ok") {
+            BundleOutcome::Updated { self_revoked, .. } => {
+                assert!(
+                    self_revoked,
+                    "member must detect its own revocation in the bundle"
+                );
+            }
+            other => panic!("expected Updated(self_revoked), got {other:?}"),
+        }
+
+        server.abort();
         let _ = std::fs::remove_dir_all(base.join("ca"));
         let _ = std::fs::remove_dir_all(base.join("member"));
     }

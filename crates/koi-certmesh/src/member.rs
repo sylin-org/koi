@@ -21,6 +21,10 @@ use crate::roster::CertPolicy;
 /// renewal; persisted per-member so a non-default CA port can be recorded.
 pub const DEFAULT_CA_MTLS_PORT: u16 = 5642;
 
+/// Default plain-HTTP port (matches the binary's `DEFAULT_HTTP_PORT`). The member
+/// pulls the self-verifying trust bundle from here (a DAT-exempt GET).
+pub const DEFAULT_CA_HTTP_PORT: u16 = 5641;
+
 /// Persisted coordinates a joined member needs to pull-renew from its CA.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MemberState {
@@ -31,6 +35,9 @@ pub struct MemberState {
     /// Port of the CA's mTLS listener.
     #[serde(default = "default_mtls_port")]
     pub ca_mtls_port: u16,
+    /// Port of the CA's plain-HTTP listener (where the trust bundle is served).
+    #[serde(default = "default_http_port")]
+    pub ca_http_port: u16,
     /// The pinned CA fingerprint (sha256 of the CA cert DER). Renewal responses
     /// must match this, or the member refuses to install (anti-CA-swap).
     pub ca_fingerprint: String,
@@ -38,8 +45,13 @@ pub struct MemberState {
     #[serde(default)]
     pub sans: Vec<String>,
     /// CA-held lifecycle policy that drives the renew schedule + grace window.
+    /// Refreshed from each accepted trust bundle (ADR-017 F4).
     #[serde(default)]
     pub policy: CertPolicy,
+    /// Highest trust-bundle `seq` this member has accepted. Anti-rollback floor:
+    /// a pulled bundle with a strictly lower `seq` is rejected.
+    #[serde(default)]
+    pub last_bundle_seq: u64,
     /// Optional local reload hook to run after a successful renewal install.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reload_hook: Option<String>,
@@ -47,6 +59,10 @@ pub struct MemberState {
 
 fn default_mtls_port() -> u16 {
     DEFAULT_CA_MTLS_PORT
+}
+
+fn default_http_port() -> u16 {
+    DEFAULT_CA_HTTP_PORT
 }
 
 impl MemberState {
@@ -87,6 +103,27 @@ pub fn host_from_endpoint(endpoint: &str) -> String {
     }
 }
 
+/// Extract the port from a join endpoint, defaulting to [`DEFAULT_CA_HTTP_PORT`]
+/// when none is present. This is the CA's plain-HTTP port (where it serves the
+/// trust bundle).
+pub fn port_from_endpoint(endpoint: &str) -> u16 {
+    let after_scheme = endpoint
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(endpoint);
+    let authority = after_scheme
+        .split(['/', '?'])
+        .next()
+        .unwrap_or(after_scheme);
+    // `[::1]:5641` → after the closing bracket; otherwise the last `:` segment.
+    let port_str = authority
+        .rsplit_once(']')
+        .map(|(_, rest)| rest.trim_start_matches(':'))
+        .or_else(|| authority.rsplit_once(':').map(|(_, p)| p))
+        .unwrap_or("");
+    port_str.parse().unwrap_or(DEFAULT_CA_HTTP_PORT)
+}
+
 /// Load the member renewal state, or `None` if it is absent/unreadable.
 pub fn load(path: &std::path::Path) -> Option<MemberState> {
     let bytes = std::fs::read(path).ok()?;
@@ -101,7 +138,9 @@ pub fn save(path: &std::path::Path, state: &MemberState) -> Result<(), CertmeshE
     let json = serde_json::to_vec_pretty(state)
         .map_err(|e| CertmeshError::Internal(format!("serialize member state: {e}")))?;
 
-    let tmp = path.with_extension("json.tmp");
+    // PID-qualified temp so concurrent processes sharing the data dir don't clobber
+    // each other's temp file before the rename.
+    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
     std::fs::write(&tmp, &json)?;
     #[cfg(unix)]
     {
@@ -121,11 +160,22 @@ mod tests {
             hostname: "web-01".to_string(),
             ca_host: "ca-host".to_string(),
             ca_mtls_port: 5642,
+            ca_http_port: 5641,
             ca_fingerprint: "deadbeef".to_string(),
             sans: vec!["web-01".to_string(), "web-01.local".to_string()],
             policy: CertPolicy::default(),
+            last_bundle_seq: 0,
             reload_hook: None,
         }
+    }
+
+    #[test]
+    fn port_from_endpoint_parses_or_defaults() {
+        assert_eq!(port_from_endpoint("http://ca-host:5641"), 5641);
+        assert_eq!(port_from_endpoint("http://ca-host:9000/v1"), 9000);
+        assert_eq!(port_from_endpoint("http://ca-host"), DEFAULT_CA_HTTP_PORT);
+        assert_eq!(port_from_endpoint("192.168.1.55:5641"), 5641);
+        assert_eq!(port_from_endpoint("[::1]:5641"), 5641);
     }
 
     #[test]
