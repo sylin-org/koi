@@ -9,7 +9,7 @@ koi_version: v0.4.2
 validation:
   date_last_tested: 2026-06-18
   status: verified
-  scope: "unit + integration (csr::tests, invite::tests, enrollment::tests {invite_token_succeeds, without_csr_is_rejected}, http member-csr/invite tests, protocol round-trips) + adversarial security review (key-custody invariant) + live on the Linux test host (member-csr -> join-with-CSR -> member-cert: join response carries NO service_key; key.pem 0600 local; single-use invite replay 401; member-csr 401 without DAT token; roster grew)"
+  scope: "unit + integration (csr::tests incl. least-privilege leaf profile, invite::tests, enrollment::tests {invite_token_succeeds (~90d leaf), without_csr_is_rejected}, http member-csr/invite tests, protocol round-trips) + adversarial security review (key-custody invariant) + live on the Linux test host (member-csr -> join-with-CSR -> member-cert: join response carries NO service_key; key.pem 0600 local; single-use invite replay 401; member-csr 401 without DAT token; roster grew). ADR-017 phase 1a (cert profiles F10 + CA-held 90/30/14 policy) shipped."
 ---
 
 # Certmesh enrollment — capability card
@@ -53,10 +53,15 @@ Under the hood the joiner's CLI orchestrates three calls, carrying only public m
 
 No invite? `koi certmesh join <endpoint>` falls back to the interactive **mesh TOTP** prompt (still CSR-based — the key stays local). For a closed/approval mesh, an invite does **not** skip the gate: `open-enrollment` and approve as usual. The **trust anchor is out-of-band delivery** of the invite (the irreducible "one trusted bit"; see [ADR-015](../../adr/015-certmesh-enrollment-hardening.md) "Accepted residual risks").
 
-## Not yet covered (honest scope)
+## Cert profile & lifecycle policy (ADR-017 phase 1a, shipped)
 
-- **Renewal still ships CA-generated keys.** F1 secures *initial* enrollment; the certificate **renewal** path (`/v1/certmesh/renew`) is the pre-F1 push flow where the CA regenerates the member key and sends it over the inter-node channel — re-introducing CA key custody after ~30 days. Fixing this is **ADR-015 F6 (pull renewal)**, not yet implemented.
-- **Plain-HTTP join is TOFU.** The initial CSR/cert exchange rides plain HTTP; a LAN MITM of mDNS discovery is a documented residual until pinned-fingerprint bootstrap (**F3**) / TLS-for-join.
+Every issued leaf now carries a least-privilege profile — `KeyUsage=[DigitalSignature,KeyEncipherment]`, `EKU=[ServerAuth,ClientAuth]`, `CA:FALSE` — and the CA cert is `pathlen=0` (it signs leaves, never sub-CAs). Lifetimes are a **CA-held policy** (`CertPolicy`, default **90-day** leaves / renew at **30 days** remaining / **14-day** grace), stored in roster metadata and applied at issuance; it will be distributed to members in the signed trust bundle (phase 2).
+
+## Not yet covered (tracked in [ADR-017](../../adr/017-certmesh-trust-lifecycle.md))
+
+- **Renewal still ships CA-generated keys.** F1 secures *initial* enrollment; the certificate **renewal** path (`/v1/certmesh/renew`) is still the pre-F1 push flow where the CA regenerates the member key — re-introducing CA key custody after the cert lifetime. The fix (member-pull, rotate-key renewal) is **ADR-017 F6**, phase 1b (in progress).
+- **Plain-HTTP join is TOFU.** The initial CSR/cert exchange rides plain HTTP; a LAN MITM of mDNS discovery is a documented residual until pinned-fingerprint bootstrap (**ADR-017 F3**, phase 3).
+- **Revocation isn't propagated/enforced at the boundary.** It's CA-local only today; the signed monotonic trust bundle (**ADR-017 F4**, phase 2) fixes propagation + anti-rollback + mTLS/health enforcement.
 
 ## The proof it works
 
