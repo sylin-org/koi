@@ -1,6 +1,6 @@
 # ADR-018: Certmesh Cross-Participant Integration Test Suite
 
-**Status:** Accepted — **Tiers 1–2 implemented** (2026-06-19); Tiers 3–4 planned
+**Status:** Accepted — **Tiers 1–3 implemented** (2026-06-19); Tier 4 planned
 **Date:** 2026-06-19
 **Builds on:** ADR-015 (Certmesh Enrollment Hardening — F1 CSR custody, F2 invites) and ADR-017 (Certmesh Trust Lifecycle — all four phases **Implemented**). Their *logic* is densely unit- and in-process-tested, but the cross-participant *exchange* those features exist for is verified only by hand. This ADR closes that verification gap.
 **Constrained by:** STACK-0001 (the certmesh contract surface — mdns/dns/certmesh/udp/truststore — is the thing under test; the harness must not introduce consumer-name leakage and must keep the SURFACES ledger honest). Pre-1.0: on-disk and wire formats may still change, so tests assert behavior, not byte layouts.
@@ -86,7 +86,7 @@ Each tier is independently shippable; the gate `cargo fmt --check && cargo clipp
 |---|---|---|---|
 | **1** ✅ | `koi-embedded/tests/whole_story.rs` two-process whole-story (real HTTP+mTLS) — **implemented 2026-06-19** (the `mtls_port` builder knob proved unnecessary — see Implementation notes) | `cargo test --locked` on the existing 3-OS matrix (no workflow edit) | #1, #3, #4 |
 | **2** ✅ | two real `koi` binary daemons; successful join + revoke over DAT-gated HTTP — **implemented 2026-06-19** as a pure-Rust child-process driver (`crates/koi/tests/two_daemon_certmesh.rs`), not a `qa.yml` promotion (see Implementation notes) | `cargo test --locked` on the existing 3-OS matrix (no workflow edit) | #5, #7 |
-| **3** | docker-compose two-node cross-host job | `ci.yml` (linux) | #2 (cross-host) |
+| **3** ✅ | docker-compose two-node cross-host job — **implemented 2026-06-19**; immediately surfaced + fixed a real CLI bug (join key-custody misroute) | `ci.yml` `cross-host` (linux, gated on test+clippy) | #2 (cross-host) |
 | **4** | Windows↔Linux runner-pair job | scheduled or self-hosted | #2 (cross-platform) |
 | **0** | determinism fixes (`--test-threads=1`, de-flake) | folded into Tier 1 | QA-grade prerequisite |
 
@@ -198,3 +198,36 @@ the largest cross-platform risk). Reviewed (security + rust); the 401-is-DAT and
 member-cert custody adapters, now tested against the real binary) and #7 (a successful
 two-process exchange is now a per-PR gate, not a weekly-cron negative-only check). Gaps #2
 (cross-host / cross-platform) remain for Tiers 3–4.
+
+## Implementation notes — Tier 3 (2026-06-19)
+
+`docker/cross-host/` (`Dockerfile` + `docker-compose.yml`) + `scripts/cross-host-certmesh.sh`
++ a `cross-host` job in `ci.yml`: two `koi` daemons run in **separate containers**
+(`node-a` = CA, `node-b` = member) with distinct hostnames/IPs on a user-defined bridge
+network, and the driver runs the whole story over the **real container network via the real
+`koi certmesh` CLI**: `create` (just-me, non-interactive) → mint invite for `node-b` →
+**`node-b` joins `node-a` over the bridge** → assert `node-b` enrolled → `revoke node-b` →
+a fresh re-join is **refused**. This is the genuine cross-**host** coverage (distinct IPs)
+the single-process Tiers 1–2 cannot give, and it additionally exercises the CLI client-mode
+path (breadcrumb discovery + DAT token + the member-csr/member-cert custody adapters) end to
+end. The image carries a prebuilt static **musl** `koi` binary (built on the host/runner via
+`cross` — the release toolchain — and copied in, so the build context is tiny and there is no
+compile-in-Docker). `KOI_HTTP_BIND=0.0.0.0` makes `node-a` reachable from `node-b` (mutations
+stay DAT-gated; the compose bridge is the only exposure). The CI job is gated on
+`needs: [test, clippy]` so a multi-minute cross-build never runs on a tree that does not
+compile/lint; `KOI_BIN=<prebuilt koi>` skips the build entirely.
+
+**This tier immediately earned its keep:** the first automated cross-host `koi certmesh join`
+surfaced a real, shipping **CLI bug** — the global `--endpoint` and the `join`/`promote`
+positional CA endpoint collided on clap's arg id, so a positional CA silently set
+`--endpoint`, and `join` then resolved its LOCAL key-custody daemon (member-csr/member-cert,
+which generate + keep the member private key) from it → those calls were sent to the remote
+CA → 401. Explicit-endpoint join could never succeed; only mDNS-discovery join worked. Fixed
+in `fix(certmesh): stop certmesh join from misrouting key custody to the CA` (positional
+renamed to `ca_endpoint`; `join`/`promote` resolve the local daemon from the breadcrumb only;
+clap regression tests). The cross-host suite now validates the fix end-to-end. This is the
+ADR's premise made concrete — the cross-participant exchange was untested, and the first test
+of it found a defect.
+
+**Closes** gap #2's cross-**host** axis (distinct-IP exchange). The cross-**platform**
+(Windows↔Linux) axis remains for Tier 4.

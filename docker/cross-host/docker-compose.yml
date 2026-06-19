@@ -1,0 +1,38 @@
+# ADR-018 Tier 3 — two koi daemons on a user-defined bridge network, distinct
+# hostnames/IPs: a genuine cross-HOST certmesh exchange (node-b joins node-a over the
+# container network), which the single-process Tiers 1–2 cannot exercise. Both services
+# run the same image, built once from ./Dockerfile (which carries the staged `koi` binary).
+services:
+  node-a:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: koi-tier3:latest
+    hostname: node-a
+    networks: [mesh]
+    # `koi status` (client mode via the in-container breadcrumb) exits 0 once the daemon's
+    # HTTP adapter is up — so node-b waits for a *ready* node-a, not just a started one.
+    healthcheck:
+      test: ["CMD", "koi", "status"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 1s
+
+  node-b:
+    image: koi-tier3:latest
+    hostname: node-b
+    depends_on:
+      node-a:
+        condition: service_healthy
+    networks: [mesh]
+    healthcheck:
+      test: ["CMD", "koi", "status"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 1s
+
+networks:
+  mesh:
+    driver: bridge
