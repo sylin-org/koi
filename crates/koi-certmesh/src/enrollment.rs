@@ -37,8 +37,20 @@ pub fn process_enrollment(
     approved_by: Option<String>,
     paths: &crate::CertmeshPaths,
 ) -> Result<(JoinResponse, IssuedCert), CertmeshError> {
+    // Every denial below is audited *before* the error is returned (ADR-017
+    // F9/F14): a refused enrollment leaves a trail even though the roster is not
+    // mutated. `audit_denied` is a best-effort append (its own error is swallowed).
+    let audit_denied = |event: &str| {
+        let _ = audit::append_entry_to(
+            &paths.audit_log_path(),
+            event,
+            &[("hostname", hostname), ("result", "denied")],
+        );
+    };
+
     // 1. Check enrollment is open
     if !roster.is_enrollment_open() {
+        audit_denied("enroll_closed");
         return Err(CertmeshError::EnrollmentClosed);
     }
 
@@ -54,20 +66,37 @@ pub fn process_enrollment(
     // step 5) gate both paths identically — the invite only swaps the credential.
     if let Some(token) = request.invite_token.as_deref() {
         if !crate::invite::verify_and_consume(&paths.invites_path(), token, hostname) {
+            // verify_and_consume folds invalid / expired / reused / wrong-host into
+            // one fail-closed false, so a single event covers the token rejection.
+            audit_denied("enroll_token_invalid");
             return Err(CertmeshError::InvalidAuth);
         }
     } else {
-        let auth = request.auth.as_ref().ok_or(CertmeshError::InvalidAuth)?;
-        let auth_state = auth_state.ok_or(CertmeshError::CaLocked)?;
+        let auth = match request.auth.as_ref() {
+            Some(a) => a,
+            None => {
+                audit_denied("enroll_auth_missing");
+                return Err(CertmeshError::InvalidAuth);
+            }
+        };
+        let auth_state = match auth_state {
+            Some(s) => s,
+            None => {
+                audit_denied("enroll_ca_locked");
+                return Err(CertmeshError::CaLocked);
+            }
+        };
         let adapter = koi_crypto::auth::adapter_for(auth_state);
         let valid = adapter.verify(auth_state, challenge, auth).unwrap_or(false);
 
         match rate_limiter.check_and_record(valid) {
             Ok(()) => {} // Valid, proceed
             Err(koi_crypto::totp::RateLimitError::LockedOut { remaining_secs }) => {
+                audit_denied("enroll_rate_limited");
                 return Err(CertmeshError::RateLimited { remaining_secs });
             }
             Err(koi_crypto::totp::RateLimitError::InvalidCode { .. }) => {
+                audit_denied("enroll_auth_failed");
                 return Err(CertmeshError::InvalidAuth);
             }
         }
@@ -75,16 +104,19 @@ pub fn process_enrollment(
 
     // 3. Reject revoked members
     if roster.is_revoked(hostname) {
+        audit_denied("enroll_revoked_attempt");
         return Err(CertmeshError::Revoked(hostname.to_string()));
     }
 
     // 4. Check not already enrolled
     if roster.is_enrolled(hostname) {
+        audit_denied("enroll_already_enrolled");
         return Err(CertmeshError::AlreadyEnrolled(hostname.to_string()));
     }
 
     // 5. Approval handled by caller when required
     if roster.requires_approval() && approved_by.as_deref().unwrap_or("").is_empty() {
+        audit_denied("enroll_approval_denied");
         return Err(CertmeshError::ApprovalDenied);
     }
 
@@ -92,11 +124,15 @@ pub fn process_enrollment(
     //    and sent ONLY this CSR; the CA signs a leaf and never sees the private
     //    key. Remote enrollment REQUIRES a CSR — the CA refuses to generate and
     //    ship member keys (the key-custody fault this fixes).
-    let csr_pem = request.csr.as_deref().ok_or_else(|| {
-        CertmeshError::InvalidPayload(
-            "a CSR is required to enroll; the CA does not generate member keys".to_string(),
-        )
-    })?;
+    let csr_pem = match request.csr.as_deref() {
+        Some(csr) => csr,
+        None => {
+            audit_denied("enroll_no_csr");
+            return Err(CertmeshError::InvalidPayload(
+                "a CSR is required to enroll; the CA does not generate member keys".to_string(),
+            ));
+        }
+    };
     // Leaf lifetime is the CA-held policy (ADR-017), not a hardcoded constant.
     let lifetime_days = roster.metadata.policy.leaf_lifetime_days;
     let leaf_pem = crate::csr::sign_csr(ca, csr_pem, sans, lifetime_days)?;

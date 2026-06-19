@@ -410,6 +410,12 @@ async fn unlock_handler(
     let ca_state = match crate::ca::load_ca(&request.passphrase, &state.paths) {
         Ok(ca) => ca,
         Err(e) => {
+            // Audit the failed unlock before returning (ADR-017 F9/F14).
+            let _ = crate::audit::append_entry_to(
+                &state.paths.audit_log_path(),
+                "unlock_failed",
+                &[("via", "http")],
+            );
             let code = koi_common::error::ErrorCode::from(&e);
             let status = StatusCode::from_u16(code.http_status())
                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -755,7 +761,15 @@ async fn promote_handler(
     let valid = adapter
         .verify(auth_state, &challenge, &request.auth)
         .unwrap_or(false);
-    match rate_limiter.check_and_record(valid) {
+    let check = rate_limiter.check_and_record(valid);
+    // Persist the limiter regardless of outcome (ADR-017 F7) — snapshot + drop the
+    // guard before the blocking write.
+    let limiter_snapshot = rate_limiter.clone();
+    drop(rate_limiter);
+    if let Err(e) = crate::persist_rate_limiter(&state.paths, &limiter_snapshot) {
+        tracing::warn!(error = %e, "Could not persist rate-limiter state");
+    }
+    match check {
         Ok(()) => {}
         Err(koi_crypto::totp::RateLimitError::LockedOut { remaining_secs }) => {
             return error_response(
@@ -861,6 +875,13 @@ async fn renew_handler(
     let (authorized_sans, lifetime_days) = {
         let roster = state.roster.lock().await;
         if roster.is_revoked(&request.hostname) {
+            // Boundary revocation, audited (ADR-017 F9/F14): a revoked member's
+            // renewal is refused at the CA, not merely dropped.
+            let _ = crate::audit::append_entry_to(
+                &state.paths.audit_log_path(),
+                "mtls_revoked_rejected",
+                &[("hostname", request.hostname.as_str()), ("op", "renew")],
+            );
             return error_response(
                 StatusCode::FORBIDDEN,
                 &CertmeshError::Revoked(request.hostname.clone()),
@@ -1009,6 +1030,14 @@ async fn health_handler(
         })
         .await
     {
+        if matches!(e, CertmeshError::Revoked(_)) {
+            // Boundary revocation, audited (ADR-017 F9/F14).
+            let _ = crate::audit::append_entry_to(
+                &state.paths.audit_log_path(),
+                "mtls_revoked_rejected",
+                &[("hostname", request.hostname.as_str()), ("op", "health")],
+            );
+        }
         return error_response(StatusCode::FORBIDDEN, &e);
     }
 

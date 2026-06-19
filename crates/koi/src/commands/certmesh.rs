@@ -185,7 +185,7 @@ pub fn create(
     //
     // The ceremony host manages all branching, validation, and content.
     // The CLI is a dumb render loop.
-    use koi_certmesh::pond_ceremony::PondCeremonyRules;
+    use koi_certmesh::init_ceremony::InitCeremonyRules;
     use koi_common::ceremony::CeremonyHost;
 
     // CLI composition root: resolve the local data dir once for the ceremony
@@ -193,7 +193,7 @@ pub fn create(
     #[allow(clippy::disallowed_methods)]
     let ceremony_paths =
         koi_certmesh::CertmeshPaths::with_data_dir(koi_common::paths::koi_data_dir());
-    let host = CeremonyHost::new(PondCeremonyRules::new(ceremony_paths.clone()));
+    let host = CeremonyHost::new(InitCeremonyRules::new(ceremony_paths.clone()));
 
     // Pre-fill initial data from CLI flags
     let mut initial_data = serde_json::Map::new();

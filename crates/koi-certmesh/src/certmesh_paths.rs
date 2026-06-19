@@ -17,6 +17,8 @@ const AUTH_FILENAME: &str = "auth.json";
 const ROSTER_FILENAME: &str = "roster.json";
 const MEMBER_STATE_FILENAME: &str = "member.json";
 const INVITES_FILENAME: &str = "invites.json";
+const MACHINE_BIND_FILENAME: &str = "machine.bind";
+const TOTP_THROTTLE_FILENAME: &str = "totp-throttle.json";
 const AUDIT_FILENAME: &str = "certmesh-audit.log";
 const AUTO_UNLOCK_KEY_FILENAME: &str = "auto-unlock-key";
 const ACME_SUBDIR: &str = "acme";
@@ -93,6 +95,24 @@ impl CertmeshPaths {
     /// Unlock slot table file.
     pub fn slot_table_path(&self) -> PathBuf {
         self.ca_dir().join(SLOT_TABLE_FILENAME)
+    }
+
+    /// Machine-binding fingerprint file (`data_dir/certmesh/ca/machine.bind`).
+    ///
+    /// Records the machine fingerprint at `certmesh create` (ADR-017 F11). At boot,
+    /// auto-unlock refuses if the current machine fingerprint no longer matches —
+    /// a VM clone / disk restore onto new hardware fails safe to a manual unlock.
+    pub fn machine_bind_path(&self) -> PathBuf {
+        self.ca_dir().join(MACHINE_BIND_FILENAME)
+    }
+
+    /// Persisted TOTP enrollment rate-limiter state
+    /// (`data_dir/certmesh/ca/totp-throttle.json`).
+    ///
+    /// The lockout survives a daemon restart (ADR-017 F7) so a bounce can't reset
+    /// it. Invite-token enrollment is deliberately not throttled.
+    pub fn rate_limiter_path(&self) -> PathBuf {
+        self.ca_dir().join(TOTP_THROTTLE_FILENAME)
     }
 
     /// Certificate files directory (`data_dir/certs/`).

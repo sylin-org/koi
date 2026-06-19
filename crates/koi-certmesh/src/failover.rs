@@ -95,6 +95,16 @@ pub fn accept_promotion(
     let ca_key = keys::decrypt_key(&response.encrypted_ca_key, shared_key_hex.as_ref())
         .map_err(|e| CertmeshError::PromotionFailed(format!("CA key DH decryption: {e}")))?;
 
+    // F14: the decrypted private key must actually match the transferred CA
+    // certificate's public key. Decryption alone (correct DH) does not prove the
+    // primary sent a *consistent* (cert, key) pair — verify the SPKI matches so a
+    // standby never installs a key that can't sign for its own CA cert.
+    if !ca_key_matches_cert(&ca_key, &response.ca_cert_pem)? {
+        return Err(CertmeshError::PromotionFailed(
+            "decrypted CA key does not match the transferred CA certificate public key".into(),
+        ));
+    }
+
     // Auth data is encrypted with the same DH-derived shared key
     let stored: koi_crypto::auth::StoredAuth = serde_json::from_value(response.auth_data.clone())
         .map_err(|e| {
@@ -108,6 +118,26 @@ pub fn accept_promotion(
         .map_err(|e| CertmeshError::PromotionFailed(format!("roster deserialization: {e}")))?;
 
     Ok((ca_key, auth_state, roster))
+}
+
+/// Whether `ca_key`'s public key (SPKI) equals the public key in `ca_cert_pem`
+/// (ADR-017 F14). Compares the raw SubjectPublicKeyInfo DER on both sides.
+fn ca_key_matches_cert(ca_key: &CaKeyPair, ca_cert_pem: &str) -> Result<bool, CertmeshError> {
+    use x509_parser::prelude::FromDer;
+
+    let cert_der = pem::parse(ca_cert_pem)
+        .map_err(|e| CertmeshError::PromotionFailed(format!("ca_cert is not valid PEM: {e}")))?;
+    let (_, cert) = x509_parser::certificate::X509Certificate::from_der(cert_der.contents())
+        .map_err(|e| CertmeshError::PromotionFailed(format!("ca_cert is not valid DER: {e}")))?;
+    let cert_spki = cert.public_key().raw;
+
+    let key_pub_pem = ca_key
+        .public_key_pem()
+        .map_err(|e| CertmeshError::PromotionFailed(format!("CA key public-key export: {e}")))?;
+    let key_spki = pem::parse(&key_pub_pem)
+        .map_err(|e| CertmeshError::PromotionFailed(format!("CA key public-key PEM: {e}")))?;
+
+    Ok(cert_spki == key_spki.contents())
 }
 
 #[cfg(test)]
@@ -205,6 +235,33 @@ mod tests {
         response.ephemeral_public = None;
         let result = accept_promotion(&response, client_kp);
         assert!(matches!(result, Err(CertmeshError::PromotionFailed(_))));
+    }
+
+    #[test]
+    fn promotion_rejects_key_cert_mismatch() {
+        // F14: a (key, cert) pair that does not match is refused even when DH
+        // decryption succeeds — guards against a primary sending an inconsistent pair.
+        let ca = make_test_ca();
+        let totp = koi_crypto::totp::generate_secret();
+        let auth = AuthState::Totp(totp);
+        let roster = make_test_roster();
+
+        let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
+        let client_pub = client_kp.public_key_bytes();
+        let mut response = prepare_promotion(&ca, &auth, &roster, &client_pub).unwrap();
+
+        // Swap in a DIFFERENT CA's certificate (a different keypair). The DH
+        // decryption still yields the original key, but it no longer matches the cert.
+        let other = ca::create_ca("other-pass", &[99u8; 32], &test_paths())
+            .unwrap()
+            .0;
+        response.ca_cert_pem = other.cert_pem.clone();
+
+        let result = accept_promotion(&response, client_kp);
+        assert!(
+            matches!(result, Err(CertmeshError::PromotionFailed(_))),
+            "key/cert mismatch must be rejected"
+        );
     }
 
     #[test]

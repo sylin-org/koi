@@ -949,11 +949,11 @@ mod tests {
     #[test]
     fn audit_log_response_serde_round_trip() {
         let resp = AuditLogResponse {
-            entries: "2026-02-11T00:00:00Z pond_initialized\n".to_string(),
+            entries: "2026-02-11T00:00:00Z ca_initialized\n".to_string(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: AuditLogResponse = serde_json::from_str(&json).unwrap();
-        assert!(parsed.entries.contains("pond_initialized"));
+        assert!(parsed.entries.contains("ca_initialized"));
     }
 
     #[test]

@@ -109,7 +109,8 @@ pub enum MemberRole {
     Primary,
     Standby,
     Member,
-    /// Non-Moss client (e.g. Rake on a workstation)
+    /// A leaf/client node — holds a certificate but is neither the CA primary nor
+    /// a promotion standby (e.g. a workstation that only consumes the mesh).
     Client,
 }
 
@@ -142,6 +143,11 @@ pub struct RosterMember {
     pub cert_fingerprint: String,
     pub cert_expires: DateTime<Utc>,
     pub cert_sans: Vec<String>,
+    /// Local cert directory for this member. **Not persisted** (`#[serde(skip)]`,
+    /// ADR-017 F13): it is only ever set for the CA's own self-enroll entry and
+    /// would leak the CA host's data-dir path into `roster.json`. It is always
+    /// derivable as `certs_dir().join(hostname)`, so nothing needs it on disk.
+    #[serde(default, skip)]
     pub cert_path: String,
     pub status: MemberStatus,
     /// Post-renewal reload hook command (Phase 3).
@@ -619,7 +625,9 @@ mod tests {
             cert_fingerprint: "fp".to_string(),
             cert_expires: Utc::now(),
             cert_sans: vec![],
-            cert_path: String::new(),
+            // A non-empty path proves F13's `#[serde(skip)]` (not merely empty-skip):
+            // the CA host's local cert dir must never leak into roster.json.
+            cert_path: "/var/lib/koi/certs/stone-01".to_string(),
             status: MemberStatus::Active,
             reload_hook: None,
             last_seen: None,
@@ -631,5 +639,8 @@ mod tests {
         assert!(!json.contains("reload_hook"));
         assert!(!json.contains("last_seen"));
         assert!(!json.contains("pinned_ca_fingerprint"));
+        // F13: cert_path is never serialized (skip), so the local path can't leak.
+        assert!(!json.contains("cert_path"));
+        assert!(!json.contains("/var/lib/koi/certs"));
     }
 }

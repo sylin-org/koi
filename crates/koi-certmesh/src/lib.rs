@@ -19,11 +19,11 @@ pub mod error;
 pub mod failover;
 pub mod health;
 pub mod http;
+pub mod init_ceremony;
 pub mod invite;
 pub mod lifecycle;
 pub mod member;
 pub mod mtls;
-pub mod pond_ceremony;
 pub mod profiles;
 pub mod protocol;
 pub mod roster;
@@ -202,11 +202,22 @@ impl CertmeshState {
         let path = self.paths.roster_path();
         // Persist off the executor but keep the roster lock held so writes
         // serialize in seq order (single writer).
-        tokio::task::spawn_blocking(move || roster::save_roster(&snapshot, &path))
+        let saved = tokio::task::spawn_blocking(move || roster::save_roster(&snapshot, &path))
             .await
             .map_err(|e| std::io::Error::other(format!("roster save task: {e}")))
             .and_then(|r| r)
-            .map_err(CertmeshError::Io)?;
+            .map_err(CertmeshError::Io);
+        if let Err(e) = saved {
+            // A failed persist is a trust-relevant event: the in-memory roster
+            // advanced but the durable copy did not (ADR-017 F9). Audit before
+            // returning so the gap is visible.
+            let _ = audit::append_entry_to(
+                &self.paths.audit_log_path(),
+                "roster_persist_failed",
+                &[("error", &e.to_string())],
+            );
+            return Err(e);
+        }
         Ok(out)
     }
 }
@@ -248,6 +259,7 @@ impl CertmeshCore {
         auth_state: Option<AuthState>,
         paths: CertmeshPaths,
     ) -> Self {
+        let rate_limiter = load_rate_limiter(&paths);
         Self {
             state: Arc::new(CertmeshState {
                 paths,
@@ -255,7 +267,7 @@ impl CertmeshCore {
                 roster: tokio::sync::Mutex::new(roster),
                 auth: tokio::sync::Mutex::new(auth_state),
                 pending_challenge: tokio::sync::Mutex::new(None),
-                rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
+                rate_limiter: tokio::sync::Mutex::new(rate_limiter),
                 approval_tx: tokio::sync::Mutex::new(None),
                 event_tx: koi_common::events::event_channel().0,
             }),
@@ -264,6 +276,7 @@ impl CertmeshCore {
 
     /// Create a CertmeshCore in locked state with explicit paths.
     pub fn locked_with_paths(roster: Roster, paths: CertmeshPaths) -> Self {
+        let rate_limiter = load_rate_limiter(&paths);
         Self {
             state: Arc::new(CertmeshState {
                 paths,
@@ -271,7 +284,7 @@ impl CertmeshCore {
                 roster: tokio::sync::Mutex::new(roster),
                 auth: tokio::sync::Mutex::new(None),
                 pending_challenge: tokio::sync::Mutex::new(None),
-                rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
+                rate_limiter: tokio::sync::Mutex::new(rate_limiter),
                 approval_tx: tokio::sync::Mutex::new(None),
                 event_tx: koi_common::events::event_channel().0,
             }),
@@ -283,6 +296,7 @@ impl CertmeshCore {
     /// HTTP routes are still mounted so `/create` is reachable on a fresh install.
     /// All operations that require an initialized CA will return `CaNotInitialized`.
     pub fn uninitialized_with_paths(paths: CertmeshPaths) -> Self {
+        let rate_limiter = load_rate_limiter(&paths);
         Self {
             state: Arc::new(CertmeshState {
                 paths,
@@ -290,7 +304,7 @@ impl CertmeshCore {
                 roster: tokio::sync::Mutex::new(Roster::empty()),
                 auth: tokio::sync::Mutex::new(None),
                 pending_challenge: tokio::sync::Mutex::new(None),
-                rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
+                rate_limiter: tokio::sync::Mutex::new(rate_limiter),
                 approval_tx: tokio::sync::Mutex::new(None),
                 event_tx: koi_common::events::event_channel().0,
             }),
@@ -518,6 +532,26 @@ impl CertmeshCore {
             tracing::warn!(error = %e, "Could not configure auto-unlock");
         }
 
+        // Record this machine's fingerprint (ADR-017 F11) so a later boot can
+        // detect a VM clone / disk restore onto different hardware and refuse to
+        // auto-unlock. Best-effort: if the machine-id is unreadable, the CA is
+        // simply not machine-checked.
+        match koi_crypto::vault::machine_fingerprint() {
+            Some(fp) => {
+                let path = state.paths.machine_bind_path();
+                let r = tokio::task::spawn_blocking(move || write_machine_binding(&path, &fp))
+                    .await
+                    .map_err(|e| std::io::Error::other(format!("machine-bind task: {e}")))
+                    .and_then(|r| r);
+                if let Err(e) = r {
+                    tracing::warn!(error = %e, "Could not record machine binding");
+                }
+            }
+            None => tracing::debug!(
+                "machine-id unavailable; machine binding not recorded (auto-unlock unchecked)"
+            ),
+        }
+
         // Update in-memory state
         *state.ca.lock().await = Some(ca_state);
         *state.auth.lock().await = Some(koi_crypto::auth::AuthState::Totp(totp_secret));
@@ -525,7 +559,7 @@ impl CertmeshCore {
 
         let _ = audit::append_entry_to(
             &state.paths.audit_log_path(),
-            "pond_initialized",
+            "ca_initialized",
             &[
                 (
                     "enrollment_open",
@@ -581,18 +615,17 @@ impl CertmeshCore {
         request: &protocol::JoinRequest,
     ) -> Result<protocol::JoinResponse, CertmeshError> {
         let hostname = &request.hostname;
-        if hostname.is_empty()
-            || hostname.len() > 253
-            || hostname.contains('\0')
-            || hostname.contains(' ')
-        {
-            return Err(CertmeshError::Internal(
-                "invalid hostname for certificate SAN".to_string(),
-            ));
-        }
-        // Default SANs: hostname + hostname.local, plus any extras the joiner sent
+        validate_hostname(hostname)?;
+        // Default SANs: hostname + hostname.local, plus any extras the joiner sent.
+        // Every extra SAN is validated (F15): IP literals pass through; everything
+        // else must be a valid RFC 1123 hostname — so a joiner can't slip a wildcard
+        // or junk DNS name into its cert. Capped to bound the SAN list.
+        const MAX_EXTRA_SANS: usize = 16;
         let mut sans = vec![hostname.clone(), format!("{hostname}.local")];
-        for extra in &request.sans {
+        for extra in request.sans.iter().take(MAX_EXTRA_SANS) {
+            if extra.parse::<std::net::IpAddr>().is_err() {
+                validate_hostname(extra)?;
+            }
             if !sans.contains(extra) {
                 sans.push(extra.clone());
             }
@@ -634,7 +667,7 @@ impl CertmeshCore {
         // and pushes the member under the lock; commit_roster bumps `seq` and
         // persists atomically. On any error it errors *before* mutating, so the
         // roster is left unchanged and nothing is persisted.
-        let (response, _issued) = self
+        let result = self
             .state
             .commit_roster(|roster| {
                 enrollment::process_enrollment(
@@ -650,7 +683,19 @@ impl CertmeshCore {
                     &self.state.paths,
                 )
             })
-            .await?;
+            .await;
+
+        // Persist the rate-limiter regardless of outcome (ADR-017 F7): a failed
+        // TOTP attempt advances a lockout that must survive a restart. Snapshot +
+        // drop the guard before the blocking write (no lock held across I/O).
+        // Invite joins never consult the limiter, so this is a no-op for them.
+        let limiter_snapshot = rate_limiter.clone();
+        drop(rate_limiter);
+        if let Err(e) = persist_rate_limiter(&self.state.paths, &limiter_snapshot) {
+            tracing::warn!(error = %e, "Could not persist rate-limiter state");
+        }
+
+        let (response, _issued) = result?;
 
         let _ = self.state.event_tx.send(CertmeshEvent::MemberJoined {
             hostname: response.hostname.clone(),
@@ -677,13 +722,8 @@ impl CertmeshCore {
             .and_then(|os| os.into_string().ok())
             .unwrap_or_else(|| "unknown".to_string());
 
-        // Validate hostname before using as certificate SAN
-        if hostname.len() > 253 || hostname.contains('\0') || hostname.contains(' ') {
-            return Err(CertmeshError::Internal(format!(
-                "hostname '{}' is not valid for use in certificate SANs",
-                &hostname[..hostname.len().min(64)],
-            )));
-        }
+        // Validate hostname before using as certificate SAN (RFC 1123, F15).
+        validate_hostname(&hostname)?;
 
         let sans = vec![
             hostname.clone(),
@@ -692,28 +732,17 @@ impl CertmeshCore {
             "127.0.0.1".to_string(),
         ];
 
-        // Read the CA-held policy (self-leaf lifetime + restart-renewal threshold)
-        // and any existing self entry's cert dir under a single lock acquisition.
-        let (policy, existing_cert_dir) = {
+        // Read the CA-held policy (self-leaf lifetime + restart-renewal threshold).
+        let policy = {
             let roster = self.state.roster.lock().await;
-            let dir = roster
-                .members
-                .iter()
-                .find(|m| m.hostname == hostname)
-                .map(|m| std::path::PathBuf::from(&m.cert_path));
-            (roster.metadata.policy.clone(), dir)
+            roster.metadata.policy.clone()
         };
 
-        // Reuse the on-disk leaf unless it is within the renewal threshold.
-        if let Some(cert_dir) = existing_cert_dir {
-            let expected_prefix = self.state.paths.certs_dir();
-            if !cert_dir.starts_with(&expected_prefix) {
-                return Err(CertmeshError::Internal(format!(
-                    "cert_path '{}' is outside expected directory '{}'",
-                    cert_dir.display(),
-                    expected_prefix.display(),
-                )));
-            }
+        // The self leaf always lives at certs_dir()/<hostname> — derived, not read
+        // from the roster (cert_path is no longer persisted, F13). Reuse the on-disk
+        // leaf unless it is within the renewal threshold.
+        {
+            let cert_dir = self.state.paths.certs_dir().join(&hostname);
             let on_disk = (
                 std::fs::read_to_string(cert_dir.join("cert.pem")).ok(),
                 std::fs::read_to_string(cert_dir.join("key.pem")).ok(),
@@ -806,6 +835,17 @@ impl CertmeshCore {
 
         tracing::info!(hostname = %hostname, "Daemon self-enrolled as certmesh member");
 
+        // Audit the self-enroll issuance (ADR-017 F14) — the one issuance path that
+        // key-gens on the CA must leave a trail like any other trust decision.
+        let _ = audit::append_entry_to(
+            &self.state.paths.audit_log_path(),
+            "self_enroll",
+            &[
+                ("hostname", hostname.as_str()),
+                ("fingerprint", issued.fingerprint.as_str()),
+            ],
+        );
+
         let _ = self.state.event_tx.send(CertmeshEvent::MemberJoined {
             hostname,
             fingerprint: issued.fingerprint,
@@ -894,7 +934,18 @@ impl CertmeshCore {
 
     /// Unlock the CA with a passphrase.
     pub async fn unlock(&self, passphrase: &str) -> Result<(), CertmeshError> {
-        let ca_state = ca::load_ca(passphrase, &self.state.paths)?;
+        let ca_state = match ca::load_ca(passphrase, &self.state.paths) {
+            Ok(ca) => ca,
+            Err(e) => {
+                // Audit the failed unlock before returning (ADR-017 F9/F14).
+                let _ = audit::append_entry_to(
+                    &self.state.paths.audit_log_path(),
+                    "unlock_failed",
+                    &[("via", "passphrase")],
+                );
+                return Err(e);
+            }
+        };
 
         // Load auth credential from auth.json
         let auth_path = self.state.paths.auth_path();
@@ -935,13 +986,13 @@ impl CertmeshCore {
         let slot_table =
             ca::load_slot_table(&self.state.paths.slot_table_path())?.ok_or_else(|| {
                 CertmeshError::NoSlotFound(
-                    "no slot table found - pond may use legacy passphrase format".into(),
+                    "no slot table found - CA may use legacy passphrase format".into(),
                 )
             })?;
 
         if !slot_table.has_totp_slot() {
             return Err(CertmeshError::NoSlotFound(
-                "TOTP unlock is not configured for this pond".into(),
+                "TOTP unlock is not configured for this CA".into(),
             ));
         }
 
@@ -1011,12 +1062,37 @@ impl CertmeshCore {
     /// stored key exists, and `Err` if the key exists but decryption
     /// failed (corrupt key, changed passphrase, etc.).
     pub async fn try_auto_unlock(&self) -> Result<bool, CertmeshError> {
+        // F11: refuse auto-unlock if the machine fingerprint changed since the CA
+        // was created (a VM clone / disk restore onto new hardware). Fail-safe —
+        // boot LOCKED and require a manual passphrase. Checked BEFORE touching the
+        // vault so a cloned host can't auto-unlock with the copied vault key.
+        // `machine_binding_ok` shells out on Windows/macOS, so run it off the
+        // executor. (The real daemon boot path is `koi_compose::init_certmesh_core`,
+        // which gates auto-unlock with the same free function — this method mirrors
+        // it for embedded/programmatic callers.)
+        let paths = self.state.paths.clone();
+        let bound_ok = tokio::task::spawn_blocking(move || machine_binding_ok(&paths))
+            .await
+            .unwrap_or(true);
+        if !bound_ok {
+            let _ = audit::append_entry_to(
+                &self.state.paths.audit_log_path(),
+                "auto_unlock_refused_machine_changed",
+                &[],
+            );
+            tracing::error!(
+                "machine fingerprint changed since CA creation (clone/restore?) — refusing \
+                 auto-unlock. Run `koi certmesh unlock` to unlock manually on this host."
+            );
+            return Ok(false);
+        }
+
         let passphrase = match Self::read_auto_unlock_key(&self.state.paths)? {
             Some(pp) => pp,
             None => return Ok(false),
         };
         self.unlock(&passphrase).await?;
-        tracing::info!("Pond auto-unlocked via vault");
+        tracing::info!("CA auto-unlocked via vault");
         Ok(true)
     }
 
@@ -1097,16 +1173,8 @@ impl CertmeshCore {
             return Err(CertmeshError::CaNotInitialized);
         }
         // Validate the hostname the same way enrollment will (it becomes the
-        // single host this token authorizes — and a certificate SAN at join).
-        if hostname.is_empty()
-            || hostname.len() > 253
-            || hostname.contains('\0')
-            || hostname.contains(' ')
-        {
-            return Err(CertmeshError::InvalidPayload(format!(
-                "invalid hostname for invite: {hostname:?}"
-            )));
-        }
+        // single host this token authorizes — and a certificate SAN at join, F15).
+        validate_hostname(hostname)?;
 
         // The CA fingerprint the joiner will pin (ADR-017 F3). `is_ca_initialized`
         // was checked above, so `ca_fingerprint()` (in-memory or on-disk, never
@@ -1150,7 +1218,7 @@ impl CertmeshCore {
         hostname: &str,
         sans: &[String],
     ) -> Result<String, CertmeshError> {
-        validate_member_hostname(hostname)?;
+        validate_hostname(hostname)?;
         let (key_pem, csr_pem) = csr::generate_keypair_and_csr(hostname, sans)?;
 
         let cert_dir = self.state.paths.certs_dir().join(hostname);
@@ -1197,7 +1265,7 @@ impl CertmeshCore {
         sans: &[String],
         policy: Option<roster::CertPolicy>,
     ) -> Result<String, CertmeshError> {
-        validate_member_hostname(hostname)?;
+        validate_hostname(hostname)?;
 
         // Enforce the pin BEFORE writing anything (ADR-017 F3). When the caller
         // supplied a pinned fingerprint (the out-of-band-trusted one from the
@@ -1982,23 +2050,103 @@ fn write_file_atomic(path: &std::path::Path, bytes: &[u8], private: bool) -> std
     Ok(())
 }
 
-/// Validate a hostname that will be used both as a certificate SAN and as a
-/// filesystem directory name under `certs/`. Rejects empty/oversized names and
-/// anything that could escape the certs directory (path separators, `..`, NUL,
-/// spaces).
-fn validate_member_hostname(hostname: &str) -> Result<(), CertmeshError> {
-    if hostname.is_empty()
-        || hostname.len() > 253
-        || hostname.contains('\0')
-        || hostname.contains(' ')
-        || hostname.contains('/')
-        || hostname.contains('\\')
-        || hostname.contains(':') // Windows drive / NTFS alternate-data-stream syntax
-        || hostname.contains("..")
-    {
-        return Err(CertmeshError::InvalidPayload(format!(
-            "invalid hostname: {hostname:?}"
-        )));
+/// Whether the recorded machine binding still matches this host (ADR-017 F11).
+///
+/// `true` when no binding was recorded (a pre-F11 CA — not machine-checked) or
+/// when the recorded fingerprint matches the current host. `false` only when a
+/// recorded binding no longer matches, or can't be re-derived — both of which
+/// must fail auto-unlock safe (boot locked).
+///
+/// Free function (not a method) so the daemon boot path
+/// (`koi_compose::init_certmesh_core`, which builds the core *after* deciding
+/// whether to auto-unlock) can gate on it with only the resolved paths. It does
+/// blocking I/O (a file read; a subprocess on Windows/macOS) — call it from a sync
+/// context or via `spawn_blocking`.
+pub fn machine_binding_ok(paths: &CertmeshPaths) -> bool {
+    let recorded = match std::fs::read_to_string(paths.machine_bind_path()) {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => return true, // no binding recorded → not machine-checked
+    };
+    match koi_crypto::vault::machine_fingerprint() {
+        Some(current) => koi_crypto::pinning::fingerprints_match(&current, &recorded),
+        None => false, // recorded a binding but machine-id is now unreadable → fail safe
+    }
+}
+
+/// Write the machine-binding fingerprint atomically (0600 on Unix), creating the
+/// parent directory if needed (ADR-017 F11). The value is a non-secret hash.
+fn write_machine_binding(path: &std::path::Path, fingerprint: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    write_file_atomic(path, fingerprint.as_bytes(), true)
+}
+
+/// Load the persisted TOTP rate-limiter state, or a fresh one (ADR-017 F7).
+///
+/// A missing or unparseable file yields a fresh limiter; the live check still
+/// fails closed, and a real lockout is re-persisted on the next failed attempt.
+fn load_rate_limiter(paths: &CertmeshPaths) -> RateLimiter {
+    match std::fs::read(paths.rate_limiter_path()) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Could not parse persisted rate-limiter; starting fresh");
+            RateLimiter::new()
+        }),
+        Err(_) => RateLimiter::new(),
+    }
+}
+
+/// Persist the TOTP rate-limiter state atomically (0600) so a daemon restart can't
+/// reset an active lockout (ADR-017 F7). Best-effort — callers log any error.
+/// `pub(crate)` so the http promote handler can persist after its own check.
+pub(crate) fn persist_rate_limiter(
+    paths: &CertmeshPaths,
+    limiter: &RateLimiter,
+) -> std::io::Result<()> {
+    let path = paths.rate_limiter_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_vec(limiter).map_err(std::io::Error::other)?;
+    write_file_atomic(&path, &json, true)
+}
+
+/// The single source of truth for hostname validation (ADR-017 F15): full
+/// **RFC 1123**, used everywhere a hostname becomes a certificate SAN/CN or a
+/// directory name under `certs/`.
+///
+/// Rules: total length 1..=253; one or more dot-separated labels; each label
+/// 1..=63 chars of ASCII alphanumeric or hyphen, with no leading or trailing
+/// hyphen. This subsumes the old per-call-site denylists — path separators (`/`
+/// `\`), `..`, `:`, NUL, and spaces are all rejected by construction, so a
+/// validated hostname is safe both as a SAN and as a single-segment directory
+/// name (it can never escape the certs directory).
+pub(crate) fn validate_hostname(hostname: &str) -> Result<(), CertmeshError> {
+    let reject = |msg: String| Err(CertmeshError::InvalidPayload(msg));
+    if hostname.is_empty() || hostname.len() > 253 {
+        return reject(format!(
+            "hostname length must be 1..=253 characters: {hostname:?}"
+        ));
+    }
+    for label in hostname.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return reject(format!(
+                "hostname label length must be 1..=63 characters: {hostname:?}"
+            ));
+        }
+        if !label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return reject(format!(
+                "hostname has invalid characters (RFC 1123 allows alphanumerics + hyphen): {hostname:?}"
+            ));
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return reject(format!(
+                "hostname label must not start or end with a hyphen: {hostname:?}"
+            ));
+        }
     }
     Ok(())
 }
@@ -2767,6 +2915,110 @@ mod tests {
         let hostname = CertmeshCore::local_hostname();
         assert!(hostname.is_some());
         assert!(!hostname.unwrap().is_empty());
+    }
+
+    // ── validate_hostname (F15, RFC 1123) ────────────────────────────
+
+    #[test]
+    fn validate_hostname_rfc1123() {
+        let label63 = "a".repeat(63);
+        for ok in [
+            "web-01",
+            "stone-granite-spring",
+            "a",
+            "a.b.c",
+            "x1.local",
+            label63.as_str(),
+        ] {
+            assert!(validate_hostname(ok).is_ok(), "{ok:?} should be valid");
+        }
+
+        let label64 = "a".repeat(64);
+        let over253 = vec!["a"; 200].join(".");
+        for bad in [
+            "",           // empty
+            " ",          // space
+            "host name",  // embedded space
+            "host/name",  // path separator
+            "host\\name", // path separator
+            "host:1",     // colon (Windows drive / ADS)
+            "..",         // empty labels
+            "host..name", // empty interior label
+            "-host",      // leading hyphen
+            "host-",      // trailing hyphen
+            "host_name",  // underscore is not RFC 1123
+            label64.as_str(),
+            over253.as_str(),
+        ] {
+            assert!(
+                validate_hostname(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+
+    // ── F11 machine binding ──────────────────────────────────────────
+
+    #[test]
+    fn machine_binding_detects_change() {
+        let paths = CertmeshPaths::with_data_dir(
+            koi_common::test::ensure_data_dir("koi-certmesh-core-tests").join("machinebind"),
+        );
+        let _ = std::fs::remove_dir_all(paths.data_dir());
+        let bind = paths.machine_bind_path();
+        std::fs::create_dir_all(bind.parent().unwrap()).unwrap();
+
+        // No recorded binding → not machine-checked (pre-F11 CA) → ok.
+        assert!(machine_binding_ok(&paths));
+
+        // A binding that matches this host → ok (when a machine-id is available).
+        if let Some(current) = koi_crypto::vault::machine_fingerprint() {
+            std::fs::write(&bind, current.as_bytes()).unwrap();
+            assert!(machine_binding_ok(&paths), "matching binding must pass");
+        }
+
+        // A binding that no longer matches (a clone/restore) → fail safe.
+        std::fs::write(
+            &bind,
+            b"0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
+        assert!(
+            !machine_binding_ok(&paths),
+            "a changed machine fingerprint must refuse auto-unlock"
+        );
+
+        let _ = std::fs::remove_dir_all(paths.data_dir());
+    }
+
+    // ── F7 persisted rate limiter ────────────────────────────────────
+
+    #[test]
+    fn rate_limiter_lockout_survives_reload() {
+        let paths = CertmeshPaths::with_data_dir(
+            koi_common::test::ensure_data_dir("koi-certmesh-core-tests").join("ratelimit"),
+        );
+        let _ = std::fs::remove_dir_all(paths.data_dir());
+
+        // No persisted file yet → fresh limiter, not locked.
+        let mut rl = load_rate_limiter(&paths);
+        assert!(!rl.is_locked());
+
+        // Drive it into lockout, then persist.
+        for _ in 0..3 {
+            let _ = rl.check_and_record(false);
+        }
+        assert!(rl.is_locked(), "limiter must lock after MAX_FAILURES");
+        persist_rate_limiter(&paths, &rl).unwrap();
+
+        // A fresh load (simulating a daemon restart) must still be locked (F7).
+        let reloaded = load_rate_limiter(&paths);
+        assert!(
+            reloaded.is_locked(),
+            "persisted lockout must survive a restart"
+        );
+
+        let _ = std::fs::remove_dir_all(paths.data_dir());
     }
 
     // ── build_status ─────────────────────────────────────────────────

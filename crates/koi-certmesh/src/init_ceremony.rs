@@ -1,4 +1,4 @@
-//! Pond ceremony rules - the domain-specific bag→prompts logic
+//! Certmesh init-ceremony rules - the domain-specific bag→prompts logic
 //! for certmesh ceremonies (init, join, invite, unlock).
 //!
 //! These rules implement [`CeremonyRules`] from koi-common. They
@@ -41,31 +41,31 @@ use koi_common::encoding::{hex_decode, hex_encode};
 
 use crate::profiles::preset_bools;
 
-// ── Pond rules ──────────────────────────────────────────────────────
+// ── Certmesh ceremony rules ─────────────────────────────────────────
 
-/// Ceremony rules for pond operations.
+/// Ceremony rules for certmesh operations (init, join, invite, unlock).
 ///
 /// Session state lives in the bag; the only instance state is the resolved
 /// data `paths`, injected once at the composition root (the CLI entry) so the
 /// unlock ceremony reads the slot table from the right place with no ambient
 /// default. The host (and the HTTP handler above it) hold the `CertmeshCore`
 /// needed to execute the terminal action.
-pub struct PondCeremonyRules {
+pub struct InitCeremonyRules {
     paths: crate::CertmeshPaths,
 }
 
-impl PondCeremonyRules {
+impl InitCeremonyRules {
     /// Construct the rules with the resolved data paths.
     pub fn new(paths: crate::CertmeshPaths) -> Self {
         Self { paths }
     }
 }
 
-impl CeremonyRules for PondCeremonyRules {
+impl CeremonyRules for InitCeremonyRules {
     fn validate_ceremony_type(&self, ceremony: &str) -> Result<(), String> {
         match ceremony {
             "init" | "join" | "invite" | "unlock" => Ok(()),
-            other => Err(format!("unknown pond ceremony: {other}")),
+            other => Err(format!("unknown certmesh ceremony: {other}")),
         }
     }
 
@@ -1113,11 +1113,11 @@ mod tests {
     use super::*;
     use koi_common::ceremony::{CeremonyHost, CeremonyRequest, InputType};
 
-    fn make_host() -> CeremonyHost<PondCeremonyRules> {
+    fn make_host() -> CeremonyHost<InitCeremonyRules> {
         let paths = crate::CertmeshPaths::with_data_dir(koi_common::test::ensure_data_dir(
             "koi-certmesh-ceremony-tests",
         ));
-        CeremonyHost::new(PondCeremonyRules::new(paths))
+        CeremonyHost::new(InitCeremonyRules::new(paths))
     }
 
     #[test]
