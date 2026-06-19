@@ -818,6 +818,30 @@ impl CertmeshCore {
         })
     }
 
+    /// The CA certificate fingerprint, or `None` when no CA is initialized.
+    ///
+    /// Reads the in-memory CA when unlocked, else derives it from the on-disk CA
+    /// cert (the fingerprint is public). Used by the daemon to advertise the CA's
+    /// fingerprint in the `_certmesh._tcp` mDNS TXT (ADR-017 F12) and as a cheap
+    /// preflight datum.
+    pub async fn ca_fingerprint(&self) -> Option<String> {
+        // In-memory path: compute under the lock, but drop the guard before any I/O
+        // (never hold the CA mutex across disk reads).
+        let in_memory = {
+            let ca_guard = self.state.ca.lock().await;
+            ca_guard.as_ref().map(ca::ca_fingerprint)
+        };
+        if in_memory.is_some() {
+            return in_memory;
+        }
+        // Locked CA: derive from the on-disk cert off the async executor.
+        let paths = self.state.paths.clone();
+        tokio::task::spawn_blocking(move || ca::ca_fingerprint_from_disk(&paths).ok())
+            .await
+            .ok()
+            .flatten()
+    }
+
     /// Get the current certmesh status.
     pub async fn certmesh_status(&self) -> protocol::CertmeshStatus {
         let ca_guard = self.state.ca.lock().await;
@@ -1084,8 +1108,19 @@ impl CertmeshCore {
             )));
         }
 
+        // The CA fingerprint the joiner will pin (ADR-017 F3). `is_ca_initialized`
+        // was checked above, so `ca_fingerprint()` (in-memory or on-disk, never
+        // holding a lock across I/O) yields the public CA fingerprint here.
+        let ca_fingerprint = self
+            .ca_fingerprint()
+            .await
+            .ok_or(CertmeshError::CaNotInitialized)?;
+
         let minted = invite::mint(&self.state.paths.invites_path(), hostname, ttl_mins)?;
         let expires_at = minted.expires_at.to_rfc3339();
+        // The operator-facing code carries the pinned CA fingerprint (F3) so the
+        // joiner can preflight + pin before sending its CSR.
+        let code = invite::encode_code(&minted.token, &ca_fingerprint);
 
         let _ = audit::append_entry_to(
             &self.state.paths.audit_log_path(),
@@ -1095,9 +1130,10 @@ impl CertmeshCore {
         tracing::info!(hostname, "Enrollment invite minted");
 
         Ok(protocol::InviteResponse {
-            token: minted.token,
+            token: code,
             hostname: hostname.to_string(),
             expires_at,
+            ca_fingerprint,
         })
     }
 
@@ -1162,6 +1198,26 @@ impl CertmeshCore {
         policy: Option<roster::CertPolicy>,
     ) -> Result<String, CertmeshError> {
         validate_member_hostname(hostname)?;
+
+        // Enforce the pin BEFORE writing anything (ADR-017 F3). When the caller
+        // supplied a pinned fingerprint (the out-of-band-trusted one from the
+        // invite), the CA cert we are about to install + trust MUST match it, or we
+        // refuse — a MITM that intercepted the plain-HTTP join and substituted its
+        // own CA is rejected here, before any file is written or any root is
+        // trusted. Without a pin (TOTP join), this is a documented TOFU install.
+        if let Some(expected_fp) = ca_fingerprint {
+            let der = pem::parse(ca_pem).map_err(|e| {
+                CertmeshError::InvalidPayload(format!("CA cert is not valid PEM: {e}"))
+            })?;
+            let actual_fp = koi_crypto::pinning::fingerprint_sha256(der.contents());
+            if !koi_crypto::pinning::fingerprints_match(&actual_fp, expected_fp) {
+                return Err(CertmeshError::InvalidPayload(format!(
+                    "installed CA cert fingerprint {actual_fp} does not match the pinned \
+                     fingerprint {expected_fp} (possible MITM) — refusing to install"
+                )));
+            }
+        }
+
         let cert_dir = self.state.paths.certs_dir().join(hostname);
         let cert_owned = cert_pem.to_string();
         let ca_owned = ca_pem.to_string();
@@ -1182,41 +1238,26 @@ impl CertmeshCore {
             tracing::warn!(error = %e, "Could not install CA cert in trust store");
         }
 
-        // Arm member-pull renewal when the join supplied the CA coordinates.
+        // Arm member-pull renewal when the join supplied the CA coordinates. The
+        // pinned fingerprint was already verified against `ca_pem` above, so the
+        // MemberState records a fingerprint we have confirmed matches the installed
+        // CA root.
         if let (Some(endpoint), Some(fingerprint)) = (ca_endpoint, ca_fingerprint) {
-            // Defend the pin: the supplied fingerprint must be the fingerprint of
-            // the CA cert we are installing, else we would arm renewal against a
-            // fingerprint we cannot actually verify.
-            match pem::parse(ca_pem) {
-                Ok(der)
-                    if koi_crypto::pinning::fingerprints_match(
-                        &koi_crypto::pinning::fingerprint_sha256(der.contents()),
-                        fingerprint,
-                    ) =>
-                {
-                    let state = member::MemberState {
-                        hostname: hostname.to_string(),
-                        ca_host: member::host_from_endpoint(endpoint),
-                        ca_mtls_port: member::DEFAULT_CA_MTLS_PORT,
-                        ca_http_port: member::port_from_endpoint(endpoint),
-                        ca_fingerprint: fingerprint.to_string(),
-                        sans: sans.to_vec(),
-                        policy: policy.unwrap_or_default(),
-                        last_bundle_seq: 0,
-                        reload_hook: None,
-                    };
-                    if let Err(e) = member::save(&self.state.paths.member_state_path(), &state) {
-                        tracing::warn!(error = %e, "Could not persist member renewal state");
-                    } else {
-                        tracing::info!(hostname, ca_host = %state.ca_host, "Member renewal state armed");
-                    }
-                }
-                _ => {
-                    tracing::warn!(
-                        hostname,
-                        "CA fingerprint does not match the installed CA cert; renewal not armed"
-                    );
-                }
+            let state = member::MemberState {
+                hostname: hostname.to_string(),
+                ca_host: member::host_from_endpoint(endpoint),
+                ca_mtls_port: member::DEFAULT_CA_MTLS_PORT,
+                ca_http_port: member::port_from_endpoint(endpoint),
+                ca_fingerprint: fingerprint.to_string(),
+                sans: sans.to_vec(),
+                policy: policy.unwrap_or_default(),
+                last_bundle_seq: 0,
+                reload_hook: None,
+            };
+            if let Err(e) = member::save(&self.state.paths.member_state_path(), &state) {
+                tracing::warn!(error = %e, "Could not persist member renewal state");
+            } else {
+                tracing::info!(hostname, ca_host = %state.ca_host, "Member renewal state armed");
             }
         }
 
@@ -1592,8 +1633,57 @@ impl CertmeshCore {
             .map_err(|e| CertmeshError::Internal(format!("malformed trust bundle: {e}")))?;
 
         // Verify signature against the pinned CA + anti-rollback floor.
-        bundle::verify(&signed, &state.ca_fingerprint, Some(state.last_bundle_seq))
-            .map_err(|e| CertmeshError::Internal(format!("trust bundle rejected: {e}")))?;
+        if let Err(e) = bundle::verify(&signed, &state.ca_fingerprint, Some(state.last_bundle_seq))
+        {
+            // F5 fail-safe: a bundle whose CA fingerprint differs from our pin is
+            // rejected, and we KEEP the old pin. There is no supported live CA
+            // re-key path today, so a fingerprint change is treated as hostile; an
+            // intentional CA replacement is recovered by re-enrolling with a fresh
+            // invite (which carries the new fingerprint, F3).
+            if matches!(e, bundle::BundleError::PinMismatch) {
+                tracing::error!(
+                    host = %state.hostname,
+                    "Trust bundle CA fingerprint does NOT match the pinned CA — rejecting \
+                     (fail-safe). Re-enroll with a fresh invite if the CA was intentionally replaced."
+                );
+            }
+            return Err(CertmeshError::Internal(format!(
+                "trust bundle rejected: {e}"
+            )));
+        }
+
+        // F5 anchor self-heal: the bundle's `ca_cert_pem` provably hashes to our pin
+        // (verify enforced it), so writing it keeps the on-disk `ca.pem` — the trust
+        // root the mTLS renewal client loads — in sync and repairs drift/corruption.
+        // Done on every verified pull (even an unchanged seq) so a wiped anchor is
+        // restored promptly; the write is skipped when the file already matches.
+        {
+            let anchor = self
+                .state
+                .paths
+                .certs_dir()
+                .join(&state.hostname)
+                .join("ca.pem");
+            let want = signed.bundle.ca_cert_pem.clone();
+            // Best-effort: the closure logs its own write error, and any JoinError
+            // (task panic) is intentionally dropped. A write failure is harmless —
+            // the bundle was already pin-verified, and because this heal runs on
+            // every verified pull (before the seq short-circuit below) the next pull
+            // simply retries it.
+            let _ = tokio::task::spawn_blocking(move || {
+                let current = std::fs::read_to_string(&anchor).ok();
+                if current.as_deref() != Some(want.as_str()) {
+                    match write_file_atomic(&anchor, want.as_bytes(), false) {
+                        Ok(()) => tracing::info!(
+                            path = %anchor.display(),
+                            "Refreshed on-disk CA anchor from the verified trust bundle"
+                        ),
+                        Err(e) => tracing::warn!(error = %e, "Could not refresh on-disk CA anchor"),
+                    }
+                }
+            })
+            .await;
+        }
 
         let seq = signed.bundle.seq;
         if seq == state.last_bundle_seq {
@@ -2162,7 +2252,10 @@ mod tests {
     async fn member_pull_renewal_round_trip() {
         use crate::roster::CertPolicy;
 
-        let base = koi_common::test::ensure_data_dir("koi-certmesh-renew-e2e");
+        // `ensure_data_dir` returns a process-wide shared base (OnceLock, prefix is
+        // only honored on the first call), so carve a test-unique subdir — otherwise
+        // this test's `remove_dir_all` races other e2e tests sharing `base/ca`.
+        let base = koi_common::test::ensure_data_dir("koi-certmesh-renew-e2e").join("renew-e2e");
         let ca_paths = CertmeshPaths::with_data_dir(base.join("ca"));
         let member_paths = CertmeshPaths::with_data_dir(base.join("member"));
         let _ = std::fs::remove_dir_all(ca_paths.data_dir());
@@ -2285,7 +2378,8 @@ mod tests {
     /// detects its own revocation.
     #[tokio::test]
     async fn trust_bundle_pull_round_trip() {
-        let base = koi_common::test::ensure_data_dir("koi-certmesh-bundle-e2e");
+        // Test-unique subdir under the shared base (see renew test note).
+        let base = koi_common::test::ensure_data_dir("koi-certmesh-bundle-e2e").join("bundle-e2e");
         let ca_paths = CertmeshPaths::with_data_dir(base.join("ca"));
         let member_paths = CertmeshPaths::with_data_dir(base.join("member"));
         let _ = std::fs::remove_dir_all(ca_paths.data_dir());
@@ -2372,6 +2466,182 @@ mod tests {
             }
             other => panic!("expected Updated(self_revoked), got {other:?}"),
         }
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(base.join("ca"));
+        let _ = std::fs::remove_dir_all(base.join("member"));
+    }
+
+    // ── F3 install pin enforcement ───────────────────────────────────
+
+    /// F3: when a pinned fingerprint is supplied, `install_member_cert` must
+    /// hard-fail (writing nothing, arming nothing) if the CA cert does not match
+    /// it — a MITM that substituted its own CA at join is rejected before any file
+    /// is written or any root is trusted. The correct pin installs and arms.
+    #[tokio::test]
+    async fn install_member_cert_rejects_pin_mismatch() {
+        // Test-unique subdir under the shared base (see renew test note).
+        let base = koi_common::test::ensure_data_dir("koi-certmesh-installpin").join("installpin");
+        let ca_paths = CertmeshPaths::with_data_dir(base.join("ca"));
+        let member_paths = CertmeshPaths::with_data_dir(base.join("member"));
+        let _ = std::fs::remove_dir_all(ca_paths.data_dir());
+        let _ = std::fs::remove_dir_all(member_paths.data_dir());
+
+        let (ca_state, _m) = ca::create_ca("ip", &[3u8; 32], &ca_paths).unwrap();
+        let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+        let auth = koi_crypto::auth::AuthState::Totp(koi_crypto::totp::generate_secret());
+        let ca_core = CertmeshCore::new_with_paths(ca_state, roster, Some(auth), ca_paths.clone());
+
+        let member_core = CertmeshCore::uninitialized_with_paths(member_paths.clone());
+        let csr = member_core
+            .prepare_member_csr("pin-host", &["pin-host".to_string()])
+            .await
+            .unwrap();
+        let invite = ca_core.mint_invite("pin-host", 60).await.unwrap();
+        // The invite code embeds the real CA fingerprint (F3).
+        let (secret, real_fp) = invite::decode_code(&invite.token);
+        let real_fp = real_fp
+            .expect("invite code carries the CA fingerprint")
+            .to_string();
+        assert_eq!(real_fp, invite.ca_fingerprint);
+        let join = ca_core
+            .enroll(&protocol::JoinRequest {
+                hostname: "pin-host".to_string(),
+                auth: None,
+                invite_token: Some(secret.to_string()),
+                csr: Some(csr),
+                sans: vec!["pin-host".to_string()],
+            })
+            .await
+            .unwrap();
+
+        // Wrong pin → hard-fail; no cert written, renewal not armed.
+        let wrong_fp = "0".repeat(64);
+        let err = member_core
+            .install_member_cert(
+                "pin-host",
+                &join.service_cert,
+                &join.ca_cert,
+                Some("http://127.0.0.1:5641"),
+                Some(&wrong_fp),
+                &["pin-host".to_string()],
+                Some(join.policy.clone()),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, CertmeshError::InvalidPayload(_)),
+            "got {err:?}"
+        );
+        let cert_dir = member_paths.certs_dir().join("pin-host");
+        assert!(
+            !cert_dir.join("cert.pem").exists(),
+            "no cert must be written on pin mismatch"
+        );
+        assert!(
+            member::load(&member_paths.member_state_path()).is_none(),
+            "renewal must not be armed on pin mismatch"
+        );
+
+        // Correct pin (the one embedded in the invite) → installs + arms.
+        let dir = member_core
+            .install_member_cert(
+                "pin-host",
+                &join.service_cert,
+                &join.ca_cert,
+                Some("http://127.0.0.1:5641"),
+                Some(&real_fp),
+                &["pin-host".to_string()],
+                Some(join.policy.clone()),
+            )
+            .await
+            .unwrap();
+        assert!(std::path::Path::new(&dir).join("cert.pem").exists());
+        assert!(
+            member::load(&member_paths.member_state_path()).is_some(),
+            "correct pin arms renewal"
+        );
+
+        let _ = std::fs::remove_dir_all(base.join("ca"));
+        let _ = std::fs::remove_dir_all(base.join("member"));
+    }
+
+    /// F5: a verified trust-bundle pull restores a corrupted on-disk `ca.pem`
+    /// (the trust anchor the mTLS renewal client loads), keeping it in sync with
+    /// the signed mesh truth.
+    #[tokio::test]
+    async fn pull_trust_bundle_self_heals_ca_anchor() {
+        // Test-unique subdir under the shared base (see renew test note).
+        let base =
+            koi_common::test::ensure_data_dir("koi-certmesh-anchor-heal").join("anchor-heal");
+        let ca_paths = CertmeshPaths::with_data_dir(base.join("ca"));
+        let member_paths = CertmeshPaths::with_data_dir(base.join("member"));
+        let _ = std::fs::remove_dir_all(ca_paths.data_dir());
+        let _ = std::fs::remove_dir_all(member_paths.data_dir());
+
+        let (ca_state, _m) = ca::create_ca("heal", &[6u8; 32], &ca_paths).unwrap();
+        let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+        let auth = koi_crypto::auth::AuthState::Totp(koi_crypto::totp::generate_secret());
+        let ca_core = CertmeshCore::new_with_paths(ca_state, roster, Some(auth), ca_paths.clone());
+
+        let member_core = CertmeshCore::uninitialized_with_paths(member_paths.clone());
+        let csr = member_core
+            .prepare_member_csr("heal-host", &["heal-host".to_string()])
+            .await
+            .unwrap();
+        let invite = ca_core.mint_invite("heal-host", 60).await.unwrap();
+        let (secret, fp) = invite::decode_code(&invite.token);
+        let pin = fp.unwrap().to_string();
+        let join = ca_core
+            .enroll(&protocol::JoinRequest {
+                hostname: "heal-host".to_string(),
+                auth: None,
+                invite_token: Some(secret.to_string()),
+                csr: Some(csr),
+                sans: vec!["heal-host".to_string()],
+            })
+            .await
+            .unwrap();
+        member_core
+            .install_member_cert(
+                "heal-host",
+                &join.service_cert,
+                &join.ca_cert,
+                Some("http://127.0.0.1:5641"),
+                Some(&pin),
+                &["heal-host".to_string()],
+                Some(join.policy.clone()),
+            )
+            .await
+            .unwrap();
+
+        // Serve the certmesh routes (incl. GET /trust-bundle) over plain HTTP.
+        let app = Router::new().nest("/v1/certmesh", crate::http::routes(ca_core.state.clone()));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+        // Point the armed member's HTTP port at the ephemeral test server.
+        let mut st = member::load(&member_paths.member_state_path()).unwrap();
+        st.ca_http_port = port;
+        member::save(&member_paths.member_state_path(), &st).unwrap();
+
+        // Corrupt the on-disk anchor, then pull → it is healed from the bundle.
+        let anchor = member_paths.certs_dir().join("heal-host").join("ca.pem");
+        std::fs::write(&anchor, b"-----BEGIN CERTIFICATE-----\nGARBAGE\n").unwrap();
+        member_core.pull_trust_bundle().await.expect("pull ok");
+
+        let restored = std::fs::read_to_string(&anchor).unwrap();
+        assert!(
+            !restored.contains("GARBAGE"),
+            "anchor must be self-healed from the verified bundle"
+        );
+        assert_eq!(
+            restored, join.ca_cert,
+            "anchor now matches the signed CA cert"
+        );
 
         server.abort();
         let _ = std::fs::remove_dir_all(base.join("ca"));

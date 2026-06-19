@@ -645,6 +645,14 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             !config.no_mcp_http && !config.no_http,
         );
 
+        // Certmesh CA discovery descriptor (`_certmesh._tcp` with fp= TXT, ADR-017
+        // F12), shared with the foreground daemon. No-op without a CA / HTTP / mDNS.
+        let _certmesh_announce_id = if !config.no_http {
+            crate::infra::announce_certmesh_endpoint(&cores, config.http_port).await
+        } else {
+            None
+        };
+
         // Write breadcrumb for client discovery
         if !config.no_http {
             let endpoint = crate::infra::breadcrumb_endpoint(http_bind_ip, config.http_port);

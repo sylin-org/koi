@@ -263,6 +263,15 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         !config.no_mcp_http && !config.no_http,
     );
 
+    // ── Certmesh CA discovery descriptor (one `_certmesh._tcp` with fp= TXT) ──
+    // ADR-017 F12. Gated on certmesh + a CA existing; withdrawn by the mDNS goodbye
+    // on shutdown. A no-op when HTTP/mDNS is disabled (no mdns core to register on).
+    let _certmesh_announce_id = if !config.no_http {
+        crate::infra::announce_certmesh_endpoint(&cores, config.http_port).await
+    } else {
+        None
+    };
+
     // ── Enrollment-approval pump ──
     // The certmesh role loops are spawned by build_cores (shared with the Windows service).
     // Only the approval pump is wired here, because its decider is host-specific: the

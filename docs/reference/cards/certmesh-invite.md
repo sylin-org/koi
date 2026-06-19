@@ -4,12 +4,12 @@ domain: certmesh
 title: "Certmesh enrollment — capability card"
 audience: [operators, developers, ai-agents]
 status: current
-last_updated: 2026-06-18
+last_updated: 2026-06-19
 koi_version: v0.4.2
 validation:
-  date_last_tested: 2026-06-18
+  date_last_tested: 2026-06-19
   status: verified
-  scope: "unit + integration (csr::tests incl. least-privilege leaf profile, invite::tests, enrollment::tests, mtls::tests {client post_json + pinned-CA reject}, bundle::tests {sign/verify, pin reject, tamper reject, rollback reject, revoked-in-bundle}, lib::member_pull_renewal_round_trip (rotate-key renewal over real mTLS), lib::trust_bundle_pull_round_trip (signed-bundle pull over HTTP: accept newer seq, no-op on equal, detect self-revocation), member::tests, protocol round-trips) + two adversarial reviews (key-custody invariant holds on enroll AND renew; trust-bundle canonicalization/pin/anti-rollback sound; single-writer commit deadlock-free; 0 critical/high) + live on the Linux test host. ADR-017 phase 1 (1a cert profiles + 1b member-pull renewal) AND phase 2 (F4 signed trust bundle + F8 sequenced single-writer roster + boundary revocation) shipped."
+  scope: "unit + integration (csr::tests incl. least-privilege leaf profile, invite::tests {mint/single-use/expiry/wrong-host + F3 code encode/decode incl. multi-dot edge}, enrollment::tests, mtls::tests {client post_json + pinned-CA reject}, bundle::tests {sign/verify, pin reject, tamper reject, rollback reject, revoked-in-bundle}, lib::member_pull_renewal_round_trip (rotate-key renewal over real mTLS), lib::trust_bundle_pull_round_trip (signed-bundle pull over HTTP), lib::install_member_cert_rejects_pin_mismatch (F3 pin hard-fail before any write), lib::pull_trust_bundle_self_heals_ca_anchor (F5), member::tests, protocol round-trips) + three adversarial reviews (key-custody invariant holds on enroll AND renew; trust-bundle pin/anti-rollback sound; F3 MITM invariant holds — out-of-band invite fingerprint enforced at preflight AND install; 0 critical/high) + live on the Linux test host. ADR-017 phases 1 (cert profiles + member-pull renewal), 2 (signed trust bundle + sequenced single-writer roster + boundary revocation), AND 3 (F3 pinned-fingerprint bootstrap + F12 mDNS fp advertise + F5 anchor self-heal) shipped."
 ---
 
 # Certmesh enrollment — capability card
@@ -84,9 +84,30 @@ Members pull the bundle on the background loop, **verify the signature against t
 curl -s http://ca-host:5641/v1/certmesh/trust-bundle | jq '.bundle | {seq, members: [.members[].hostname], revoked: [.revoked[].hostname]}'
 ```
 
+## Pinned-fingerprint bootstrap — closing the join MITM gap (ADR-017 F3/F12/F5, phase 3, shipped)
+
+The invite is now a **code** `<secret>.<ca_fingerprint>` — `koi certmesh invite` embeds the CA's fingerprint, so the one trusted bit delivered out of band now carries the CA's identity, not just an authorization secret. On the joining side, `koi certmesh join --invite <code>`:
+
+1. **pins** the embedded fingerprint and **preflights** the CA (`GET /status`), aborting **before it ever sends a CSR** if the CA it reached advertises a different fingerprint — a LAN MITM of plain-HTTP discovery is rejected at the door;
+2. sends only the **secret** half to the CA (the fingerprint is a client-side concern the CA never needs);
+3. installs the leaf only if the returned CA cert matches the **out-of-band** pinned fingerprint — `install_member_cert` **hard-fails** (writing nothing, trusting nothing) on a mismatch, so even a `/join`-only MITM that slipped past preflight cannot get a substituted CA installed.
+
+The daemon also **advertises** `_certmesh._tcp` with `fp=<ca_fingerprint>` in TXT (**F12**) — `koi certmesh join` (mDNS auto-discovery) cross-checks that hint against the invite and drops any CA whose advertised fingerprint contradicts it. The TXT is a convenience hint, never a trust source. Members also **self-heal** their on-disk `ca.pem` from each verified trust bundle (**F5**): the anchor the renewal client loads is kept in sync with the signed mesh truth and restored if it drifts. A bundle whose CA fingerprint differs from the pin is **rejected fail-safe** (the old pin is kept); an intentional CA replacement is recovered by re-enrolling with a fresh invite.
+
+```bash
+# The invite code carries the CA fingerprint; the joiner pins + preflights it.
+koi certmesh invite web-01        # -> 714cad…  (a <secret>.<ca_fingerprint> code)
+koi certmesh join http://ca-host:5641 --invite <code>
+#   Preflight OK — CA fingerprint matches the invite pin.
+#   Enrolled as: web-01
+# A spoofed CA (wrong fingerprint) aborts before any CSR is sent:
+#   Error: CA fingerprint mismatch — refusing to join.
+```
+
 ## Not yet covered (tracked in [ADR-017](../../adr/017-certmesh-trust-lifecycle.md))
 
-- **Plain-HTTP join is TOFU.** The initial CSR/cert exchange rides plain HTTP; a LAN MITM of mDNS discovery is a documented residual until pinned-fingerprint bootstrap (**ADR-017 F3**, phase 3). *(Renewal and the trust-bundle pull, by contrast, are already fingerprint-pinned.)*
+- **Invite-based join is now fingerprint-pinned (F3, shipped); the TOTP join remains TOFU.** An invite join pins the CA fingerprint out of band and preflights + hard-fails on mismatch, closing the LAN-MITM gap. The interactive `koi certmesh join` (mesh TOTP, no invite) has no fingerprint to pin and stays trust-on-first-use — use an invite for untrusted networks. The CSR/cert bytes still ride plain HTTP; the pin (not transport encryption) is what defeats the CA-spoofing MITM.
+- **Live CA re-key is not supported.** The CA root key/fingerprint is invariant for the life of the mesh (promotion transfers the *same* key). A bundle whose fingerprint differs from a member's pin is rejected fail-safe; an intentional CA replacement is recovered by re-enrolling members with a fresh invite (which carries the new fingerprint). A signed re-key *transition* is deferred to a future ADR.
 - **Peer-to-peer revocation enforcement.** The CA enforces revocation at its own boundary and propagates it in the signed bundle; members consume it (self-revocation detection + anti-rollback). Member-to-member mTLS peers don't yet cross-check each other against the bundle's `revoked[]` — members don't dial peers today (only the CA). Tightened as the mesh grows peer traffic.
 - **The CA's own leaf renews only at restart.** A long-running CA refreshes its mTLS/ACME listener cert on the next daemon restart (no live in-process reload yet); members renew continuously via the pull loop.
 

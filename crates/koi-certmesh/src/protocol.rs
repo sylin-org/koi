@@ -50,12 +50,20 @@ pub struct InviteRequest {
 /// Response carrying a freshly minted invite token (returned exactly once).
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct InviteResponse {
-    /// The one-time plaintext token — deliver to the joining host out of band.
+    /// The one-time invite **code** — deliver to the joining host out of band.
+    ///
+    /// The code is `<secret>.<ca_fingerprint>` (ADR-017 F3): the joiner pins the
+    /// embedded fingerprint and preflights the CA before sending its CSR, and the
+    /// CA consumes only the secret half. The plaintext secret exists only here.
     pub token: String,
     /// Hostname this invite is bound to.
     pub hostname: String,
     /// RFC 3339 absolute expiry.
     pub expires_at: String,
+    /// The CA fingerprint embedded in the invite code (also carried separately for
+    /// JSON consumers). The joiner pins this and aborts the join if the CA it
+    /// reaches advertises a different fingerprint (ADR-017 F3).
+    pub ca_fingerprint: String,
 }
 
 // ── Member-side key custody (ADR-015 F1, local daemon endpoints) ─────
@@ -564,14 +572,16 @@ mod tests {
     #[test]
     fn invite_response_round_trip() {
         let resp = InviteResponse {
-            token: "abc123".to_string(),
+            token: "abc123.deadbeef".to_string(),
             hostname: "web-01".to_string(),
             expires_at: "2026-06-18T12:00:00Z".to_string(),
+            ca_fingerprint: "deadbeef".to_string(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: InviteResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.token, "abc123");
+        assert_eq!(parsed.token, "abc123.deadbeef");
         assert_eq!(parsed.hostname, "web-01");
+        assert_eq!(parsed.ca_fingerprint, "deadbeef");
     }
 
     #[test]

@@ -659,15 +659,56 @@ pub async fn join(
     // only carries public material (CSR out, cert back).
     let local = require_daemon(cli_endpoint, cli_token)?;
 
+    // ADR-017 F3: an invite is a *code* `<secret>.<ca_fingerprint>`. Split it so we
+    // can pin the CA fingerprint and preflight the endpoint before sending our CSR.
+    // The CA is sent only the secret half (`invite_secret`).
+    let (invite_secret, pinned_fp) = match invite {
+        Some(code) => {
+            let (secret, fp) = koi_certmesh::invite::decode_code(code);
+            (Some(secret.to_string()), fp.map(str::to_string))
+        }
+        None => (None, None),
+    };
+
     let resolved_endpoint = match endpoint {
         Some(ep) => ep.to_string(),
-        None => discover_ca().await?,
+        // Cross-check the discovered `_certmesh._tcp` fp= TXT against the invite's
+        // pin (F12 hint); the authoritative pin check is the preflight below.
+        None => discover_ca(pinned_fp.as_deref()).await?,
     };
 
     let remote = KoiClient::new(&resolved_endpoint);
     let local_hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
+
+    // 0. Preflight + pin (ADR-017 F3). When the invite carries a CA fingerprint,
+    //    fetch the CA's self-reported status and refuse to continue unless its
+    //    fingerprint matches the pinned one — so a LAN MITM of plain-HTTP discovery
+    //    is rejected *before* we ever transmit a CSR. (`/status` is a GET, so it
+    //    needs no token.) The TOTP path has no fingerprint to pin and stays TOFU.
+    if let Some(ref pin) = pinned_fp {
+        let status = remote.get_json("/v1/certmesh/status").map_err(|e| {
+            anyhow::anyhow!("could not preflight the CA at {resolved_endpoint}: {e}")
+        })?;
+        let advertised = status
+            .get("ca_fingerprint")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "CA at {resolved_endpoint} did not report a fingerprint — aborting (the \
+                     invite expects {pin})"
+                )
+            })?;
+        if !koi_crypto::pinning::fingerprints_match(advertised, pin) {
+            anyhow::bail!(
+                "CA fingerprint mismatch — refusing to join.\n  invite pinned: {pin}\n  \
+                 CA advertised: {advertised}\nThe endpoint may be impersonating the CA \
+                 (MITM), or the invite is for a different mesh."
+            );
+        }
+        eprintln!("Preflight OK — CA fingerprint matches the invite pin.");
+    }
 
     // 1. Ask the LOCAL daemon to generate our keypair + CSR. The private key is
     //    written locally by the daemon and never leaves this machine.
@@ -690,8 +731,10 @@ pub async fn join(
     let mut body = serde_json::Map::new();
     body.insert("hostname".into(), serde_json::json!(local_hostname));
     body.insert("csr".into(), serde_json::json!(csr));
-    if let Some(token) = invite {
-        body.insert("invite_token".into(), serde_json::json!(token));
+    if let Some(ref secret) = invite_secret {
+        // Send only the secret half — the CA does not need (and never sees) the
+        // pinned fingerprint that travelled in the invite code.
+        body.insert("invite_token".into(), serde_json::json!(secret));
     } else {
         eprintln!("Enter the TOTP code from your authenticator app:");
         let mut code = String::new();
@@ -721,7 +764,18 @@ pub async fn join(
     install_body.insert("cert_pem".into(), serde_json::json!(service_cert));
     install_body.insert("ca_pem".into(), serde_json::json!(ca_cert));
     install_body.insert("ca_endpoint".into(), serde_json::json!(resolved_endpoint));
-    if let Some(fp) = resp.get("ca_fingerprint").and_then(|v| v.as_str()) {
+    // Pin the install to the OUT-OF-BAND fingerprint from the invite when we have
+    // one (F3) — so the local daemon hard-fails if the CA returned a cert that does
+    // not match the pin (a /join MITM that slipped past preflight). Without an
+    // invite pin (TOTP join), fall back to the CA's self-reported fingerprint
+    // (documented TOFU).
+    // `pinned_fp` is `Some` for every invite join, so the `or_else` (the CA's
+    // self-reported fingerprint — TOFU) is reached ONLY on the TOTP path, which has
+    // no out-of-band pin. Never let an invite join fall through to the response fp.
+    let install_fp = pinned_fp
+        .as_deref()
+        .or_else(|| resp.get("ca_fingerprint").and_then(|v| v.as_str()));
+    if let Some(fp) = install_fp {
         install_body.insert("ca_fingerprint".into(), serde_json::json!(fp));
     }
     install_body.insert(
@@ -811,7 +865,7 @@ pub async fn promote(
 
     let resolved_endpoint = match endpoint {
         Some(ep) => ep.to_string(),
-        None => discover_ca().await?,
+        None => discover_ca(None).await?,
     };
 
     eprintln!("Enter the TOTP code from your authenticator app:");
@@ -1170,9 +1224,13 @@ fn confirm_passphrase(prompt: &str, expected: &str) -> anyhow::Result<()> {
 
 /// Discover a certmesh CA on the local network via mDNS.
 ///
-/// Browses for `_certmesh._tcp` services for 5 seconds, collects
-/// resolved results, and returns the endpoint URL of the discovered CA.
-async fn discover_ca() -> anyhow::Result<String> {
+/// Browses for `_certmesh._tcp` services for 5 seconds, collects resolved results,
+/// and returns the endpoint URL of the discovered CA. When `pinned_fp` is set (an
+/// invite carried a CA fingerprint, ADR-017 F3), the CA's `fp=` TXT record is used
+/// as a **cross-check hint** (F12): any discovered CA that advertises a *different*
+/// fingerprint is dropped as definitively the wrong mesh. The TXT is never the
+/// trust source — the authoritative pin check is the preflight in [`join`].
+async fn discover_ca(pinned_fp: Option<&str>) -> anyhow::Result<String> {
     eprintln!("Searching for certmesh CA on the local network...");
 
     let core = Arc::new(koi_mdns::MdnsCore::new()?);
@@ -1181,7 +1239,8 @@ async fn discover_ca() -> anyhow::Result<String> {
         .await?;
 
     let deadline = tokio::time::Instant::now() + CA_DISCOVERY_TIMEOUT;
-    let mut found = Vec::new();
+    // (endpoint, instance name, advertised fp= TXT)
+    let mut found: Vec<(String, String, Option<String>)> = Vec::new();
 
     loop {
         tokio::select! {
@@ -1190,8 +1249,9 @@ async fn discover_ca() -> anyhow::Result<String> {
                     Some(MdnsEvent::Resolved(record)) => {
                         if let (Some(ip), Some(port)) = (&record.ip, record.port) {
                             let endpoint = format!("http://{ip}:{port}");
-                            if !found.iter().any(|(ep, _)| ep == &endpoint) {
-                                found.push((endpoint, record.name.clone()));
+                            if !found.iter().any(|(ep, _, _)| ep == &endpoint) {
+                                let fp = record.txt.get("fp").cloned();
+                                found.push((endpoint, record.name.clone(), fp));
                             }
                         }
                     }
@@ -1205,19 +1265,44 @@ async fn discover_ca() -> anyhow::Result<String> {
 
     let _ = core.shutdown().await;
 
+    // F12 cross-check: drop CAs whose advertised fp contradicts the invite pin. CAs
+    // that match the pin, or advertise no fp (can't disambiguate — let preflight
+    // decide), are kept.
+    if let Some(pin) = pinned_fp {
+        let before = found.len();
+        found.retain(|(_, _, fp)| match fp {
+            Some(f) => koi_crypto::pinning::fingerprints_match(f, pin),
+            None => true,
+        });
+        let dropped = before - found.len();
+        if dropped > 0 {
+            eprintln!(
+                "Ignored {dropped} discovered CA(s) whose advertised fingerprint did not match \
+                 the invite."
+            );
+        }
+    }
+
     match found.len() {
-        0 => anyhow::bail!(
-            "No certmesh CA found on the local network.\n\
-             Specify the endpoint manually: koi certmesh join <endpoint>"
-        ),
+        0 => {
+            let hint = if pinned_fp.is_some() {
+                " matching the invite"
+            } else {
+                ""
+            };
+            anyhow::bail!(
+                "No certmesh CA{hint} found on the local network.\n\
+                 Specify the endpoint manually: koi certmesh join <endpoint>"
+            )
+        }
         1 => {
-            let (endpoint, name) = found.into_iter().next().unwrap();
+            let (endpoint, name, _) = found.into_iter().next().unwrap();
             eprintln!("Found CA: {name} at {endpoint}");
             Ok(endpoint)
         }
         _ => {
             let mut msg = String::from("Multiple certmesh CAs found:\n");
-            for (ep, name) in &found {
+            for (ep, name, _) in &found {
                 msg.push_str(&format!("  {name}  {ep}\n"));
             }
             msg.push_str("\nSpecify which to join: koi certmesh join <endpoint>");

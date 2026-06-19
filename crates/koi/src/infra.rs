@@ -248,6 +248,55 @@ pub(crate) fn announce_mcp_endpoint(
     }
 }
 
+/// Advertise the certmesh CA on the LAN with its fingerprint in TXT (ADR-017 F12).
+///
+/// Publishes EXACTLY ONE `_certmesh._tcp` mDNS record (on the HTTP port, where the
+/// CA serves `/status` and `/trust-bundle`) with `fp=<ca_fingerprint>` in TXT. A
+/// joiner discovers this and cross-checks the fingerprint against the one carried
+/// in its invite (F3) — a **convenience hint** to disambiguate / fail fast, never
+/// a trust source (the authoritative check is the joiner's pinned-fingerprint
+/// preflight). No-op when certmesh is absent or no CA is initialized. The record is
+/// withdrawn by the mDNS goodbye on shutdown. Shared by the foreground daemon and
+/// the Windows service so the two never diverge.
+pub(crate) async fn announce_certmesh_endpoint(
+    cores: &crate::DaemonCores,
+    http_port: u16,
+) -> Option<String> {
+    let certmesh = cores.certmesh.as_ref()?;
+    let mdns = cores.mdns.as_ref()?;
+    // Only advertise once a CA exists — the fingerprint is the whole point of the
+    // record. An uninitialized node has nothing to advertise.
+    let fingerprint = certmesh.ca_fingerprint().await?;
+
+    let hostname = hostname::get()
+        .ok()
+        .and_then(|os| os.into_string().ok())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let mut txt = std::collections::HashMap::new();
+    txt.insert("fp".to_string(), fingerprint.clone());
+    txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
+    txt.insert("name".to_string(), format!("Koi CA ({hostname})"));
+    let payload = koi_mdns::protocol::RegisterPayload {
+        name: format!("Koi CA ({hostname})"),
+        service_type: koi_certmesh::CERTMESH_SERVICE_TYPE.to_string(),
+        port: http_port,
+        ip: None,
+        lease_secs: None,
+        txt,
+    };
+    match mdns.register(payload) {
+        Ok(result) => {
+            tracing::info!(id = %result.id, port = http_port, fp = %fingerprint, "Certmesh CA announced via mDNS (_certmesh._tcp)");
+            Some(result.id)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to announce certmesh CA via mDNS");
+            None
+        }
+    }
+}
+
 /// Resolves the `--http-bind` mode string to a concrete bind address:
 /// `loopback` → 127.0.0.1, `0.0.0.0` → all interfaces, `bridge` → the
 /// docker/podman bridge IPv4 (errors if none), `<ip>` → parsed literally.
