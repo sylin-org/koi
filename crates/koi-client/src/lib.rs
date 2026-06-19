@@ -453,38 +453,6 @@ impl KoiClient {
         Ok(())
     }
 
-    // ── Certmesh operations (Phase 3) ──────────────────────────────
-
-    /// POST /v1/certmesh/renew - push renewed cert to a member.
-    ///
-    /// `member_endpoint` is the member's HTTP endpoint, not the CA's.
-    /// Used when the primary pushes renewals to remote members.
-    #[allow(dead_code)]
-    pub fn push_renewal(
-        &self,
-        member_endpoint: &str,
-        request: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let url = format!("{member_endpoint}/v1/certmesh/renew");
-        let resp = self
-            .auth_post(&url)
-            .send_json(request.clone())
-            .map_err(map_error)?;
-        resp.into_json()
-            .map_err(|e| ClientError::Decode(e.to_string()))
-    }
-
-    /// POST /v1/certmesh/health - send health heartbeat.
-    pub fn health_heartbeat(&self, request: &serde_json::Value) -> Result<serde_json::Value> {
-        let url = format!("{}/v1/certmesh/health", self.endpoint);
-        let resp = self
-            .auth_post(&url)
-            .send_json(request.clone())
-            .map_err(map_error)?;
-        resp.into_json()
-            .map_err(|e| ClientError::Decode(e.to_string()))
-    }
-
     // ── Private helpers ───────────────────────────────────────────
 
     /// Agent without read timeout for SSE streams.

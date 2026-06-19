@@ -58,6 +58,12 @@ tokio-util = { workspace = true }
 tokio-rustls.workspace = true
 rustls.workspace = true
 hyper-util.workspace = true
+# mTLS CLIENT primitive (`koi_certmesh::mtls::post_json`): the member-pull
+# rotate-key renewal (ADR-017 F6) dials the CA's mTLS listener presenting its own
+# leaf as the client cert. hyper drives the HTTP/1.1 request over tokio-rustls;
+# http-body-util collects the response body.
+hyper.workspace = true
+http-body-util.workspace = true
 
 [features]
 # Pass-through to koi-crypto's optional backends, default-on (standalone builds and the
@@ -73,9 +79,8 @@ tower = { version = "0.5", features = ["util"] }
 # conformance test also stands up a rustls TLS server with the daemon leaf. `rcgen`
 # lets instant-acme auto-generate the order's key + CSR at finalize.
 instant-acme = { version = "0.8.5", features = ["hyper-rustls", "rcgen"] }
-# tokio-rustls / rustls / hyper-util are now normal deps (the mtls module); the
-# ACME conformance test reuses them. `hyper` stays dev-only (used directly there).
-hyper.workspace = true
+# tokio-rustls / rustls / hyper-util / hyper / http-body-util are now normal deps
+# (the mtls server + client primitives); the ACME conformance test reuses them.
 tempfile = "3"
 # Raw-JWS security tests POST flattened JWS over plain HTTP (no TLS); reqwest is
 # the simplest async client. The conformance test reuses it for nothing — it goes

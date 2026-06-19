@@ -78,7 +78,10 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::MEMBER_CERT), post(member_cert_handler))
         .route(rel(paths::STATUS), get(status_handler))
         .route(rel(paths::SET_HOOK), put(set_hook_handler))
-        .route(rel(paths::RENEW), post(renew_handler))
+        // NOTE: /renew is intentionally NOT on the plain-HTTP router. Renewal is
+        // member-initiated over mTLS only (ADR-017 F6) — it lives on
+        // `inter_node_routes` where the caller's identity comes from its client
+        // cert. A plain-HTTP renewal has no authenticated CN and is refused.
         .route(rel(paths::HEALTH), post(health_handler))
         // Service delegation - CA management
         .route(rel(paths::CREATE), post(create_handler))
@@ -219,7 +222,15 @@ async fn member_cert_handler(
 ) -> impl IntoResponse {
     let core = CertmeshCore::from_state(Arc::clone(&state));
     match core
-        .install_member_cert(&request.hostname, &request.cert_pem, &request.ca_pem)
+        .install_member_cert(
+            &request.hostname,
+            &request.cert_pem,
+            &request.ca_pem,
+            request.ca_endpoint.as_deref(),
+            request.ca_fingerprint.as_deref(),
+            &request.sans,
+            request.policy.clone(),
+        )
         .await
     {
         Ok(cert_path) => {
@@ -736,12 +747,16 @@ async fn promote_handler(
     }
 }
 
-/// POST /renew - Receive renewed certificate from the CA.
+/// POST /renew - **mTLS-only** member-initiated, CSR-only rotate-key renewal.
 ///
-/// The CA pushes renewed cert material to members. The member writes
-/// the files and optionally executes its reload hook.
+/// The member sends only a CSR for its freshly rotated keypair (ADR-017 F6); the
+/// CA verifies the caller's mTLS client cert CN matches `hostname`, confirms the
+/// member is enrolled + active + not revoked, signs the CSR with the **authorized
+/// SANs recorded at enrollment** (renewal never expands the SAN set), updates the
+/// roster, and returns the leaf. The CA **never** generates or receives a member
+/// private key.
 #[utoipa::path(post, path = "/renew", tag = "certmesh",
-    summary = "Trigger certificate renewal",
+    summary = "Renew a member certificate from a CSR (mTLS, rotate-key)",
     request_body = RenewRequest,
     responses((status = 200, body = RenewResponse)))]
 async fn renew_handler(
@@ -749,60 +764,130 @@ async fn renew_handler(
     client_cn: Option<Extension<ClientCn>>,
     Json(request): Json<RenewRequest>,
 ) -> impl IntoResponse {
-    // CN authorization: caller can only receive renewals for their own hostname
-    if let Some(Extension(ClientCn(ref caller))) = client_cn {
-        if caller != &request.hostname {
+    // mTLS required: the caller identity is its client certificate's CN. A
+    // plain-HTTP request (no ClientCn) has no authenticated identity → refuse.
+    let caller = match client_cn {
+        Some(Extension(ClientCn(cn))) => cn,
+        None => {
             return error_response(
                 StatusCode::FORBIDDEN,
-                &CertmeshError::Internal(format!(
-                    "CN mismatch: authenticated as '{}' but renewing for '{}'",
-                    caller, request.hostname
-                )),
+                &CertmeshError::Internal(
+                    "certificate renewal requires mTLS client authentication".into(),
+                ),
             );
         }
-    }
-
-    // Build an IssuedCert from the request to reuse write_cert_files
-    let issued = crate::ca::IssuedCert {
-        cert_pem: request.cert_pem,
-        key_pem: request.key_pem,
-        ca_pem: request.ca_pem,
-        fullchain_pem: request.fullchain_pem,
-        fingerprint: request.fingerprint.clone(),
-        expires: chrono::DateTime::parse_from_rfc3339(&request.expires)
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .unwrap_or_else(|_| chrono::Utc::now()),
     };
-
-    // Write cert files
-    let cert_dir = state.paths.certs_dir().join(&request.hostname);
-    if let Err(e) = crate::certfiles::write_cert_files_to(&cert_dir, &issued) {
+    if caller != request.hostname {
         return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &CertmeshError::RenewalFailed {
-                hostname: request.hostname,
-                reason: format!("failed to write cert files: {e}"),
-            },
+            StatusCode::FORBIDDEN,
+            &CertmeshError::Internal(format!(
+                "CN mismatch: authenticated as '{}' but renewing for '{}'",
+                caller, request.hostname
+            )),
         );
     }
 
-    // Update roster if we are the CA (daemon mode processes renewals for local roster)
-    let mut roster = state.roster.lock().await;
-    if let Some(member) = roster.find_member_mut(&request.hostname) {
-        member.cert_fingerprint = issued.fingerprint.clone();
-        member.cert_expires = issued.expires;
+    let ca_guard = state.ca.lock().await;
+    let ca = match ca_guard.as_ref() {
+        Some(ca) => ca,
+        None => {
+            return if state.paths.is_ca_initialized() {
+                error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
+            } else {
+                error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &CertmeshError::CaNotInitialized,
+                )
+            };
+        }
+    };
+
+    // The member must be enrolled, active, and not revoked. The authorized SANs
+    // are the ones recorded at enrollment — a renewal CSR cannot expand them.
+    let (authorized_sans, lifetime_days) = {
+        let roster = state.roster.lock().await;
+        if roster.is_revoked(&request.hostname) {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                &CertmeshError::Revoked(request.hostname.clone()),
+            );
+        }
+        match roster.find_member(&request.hostname) {
+            Some(m) if m.status == crate::roster::MemberStatus::Active => (
+                m.cert_sans.clone(),
+                roster.metadata.policy.leaf_lifetime_days,
+            ),
+            Some(_) => {
+                return error_response(
+                    StatusCode::FORBIDDEN,
+                    &CertmeshError::Internal(format!(
+                        "member '{}' is not active",
+                        request.hostname
+                    )),
+                );
+            }
+            None => {
+                return error_response(
+                    StatusCode::NOT_FOUND,
+                    &CertmeshError::NotFound(request.hostname.clone()),
+                );
+            }
+        }
+    };
+
+    // Sign the member's CSR — no key generation, authorized SANs only.
+    let leaf_pem = match crate::csr::sign_csr(ca, &request.csr, &authorized_sans, lifetime_days) {
+        Ok(pem) => pem,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
+    };
+    let ca_cert = ca.cert_pem.clone();
+    let ca_fingerprint = crate::ca::ca_fingerprint(ca);
+    drop(ca_guard);
+
+    // Fingerprint + expiry from the issued leaf (same convention as enrollment).
+    let fingerprint = match pem::parse(&leaf_pem) {
+        Ok(der) => koi_crypto::pinning::fingerprint_sha256(der.contents()),
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &CertmeshError::Certificate(format!("issued leaf parse: {e}")),
+            );
+        }
+    };
+    let expires = chrono::Utc::now() + chrono::Duration::days(i64::from(lifetime_days));
+
+    // Update the roster member's fingerprint/expiry/last_seen (rotation tracked).
+    {
+        let mut roster = state.roster.lock().await;
+        if let Some(member) = roster.find_member_mut(&request.hostname) {
+            member.cert_fingerprint = fingerprint.clone();
+            member.cert_expires = expires;
+            member.last_seen = Some(chrono::Utc::now());
+        }
+        let roster_clone = roster.clone();
+        let roster_path = state.paths.roster_path();
+        drop(roster);
+        if let Err(e) = crate::roster::persist_roster(&roster_clone, &roster_path).await {
+            tracing::warn!(error = %e, "Failed to save roster after renewal");
+        }
     }
 
-    // Execute reload hook if the member has one set
-    let hook_result = roster
-        .find_member(&request.hostname)
-        .and_then(|m| m.reload_hook.as_ref())
-        .map(|hook| crate::lifecycle::execute_reload_hook(hook));
+    let _ = crate::audit::append_entry_to(
+        &state.paths.audit_log_path(),
+        "cert_renewed",
+        &[
+            ("hostname", request.hostname.as_str()),
+            ("fingerprint", &fingerprint),
+            ("expires", &expires.to_rfc3339()),
+        ],
+    );
 
     let response = RenewResponse {
         hostname: request.hostname.clone(),
-        renewed: true,
-        hook_result,
+        service_cert: leaf_pem,
+        ca_cert,
+        ca_fingerprint,
+        expires: expires.to_rfc3339(),
     };
 
     match serde_json::to_value(&response) {

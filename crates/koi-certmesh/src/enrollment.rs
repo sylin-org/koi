@@ -165,6 +165,8 @@ pub fn process_enrollment(
         service_key: String::new(),
         ca_fingerprint,
         cert_path: String::new(),
+        // The member persists this to drive its pull-renewal loop (ADR-017 F6).
+        policy: roster.metadata.policy.clone(),
     };
 
     let issued = IssuedCert {

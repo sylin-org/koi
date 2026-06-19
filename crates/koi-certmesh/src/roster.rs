@@ -234,8 +234,18 @@ impl Roster {
     }
 
     /// Check if a hostname has been revoked.
+    ///
+    /// Comprehensive by design: a host counts as revoked if it is on the
+    /// revocation list **or** its roster entry is `MemberStatus::Revoked`.
+    /// `revoke_member` sets both, so the two are normally in lock-step; checking
+    /// both makes every revocation guard (enroll, renew, health) fail closed even
+    /// if a roster were ever left in a partially-revoked state.
     pub fn is_revoked(&self, hostname: &str) -> bool {
         self.revocation_list.iter().any(|r| r.hostname == hostname)
+            || self
+                .members
+                .iter()
+                .any(|m| m.hostname == hostname && m.status == MemberStatus::Revoked)
     }
 
     /// Revoke a member and record the revocation entry.

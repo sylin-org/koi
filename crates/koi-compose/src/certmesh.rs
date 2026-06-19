@@ -1,12 +1,10 @@
-//! Certmesh background orchestration — the role-driven loops that keep a CA mesh
-//! converging (renewal, member heartbeat) plus the enrollment-approval pump.
+//! Certmesh background orchestration — the member-pull renewal loop plus the
+//! enrollment-approval pump.
 //!
-//! These loops are **cross-domain orchestration**, not certmesh domain logic: they tie
-//! the certmesh state machine (which lives in `koi-certmesh`, with its own tests) to the
-//! local daemon's HTTP surface (`koi-client` over the breadcrumb) and an operator-approval
-//! decision. That is exactly what a composition crate is for — and it is why the loops
-//! cannot live in `koi-certmesh` itself: a domain crate must not depend on `koi-client`
-//! (the architecture guard forbids domain→domain edges).
+//! These are **cross-domain orchestration**, not certmesh domain logic: they tie the
+//! certmesh state machine (which lives in `koi-certmesh`, with its own tests) to the
+//! daemon lifecycle (the cancellation token, the background task set) and an
+//! operator-approval decision. That is exactly what a composition crate is for.
 //!
 //! Relocating them here (out of the binary's `main.rs`) is what makes Windows-service and
 //! embedded daemons reach parity with the foreground daemon by construction — all three
@@ -93,22 +91,24 @@ async fn dispatch_approval(request: ApprovalRequest, decider: ApprovalDecider) {
 
 /// Spawn certmesh background tasks based on the node's role.
 ///
-/// Spawns exactly two loops:
-/// - **Primary (unlocked)**: hourly renewal check loop
-/// - **Member**: periodic health heartbeat to CA
+/// Spawns one loop: the **member-pull renewal** check (ADR-017 F6). On a node that
+/// joined a mesh it periodically asks the certmesh core whether the local leaf is
+/// within the CA policy's renewal threshold and, if so, performs a rotate-key pull
+/// renewal over mTLS. It is a no-op on the CA itself and on unconfigured nodes
+/// (the CA renews its own leaf at restart via `self_enroll`).
 ///
-/// CA failover is **manual** (`koi certmesh promote`): there is no automatic absence-watch
-/// or standby roster sync, so neither loop needs mDNS or the HTTP port.
-///
-/// All loops respect `CancellationToken` for orderly shutdown.
+/// CA failover is **manual** (`koi certmesh promote`): there is no automatic
+/// absence-watch or standby roster sync, so the loop needs neither mDNS nor the
+/// HTTP port. It respects `CancellationToken` for orderly shutdown.
 pub fn spawn_certmesh_background_tasks(
     certmesh: &Arc<CertmeshCore>,
     cancel: &CancellationToken,
     tasks: &mut Vec<JoinHandle<()>>,
 ) {
-    // ── Renewal check loop ──────────────────────────────────────────
-    // Runs on the primary when the CA is unlocked. If the CA is still
-    // locked at startup, the loop checks periodically and skips gracefully.
+    // ── Member-pull renewal loop ────────────────────────────────────
+    // A joined member renews its own cert before expiry by generating a fresh
+    // keypair + CSR and pulling a CA signature over mTLS (the key never leaves the
+    // member). No-op on the CA / unconfigured nodes.
     let cm = Arc::clone(certmesh);
     let token = cancel.clone();
     tasks.push(tokio::spawn(async move {
@@ -117,95 +117,19 @@ pub fn spawn_certmesh_background_tasks(
             tokio::select! {
                 _ = token.cancelled() => break,
                 _ = tokio::time::sleep(interval) => {
-                    let results = cm.renew_all_due().await;
-                    for (hostname, result) in &results {
-                        match result {
-                            Ok(hook) => {
-                                let hook_ok = hook.as_ref().map(|h| h.success).unwrap_or(true);
-                                if hook_ok {
-                                    tracing::info!(hostname, "Certificate renewed");
-                                } else {
-                                    tracing::warn!(hostname, "Certificate renewed but hook failed");
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!(hostname, error = %e, "Certificate renewal failed");
-                            }
-                        }
-                    }
-                    if !results.is_empty() {
-                        tracing::info!(count = results.len(), "Renewal check complete");
-                    }
-                }
-            }
-        }
-    }));
-
-    // ── Member health heartbeat loop ────────────────────────────────
-    // Members periodically POST their pinned CA fingerprint to the CA
-    // endpoint. This validates the cert chain is still trusted.
-    let cm = Arc::clone(certmesh);
-    let token = cancel.clone();
-    tasks.push(tokio::spawn(async move {
-        let interval = Duration::from_secs(koi_certmesh::health::HEARTBEAT_INTERVAL_SECS);
-        loop {
-            tokio::select! {
-                _ = token.cancelled() => break,
-                _ = tokio::time::sleep(interval) => {
-                    // Only run if this node is a regular member (not primary/standby)
-                    if cm.node_role().await != Some(koi_certmesh::roster::MemberRole::Member) {
-                        continue;
-                    }
-
-                    let hostname = match koi_certmesh::CertmeshCore::local_hostname() {
-                        Some(h) => h,
-                        None => continue,
-                    };
-
-                    let pinned_fp = match cm.pinned_ca_fingerprint().await {
-                        Some(fp) => fp,
-                        None => {
-                            tracing::debug!("Health heartbeat: no pinned CA fingerprint");
-                            continue;
-                        }
-                    };
-
-                    let bc = match koi_config::breadcrumb::read_breadcrumb() {
-                        Some(bc) => bc,
-                        None => {
-                            tracing::debug!("Health heartbeat: no CA endpoint found");
-                            continue;
-                        }
-                    };
-                    let endpoint = bc.endpoint;
-                    let token = bc.token;
-
-                    let request = serde_json::json!({
-                        "hostname": hostname,
-                        "pinned_ca_fingerprint": pinned_fp,
-                    });
-
-                    // KoiClient is blocking (ureq) - run in a blocking task
-                    let result = tokio::task::spawn_blocking(move || {
-                        let c = koi_client::KoiClient::with_token(&endpoint, &token);
-                        c.health_heartbeat(&request)
-                    })
-                    .await;
-
-                    match result {
-                        Ok(Ok(resp)) => {
-                            let valid = resp.get("valid").and_then(|v| v.as_bool()).unwrap_or(false);
-                            if valid {
-                                tracing::debug!("Health heartbeat: valid");
+                    match cm.renew_self_if_due().await {
+                        Ok(koi_certmesh::RenewOutcome::Renewed { expires, hook }) => {
+                            let hook_ok = hook.as_ref().map(|h| h.success).unwrap_or(true);
+                            if hook_ok {
+                                tracing::info!(%expires, "Certificate renewed (rotated key)");
                             } else {
-                                tracing::warn!("Health heartbeat: CA fingerprint mismatch");
+                                tracing::warn!(%expires, "Certificate renewed but reload hook failed");
                             }
                         }
-                        Ok(Err(e)) => {
-                            tracing::warn!(error = %e, "Health heartbeat: request failed");
-                        }
+                        Ok(koi_certmesh::RenewOutcome::NotDue { .. })
+                        | Ok(koi_certmesh::RenewOutcome::NotApplicable) => {}
                         Err(e) => {
-                            tracing::warn!(error = %e, "Health heartbeat: blocking task panicked");
+                            tracing::warn!(error = %e, "Certificate renewal failed; will retry next cycle");
                         }
                     }
                 }

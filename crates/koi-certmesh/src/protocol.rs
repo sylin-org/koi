@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::roster::EnrollmentState;
+use crate::roster::{CertPolicy, EnrollmentState};
 
 /// Client request to join the mesh.
 ///
@@ -81,6 +81,12 @@ pub struct MemberCsrResponse {
 }
 
 /// Ask the local daemon to install a CA-signed cert next to the member key.
+///
+/// When `ca_endpoint` + `ca_fingerprint` are supplied (the normal join flow), the
+/// daemon also persists the **member renewal state** (`certmesh/member.json`) so
+/// the background loop can later pull a rotate-key renewal from the CA over mTLS
+/// (ADR-017 F6). They are optional so a bare cert install (e.g. re-install) still
+/// works without re-arming renewal.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct InstallCertRequest {
     /// Hostname whose key was prepared via [`MemberCsrRequest`].
@@ -89,6 +95,19 @@ pub struct InstallCertRequest {
     pub cert_pem: String,
     /// The CA root certificate (PEM) to install + trust.
     pub ca_pem: String,
+    /// The CA endpoint the joiner reached (e.g. `http://ca-host:5641`). The host
+    /// component is the mTLS renewal target. Absent → renewal state not armed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_endpoint: Option<String>,
+    /// The pinned CA fingerprint (from the join response). Absent → not armed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_fingerprint: Option<String>,
+    /// SANs the member requested (persisted so renewal CSRs carry the same set).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sans: Vec<String>,
+    /// CA-held lifecycle policy from the join response (drives the renew schedule).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<CertPolicy>,
 }
 
 /// Response after installing the member cert locally.
@@ -114,6 +133,11 @@ pub struct JoinResponse {
     /// the member persists its own cert locally.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cert_path: String,
+    /// CA-held lifecycle policy (ADR-017). The member persists this so its
+    /// background loop renews on the CA's schedule (`renew_threshold_days`) and
+    /// knows its grace window (`grace_days`). Phase 2's signed bundle refreshes it.
+    #[serde(default)]
+    pub policy: CertPolicy,
 }
 
 /// Certmesh status overview (returned by GET /status).
@@ -345,25 +369,33 @@ pub struct PromoteResponse {
     pub ephemeral_public: Option<[u8; 32]>,
 }
 
-/// POST /renew request - CA pushes renewed cert to a member.
+/// POST /renew request — **member-initiated, CSR-only** rotate-key renewal
+/// (ADR-017 F6). The member generates a fresh keypair locally and sends only the
+/// CSR over mTLS; the CA signs it. The CA **never** generates or receives a
+/// member private key, on enroll *or* renew. Authorized by the mTLS client cert
+/// (the caller's CN must equal `hostname`).
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RenewRequest {
     pub hostname: String,
-    pub cert_pem: String,
-    pub key_pem: String,
-    pub ca_pem: String,
-    pub fullchain_pem: String,
-    pub fingerprint: String,
-    pub expires: String,
+    /// PKCS#10 CSR (PEM) for the member's freshly rotated keypair.
+    pub csr: String,
 }
 
-/// POST /renew response.
+/// POST /renew response — the CA-signed leaf (no private key).
+///
+/// The member installs the leaf next to its locally held new key and runs its own
+/// reload hook; the CA performs no hook execution on the member's behalf.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RenewResponse {
     pub hostname: String,
-    pub renewed: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hook_result: Option<HookResult>,
+    /// The renewed CA-signed leaf certificate (PEM).
+    pub service_cert: String,
+    /// The CA root certificate (PEM).
+    pub ca_cert: String,
+    /// The CA fingerprint, for the member to cross-check against its pin.
+    pub ca_fingerprint: String,
+    /// RFC 3339 absolute expiry of the renewed leaf.
+    pub expires: String,
 }
 
 /// Result of executing a reload hook after cert renewal.
@@ -497,11 +529,23 @@ mod tests {
             hostname: "web-01".to_string(),
             cert_pem: "CERT".to_string(),
             ca_pem: "CA".to_string(),
+            ca_endpoint: Some("http://ca-host:5641".to_string()),
+            ca_fingerprint: Some("deadbeef".to_string()),
+            sans: vec!["web-01".to_string()],
+            policy: Some(CertPolicy::default()),
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: InstallCertRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.hostname, "web-01");
         assert_eq!(parsed.cert_pem, "CERT");
+        assert_eq!(parsed.ca_endpoint.as_deref(), Some("http://ca-host:5641"));
+        assert_eq!(parsed.ca_fingerprint.as_deref(), Some("deadbeef"));
+
+        // Bare install (no renewal coords) still round-trips.
+        let bare: InstallCertRequest =
+            serde_json::from_str(r#"{"hostname":"web-01","cert_pem":"C","ca_pem":"CA"}"#).unwrap();
+        assert!(bare.ca_endpoint.is_none());
+        assert!(bare.policy.is_none());
     }
 
     #[test]
@@ -544,6 +588,7 @@ mod tests {
                 .to_string(),
             ca_fingerprint: "abc123".to_string(),
             cert_path: "/home/koi/.koi/certs/stone-05".to_string(),
+            policy: CertPolicy::default(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("stone-05"));
@@ -648,48 +693,43 @@ mod tests {
     }
 
     #[test]
-    fn renew_request_serde_round_trip() {
+    fn renew_request_is_csr_only_no_key() {
+        // ADR-017 F6: the renewal request carries ONLY a CSR — never a private
+        // key. The struct has no `key_pem` field; assert the wire shape too.
         let req = RenewRequest {
             hostname: "stone-05".to_string(),
-            cert_pem: "cert".to_string(),
-            key_pem: "key".to_string(),
-            ca_pem: "ca".to_string(),
-            fullchain_pem: "chain".to_string(),
-            fingerprint: "abc123".to_string(),
-            expires: "2026-03-15T00:00:00Z".to_string(),
+            csr: "-----BEGIN CERTIFICATE REQUEST-----\nx\n-----END CERTIFICATE REQUEST-----\n"
+                .to_string(),
         };
         let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            !json.contains("key"),
+            "renew request must never carry a key"
+        );
         let parsed: RenewRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.hostname, "stone-05");
-        assert_eq!(parsed.fingerprint, "abc123");
+        assert!(parsed.csr.contains("CERTIFICATE REQUEST"));
     }
 
     #[test]
-    fn renew_response_serde_round_trip() {
+    fn renew_response_carries_cert_not_key() {
         let resp = RenewResponse {
             hostname: "stone-05".to_string(),
-            renewed: true,
-            hook_result: Some(HookResult {
-                success: true,
-                command: "systemctl reload nginx".to_string(),
-                output: Some("OK".to_string()),
-            }),
+            service_cert: "-----BEGIN CERTIFICATE-----\nsvc\n-----END CERTIFICATE-----\n"
+                .to_string(),
+            ca_cert: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n".to_string(),
+            ca_fingerprint: "abc123".to_string(),
+            expires: "2026-09-15T00:00:00Z".to_string(),
         };
         let json = serde_json::to_string(&resp).unwrap();
+        assert!(
+            !json.contains("PRIVATE KEY"),
+            "renew response must never carry a private key"
+        );
         let parsed: RenewResponse = serde_json::from_str(&json).unwrap();
-        assert!(parsed.renewed);
-        assert!(parsed.hook_result.unwrap().success);
-    }
-
-    #[test]
-    fn renew_response_omits_none_hook_result() {
-        let resp = RenewResponse {
-            hostname: "stone-05".to_string(),
-            renewed: true,
-            hook_result: None,
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(!json.contains("hook_result"));
+        assert_eq!(parsed.hostname, "stone-05");
+        assert!(parsed.service_cert.contains("BEGIN CERTIFICATE"));
+        assert_eq!(parsed.ca_fingerprint, "abc123");
     }
 
     #[test]

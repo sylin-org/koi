@@ -15,8 +15,11 @@ use zeroize::Zeroizing;
 
 use crate::error::CertmeshError;
 
-/// Certificate lifetime for issued service certificates.
-const CERT_LIFETIME_DAYS: i64 = 30;
+/// Default leaf lifetime (days) for a CA-issued certificate when the caller
+/// passes `0`. Matches the [`crate::roster::CertPolicy`] default
+/// (`leaf_lifetime_days = 90`, ADR-017) so the CA's own self-enrolled leaf and a
+/// member-signed leaf age on the same schedule.
+pub const DEFAULT_LEAF_LIFETIME_DAYS: u32 = 90;
 
 /// CA certificate validity period.
 const CA_VALIDITY_YEARS: i64 = 10;
@@ -300,13 +303,22 @@ fn build_ca_state_from_der(
     })
 }
 
-/// Issue a service certificate for a member signed by this CA.
+/// Issue a service certificate **for the CA's own identity**, signed by this CA.
 ///
-/// `sans` should include: hostname, hostname.local, any IPs.
+/// This is the one issuance path that **generates a keypair on the CA**, and it
+/// survives ADR-017 P3 only for the CA's own `self_enroll` (create + restart):
+/// the CA legitimately holds its own private key. **Member** certificates are
+/// never minted here — they come from [`crate::csr::sign_csr`] over a
+/// member-supplied CSR, so a member private key never exists on the CA.
+///
+/// `sans` should include: hostname, hostname.local, any IPs. `validity_days`
+/// sets the leaf lifetime (the CA-held [`crate::roster::CertPolicy`]
+/// `leaf_lifetime_days`); pass `0` to use [`DEFAULT_LEAF_LIFETIME_DAYS`].
 pub fn issue_certificate(
     ca: &CaState,
     hostname: &str,
     sans: &[String],
+    validity_days: u32,
 ) -> Result<IssuedCert, CertmeshError> {
     // Generate a new keypair for the member
     let member_key = KeyPair::generate().map_err(|e| CertmeshError::Certificate(e.to_string()))?;
@@ -335,8 +347,13 @@ pub fn issue_certificate(
     // Least-privilege leaf profile (ADR-017 F10).
     apply_leaf_profile(&mut cert_params);
 
+    let days = if validity_days == 0 {
+        DEFAULT_LEAF_LIFETIME_DAYS
+    } else {
+        validity_days
+    };
     let not_before = Utc::now();
-    let not_after = not_before + Duration::days(CERT_LIFETIME_DAYS);
+    let not_after = not_before + Duration::days(i64::from(days));
     cert_params.not_before = time::OffsetDateTime::from_unix_timestamp(not_before.timestamp())
         .unwrap_or(time::OffsetDateTime::now_utc());
     cert_params.not_after = time::OffsetDateTime::from_unix_timestamp(not_after.timestamp())
@@ -426,6 +443,7 @@ mod tests {
             &ca,
             "stone-05",
             &["stone-05".to_string(), "stone-05.local".to_string()],
+            0,
         )
         .unwrap();
 
@@ -434,5 +452,11 @@ mod tests {
         assert!(issued.fullchain_pem.contains(&issued.cert_pem));
         assert!(issued.fullchain_pem.contains(&issued.ca_pem));
         assert_eq!(issued.fingerprint.len(), 64);
+        // Default leaf lifetime is the CA policy default (90 days, ADR-017).
+        let days = (issued.expires - chrono::Utc::now()).num_days();
+        assert!(
+            (89..=90).contains(&days),
+            "expected ~90-day leaf, got {days}"
+        );
     }
 }

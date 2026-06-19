@@ -15,6 +15,7 @@ const CA_CERT_FILENAME: &str = "ca-cert.pem";
 const SLOT_TABLE_FILENAME: &str = "unlock-slots.json";
 const AUTH_FILENAME: &str = "auth.json";
 const ROSTER_FILENAME: &str = "roster.json";
+const MEMBER_STATE_FILENAME: &str = "member.json";
 const INVITES_FILENAME: &str = "invites.json";
 const AUDIT_FILENAME: &str = "certmesh-audit.log";
 const AUTO_UNLOCK_KEY_FILENAME: &str = "auto-unlock-key";
@@ -70,6 +71,15 @@ impl CertmeshPaths {
     /// Roster file.
     pub fn roster_path(&self) -> PathBuf {
         self.certmesh_dir().join(ROSTER_FILENAME)
+    }
+
+    /// Member renewal-state file (`data_dir/certmesh/member.json`).
+    ///
+    /// Holds a joined member's CA coordinates + pinned fingerprint so the
+    /// background loop can pull rotate-key renewals (ADR-017 F6). Only present on
+    /// nodes that joined a mesh; the CA itself never writes it.
+    pub fn member_state_path(&self) -> PathBuf {
+        self.certmesh_dir().join(MEMBER_STATE_FILENAME)
     }
 
     /// Enrollment invite store (`data_dir/certmesh/invites.json`).

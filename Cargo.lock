@@ -1980,6 +1980,7 @@ dependencies = [
  "crossterm",
  "hmac",
  "hostname",
+ "http-body-util",
  "hyper",
  "hyper-util",
  "indicatif",
@@ -2046,7 +2047,6 @@ version = "0.4.2"
 dependencies = [
  "hickory-proto",
  "koi-certmesh",
- "koi-client",
  "koi-common",
  "koi-config",
  "koi-crypto",

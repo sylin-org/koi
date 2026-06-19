@@ -1,6 +1,6 @@
 # ADR-017: Certmesh Trust Ledger, CSR-Only Issuance, and Anchor Lifecycle
 
-**Status:** Proposed (operator-ratified key decisions 2026-06-18)
+**Status:** Accepted — **Phase 1 Implemented** (1a cert profiles + CA-held policy; 1b member-pull rotate-key renewal). Phases 2–4 pending. (operator-ratified key decisions 2026-06-18)
 **Date:** 2026-06-18
 **Builds on:** ADR-015 (Certmesh Enrollment Hardening) — **F1** (CSR-based enrollment) and **F2** (single-use invite tokens) are **Implemented**; this ADR supersedes ADR-015's **phases 3–4** (F3, F4, F5, F6, F7, F9, F11, F12, F14, F16) and the completion of the phase-1 hygiene items not yet finished (F10 cert profile, F13 cert_path, F15 RFC1123).
 **Constrained by:** STACK-0001 (K2 consumer-neutrality, K3 frozen HKDF labels, D7 contract surface). The bundle/policy signing uses the CA's P-256 key — **not** HKDF — so the frozen K3 labels are untouched. No consumer names are introduced.
@@ -107,7 +107,7 @@ mDNS: `_certmesh._tcp` is now **advertised** by the daemon with `fp=` TXT (was b
 
 ## Phased plan (each phase independently testable; the gate `cargo fmt --check && cargo clippy -- -D warnings && cargo test` stays green; each phase is security-reviewed and live-verified on the test host before the next)
 
-1. **Issuance unification.** P3 + `leaf_profile`/`ca_profile` (F10) + `CertPolicy` (CA-held, 90/30/14) + member-pull rotate-key renewal (F6); delete CA-side member key-gen on renewal and `RenewRequest.key_pem`. *Closes the live key-custody regression first.*
+1. **Issuance unification. ✅ Implemented (1a + 1b).** P3 + `leaf_profile`/`ca_profile` (F10) + `CertPolicy` (CA-held, 90/30/14) + member-pull rotate-key renewal (F6); deleted CA-side member key-gen on renewal and `RenewRequest.key_pem` (the request is now `{hostname, csr}`). `/renew` is mTLS-only; members persist `certmesh/member.json` (CA host + pinned fp + policy) and pull a rotated leaf before expiry; the CA self-renews its own leaf at restart. *Closed the live key-custody regression first.*
 2. **Trust ledger.** P2 `RosterStore` (atomic, sequenced, idempotent — F8) → P1 signed `TrustBundle` + `GET /trust-bundle` + boundary revocation enforcement at mTLS/health (F4).
 3. **Anchor lifecycle.** F3 pinned-fingerprint bootstrap (invite carries fp + preflight) + F5 pin refresh on re-key + F12 mDNS advertise with fp TXT.
 4. **Custody, observability, hygiene.** F11 machine-binding + clone detection; F9/F14 full failure audit incl. `self_enroll`; F13/F15/F16 hygiene; F7 persisted fail-closed rate limiter.

@@ -712,14 +712,28 @@ pub async fn join(
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("CA response missing ca_cert"))?;
 
-    // 3. Hand the signed cert to the LOCAL daemon to install next to the key.
+    // 3. Hand the signed cert to the LOCAL daemon to install next to the key. We
+    //    also pass the CA coordinates (endpoint + pinned fingerprint + policy) so
+    //    the daemon arms member-pull renewal (ADR-017 F6) — the background loop
+    //    later rotates the key + pulls a fresh leaf over mTLS before expiry.
+    let mut install_body = serde_json::Map::new();
+    install_body.insert("hostname".into(), serde_json::json!(local_hostname));
+    install_body.insert("cert_pem".into(), serde_json::json!(service_cert));
+    install_body.insert("ca_pem".into(), serde_json::json!(ca_cert));
+    install_body.insert("ca_endpoint".into(), serde_json::json!(resolved_endpoint));
+    if let Some(fp) = resp.get("ca_fingerprint").and_then(|v| v.as_str()) {
+        install_body.insert("ca_fingerprint".into(), serde_json::json!(fp));
+    }
+    install_body.insert(
+        "sans".into(),
+        serde_json::json!([local_hostname, format!("{local_hostname}.local")]),
+    );
+    if let Some(policy) = resp.get("policy") {
+        install_body.insert("policy".into(), policy.clone());
+    }
     let install = local.post_json(
         "/v1/certmesh/member-cert",
-        &serde_json::json!({
-            "hostname": local_hostname,
-            "cert_pem": service_cert,
-            "ca_pem": ca_cert,
-        }),
+        &serde_json::Value::Object(install_body),
     )?;
     let cert_path = install
         .get("cert_path")

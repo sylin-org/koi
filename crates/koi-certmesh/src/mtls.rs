@@ -15,13 +15,17 @@ use std::sync::{Arc, OnceLock};
 
 use axum::extract::Extension;
 use axum::Router;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use tokio::net::TcpListener;
-use tokio_rustls::TlsAcceptor;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tokio_util::sync::CancellationToken;
 use x509_parser::prelude::*;
 
@@ -173,6 +177,189 @@ pub async fn serve(
     }
 }
 
+// ── mTLS CLIENT primitive (ADR-017 F6 member-pull renewal) ──────────
+
+/// A rustls server-cert verifier that **pins the CA** but does not require the
+/// dialed name to match a certificate SAN.
+///
+/// On a LAN a member may legitimately reach its CA by IP, `.local`, or hostname —
+/// trust is established by the *pinned CA* (the only root in the store), not by
+/// DNS. The chain, signature, and validity window are still fully enforced by the
+/// inner [`rustls::client::WebPkiServerVerifier`]; we only relax the name check by
+/// substituting a name taken from the peer certificate itself. The pinned
+/// `ca_fingerprint` is additionally re-checked at the application layer
+/// (`renew_self_if_due`) against the returned CA cert.
+#[derive(Debug)]
+struct PinnedCaServerVerifier {
+    inner: Arc<rustls::client::WebPkiServerVerifier>,
+}
+
+impl ServerCertVerifier for PinnedCaServerVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        // Substitute a name the certificate actually carries so the inner
+        // verifier's name check passes; chain-to-pinned-CA + validity still run.
+        let name: ServerName<'static> = first_dns_san(end_entity.as_ref())
+            .and_then(|s| ServerName::try_from(s).ok())
+            .unwrap_or_else(|| server_name.to_owned());
+        self.inner
+            .verify_server_cert(end_entity, intermediates, &name, ocsp_response, now)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
+/// Extract the first DNS SAN from a DER-encoded X.509 certificate.
+fn first_dns_san(cert_der: &[u8]) -> Option<String> {
+    let (_, cert) = X509Certificate::from_der(cert_der).ok()?;
+    let san = cert.subject_alternative_name().ok()??;
+    san.value.general_names.iter().find_map(|gn| match gn {
+        GeneralName::DNSName(dns) => Some(dns.to_string()),
+        _ => None,
+    })
+}
+
+/// Build a rustls [`ClientConfig`](rustls::ClientConfig) that presents
+/// `(client_cert_pem, client_key_pem)` and verifies the server against the pinned
+/// `ca_cert_pem` (chain + signature + validity), tolerating any SAN name (see
+/// [`PinnedCaServerVerifier`]).
+pub fn build_client_config(
+    client_cert_pem: &str,
+    client_key_pem: &str,
+    ca_cert_pem: &str,
+) -> Result<rustls::ClientConfig, CertmeshError> {
+    let cert_err = |what: &str, e: String| CertmeshError::Certificate(format!("{what}: {e}"));
+
+    let client_certs: Vec<CertificateDer<'static>> =
+        CertificateDer::pem_slice_iter(client_cert_pem.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| cert_err("client cert PEM", e.to_string()))?;
+    if client_certs.is_empty() {
+        return Err(CertmeshError::Certificate(
+            "no certificates found in client cert PEM".to_string(),
+        ));
+    }
+    let client_key: PrivateKeyDer<'static> =
+        PrivateKeyDer::from_pem_slice(client_key_pem.as_bytes())
+            .map_err(|e| cert_err("client key PEM", e.to_string()))?;
+
+    let mut root_store = rustls::RootCertStore::empty();
+    for ca in CertificateDer::pem_slice_iter(ca_cert_pem.as_bytes()) {
+        let ca = ca.map_err(|e| cert_err("CA cert PEM", e.to_string()))?;
+        root_store
+            .add(ca)
+            .map_err(|e| cert_err("add CA to root store", e.to_string()))?;
+    }
+
+    let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(
+        Arc::new(root_store),
+        provider(),
+    )
+    .build()
+    .map_err(|e| cert_err("server verifier", e.to_string()))?;
+    let verifier = Arc::new(PinnedCaServerVerifier { inner });
+
+    rustls::ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| cert_err("tls versions", e.to_string()))?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_client_auth_cert(client_certs, client_key)
+        .map_err(|e| cert_err("client config", e.to_string()))
+}
+
+/// POST a JSON body to `host:port`+`path` over mTLS, presenting the client cert.
+///
+/// Returns `(status_code, response_body)`. The member-pull renewal loop uses this
+/// to call the CA's mTLS `/v1/certmesh/renew` with its current leaf as the client
+/// identity. A single request/response over a one-shot HTTP/1.1 connection.
+#[allow(clippy::too_many_arguments)]
+pub async fn post_json(
+    host: &str,
+    port: u16,
+    path: &str,
+    json_body: &str,
+    client_cert_pem: &str,
+    client_key_pem: &str,
+    ca_cert_pem: &str,
+) -> Result<(u16, String), CertmeshError> {
+    let config = build_client_config(client_cert_pem, client_key_pem, ca_cert_pem)?;
+    let connector = TlsConnector::from(Arc::new(config));
+
+    let tcp = TcpStream::connect((host, port)).await?;
+    // SNI is advisory here (the verifier tolerates the dialed name); fall back to
+    // a placeholder when the host is not a valid DNS name (e.g. an IP literal).
+    let server_name = ServerName::try_from(host.to_string())
+        .or_else(|_| ServerName::try_from("certmesh-peer.invalid".to_string()))
+        .map_err(|e| CertmeshError::Internal(format!("server name: {e}")))?;
+    let tls = connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("mTLS handshake to {host}:{port}: {e}")))?;
+
+    let io = TokioIo::new(tls);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("http handshake: {e}")))?;
+    // Drive the one-shot connection concurrently so `send_request` can proceed.
+    // A driver error makes the body read below fail too, so log (don't swallow).
+    tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            tracing::debug!(error = %e, "mTLS client connection driver error");
+        }
+    });
+
+    let req = hyper::Request::builder()
+        .method(hyper::Method::POST)
+        .uri(path)
+        .header(hyper::header::HOST, format!("{host}:{port}"))
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        // One-shot client: ask the server to close after the response so the body
+        // read always terminates.
+        .header(hyper::header::CONNECTION, "close")
+        .body(Full::new(Bytes::from(json_body.to_owned())))
+        .map_err(|e| CertmeshError::Internal(format!("build request: {e}")))?;
+
+    let resp = sender
+        .send_request(req)
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("send request: {e}")))?;
+    let status = resp.status().as_u16();
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("read body: {e}")))?
+        .to_bytes();
+    Ok((status, String::from_utf8_lossy(&body).into_owned()))
+}
+
 /// Extract the Common Name (CN) from a DER-encoded X.509 certificate.
 pub fn extract_cn(cert_der: &[u8]) -> Option<String> {
     let (_, cert) = X509Certificate::from_der(cert_der).ok()?;
@@ -189,7 +376,7 @@ pub fn extract_cn(cert_der: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::routing::get;
+    use axum::routing::{get, post};
     use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, SanType};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -262,6 +449,13 @@ mod tests {
         Router::new().route(
             "/cn",
             get(|Extension(ClientCn(cn)): Extension<ClientCn>| async move { cn }),
+        )
+    }
+
+    fn cn_post_router() -> Router {
+        Router::new().route(
+            "/echo",
+            post(|Extension(ClientCn(cn)): Extension<ClientCn>| async move { cn }),
         )
     }
 
@@ -338,6 +532,71 @@ mod tests {
         assert!(
             no_cert.is_err() || !no_cert.as_ref().unwrap().contains("200"),
             "a no-cert client must be rejected; got: {no_cert:?}"
+        );
+
+        cancel.cancel();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn mtls_client_post_json_authenticates_and_reads_cn() {
+        let pki = test_pki();
+        let config =
+            build_server_config(&pki.server_cert_pem, &pki.server_key_pem, &pki.ca_pem).unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cancel = CancellationToken::new();
+        let server = tokio::spawn(serve(cn_post_router(), listener, config, cancel.clone()));
+
+        let (status, body) = post_json(
+            &addr.ip().to_string(),
+            addr.port(),
+            "/echo",
+            "{}",
+            &pki.client_cert_pem,
+            &pki.client_key_pem,
+            &pki.ca_pem,
+        )
+        .await
+        .expect("authenticated client should POST");
+        assert_eq!(status, 200);
+        assert_eq!(body, "test-client", "the server saw the client CN");
+
+        cancel.cancel();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn mtls_client_rejects_server_not_signed_by_pinned_ca() {
+        // The server is signed by PKI A; the client presents a valid PKI-A client
+        // cert (so the server accepts it) but PINS a different CA (PKI B) as the
+        // server root → the client must reject the server cert.
+        let server_pki = test_pki();
+        let other_pki = test_pki();
+        let config = build_server_config(
+            &server_pki.server_cert_pem,
+            &server_pki.server_key_pem,
+            &server_pki.ca_pem,
+        )
+        .unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cancel = CancellationToken::new();
+        let server = tokio::spawn(serve(cn_post_router(), listener, config, cancel.clone()));
+
+        let result = post_json(
+            &addr.ip().to_string(),
+            addr.port(),
+            "/echo",
+            "{}",
+            &server_pki.client_cert_pem,
+            &server_pki.client_key_pem,
+            &other_pki.ca_pem, // pin the WRONG CA
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "client must reject a server not signed by its pinned CA"
         );
 
         cancel.cancel();

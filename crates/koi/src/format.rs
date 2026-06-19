@@ -243,31 +243,6 @@ pub fn promote_success(hostname: &str) -> String {
     out
 }
 
-/// Format the result of a certificate renewal for a member.
-/// Used by the renewal push flow when displaying results.
-#[allow(dead_code)]
-pub fn renewal_result(
-    hostname: &str,
-    success: bool,
-    hook_result: Option<&koi_certmesh::protocol::HookResult>,
-) -> String {
-    let mut out = if success {
-        format!("  [ok] {hostname}")
-    } else {
-        format!("  [fail] {hostname}")
-    };
-    if let Some(hr) = hook_result {
-        if hr.success {
-            out.push_str(" (hook: ok)\n");
-        } else {
-            out.push_str(" (hook: failed)\n");
-        }
-    } else {
-        out.push('\n');
-    }
-    out
-}
-
 // ── Proxy formatting ────────────────────────────────────────────────
 
 /// One row of `koi proxy status` output.
@@ -699,52 +674,5 @@ mod tests {
         assert!(out.contains("Role:     standby"));
         assert!(out.contains("encrypted copy of the CA key"));
         assert!(out.contains("take over automatically"));
-    }
-
-    // ── renewal_result ──────────────────────────────────────────────
-
-    #[test]
-    fn renewal_result_success_no_hook() {
-        let out = renewal_result("stone-01", true, None);
-        assert_eq!(out, "  [ok] stone-01\n");
-    }
-
-    #[test]
-    fn renewal_result_failure_no_hook() {
-        let out = renewal_result("stone-01", false, None);
-        assert_eq!(out, "  [fail] stone-01\n");
-    }
-
-    #[test]
-    fn renewal_result_success_hook_ok() {
-        let hr = koi_certmesh::protocol::HookResult {
-            success: true,
-            command: "systemctl reload nginx".into(),
-            output: None,
-        };
-        let out = renewal_result("stone-01", true, Some(&hr));
-        assert_eq!(out, "  [ok] stone-01 (hook: ok)\n");
-    }
-
-    #[test]
-    fn renewal_result_success_hook_failed() {
-        let hr = koi_certmesh::protocol::HookResult {
-            success: false,
-            command: "bad-cmd".into(),
-            output: Some("not found".into()),
-        };
-        let out = renewal_result("stone-01", true, Some(&hr));
-        assert_eq!(out, "  [ok] stone-01 (hook: failed)\n");
-    }
-
-    #[test]
-    fn renewal_result_failure_hook_failed() {
-        let hr = koi_certmesh::protocol::HookResult {
-            success: false,
-            command: "bad-cmd".into(),
-            output: None,
-        };
-        let out = renewal_result("stone-01", false, Some(&hr));
-        assert_eq!(out, "  [fail] stone-01 (hook: failed)\n");
     }
 }

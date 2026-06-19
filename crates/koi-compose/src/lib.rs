@@ -62,15 +62,20 @@ mod parity_tests {
     }
 
     #[tokio::test]
-    async fn certmesh_role_loops_spawn_two_tasks() {
-        // renewal + heartbeat = 2. CA failover is manual (`koi certmesh promote`), so there
-        // is no roster-sync or failover-detection loop, and neither remaining loop needs mDNS.
+    async fn certmesh_role_loops_spawn_one_task() {
+        // ADR-017 F6: a single member-pull renewal loop. CA failover is manual
+        // (`koi certmesh promote`) and the old broken health-heartbeat loop was
+        // removed, so there is exactly one background loop, needing no mDNS.
         let certmesh = test_certmesh();
         let cancel = CancellationToken::new();
         let mut tasks: Vec<JoinHandle<()>> = Vec::new();
 
         crate::certmesh::spawn_certmesh_background_tasks(&certmesh, &cancel, &mut tasks);
-        assert_eq!(tasks.len(), 2, "expected the 2 certmesh role loops");
+        assert_eq!(
+            tasks.len(),
+            1,
+            "expected the single member-pull renewal loop"
+        );
 
         cancel.cancel();
         for task in tasks {
@@ -81,7 +86,7 @@ mod parity_tests {
     #[tokio::test]
     async fn windows_parity_full_task_inventory() {
         // Mirror the exact spawn sequence windows.rs run_service now uses with certmesh +
-        // runtime enabled: 1 approval pump + 2 certmesh role loops + 1 orchestrator = 4.
+        // runtime enabled: 1 approval pump + 1 certmesh renewal loop + 1 orchestrator = 3.
         let certmesh = test_certmesh();
         let runtime = test_runtime();
         let cancel = CancellationToken::new();
@@ -108,8 +113,8 @@ mod parity_tests {
 
         assert_eq!(
             tasks.len(),
-            4,
-            "Windows parity: 1 approval + 2 certmesh loops + 1 orchestrator"
+            3,
+            "Windows parity: 1 approval + 1 certmesh renewal loop + 1 orchestrator"
         );
 
         cancel.cancel();

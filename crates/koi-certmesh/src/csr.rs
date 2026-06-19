@@ -13,10 +13,14 @@ use rcgen::{CertificateParams, CertificateSigningRequestParams, DnType, KeyPair,
 use crate::ca::CaState;
 use crate::error::CertmeshError;
 
-/// Default leaf validity for a CSR-signed certificate (days).
+/// Default leaf validity for a CSR-signed certificate (days), used when the
+/// caller passes `validity_days = 0`.
 ///
-/// Matches the 30-day member-cert convention used by `ca::issue_certificate`.
-pub const DEFAULT_CSR_VALIDITY_DAYS: u32 = 30;
+/// Matches the CA-held [`crate::roster::CertPolicy`] default
+/// (`leaf_lifetime_days = 90`, ADR-017) and [`crate::ca::DEFAULT_LEAF_LIFETIME_DAYS`]
+/// so every issuance path — enrollment, renewal, and CA self-enroll — ages on
+/// the same schedule.
+pub const DEFAULT_CSR_VALIDITY_DAYS: u32 = 90;
 
 /// Generate a fresh member keypair and a PKCS#10 CSR for `hostname` (ADR-015 F1).
 ///

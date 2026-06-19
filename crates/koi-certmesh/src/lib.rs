@@ -20,6 +20,7 @@ pub mod health;
 pub mod http;
 pub mod invite;
 pub mod lifecycle;
+pub mod member;
 pub mod mtls;
 pub mod pond_ceremony;
 pub mod profiles;
@@ -94,6 +95,11 @@ pub enum ApprovalDecision {
 }
 
 const APPROVAL_TIMEOUT_SECS: u64 = 300;
+
+/// Hard ceiling on a single member-pull renewal request (connect + handshake +
+/// request + body). Bounds a black-holed CA so the renewal loop and daemon
+/// shutdown never wait on the OS TCP timeout.
+const RENEWAL_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Result of daemon self-enrollment for the mTLS listener.
 ///
@@ -390,7 +396,12 @@ impl CertmeshCore {
             "127.0.0.1".to_string(),
             "::1".to_string(),
         ];
-        match ca::issue_certificate(&ca_state, &local_hostname, &sans) {
+        match ca::issue_certificate(
+            &ca_state,
+            &local_hostname,
+            &sans,
+            new_roster.metadata.policy.leaf_lifetime_days,
+        ) {
             Ok(issued) => {
                 let cert_dir_base = state.paths.certs_dir().join(&local_hostname);
                 let cert_dir_base_clone = cert_dir_base.clone();
@@ -606,8 +617,15 @@ impl CertmeshCore {
 
     /// Self-enroll the daemon as a certmesh member.
     ///
-    /// Called automatically after CA creation to get a server cert for the mTLS listener.
-    /// This bypasses the normal authentication flow since the daemon owns the CA.
+    /// Called automatically after CA creation (and on every daemon start) to get
+    /// the server leaf the mTLS + ACME listeners use. This is the **one** issuance
+    /// path that key-gens on the CA (the CA's own identity, [`ca::issue_certificate`]
+    /// — ADR-017 P3); member leaves only ever come from a member CSR.
+    ///
+    /// Idempotent **except** when the on-disk leaf is within the CA policy's
+    /// `renew_threshold_days`: then it re-issues, so a restart refreshes the
+    /// listener cert (the CA self-renews — no live mTLS reload yet; the restart is
+    /// the reload point).
     pub async fn self_enroll(&self) -> Result<SelfEnrollment, CertmeshError> {
         let hostname = hostname::get()
             .ok()
@@ -629,19 +647,20 @@ impl CertmeshCore {
             "127.0.0.1".to_string(),
         ];
 
-        // Idempotency: if already enrolled, read existing cert from disk.
-        // Check roster first (before acquiring CA lock) so the early-return
-        // path never holds the CA lock during blocking file I/O.
-        let existing_cert_dir = {
+        // Read the CA-held policy (self-leaf lifetime + restart-renewal threshold)
+        // and any existing self entry's cert dir under a single lock acquisition.
+        let (policy, existing_cert_dir) = {
             let roster = self.state.roster.lock().await;
-            roster
+            let dir = roster
                 .members
                 .iter()
                 .find(|m| m.hostname == hostname)
-                .map(|m| std::path::PathBuf::from(&m.cert_path))
+                .map(|m| std::path::PathBuf::from(&m.cert_path));
+            (roster.metadata.policy.clone(), dir)
         };
+
+        // Reuse the on-disk leaf unless it is within the renewal threshold.
         if let Some(cert_dir) = existing_cert_dir {
-            // Validate cert_path is under the expected certs directory
             let expected_prefix = self.state.paths.certs_dir();
             if !cert_dir.starts_with(&expected_prefix) {
                 return Err(CertmeshError::Internal(format!(
@@ -650,28 +669,41 @@ impl CertmeshCore {
                     expected_prefix.display(),
                 )));
             }
-            tracing::debug!(hostname = %hostname, "already self-enrolled, reading existing cert");
-            let ca_guard = self.state.ca.lock().await;
-            let ca = ca_guard.as_ref().ok_or_else(|| {
-                if self.state.paths.is_ca_initialized() {
-                    CertmeshError::CaLocked
-                } else {
-                    CertmeshError::CaNotInitialized
+            let on_disk = (
+                std::fs::read_to_string(cert_dir.join("cert.pem")).ok(),
+                std::fs::read_to_string(cert_dir.join("key.pem")).ok(),
+            );
+            if let (Some(cert_pem), Some(key_pem)) = on_disk {
+                let due = leaf_not_after_utc(&cert_pem)
+                    .map(|na| {
+                        chrono::Utc::now()
+                            + chrono::Duration::days(i64::from(policy.renew_threshold_days))
+                            >= na
+                    })
+                    .unwrap_or(true); // unparseable → re-issue to be safe
+                if !due {
+                    let ca_guard = self.state.ca.lock().await;
+                    let ca = ca_guard.as_ref().ok_or_else(|| {
+                        if self.state.paths.is_ca_initialized() {
+                            CertmeshError::CaLocked
+                        } else {
+                            CertmeshError::CaNotInitialized
+                        }
+                    })?;
+                    let ca_cert_pem = ca.cert_pem.clone();
+                    drop(ca_guard);
+                    tracing::debug!(hostname = %hostname, "already self-enrolled, reusing existing cert");
+                    return Ok(SelfEnrollment {
+                        cert_pem,
+                        key_pem,
+                        ca_cert_pem,
+                    });
                 }
-            })?;
-            let ca_cert_pem = ca.cert_pem.clone();
-            drop(ca_guard);
-            let cert_pem = std::fs::read_to_string(cert_dir.join("cert.pem"))
-                .map_err(|e| CertmeshError::Internal(format!("read existing cert: {e}")))?;
-            let key_pem = std::fs::read_to_string(cert_dir.join("key.pem"))
-                .map_err(|e| CertmeshError::Internal(format!("read existing key: {e}")))?;
-            return Ok(SelfEnrollment {
-                cert_pem,
-                key_pem,
-                ca_cert_pem,
-            });
+                tracing::info!(hostname = %hostname, "CA self-cert within renewal threshold; re-issuing");
+            }
         }
 
+        // Issue a fresh (or renewed) self leaf at the policy lifetime.
         let ca_guard = self.state.ca.lock().await;
         let ca = ca_guard.as_ref().ok_or_else(|| {
             if self.state.paths.is_ca_initialized() {
@@ -680,9 +712,9 @@ impl CertmeshCore {
                 CertmeshError::CaNotInitialized
             }
         })?;
-
-        let issued = ca::issue_certificate(ca, &hostname, &sans)?;
+        let issued = ca::issue_certificate(ca, &hostname, &sans, policy.leaf_lifetime_days)?;
         let ca_cert_pem = ca.cert_pem.clone();
+        drop(ca_guard);
 
         // Write cert files to the standard path (blocking I/O)
         let cert_path = self.state.paths.certs_dir().join(&hostname);
@@ -693,34 +725,30 @@ impl CertmeshCore {
         .await
         .map_err(|e| CertmeshError::Internal(format!("cert write task: {e}")))??;
 
-        // Add self to roster as primary member.
-        // Re-check roster under the lock to prevent duplicate entries from
-        // concurrent self_enroll calls racing past the initial check.
-        drop(ca_guard);
+        // Update the existing self entry in place, or insert as primary. The
+        // update path covers both restart-renewal and concurrent self_enroll.
         let mut roster = self.state.roster.lock().await;
-        if roster.members.iter().any(|m| m.hostname == hostname) {
-            tracing::debug!(hostname = %hostname, "concurrent self-enroll resolved, skipping duplicate");
-            return Ok(SelfEnrollment {
-                cert_pem: issued.cert_pem,
-                key_pem: issued.key_pem,
-                ca_cert_pem,
+        if let Some(member) = roster.find_member_mut(&hostname) {
+            member.cert_fingerprint = issued.fingerprint.clone();
+            member.cert_expires = issued.expires;
+            member.cert_path = cert_dir.display().to_string();
+        } else {
+            roster.members.push(roster::RosterMember {
+                hostname: hostname.clone(),
+                role: roster::MemberRole::Primary,
+                enrolled_at: chrono::Utc::now(),
+                enrolled_by: Some("self-enrollment".to_string()),
+                cert_fingerprint: issued.fingerprint.clone(),
+                cert_expires: issued.expires,
+                cert_sans: sans,
+                cert_path: cert_dir.display().to_string(),
+                status: roster::MemberStatus::Active,
+                reload_hook: None,
+                last_seen: Some(chrono::Utc::now()),
+                pinned_ca_fingerprint: None,
+                proxy_entries: Vec::new(),
             });
         }
-        roster.members.push(roster::RosterMember {
-            hostname: hostname.clone(),
-            role: roster::MemberRole::Primary,
-            enrolled_at: chrono::Utc::now(),
-            enrolled_by: Some("self-enrollment".to_string()),
-            cert_fingerprint: issued.fingerprint.clone(),
-            cert_expires: issued.expires,
-            cert_sans: sans,
-            cert_path: cert_dir.display().to_string(),
-            status: roster::MemberStatus::Active,
-            reload_hook: None,
-            last_seen: Some(chrono::Utc::now()),
-            pinned_ca_fingerprint: None,
-            proxy_entries: Vec::new(),
-        });
         let roster_clone = roster.clone();
         let roster_path = self.state.paths.roster_path();
         drop(roster);
@@ -1068,11 +1096,22 @@ impl CertmeshCore {
     /// Writes `cert.pem`, `ca.pem`, and `fullchain.pem` into `certs/<hostname>/`
     /// (the key is already there) and installs the CA root in the OS trust store
     /// (best-effort). Returns the cert directory path.
+    ///
+    /// When `ca_endpoint` + `ca_fingerprint` are supplied (the normal join flow),
+    /// it also writes the **member renewal state** (`certmesh/member.json`) so the
+    /// background loop can later pull a rotate-key renewal from the CA over mTLS
+    /// (ADR-017 F6). The pinned `ca_fingerprint` is verified against the supplied
+    /// `ca_pem` before arming, so a mismatched pair never arms renewal.
+    #[allow(clippy::too_many_arguments)]
     pub async fn install_member_cert(
         &self,
         hostname: &str,
         cert_pem: &str,
         ca_pem: &str,
+        ca_endpoint: Option<&str>,
+        ca_fingerprint: Option<&str>,
+        sans: &[String],
+        policy: Option<roster::CertPolicy>,
     ) -> Result<String, CertmeshError> {
         validate_member_hostname(hostname)?;
         let cert_dir = self.state.paths.certs_dir().join(hostname);
@@ -1082,9 +1121,9 @@ impl CertmeshCore {
         let dir = cert_dir.clone();
         tokio::task::spawn_blocking(move || -> Result<(), CertmeshError> {
             std::fs::create_dir_all(&dir)?;
-            std::fs::write(dir.join("cert.pem"), cert_owned.as_bytes())?;
-            std::fs::write(dir.join("ca.pem"), ca_owned.as_bytes())?;
-            std::fs::write(dir.join("fullchain.pem"), fullchain.as_bytes())?;
+            write_file_atomic(&dir.join("cert.pem"), cert_owned.as_bytes(), false)?;
+            write_file_atomic(&dir.join("ca.pem"), ca_owned.as_bytes(), false)?;
+            write_file_atomic(&dir.join("fullchain.pem"), fullchain.as_bytes(), false)?;
             Ok(())
         })
         .await
@@ -1094,6 +1133,43 @@ impl CertmeshCore {
         if let Err(e) = koi_truststore::install_ca_cert(ca_pem, "koi-certmesh") {
             tracing::warn!(error = %e, "Could not install CA cert in trust store");
         }
+
+        // Arm member-pull renewal when the join supplied the CA coordinates.
+        if let (Some(endpoint), Some(fingerprint)) = (ca_endpoint, ca_fingerprint) {
+            // Defend the pin: the supplied fingerprint must be the fingerprint of
+            // the CA cert we are installing, else we would arm renewal against a
+            // fingerprint we cannot actually verify.
+            match pem::parse(ca_pem) {
+                Ok(der)
+                    if koi_crypto::pinning::fingerprints_match(
+                        &koi_crypto::pinning::fingerprint_sha256(der.contents()),
+                        fingerprint,
+                    ) =>
+                {
+                    let state = member::MemberState {
+                        hostname: hostname.to_string(),
+                        ca_host: member::host_from_endpoint(endpoint),
+                        ca_mtls_port: member::DEFAULT_CA_MTLS_PORT,
+                        ca_fingerprint: fingerprint.to_string(),
+                        sans: sans.to_vec(),
+                        policy: policy.unwrap_or_default(),
+                        reload_hook: None,
+                    };
+                    if let Err(e) = member::save(&self.state.paths.member_state_path(), &state) {
+                        tracing::warn!(error = %e, "Could not persist member renewal state");
+                    } else {
+                        tracing::info!(hostname, ca_host = %state.ca_host, "Member renewal state armed");
+                    }
+                }
+                _ => {
+                    tracing::warn!(
+                        hostname,
+                        "CA fingerprint does not match the installed CA cert; renewal not armed"
+                    );
+                }
+            }
+        }
+
         tracing::info!(hostname, "Member certificate installed locally");
         Ok(cert_dir.display().to_string())
     }
@@ -1296,94 +1372,140 @@ impl CertmeshCore {
 
     // ── Phase 3 - Lifecycle ────────────────────────────────────────
 
-    /// Renew all members whose certs are within the renewal threshold.
+    /// Member-initiated, rotate-key renewal (ADR-017 F6).
     ///
-    /// Returns a list of (hostname, result) pairs. Each result is either
-    /// Ok(hook_result) or Err(e). Callers can inspect which renewals
-    /// succeeded and which failed without aborting the entire batch.
-    pub async fn renew_all_due(
-        &self,
-    ) -> Vec<(String, Result<Option<protocol::HookResult>, CertmeshError>)> {
-        let ca_guard = self.state.ca.lock().await;
-        let ca = match ca_guard.as_ref() {
-            Some(ca) => ca,
-            None => return Vec::new(),
+    /// A no-op ([`RenewOutcome::NotApplicable`]) unless this node has a persisted
+    /// [`member::MemberState`] (i.e. it *joined* a mesh). When its local leaf is
+    /// within the CA policy's `renew_threshold_days`, it:
+    ///
+    /// 1. generates a **fresh** keypair + CSR (rotate-on-renewal — the new private
+    ///    key is held in memory until the install succeeds, never on the CA),
+    /// 2. POSTs only the CSR to the CA's mTLS `/v1/certmesh/renew`, presenting its
+    ///    **current** (still-valid) leaf as the client identity,
+    /// 3. verifies the returned CA fingerprint matches its pin (anti-CA-swap),
+    /// 4. installs the new key + signed leaf locally and runs its reload hook.
+    ///
+    /// The CA never generates or receives a member private key — on enroll *or*
+    /// renew. If the network call fails (CA down, cert lapsed past mTLS validity)
+    /// the local files are left untouched and the loop retries next tick.
+    pub async fn renew_self_if_due(&self) -> Result<RenewOutcome, CertmeshError> {
+        let Some(state) = member::load(&self.state.paths.member_state_path()) else {
+            return Ok(RenewOutcome::NotApplicable);
         };
 
-        let mut roster = self.state.roster.lock().await;
+        let cert_dir = self.state.paths.certs_dir().join(&state.hostname);
+        // Read the current key + cert + pinned CA off the blocking pool.
+        let read_dir = cert_dir.clone();
+        let (current_cert, current_key, pinned_ca_pem) =
+            tokio::task::spawn_blocking(move || -> std::io::Result<(String, String, String)> {
+                Ok((
+                    std::fs::read_to_string(read_dir.join("cert.pem"))?,
+                    std::fs::read_to_string(read_dir.join("key.pem"))?,
+                    std::fs::read_to_string(read_dir.join("ca.pem"))?,
+                ))
+            })
+            .await
+            .map_err(|e| CertmeshError::Internal(format!("read member cert task: {e}")))??;
 
-        let hostnames: Vec<String> = lifecycle::members_needing_renewal(&roster)
-            .iter()
-            .map(|m| m.hostname.clone())
-            .collect();
-
-        let mut results = Vec::new();
-        for hostname in &hostnames {
-            let result =
-                lifecycle::renew_and_update_member(ca, &mut roster, hostname, &self.state.paths);
-            results.push((hostname.clone(), result));
+        // Due? Compare the local leaf's not_after against the renew threshold.
+        let not_after = leaf_not_after_utc(&current_cert).ok_or_else(|| {
+            CertmeshError::Internal("cannot parse local leaf expiry for renewal".into())
+        })?;
+        let threshold = chrono::Duration::days(i64::from(state.policy.renew_threshold_days));
+        if chrono::Utc::now() + threshold < not_after {
+            return Ok(RenewOutcome::NotDue { not_after });
         }
 
-        // Save roster after all renewals
-        if !hostnames.is_empty() {
-            let roster_clone = roster.clone();
-            let roster_path = self.state.paths.roster_path();
-            drop(roster);
-            if let Err(e) = roster::persist_roster(&roster_clone, &roster_path).await {
-                tracing::warn!(error = %e, "Failed to save roster after batch renewal");
-            }
+        // Rotate: fresh keypair + CSR. The new key lives only in memory until the
+        // CA-signed leaf is in hand, so a failed renewal never discards the
+        // working key.
+        let (new_key_pem, csr_pem) = csr::generate_keypair_and_csr(&state.hostname, &state.sans)?;
+        let req_body = serde_json::to_string(&protocol::RenewRequest {
+            hostname: state.hostname.clone(),
+            csr: csr_pem,
+        })
+        .map_err(|e| CertmeshError::Internal(format!("serialize renew request: {e}")))?;
+
+        let (host, port) = state.ca_mtls_authority();
+        // Bound the network call: a black-holed CA must not stall the loop (or
+        // daemon shutdown) for the OS TCP timeout.
+        let (status, body) = tokio::time::timeout(
+            RENEWAL_REQUEST_TIMEOUT,
+            mtls::post_json(
+                &host,
+                port,
+                http::paths::RENEW,
+                &req_body,
+                &current_cert,
+                &current_key,
+                &pinned_ca_pem,
+            ),
+        )
+        .await
+        .map_err(|_| CertmeshError::RenewalFailed {
+            hostname: state.hostname.clone(),
+            reason: format!(
+                "renewal request to {host}:{port} timed out after {}s",
+                RENEWAL_REQUEST_TIMEOUT.as_secs()
+            ),
+        })??;
+
+        if status != 200 {
+            return Err(CertmeshError::RenewalFailed {
+                hostname: state.hostname.clone(),
+                reason: format!("CA returned HTTP {status}: {body}"),
+            });
+        }
+        let resp: protocol::RenewResponse =
+            serde_json::from_str(&body).map_err(|e| CertmeshError::RenewalFailed {
+                hostname: state.hostname.clone(),
+                reason: format!("malformed renew response: {e}"),
+            })?;
+
+        // Anti-CA-swap: derive the fingerprint from the RETURNED CA cert (the one
+        // we are about to install as our new pin) and require it to match the pin.
+        // Deriving locally — rather than trusting the asserted `ca_fingerprint`
+        // string — is the authoritative check.
+        let returned_ca_fp = pem::parse(&resp.ca_cert)
+            .map(|der| koi_crypto::pinning::fingerprint_sha256(der.contents()))
+            .map_err(|e| CertmeshError::RenewalFailed {
+                hostname: state.hostname.clone(),
+                reason: format!("returned ca_cert is not valid PEM: {e}"),
+            })?;
+        if !koi_crypto::pinning::fingerprints_match(&returned_ca_fp, &state.ca_fingerprint) {
+            return Err(CertmeshError::RenewalFailed {
+                hostname: state.hostname.clone(),
+                reason: "returned CA cert does not match the pinned CA fingerprint".into(),
+            });
         }
 
-        results
-    }
+        // Install the new key + leaf atomically (temp → rename per file).
+        let new_cert = resp.service_cert.clone();
+        let new_ca = resp.ca_cert.clone();
+        let fullchain = format!("{new_cert}{new_ca}");
+        let dir = cert_dir.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), CertmeshError> {
+            std::fs::create_dir_all(&dir)?;
+            write_file_atomic(&dir.join("key.pem"), new_key_pem.as_bytes(), true)?;
+            write_file_atomic(&dir.join("cert.pem"), new_cert.as_bytes(), false)?;
+            write_file_atomic(&dir.join("ca.pem"), new_ca.as_bytes(), false)?;
+            write_file_atomic(&dir.join("fullchain.pem"), fullchain.as_bytes(), false)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("write renewed cert task: {e}")))??;
 
-    /// Receive a renewal push from the CA and install the cert files.
-    ///
-    /// The member-side counterpart to `renew_all_due`. Returns the
-    /// renewal response including any hook result.
-    pub async fn receive_renewal(
-        &self,
-        request: &protocol::RenewRequest,
-    ) -> Result<protocol::RenewResponse, CertmeshError> {
-        let issued = ca::IssuedCert {
-            cert_pem: request.cert_pem.clone(),
-            key_pem: request.key_pem.clone(),
-            ca_pem: request.ca_pem.clone(),
-            fullchain_pem: request.fullchain_pem.clone(),
-            fingerprint: request.fingerprint.clone(),
-            expires: chrono::DateTime::parse_from_rfc3339(&request.expires)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now()),
-        };
+        tracing::info!(hostname = %state.hostname, expires = %resp.expires, "Member certificate renewed (rotated key)");
 
-        certfiles::write_cert_files_to(
-            &self.state.paths.certs_dir().join(&request.hostname),
-            &issued,
-        )?;
+        // Run the local reload hook, if configured.
+        let hook = state
+            .reload_hook
+            .as_deref()
+            .map(lifecycle::execute_reload_hook);
 
-        // Update roster and extract hook command, then drop the lock
-        // before executing the hook (which may block).
-        let hook_cmd = {
-            let mut roster = self.state.roster.lock().await;
-            if roster.is_revoked(&request.hostname) {
-                return Err(CertmeshError::Revoked(request.hostname.clone()));
-            }
-            if let Some(member) = roster.find_member_mut(&request.hostname) {
-                member.cert_fingerprint = issued.fingerprint.clone();
-                member.cert_expires = issued.expires;
-            }
-            roster
-                .find_member(&request.hostname)
-                .and_then(|m| m.reload_hook.clone())
-            // roster lock dropped here
-        };
-
-        let hook_result = hook_cmd.map(|hook| lifecycle::execute_reload_hook(&hook));
-
-        Ok(protocol::RenewResponse {
-            hostname: request.hostname.clone(),
-            renewed: true,
-            hook_result,
+        Ok(RenewOutcome::Renewed {
+            expires: resp.expires,
+            hook,
         })
     }
 
@@ -1613,6 +1735,52 @@ pub(crate) fn validate_reload_hook(hook: &str) -> Result<(), CertmeshError> {
             ));
         }
     }
+    Ok(())
+}
+
+/// Outcome of a member-pull renewal attempt ([`CertmeshCore::renew_self_if_due`]).
+#[derive(Debug)]
+pub enum RenewOutcome {
+    /// This node has no member renewal state — it never joined a mesh (e.g. it is
+    /// the CA, or unconfigured). Nothing to do.
+    NotApplicable,
+    /// The local leaf is not yet within the renewal threshold.
+    NotDue {
+        not_after: chrono::DateTime<chrono::Utc>,
+    },
+    /// The leaf was renewed (key rotated); carries the new expiry and any reload
+    /// hook result.
+    Renewed {
+        expires: String,
+        hook: Option<protocol::HookResult>,
+    },
+}
+
+/// Parse a leaf certificate PEM and return its `not_after` as a UTC datetime.
+///
+/// Returns `None` on unparseable PEM/DER or an out-of-range timestamp.
+fn leaf_not_after_utc(cert_pem: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use x509_parser::prelude::FromDer;
+    let der = pem::parse(cert_pem).ok()?;
+    let (_, cert) = x509_parser::certificate::X509Certificate::from_der(der.contents()).ok()?;
+    chrono::DateTime::from_timestamp(cert.validity().not_after.timestamp(), 0)
+}
+
+/// Write `bytes` to `path` atomically (temp file → rename), 0600 on Unix when
+/// `private` is set. Used by the member-pull renewal install so a crash mid-write
+/// can never leave a half-written key or cert in place. The temp name carries the
+/// pid so concurrent writers (different processes) never collide on it.
+fn write_file_atomic(path: &std::path::Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -1862,95 +2030,143 @@ mod tests {
             .is_none());
     }
 
-    // ── renew_all_due ────────────────────────────────────────────────
+    // ── renew_self_if_due ─────────────────────────────────────────────
 
     #[tokio::test]
-    async fn renew_all_due_returns_empty_when_ca_locked() {
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let core = make_locked_core(roster);
-        let results = core.renew_all_due().await;
-        assert!(results.is_empty());
-    }
-
-    #[tokio::test]
-    async fn renew_all_due_returns_empty_when_no_members_due() {
+    async fn renew_self_if_due_is_noop_without_member_state() {
+        // A node that never joined a mesh (no member.json) has nothing to pull.
         let ca = make_test_ca();
-        // Cert expires in 25 days - well beyond the 10-day threshold
         let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
-        let results = core.renew_all_due().await;
-        assert!(results.is_empty());
+        let outcome = core.renew_self_if_due().await.expect("no-op succeeds");
+        assert!(matches!(outcome, RenewOutcome::NotApplicable));
     }
 
+    /// End-to-end member-pull renewal over a real mTLS connection (ADR-017 F6).
+    ///
+    /// Proves the whole loop without the test host: a member enrolls (CSR), then
+    /// pulls a rotate-key renewal from the CA's mTLS `/renew` — the request carries
+    /// ONLY a CSR, the member's key ROTATES locally, and the CA records the new
+    /// fingerprint. The key-custody invariant holds across renewal.
     #[tokio::test]
-    async fn renew_all_due_renews_expiring_members() {
-        let ca = make_test_ca();
-        let mut roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
-        // Expires in 5 days - within the 10-day threshold
-        roster.members.push(RosterMember {
-            hostname: "expiring-host".to_string(),
-            role: MemberRole::Member,
-            enrolled_at: Utc::now(),
-            enrolled_by: None,
-            cert_fingerprint: "old-fp".to_string(),
-            cert_expires: Utc::now() + Duration::days(5),
-            cert_sans: vec!["expiring-host".to_string()],
-            cert_path: String::new(),
-            status: MemberStatus::Active,
-            reload_hook: None,
-            last_seen: None,
-            pinned_ca_fingerprint: None,
-            proxy_entries: Vec::new(),
-        });
-        let core = make_unlocked_core(ca, roster);
+    async fn member_pull_renewal_round_trip() {
+        use crate::roster::CertPolicy;
 
-        let results = core.renew_all_due().await;
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, "expiring-host");
-        assert!(results[0].1.is_ok());
-    }
+        let base = koi_common::test::ensure_data_dir("koi-certmesh-renew-e2e");
+        let ca_paths = CertmeshPaths::with_data_dir(base.join("ca"));
+        let member_paths = CertmeshPaths::with_data_dir(base.join("member"));
+        let _ = std::fs::remove_dir_all(ca_paths.data_dir());
+        let _ = std::fs::remove_dir_all(member_paths.data_dir());
 
-    #[tokio::test]
-    async fn renew_all_due_partial_failure_continues() {
-        let ca = make_test_ca();
-        let mut roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
-        // Valid member that will succeed
-        roster.members.push(RosterMember {
-            hostname: "good-host".to_string(),
-            role: MemberRole::Member,
-            enrolled_at: Utc::now(),
-            enrolled_by: None,
-            cert_fingerprint: "fp-1".to_string(),
-            cert_expires: Utc::now() + Duration::days(3),
-            cert_sans: vec!["good-host".to_string()],
-            cert_path: String::new(),
-            status: MemberStatus::Active,
-            reload_hook: None,
-            last_seen: None,
-            pinned_ca_fingerprint: None,
-            proxy_entries: Vec::new(),
-        });
-        // Another valid member
-        roster.members.push(RosterMember {
-            hostname: "also-good".to_string(),
-            role: MemberRole::Member,
-            enrolled_at: Utc::now(),
-            enrolled_by: None,
-            cert_fingerprint: "fp-2".to_string(),
-            cert_expires: Utc::now() + Duration::days(2),
-            cert_sans: vec!["also-good".to_string()],
-            cert_path: String::new(),
-            status: MemberStatus::Active,
-            reload_hook: None,
-            last_seen: None,
-            pinned_ca_fingerprint: None,
-            proxy_entries: Vec::new(),
-        });
-        let core = make_unlocked_core(ca, roster);
+        // ── CA side: create CA, self-enroll (server leaf for the mTLS listener) ──
+        let (ca_state, _master) = ca::create_ca("e2e-pass", &[7u8; 32], &ca_paths).unwrap();
+        let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+        let auth = koi_crypto::auth::AuthState::Totp(koi_crypto::totp::generate_secret());
+        let ca_core = CertmeshCore::new_with_paths(ca_state, roster, Some(auth), ca_paths.clone());
+        let server_leaf = ca_core.self_enroll().await.expect("CA self-enroll");
 
-        let results = core.renew_all_due().await;
-        // Both members should be processed (no short-circuit)
-        assert_eq!(results.len(), 2);
+        // ── Member side: generate keypair+CSR, enroll via invite, install cert ──
+        let member_core = CertmeshCore::uninitialized_with_paths(member_paths.clone());
+        let csr = member_core
+            .prepare_member_csr("renew-host", &["renew-host".to_string()])
+            .await
+            .expect("member CSR");
+        let invite = ca_core
+            .mint_invite("renew-host", 60)
+            .await
+            .expect("invite")
+            .token;
+        let join = ca_core
+            .enroll(&protocol::JoinRequest {
+                hostname: "renew-host".to_string(),
+                auth: None,
+                invite_token: Some(invite),
+                csr: Some(csr),
+                sans: vec!["renew-host".to_string()],
+            })
+            .await
+            .expect("enroll");
+        assert!(join.service_key.is_empty(), "enroll must not return a key");
+        member_core
+            .install_member_cert(
+                "renew-host",
+                &join.service_cert,
+                &join.ca_cert,
+                Some("http://127.0.0.1:5641"),
+                Some(&join.ca_fingerprint),
+                &["renew-host".to_string()],
+                Some(join.policy.clone()),
+            )
+            .await
+            .expect("install");
+
+        // ── Stand up the CA's mTLS inter-node listener ──
+        let config = mtls::build_server_config(
+            &server_leaf.cert_pem,
+            &server_leaf.key_pem,
+            &server_leaf.ca_cert_pem,
+        )
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        // Mirror the binary's mTLS adapter, which nests the inter-node router under
+        // the crate prefix so the served path is `/v1/certmesh/renew`.
+        let app = Router::new().nest("/v1/certmesh", ca_core.inter_node_routes());
+        let server = tokio::spawn(mtls::serve(app, listener, config, cancel.clone()));
+
+        // Point the armed member state at the ephemeral test port and force "due".
+        let mut st = member::load(&member_paths.member_state_path()).expect("renewal armed");
+        assert_eq!(st.ca_host, "127.0.0.1");
+        st.ca_mtls_port = port;
+        st.policy = CertPolicy {
+            leaf_lifetime_days: 90,
+            renew_threshold_days: 365, // > leaf lifetime → always due
+            grace_days: 14,
+        };
+        member::save(&member_paths.member_state_path(), &st).unwrap();
+
+        let cert_dir = member_paths.certs_dir().join("renew-host");
+        let old_key = std::fs::read_to_string(cert_dir.join("key.pem")).unwrap();
+        let old_cert = std::fs::read_to_string(cert_dir.join("cert.pem")).unwrap();
+
+        // ── Member pulls the renewal over mTLS ──
+        let outcome = member_core.renew_self_if_due().await.expect("renewal ok");
+        assert!(
+            matches!(outcome, RenewOutcome::Renewed { .. }),
+            "expected Renewed, got {outcome:?}"
+        );
+
+        let new_key = std::fs::read_to_string(cert_dir.join("key.pem")).unwrap();
+        let new_cert = std::fs::read_to_string(cert_dir.join("cert.pem")).unwrap();
+        assert_ne!(
+            old_key, new_key,
+            "renewal must ROTATE the member private key"
+        );
+        assert_ne!(old_cert, new_cert, "renewal must install a fresh leaf");
+        assert!(new_cert.contains("BEGIN CERTIFICATE"));
+        assert!(new_key.contains("PRIVATE KEY"));
+
+        // The CA roster recorded the rotated leaf's fingerprint.
+        let new_fp =
+            koi_crypto::pinning::fingerprint_sha256(pem::parse(&new_cert).unwrap().contents());
+        {
+            let roster = ca_core.state.roster.lock().await;
+            let member = roster
+                .find_member("renew-host")
+                .expect("member in CA roster");
+            assert_eq!(
+                member.cert_fingerprint, new_fp,
+                "CA roster must record the rotated leaf fingerprint"
+            );
+        }
+
+        cancel.cancel();
+        let _ = server.await;
+        let _ = std::fs::remove_dir_all(base.join("ca"));
+        let _ = std::fs::remove_dir_all(base.join("member"));
     }
 
     // ── health_check ─────────────────────────────────────────────────
@@ -2063,109 +2279,6 @@ mod tests {
         assert!(!ca_key.public_key_pem().unwrap().is_empty());
         assert_eq!(accepted_auth.method_name(), "totp");
         assert_eq!(accepted_roster.members.len(), 1);
-    }
-
-    // ── receive_renewal ──────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn receive_renewal_updates_roster_member() {
-        let ca = make_test_ca();
-        let mut roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        roster.members[0].cert_fingerprint = "old-fp".to_string();
-        let core = make_unlocked_core(ca, roster);
-
-        let request = protocol::RenewRequest {
-            hostname: "stone-01".to_string(),
-            cert_pem: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n".to_string(),
-            key_pem: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n".to_string(),
-            ca_pem: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n".to_string(),
-            fullchain_pem: "-----BEGIN CERTIFICATE-----\nchain\n-----END CERTIFICATE-----\n"
-                .to_string(),
-            fingerprint: "new-fp-abc123".to_string(),
-            expires: "2026-04-01T00:00:00Z".to_string(),
-        };
-
-        let result = core.receive_renewal(&request).await.unwrap();
-        assert!(result.renewed);
-        assert_eq!(result.hostname, "stone-01");
-
-        // Verify roster was updated
-        let roster = core.state.roster.lock().await;
-        assert_eq!(roster.members[0].cert_fingerprint, "new-fp-abc123");
-    }
-
-    #[tokio::test]
-    async fn receive_renewal_handles_invalid_expires_gracefully() {
-        let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let core = make_unlocked_core(ca, roster);
-
-        let request = protocol::RenewRequest {
-            hostname: "stone-01".to_string(),
-            cert_pem: "cert".to_string(),
-            key_pem: "key".to_string(),
-            ca_pem: "ca".to_string(),
-            fullchain_pem: "chain".to_string(),
-            fingerprint: "new-fp".to_string(),
-            expires: "not-a-date".to_string(),
-        };
-
-        // Should not panic - falls back to Utc::now()
-        let result = core.receive_renewal(&request).await.unwrap();
-        assert!(result.renewed);
-    }
-
-    #[tokio::test]
-    async fn receive_renewal_skips_roster_update_for_unknown_member() {
-        let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        let core = make_unlocked_core(ca, roster);
-
-        let request = protocol::RenewRequest {
-            hostname: "unknown-host".to_string(),
-            cert_pem: "cert".to_string(),
-            key_pem: "key".to_string(),
-            ca_pem: "ca".to_string(),
-            fullchain_pem: "chain".to_string(),
-            fingerprint: "fp".to_string(),
-            expires: "2026-04-01T00:00:00Z".to_string(),
-        };
-
-        let result = core.receive_renewal(&request).await.unwrap();
-        assert!(result.renewed);
-        // No hook result since member not in roster
-        assert!(result.hook_result.is_none());
-
-        // Original roster should be unchanged
-        let roster = core.state.roster.lock().await;
-        assert_eq!(roster.members[0].cert_fingerprint, "fp-test");
-    }
-
-    #[tokio::test]
-    async fn receive_renewal_executes_hook_if_set() {
-        let ca = make_test_ca();
-        let mut roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
-        #[cfg(unix)]
-        let cmd = "/bin/echo renewed";
-        #[cfg(windows)]
-        let cmd = "C:\\Windows\\System32\\cmd.exe /c echo renewed";
-        roster.members[0].reload_hook = Some(cmd.to_string());
-        let core = make_unlocked_core(ca, roster);
-
-        let request = protocol::RenewRequest {
-            hostname: "stone-01".to_string(),
-            cert_pem: "cert".to_string(),
-            key_pem: "key".to_string(),
-            ca_pem: "ca".to_string(),
-            fullchain_pem: "chain".to_string(),
-            fingerprint: "new-fp".to_string(),
-            expires: "2026-04-01T00:00:00Z".to_string(),
-        };
-
-        let result = core.receive_renewal(&request).await.unwrap();
-        assert!(result.hook_result.is_some());
-        let hook = result.hook_result.unwrap();
-        assert!(hook.success);
     }
 
     // ── local_hostname ───────────────────────────────────────────────
@@ -2317,10 +2430,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uninitialized_core_renew_all_due_returns_empty() {
+    async fn uninitialized_core_renew_self_is_noop() {
         let core = CertmeshCore::uninitialized_with_paths(test_paths());
-        let results = core.renew_all_due().await;
-        assert!(results.is_empty());
+        let outcome = core.renew_self_if_due().await.expect("no-op succeeds");
+        assert!(matches!(outcome, RenewOutcome::NotApplicable));
     }
 
     #[tokio::test]

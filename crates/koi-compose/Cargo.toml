@@ -13,7 +13,7 @@ keywords = ["koi", "composition", "orchestrator", "networking"]
 categories = ["network-programming"]
 
 [dependencies]
-# Composition crate: depends on every domain it wires + koi-dashboard + koi-client.
+# Composition crate: depends on every domain it wires + koi-dashboard.
 # Nothing depends on koi-compose except the top-level consumers (the koi binary and
 # koi-embedded), so the kernel and domain closures stay clean.
 koi-common.workspace = true
@@ -21,7 +21,6 @@ koi-mdns.workspace = true
 koi-certmesh.workspace = true
 koi-crypto.workspace = true
 koi-config.workspace = true
-koi-client.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true
 koi-proxy.workspace = true

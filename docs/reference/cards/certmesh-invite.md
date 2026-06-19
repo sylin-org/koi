@@ -9,7 +9,7 @@ koi_version: v0.4.2
 validation:
   date_last_tested: 2026-06-18
   status: verified
-  scope: "unit + integration (csr::tests incl. least-privilege leaf profile, invite::tests, enrollment::tests {invite_token_succeeds (~90d leaf), without_csr_is_rejected}, http member-csr/invite tests, protocol round-trips) + adversarial security review (key-custody invariant) + live on the Linux test host (member-csr -> join-with-CSR -> member-cert: join response carries NO service_key; key.pem 0600 local; single-use invite replay 401; member-csr 401 without DAT token; roster grew). ADR-017 phase 1a (cert profiles F10 + CA-held 90/30/14 policy) shipped."
+  scope: "unit + integration (csr::tests incl. least-privilege leaf profile, invite::tests, enrollment::tests {invite_token_succeeds (~90d leaf), without_csr_is_rejected}, mtls::tests {client post_json authenticates + reads CN, rejects server not signed by pinned CA}, lib::member_pull_renewal_round_trip (end-to-end rotate-key renewal over real mTLS), member::tests, http member-csr/invite tests, protocol round-trips) + adversarial security review (key-custody invariant holds on enroll AND renew; 0 critical/high) + live on the Linux test host. ADR-017 phase 1a (cert profiles F10 + CA-held 90/30/14 policy) AND phase 1b (F6 member-pull rotate-key renewal) shipped."
 ---
 
 # Certmesh enrollment — capability card
@@ -55,14 +55,30 @@ No invite? `koi certmesh join <endpoint>` falls back to the interactive **mesh T
 
 ## Cert profile & lifecycle policy (ADR-017 phase 1a, shipped)
 
-Every issued leaf now carries a least-privilege profile — `KeyUsage=[DigitalSignature,KeyEncipherment]`, `EKU=[ServerAuth,ClientAuth]`, `CA:FALSE` — and the CA cert is `pathlen=0` (it signs leaves, never sub-CAs). Lifetimes are a **CA-held policy** (`CertPolicy`, default **90-day** leaves / renew at **30 days** remaining / **14-day** grace), stored in roster metadata and applied at issuance; it will be distributed to members in the signed trust bundle (phase 2).
+Every issued leaf carries a least-privilege profile — `KeyUsage=[DigitalSignature,KeyEncipherment]`, `EKU=[ServerAuth,ClientAuth]`, `CA:FALSE` — and the CA cert is `pathlen=0` (it signs leaves, never sub-CAs). Lifetimes are a **CA-held policy** (`CertPolicy`, default **90-day** leaves / renew at **30 days** remaining / **14-day** grace), stored in roster metadata and applied at **both** enrollment and renewal. It will be distributed to members in the signed trust bundle (phase 2).
+
+## Renewal — member-pull, rotate-key (ADR-017 F6, phase 1b, shipped)
+
+Renewal preserves the same key-custody invariant as enrollment: **the member's key never reaches the CA, on renew either.** At join, the daemon persists `certmesh/member.json` (the CA's mTLS host, the pinned CA fingerprint, the SANs, and the policy). A background loop checks the local leaf hourly; once it is within `renew_threshold_days` it:
+
+1. generates a **fresh** keypair + CSR (rotate-on-renewal — the new key stays in memory until install succeeds, so a failed renewal never discards the working key),
+2. POSTs **only the CSR** to the CA's **mTLS** `/v1/certmesh/renew` (port 5642), presenting its current still-valid leaf as the client cert,
+3. verifies the returned CA cert matches its **pinned fingerprint** (anti-CA-swap), then installs the new key + leaf atomically and runs its reload hook.
+
+The CA's `renew_handler` is **mTLS-only** (removed from the plain-HTTP router): it requires the client-cert CN to equal the requested hostname, the member to be enrolled + active + not-revoked, and signs the CSR with the **SANs recorded at enrollment** (a renewal CSR can never expand its SAN set). The CA signs — it never generates or receives a member key. The CA renews **its own** leaf at restart (`self_enroll` re-issues when within threshold).
+
+```bash
+# Renewal is automatic. To force a member to renew now (testing), shrink its window:
+#   edit /var/lib/koi/certmesh/member.json → raise renew_threshold_days, restart koi.
+# The loop pulls a fresh rotated cert from the CA over mTLS and reloads in place.
+```
 
 ## Not yet covered (tracked in [ADR-017](../../adr/017-certmesh-trust-lifecycle.md))
 
-- **Renewal still ships CA-generated keys.** F1 secures *initial* enrollment; the certificate **renewal** path (`/v1/certmesh/renew`) is still the pre-F1 push flow where the CA regenerates the member key — re-introducing CA key custody after the cert lifetime. The fix (member-pull, rotate-key renewal) is **ADR-017 F6**, phase 1b (in progress).
-- **Plain-HTTP join is TOFU.** The initial CSR/cert exchange rides plain HTTP; a LAN MITM of mDNS discovery is a documented residual until pinned-fingerprint bootstrap (**ADR-017 F3**, phase 3).
-- **Revocation isn't propagated/enforced at the boundary.** It's CA-local only today; the signed monotonic trust bundle (**ADR-017 F4**, phase 2) fixes propagation + anti-rollback + mTLS/health enforcement.
+- **Plain-HTTP join is TOFU.** The initial CSR/cert exchange rides plain HTTP; a LAN MITM of mDNS discovery is a documented residual until pinned-fingerprint bootstrap (**ADR-017 F3**, phase 3). *(Renewal, by contrast, is already mTLS + fingerprint-pinned.)*
+- **Revocation isn't propagated/enforced at the boundary.** It's CA-local only today (enforced at enroll/renew, not yet at the mTLS/health boundary mesh-wide); the signed monotonic trust bundle (**ADR-017 F4**, phase 2) fixes propagation + anti-rollback + boundary enforcement.
+- **The CA's own leaf renews only at restart.** A long-running CA refreshes its mTLS/ACME listener cert on the next daemon restart (no live in-process reload yet); members renew continuously via the pull loop.
 
 ## The proof it works
 
-Unit + integration: `csr::tests::generated_csr_is_signable_and_keeps_key_local`, `enrollment::tests::{enrollment_with_invite_token_succeeds (asserts no service_key), enrollment_without_csr_is_rejected}`, `invite::tests` (mint/single-use/expiry/wrong-host), `http::tests::{member_csr_returns_csr_without_ca, invite_without_ca_returns_503}`, protocol round-trips. An adversarial security review confirmed the key-custody invariant (CA never generates/returns a member key in the join path). **Live (2026-06-18)** on the Linux test host: `member-csr → join-with-CSR → member-cert` — join response carried **no** `service_key`, `key.pem` was `0600` local, `member-csr` returned 401 without the DAT token, and an invite replay returned 401. The standing scenario is the "Invite/Join" acts in [whole-story-e2e-surface.md](../../testing/whole-story-e2e-surface.md).
+Unit + integration: `csr::tests::generated_csr_is_signable_and_keeps_key_local`, `enrollment::tests::{enrollment_with_invite_token_succeeds (asserts no service_key), enrollment_without_csr_is_rejected}`, `invite::tests` (mint/single-use/expiry/wrong-host), `mtls::tests::{mtls_client_post_json_authenticates_and_reads_cn, mtls_client_rejects_server_not_signed_by_pinned_ca}`, `lib::tests::member_pull_renewal_round_trip` (a real mTLS client→server renewal: the request carries only a CSR, the member key **rotates**, and the CA records the new fingerprint), `http::tests::{member_csr_returns_csr_without_ca, invite_without_ca_returns_503}`, protocol round-trips. An adversarial security review (security + rust reviewers) confirmed the key-custody invariant holds on **enroll and renew** with zero critical/high findings. **Live (2026-06-18)** on the Linux test host: `member-csr → join-with-CSR → member-cert` — join response carried **no** `service_key`, `key.pem` was `0600` local, `member-csr` returned 401 without the DAT token, and an invite replay returned 401. The standing scenario is the "Invite/Join" acts in [whole-story-e2e-surface.md](../../testing/whole-story-e2e-surface.md).
