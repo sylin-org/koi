@@ -18,6 +18,7 @@ pub mod error;
 pub mod failover;
 pub mod health;
 pub mod http;
+pub mod invite;
 pub mod lifecycle;
 pub mod mtls;
 pub mod pond_ceremony;
@@ -551,7 +552,11 @@ impl CertmeshCore {
 
         let roster = self.state.roster.lock().await;
         let auth_guard = self.state.auth.lock().await;
-        let auth_state = auth_guard.as_ref().ok_or(CertmeshError::CaLocked)?;
+        // The enrollment auth credential may be absent when the CA was unlocked
+        // via a non-passphrase slot (TOTP/auto-unlock master key). Invite-token
+        // enrollment (ADR-015 F2) does not need it; the TOTP branch inside
+        // `process_enrollment` fails closed (CaLocked) when it does.
+        let auth_state = auth_guard.as_ref();
         let challenge_guard = self.state.pending_challenge.lock().await;
         let challenge = challenge_guard
             .as_ref()
@@ -973,6 +978,124 @@ impl CertmeshCore {
         let _ =
             audit::append_entry_to(&self.state.paths.audit_log_path(), "enrollment_closed", &[]);
         Ok(())
+    }
+
+    /// Mint a single-use, hostname-bound enrollment invite (ADR-015 F2).
+    ///
+    /// Returns the one-time plaintext token plus its absolute expiry. The CA
+    /// stores only a hash; the joining host presents the token once via
+    /// `POST /join` (`invite_token`). The mesh must be initialized — the invite
+    /// is an authorization to enroll into an existing CA. Posture booleans are
+    /// unchanged: the token replaces the credential, not the `enrollment_open` /
+    /// `requires_approval` gates.
+    pub async fn mint_invite(
+        &self,
+        hostname: &str,
+        ttl_mins: i64,
+    ) -> Result<protocol::InviteResponse, CertmeshError> {
+        if !self.state.paths.is_ca_initialized() {
+            return Err(CertmeshError::CaNotInitialized);
+        }
+        // Validate the hostname the same way enrollment will (it becomes the
+        // single host this token authorizes — and a certificate SAN at join).
+        if hostname.is_empty()
+            || hostname.len() > 253
+            || hostname.contains('\0')
+            || hostname.contains(' ')
+        {
+            return Err(CertmeshError::InvalidPayload(format!(
+                "invalid hostname for invite: {hostname:?}"
+            )));
+        }
+
+        let minted = invite::mint(&self.state.paths.invites_path(), hostname, ttl_mins)?;
+        let expires_at = minted.expires_at.to_rfc3339();
+
+        let _ = audit::append_entry_to(
+            &self.state.paths.audit_log_path(),
+            "invite_minted",
+            &[("hostname", hostname), ("expires_at", &expires_at)],
+        );
+        tracing::info!(hostname, "Enrollment invite minted");
+
+        Ok(protocol::InviteResponse {
+            token: minted.token,
+            hostname: hostname.to_string(),
+            expires_at,
+        })
+    }
+
+    // ── Member-side key custody (ADR-015 F1) ────────────────────────
+
+    /// Generate this member's keypair + CSR and persist the **private key** locally.
+    ///
+    /// The daemon generates the keypair, writes the private key to
+    /// `certs/<hostname>/key.pem` (0600 on Unix), and returns only the CSR. The
+    /// key never leaves the daemon; the CLI carries only the public CSR to the
+    /// remote CA. Paired with [`Self::install_member_cert`].
+    pub async fn prepare_member_csr(
+        &self,
+        hostname: &str,
+        sans: &[String],
+    ) -> Result<String, CertmeshError> {
+        validate_member_hostname(hostname)?;
+        let (key_pem, csr_pem) = csr::generate_keypair_and_csr(hostname, sans)?;
+
+        let cert_dir = self.state.paths.certs_dir().join(hostname);
+        let key_path = cert_dir.join("key.pem");
+        tokio::task::spawn_blocking(move || -> Result<(), CertmeshError> {
+            std::fs::create_dir_all(&cert_dir)?;
+            std::fs::write(&key_path, key_pem.as_bytes())?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("write member key task: {e}")))??;
+
+        tracing::info!(
+            hostname,
+            "Member keypair generated; CSR prepared (key kept local)"
+        );
+        Ok(csr_pem)
+    }
+
+    /// Install a CA-signed leaf next to the member key from [`Self::prepare_member_csr`].
+    ///
+    /// Writes `cert.pem`, `ca.pem`, and `fullchain.pem` into `certs/<hostname>/`
+    /// (the key is already there) and installs the CA root in the OS trust store
+    /// (best-effort). Returns the cert directory path.
+    pub async fn install_member_cert(
+        &self,
+        hostname: &str,
+        cert_pem: &str,
+        ca_pem: &str,
+    ) -> Result<String, CertmeshError> {
+        validate_member_hostname(hostname)?;
+        let cert_dir = self.state.paths.certs_dir().join(hostname);
+        let cert_owned = cert_pem.to_string();
+        let ca_owned = ca_pem.to_string();
+        let fullchain = format!("{cert_owned}{ca_owned}");
+        let dir = cert_dir.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), CertmeshError> {
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join("cert.pem"), cert_owned.as_bytes())?;
+            std::fs::write(dir.join("ca.pem"), ca_owned.as_bytes())?;
+            std::fs::write(dir.join("fullchain.pem"), fullchain.as_bytes())?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("write member cert task: {e}")))??;
+
+        // Trust the CA root so this node can verify the mesh (best-effort).
+        if let Err(e) = koi_truststore::install_ca_cert(ca_pem, "koi-certmesh") {
+            tracing::warn!(error = %e, "Could not install CA cert in trust store");
+        }
+        tracing::info!(hostname, "Member certificate installed locally");
+        Ok(cert_dir.display().to_string())
     }
 
     /// Rotate the auth credential - generates new credential, persists, returns setup info.
@@ -1489,6 +1612,27 @@ pub(crate) fn validate_reload_hook(hook: &str) -> Result<(), CertmeshError> {
                 "reload hook must be an absolute path".into(),
             ));
         }
+    }
+    Ok(())
+}
+
+/// Validate a hostname that will be used both as a certificate SAN and as a
+/// filesystem directory name under `certs/`. Rejects empty/oversized names and
+/// anything that could escape the certs directory (path separators, `..`, NUL,
+/// spaces).
+fn validate_member_hostname(hostname: &str) -> Result<(), CertmeshError> {
+    if hostname.is_empty()
+        || hostname.len() > 253
+        || hostname.contains('\0')
+        || hostname.contains(' ')
+        || hostname.contains('/')
+        || hostname.contains('\\')
+        || hostname.contains(':') // Windows drive / NTFS alternate-data-stream syntax
+        || hostname.contains("..")
+    {
+        return Err(CertmeshError::InvalidPayload(format!(
+            "invalid hostname: {hostname:?}"
+        )));
     }
     Ok(())
 }
@@ -2153,9 +2297,11 @@ mod tests {
         let core = CertmeshCore::uninitialized_with_paths(test_paths());
         let request = protocol::JoinRequest {
             hostname: "stone-05".to_string(),
-            auth: koi_crypto::auth::AuthResponse::Totp {
+            auth: Some(koi_crypto::auth::AuthResponse::Totp {
                 code: "123456".to_string(),
-            },
+            }),
+            invite_token: None,
+            csr: None,
             sans: vec![],
         };
         let result = core.enroll(&request).await;

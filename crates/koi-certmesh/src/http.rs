@@ -18,9 +18,11 @@ use koi_common::encoding::{hex_decode, hex_encode};
 use crate::protocol::{
     AuditLogResponse, BackupRequest, BackupResponse, CertmeshStatus, CreateCaRequest,
     CreateCaResponse, DestroyResponse, EnrollmentSummary, HealthRequest, HealthResponse,
-    JoinRequest, JoinResponse, PromoteRequest, PromoteResponse, RenewRequest, RenewResponse,
-    RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse, RotateAuthRequest,
-    RotateAuthResponse, SetHookRequest, SetHookResponse, UnlockRequest, UnlockResponse,
+    InstallCertRequest, InstallCertResponse, InviteRequest, InviteResponse, JoinRequest,
+    JoinResponse, MemberCsrRequest, MemberCsrResponse, PromoteRequest, PromoteResponse,
+    RenewRequest, RenewResponse, RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse,
+    RotateAuthRequest, RotateAuthResponse, SetHookRequest, SetHookResponse, UnlockRequest,
+    UnlockResponse,
 };
 
 /// Authenticated client certificate CN, injected by the mTLS adapter as an axum Extension.
@@ -37,6 +39,11 @@ pub mod paths {
     pub const PREFIX: &str = "/v1/certmesh";
 
     pub const JOIN: &str = "/v1/certmesh/join";
+    pub const INVITE: &str = "/v1/certmesh/invite";
+    /// Local: generate this member's keypair + CSR (key persisted locally).
+    pub const MEMBER_CSR: &str = "/v1/certmesh/member-csr";
+    /// Local: install a CA-signed cert next to the member key.
+    pub const MEMBER_CERT: &str = "/v1/certmesh/member-cert";
     pub const STATUS: &str = "/v1/certmesh/status";
     pub const SET_HOOK: &str = "/v1/certmesh/set-hook";
     pub const PROMOTE: &str = "/v1/certmesh/promote";
@@ -66,6 +73,9 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
     use paths::rel;
     Router::new()
         .route(rel(paths::JOIN), post(join_handler))
+        .route(rel(paths::INVITE), post(invite_handler))
+        .route(rel(paths::MEMBER_CSR), post(member_csr_handler))
+        .route(rel(paths::MEMBER_CERT), post(member_cert_handler))
         .route(rel(paths::STATUS), get(status_handler))
         .route(rel(paths::SET_HOOK), put(set_hook_handler))
         .route(rel(paths::RENEW), post(renew_handler))
@@ -119,6 +129,112 @@ async fn join_handler(
                 &CertmeshError::Internal(format!("Serialization error: {e}")),
             ),
         },
+        Err(e) => {
+            let code = koi_common::error::ErrorCode::from(&e);
+            let status = StatusCode::from_u16(code.http_status())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            error_response(status, &e)
+        }
+    }
+}
+
+/// POST /invite - Mint a single-use, hostname-bound enrollment invite (ADR-015 F2).
+///
+/// Operator-only: this route is DAT-gated by the binary's auth middleware (it is
+/// NOT in the `/join` exemption), so only a caller holding the local daemon token
+/// can mint invites.
+#[utoipa::path(post, path = "/invite", tag = "certmesh",
+    summary = "Mint a single-use enrollment invite token",
+    request_body = InviteRequest,
+    responses((status = 200, body = InviteResponse)))]
+async fn invite_handler(
+    Extension(state): Extension<Arc<CertmeshState>>,
+    Json(request): Json<InviteRequest>,
+) -> impl IntoResponse {
+    let core = CertmeshCore::from_state(Arc::clone(&state));
+    match core.mint_invite(&request.hostname, request.ttl_mins).await {
+        Ok(response) => match serde_json::to_value(&response) {
+            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+            Err(e) => error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &CertmeshError::Internal(format!("Serialization error: {e}")),
+            ),
+        },
+        Err(e) => {
+            let code = koi_common::error::ErrorCode::from(&e);
+            let status = StatusCode::from_u16(code.http_status())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            error_response(status, &e)
+        }
+    }
+}
+
+/// POST /member-csr - Generate this member's keypair + CSR (ADR-015 F1).
+///
+/// Local/operator-only (DAT-gated): the daemon generates the keypair, persists
+/// the private key locally, and returns only the CSR. The key never leaves here.
+#[utoipa::path(post, path = "/member-csr", tag = "certmesh",
+    summary = "Generate this member's keypair and CSR (key kept local)",
+    request_body = MemberCsrRequest,
+    responses((status = 200, body = MemberCsrResponse)))]
+async fn member_csr_handler(
+    Extension(state): Extension<Arc<CertmeshState>>,
+    Json(request): Json<MemberCsrRequest>,
+) -> impl IntoResponse {
+    let core = CertmeshCore::from_state(Arc::clone(&state));
+    match core
+        .prepare_member_csr(&request.hostname, &request.sans)
+        .await
+    {
+        Ok(csr) => {
+            let response = MemberCsrResponse { csr };
+            match serde_json::to_value(&response) {
+                Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+                Err(e) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &CertmeshError::Internal(format!("Serialization error: {e}")),
+                ),
+            }
+        }
+        Err(e) => {
+            let code = koi_common::error::ErrorCode::from(&e);
+            let status = StatusCode::from_u16(code.http_status())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            error_response(status, &e)
+        }
+    }
+}
+
+/// POST /member-cert - Install a CA-signed cert next to the member key (ADR-015 F1).
+///
+/// Local/operator-only (DAT-gated): writes the signed leaf + CA next to the key
+/// the daemon already holds, and trusts the CA root.
+#[utoipa::path(post, path = "/member-cert", tag = "certmesh",
+    summary = "Install a CA-signed cert next to the member key",
+    request_body = InstallCertRequest,
+    responses((status = 200, body = InstallCertResponse)))]
+async fn member_cert_handler(
+    Extension(state): Extension<Arc<CertmeshState>>,
+    Json(request): Json<InstallCertRequest>,
+) -> impl IntoResponse {
+    let core = CertmeshCore::from_state(Arc::clone(&state));
+    match core
+        .install_member_cert(&request.hostname, &request.cert_pem, &request.ca_pem)
+        .await
+    {
+        Ok(cert_path) => {
+            let response = InstallCertResponse {
+                installed: true,
+                cert_path,
+            };
+            match serde_json::to_value(&response) {
+                Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+                Err(e) => error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &CertmeshError::Internal(format!("Serialization error: {e}")),
+                ),
+            }
+        }
         Err(e) => {
             let code = koi_common::error::ErrorCode::from(&e);
             let status = StatusCode::from_u16(code.http_status())
@@ -776,6 +892,9 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
 #[openapi(
     paths(
         join_handler,
+        invite_handler,
+        member_csr_handler,
+        member_cert_handler,
         status_handler,
         set_hook_handler,
         promote_handler,
@@ -795,6 +914,12 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
     components(schemas(
         crate::protocol::JoinRequest,
         crate::protocol::JoinResponse,
+        crate::protocol::InviteRequest,
+        crate::protocol::InviteResponse,
+        crate::protocol::MemberCsrRequest,
+        crate::protocol::MemberCsrResponse,
+        crate::protocol::InstallCertRequest,
+        crate::protocol::InstallCertResponse,
         crate::protocol::CertmeshStatus,
         crate::protocol::MemberSummary,
         crate::protocol::SetHookRequest,
@@ -906,6 +1031,41 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         // CA not initialized → 503
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn member_csr_returns_csr_without_ca() {
+        // Generating the member keypair + CSR is local and needs no CA.
+        let app = routes(test_extension());
+        let req = Request::post("/member-csr")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"hostname":"web-01","sans":["10.0.0.9"]}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            json.get("csr")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .contains("CERTIFICATE REQUEST"),
+            "member-csr must return a PEM CSR"
+        );
+    }
+
+    #[tokio::test]
+    async fn invite_without_ca_returns_503() {
+        // Minting requires an initialized CA; with none on disk → 503.
+        let app = routes(test_extension());
+        let req = Request::post("/invite")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"hostname":"web-01","ttl_mins":15}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 

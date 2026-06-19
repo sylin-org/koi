@@ -649,47 +649,138 @@ pub fn set_hook(
 
 pub async fn join(
     endpoint: Option<&str>,
+    invite: Option<&str>,
     json: bool,
     cli_endpoint: Option<&str>,
     cli_token: Option<&str>,
 ) -> anyhow::Result<()> {
-    // The local daemon must be running to handle cert file writes
-    let _local = require_daemon(cli_endpoint, cli_token)?;
+    // The local daemon owns key custody (ADR-015 F1): it generates the member
+    // keypair, persists the private key, and installs the signed cert. The CLI
+    // only carries public material (CSR out, cert back).
+    let local = require_daemon(cli_endpoint, cli_token)?;
 
     let resolved_endpoint = match endpoint {
         Some(ep) => ep.to_string(),
         None => discover_ca().await?,
     };
 
-    eprintln!("Enter the TOTP code from your authenticator app:");
-    let mut code = String::new();
-    std::io::stdin().read_line(&mut code)?;
-    let code = code.trim().to_string();
-
-    let client = KoiClient::new(&resolved_endpoint);
+    let remote = KoiClient::new(&resolved_endpoint);
     let local_hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
+
+    // 1. Ask the LOCAL daemon to generate our keypair + CSR. The private key is
+    //    written locally by the daemon and never leaves this machine.
+    let csr_resp = local.post_json(
+        "/v1/certmesh/member-csr",
+        &serde_json::json!({
+            "hostname": local_hostname,
+            "sans": [local_hostname, format!("{local_hostname}.local")],
+        }),
+    )?;
+    let csr = csr_resp
+        .get("csr")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("local daemon did not return a CSR"))?
+        .to_string();
+
+    // 2. Send the CSR + credential to the REMOTE CA. Two credentials (ADR-015 F2):
+    //    an invite token enrolls non-interactively; otherwise prompt for the mesh
+    //    TOTP. The CA signs the CSR and returns a cert — never a private key.
+    let mut body = serde_json::Map::new();
+    body.insert("hostname".into(), serde_json::json!(local_hostname));
+    body.insert("csr".into(), serde_json::json!(csr));
+    if let Some(token) = invite {
+        body.insert("invite_token".into(), serde_json::json!(token));
+    } else {
+        eprintln!("Enter the TOTP code from your authenticator app:");
+        let mut code = String::new();
+        std::io::stdin().read_line(&mut code)?;
+        body.insert(
+            "auth".into(),
+            serde_json::json!({ "method": "totp", "code": code.trim() }),
+        );
+    }
+    let resp = remote.post_json("/v1/certmesh/join", &serde_json::Value::Object(body))?;
+
+    let service_cert = resp
+        .get("service_cert")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("CA response missing service_cert"))?;
+    let ca_cert = resp
+        .get("ca_cert")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("CA response missing ca_cert"))?;
+
+    // 3. Hand the signed cert to the LOCAL daemon to install next to the key.
+    let install = local.post_json(
+        "/v1/certmesh/member-cert",
+        &serde_json::json!({
+            "hostname": local_hostname,
+            "cert_pem": service_cert,
+            "ca_pem": ca_cert,
+        }),
+    )?;
+    let cert_path = install
+        .get("cert_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(local certs dir)");
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "enrolled": true,
+                "hostname": local_hostname,
+                "cert_path": cert_path,
+                "ca_fingerprint": resp.get("ca_fingerprint").and_then(|v| v.as_str()),
+            })
+        );
+    } else {
+        println!("Enrolled as: {local_hostname}");
+        println!("Key + certificate stored locally: {cert_path}");
+    }
+    Ok(())
+}
+
+// ── Invite ───────────────────────────────────────────────────────────
+
+/// Mint a single-use, hostname-bound enrollment invite (ADR-015 F2).
+///
+/// Delegates to the running daemon (`POST /v1/certmesh/invite`), which owns the
+/// certmesh data dir and writes the audit entry. The endpoint is DAT-gated, so
+/// this requires the local daemon token (operator-only).
+pub fn invite(
+    hostname: &str,
+    ttl: i64,
+    json: bool,
+    endpoint: Option<&str>,
+    token: Option<&str>,
+) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint, token)?;
     let body = serde_json::json!({
-        "hostname": local_hostname,
-        "auth": { "method": "totp", "code": code },
+        "hostname": hostname,
+        "ttl_mins": ttl,
     });
-    let resp = client.post_json("/v1/certmesh/join", &body)?;
+    let resp = client.post_json("/v1/certmesh/invite", &body)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
-    } else {
-        let hostname = resp
-            .get("hostname")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let cert_path = resp
-            .get("cert_path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        println!("Enrolled as: {hostname}");
-        println!("Certificates written to: {cert_path}");
+        return Ok(());
     }
+
+    let token_str = resp.get("token").and_then(|v| v.as_str()).unwrap_or("");
+    let expires_at = resp
+        .get("expires_at")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(unknown)");
+
+    println!("Invite minted for {hostname} (single-use, expires {expires_at}):");
+    println!();
+    println!("  {}", color::green(token_str));
+    println!();
+    println!("On {hostname}, run:");
+    println!("  koi certmesh join <ca-endpoint> --invite {token_str}");
     Ok(())
 }
 

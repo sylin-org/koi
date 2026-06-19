@@ -125,7 +125,7 @@ pub struct Cli {
     pub dns_port: u16,
 
     /// DNS zone suffix for local records
-    #[arg(long, env = "KOI_DNS_ZONE", default_value = "lan")]
+    #[arg(long, env = "KOI_DNS_ZONE", default_value = "internal")]
     pub dns_zone: String,
 
     /// Allow DNS queries from non-private addresses
@@ -532,6 +532,17 @@ pub enum CertmeshSubcommand {
     Join {
         /// CA endpoint (e.g. "http://ca-host:5641"). Omit to discover via mDNS.
         endpoint: Option<String>,
+        /// Single-use invite token (from `certmesh invite`). Skips the TOTP prompt.
+        #[arg(long)]
+        invite: Option<String>,
+    },
+    /// Mint a single-use invite token authorizing one host to join
+    Invite {
+        /// Hostname the invite authorizes (bound at mint time)
+        hostname: String,
+        /// Invite lifetime in minutes
+        #[arg(long, default_value_t = 60)]
+        ttl: i64,
     },
     /// Show certificate mesh status
     Status,
@@ -782,7 +793,7 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(53);
 
-        let dns_zone = std::env::var("KOI_DNS_ZONE").unwrap_or_else(|_| "lan".to_string());
+        let dns_zone = std::env::var("KOI_DNS_ZONE").unwrap_or_else(|_| "internal".to_string());
 
         let dns_public = std::env::var("KOI_DNS_PUBLIC")
             .ok()
@@ -847,7 +858,7 @@ impl Default for Config {
             runtime: "auto".to_string(),
             announce_http: false,
             dns_port: 53,
-            dns_zone: "lan".to_string(),
+            dns_zone: "internal".to_string(),
             dns_public: false,
         }
     }
@@ -969,7 +980,7 @@ mod tests {
         assert!(!config.no_health);
         assert!(!config.no_proxy);
         assert_eq!(config.dns_port, 53);
-        assert_eq!(config.dns_zone, "lan");
+        assert_eq!(config.dns_zone, "internal");
         assert!(!config.dns_public);
     }
 
@@ -1003,6 +1014,57 @@ mod tests {
                 assert_eq!(endpoint.as_deref(), Some("http://ca:5641"));
             }
             other => panic!("Expected Certmesh Promote, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_invite_default_ttl() {
+        let cli = Cli::try_parse_from(["koi", "certmesh", "invite", "web-01"]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: Some(CertmeshSubcommand::Invite { hostname, ttl }),
+            })) => {
+                assert_eq!(hostname, "web-01");
+                assert_eq!(ttl, 60);
+            }
+            other => panic!("Expected Certmesh Invite, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_invite_custom_ttl() {
+        let cli =
+            Cli::try_parse_from(["koi", "certmesh", "invite", "web-01", "--ttl", "15"]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: Some(CertmeshSubcommand::Invite { hostname, ttl }),
+            })) => {
+                assert_eq!(hostname, "web-01");
+                assert_eq!(ttl, 15);
+            }
+            other => panic!("Expected Certmesh Invite, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_join_with_invite() {
+        let cli = Cli::try_parse_from([
+            "koi",
+            "certmesh",
+            "join",
+            "http://ca:5641",
+            "--invite",
+            "deadbeef",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: Some(CertmeshSubcommand::Join { endpoint, invite }),
+            })) => {
+                assert_eq!(endpoint.as_deref(), Some("http://ca:5641"));
+                assert_eq!(invite.as_deref(), Some("deadbeef"));
+            }
+            other => panic!("Expected Certmesh Join, got: {other:?}"),
         }
     }
 

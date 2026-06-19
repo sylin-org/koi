@@ -114,8 +114,18 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     Some(CertmeshSubcommand::SetHook { reload }) => {
                         commands::certmesh::set_hook(reload, cli.json, ep, tok)
                     }
-                    Some(CertmeshSubcommand::Join { endpoint }) => {
-                        commands::certmesh::join(endpoint.as_deref(), cli.json, ep, tok).await
+                    Some(CertmeshSubcommand::Join { endpoint, invite }) => {
+                        commands::certmesh::join(
+                            endpoint.as_deref(),
+                            invite.as_deref(),
+                            cli.json,
+                            ep,
+                            tok,
+                        )
+                        .await
+                    }
+                    Some(CertmeshSubcommand::Invite { hostname, ttl }) => {
+                        commands::certmesh::invite(hostname, *ttl, cli.json, ep, tok)
                     }
                     Some(CertmeshSubcommand::Promote { endpoint }) => {
                         commands::certmesh::promote(endpoint.as_deref(), cli.json, ep, tok).await

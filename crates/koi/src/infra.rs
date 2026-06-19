@@ -300,6 +300,50 @@ fn resolve_bridge_ip() -> anyhow::Result<std::net::IpAddr> {
     )
 }
 
+// ── Logging setup ───────────────────────────────────────────────────
+
+/// Initialize tracing with stderr + optional file output.
+/// Returns guards that must be held for the lifetime of the program
+/// to ensure the non-blocking writers flush on shutdown.
+pub(crate) fn init_logging(
+    env_filter: tracing_subscriber::EnvFilter,
+    log_file: Option<&std::path::Path>,
+) -> anyhow::Result<Vec<tracing_appender::non_blocking::WorkerGuard>> {
+    use tracing_subscriber::prelude::*;
+
+    // Always use non-blocking stderr to avoid deadlocks when stderr is a
+    // redirected pipe that nobody reads (e.g. Windows service, test harness).
+    let (nb_stderr, stderr_guard) = tracing_appender::non_blocking(std::io::stderr());
+    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(nb_stderr);
+
+    if let Some(path) = log_file {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        let (nb_file, file_guard) = tracing_appender::non_blocking(file);
+        let file_layer = tracing_subscriber::fmt::layer().with_writer(nb_file);
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(stderr_layer)
+            .with(file_layer)
+            .init();
+
+        Ok(vec![stderr_guard, file_guard])
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(stderr_layer)
+            .init();
+
+        Ok(vec![stderr_guard])
+    }
+}
+
 #[cfg(test)]
 mod http_bind_tests {
     use super::{breadcrumb_endpoint, resolve_http_bind_ip};
@@ -358,49 +402,5 @@ mod http_bind_tests {
             breadcrumb_endpoint(Some(ip), 5641),
             "http://172.17.0.1:5641"
         );
-    }
-}
-
-// ── Logging setup ───────────────────────────────────────────────────
-
-/// Initialize tracing with stderr + optional file output.
-/// Returns guards that must be held for the lifetime of the program
-/// to ensure the non-blocking writers flush on shutdown.
-pub(crate) fn init_logging(
-    env_filter: tracing_subscriber::EnvFilter,
-    log_file: Option<&std::path::Path>,
-) -> anyhow::Result<Vec<tracing_appender::non_blocking::WorkerGuard>> {
-    use tracing_subscriber::prelude::*;
-
-    // Always use non-blocking stderr to avoid deadlocks when stderr is a
-    // redirected pipe that nobody reads (e.g. Windows service, test harness).
-    let (nb_stderr, stderr_guard) = tracing_appender::non_blocking(std::io::stderr());
-    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(nb_stderr);
-
-    if let Some(path) = log_file {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-        let (nb_file, file_guard) = tracing_appender::non_blocking(file);
-        let file_layer = tracing_subscriber::fmt::layer().with_writer(nb_file);
-
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(stderr_layer)
-            .with(file_layer)
-            .init();
-
-        Ok(vec![stderr_guard, file_guard])
-    } else {
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(stderr_layer)
-            .init();
-
-        Ok(vec![stderr_guard])
     }
 }

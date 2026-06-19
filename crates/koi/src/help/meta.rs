@@ -950,7 +950,10 @@ window (see 'certmesh open-enrollment').
 
 During enrollment, this node generates a keypair, sends a CSR to the CA,
 and receives a signed certificate. The node then participates in the
-mesh's automatic renewal cycle.",
+mesh's automatic renewal cycle.
+
+Pass --invite <token> (minted with 'certmesh invite' on the CA) to enroll
+non-interactively; otherwise you are prompted for the mesh TOTP code.",
         category: KoiCategory::Trust,
         tags: &[KoiTag::Mutating],
         scope: KoiScope::Admin,
@@ -964,10 +967,42 @@ mesh's automatic renewal cycle.",
                 description: "Discover a CA on the LAN via mDNS",
             },
         ],
-        see_also: &["certmesh create", "certmesh status"],
+        see_also: &["certmesh create", "certmesh invite", "certmesh status"],
         api: &[ApiEndpoint {
             method: "POST",
             path: koi_certmesh::http::paths::JOIN,
+        }],
+        confirmation: None,
+    },
+    CommandMeta {
+        name: "certmesh invite",
+        summary: "Mint a single-use invite token for a host",
+        long_description: "\
+Mints a per-host, single-use enrollment invite token (ADR-015 F2). The
+token is bound to exactly one hostname, expires after a short TTL
+(default 60 minutes), and is stored hashed at rest on the CA. Deliver it
+to the joining host over a channel you trust; that host then enrolls
+non-interactively with 'certmesh join <endpoint> --invite <token>'.
+
+This replaces sharing the mesh-wide TOTP code: a leaked invite admits
+only the named host, once, and only until it expires.",
+        category: KoiCategory::Trust,
+        tags: &[KoiTag::Mutating],
+        scope: KoiScope::Admin,
+        examples: &[
+            Example {
+                command: "koi certmesh invite stone-leaded-sparkle",
+                description: "Mint a 60-minute invite for a host",
+            },
+            Example {
+                command: "koi certmesh invite web-01 --ttl 15",
+                description: "Mint a short-lived (15-minute) invite",
+            },
+        ],
+        see_also: &["certmesh join", "certmesh open-enrollment"],
+        api: &[ApiEndpoint {
+            method: "POST",
+            path: koi_certmesh::http::paths::INVITE,
         }],
         confirmation: None,
     },
