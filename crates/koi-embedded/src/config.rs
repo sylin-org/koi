@@ -206,10 +206,12 @@ mod tests {
 
     #[test]
     fn firewall_ports_includes_http_when_enabled() {
-        let mut cfg = KoiConfig::default();
-        cfg.http_enabled = true;
-        cfg.mdns_enabled = false;
-        cfg.dns_enabled = false;
+        let cfg = KoiConfig {
+            http_enabled: true,
+            mdns_enabled: false,
+            dns_enabled: false,
+            ..Default::default()
+        };
         let ports = cfg.firewall_ports();
         assert!(
             ports.iter().any(|p| p.port == 5641),
@@ -219,11 +221,13 @@ mod tests {
 
     #[test]
     fn firewall_ports_respects_custom_http_port() {
-        let mut cfg = KoiConfig::default();
-        cfg.http_enabled = true;
-        cfg.http_port = 9999;
-        cfg.mdns_enabled = false;
-        cfg.dns_enabled = false;
+        let cfg = KoiConfig {
+            http_enabled: true,
+            http_port: 9999,
+            mdns_enabled: false,
+            dns_enabled: false,
+            ..Default::default()
+        };
         let ports = cfg.firewall_ports();
         assert!(
             ports.iter().any(|p| p.port == 9999),
@@ -237,22 +241,26 @@ mod tests {
 
     #[test]
     fn firewall_ports_empty_when_all_disabled() {
-        let mut cfg = KoiConfig::default();
-        cfg.http_enabled = false;
-        cfg.mdns_enabled = false;
-        cfg.dns_enabled = false;
+        let cfg = KoiConfig {
+            http_enabled: false,
+            mdns_enabled: false,
+            dns_enabled: false,
+            ..Default::default()
+        };
         let ports = cfg.firewall_ports();
         assert!(ports.is_empty(), "all disabled should yield no ports");
     }
 
     #[test]
     fn firewall_ports_deduplicates() {
-        let mut cfg = KoiConfig::default();
         // DNS default port is 53 (TCP+UDP), mDNS is 5353 (UDP).
         // With both enabled we should not have duplicate (protocol, port) pairs.
-        cfg.http_enabled = false;
-        cfg.mdns_enabled = true;
-        cfg.dns_enabled = true;
+        let cfg = KoiConfig {
+            http_enabled: false,
+            mdns_enabled: true,
+            dns_enabled: true,
+            ..Default::default()
+        };
         let ports = cfg.firewall_ports();
         let mut seen = std::collections::HashSet::new();
         for p in &ports {

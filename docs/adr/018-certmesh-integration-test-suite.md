@@ -1,6 +1,6 @@
 # ADR-018: Certmesh Cross-Participant Integration Test Suite
 
-**Status:** Proposed
+**Status:** Accepted — **Tier 1 implemented** (2026-06-19); Tiers 2–4 planned
 **Date:** 2026-06-19
 **Builds on:** ADR-015 (Certmesh Enrollment Hardening — F1 CSR custody, F2 invites) and ADR-017 (Certmesh Trust Lifecycle — all four phases **Implemented**). Their *logic* is densely unit- and in-process-tested, but the cross-participant *exchange* those features exist for is verified only by hand. This ADR closes that verification gap.
 **Constrained by:** STACK-0001 (the certmesh contract surface — mdns/dns/certmesh/udp/truststore — is the thing under test; the harness must not introduce consumer-name leakage and must keep the SURFACES ledger honest). Pre-1.0: on-disk and wire formats may still change, so tests assert behavior, not byte layouts.
@@ -84,7 +84,7 @@ Each tier is independently shippable; the gate `cargo fmt --check && cargo clipp
 
 | Tier | Deliverable | Gate | Closes |
 |---|---|---|---|
-| **1** | `koi-embedded/tests/whole_story.rs` two-process whole-story (real HTTP+mTLS) + builder `mtls_port` knob if missing | `ci.yml` per-PR, 3-OS | #1, #3, #4 |
+| **1** ✅ | `koi-embedded/tests/whole_story.rs` two-process whole-story (real HTTP+mTLS) — **implemented 2026-06-19** (the `mtls_port` builder knob proved unnecessary — see Implementation notes) | `cargo test --locked` on the existing 3-OS matrix (no workflow edit) | #1, #3, #4 |
 | **2** | second-daemon successful join/renew/revoke in the real-daemon harness; promote it to a gate | `ci.yml`/gated `qa.yml` | #5, #7 |
 | **3** | docker-compose two-node cross-host job | `ci.yml` (linux) | #2 (cross-host) |
 | **4** | Windows↔Linux runner-pair job | scheduled or self-hosted | #2 (cross-platform) |
@@ -106,3 +106,53 @@ Each tier is independently shippable; the gate `cargo fmt --check && cargo clipp
 - **Tier 1 (embedded two-process, in CI, per-OS) is the primary deliverable** and lands first.
 - The **embedded facade** (not child-process spawning) is the Tier-1 vehicle — pure-Rust, cross-platform by construction.
 - Boundary-revocation-over-live-mTLS and the HTTP success paths are **must-have** assertions, not nice-to-haves (they are the highest-risk untested behavior today).
+
+## Implementation notes — Tier 1 (2026-06-19)
+
+`crates/koi-embedded/tests/whole_story.rs` lands four `#[tokio::test]`s, each starting its
+own daemon(s) on unique temp data dirs + ephemeral ports (parallel-safe):
+
+- **`whole_story_join_renew_revoke_over_http_and_mtls`** — the canonical scenario, steps
+  1–8: create (auto-unlock; asserts `machine.bind` + the `ca_initialized` audit) → invite →
+  **B joins over real HTTP** (preflight pins A's fingerprint; the wire response carries no
+  `service_key` and no PEM private key under any field; B's key is `0600`) → **B
+  rotate-key renewal over real mTLS** (the key rotates and A's roster records the new
+  fingerprint; the rotated key stays `0600`) → signed trust-bundle pull (ES256 +
+  anti-rollback `seq`) → **A revokes B** → **B's `/renew` over live mTLS = 403** (asserted
+  to be the *revocation* path, by body) **+ the next bundle pull reports `self_revoked`
+  on a strictly newer `seq`**.
+- **`wrong_fingerprint_invite_aborts_at_preflight`** (F3) — a forged-fingerprint invite
+  fails the preflight pin check against the live CA, **and** `install_member_cert`
+  hard-fails (`InvalidPayload`) on the forged pin while accepting the genuine one.
+- **`totp_lockout_persists_across_ca_restart`** (F7) — three bad-TOTP joins lock the CA
+  (401, 401, 429); the persisted `totp-throttle.json` deserializes to a locked limiter;
+  after a restart the rebuilt CA auto-unlocks and a further bad-TOTP join still returns 429.
+- **`tampered_machine_binding_boots_ca_locked`** (F11) — tampering the CA host's
+  `machine.bind` boots it **LOCKED** with an `auto_unlock_refused_machine_changed` audit
+  entry (the untampered baseline is asserted unlocked first, so the lock is not vacuous).
+
+**Deviation from the Tier-1 prerequisite (no `mtls_port` builder knob).** The prerequisite
+assumed both daemons would run an mTLS *server* and thus need distinct ports. The trust
+model is **asymmetric**: only the CA runs an mTLS server; a member is a pure mTLS *client*
+that learns the CA's port from its persisted `member.json` (`ca_mtls_port`, overridable).
+There is exactly one mTLS server in the whole story, so no port to deconflict and no
+builder knob needed. The test stands A's `inter_node_routes()` up on an ephemeral
+`127.0.0.1:0` port via the public `koi_certmesh::mtls` primitive — the same
+`build_server_config` + `serve` the binary's `adapters::mtls::start` wraps — so the
+renew-handler / TLS / 403-boundary coverage is identical with **zero new production
+surface**. F11 is exercised against the **CA host** (a member holds no CA key,
+`machine.bind`, or auto-unlock).
+
+**CI gating (confirmed, no workflow edit).** `ci.yml`'s `test` job already runs
+`cargo test --locked` over the whole workspace on `ubuntu-latest` + `windows-latest` +
+`macos-latest`, so the new integration test gates on every PR to `main` (including the
+`dev → main` release PR) on all three OSes the moment the file lands. (Widening the
+`pull_request: branches:[main]` trigger to also gate `dev`-targeting PRs is a separate
+team policy decision, out of scope here.) Five pre-existing koi-embedded test-only clippy
+findings (`field_reassign_with_default` ×4, `unnecessary_literal_unwrap` ×1) were cleaned
+up so the suite is green under the stricter `clippy --all-targets -D warnings` (CI runs
+`clippy --locked`, which does not lint `#[cfg(test)]` modules).
+
+**Closes** gaps #1 (two-process join over HTTP), #3 (boundary revocation over live mTLS),
+#4 (certmesh HTTP success paths). Gaps #2 (cross-host / cross-platform) and #5/#7
+(binary + DAT middleware + adapters; cron-only real-daemon harness) remain for Tiers 2–4.
