@@ -1048,6 +1048,38 @@ impl CertmeshCore {
         self.state.roster.lock().await.metadata.policy.clone()
     }
 
+    /// Ensure this node holds a current identity, then return it (`None` if it
+    /// cannot — the node is Open with no way to enroll). ADR-020 §7.
+    ///
+    /// Mode-transparent + idempotent — the consumer calls this without branching:
+    /// - **Open** (no CA, not a member): returns `None`.
+    /// - **CA node** (CA unlocked): self-enrolls if needed and re-issues a self
+    ///   leaf that is within the renewal threshold (local, no network).
+    /// - **Joined member**: pull-renews from the CA when the leaf is due
+    ///   (`renew_self_if_due`); best-effort — on a network/CA failure it logs and
+    ///   returns the current (un-renewed) identity rather than erroring.
+    ///
+    /// First-join identity acquisition that needs out-of-band authorization (an
+    /// invite/TOTP) is *not* performed here — that is the explicit `join` flow.
+    pub async fn ensure_identity(&self) -> Option<Identity> {
+        if self.paths().is_ca_initialized() {
+            // CA node: self-enroll is idempotent (reuses a fresh leaf, re-issues
+            // one within the renewal threshold). Requires the CA unlocked.
+            let unlocked = self.state.ca.lock().await.is_some();
+            if unlocked {
+                if let Err(e) = self.self_enroll().await {
+                    tracing::warn!(error = %e, "ensure_identity: self-enroll failed");
+                }
+            }
+        } else if member::load(&self.paths().member_state_path()).is_some() {
+            // Joined member: renew if due (network pull to the CA). Best-effort.
+            if let Err(e) = self.renew_self_if_due().await {
+                tracing::warn!(error = %e, "ensure_identity: renewal check failed");
+            }
+        }
+        self.local_identity().await
+    }
+
     /// Set the post-renewal reload hook for a member.
     pub async fn set_reload_hook(&self, hostname: &str, hook: &str) -> Result<(), CertmeshError> {
         // Validate at domain boundary — all callers (HTTP, embedded, CLI) are
@@ -2551,6 +2583,35 @@ mod tests {
         assert!(id.renewal.expires_in_days > 30);
         // Redacted Debug must never leak key material.
         assert!(!format!("{id:?}").contains("BEGIN"));
+    }
+
+    #[tokio::test]
+    async fn ensure_identity_none_when_open() {
+        let paths = isolated_posture_paths("ensure-open");
+        let core = CertmeshCore::uninitialized_with_paths(paths);
+        assert!(core.ensure_identity().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn ensure_identity_self_enrolls_ca_node() {
+        std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+        let paths = isolated_posture_paths("ensure-ca");
+        let ca = ca::create_ca("test-pass", &[9u8; 32], &paths).unwrap().0;
+        let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+        let core = CertmeshCore::new_with_paths(ca, roster, None, paths);
+
+        // No leaf yet → Open.
+        assert!(!core.posture().signed);
+        // ensure_identity self-enrolls the CA node and returns a live identity.
+        let id = core.ensure_identity().await.expect("identity after ensure");
+        assert_eq!(id.hostname, CertmeshCore::local_hostname().unwrap());
+        assert!(core.posture().signed);
+        // Idempotent: a second call reuses the fresh leaf (no re-issue).
+        let id2 = core
+            .ensure_identity()
+            .await
+            .expect("identity still present");
+        assert_eq!(id2.cert_pem, id.cert_pem);
     }
 
     fn test_paths() -> CertmeshPaths {
