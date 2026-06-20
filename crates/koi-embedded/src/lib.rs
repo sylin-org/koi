@@ -3,6 +3,7 @@ mod events;
 mod handle;
 pub(crate) mod http;
 mod serve;
+pub mod testkit;
 
 use std::sync::Arc;
 
