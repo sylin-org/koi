@@ -179,10 +179,10 @@ Per ADR-016 §2 ("never grow a discovery/membership/mesh-gossip protocol; Koi pr
 
 | Phase | Content | Size |
 |---|---|---|
-| **P1 — Posture + cheap wrappers** | `Posture`/`PostureLevel` + oracle; `ensure_identity` + `Identity` (renewal-health fields, 2/3-% trigger, graduated + first-failure events); `client_for`; `KoiEvent::PostureChanged`; `participate()` | S–M |
+| **P1 — Posture + identity** ✅ landed | `Posture`/`PostureLevel` + the `posture()` oracle; unified `Identity` + `RenewalHealth` (derived schedule) + read-only `local_identity()`; idempotent `ensure_identity()`; embedded-facade passthroughs. (`client_for`/`PostureChanged`/`participate()` had forward deps → re-homed to P3/P4; the 2/3-% renewal trigger + graduated/first-failure events land with the renewal loop.) | S–M |
 | **P2 — Envelope** | `Envelope` wire type + `sign`/`verify`/`Assurance` (one-identity-door, freshness sub-field, ±300 s window, version-selects-construction); `require_auth` | M |
-| **P3 — Discovery + fleet legibility** | typed `Peer` + `discover` (carries `posture`/`expires_in`); `fp=`/`posture=`/`expires=` mDNS stamping; fleet-wide view | S–M |
-| **P4 — Same-port dial** | dual-acceptor posture flip (no dropped connections) + loud per-connection state; posture `watch`; make daemon mTLS listener posture-reactive (fixes ADR-016 §2) | **L** |
+| **P3 — Discovery + fleet legibility + client_for** | typed `Peer` + `discover` (carries `posture`/`expires_in`); `client_for(&peer)` (high-level plain/mTLS client keyed off the peer's posture+pin); `fp=`/`posture=`/`expires=` mDNS stamping; fleet-wide view | M |
+| **P4 — Same-port dial + posture events** | dual-acceptor posture flip (no dropped connections) + loud per-connection state; posture `watch` + `KoiEvent::PostureChanged`; `participate()` one-liner; make daemon mTLS listener posture-reactive (fixes ADR-016 §2) | **L** |
 | **P5 — `seal`/`open` passthrough** | version-tagged `Sealed` + type-level confidentiality + `/v1/status` `seal:` + anti-downgrade (new HKDF label) | S–M |
 | **P6 — diagnose() + testkit + wire contract** | `diagnose()` (distinct reasons, clock-skew, renewal-health, per-store trust-install, non-zero-on-red, `--fix` LAN-trust propagation); `koi_embedded::testkit` + `#[koi::test]`; conformance vectors; the "same code, both postures" CI gate; STACK-0001 D7 amendment | M–L |
 | **P7 — (stretch) deterministic simulator** | sans-IO + `proptest` LAN-trust state machine; doubles as Koi's own trust state-machine test backbone | M |
