@@ -700,6 +700,28 @@ impl CertmeshHandle {
             CertmeshBackend::Remote { .. } => Err(KoiError::DisabledCapability("certmesh")),
         }
     }
+
+    /// Sign `bytes` into an `Envelope` (ADR-020 §3). Mode-transparent: a
+    /// freshness-stamped passthrough when Open, ES256-signed when Authenticated.
+    /// Embedded only.
+    pub async fn sign(&self, bytes: &[u8]) -> Result<koi_common::envelope::Envelope, KoiError> {
+        match &self.backend {
+            CertmeshBackend::Embedded { core } => Ok(core.sign(bytes).await),
+            CertmeshBackend::Remote { .. } => Err(KoiError::DisabledCapability("certmesh")),
+        }
+    }
+
+    /// Verify an `Envelope`, returning an `Assurance` (ADR-020 §3). Read a trusted
+    /// identity only via `Assurance::identity()`. Embedded only.
+    pub async fn verify(
+        &self,
+        env: &koi_common::envelope::Envelope,
+    ) -> Result<koi_common::envelope::Assurance, KoiError> {
+        match &self.backend {
+            CertmeshBackend::Embedded { core } => Ok(core.verify(env).await),
+            CertmeshBackend::Remote { .. } => Err(KoiError::DisabledCapability("certmesh")),
+        }
+    }
 }
 
 pub struct ProxyHandle {
