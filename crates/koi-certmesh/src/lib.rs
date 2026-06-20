@@ -12,6 +12,7 @@ pub mod bundle;
 pub mod ca;
 pub mod certfiles;
 pub mod certmesh_paths;
+pub mod client;
 pub mod csr;
 pub mod enrollment;
 pub mod entropy;
@@ -42,6 +43,7 @@ use koi_crypto::totp::RateLimiter;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use zeroize::Zeroizing;
 
+pub use client::PeerClient;
 pub use csr::sign_csr;
 pub use error::CertmeshError;
 use roster::Roster;

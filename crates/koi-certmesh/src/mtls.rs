@@ -299,6 +299,104 @@ pub fn build_client_config(
         .map_err(|e| cert_err("client config", e.to_string()))
 }
 
+// ── shared request driver (plain + mTLS) ────────────────────────────
+
+/// Drive a single one-shot HTTP/1.1 request/response over an established byte
+/// stream — plain [`TcpStream`] **or** an mTLS [`tokio_rustls`] stream — and
+/// return `(status, body)`.
+///
+/// Generic over the stream so the plain and mTLS request paths share exactly one
+/// implementation (no copy-pasted hyper plumbing): a `Connection: close` exchange
+/// with the response body capped at [`MAX_RESPONSE_BYTES`]. The connection driver
+/// is spawned so `send_request` can proceed; its errors are logged (they resurface
+/// as a body-read failure if fatal). `json_body` present ⇒ POST-style body with a
+/// JSON content type; absent ⇒ empty body (e.g. a GET).
+async fn drive_request<S>(
+    stream: S,
+    method: hyper::Method,
+    host: &str,
+    port: u16,
+    path: &str,
+    json_body: Option<&str>,
+) -> Result<(u16, String), CertmeshError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("http handshake: {e}")))?;
+    // Drive the one-shot connection concurrently so `send_request` can proceed.
+    tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            tracing::debug!(error = %e, "client connection driver error");
+        }
+    });
+
+    let builder = hyper::Request::builder()
+        .method(method)
+        .uri(path)
+        .header(hyper::header::HOST, format!("{host}:{port}"))
+        // One-shot client: ask the server to close after the response so the body
+        // read always terminates.
+        .header(hyper::header::CONNECTION, "close");
+    let req = match json_body {
+        Some(body) => builder
+            .header(hyper::header::CONTENT_TYPE, "application/json")
+            .body(Full::new(Bytes::from(body.to_owned()))),
+        None => builder.body(Full::new(Bytes::new())),
+    }
+    .map_err(|e| CertmeshError::Internal(format!("build request: {e}")))?;
+
+    let resp = sender
+        .send_request(req)
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("send request: {e}")))?;
+    let status = resp.status().as_u16();
+    let body = http_body_util::Limited::new(resp.into_body(), MAX_RESPONSE_BYTES)
+        .collect()
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("read body: {e}")))?
+        .to_bytes();
+    Ok((status, String::from_utf8_lossy(&body).into_owned()))
+}
+
+/// Open a plain TCP connection to `host:port` and drive one request over it.
+pub(crate) async fn request_plain(
+    host: &str,
+    port: u16,
+    method: hyper::Method,
+    path: &str,
+    json_body: Option<&str>,
+) -> Result<(u16, String), CertmeshError> {
+    let tcp = TcpStream::connect((host, port)).await?;
+    drive_request(tcp, method, host, port, path, json_body).await
+}
+
+/// Open an mTLS connection to `host:port` with a prebuilt client `config` and
+/// drive one request over it. SNI is advisory (the verifier tolerates the dialed
+/// name — see [`PinnedCaServerVerifier`]); a placeholder name is substituted when
+/// `host` is not a valid DNS name (e.g. an IP literal).
+pub(crate) async fn request_tls(
+    config: Arc<rustls::ClientConfig>,
+    host: &str,
+    port: u16,
+    method: hyper::Method,
+    path: &str,
+    json_body: Option<&str>,
+) -> Result<(u16, String), CertmeshError> {
+    let connector = TlsConnector::from(config);
+    let tcp = TcpStream::connect((host, port)).await?;
+    let server_name = ServerName::try_from(host.to_string())
+        .or_else(|_| ServerName::try_from("certmesh-peer.invalid".to_string()))
+        .map_err(|e| CertmeshError::Internal(format!("server name: {e}")))?;
+    let tls = connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(|e| CertmeshError::Internal(format!("mTLS handshake to {host}:{port}: {e}")))?;
+    drive_request(tls, method, host, port, path, json_body).await
+}
+
 /// POST a JSON body to `host:port`+`path` over mTLS, presenting the client cert.
 ///
 /// Returns `(status_code, response_body)`. The member-pull renewal loop uses this
@@ -314,54 +412,20 @@ pub async fn post_json(
     client_key_pem: &str,
     ca_cert_pem: &str,
 ) -> Result<(u16, String), CertmeshError> {
-    let config = build_client_config(client_cert_pem, client_key_pem, ca_cert_pem)?;
-    let connector = TlsConnector::from(Arc::new(config));
-
-    let tcp = TcpStream::connect((host, port)).await?;
-    // SNI is advisory here (the verifier tolerates the dialed name); fall back to
-    // a placeholder when the host is not a valid DNS name (e.g. an IP literal).
-    let server_name = ServerName::try_from(host.to_string())
-        .or_else(|_| ServerName::try_from("certmesh-peer.invalid".to_string()))
-        .map_err(|e| CertmeshError::Internal(format!("server name: {e}")))?;
-    let tls = connector
-        .connect(server_name, tcp)
-        .await
-        .map_err(|e| CertmeshError::Internal(format!("mTLS handshake to {host}:{port}: {e}")))?;
-
-    let io = TokioIo::new(tls);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .map_err(|e| CertmeshError::Internal(format!("http handshake: {e}")))?;
-    // Drive the one-shot connection concurrently so `send_request` can proceed.
-    // A driver error makes the body read below fail too, so log (don't swallow).
-    tokio::spawn(async move {
-        if let Err(e) = conn.await {
-            tracing::debug!(error = %e, "mTLS client connection driver error");
-        }
-    });
-
-    let req = hyper::Request::builder()
-        .method(hyper::Method::POST)
-        .uri(path)
-        .header(hyper::header::HOST, format!("{host}:{port}"))
-        .header(hyper::header::CONTENT_TYPE, "application/json")
-        // One-shot client: ask the server to close after the response so the body
-        // read always terminates.
-        .header(hyper::header::CONNECTION, "close")
-        .body(Full::new(Bytes::from(json_body.to_owned())))
-        .map_err(|e| CertmeshError::Internal(format!("build request: {e}")))?;
-
-    let resp = sender
-        .send_request(req)
-        .await
-        .map_err(|e| CertmeshError::Internal(format!("send request: {e}")))?;
-    let status = resp.status().as_u16();
-    let body = http_body_util::Limited::new(resp.into_body(), MAX_RESPONSE_BYTES)
-        .collect()
-        .await
-        .map_err(|e| CertmeshError::Internal(format!("read body: {e}")))?
-        .to_bytes();
-    Ok((status, String::from_utf8_lossy(&body).into_owned()))
+    let config = Arc::new(build_client_config(
+        client_cert_pem,
+        client_key_pem,
+        ca_cert_pem,
+    )?);
+    request_tls(
+        config,
+        host,
+        port,
+        hyper::Method::POST,
+        path,
+        Some(json_body),
+    )
+    .await
 }
 
 /// Plain-HTTP GET of `host:port`+`path` (no TLS) — the companion to [`post_json`]
@@ -371,36 +435,7 @@ pub async fn post_json(
 /// transport security; a plain GET (which the daemon's DAT middleware exempts)
 /// keeps the pull simple. Returns `(status_code, body)`.
 pub async fn get(host: &str, port: u16, path: &str) -> Result<(u16, String), CertmeshError> {
-    let tcp = TcpStream::connect((host, port)).await?;
-    let io = TokioIo::new(tcp);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .map_err(|e| CertmeshError::Internal(format!("http handshake: {e}")))?;
-    tokio::spawn(async move {
-        if let Err(e) = conn.await {
-            tracing::debug!(error = %e, "plain-HTTP client connection driver error");
-        }
-    });
-
-    let req = hyper::Request::builder()
-        .method(hyper::Method::GET)
-        .uri(path)
-        .header(hyper::header::HOST, format!("{host}:{port}"))
-        .header(hyper::header::CONNECTION, "close")
-        .body(http_body_util::Empty::<Bytes>::new())
-        .map_err(|e| CertmeshError::Internal(format!("build request: {e}")))?;
-
-    let resp = sender
-        .send_request(req)
-        .await
-        .map_err(|e| CertmeshError::Internal(format!("send request: {e}")))?;
-    let status = resp.status().as_u16();
-    let body = http_body_util::Limited::new(resp.into_body(), MAX_RESPONSE_BYTES)
-        .collect()
-        .await
-        .map_err(|e| CertmeshError::Internal(format!("read body: {e}")))?
-        .to_bytes();
-    Ok((status, String::from_utf8_lossy(&body).into_owned()))
+    request_plain(host, port, hyper::Method::GET, path, None).await
 }
 
 /// Extract the Common Name (CN) from a DER-encoded X.509 certificate.
