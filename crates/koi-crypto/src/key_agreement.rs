@@ -13,6 +13,15 @@ use crate::keys::CryptoError;
 /// HKDF info string binding the derived key to the promote-v1 protocol.
 const PROMOTE_INFO: &[u8] = b"koi-promote-v1";
 
+/// HKDF info string for the ADR-020 §4 group-key `seal`/`open` rung (v1).
+///
+/// **Reserved** — the passthrough rung (today) performs no key derivation; this
+/// stakes out a new, distinct, versioned label so the group-key encryption rung
+/// can land without ever touching the frozen STACK-0001 K3 labels
+/// (`pond-unlock-slot-totp-v1`, `pond-fido2-storage-key-v1`). A new algorithm is a
+/// new label, never a reuse.
+pub const SEAL_GROUP_KEY_HKDF_INFO_V1: &[u8] = b"koi-seal-group-v1";
+
 /// An ephemeral X25519 key pair for one-time Diffie-Hellman exchange.
 ///
 /// The secret is consumed on `derive_shared_key`, ensuring it cannot

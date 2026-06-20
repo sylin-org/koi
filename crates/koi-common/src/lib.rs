@@ -17,5 +17,6 @@ pub mod persist;
 pub mod pipeline;
 pub mod posture;
 pub mod runtime_state;
+pub mod sealed;
 pub mod test;
 pub mod types;
