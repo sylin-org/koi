@@ -2,6 +2,7 @@ mod config;
 mod events;
 mod handle;
 pub(crate) mod http;
+mod serve;
 
 use std::sync::Arc;
 
@@ -33,6 +34,8 @@ pub use koi_health::{HealthCheck, HealthSnapshot, ServiceCheckKind};
 pub use koi_mdns::protocol::{RegisterPayload, RegistrationResult};
 pub use koi_mdns::MdnsEvent;
 pub use koi_proxy::ProxyEntry;
+// Same-port posture dial (ADR-020 §5): plain↔mTLS on one socket, live-flipping.
+pub use serve::serve_adaptive;
 
 // Vault: general-purpose encrypted secret storage
 pub use koi_crypto::vault::{Vault, VaultError};

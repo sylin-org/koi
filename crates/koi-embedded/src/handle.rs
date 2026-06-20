@@ -97,6 +97,39 @@ impl KoiHandle {
         BroadcastStream::new(self.events.subscribe())
     }
 
+    /// Serve `router` on `addr` with the same-port posture dial (ADR-020 §5):
+    /// plain HTTP while this node is Open, mTLS once it is secure, flipping live
+    /// with **no dropped connections** as the posture changes. The consumer writes
+    /// one `serve` call and never branches on posture.
+    ///
+    /// Returns the supervisor's [`JoinHandle`]; the listener stops when this
+    /// handle's `cancel` is triggered (e.g. on [`shutdown`](Self::shutdown)) or
+    /// the passed `cancel` fires. Embedded only — a remote handle has no local
+    /// identity to serve mTLS with.
+    pub fn serve(
+        &self,
+        router: axum::Router,
+        addr: std::net::SocketAddr,
+        cancel: CancellationToken,
+    ) -> Result<JoinHandle<()>, KoiError> {
+        match &self.backend {
+            HandleBackend::Embedded { certmesh, .. } => {
+                let core = certmesh
+                    .as_ref()
+                    .ok_or(KoiError::DisabledCapability("certmesh"))?;
+                let core = Arc::clone(core);
+                Ok(tokio::spawn(async move {
+                    if let Err(e) = crate::serve::serve_adaptive(core, router, addr, cancel).await {
+                        tracing::error!(error = %e, "same-port serve failed to bind");
+                    }
+                }))
+            }
+            HandleBackend::Remote { .. } => {
+                Err(KoiError::DisabledCapability("certmesh (remote mode)"))
+            }
+        }
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<KoiEvent> {
         self.events.subscribe()
     }
