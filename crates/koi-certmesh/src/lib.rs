@@ -29,6 +29,7 @@ pub mod mtls;
 pub mod profiles;
 pub mod protocol;
 pub mod roster;
+pub mod sealed;
 pub mod serve;
 pub mod wordlist;
 
@@ -1163,6 +1164,49 @@ impl CertmeshCore {
         let revoked = self.revoked_fingerprints().await;
         let now = chrono::Utc::now().timestamp();
         envelope::verify_envelope(env, ca_cert_pem.as_deref(), &revoked, now)
+    }
+
+    /// Seal `bytes` into a [`Sealed`](koi_common::sealed::Sealed) (ADR-020 §4).
+    ///
+    /// The confidentiality rung, shipped today as **passthrough**: the bytes are
+    /// signed (integrity + freshness) but **not encrypted**. Reuses [`sign`](Self::sign)'s
+    /// machinery — a `Sealed` is a signed [`Envelope`](koi_common::envelope::Envelope)
+    /// plus a confidentiality version tag. The consumer codes against the final API
+    /// now; the group-key rung lands later with no consumer change. A one-time
+    /// `warn!` makes the passthrough (un-encrypted) state loud, not silent.
+    pub async fn seal(&self, bytes: &[u8]) -> koi_common::sealed::Sealed {
+        static PASSTHROUGH_WARNED: std::sync::Once = std::sync::Once::new();
+        PASSTHROUGH_WARNED.call_once(|| {
+            tracing::warn!(
+                "seal(): running in passthrough mode — messages are signed but NOT \
+                 encrypted (group-key confidentiality is not yet available)"
+            );
+        });
+        use rand::RngCore;
+        let mut nonce = [0u8; 16];
+        rand::rng().fill_bytes(&mut nonce);
+        let ts = chrono::Utc::now().timestamp();
+        let identity = self.local_identity().await;
+        let signer = identity
+            .as_ref()
+            .map(|id| (id.key_pem.as_str(), id.cert_pem.as_str()));
+        sealed::seal_passthrough(signer, bytes, &nonce, ts)
+    }
+
+    /// Open a [`Sealed`](koi_common::sealed::Sealed) → [`Opened`](koi_common::sealed::Opened)
+    /// (ADR-020 §4): the recovered bytes plus the trust state they arrived with.
+    ///
+    /// Self-contained (carry-cert), reusing [`verify`](Self::verify)'s machinery. A
+    /// tampered / unknown-signer / expired / revoked message yields an `Err`, never
+    /// bytes — read a trusted identity via `opened.assurance.identity()`.
+    pub async fn open(
+        &self,
+        sealed: &koi_common::sealed::Sealed,
+    ) -> Result<koi_common::sealed::Opened, CertmeshError> {
+        let ca_cert_pem = self.local_ca_cert_pem().await;
+        let revoked = self.revoked_fingerprints().await;
+        let now = chrono::Utc::now().timestamp();
+        sealed::open_sealed(sealed, ca_cert_pem.as_deref(), &revoked, now)
     }
 
     /// The CA certificate this node trusts as its verification anchor: the leaf's
