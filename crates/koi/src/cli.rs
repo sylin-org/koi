@@ -358,6 +358,14 @@ pub enum TrustSubcommand {
         #[arg(long)]
         ca: bool,
     },
+    /// Run the trust-doctor: posture, identity & renewal health, integrity,
+    /// revocation, and CA trust-install — each with an exact remedy. Exits
+    /// non-zero when anything is RED.
+    Diagnose {
+        /// Repair what can be auto-fixed (install the mesh CA into the OS trust store)
+        #[arg(long)]
+        fix: bool,
+    },
 }
 
 #[derive(Args, Debug)]

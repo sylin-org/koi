@@ -25,24 +25,7 @@ pub fn install(pem_path: &Path, json: bool) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("invalid CA certificate: {e}"))?;
 
     let name = derive_name(pem_path)?;
-    let fingerprint = koi_crypto::pinning::fingerprint_sha256(cert.der());
-
-    // The certificate is the identity; the derived name is the human-readable display label.
-    os_truststore::Install::new(&cert)
-        .label(&name)
-        .run()
-        .map_err(|e| anyhow::anyhow!("failed to install into OS trust store: {e}"))?;
-
-    // Record so `list`/`remove` can manage just this Koi-installed root.
-    let mut state = koi_config::state::load_trust_state().unwrap_or_default();
-    state.roots.retain(|r| r.name != name);
-    state.roots.push(koi_config::state::TrustEntry {
-        name: name.clone(),
-        installed_at: chrono::Utc::now().to_rfc3339(),
-        fingerprint: fingerprint.clone(),
-        source: pem_path.display().to_string(),
-    });
-    koi_config::state::save_trust_state(&state).context("saving trust state")?;
+    let fingerprint = install_cert(&cert, &name, &pem_path.display().to_string())?;
 
     if json {
         print_json(&serde_json::json!({
@@ -51,6 +34,75 @@ pub fn install(pem_path: &Path, json: bool) -> anyhow::Result<()> {
     } else {
         println!("Installed CA \"{name}\" (sha256: {fingerprint})");
         eprintln!("The OS trust store now trusts certificates signed by this root.");
+    }
+    Ok(())
+}
+
+/// Install a validated CA cert into the OS trust store and record it in
+/// `state/trust.json`, returning its fingerprint. Shared by `install` and
+/// `diagnose --fix` so the install+record path is written once.
+fn install_cert(cert: &os_truststore::Cert, name: &str, source: &str) -> anyhow::Result<String> {
+    let fingerprint = koi_crypto::pinning::fingerprint_sha256(cert.der());
+
+    // The certificate is the identity; `name` is the human-readable display label.
+    os_truststore::Install::new(cert)
+        .label(name)
+        .run()
+        .map_err(|e| anyhow::anyhow!("failed to install into OS trust store: {e}"))?;
+
+    // Record so `list`/`remove` can manage just this Koi-installed root.
+    let mut state = koi_config::state::load_trust_state().unwrap_or_default();
+    state.roots.retain(|r| r.name != name);
+    state.roots.push(koi_config::state::TrustEntry {
+        name: name.to_string(),
+        installed_at: chrono::Utc::now().to_rfc3339(),
+        fingerprint: fingerprint.clone(),
+        source: source.to_string(),
+    });
+    koi_config::state::save_trust_state(&state).context("saving trust state")?;
+    Ok(fingerprint)
+}
+
+/// Run the trust-doctor (`koi trust diagnose`) — ADR-020 §13.
+///
+/// Builds a local certmesh core (reads on-disk identity/roster — no daemon needed,
+/// mirroring `export`), runs the single `CertmeshCore::diagnose` logic, prints a
+/// loud report, and **exits non-zero when anything is RED**. `--fix` installs the
+/// mesh CA into the OS trust store (the one auto-fixable remedy).
+pub async fn diagnose(fix: bool, json: bool) -> anyhow::Result<()> {
+    let core = tokio::task::spawn_blocking(|| koi_compose::cores::init_certmesh_core(None))
+        .await
+        .map_err(|e| anyhow::anyhow!("certmesh init task: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("certmesh is unavailable on this node"))?;
+
+    // --fix: install the mesh CA so local apps trust mesh certs (the actionable
+    // remedy for the ca_trust_install check). Best-effort; reported, never fatal.
+    if fix {
+        match core.local_identity().await {
+            Some(id) => match os_truststore::Cert::from_pem(&id.ca_cert_pem) {
+                Ok(cert) => match install_cert(&cert, "koi-certmesh-ca", "certmesh") {
+                    Ok(fp) => eprintln!(
+                        "Fixed: installed the mesh CA (sha256: {fp}) into the OS trust store."
+                    ),
+                    Err(e) => eprintln!("--fix: could not install the mesh CA: {e}"),
+                },
+                Err(e) => eprintln!("--fix: the mesh CA certificate is invalid: {e}"),
+            },
+            None => eprintln!("--fix: no local identity — nothing to install (this node is Open)."),
+        }
+    }
+
+    let diagnosis = core.diagnose().await;
+
+    if json {
+        print_json(&diagnosis);
+    } else {
+        print!("{}", crate::format::trust_diagnosis(&diagnosis));
+    }
+
+    // The tool must fail loud: a RED diagnosis exits non-zero.
+    if diagnosis.is_red() {
+        std::process::exit(diagnosis.exit_code());
     }
     Ok(())
 }

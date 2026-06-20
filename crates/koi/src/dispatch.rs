@@ -301,6 +301,9 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         commands::trust::remove(name, cli.json)
                     }
                     Some(TrustSubcommand::Export { ca }) => commands::trust::export(*ca, cli.json),
+                    Some(TrustSubcommand::Diagnose { fix }) => {
+                        commands::trust::diagnose(*fix, cli.json).await
+                    }
                 }
             }
             Command::Mcp(mcp_cmd) => match &mcp_cmd.command {

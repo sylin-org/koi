@@ -230,6 +230,36 @@ pub fn unified_status(json: &serde_json::Value) -> String {
     out
 }
 
+/// Render a [`TrustDiagnosis`](koi_common::diagnosis::TrustDiagnosis) as a loud,
+/// scannable report (ADR-020 §13). Each check shows a marker, its detail, and —
+/// for anything actionable — the exact remedy on an indented `→ fix:` line.
+pub fn trust_diagnosis(d: &koi_common::diagnosis::TrustDiagnosis) -> String {
+    use koi_common::diagnosis::{CheckStatus, DiagnosisStatus};
+    let overall = match d.overall {
+        DiagnosisStatus::Healthy => "HEALTHY",
+        DiagnosisStatus::Degraded => "DEGRADED",
+        DiagnosisStatus::Red => "RED",
+    };
+    let mut out = format!("Trust diagnosis: {overall}\n");
+    for c in &d.checks {
+        let marker = match c.status {
+            CheckStatus::Ok => "+",
+            CheckStatus::Warn => "!",
+            CheckStatus::Red => "x",
+            CheckStatus::NotApplicable => "-",
+        };
+        let _ = writeln!(out, "  [{marker}] {}: {}", c.name, c.detail);
+        // Surface the remedy for anything that isn't plainly Ok (so warnings/reds
+        // and the actionable hints are visible without --json).
+        if let Some(remedy) = &c.remedy {
+            if c.status != CheckStatus::Ok {
+                let _ = writeln!(out, "      → fix: {remedy}");
+            }
+        }
+    }
+    out
+}
+
 // ── Phase 3 certmesh formatting ────────────────────────────────────
 
 /// Format success message after promoting a host to standby CA.
@@ -667,6 +697,25 @@ mod tests {
         assert!(!out.contains("Uptime:"));
         // No certmesh → no seal line (the field is absent).
         assert!(!out.contains("Seal:"));
+    }
+
+    #[test]
+    fn trust_diagnosis_renders_markers_and_remedies() {
+        use koi_common::diagnosis::{DiagnosisCheck, TrustDiagnosis};
+        use koi_common::posture::Posture;
+        let d = TrustDiagnosis::from_checks(
+            Posture::new(true, false),
+            vec![
+                DiagnosisCheck::ok("posture", "Authenticated"),
+                DiagnosisCheck::red("self_revocation", "REVOKED by the CA")
+                    .with_remedy("koi certmesh join <endpoint>"),
+            ],
+        );
+        let out = trust_diagnosis(&d);
+        assert!(out.contains("Trust diagnosis: RED"));
+        assert!(out.contains("[+] posture: Authenticated"));
+        assert!(out.contains("[x] self_revocation: REVOKED"));
+        assert!(out.contains("→ fix: koi certmesh join <endpoint>"));
     }
 
     #[test]
