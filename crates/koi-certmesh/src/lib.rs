@@ -40,7 +40,7 @@ use koi_common::capability::{Capability, CapabilityStatus};
 use koi_common::posture::Posture;
 use koi_crypto::auth::AuthState;
 use koi_crypto::totp::RateLimiter;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use zeroize::Zeroizing;
 
 pub use client::PeerClient;
@@ -80,6 +80,10 @@ pub(crate) struct CertmeshState {
     pub(crate) rate_limiter: tokio::sync::Mutex<RateLimiter>,
     pub(crate) approval_tx: tokio::sync::Mutex<Option<mpsc::Sender<ApprovalRequest>>>,
     pub(crate) event_tx: broadcast::Sender<CertmeshEvent>,
+    /// Latest node posture, published on every identity-mutating op so a listener
+    /// supervisor (ADR-020 §5) can react to Open↔Authenticated transitions without
+    /// polling. Seeded from disk at construction; coalesced (no-op when unchanged).
+    pub(crate) posture_tx: watch::Sender<Posture>,
 }
 
 /// Enrollment approval request sent to the operator prompt.
@@ -196,7 +200,37 @@ impl RenewalHealth {
     }
 }
 
+/// The posture watch seeded from disk: a node is `signed` when it already holds a
+/// usable CA-anchored leaf. Used by every `CertmeshState` constructor so the watch
+/// reports the right value before any mutation (ADR-020 §5).
+fn initial_posture_tx(paths: &CertmeshPaths) -> watch::Sender<Posture> {
+    watch::channel(Posture {
+        signed: node_has_identity(paths),
+        encrypted: false,
+    })
+    .0
+}
+
 impl CertmeshState {
+    /// Recompute this node's posture from disk and publish it on the watch
+    /// (ADR-020 §5). Coalesced — a `send` (and thus a `PostureChanged`) fires only
+    /// when the posture actually changed. Called after every identity-mutating op
+    /// (create / self-enroll / member install / destroy).
+    pub(crate) fn republish_posture(&self) {
+        let next = Posture {
+            signed: node_has_identity(&self.paths),
+            encrypted: false,
+        };
+        self.posture_tx.send_if_modified(|cur| {
+            if *cur != next {
+                *cur = next;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
     /// Destroy all certmesh state - shared by CertmeshCore::destroy() and the HTTP handler.
     pub(crate) async fn destroy(&self) -> Result<(), CertmeshError> {
         // Clear in-memory state first
@@ -241,6 +275,7 @@ impl CertmeshState {
         .map_err(|e| CertmeshError::Internal(format!("destroy task: {e}")))?;
 
         tracing::info!("Certmesh state destroyed");
+        self.republish_posture();
         Ok(())
     }
 
@@ -339,6 +374,7 @@ impl CertmeshCore {
         paths: CertmeshPaths,
     ) -> Self {
         let rate_limiter = load_rate_limiter(&paths);
+        let posture_tx = initial_posture_tx(&paths);
         Self {
             state: Arc::new(CertmeshState {
                 paths,
@@ -349,6 +385,7 @@ impl CertmeshCore {
                 rate_limiter: tokio::sync::Mutex::new(rate_limiter),
                 approval_tx: tokio::sync::Mutex::new(None),
                 event_tx: koi_common::events::event_channel().0,
+                posture_tx,
             }),
         }
     }
@@ -356,6 +393,7 @@ impl CertmeshCore {
     /// Create a CertmeshCore in locked state with explicit paths.
     pub fn locked_with_paths(roster: Roster, paths: CertmeshPaths) -> Self {
         let rate_limiter = load_rate_limiter(&paths);
+        let posture_tx = initial_posture_tx(&paths);
         Self {
             state: Arc::new(CertmeshState {
                 paths,
@@ -366,6 +404,7 @@ impl CertmeshCore {
                 rate_limiter: tokio::sync::Mutex::new(rate_limiter),
                 approval_tx: tokio::sync::Mutex::new(None),
                 event_tx: koi_common::events::event_channel().0,
+                posture_tx,
             }),
         }
     }
@@ -376,6 +415,7 @@ impl CertmeshCore {
     /// All operations that require an initialized CA will return `CaNotInitialized`.
     pub fn uninitialized_with_paths(paths: CertmeshPaths) -> Self {
         let rate_limiter = load_rate_limiter(&paths);
+        let posture_tx = initial_posture_tx(&paths);
         Self {
             state: Arc::new(CertmeshState {
                 paths,
@@ -386,6 +426,7 @@ impl CertmeshCore {
                 rate_limiter: tokio::sync::Mutex::new(rate_limiter),
                 approval_tx: tokio::sync::Mutex::new(None),
                 event_tx: koi_common::events::event_channel().0,
+                posture_tx,
             }),
         }
     }
@@ -420,6 +461,15 @@ impl CertmeshCore {
     /// Subscribe to certmesh events.
     pub fn subscribe(&self) -> broadcast::Receiver<CertmeshEvent> {
         self.state.event_tx.subscribe()
+    }
+
+    /// Watch this node's posture (ADR-020 §5). The receiver always holds the
+    /// current [`Posture`] (so a new subscriber reads it immediately) and is
+    /// notified on every Open↔Authenticated transition — the signal a listener
+    /// supervisor uses to flip plain↔mTLS without polling. Transitions are also
+    /// surfaced as `KoiEvent::PostureChanged` by the embedded facade.
+    pub fn watch_posture(&self) -> watch::Receiver<Posture> {
+        self.state.posture_tx.subscribe()
     }
 
     /// Build the RFC 8555 ACME server state over this CA.
@@ -664,6 +714,9 @@ impl CertmeshCore {
             auto_unlock = req.auto_unlock,
             "CA initialized via service"
         );
+
+        // The CA node self-enrolled a leaf above → Open→Authenticated.
+        state.republish_posture();
 
         Ok(protocol::CreateCaResponse {
             auth_setup: koi_crypto::auth::AuthSetup::Totp { totp_uri },
@@ -931,6 +984,9 @@ impl CertmeshCore {
             hostname,
             fingerprint: issued.fingerprint,
         });
+
+        // A leaf is now on disk → posture may have flipped Open→Authenticated.
+        self.state.republish_posture();
 
         Ok(SelfEnrollment {
             cert_pem: issued.cert_pem,
@@ -1592,6 +1648,10 @@ impl CertmeshCore {
         }
 
         tracing::info!(hostname, "Member certificate installed locally");
+
+        // Leaf (and possibly member.json) now on disk → Open→Authenticated.
+        self.state.republish_posture();
+
         Ok(cert_dir.display().to_string())
     }
 
@@ -2698,6 +2758,38 @@ mod tests {
             .await
             .expect("identity still present");
         assert_eq!(id2.cert_pem, id.cert_pem);
+    }
+
+    #[tokio::test]
+    async fn posture_watch_observes_transitions_and_coalesces() {
+        std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+        let paths = isolated_posture_paths("watch");
+        let ca = ca::create_ca("test-pass", &[5u8; 32], &paths).unwrap().0;
+        let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+        let core = CertmeshCore::new_with_paths(ca, roster, None, paths);
+
+        let mut rx = core.watch_posture();
+        assert!(!rx.borrow_and_update().signed, "no leaf yet → Open");
+
+        // self_enroll writes the leaf and publishes → Open→Authenticated observed.
+        core.self_enroll().await.expect("self-enroll");
+        assert!(rx.has_changed().unwrap(), "self-enroll must notify");
+        assert!(rx.borrow_and_update().signed);
+
+        // A second self_enroll re-issues the leaf but the posture is unchanged →
+        // the watch coalesces (no spurious PostureChanged — silence is correct here,
+        // an upgrade is not).
+        core.self_enroll().await.expect("re-enroll");
+        assert!(
+            !rx.has_changed().unwrap(),
+            "an unchanged posture must not notify"
+        );
+
+        // destroy tears the identity down → Authenticated→Open observed (a degrade
+        // is as loud as the upgrade, ADR-020 §13).
+        core.destroy().await.expect("destroy");
+        assert!(rx.has_changed().unwrap(), "destroy must notify");
+        assert!(!rx.borrow_and_update().signed);
     }
 
     fn test_paths() -> CertmeshPaths {

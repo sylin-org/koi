@@ -1174,8 +1174,10 @@ mod tests {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let data_dir =
             koi_common::test::ensure_data_dir("koi-certmesh-http-tests").join(format!("ext-{n}"));
+        let paths = CertmeshPaths::with_data_dir(data_dir);
+        let posture_tx = crate::initial_posture_tx(&paths);
         Arc::new(CertmeshState {
-            paths: CertmeshPaths::with_data_dir(data_dir),
+            paths,
             ca: tokio::sync::Mutex::new(None),
             roster: tokio::sync::Mutex::new(Roster {
                 metadata: RosterMetadata {
@@ -1194,6 +1196,7 @@ mod tests {
             rate_limiter: tokio::sync::Mutex::new(RateLimiter::new()),
             approval_tx: tokio::sync::Mutex::new(None),
             event_tx: tokio::sync::broadcast::channel(16).0,
+            posture_tx,
         })
     }
 
