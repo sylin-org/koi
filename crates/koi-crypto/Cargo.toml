@@ -45,6 +45,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
 tempfile = "3"
+# Test-only: generate real leaf keys (PKCS#8 PEM) the way Koi enrolls them, to
+# exercise the leaf-key signing helper against rcgen's actual key encoding.
+rcgen.workspace = true
 
 [features]
 # `keyring` (OS credential store / TPM-style key sealing) and `qr` (qrcode + image PNG

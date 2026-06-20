@@ -4,8 +4,8 @@
 //! during roster sync. Uses the same P-256 key used for certificate operations.
 
 use p256::ecdsa::signature::Signer;
-use p256::ecdsa::{Signature, VerifyingKey};
-use p256::pkcs8::DecodePublicKey;
+use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
+use p256::pkcs8::{DecodePrivateKey, DecodePublicKey};
 
 use crate::keys::CaKeyPair;
 
@@ -15,6 +15,19 @@ use crate::keys::CaKeyPair;
 pub fn sign_bytes(key: &CaKeyPair, data: &[u8]) -> Vec<u8> {
     let sig: Signature = key.signing_key().sign(data);
     sig.to_der().as_bytes().to_vec()
+}
+
+/// Sign arbitrary bytes with an ECDSA P-256 private key in PKCS#8 PEM form.
+///
+/// Unlike [`sign_bytes`] (which signs with the CA's in-memory `CaKeyPair`), this
+/// signs with a leaf key loaded from PEM — e.g. a node signing an `Envelope` with
+/// its own enrolled identity. Returns the DER-encoded signature, or `None` if the
+/// key cannot be parsed. Pairs with [`verify_signature`] against the leaf's public
+/// key.
+pub fn sign_with_key_pem(private_key_pem: &str, data: &[u8]) -> Option<Vec<u8>> {
+    let key = SigningKey::from_pkcs8_pem(private_key_pem).ok()?;
+    let sig: Signature = key.sign(data);
+    Some(sig.to_der().as_bytes().to_vec())
 }
 
 /// Verify an ECDSA P-256 signature against a public key in PEM format.
@@ -168,5 +181,24 @@ mod tests {
         let public_pem = key.public_key_pem().unwrap();
 
         assert!(!verify_signature(&public_pem, data, &[]));
+    }
+
+    #[test]
+    fn sign_with_leaf_key_pem_round_trips() {
+        // A leaf key as produced by rcgen (PKCS#8 PEM), the shape Koi enrolls.
+        let kp = rcgen::KeyPair::generate().unwrap();
+        let priv_pem = kp.serialize_pem();
+        let pub_pem = kp.public_key_pem();
+        let data = b"koi-envelope-v1 canonical bytes";
+
+        let sig = sign_with_key_pem(&priv_pem, data).expect("sign with leaf key");
+        assert!(verify_signature(&pub_pem, data, &sig));
+        // Tampered data must not verify.
+        assert!(!verify_signature(&pub_pem, b"tampered", &sig));
+    }
+
+    #[test]
+    fn sign_with_invalid_key_pem_is_none() {
+        assert!(sign_with_key_pem("not a pem", b"data").is_none());
     }
 }
