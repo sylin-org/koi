@@ -35,6 +35,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use koi_common::capability::{Capability, CapabilityStatus};
+use koi_common::posture::Posture;
 use koi_crypto::auth::AuthState;
 use koi_crypto::totp::RateLimiter;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -891,6 +892,43 @@ impl CertmeshCore {
         let auth_guard = self.state.auth.lock().await;
         let auth_method = auth_guard.as_ref().map(|a| a.method_name());
         build_status(self.paths(), &ca_guard, &roster, auth_method)
+    }
+
+    /// This node's current trust posture — the mode oracle every
+    /// mode-transparent primitive consults (ADR-020 §0).
+    ///
+    /// `signed` is true when this node holds a usable cryptographic identity: its
+    /// CA-signed leaf (`cert.pem`/`key.pem`) is on disk *and* the node is anchored
+    /// to a mesh (the CA is initialized here, or a `member.json` records the mesh
+    /// it joined — so an orphaned leaf left after `destroy` does not read as
+    /// secure). A cheap filesystem check, safe to call from any primitive.
+    /// `encrypted` (the Confidential rung) stays false until the `seal`/`open`
+    /// encryption rung lands (ADR-020 §4).
+    ///
+    /// Posture answers "do I have an identity", not "is it fresh" — identity
+    /// *health* (expiry, renewal status) is reported separately by
+    /// `ensure_identity` / `diagnose` (later ADR-020 phases).
+    pub fn posture(&self) -> Posture {
+        Posture {
+            signed: self.has_local_identity(),
+            encrypted: false,
+        }
+    }
+
+    /// Whether this node holds a usable local identity (a CA-signed leaf on disk,
+    /// anchored to a mesh). Backs [`posture`](Self::posture).
+    fn has_local_identity(&self) -> bool {
+        let Some(hostname) = Self::local_hostname() else {
+            return false;
+        };
+        let leaf = self.paths().certs_dir().join(&hostname);
+        let leaf_present = leaf.join("cert.pem").exists() && leaf.join("key.pem").exists();
+        // Require an anchor so an orphaned leaf (e.g. left behind by `destroy`)
+        // does not read as secure: either the CA lives here, or a member.json
+        // records the joined mesh.
+        let anchored =
+            self.paths().is_ca_initialized() || self.paths().member_state_path().exists();
+        leaf_present && anchored
     }
 
     /// Set the post-renewal reload hook for a member.
@@ -2303,6 +2341,71 @@ mod tests {
     use super::*;
     use crate::roster::{MemberRole, MemberStatus, RosterMember};
     use chrono::{Duration, Utc};
+
+    // ── ADR-020 P1: posture oracle ──────────────────────────────────
+
+    // Each posture test gets its OWN isolated data dir. We deliberately do NOT
+    // use `koi_common::test::ensure_data_dir` here: that returns a process-wide
+    // `OnceLock` dir shared by every test in this binary, so wiping it (to get a
+    // clean slate) would destroy sibling tests' CA/vault/roster state. posture()
+    // reads only the injected `CertmeshPaths`, so an isolated dir is sufficient.
+    fn isolated_posture_paths(tag: &str) -> CertmeshPaths {
+        let dir = std::env::temp_dir().join(format!("koi-cm-posture-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        CertmeshPaths::with_data_dir(dir)
+    }
+
+    fn posture_member_state(hostname: &str) -> crate::member::MemberState {
+        crate::member::MemberState {
+            hostname: hostname.to_string(),
+            ca_host: "ca-host".to_string(),
+            ca_mtls_port: 5642,
+            ca_http_port: 5641,
+            ca_fingerprint: "fp".to_string(),
+            sans: vec![hostname.to_string()],
+            policy: crate::roster::CertPolicy::default(),
+            last_bundle_seq: 0,
+            reload_hook: None,
+        }
+    }
+
+    fn write_posture_leaf(paths: &CertmeshPaths, hostname: &str) {
+        let leaf = paths.certs_dir().join(hostname);
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::fs::write(leaf.join("cert.pem"), b"leaf-cert").unwrap();
+        std::fs::write(leaf.join("key.pem"), b"leaf-key").unwrap();
+    }
+
+    #[test]
+    fn posture_is_open_without_identity() {
+        let paths = isolated_posture_paths("open");
+        let core = CertmeshCore::uninitialized_with_paths(paths);
+        assert_eq!(core.posture(), koi_common::posture::Posture::OPEN);
+    }
+
+    #[test]
+    fn posture_is_authenticated_with_member_identity() {
+        let paths = isolated_posture_paths("auth");
+        let hostname = CertmeshCore::local_hostname().expect("local hostname");
+        crate::member::save(&paths.member_state_path(), &posture_member_state(&hostname)).unwrap();
+        write_posture_leaf(&paths, &hostname);
+        let core = CertmeshCore::uninitialized_with_paths(paths);
+        let p = core.posture();
+        assert!(p.signed);
+        assert!(!p.encrypted);
+        assert_eq!(p.level(), koi_common::posture::PostureLevel::Authenticated);
+    }
+
+    #[test]
+    fn posture_ignores_orphan_leaf_without_anchor() {
+        let paths = isolated_posture_paths("orphan");
+        let hostname = CertmeshCore::local_hostname().expect("local hostname");
+        // Leaf present but no CA and no member.json — an unanchored orphan.
+        write_posture_leaf(&paths, &hostname);
+        let core = CertmeshCore::uninitialized_with_paths(paths);
+        assert_eq!(core.posture(), koi_common::posture::Posture::OPEN);
+    }
 
     fn test_paths() -> CertmeshPaths {
         CertmeshPaths::with_data_dir(koi_common::test::ensure_data_dir("koi-certmesh-core-tests"))
