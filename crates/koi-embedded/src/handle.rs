@@ -130,6 +130,61 @@ impl KoiHandle {
         }
     }
 
+    /// Become a fully-participating trusted service in one call (ADR-020 §13 — the
+    /// "3-line trusted service"):
+    ///
+    /// 1. acquire/maintain this node's identity (best-effort — an Open node with no
+    ///    way to enroll simply stays plaintext),
+    /// 2. announce `service_type` on the LAN at `addr`'s port with the node's
+    ///    posture stamped into the TXT, **kept current across posture flips**, and
+    /// 3. serve `router` on `addr` with the same-port dial ([`serve`](Self::serve)).
+    ///
+    /// The consumer never branches on posture and never wires identity, discovery,
+    /// and serving separately. Returns the serve supervisor's [`JoinHandle`].
+    /// Certificate *renewal* is handled by the certmesh background loops — enable
+    /// them with `Builder::certmesh_background(true)` on a long-running host.
+    /// Embedded only.
+    pub async fn participate(
+        &self,
+        router: axum::Router,
+        addr: std::net::SocketAddr,
+        service_type: &str,
+        cancel: CancellationToken,
+    ) -> Result<JoinHandle<()>, KoiError> {
+        let (certmesh, mdns) = match &self.backend {
+            HandleBackend::Embedded { certmesh, mdns, .. } => (
+                certmesh
+                    .as_ref()
+                    .ok_or(KoiError::DisabledCapability("certmesh"))?
+                    .clone(),
+                mdns.clone(),
+            ),
+            HandleBackend::Remote { .. } => {
+                return Err(KoiError::DisabledCapability("certmesh (remote mode)"))
+            }
+        };
+
+        // 1. Acquire/maintain identity. Open (no CA / not a member) stays plaintext.
+        let _ = certmesh.ensure_identity().await;
+
+        // 2. Announce with posture, refreshed on every flip so the LAN trust map
+        //    never goes stale (ADR-020 §13 "maintained across flips").
+        if let Some(mdns) = mdns {
+            spawn_participate_announce(
+                mdns,
+                Arc::clone(&certmesh),
+                service_type.to_string(),
+                addr.port(),
+                cancel.clone(),
+            );
+        } else {
+            tracing::debug!("participate: mDNS disabled — serving without announcing");
+        }
+
+        // 3. Serve with the same-port posture dial.
+        self.serve(router, addr, cancel)
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<KoiEvent> {
         self.events.subscribe()
     }
@@ -813,6 +868,81 @@ impl CertmeshHandle {
     }
 }
 
+/// Announce this node's `service_type` on `port` with its current posture stamped
+/// into the TXT (ADR-020 §8). Returns the registration id, or `None` if mDNS
+/// registration failed. Used by [`participate`](KoiHandle::participate).
+async fn announce_once(
+    mdns: &Arc<MdnsCore>,
+    certmesh: &Arc<koi_certmesh::CertmeshCore>,
+    hostname: &str,
+    service_type: &str,
+    port: u16,
+) -> Option<String> {
+    let id = certmesh.local_identity().await;
+    let mut txt = std::collections::HashMap::new();
+    koi_common::peer::stamp(
+        &mut txt,
+        certmesh.posture(),
+        id.as_ref().map(|i| i.ca_fingerprint.as_str()),
+        id.as_ref().map(|i| i.renewal.expires_at),
+    );
+    let payload = RegisterPayload {
+        name: hostname.to_string(),
+        service_type: service_type.to_string(),
+        port,
+        ip: None,
+        lease_secs: None,
+        txt,
+    };
+    match mdns.register(payload) {
+        Ok(result) => Some(result.id),
+        Err(e) => {
+            tracing::warn!(error = %e, "participate: mDNS announce failed");
+            None
+        }
+    }
+}
+
+/// Maintain a posture-stamped mDNS announcement across posture flips until
+/// `cancel` (ADR-020 §13). Re-announces on every transition so a peer discovering
+/// this node always reads its *current* posture, then withdraws the record on
+/// shutdown.
+fn spawn_participate_announce(
+    mdns: Arc<MdnsCore>,
+    certmesh: Arc<koi_certmesh::CertmeshCore>,
+    service_type: String,
+    port: u16,
+    cancel: CancellationToken,
+) {
+    tokio::spawn(async move {
+        let hostname = hostname::get()
+            .ok()
+            .and_then(|os| os.into_string().ok())
+            .unwrap_or_else(|| "unknown".to_string());
+        let mut posture_rx = certmesh.watch_posture();
+        let mut current_id = announce_once(&mdns, &certmesh, &hostname, &service_type, port).await;
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                changed = posture_rx.changed() => {
+                    if changed.is_err() {
+                        break; // the certmesh core was dropped
+                    }
+                    // Posture flipped → re-announce so the advertised posture is current.
+                    if let Some(old) = current_id.take() {
+                        let _ = mdns.unregister(&old);
+                    }
+                    current_id =
+                        announce_once(&mdns, &certmesh, &hostname, &service_type, port).await;
+                }
+            }
+        }
+        if let Some(id) = current_id {
+            let _ = mdns.unregister(&id);
+        }
+    });
+}
+
 /// Fold a stream of mDNS lifecycle events into a deduplicated peer snapshot
 /// (ADR-020 §8). Resolved records (which carry TXT, hence the trust hints)
 /// overwrite an earlier Found for the same name; a Removed drops it. Ordered by
@@ -1107,5 +1237,64 @@ mod tests {
         assert_eq!(peers.len(), 1);
         assert_eq!(peers[0].level(), PostureLevel::Open);
         assert!(!peers[0].is_secure());
+    }
+
+    // ── participate (ADR-020 §13) ───────────────────────────────────
+
+    #[tokio::test]
+    async fn participate_remote_handle_is_disabled() {
+        let client = Arc::new(KoiClient::new("http://127.0.0.1:1"));
+        let (tx, _) = broadcast::channel(8);
+        let handle = KoiHandle::new_remote(client, tx, CancellationToken::new(), Vec::new());
+        let router = axum::Router::new();
+        let addr: std::net::SocketAddr = ([127, 0, 0, 1], 0).into();
+        let err = handle
+            .participate(router, addr, "_x._tcp", CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, KoiError::DisabledCapability(_)));
+    }
+
+    #[tokio::test]
+    async fn participate_open_node_serves_plaintext() {
+        // certmesh on (but no CA → Open), mDNS off (participate just serves plain),
+        // isolated data dir. The Open node serves the consumer's router in plaintext
+        // with no posture branching by the caller.
+        let dir = std::env::temp_dir().join(format!("koi-emb-participate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let koi = crate::Builder::new()
+            .data_dir(&dir)
+            .service_mode(crate::ServiceMode::EmbeddedOnly)
+            .mdns(false)
+            .dns_enabled(false)
+            .health(false)
+            .certmesh(true)
+            .proxy(false)
+            .build()
+            .expect("build");
+        let handle = koi.start().await.expect("start");
+
+        let addr = {
+            let l = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            l.local_addr().unwrap()
+        };
+        let router = axum::Router::new().route("/ping", axum::routing::get(|| async { "pong" }));
+        let cancel = CancellationToken::new();
+        let _server = handle
+            .participate(router, addr, "_koi-test._tcp", cancel.clone())
+            .await
+            .expect("participate");
+        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+
+        let (status, body) = koi_certmesh::mtls::get(&addr.ip().to_string(), addr.port(), "/ping")
+            .await
+            .expect("plain GET to an Open participating node");
+        assert_eq!(status, 200);
+        assert_eq!(body, "pong");
+
+        cancel.cancel();
+        handle.shutdown().await.expect("shutdown");
     }
 }
