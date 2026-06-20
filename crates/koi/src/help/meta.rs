@@ -1980,6 +1980,42 @@ guide for how this fits the ACME bootstrap recipes.",
         api: &[],
         confirmation: None,
     },
+    CommandMeta {
+        name: "trust diagnose",
+        summary: "Run the trust-doctor (posture, identity, renewal, revocation)",
+        long_description: "\
+Diagnoses this node's trust state and prints a loud, scannable report — each check
+with a distinct status and, where there is something to do, an exact remedy:
+
+  • posture (Open / Authenticated / Confidential)
+  • identity + on-disk integrity (the leaf chains to its CA)
+  • self-revocation (has the CA revoked this node?)
+  • renewal health (expired / overdue / soon / healthy)
+  • CA trust-install + the local clock / freshness window
+
+Exits non-zero when anything is RED, so it slots into scripts and CI. `--fix`
+installs the mesh CA into the OS trust store (the one auto-fixable remedy). Runs
+locally (reads on-disk state); no daemon required.",
+        category: KoiCategory::TrustStore,
+        tags: &[KoiTag::CliOnly],
+        scope: KoiScope::Public,
+        examples: &[
+            Example {
+                command: "koi trust diagnose",
+                description: "Show the trust-doctor report",
+            },
+            Example {
+                command: "koi trust diagnose --fix",
+                description: "Diagnose and install the mesh CA locally",
+            },
+        ],
+        see_also: &["trust install", "certmesh status"],
+        api: &[ApiEndpoint {
+            method: "GET",
+            path: koi_certmesh::http::paths::DIAGNOSE,
+        }],
+        confirmation: None,
+    },
     // ── factory-reset (Core; defined last to mirror the original manifest) ─
     CommandMeta {
         name: "factory-reset",
