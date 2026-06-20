@@ -16,10 +16,17 @@ use koi_compose::bridges::{
 
 pub use config::{DnsConfigBuilder, KoiConfig, ServiceMode};
 pub use events::KoiEvent;
-pub use handle::{CertmeshHandle, DnsHandle, HealthHandle, KoiHandle, MdnsHandle, ProxyHandle};
+pub use handle::{
+    CertmeshHandle, DnsHandle, HealthHandle, KoiHandle, MdnsHandle, ProxyHandle,
+    DEFAULT_DISCOVER_WINDOW,
+};
 
 // Re-export types needed by downstream consumers (registration, discovery, DNS, proxy, health)
 pub use koi_common::firewall::{FirewallPort, FirewallProtocol};
+// Mode-transparent trust primitives (ADR-020): typed discovery + posture + posture-keyed client.
+pub use koi_certmesh::PeerClient;
+pub use koi_common::peer::Peer;
+pub use koi_common::posture::{Posture, PostureLevel};
 pub use koi_common::types::ServiceRecord;
 pub use koi_config::state::DnsEntry;
 pub use koi_health::{HealthCheck, HealthSnapshot, ServiceCheckKind};
@@ -547,6 +554,19 @@ impl KoiEmbedded {
                         "dashboard".to_string(),
                         self.config.dashboard_enabled.to_string(),
                     );
+
+                    // Stamp this node's trust posture into its own announcement so
+                    // peers discovering it get fleet-wide trust legibility
+                    // (ADR-020 §8). Advisory hints; `verify`/mTLS adjudicates.
+                    if let Some(ref core) = certmesh {
+                        let id = core.local_identity().await;
+                        koi_common::peer::stamp(
+                            &mut txt,
+                            core.posture(),
+                            id.as_ref().map(|i| i.ca_fingerprint.as_str()),
+                            id.as_ref().map(|i| i.renewal.expires_at),
+                        );
+                    }
 
                     let payload = koi_mdns::protocol::RegisterPayload {
                         name: format!("Koi ({hostname})"),
