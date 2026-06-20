@@ -29,6 +29,7 @@ pub mod mtls;
 pub mod profiles;
 pub mod protocol;
 pub mod roster;
+pub mod serve;
 pub mod wordlist;
 
 pub use certmesh_paths::CertmeshPaths;
