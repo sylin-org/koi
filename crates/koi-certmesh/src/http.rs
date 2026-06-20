@@ -1060,6 +1060,29 @@ fn error_response(status: StatusCode, error: &CertmeshError) -> axum::response::
     koi_common::http::error_response_with_status(status, code, error.to_string())
 }
 
+/// Posture-aware auth gate middleware backing
+/// [`CertmeshCore::require_auth`](crate::CertmeshCore::require_auth) (ADR-020 §6).
+///
+/// No-op in Open posture (the node holds no identity → homelab-open); in secure
+/// posture it requires an authenticated client CN (the mTLS [`ClientCn`] the
+/// listener / same-port dial injects) and returns 401 when absent.
+pub(crate) async fn require_auth_mw(
+    axum::extract::State(state): axum::extract::State<Arc<CertmeshState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    // Open node → no identity, no expectation of auth → pass.
+    if !crate::node_has_identity(&state.paths) {
+        return next.run(req).await;
+    }
+    // Secure node → require an authenticated client identity.
+    if req.extensions().get::<ClientCn>().is_some() {
+        next.run(req).await
+    } else {
+        error_response(StatusCode::UNAUTHORIZED, &CertmeshError::InvalidAuth)
+    }
+}
+
 /// OpenAPI documentation for the certmesh domain.
 #[derive(utoipa::OpenApi)]
 #[openapi(
@@ -1178,6 +1201,73 @@ mod tests {
     fn certmesh_state_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<CertmeshState>();
+    }
+
+    // ── ADR-020 P2: require_auth gate ───────────────────────────────
+
+    fn ra_paths(tag: &str) -> crate::certmesh_paths::CertmeshPaths {
+        let dir = std::env::temp_dir().join(format!("koi-cm-ra-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::certmesh_paths::CertmeshPaths::with_data_dir(dir)
+    }
+
+    // Make `paths` read as a secure node: a member.json anchor + a leaf on disk.
+    fn make_secure(paths: &crate::certmesh_paths::CertmeshPaths) {
+        let hostname = CertmeshCore::local_hostname().unwrap();
+        let ms = crate::member::MemberState {
+            hostname: hostname.clone(),
+            ca_host: "h".to_string(),
+            ca_mtls_port: 5642,
+            ca_http_port: 5641,
+            ca_fingerprint: "fp".to_string(),
+            sans: vec![],
+            policy: crate::roster::CertPolicy::default(),
+            last_bundle_seq: 0,
+            reload_hook: None,
+        };
+        crate::member::save(&paths.member_state_path(), &ms).unwrap();
+        let leaf = paths.certs_dir().join(&hostname);
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::fs::write(leaf.join("cert.pem"), b"x").unwrap();
+        std::fs::write(leaf.join("key.pem"), b"x").unwrap();
+    }
+
+    fn gated_app(core: &CertmeshCore) -> Router {
+        let inner = Router::new().route("/w", post(|| async { StatusCode::OK }));
+        core.require_auth(inner)
+    }
+
+    #[tokio::test]
+    async fn require_auth_passes_in_open_posture() {
+        let core = CertmeshCore::uninitialized_with_paths(ra_paths("open"));
+        let req = Request::post("/w").body(Body::empty()).unwrap();
+        let resp = gated_app(&core).oneshot(req).await.unwrap();
+        // Open → homelab-open, the write route is reachable without auth.
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn require_auth_rejects_unauthenticated_when_secure() {
+        let paths = ra_paths("secure-no-cn");
+        make_secure(&paths);
+        let core = CertmeshCore::uninitialized_with_paths(paths);
+        let req = Request::post("/w").body(Body::empty()).unwrap();
+        let resp = gated_app(&core).oneshot(req).await.unwrap();
+        // Secure + no client cert → 401.
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn require_auth_allows_authenticated_cn_when_secure() {
+        let paths = ra_paths("secure-cn");
+        make_secure(&paths);
+        let core = CertmeshCore::uninitialized_with_paths(paths);
+        let mut req = Request::post("/w").body(Body::empty()).unwrap();
+        req.extensions_mut().insert(ClientCn("web-01".to_string()));
+        let resp = gated_app(&core).oneshot(req).await.unwrap();
+        // Secure + authenticated client CN → passes.
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

@@ -994,17 +994,7 @@ impl CertmeshCore {
     /// Whether this node holds a usable local identity (a CA-signed leaf on disk,
     /// anchored to a mesh). Backs [`posture`](Self::posture).
     fn has_local_identity(&self) -> bool {
-        let Some(hostname) = Self::local_hostname() else {
-            return false;
-        };
-        let leaf = self.paths().certs_dir().join(&hostname);
-        let leaf_present = leaf.join("cert.pem").exists() && leaf.join("key.pem").exists();
-        // Require an anchor so an orphaned leaf (e.g. left behind by `destroy`)
-        // does not read as secure: either the CA lives here, or a member.json
-        // records the joined mesh.
-        let anchored =
-            self.paths().is_ca_initialized() || self.paths().member_state_path().exists();
-        leaf_present && anchored
+        node_has_identity(self.paths())
     }
 
     /// Load this node's live identity from disk, or `None` if it has none.
@@ -1140,6 +1130,23 @@ impl CertmeshCore {
             .filter(|m| m.status == roster::MemberStatus::Revoked)
             .map(|m| m.cert_fingerprint.clone())
             .collect()
+    }
+
+    /// Gate `router`'s routes by authentication (ADR-020 §6 `require_auth`).
+    ///
+    /// Mode-transparent: a **no-op in Open posture** (homelab-open); in secure
+    /// posture every request must carry an authenticated client CN (the mTLS
+    /// `ClientCn` the listener / same-port dial injects) or it is rejected with
+    /// 401. Apply once to your *write* routes — no per-handler boilerplate, and the
+    /// same consumer code runs green in both postures.
+    ///
+    /// (P2 gates on the mTLS client identity; an optional CN/role policy hook and a
+    /// signed-envelope-header path are planned refinements.)
+    pub fn require_auth(&self, router: Router) -> Router {
+        router.layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&self.state),
+            http::require_auth_mw,
+        ))
     }
 
     /// Set the post-renewal reload hook for a member.
@@ -2278,6 +2285,21 @@ pub enum RenewOutcome {
 /// Parse a leaf certificate PEM and return its `not_after` as a UTC datetime.
 ///
 /// Returns `None` on unparseable PEM/DER or an out-of-range timestamp.
+/// Whether a node rooted at `paths` holds a usable local identity: a CA-signed
+/// leaf (`cert.pem`/`key.pem`) for the local hostname on disk, anchored to a mesh
+/// (the CA is initialized here, or a `member.json` records the joined mesh — so an
+/// orphaned leaf left by `destroy` does not read as secure). Backs
+/// [`CertmeshCore::posture`] and the [`CertmeshCore::require_auth`] gate.
+pub(crate) fn node_has_identity(paths: &CertmeshPaths) -> bool {
+    let Some(hostname) = CertmeshCore::local_hostname() else {
+        return false;
+    };
+    let leaf = paths.certs_dir().join(&hostname);
+    let leaf_present = leaf.join("cert.pem").exists() && leaf.join("key.pem").exists();
+    let anchored = paths.is_ca_initialized() || paths.member_state_path().exists();
+    leaf_present && anchored
+}
+
 fn leaf_not_after_utc(cert_pem: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     use x509_parser::prelude::FromDer;
     let der = pem::parse(cert_pem).ok()?;
