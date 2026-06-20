@@ -319,6 +319,10 @@ struct UnifiedStatusResponse {
     daemon: bool,
     /// The HTTP adapter's bind address (e.g. "127.0.0.1" or "0.0.0.0").
     http_bind: String,
+    /// The confidentiality `seal()` produces — `passthrough` | `groupkey` (ADR-020
+    /// §4). Absent when certmesh is disabled. `null`-able.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seal: Option<String>,
     capabilities: Vec<koi_common::capability::CapabilityStatus>,
 }
 
@@ -607,6 +611,13 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
             .collect();
 
     let uptime_secs = state.started_at.elapsed().as_secs();
+    // The confidentiality `seal()` currently produces (ADR-020 §4) — `passthrough`
+    // until the group-key rung lands. Reported only when certmesh is present (sealing
+    // needs the identity infra); makes the un-encrypted state observable, not silent.
+    let seal = state
+        .certmesh
+        .as_ref()
+        .map(|_| koi_common::sealed::CURRENT_CONFIDENTIALITY.as_wire());
     Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "platform": std::env::consts::OS,
@@ -615,6 +626,7 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
         "http_bind": state.http_bind,
         "mdns_browse_active": state.mdns_browse.as_ref().map(|m| m.is_active()),
         "mcp_http": state.mcp_http_enabled,
+        "seal": seal,
         "capabilities": capabilities,
     }))
 }

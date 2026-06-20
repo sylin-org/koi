@@ -211,6 +211,9 @@ pub fn unified_status(json: &serde_json::Value) -> String {
             if active { "active" } else { "idle" }
         );
     }
+    if let Some(seal) = json.get("seal").and_then(|v| v.as_str()) {
+        let _ = writeln!(out, "  Seal:      {seal}");
+    }
 
     if let Some(caps) = json.get("capabilities").and_then(|v| v.as_array()) {
         for cap in caps {
@@ -662,6 +665,20 @@ mod tests {
         assert!(out.contains("Koi vunknown"));
         assert!(out.contains("Platform:  unknown"));
         assert!(!out.contains("Uptime:"));
+        // No certmesh → no seal line (the field is absent).
+        assert!(!out.contains("Seal:"));
+    }
+
+    #[test]
+    fn unified_status_shows_seal_level() {
+        let json = serde_json::json!({
+            "version": "0.4.2",
+            "platform": "linux",
+            "seal": "passthrough",
+            "capabilities": []
+        });
+        let out = unified_status(&json);
+        assert!(out.contains("Seal:      passthrough"), "got: {out}");
     }
 
     // ── promote_success ─────────────────────────────────────────────
