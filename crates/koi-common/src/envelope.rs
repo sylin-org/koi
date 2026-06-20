@@ -49,6 +49,12 @@ pub struct Envelope {
 }
 
 /// The signature block of an [`Envelope`] (present only when signed).
+///
+/// Carries the signer's leaf certificate so verification is **self-contained**: a
+/// verifier validates the leaf against the pinned CA it already trusts and derives
+/// the authoritative CN + public key from it — never from a claimed field (ADR-020
+/// §3, the carry-cert model). This is what lets verification work on a pure member
+/// node, which keeps no roster of other members' keys.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct Sig {
     /// Signature algorithm. A closed set pinned by the envelope version; the
@@ -57,11 +63,9 @@ pub struct Sig {
     pub alg: SigAlg,
     /// The signature over the canonical envelope bytes, base64 (standard) encoded.
     pub signature: String,
-    /// The signer's claimed CN (verified against the signer's certificate).
-    pub signer_cn: String,
-    /// The signer's certificate serial, if carried (advisory).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub serial: Option<String>,
+    /// The signer's leaf certificate, DER, base64 (standard) encoded. The CN,
+    /// public key, serial, and validity are all read from here (authoritative).
+    pub signer_cert: String,
 }
 
 /// Signature algorithms Koi will produce/accept. Closed set (no agility): a new
@@ -151,12 +155,11 @@ pub enum RejectReason {
 mod tests {
     use super::*;
 
-    fn signed(cn: &str) -> Sig {
+    fn dummy_sig() -> Sig {
         Sig {
             alg: SigAlg::Es256,
-            signature: "c2ln".to_string(), // base64("sig")
-            signer_cn: cn.to_string(),
-            serial: None,
+            signature: "c2ln".to_string(),     // base64("sig")
+            signer_cert: "Y2VydA".to_string(), // base64("cert")
         }
     }
 
@@ -208,9 +211,10 @@ mod tests {
             payload: "aGk".to_string(),
             nonce: "bm9uY2U".to_string(),
             ts: 1_700_000_000,
-            sig: Some(signed("web-01")),
+            sig: Some(dummy_sig()),
         };
         let json = serde_json::to_string(&env).unwrap();
+        assert!(json.contains("signer_cert"));
         let back: Envelope = serde_json::from_str(&json).unwrap();
         assert_eq!(back, env);
     }
@@ -234,11 +238,5 @@ mod tests {
             serde_json::to_string(&RejectReason::NoSignature).unwrap(),
             r#""no_signature""#
         );
-    }
-
-    #[test]
-    fn serial_is_omitted_when_absent() {
-        let json = serde_json::to_string(&signed("a")).unwrap();
-        assert!(!json.contains("serial"));
     }
 }

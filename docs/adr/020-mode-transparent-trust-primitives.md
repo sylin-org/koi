@@ -74,7 +74,7 @@ Every primitive in this ADR is **no-op-in-Open / real-in-secure**, and the switc
 ```rust
 // Envelope: koi-common (versioned, encryption-ready header)
 pub struct Envelope { v, payload, nonce, ts, sig: Option<Sig> }   // sig absent in Open
-pub struct Sig { alg, signature, signer_cn, serial }
+pub struct Sig { alg, signature, signer_cert }   // carries the leaf (DER b64); CN derived from it, never claimed
 
 // logic: koi-certmesh (needs the identity key + roster)
 fn sign(&self, bytes: &[u8]) -> Envelope;          // Open: freshness-stamped passthrough; Authenticated: + ES256
@@ -251,7 +251,7 @@ Six "delight benchmark" lanes were researched against this design: **Tailscale**
 1. **Collapse 5641+5642** into one posture-adaptive control port (DAT-token ↔ mTLS-CN coexistence), or keep ADR-011's dual-port control plane? (Deferred; P4 only makes 5642 posture-reactive.)
 2. **`posture=` / `expires=` TXT semantics** — advisory hints only (confirmed); do we also offer a *signed* posture attestation for peers that want more than a hint?
 3. **Deterministic simulator (P7)** — ship as a consumer-facing tool, or keep it internal-only as Koi's test backbone? (The replay-window default is now decided: **±300 s**, §13.)
-4. **Envelope verification model (P2b)** — does the signed `Envelope` *carry the signer's leaf cert* (verify = chain to the pinned CA + the signer's fingerprint is a current, non-revoked roster member; self-contained, mirrors mTLS / JWS `x5c`), or does the verifier hold members' public keys (the roster/bundle must then persist leaf public keys, which they do not today)? The carry-cert model is the leaning default; it adds a `signer_cert` to `Sig` and needs a new koi-crypto leaf-key (PKCS#8 PEM) signing helper (`sign_bytes` today only signs with the `CaKeyPair`). Decide before P2b; pins into the wire contract at P6.
+4. **Envelope verification model (P2b) — RESOLVED: carry the signer's leaf cert** (self-contained verify, zero-config). `verify()` validates the carried leaf against the pinned CA (`x509-parser` `verify_signature` against the CA SPKI) + not-expired + ES256 over the canonical bytes; revocation is **best-effort** against the last trust bundle; the authoritative CN/public key come from the cert (no claimed-CN footgun). **Rationale (developer delight):** the alternative — verifier holds members' public keys — *cannot work on a pure member node* (members keep no roster), so `verify()` would spuriously return `unknown_signer`; carry-cert needs only the CA anchor every mesh node already has → it just works, mirrors mTLS, and degrades gracefully (Open verifier → `anonymous`). `Sig` carries `signer_cert` (DER, base64); `signer_cn`/`serial` are dropped (derived from the cert). v1 canonical signing bytes: `koi-envelope-v1\n{v}\n{payload}\n{nonce}\n{ts}` (domain-separated; frozen at P6).
 
 ## References
 - ADR-016 (trust plane; primary surfaces; startup-gating bug), ADR-015 (deferred dual-mode transport; key-custody invariant), ADR-017 (trust ledger, CSR-only issuance, mTLS server/client), ADR-011 (port model), ADR-008 (embedded facade), ADR-003 (envelope encryption).
