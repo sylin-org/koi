@@ -228,6 +228,19 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             txt.insert("api".to_string(), "v1".to_string());
             txt.insert("dashboard".to_string(), "true".to_string());
 
+            // Stamp this node's trust posture so peers discovering it read the
+            // mesh's trust map directly (ADR-020 §8). Advisory hints; verify/mTLS
+            // adjudicates actual trust.
+            if let Some(ref certmesh) = cores.certmesh {
+                let id = certmesh.local_identity().await;
+                koi_common::peer::stamp(
+                    &mut txt,
+                    certmesh.posture(),
+                    id.as_ref().map(|i| i.ca_fingerprint.as_str()),
+                    id.as_ref().map(|i| i.renewal.expires_at),
+                );
+            }
+
             let payload = koi_mdns::protocol::RegisterPayload {
                 name: format!("Koi ({hostname})"),
                 service_type: "_http._tcp".to_string(),

@@ -274,9 +274,18 @@ pub(crate) async fn announce_certmesh_endpoint(
         .unwrap_or_else(|| "unknown".to_string());
 
     let mut txt = std::collections::HashMap::new();
-    txt.insert("fp".to_string(), fingerprint.clone());
     txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
     txt.insert("name".to_string(), format!("Koi CA ({hostname})"));
+    // Stamp the node's trust state (posture/fp/expires) so discoverers read the
+    // mesh's trust map directly (ADR-020 §8 fleet legibility). `fp=` stays the
+    // joiner's disambiguation hint (ADR-017 F12); `posture=`/`expires=` are added
+    // alongside it. All advisory — the joiner's pinned-fingerprint preflight and
+    // `verify` remain the authority (ADR-016 §2 "ask Koi, don't trust the wire").
+    let expires_at = certmesh
+        .local_identity()
+        .await
+        .map(|id| id.renewal.expires_at);
+    koi_common::peer::stamp(&mut txt, certmesh.posture(), Some(&fingerprint), expires_at);
     let payload = koi_mdns::protocol::RegisterPayload {
         name: format!("Koi CA ({hostname})"),
         service_type: koi_certmesh::CERTMESH_SERVICE_TYPE.to_string(),
