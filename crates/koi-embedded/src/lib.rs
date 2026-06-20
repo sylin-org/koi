@@ -26,6 +26,7 @@ pub use handle::{
 pub use koi_common::firewall::{FirewallPort, FirewallProtocol};
 // Mode-transparent trust primitives (ADR-020): typed discovery + posture + posture-keyed client.
 pub use koi_certmesh::PeerClient;
+pub use koi_common::diagnosis::{CheckStatus, DiagnosisCheck, DiagnosisStatus, TrustDiagnosis};
 pub use koi_common::peer::Peer;
 pub use koi_common::posture::{Posture, PostureLevel};
 pub use koi_common::sealed::{Confidentiality, Opened, Sealed};

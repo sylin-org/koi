@@ -875,6 +875,17 @@ impl CertmeshHandle {
         }
     }
 
+    /// Run the trust-doctor (ADR-020 §13) → a structured `TrustDiagnosis`: posture,
+    /// identity + renewal health, on-disk-leaf integrity, self-revocation, and the
+    /// CA trust-install state, each with an exact remedy. `is_red()`/`exit_code()`
+    /// fail loud. Embedded only.
+    pub async fn diagnose(&self) -> Result<koi_common::diagnosis::TrustDiagnosis, KoiError> {
+        match &self.backend {
+            CertmeshBackend::Embedded { core } => Ok(core.diagnose().await),
+            CertmeshBackend::Remote { .. } => Err(KoiError::DisabledCapability("certmesh")),
+        }
+    }
+
     /// Build a posture-keyed client to a discovered [`Peer`] (ADR-020 §6): plain
     /// HTTP to an Open peer, mTLS to a secure peer — the caller writes one code
     /// path. Embedded only (a remote handle has no local identity to present).

@@ -45,6 +45,9 @@ pub mod paths {
     /// Local: install a CA-signed cert next to the member key.
     pub const MEMBER_CERT: &str = "/v1/certmesh/member-cert";
     pub const STATUS: &str = "/v1/certmesh/status";
+    /// Trust-doctor report (ADR-020 §13). A GET, so the DAT middleware exempts it —
+    /// it carries no secrets (the same posture/renewal state the dashboard shows).
+    pub const DIAGNOSE: &str = "/v1/certmesh/diagnose";
     /// Signed, monotonic trust bundle (ADR-017 P1). A GET, so the DAT middleware
     /// exempts it — it is integrity-protected by its own signature, like a CRL.
     pub const TRUST_BUNDLE: &str = "/v1/certmesh/trust-bundle";
@@ -80,6 +83,7 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::MEMBER_CSR), post(member_csr_handler))
         .route(rel(paths::MEMBER_CERT), post(member_cert_handler))
         .route(rel(paths::STATUS), get(status_handler))
+        .route(rel(paths::DIAGNOSE), get(diagnose_handler))
         .route(rel(paths::TRUST_BUNDLE), get(trust_bundle_handler))
         .route(rel(paths::SET_HOOK), put(set_hook_handler))
         // NOTE: /renew is intentionally NOT on the plain-HTTP router. Renewal is
@@ -314,6 +318,14 @@ async fn status_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl
     let auth_method = auth_guard.as_ref().map(|a| a.method_name());
     let status = crate::build_status(&state.paths, &ca_guard, &roster, auth_method);
     Json(status)
+}
+
+/// GET /diagnose - the trust-doctor report (ADR-020 §13). Reuses the one
+/// `CertmeshCore::diagnose` logic so the daemon/dashboard and the `koi trust
+/// diagnose` CLI render the same checks.
+async fn diagnose_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
+    let core = crate::CertmeshCore::from_state(Arc::clone(&state));
+    Json(core.diagnose().await)
 }
 
 /// PUT /hook - Set a post-renewal reload hook for a member.

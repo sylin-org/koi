@@ -14,6 +14,7 @@ pub mod certfiles;
 pub mod certmesh_paths;
 pub mod client;
 pub mod csr;
+pub mod diagnosis;
 pub mod enrollment;
 pub mod entropy;
 pub mod envelope;
@@ -1207,6 +1208,40 @@ impl CertmeshCore {
         let revoked = self.revoked_fingerprints().await;
         let now = chrono::Utc::now().timestamp();
         sealed::open_sealed(sealed, ca_cert_pem.as_deref(), &revoked, now)
+    }
+
+    /// Run the trust-doctor (ADR-020 §13) → a structured [`TrustDiagnosis`].
+    ///
+    /// Aggregates this node's real trust state — posture, identity + renewal health
+    /// (reusing [`local_identity`](Self::local_identity)), on-disk-leaf integrity
+    /// (chains to its CA), self-revocation, and the CA trust-install limitation —
+    /// into distinct, named checks each carrying an exact remedy. The rollup exits
+    /// non-zero only when something is RED (`TrustDiagnosis::exit_code`).
+    pub async fn diagnose(&self) -> koi_common::diagnosis::TrustDiagnosis {
+        let posture = self.posture();
+        let identity = self.local_identity().await;
+        let now = chrono::Utc::now();
+        let (integrity_ok, self_revoked) = match &identity {
+            Some(id) => {
+                let integrity = diagnosis::leaf_chains_to_ca(&id.cert_pem, &id.ca_cert_pem);
+                // Is this node's own leaf in the (best-effort) revoked set?
+                let self_fp = pem::parse(&id.cert_pem)
+                    .ok()
+                    .map(|p| koi_crypto::pinning::fingerprint_sha256(p.contents()));
+                let revoked = self.revoked_fingerprints().await;
+                let self_revoked = self_fp
+                    .as_ref()
+                    .map(|fp| {
+                        revoked
+                            .iter()
+                            .any(|r| koi_crypto::pinning::fingerprints_match(r, fp))
+                    })
+                    .unwrap_or(false);
+                (Some(integrity), self_revoked)
+            }
+            None => (None, false),
+        };
+        diagnosis::build_diagnosis(posture, identity.as_ref(), integrity_ok, self_revoked, now)
     }
 
     /// The CA certificate this node trusts as its verification anchor: the leaf's
