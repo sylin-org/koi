@@ -853,6 +853,28 @@ impl CertmeshHandle {
         }
     }
 
+    /// Seal `bytes` into a `Sealed` (ADR-020 §4). The confidentiality rung, today a
+    /// signed-not-encrypted passthrough; the consumer codes against the final API
+    /// now. Embedded only.
+    pub async fn seal(&self, bytes: &[u8]) -> Result<koi_common::sealed::Sealed, KoiError> {
+        match &self.backend {
+            CertmeshBackend::Embedded { core } => Ok(core.seal(bytes).await),
+            CertmeshBackend::Remote { .. } => Err(KoiError::DisabledCapability("certmesh")),
+        }
+    }
+
+    /// Open a `Sealed` → `Opened` (recovered bytes + trust state, ADR-020 §4). A
+    /// tampered/rejected message errors rather than yielding bytes. Embedded only.
+    pub async fn open(
+        &self,
+        sealed: &koi_common::sealed::Sealed,
+    ) -> Result<koi_common::sealed::Opened, KoiError> {
+        match &self.backend {
+            CertmeshBackend::Embedded { core } => Ok(core.open(sealed).await?),
+            CertmeshBackend::Remote { .. } => Err(KoiError::DisabledCapability("certmesh")),
+        }
+    }
+
     /// Build a posture-keyed client to a discovered [`Peer`] (ADR-020 §6): plain
     /// HTTP to an Open peer, mTLS to a secure peer — the caller writes one code
     /// path. Embedded only (a remote handle has no local identity to present).
@@ -1295,6 +1317,41 @@ mod tests {
         assert_eq!(body, "pong");
 
         cancel.cancel();
+        handle.shutdown().await.expect("shutdown");
+    }
+
+    // ── seal/open (ADR-020 §4) ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn seal_open_round_trip_on_open_node() {
+        use koi_common::sealed::Confidentiality;
+        let dir = std::env::temp_dir().join(format!("koi-emb-seal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let koi = crate::Builder::new()
+            .data_dir(&dir)
+            .service_mode(crate::ServiceMode::EmbeddedOnly)
+            .mdns(false)
+            .dns_enabled(false)
+            .health(false)
+            .certmesh(true)
+            .proxy(false)
+            .build()
+            .expect("build");
+        let handle = koi.start().await.expect("start");
+        let cm = handle.certmesh().expect("certmesh handle");
+
+        // Open node: seal is a passthrough (signed-not-encrypted); the same code path
+        // round-trips the bytes back with an anonymous assurance.
+        let sealed = cm.seal(b"hello seal").await.expect("seal");
+        assert_eq!(sealed.confidentiality(), Confidentiality::None);
+        let opened = cm.open(&sealed).await.expect("open");
+        assert_eq!(opened.payload, b"hello seal");
+        assert_eq!(opened.confidentiality, Confidentiality::None);
+        assert!(
+            opened.assurance.identity().is_none(),
+            "an Open node's seal is anonymous, not a trusted identity"
+        );
+
         handle.shutdown().await.expect("shutdown");
     }
 }

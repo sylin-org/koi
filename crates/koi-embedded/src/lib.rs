@@ -28,6 +28,7 @@ pub use koi_common::firewall::{FirewallPort, FirewallProtocol};
 pub use koi_certmesh::PeerClient;
 pub use koi_common::peer::Peer;
 pub use koi_common::posture::{Posture, PostureLevel};
+pub use koi_common::sealed::{Confidentiality, Opened, Sealed};
 pub use koi_common::types::ServiceRecord;
 pub use koi_config::state::DnsEntry;
 pub use koi_health::{HealthCheck, HealthSnapshot, ServiceCheckKind};
