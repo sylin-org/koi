@@ -44,10 +44,10 @@ koi-mdns = { path = "crates/koi-mdns", version = "=0.4.2" }
 koi-config = { path = "crates/koi-config", version = "=0.4.2" }
 koi-certmesh = { path = "crates/koi-certmesh", version = "=0.4.2", default-features = false }
 koi-crypto = { path = "crates/koi-crypto", version = "=0.4.2", default-features = false }
-# Spun out to the os-tools repo (Operational Symmetry family). Consumed directly from
-# source via git — no crates.io dependency yet (see docs/adr). When os-truststore is
-# published, add `version = "..."` here to make koi publishable again.
-os-truststore = { git = "https://github.com/sylin-org/os-tools" }
+# Spun out to the os-tools repo (Operational Symmetry family) and published on crates.io
+# (ADR-019). A plain version dep — not a git/path source — is what `cargo publish` requires
+# to accept koi-certmesh / koi-net; default features (the rustls in-process helper is unused).
+os-truststore = "0.0.2"
 koi-dns = { path = "crates/koi-dns", version = "=0.4.2" }
 koi-health = { path = "crates/koi-health", version = "=0.4.2" }
 koi-proxy = { path = "crates/koi-proxy", version = "=0.4.2" }

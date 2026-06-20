@@ -5,7 +5,7 @@ Before implementing anything for this task, complete the following steps in orde
 ## Step 1: Understand the task
 
 Restate the task in your own words. Identify:
-- What crate does this touch? (`koi-common`, `koi-client`, `koi-mdns`, `koi-config`, `koi-dns`, `koi-health`, `koi-proxy`, `koi-certmesh`, `koi-crypto`, `koi-truststore`, `koi-embedded`, `koi` binary)
+- What crate does this touch? (`koi-common`, `koi-client`, `koi-mdns`, `koi-config`, `koi-dns`, `koi-health`, `koi-proxy`, `koi-certmesh`, `koi-crypto`, `koi-embedded`, `koi` binary)
 - Which layer is involved? (transport, business logic, wire format, CLI)
 - What's the expected output? (new feature, refactor, bug fix, extension)
 

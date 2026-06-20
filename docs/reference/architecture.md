@@ -61,7 +61,7 @@ koi-embedded     → koi-compose, koi-common, koi-client (+ axum, reqwest, tokio
     │              orchestrator, capability ladder, certmesh loops, integration bridges)
     ├── koi-common
     ├── koi-mdns        → koi-common, mdns-sd, axum, tokio
-    ├── koi-certmesh    → koi-common, koi-crypto, os-truststore (external git dep), axum, tokio
+    ├── koi-certmesh    → koi-common, koi-crypto, os-truststore (external, crates.io), axum, tokio
     ├── koi-crypto      → ring, rcgen, totp-rs, p256
     ├── koi-config      → koi-common
     ├── koi-dns         → koi-common, koi-config, hickory-server, hickory-resolver, axum, tokio

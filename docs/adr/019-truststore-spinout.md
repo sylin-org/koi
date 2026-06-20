@@ -26,11 +26,12 @@ This ADR records the Koi-side consequences.
 ## Decision
 
 1. **Delete `crates/koi-truststore`** from the Koi workspace.
-2. **Depend on `os-truststore` directly from source via a git dependency** —
-   `os-truststore = { git = "https://github.com/sylin-org/os-tools" }` — *not* a path dep
-   (a `../os-tools` path breaks Koi CI, which checks out only Koi) and *not* a crates.io
-   dep yet (os-truststore is not published-stable). This is "direct source, no package
-   dance": it builds locally and in CI without crates.io.
+2. **Depend on `os-truststore` as a published crates.io version** — `os-truststore = "0.0.2"`.
+   (Initially this was a git dependency `{ git = "https://github.com/sylin-org/os-tools" }`
+   while os-truststore stabilised — a path dep was rejected because `../os-tools` breaks Koi
+   CI, which checks out only Koi. Once os-truststore published `0.0.2` the git dep was
+   swapped for the version pin — the "package dance" below — restoring Koi's own crates.io
+   publishability.)
 3. **Rewire the two consumers to the new cert-as-identity API:**
    - `koi-certmesh` (CA-create + member-join trust installs): `os_truststore::Cert::from_pem(pem)`
      then `os_truststore::install(&cert)`, best-effort (logged warn) as before.
@@ -53,10 +54,11 @@ rule are untouched.
 
 ## Consequences
 
-- **Koi cannot publish `koi-certmesh` / `koi-net` to crates.io until `os-truststore` is
-  published there** and a `version = "…"` is added to the git dep (the deferred "package
-  dance"). Local builds, all CI jobs except `cargo publish`, and the release *test* gate
-  are unaffected; only an actual crates.io release of Koi is blocked until then.
+- **Package dance — done (2026-06-20).** While `os-truststore` was git-sourced, Koi could
+  not publish `koi-certmesh` / `koi-net` to crates.io (`cargo publish` rejects a git source
+  without a version). `os-truststore 0.0.2` is now published, and the git dep was swapped for
+  `os-truststore = "0.0.2"`, so Koi is publishable again. Local builds, CI, and the release
+  *test* gate were unaffected throughout.
 - The trust-store implementation, its tests (unit + cross-distro round-trips on
   Debian/Fedora/Arch), and its MSRV (1.88, bounded by the `time` crate) now live in
   os-tools and are exercised by os-tools CI, not Koi's.
