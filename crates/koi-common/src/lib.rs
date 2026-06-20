@@ -13,6 +13,7 @@ pub mod net;
 pub mod paths;
 pub mod persist;
 pub mod pipeline;
+pub mod posture;
 pub mod runtime_state;
 pub mod test;
 pub mod types;
