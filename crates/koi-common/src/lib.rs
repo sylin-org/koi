@@ -12,6 +12,7 @@ pub mod integration;
 pub mod mdns_protocol;
 pub mod net;
 pub mod paths;
+pub mod peer;
 pub mod persist;
 pub mod pipeline;
 pub mod posture;

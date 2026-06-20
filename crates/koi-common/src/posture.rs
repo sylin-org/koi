@@ -84,6 +84,43 @@ pub enum PostureLevel {
     Confidential,
 }
 
+impl PostureLevel {
+    /// The stable wire string (snake_case) used in mDNS TXT stamping and the
+    /// published wire contract (ADR-020 §8/§9). The inverse of [`from_wire`].
+    ///
+    /// [`from_wire`]: PostureLevel::from_wire
+    pub const fn as_wire(self) -> &'static str {
+        match self {
+            PostureLevel::Open => "open",
+            PostureLevel::Authenticated => "authenticated",
+            PostureLevel::Confidential => "confidential",
+        }
+    }
+
+    /// Parse a wire string back into a level (the inverse of [`as_wire`]).
+    /// Returns `None` for any unrecognized token.
+    ///
+    /// [`as_wire`]: PostureLevel::as_wire
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s {
+            "open" => Some(PostureLevel::Open),
+            "authenticated" => Some(PostureLevel::Authenticated),
+            "confidential" => Some(PostureLevel::Confidential),
+            _ => None,
+        }
+    }
+
+    /// The [`Posture`] booleans this level implies — the inverse of
+    /// [`Posture::level`].
+    pub const fn to_posture(self) -> Posture {
+        match self {
+            PostureLevel::Open => Posture::OPEN,
+            PostureLevel::Authenticated => Posture::new(true, false),
+            PostureLevel::Confidential => Posture::new(true, true),
+        }
+    }
+}
+
 impl From<Posture> for PostureLevel {
     fn from(p: Posture) -> Self {
         p.level()
@@ -163,5 +200,43 @@ mod tests {
         );
         let back: PostureLevel = serde_json::from_str(r#""open""#).unwrap();
         assert_eq!(back, PostureLevel::Open);
+    }
+
+    #[test]
+    fn as_wire_matches_serde_snake_case() {
+        // The TXT wire string must equal the serde token so the contract is one
+        // vocabulary, not two.
+        for level in [
+            PostureLevel::Open,
+            PostureLevel::Authenticated,
+            PostureLevel::Confidential,
+        ] {
+            let serde = serde_json::to_string(&level).unwrap();
+            assert_eq!(format!("\"{}\"", level.as_wire()), serde);
+        }
+    }
+
+    #[test]
+    fn from_wire_round_trips_as_wire() {
+        for level in [
+            PostureLevel::Open,
+            PostureLevel::Authenticated,
+            PostureLevel::Confidential,
+        ] {
+            assert_eq!(PostureLevel::from_wire(level.as_wire()), Some(level));
+        }
+        assert_eq!(PostureLevel::from_wire("bogus"), None);
+        assert_eq!(PostureLevel::from_wire("Authenticated"), None); // case-sensitive
+    }
+
+    #[test]
+    fn to_posture_is_inverse_of_level() {
+        for posture in [
+            Posture::OPEN,
+            Posture::new(true, false),
+            Posture::new(true, true),
+        ] {
+            assert_eq!(posture.level().to_posture(), posture);
+        }
     }
 }
