@@ -1,3 +1,4 @@
+use koi_common::posture::Posture;
 use koi_common::types::ServiceRecord;
 use koi_health::HealthStatus;
 use koi_proxy::ProxyEntry;
@@ -29,6 +30,14 @@ pub enum KoiEvent {
         hostname: String,
     },
     CertmeshDestroyed,
+    /// This node's trust posture changed (ADR-020 §5/§13). Emitted on every
+    /// Open↔Authenticated transition. The **degrade** direction (identity lost →
+    /// fell back to Open) is surfaced as loudly as the upgrade — exactly where
+    /// silent expiry/fallback loses operators.
+    PostureChanged {
+        from: Posture,
+        to: Posture,
+    },
     ProxyEntryUpdated {
         entry: ProxyEntry,
     },
@@ -139,6 +148,17 @@ mod tests {
     }
 
     #[test]
+    fn posture_changed_variant() {
+        let event = KoiEvent::PostureChanged {
+            from: Posture::OPEN,
+            to: Posture::new(true, false),
+        };
+        assert!(
+            matches!(event, KoiEvent::PostureChanged { from, to } if !from.signed && to.signed)
+        );
+    }
+
+    #[test]
     fn proxy_entry_updated_variant() {
         let entry = ProxyEntry {
             name: "grafana".to_string(),
@@ -222,6 +242,10 @@ mod tests {
                 hostname: "h".to_string(),
             },
             KoiEvent::CertmeshDestroyed,
+            KoiEvent::PostureChanged {
+                from: Posture::OPEN,
+                to: Posture::new(true, true),
+            },
             KoiEvent::ProxyEntryUpdated {
                 entry: ProxyEntry {
                     name: "p".to_string(),

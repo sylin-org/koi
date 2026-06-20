@@ -640,6 +640,16 @@ impl KoiEmbedded {
                 cancel.clone(),
                 &mut tasks,
             );
+            // Posture transitions (Open↔Authenticated) surface as PostureChanged —
+            // the live trust-state signal the consumer's serve supervisor and any
+            // observer react to (ADR-020 §5/§13).
+            spawn_posture_watcher(
+                core.watch_posture(),
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
         }
         if let Some(runtime_proxy) = &proxy {
             spawn_event_mapper(
@@ -813,6 +823,38 @@ fn spawn_event_mapper<E, F>(
                     let Ok(event) = msg else { continue; };
                     if let Some(mapped) = map(event) {
                         emit_event(&tx, handler.as_ref(), mapped);
+                    }
+                }
+            }
+        }
+    }));
+}
+
+/// Spawn a task translating this node's posture-watch transitions into
+/// `KoiEvent::PostureChanged` until cancellation (ADR-020 §5). A `watch` (which
+/// holds the latest value and coalesces) rather than a broadcast, so it needs its
+/// own loop instead of [`spawn_event_mapper`]. The first borrow seeds the baseline
+/// so the initial value is not mis-reported as a transition.
+fn spawn_posture_watcher(
+    mut rx: tokio::sync::watch::Receiver<koi_common::posture::Posture>,
+    tx: broadcast::Sender<KoiEvent>,
+    handler: Option<Arc<dyn Fn(KoiEvent) + Send + Sync>>,
+    cancel: CancellationToken,
+    tasks: &mut Vec<JoinHandle<()>>,
+) {
+    tasks.push(tokio::spawn(async move {
+        let mut last = *rx.borrow_and_update();
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                res = rx.changed() => {
+                    if res.is_err() {
+                        break; // the certmesh core was dropped
+                    }
+                    let to = *rx.borrow_and_update();
+                    if to != last {
+                        emit_event(&tx, handler.as_ref(), KoiEvent::PostureChanged { from: last, to });
+                        last = to;
                     }
                 }
             }
@@ -1105,6 +1147,47 @@ mod tests {
         let event = koi_certmesh::CertmeshEvent::Destroyed;
         let mapped = map_certmesh_event(event);
         assert!(matches!(mapped, KoiEvent::CertmeshDestroyed));
+    }
+
+    #[tokio::test]
+    async fn posture_watcher_emits_upgrade_and_degrade() {
+        use koi_common::posture::Posture;
+        let (tx_p, rx_p) = tokio::sync::watch::channel(Posture::OPEN);
+        let (ev_tx, mut ev_rx) = broadcast::channel(16);
+        let cancel = CancellationToken::new();
+        let mut tasks = Vec::new();
+        spawn_posture_watcher(rx_p, ev_tx, None, cancel.clone(), &mut tasks);
+        // Let the watcher run to its first await so it captures OPEN as the
+        // baseline before we send (current-thread test runtime: yield runs the
+        // spawned task up to `rx.changed()`).
+        tokio::task::yield_now().await;
+
+        // Open→Authenticated → an upgrade PostureChanged.
+        tx_p.send(Posture::new(true, false)).unwrap();
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(1), ev_rx.recv())
+            .await
+            .expect("event arrives")
+            .expect("recv ok");
+        assert!(
+            matches!(ev, KoiEvent::PostureChanged { from, to } if !from.signed && to.signed),
+            "expected upgrade, got {ev:?}"
+        );
+
+        // Authenticated→Open → a degrade PostureChanged (as loud as the upgrade).
+        tx_p.send(Posture::OPEN).unwrap();
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(1), ev_rx.recv())
+            .await
+            .expect("event arrives")
+            .expect("recv ok");
+        assert!(
+            matches!(ev, KoiEvent::PostureChanged { from, to } if from.signed && !to.signed),
+            "expected degrade, got {ev:?}"
+        );
+
+        cancel.cancel();
+        for t in tasks {
+            let _ = t.await;
+        }
     }
 
     // ── map_proxy_event ────────────────────────────────────────────
