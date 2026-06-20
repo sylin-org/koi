@@ -118,6 +118,81 @@ pub struct SelfEnrollment {
     pub ca_cert_pem: String,
 }
 
+/// This node's live cryptographic identity (ADR-020 §7): its CA-signed leaf plus
+/// the CA anchor it chains to. The unified replacement for the previously
+/// fragmented [`SelfEnrollment`] (cert/key/CA, no hostname) and
+/// [`member::MemberState`] (CA coordinates, no cert). Returned by
+/// [`CertmeshCore::local_identity`] and `ensure_identity`.
+///
+/// Cloneable so the same leaf can configure multiple listeners/clients. `Debug`
+/// is redacted — the private key is never logged.
+#[derive(Clone)]
+pub struct Identity {
+    /// This node's hostname (its certificate CN / cert directory name).
+    pub hostname: String,
+    /// The node's leaf certificate (PEM), signed by the CA.
+    pub cert_pem: String,
+    /// The node's private key (PEM). Never logged (redacted `Debug`).
+    pub key_pem: String,
+    /// The CA root certificate (PEM) the leaf chains to.
+    pub ca_cert_pem: String,
+    /// SHA-256 (hex) of the CA cert DER — the pin peers verify against.
+    pub ca_fingerprint: String,
+    /// Renewal/expiry health of the leaf (ADR-020 §13: "loud, not silent").
+    pub renewal: RenewalHealth,
+}
+
+impl std::fmt::Debug for Identity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Identity")
+            .field("hostname", &self.hostname)
+            .field("ca_fingerprint", &self.ca_fingerprint)
+            .field("renewal", &self.renewal)
+            .field("cert_pem", &"<redacted>")
+            .field("key_pem", &"<redacted>")
+            .field("ca_cert_pem", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Derived renewal/expiry health of a leaf certificate (ADR-020 §13).
+///
+/// The schedule facts a node and operator need so identity expiry is never a
+/// silent surprise: when the leaf expires, when renewal is due, and whether it is
+/// overdue or already expired. Attempt-level fields (last attempt, failure streak)
+/// are wired by the renewal loop in a later increment.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RenewalHealth {
+    /// When the current leaf expires.
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    /// When renewal becomes due (`expires_at` − `renew_threshold_days`).
+    pub next_renewal_at: chrono::DateTime<chrono::Utc>,
+    /// Whole days until expiry (negative once expired).
+    pub expires_in_days: i64,
+    /// At/past the renewal point but the leaf has not yet rotated.
+    pub renew_overdue: bool,
+    /// At/past expiry — renewal failed or never ran.
+    pub expired: bool,
+}
+
+impl RenewalHealth {
+    /// Derive health from a leaf cert PEM and the CA-held policy. `None` when the
+    /// certificate's validity window cannot be parsed.
+    fn from_leaf(cert_pem: &str, policy: &roster::CertPolicy) -> Option<Self> {
+        let expires_at = leaf_not_after_utc(cert_pem)?;
+        let next_renewal_at =
+            expires_at - chrono::Duration::days(i64::from(policy.renew_threshold_days));
+        let now = chrono::Utc::now();
+        Some(Self {
+            expires_at,
+            next_renewal_at,
+            expires_in_days: (expires_at - now).num_days(),
+            renew_overdue: now >= next_renewal_at,
+            expired: now >= expires_at,
+        })
+    }
+}
+
 impl CertmeshState {
     /// Destroy all certmesh state - shared by CertmeshCore::destroy() and the HTTP handler.
     pub(crate) async fn destroy(&self) -> Result<(), CertmeshError> {
@@ -929,6 +1004,48 @@ impl CertmeshCore {
         let anchored =
             self.paths().is_ca_initialized() || self.paths().member_state_path().exists();
         leaf_present && anchored
+    }
+
+    /// Load this node's live identity from disk, or `None` if it has none.
+    ///
+    /// Read-only: loads the on-disk leaf (cert/key) for the local hostname plus
+    /// the CA anchor it chains to, derives the pinned CA fingerprint, and computes
+    /// the leaf's renewal/expiry health from the CA-held policy. Returns `None`
+    /// when the node is Open — consistent with [`posture`](Self::posture)`.signed`.
+    /// Does not renew or enroll (that is `ensure_identity`'s job).
+    pub async fn local_identity(&self) -> Option<Identity> {
+        if !self.has_local_identity() {
+            return None;
+        }
+        let hostname = Self::local_hostname()?;
+        let leaf = self.paths().certs_dir().join(&hostname);
+        let cert_pem = std::fs::read_to_string(leaf.join("cert.pem")).ok()?;
+        let key_pem = std::fs::read_to_string(leaf.join("key.pem")).ok()?;
+        // CA anchor: the leaf-local ca.pem, falling back to the CA dir (CA node).
+        let ca_cert_pem = std::fs::read_to_string(leaf.join("ca.pem"))
+            .ok()
+            .or_else(|| std::fs::read_to_string(self.paths().ca_cert_path()).ok())?;
+        let ca_fingerprint =
+            koi_crypto::pinning::fingerprint_sha256(pem::parse(&ca_cert_pem).ok()?.contents());
+        let policy = self.local_policy().await;
+        let renewal = RenewalHealth::from_leaf(&cert_pem, &policy)?;
+        Some(Identity {
+            hostname,
+            cert_pem,
+            key_pem,
+            ca_cert_pem,
+            ca_fingerprint,
+            renewal,
+        })
+    }
+
+    /// The CA-held cert lifecycle policy this node follows: from `member.json`
+    /// if it joined a mesh, else the local roster's (CA node), else the default.
+    async fn local_policy(&self) -> roster::CertPolicy {
+        if let Some(ms) = member::load(&self.paths().member_state_path()) {
+            return ms.policy;
+        }
+        self.state.roster.lock().await.metadata.policy.clone()
     }
 
     /// Set the post-renewal reload hook for a member.
@@ -2405,6 +2522,35 @@ mod tests {
         write_posture_leaf(&paths, &hostname);
         let core = CertmeshCore::uninitialized_with_paths(paths);
         assert_eq!(core.posture(), koi_common::posture::Posture::OPEN);
+    }
+
+    #[tokio::test]
+    async fn local_identity_is_none_when_open() {
+        let paths = isolated_posture_paths("local-id-open");
+        let core = CertmeshCore::uninitialized_with_paths(paths);
+        assert!(core.local_identity().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn local_identity_loads_after_self_enroll() {
+        std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+        let paths = isolated_posture_paths("local-id");
+        let ca = ca::create_ca("test-pass", &[7u8; 32], &paths).unwrap().0;
+        let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+        let core = CertmeshCore::new_with_paths(ca, roster, None, paths);
+        core.self_enroll().await.expect("self-enroll");
+
+        let id = core.local_identity().await.expect("identity present");
+        assert_eq!(id.hostname, CertmeshCore::local_hostname().unwrap());
+        assert!(id.cert_pem.contains("BEGIN CERTIFICATE"));
+        assert!(id.key_pem.contains("BEGIN"));
+        assert_eq!(id.ca_fingerprint.len(), 64); // sha256 hex
+                                                 // A fresh 90-day leaf (renew at 30 days remaining) is healthy.
+        assert!(!id.renewal.expired);
+        assert!(!id.renewal.renew_overdue);
+        assert!(id.renewal.expires_in_days > 30);
+        // Redacted Debug must never leak key material.
+        assert!(!format!("{id:?}").contains("BEGIN"));
     }
 
     fn test_paths() -> CertmeshPaths {
