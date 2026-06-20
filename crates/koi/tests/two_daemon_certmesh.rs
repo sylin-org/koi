@@ -23,12 +23,14 @@
 //!
 //! ## Scope note (vs ADR-018's "mTLS-renew")
 //!
-//! The binary starts its mTLS inter-node listener only at boot, gated on a CA already
-//! existing (`daemon.rs` self-enroll). A CA created post-boot via HTTP `/create` leaves the
-//! listener down until a restart, so Tier 2 proves the **revocation boundary over the
-//! cross-process enrollment path** (a revoked host's re-join → 403) rather than the mTLS
-//! `/renew` path — which is already covered in-process by Tier 1. Runs per-PR on the 3-OS
-//! matrix via `cargo test --locked` (this is the koi-net crate's first integration test).
+//! Tier 2 proves the **revocation boundary over the cross-process enrollment path** (a
+//! revoked host's re-join → 403); the full mTLS `/renew` exchange is covered in-process by
+//! Tier 1. It additionally asserts the **posture-reactive trust plane** (ADR-020 P4c /
+//! ADR-016 §2): A boots Open, so its inter-node mTLS listener is down; once the CA is
+//! created post-boot via HTTP `/create`, the listener comes up with **no restart**. (Before
+//! that fix the listener stayed down until a restart, which is why this suite originally
+//! could not exercise the post-boot mTLS path.) Runs per-PR on the 3-OS matrix via
+//! `cargo test --locked` (this is the koi-net crate's first integration test).
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -51,6 +53,7 @@ struct Daemon {
     child: Child,
     data_dir: PathBuf,
     http_port: u16,
+    mtls_port: u16,
 }
 
 impl Daemon {
@@ -148,7 +151,26 @@ fn spawn_daemon() -> Daemon {
         child,
         data_dir,
         http_port,
+        mtls_port,
     }
+}
+
+/// Whether a TCP connection to `127.0.0.1:port` is accepted (the listener is up).
+async fn tcp_up(port: u16) -> bool {
+    tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .is_ok()
+}
+
+/// Poll until `127.0.0.1:port` accepts, panicking after ~5s.
+async fn wait_tcp_up(port: u16, label: &str) {
+    for _ in 0..50 {
+        if tcp_up(port).await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("{label} (port {port}) did not come up");
 }
 
 async fn wait_ready(client: &reqwest::Client, base: &str) {
@@ -186,6 +208,13 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
         .await
         .expect("GET /status");
     assert!(st.status().is_success(), "GET /status must be token-exempt");
+
+    // ── ADR-016 §2 / ADR-020 P4c: the inter-node mTLS listener is posture-reactive ──
+    // A booted Open (no CA), so its mTLS listener must be DOWN now…
+    assert!(
+        !tcp_up(a.mtls_port).await,
+        "A's mTLS listener must be down while A is Open (no CA yet)"
+    );
 
     let create_body = CreateCaRequest {
         passphrase: "tier2-pass".to_string(),
@@ -227,6 +256,11 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
         "create with the token must succeed, got {}",
         created.status()
     );
+
+    // …and once the CA exists (post-boot, via HTTP), the listener comes up with NO
+    // restart — proving the posture-reactive trust plane (ADR-020 P4c). Before this
+    // fix the listener stayed down until a daemon restart (ADR-016 §2).
+    wait_tcp_up(a.mtls_port, "A's mTLS listener after post-boot CA create").await;
 
     // ── invite is also DAT-gated; mint one for an explicit member hostname ──
     let invite_unauth = client

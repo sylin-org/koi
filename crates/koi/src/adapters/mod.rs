@@ -9,3 +9,4 @@ pub mod mcp_http;
 pub mod mtls;
 pub mod pipe;
 pub mod prometheus_sd;
+pub mod trust_plane;

@@ -548,36 +548,21 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             }));
         }
 
-        // mTLS adapter (only if certmesh CA is initialized and unlocked)
-        if let Some(ref certmesh) = cores.certmesh {
-            match certmesh.self_enroll().await {
-                Ok(enrollment) => {
-                    let cm = certmesh.clone();
-                    let port = config.mtls_port;
-                    let token = cancel.clone();
-                    tasks.push(tokio::spawn(async move {
-                        if let Err(e) = crate::adapters::mtls::start(
-                            port,
-                            cm,
-                            &enrollment.cert_pem,
-                            &enrollment.key_pem,
-                            &enrollment.ca_cert_pem,
-                            token,
-                        )
-                        .await
-                        {
-                            tracing::error!(error = %e, "mTLS adapter failed");
-                        }
-                    }));
-                }
-                Err(e) => {
-                    tracing::info!(
-                        reason = %e,
-                        "mTLS adapter: skipped (CA not available for self-enrollment)"
-                    );
-                }
-            }
-        }
+        // Trust-plane TLS listeners (mTLS inter-node + ACME), posture-reactive —
+        // the SAME supervisor the foreground daemon spawns (ADR-020 P4c / ADR-016
+        // §2). Sharing it fixes a prior parity defect: this path used to start mTLS
+        // but silently omit ACME.
+        crate::adapters::trust_plane::spawn(
+            &cores,
+            crate::adapters::trust_plane::TrustPlaneConfig {
+                mtls_port: config.mtls_port,
+                acme_port: config.acme_port,
+                no_acme: config.no_acme,
+                dns_zone: config.dns_zone.clone(),
+            },
+            cancel.clone(),
+            &mut tasks,
+        );
 
         // IPC adapter (mDNS only - skip if mDNS disabled)
         if !config.no_ipc {
