@@ -2,6 +2,7 @@ pub mod api;
 pub mod capability;
 pub mod ceremony;
 pub mod encoding;
+pub mod envelope;
 pub mod error;
 pub mod events;
 pub mod firewall;
