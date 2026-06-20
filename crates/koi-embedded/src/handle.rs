@@ -670,6 +670,36 @@ impl CertmeshHandle {
             }
         }
     }
+
+    /// This node's current trust posture — the mode oracle (ADR-020 §0).
+    ///
+    /// Embedded only: a remote handle has no endpoint to query the daemon's
+    /// posture yet (that arrives with the diagnose/status surface in a later
+    /// ADR-020 phase), so it returns `DisabledCapability`.
+    pub fn posture(&self) -> Result<koi_common::posture::Posture, KoiError> {
+        match &self.backend {
+            CertmeshBackend::Embedded { core } => Ok(core.posture()),
+            CertmeshBackend::Remote { .. } => Err(KoiError::DisabledCapability("certmesh")),
+        }
+    }
+
+    /// This node's live identity, or `None` if it is Open (ADR-020 §7).
+    /// Read-only; embedded only.
+    pub async fn local_identity(&self) -> Result<Option<koi_certmesh::Identity>, KoiError> {
+        match &self.backend {
+            CertmeshBackend::Embedded { core } => Ok(core.local_identity().await),
+            CertmeshBackend::Remote { .. } => Err(KoiError::DisabledCapability("certmesh")),
+        }
+    }
+
+    /// Ensure this node holds a current identity, then return it (ADR-020 §7).
+    /// Idempotent and mode-transparent; embedded only.
+    pub async fn ensure_identity(&self) -> Result<Option<koi_certmesh::Identity>, KoiError> {
+        match &self.backend {
+            CertmeshBackend::Embedded { core } => Ok(core.ensure_identity().await),
+            CertmeshBackend::Remote { .. } => Err(KoiError::DisabledCapability("certmesh")),
+        }
+    }
 }
 
 pub struct ProxyHandle {
