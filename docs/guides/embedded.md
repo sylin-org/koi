@@ -218,7 +218,9 @@ This validates: mDNS, DNS, health, certmesh, and proxy HTTP routes (including SS
 
 ## Certmesh notes
 
-Certmesh create/destroy touches the trust store and may require elevated permissions. Certmesh initialization checks disk state on startup: no CA → `CertmeshCore::uninitialized()`; roster exists but key not decrypted → `CertmeshCore::locked()`. Use the ceremony protocol to create or unlock.
+Certmesh create/destroy touches the trust store and may require elevated permissions. On startup the core resolves disk state automatically (`koi_compose::cores::init_certmesh_core`): no CA → an uninitialized core; a CA on disk that isn't decrypted → a locked core (machine-bound auto-unlock, or call `core.unlock(passphrase)`).
+
+`koi-embedded` exposes the **full `CertmeshCore`** via `handle.certmesh()?.core()?` (create, invite, join, renew, revoke, trust-bundle, status, …) plus the plain-HTTP routes; the mTLS inter-node listener and the lifecycle background loops are yours to compose. For embedding a mesh **member** or a **CA host** — the auto-wired-vs-you-wire matrix, working code, the renewal options, and the auth caveat (embedded HTTP has no DAT token gate) — see **[Embedding certmesh](certmesh-embedded.md)**.
 
 ---
 

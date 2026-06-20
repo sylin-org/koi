@@ -35,11 +35,17 @@ restarts.
 ### The certmesh bootstrap exception
 
 Enrolling a new node into a certificate mesh — `POST /v1/certmesh/join` — is the one
-mutation that authorizes the caller with a **TOTP enrollment code in the request body**
-rather than the daemon token, because a fresh node joining a *remote* CA host has no
-way to know that host's local token. That flow is owned end-to-end by
-`koi certmesh join`; you should not hand-roll it. Everything else in this guide is
-about the ordinary token-authenticated writes. See the [certmesh guide](./certmesh.md).
+mutation that authorizes the caller with an **enrollment credential in the request body**
+(a single-use invite code, or a mesh TOTP code) rather than the daemon token, because a
+fresh node joining a *remote* CA host has no way to know that host's local token. That
+flow is owned end-to-end by `koi certmesh join`; you should not hand-roll it. Everything
+else in this guide is about the ordinary token-authenticated writes. See the
+[certmesh guide](./certmesh.md).
+
+> `koi certmesh join`/`promote` route their key-custody calls to the **local** daemon
+> (via the breadcrumb) and reach the CA at the positional `<ca-endpoint>` argument (or
+> mDNS) — the global `--endpoint`/`--token` below do **not** point them at the CA, they
+> apply to the other certmesh client commands (`status`, `invite`, `revoke`, …).
 
 ---
 

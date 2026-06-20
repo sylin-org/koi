@@ -2,10 +2,10 @@
 
 Your certmesh CA host is one machine. When it dies — disk failure, a reinstall, a
 laptop left at the office — the mesh does **not** go down with it. Member
-certificates live for 30 days and renew well before expiry, so a dead CA *pauses*
-renewals; it does not break TLS that already works. That buys you days, not minutes.
-This is a runbook for using that runway: how to prepare before the failure, and the
-ordered steps to recover after one.
+certificates live for 90 days and renew at 30 days remaining (with a 14-day
+post-expiry grace), so a dead CA *pauses* renewals; it does not break TLS that
+already works. That buys you weeks, not minutes. This is a runbook for using that
+runway: how to prepare before the failure, and the ordered steps to recover after one.
 
 There is **no automatic failover** in certmesh — no election, no absence-watch, no
 self-healing. Every continuity action here is a deliberate command you run. That is
@@ -189,6 +189,13 @@ host's data directory and brings the CA online (unlocked) in place. **Restore ov
 any certmesh state already on this node** — only run it on a machine you intend to be the
 CA.
 
+> **Recover by restore/promote, not by copying the data directory.** The CA key envelope
+> is machine-bound: at boot the daemon refuses to auto-unlock a certmesh whose data
+> directory was lifted onto a different machine (it audits
+> `auto_unlock_refused_machine_changed` and waits for an explicit `koi certmesh unlock`).
+> This is a clone-defence, not a recovery path — to move the CA, run `koi certmesh
+> restore` (or promote a standby), which legitimately re-binds the key to the new host.
+
 ### 3. Verify the restored/promoted CA
 
 ```
@@ -223,9 +230,11 @@ This is the question that decides how much work remains.
   roster** — e.g. it enrolled *after* the backup you restored. Check `koi certmesh status`;
   if an expected member is absent, have it re-join (you may need `koi certmesh
   open-enrollment` first).
-- **If the CA's endpoint/IP changed**, update wherever members reach it (the `endpoint`
-  you pass to `join`/`promote`, any DNS name pointing at the old CA host). mDNS discovery
-  will find the CA at its new address on the same broadcast domain.
+- **If the CA's endpoint/IP changed**, update wherever members reach it (the positional
+  CA address you pass to `koi certmesh join <ca-endpoint>` / `promote <ca-endpoint>` — not
+  the global `--endpoint`, which points at the member's own local daemon — and any DNS name
+  pointing at the old CA host). mDNS discovery will find the CA at its new address on the
+  same broadcast domain.
 
 ### 5. Re-establish redundancy
 
@@ -242,11 +251,14 @@ You just spent your safety margin. Rebuild it before the next failure:
 Knowing the limits keeps the runbook from over-promising under pressure:
 
 - **No automatic failover.** Nothing detects a dead CA or elects a replacement. Every
-  step above is a manual command. The 30-day cert lifetime is the cushion that makes
-  manual recovery acceptable — a dead CA is a maintenance task, not an outage.
+  step above is a manual command. The 90-day cert lifetime (renew at 30 days remaining)
+  is the cushion that makes manual recovery acceptable — a dead CA is a maintenance task,
+  not an outage.
 - **Revocation is roster-only — there is no CRL/OCSP.** `koi certmesh revoke <hostname>`
   marks a member revoked in the roster and stops Koi from renewing its cert, so it dies
-  at its (≤30-day) expiry. Already-issued, still-valid certificates are **not** actively
+  at its (≤90-day) expiry. A revoked member is also locked out at the CA boundary
+  immediately — its `/renew` and `/health` calls return `403` — so it can never pull a
+  fresh leaf. But already-issued, still-valid certificates are **not** actively
   invalidated across the network. After a restore, the restored roster's revocations
   apply going forward; a cert revoked before the backup is still on the revoked member's
   disk and valid to TLS verifiers until it expires. If you need a member gone *now*,

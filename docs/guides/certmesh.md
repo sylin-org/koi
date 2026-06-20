@@ -8,6 +8,8 @@ Koi's certmesh solves this by running a private Certificate Authority directly o
 
 All CLI commands use the `koi certmesh` prefix. All HTTP endpoints live under `/v1/certmesh/`. Certmesh commands require a running daemon - use `koi install` or `koi --daemon` first.
 
+The full member exchange - create, invite, cross-machine join over the DAT-gated HTTP API, member-pull rotate-key renewal over mTLS, revocation, and boot-time clone refusal - is exercised end to end by an automated cross-participant integration suite (two-daemon, docker-compose cross-host, and Windows↔Linux cross-platform), so the behavior described here is validated, not just intended.
+
 ---
 
 ## Creating a certificate mesh
@@ -102,9 +104,34 @@ The CLI accepts these `create` flags (the JSON/non-interactive path requires `--
 
 ---
 
+## Inviting a host
+
+The recommended way to add a member is for the operator to mint a single-use **invite** on the CA host, then hand it to the joining machine out of band:
+
+```
+koi certmesh invite stone-02 --ttl 60
+```
+
+```
+Invite minted for stone-02 (single-use, expires 2026-02-11T11:05:00Z):
+
+  9f3a…d7c1.a1b2c3d4…
+
+On stone-02, run:
+  koi certmesh join <ca-endpoint> --invite 9f3a…d7c1.a1b2c3d4…
+```
+
+An invite is a code of the form `<secret>.<ca_fingerprint>`. It is **bound to the named hostname**, single-use, and time-limited (`--ttl` minutes, default 60). The trailing `<ca_fingerprint>` half is what makes invite-based joins safer than a bare TOTP code: the joining host pins that fingerprint and refuses to enroll against a CA that advertises a different one (see "Joining the mesh"). Minting an invite is an operator action - the endpoint is DAT-gated, so it runs against the local daemon (or an explicit `--endpoint` with its `--token`).
+
 ## Joining the mesh
 
-From a second machine, joining is a single command. With no endpoint, Koi browses the LAN for a `_certmesh._tcp` CA via mDNS (see "Finding the CA"); if it can't find exactly one, it asks you to pass the endpoint directly:
+From a second machine, joining is a single command. The preferred form passes the CA endpoint **positionally** and supplies the invite from the step above - fully non-interactive:
+
+```
+koi certmesh join http://stone-01:5641 --invite 9f3a…d7c1.a1b2c3d4…
+```
+
+Without an invite, Koi falls back to a TOTP join: with no endpoint it browses the LAN for a `_certmesh._tcp` CA via mDNS (see "Finding the CA"); if it can't find exactly one, it asks you to pass the endpoint directly, then prompts for the mesh TOTP code:
 
 ```
 koi certmesh join
@@ -116,16 +143,16 @@ Found CA: stone-01 Certmesh CA at http://192.168.1.10:5641
 Enter the TOTP code from your authenticator app:
 123456
 Enrolled as: stone-02
-Certificates written to: /var/lib/koi/certs/stone-02
+Key + certificate stored locally: /var/lib/koi/certs/stone-02
 ```
 
-The flow is intentionally simple because the hard part - proving you're authorized - is handled by the enrollment auth (a TOTP code). The CA verifies the credential, issues a certificate, and enrolls the new member in the roster. No certificate signing requests, no out-of-band key exchange, no manual approval queues (unless the mesh has `requires_approval` set, as the My Organization preset does).
+The positional `<ca-endpoint>` (or the mDNS-discovered address) is always the **remote CA**. The joining host's own running daemon - resolved locally via the breadcrumb - keeps custody of the new member's private key: it generates the keypair and CSR, the CA signs only the CSR (it never sees or returns a private key), and the local daemon installs the signed certificate next to the key. The CA's global `--endpoint`/`--token` are *not* how you point `join` at the CA; the positional argument is.
 
-If multiple CAs are found on the network, or the machines aren't on the same broadcast domain, specify the endpoint directly:
+The flow is intentionally simple because the hard part - proving you're authorized - is handled by the credential: an invite (fingerprint-pinned, non-interactive) or a TOTP code. The CA verifies the credential, signs the CSR, and enrolls the new member in the roster. No out-of-band private-key exchange, no manual approval queues (unless the mesh has `requires_approval` set, as the My Organization preset does).
 
-```
-koi certmesh join http://stone-01:5641
-```
+When the invite carries a CA fingerprint, the joining host **preflights** the CA's self-reported fingerprint and aborts on a mismatch *before* transmitting its CSR - so a LAN man-in-the-middle of plain-HTTP discovery is rejected up front. The install step then hard-fails if the returned certificate doesn't match the pinned fingerprint. The bare-TOTP path has no out-of-band fingerprint to pin and stays trust-on-first-use.
+
+If multiple CAs are found on the network, or the machines aren't on the same broadcast domain, specify the endpoint positionally as shown above.
 
 ---
 
@@ -184,13 +211,15 @@ This is your paper trail. When something goes wrong three months from now, the l
 
 ## Certificate renewal and hooks
 
-Koi renews certificates automatically before they expire. But your applications need to know about it - a web server can't use a new certificate without reloading. That's what hooks are for:
+Koi renews certificates automatically before they expire. Leaf certificates live for **90 days**; a member renews when fewer than **30 days** remain, and a CA-held policy allows a **14-day** post-expiry grace window before a member must re-enroll. Renewal is **member-pull**: each enrolled host's daemon runs a background loop that rotates its key and pulls a fresh leaf from the CA over mTLS (port 5642) before expiry - the member, not the CA, drives the rotation. The CA's *own* leaf renews when the daemon restarts.
+
+But your applications need to know when a cert changes - a web server can't use a new certificate without reloading. That's what hooks are for:
 
 ```
 koi certmesh set-hook --reload "systemctl restart nginx"
 ```
 
-The hook is stored in the roster and runs after each successful certificate renewal. This closes the loop: Koi issues the cert, writes it to disk, and kicks your application to pick it up. No cron jobs, no manual rotation.
+The hook is stored in the roster and runs after each successful certificate renewal. This closes the loop: Koi rotates the cert, writes it to disk, and kicks your application to pick it up. No cron jobs, no manual rotation.
 
 ---
 
@@ -219,6 +248,7 @@ All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 | Method | Path                            | Purpose                               |
 | ------ | ------------------------------- | ------------------------------------- |
 | `POST` | `/v1/certmesh/create`           | Initialize a new CA                   |
+| `POST` | `/v1/certmesh/invite`           | Mint a single-use, hostname-bound invite |
 | `POST` | `/v1/certmesh/join`             | Enroll in an existing mesh            |
 | `GET`  | `/v1/certmesh/status`           | Mesh status, members, CA state        |
 | `POST` | `/v1/certmesh/unlock`           | Decrypt the CA key                    |
@@ -237,23 +267,24 @@ All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 
 ### Join example
 
+The joining host generates its own key + CSR locally and sends only the CSR to the CA, alongside a credential - an `invite_token` (the secret half of an invite code) or an `auth` block (TOTP). This is the one mutation exempt from the `x-koi-token` header, since a joining node can't know the CA host's local token.
+
 ```
 POST /v1/certmesh/join
 Content-Type: application/json
 
-{"hostname": "stone-02", "auth": {"method": "totp", "code": "123456"}}
+{"hostname": "stone-02", "csr": "-----BEGIN CERTIFICATE REQUEST-----\n...", "invite_token": "9f3a…d7c1"}
 ```
 
-Response:
+The CA signs the CSR and returns the certificate chain - never a private key (the key stays on the joining host):
 
 ```json
 {
   "hostname": "stone-02",
   "ca_cert": "-----BEGIN CERTIFICATE-----\n...",
   "service_cert": "-----BEGIN CERTIFICATE-----\n...",
-  "service_key": "-----BEGIN PRIVATE KEY-----\n...",
   "ca_fingerprint": "a1b2c3d4...",
-  "cert_path": "/var/lib/koi/certs/stone-02"
+  "policy": { "leaf_lifetime_days": 90, "renew_threshold_days": 30, "grace_days": 14 }
 }
 ```
 
@@ -276,7 +307,7 @@ Understanding what certmesh produces helps when debugging TLS issues:
 
 - **Algorithm**: ECDSA P-256 (fast, widely supported, small keys)
 - **CA validity**: 10 years
-- **Service cert lifetime**: 30 days (auto-renewed)
+- **Leaf cert lifetime**: 90 days (auto-renewed at 30 days remaining, 14-day grace - the CA-held `CertPolicy`)
 - **CA self-enrollment SANs**: hostname, localhost, 127.0.0.1, ::1
 - **Member cert SANs**: hostname, hostname.local
 - **Trust store**: CA cert is installed in the system trust store at creation time
@@ -320,14 +351,16 @@ The `fullchain.pem` is what most applications want - it includes both the servic
 
 ## Finding the CA
 
-`koi certmesh join` and `koi certmesh promote` both take an optional endpoint. When you omit it, they browse the LAN for `_certmesh._tcp` over mDNS for a few seconds and use the single CA they find:
+`koi certmesh join` and `koi certmesh promote` both take an optional **positional** CA endpoint. When you omit it, they browse the LAN for `_certmesh._tcp` over mDNS for a few seconds and use the single CA they find:
 
 ```
 koi certmesh join                       # browse for the CA
 koi certmesh join http://stone-01:5641  # or point at it directly
 ```
 
-The CA does **not** run a background self-announce / absence-watch loop - that machinery was removed along with automatic failover. The daemon's own management endpoint is still recorded locally in the breadcrumb file (`koi.endpoint`), which is how local CLI commands reach the running daemon. For cross-machine `join`/`promote`, passing the endpoint explicitly is the most reliable path; the mDNS browse is a convenience that depends on the CA being reachable and advertised on the same broadcast domain.
+When you join with an invite, the CA's advertised `fp=` TXT record is cross-checked against the invite's pinned fingerprint, so a discovered CA from the wrong mesh is dropped before it can be used (the authoritative pin check is still the preflight in "Joining the mesh").
+
+The CA does **not** run a background self-announce / absence-watch loop - that machinery was removed along with automatic failover. The daemon's own management endpoint is still recorded locally in the breadcrumb file (`koi.endpoint`), which is how local CLI commands reach the running daemon. For cross-machine `join`/`promote`, passing the positional endpoint explicitly is the most reliable path; the mDNS browse is a convenience that depends on the CA being reachable and advertised on the same broadcast domain.
 
 ---
 
@@ -339,7 +372,7 @@ If a machine is compromised, decommissioned, or simply no longer trusted, revoke
 koi certmesh revoke stone-02 --reason "decommissioned"
 ```
 
-This marks the member as revoked in the roster and records the event in the audit log. The revoked host's certificate remains on disk and will no longer be renewed - so it stops working once it expires (within the 30-day cert lifetime). Revocation is **roster state**, not a network-wide CRL or OCSP push: there is no revocation list distributed to other members. The short certificate lifetime is the bound on a revoked member's remaining access (see "What certmesh deliberately does not do").
+This marks the member as revoked in the roster and records the event in the audit log. The revoked host's certificate remains on disk and will no longer be renewed - so it stops working once it expires (within the 90-day leaf lifetime). Revocation also takes effect immediately at the CA boundary: a revoked member's `/renew` and `/health` calls over mTLS are rejected with `403`, so it can neither pull a fresh leaf nor report healthy. Revocation is otherwise **roster state**, not a network-wide CRL or OCSP push: there is no revocation list distributed to other members, and an already-issued, still-valid leaf keeps working against third parties until it expires. The leaf lifetime is the bound on that residual access (see "What certmesh deliberately does not do").
 
 ---
 
@@ -351,9 +384,11 @@ Certmesh has one continuity primitive: **manual promotion**. You promote a membe
 koi certmesh promote http://stone-01:5641
 ```
 
+As with `join`, the positional `<ca-endpoint>` (or mDNS) is the **remote CA** being promoted from, while the standby's own running daemon is resolved locally via the breadcrumb. The CA signing key is transferred encrypted via Diffie-Hellman - the passphrase never goes on the wire.
+
 Promotion is a **deliberate operator action**, not an automatic election. There is no absence-watch loop, no lexicographic tiebreaker, and no background roster sync - that machinery was removed. Promotion only happens when you run the command.
 
-Manual is fine here because of how certmesh degrades. Member certificates live for 30 days and are renewed well before expiry. If the CA goes offline, **renewals pause - they do not fail closed**. Existing certificates keep working until they near expiry, which gives you days of runway to either bring the original CA back or promote a standby on your own schedule. A dead CA is a maintenance task, not an outage, so the complexity and failure modes of automatic failover are not justified.
+Manual is fine here because of how certmesh degrades. Member certificates live for 90 days and are renewed well before expiry. If the CA goes offline, **renewals pause - they do not fail closed**. Existing certificates keep working until they near expiry, which gives you weeks of runway to either bring the original CA back or promote a standby on your own schedule. A dead CA is a maintenance task, not an outage, so the complexity and failure modes of automatic failover are not justified.
 
 ---
 
@@ -405,7 +440,13 @@ koi certmesh destroy --json
 
 Certmesh is intentionally small. Knowing what it does *not* do is as important as knowing what it does:
 
-- **No network-wide revocation (CRL/OCSP).** Revocation is roster state only: a revoked member is removed from the roster and its certificate is never renewed. Already-issued, still-valid certificates are **not** actively revoked across the network. The 30-day certificate lifetime is the bound on a revoked member's remaining access.
-- **No automatic failover.** Continuity is the manual `koi certmesh promote`. There is no absence-watch, no automatic election, and no tiebreaker. A dead CA pauses renewals (days of runway), it does not cause an outage.
+- **No network-wide revocation (CRL/OCSP).** Revocation takes effect at the CA boundary (a revoked member's `/renew` and `/health` get `403`) and in roster state, but already-issued, still-valid certificates are **not** actively revoked across the network - peers do not consult a distributed revocation list. The 90-day leaf lifetime is the bound on a revoked member's residual access to third parties.
+- **No automatic failover.** Continuity is the manual `koi certmesh promote`. There is no absence-watch, no automatic election, and no tiebreaker. A dead CA pauses renewals (weeks of runway), it does not cause an outage.
 - **No enterprise compliance or audit-export endpoint.** There is no compliance summary and no policy/scope engine. The audit trail is the append-only log (`koi certmesh log`) and the live view is `koi certmesh status` - use those.
 - **No FIDO2 / hardware-key auth.** Enrollment and unlock use TOTP and passphrase only. The extension point is the `AuthAdapter` trait in `koi-crypto` (`adapter_by_name`): a future hardware-key method would re-enter through there rather than as special-cased code.
+
+---
+
+## Embedding certmesh in a Rust app
+
+To run certmesh as a library — in-process, no daemon, the full `CertmeshCore` plus the network adapters you compose for your role (a mesh member or the CA host) — see [Embedding certmesh](certmesh-embedded.md).

@@ -46,7 +46,8 @@ Task-oriented, one goal each.
 [DNS coexistence](guides/dns-coexistence.md)
 
 **Trust & serving** — [certmesh (private CA)](guides/certmesh.md) ·
-[certmesh HA & recovery](guides/certmesh-ha-recovery.md) · [ACME server](guides/acme.md) ·
+[certmesh HA & recovery](guides/certmesh-ha-recovery.md) ·
+[embedding certmesh (Rust library)](guides/certmesh-embedded.md) · [ACME server](guides/acme.md) ·
 [trust (root distribution)](guides/trust.md) · [proxy (TLS endpoint)](guides/proxy.md)
 
 **Operate** — [health checks](guides/health.md) · [UDP bridging](guides/udp.md) ·

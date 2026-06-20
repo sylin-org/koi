@@ -90,8 +90,9 @@ In all cases, running `koi install` from the new binary is the supported, least
 error-prone route — prefer it unless you have a reason to step through manually.
 
 > **Custom port?** If you originally installed on a non-default port (e.g.
-> `koi --port 5642 install`), re-run `install` with the same flag so the rewritten
-> service definition keeps it.
+> `koi --port 5651 install`), re-run `install` with the same flag so the rewritten
+> service definition keeps it. (Avoid 5642/5643 for `--port` — those are the
+> certmesh mTLS and ACME ports.)
 
 ### If you run the binary by hand
 
