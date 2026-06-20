@@ -10,7 +10,8 @@
 
 - [architecture.md](../docs/reference/architecture.md) - crate inventory, boundaries, dependency graph
 - [http-api.md](../docs/reference/http-api.md) - all HTTP endpoints with request/response shapes
-- [wire-protocol.md](../docs/reference/wire-protocol.md) - JSON protocol, serde patterns, service records
+- [wire-protocol.md](../docs/reference/wire-protocol.md) - mDNS NDJSON protocol, serde patterns, service records
+- [trust-protocol.md](../docs/reference/trust-protocol.md) - **ADR-020 cross-sibling wire contract**: Posture, Envelope (sign/verify), Sealed (seal/open), the same-port dual-mode handshake, the diagnose report — language-neutral so a non-Rust sibling implements identical primitives (realizes STACK-0001 D7)
 - [cli.md](../docs/reference/cli.md) - every command, flag, and environment variable
 - [ceremony-protocol.md](../docs/reference/ceremony-protocol.md) - ceremony engine, input types, session flow
 - [envelope-encryption.md](../docs/reference/envelope-encryption.md) - CA key protection, slot types
