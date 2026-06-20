@@ -20,7 +20,7 @@ koi-common.workspace = true
 koi-crypto = { workspace = true, default-features = false }
 async-trait.workspace = true
 utoipa.workspace = true
-koi-truststore.workspace = true
+os-truststore.workspace = true
 # `pem` + `x509-parser` enable `CertificateSigningRequestParams::from_pem`, which
 # parses AND verifies a client CSR's self-signature (used by the ACME finalize path).
 rcgen = { workspace = true, features = ["pem", "x509-parser"] }

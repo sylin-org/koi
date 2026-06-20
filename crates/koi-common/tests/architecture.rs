@@ -4,8 +4,8 @@
 //! It parses every workspace member's `Cargo.toml` and asserts the layering:
 //!
 //! - **kernel** (`koi-common`) depends on no `koi-*` crate;
-//! - **foundation** (`koi-config`, `koi-crypto`, `koi-truststore`) depends only on the
-//!   kernel;
+//! - **foundation** (`koi-config`, `koi-crypto`) depends only on the
+//!   kernel (trust-store install was spun out to the external `os-truststore` crate);
 //! - **domain** crates (and the lean `koi-client`) depend only on the kernel +
 //!   foundation — **never on another domain** (the boundary model);
 //! - **composition** crates (`koi-dashboard`, `koi-embedded`, the `koi-net` binary) may
@@ -31,7 +31,7 @@ enum Class {
 fn classify(pkg: &str) -> Option<Class> {
     Some(match pkg {
         "koi-common" => Class::Kernel,
-        "koi-config" | "koi-crypto" | "koi-truststore" => Class::Foundation,
+        "koi-config" | "koi-crypto" => Class::Foundation,
         // Domains + the lean blocking client (must not re-acquire a domain dependency).
         "koi-mdns" | "koi-dns" | "koi-health" | "koi-proxy" | "koi-udp" | "koi-runtime"
         | "koi-certmesh" | "koi-client" => Class::Domain,
@@ -44,7 +44,7 @@ fn classify(pkg: &str) -> Option<Class> {
     })
 }
 
-const FOUNDATION: &[&str] = &["koi-config", "koi-crypto", "koi-truststore"];
+const FOUNDATION: &[&str] = &["koi-config", "koi-crypto"];
 
 /// `koi-*` dependency names declared in `[dependencies]` / `[target.*.dependencies]`
 /// (NOT dev/build-dependencies, NOT `[features]`).

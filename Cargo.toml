@@ -11,7 +11,6 @@ members = [
     "crates/koi-config",
     "crates/koi-certmesh",
     "crates/koi-crypto",
-    "crates/koi-truststore",
     "crates/koi-dns",
     "crates/koi-health",
     "crates/koi-proxy",
@@ -45,7 +44,10 @@ koi-mdns = { path = "crates/koi-mdns", version = "=0.4.2" }
 koi-config = { path = "crates/koi-config", version = "=0.4.2" }
 koi-certmesh = { path = "crates/koi-certmesh", version = "=0.4.2", default-features = false }
 koi-crypto = { path = "crates/koi-crypto", version = "=0.4.2", default-features = false }
-koi-truststore = { path = "crates/koi-truststore", version = "=0.4.2" }
+# Spun out to the os-tools repo (Operational Symmetry family). Consumed directly from
+# source via git — no crates.io dependency yet (see docs/adr). When os-truststore is
+# published, add `version = "..."` here to make koi publishable again.
+os-truststore = { git = "https://github.com/sylin-org/os-tools" }
 koi-dns = { path = "crates/koi-dns", version = "=0.4.2" }
 koi-health = { path = "crates/koi-health", version = "=0.4.2" }
 koi-proxy = { path = "crates/koi-proxy", version = "=0.4.2" }

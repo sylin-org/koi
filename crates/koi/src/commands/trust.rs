@@ -21,13 +21,16 @@ pub fn install(pem_path: &Path, json: bool) -> anyhow::Result<()> {
         .with_context(|| format!("reading certificate file {}", pem_path.display()))?;
 
     // Validate: real PEM, real X.509, and actually a CA (rejects a leaf cert).
-    let parsed = koi_truststore::parse_ca_cert(&pem)
+    let cert = os_truststore::Cert::from_pem(&pem)
         .map_err(|e| anyhow::anyhow!("invalid CA certificate: {e}"))?;
 
     let name = derive_name(pem_path)?;
-    let fingerprint = koi_crypto::pinning::fingerprint_sha256(&parsed.der);
+    let fingerprint = koi_crypto::pinning::fingerprint_sha256(cert.der());
 
-    koi_truststore::install_ca_cert(&parsed.pem, &name)
+    // The certificate is the identity; the derived name is the human-readable display label.
+    os_truststore::Install::new(&cert)
+        .label(&name)
+        .run()
         .map_err(|e| anyhow::anyhow!("failed to install into OS trust store: {e}"))?;
 
     // Record so `list`/`remove` can manage just this Koi-installed root.
@@ -80,13 +83,24 @@ pub fn list(json: bool) -> anyhow::Result<()> {
 /// Remove a Koi-installed CA root by name (OS store + the tracked entry).
 pub fn remove(name: &str, json: bool) -> anyhow::Result<()> {
     let mut state = koi_config::state::load_trust_state().unwrap_or_default();
-    if !state.roots.iter().any(|r| r.name == name) {
+    let Some(entry) = state.roots.iter().find(|r| r.name == name).cloned() else {
         anyhow::bail!(
             "no Koi-installed CA root named \"{name}\" (run `koi trust list` to see them)"
         );
-    }
+    };
 
-    koi_truststore::remove_ca_cert(name)
+    // The trust-store API is keyed on the certificate, so reconstruct it from the source
+    // this entry recorded, then uninstall.
+    let pem = std::fs::read_to_string(&entry.source).with_context(|| {
+        format!(
+            "re-reading the certificate from {} to remove it (the source file must still exist)",
+            entry.source
+        )
+    })?;
+    let cert = os_truststore::Cert::from_pem(&pem)
+        .map_err(|e| anyhow::anyhow!("the certificate at {} is invalid: {e}", entry.source))?;
+
+    os_truststore::uninstall(&cert)
         .map_err(|e| anyhow::anyhow!("failed to remove from OS trust store: {e}"))?;
 
     state.roots.retain(|r| r.name != name);

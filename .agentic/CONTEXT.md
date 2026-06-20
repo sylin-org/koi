@@ -39,7 +39,6 @@ crates/
 ├── koi-config/       # Config & state - breadcrumb discovery
 ├── koi-certmesh/     # Certificate mesh domain - CA, enrollment, roster
 ├── koi-crypto/       # Cryptographic primitives - key gen, signing, TOTP, FIDO2, auth adapters
-├── koi-truststore/   # Trust store - platform cert installation
 ├── koi-dns/          # Local DNS resolver - zone management, resolution, rate limiting
 ├── koi-health/       # Machine & service health monitoring - HTTP/TCP checks, transitions
 ├── koi-proxy/        # TLS-terminating reverse proxy - cert reload, forwarding
@@ -74,11 +73,12 @@ Each domain crate exposes three faces:
 ### 3. Crate Dependency Graph
 
 ```
-koi (bin) → koi-common, koi-dashboard, koi-mdns, koi-certmesh, koi-crypto, koi-truststore, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, koi-embedded
+koi (bin) → koi-common, koi-dashboard, koi-mdns, koi-certmesh, koi-crypto, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, koi-embedded, os-truststore (external)
 koi-mdns      → koi-common, mdns-sd, axum, utoipa, tokio
-koi-certmesh  → koi-common, koi-crypto, koi-truststore, axum, utoipa, tokio
+koi-certmesh  → koi-common, koi-crypto, os-truststore (external), axum, utoipa, tokio
 koi-crypto    → (standalone: ring/rcgen/totp-rs/p256)
-koi-truststore → (standalone: platform cert APIs)
+# os-truststore: platform trust-store install — spun out to the os-tools repo (ADR-019);
+# consumed via a git dependency, not a workspace member.
 koi-config    → koi-common
 koi-dns       → koi-common, koi-config, hickory-server, hickory-resolver, axum, utoipa, tokio
 koi-health    → koi-common, koi-config, axum, utoipa, tokio

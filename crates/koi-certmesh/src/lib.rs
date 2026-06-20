@@ -519,7 +519,9 @@ impl CertmeshCore {
         }
 
         // Install CA cert in OS trust store (best-effort)
-        if let Err(e) = koi_truststore::install_ca_cert(&ca_state.cert_pem, "koi-certmesh") {
+        if let Err(e) = os_truststore::Cert::from_pem(&ca_state.cert_pem)
+            .and_then(|cert| os_truststore::install(&cert).map(drop))
+        {
             tracing::warn!(error = %e, "Could not install CA cert in trust store");
         }
 
@@ -1302,7 +1304,9 @@ impl CertmeshCore {
         .map_err(|e| CertmeshError::Internal(format!("write member cert task: {e}")))??;
 
         // Trust the CA root so this node can verify the mesh (best-effort).
-        if let Err(e) = koi_truststore::install_ca_cert(ca_pem, "koi-certmesh") {
+        if let Err(e) = os_truststore::Cert::from_pem(ca_pem)
+            .and_then(|cert| os_truststore::install(&cert).map(drop))
+        {
             tracing::warn!(error = %e, "Could not install CA cert in trust store");
         }
 

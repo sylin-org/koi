@@ -43,7 +43,6 @@ jobs:
             koi-common      # Layer 0: no internal deps
             koi-config      # Layer 1: depends on koi-common
             koi-crypto      # Layer 1: cryptographic primitives
-            koi-truststore  # Layer 1: trust store helpers
             koi-mdns        # Layer 1: mDNS Querier/Responder
             koi-udp         # Layer 1: UDP host socket binding
             koi-runtime     # Layer 1: container integration runtime

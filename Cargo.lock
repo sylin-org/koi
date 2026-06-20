@@ -1401,6 +1401,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "home"
+version = "0.5.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "hostname"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1987,7 +1996,7 @@ dependencies = [
  "instant-acme",
  "koi-common",
  "koi-crypto",
- "koi-truststore",
+ "os-truststore",
  "p256",
  "pem",
  "rand 0.9.4",
@@ -2277,10 +2286,10 @@ dependencies = [
  "koi-mdns",
  "koi-proxy",
  "koi-runtime",
- "koi-truststore",
  "koi-udp",
  "libc",
  "open",
+ "os-truststore",
  "rand 0.9.4",
  "rcgen 0.13.2",
  "reqwest 0.12.28",
@@ -2350,18 +2359,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "utoipa",
-]
-
-[[package]]
-name = "koi-truststore"
-version = "0.4.2"
-dependencies = [
- "koi-common",
- "pem",
- "rcgen 0.13.2",
- "thiserror 2.0.18",
- "tracing",
- "x509-parser 0.16.0",
 ]
 
 [[package]]
@@ -2728,6 +2725,22 @@ name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
+name = "os-truststore"
+version = "0.0.1"
+source = "git+https://github.com/sylin-org/os-tools#d06a4d6ae1266652bfddb7fe6fd6551b39b10b0f"
+dependencies = [
+ "libc",
+ "pem",
+ "schannel",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "which",
+ "x509-parser 0.16.0",
+]
 
 [[package]]
 name = "p256"
@@ -4659,6 +4672,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "which"
+version = "6.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4ee928febd44d98f2f459a4a79bd4d928591333a494a10a868418ac1b39cf1f"
+dependencies = [
+ "either",
+ "home",
+ "rustix 0.38.44",
+ "winsafe",
+]
+
+[[package]]
 name = "widestring"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5080,6 +5105,12 @@ dependencies = [
  "cfg-if",
  "windows-sys 0.48.0",
 ]
+
+[[package]]
+name = "winsafe"
+version = "0.0.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
 
 [[package]]
 name = "wit-bindgen"

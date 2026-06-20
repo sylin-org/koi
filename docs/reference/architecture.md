@@ -38,7 +38,6 @@ Koi is a single binary with a layered architecture. Three adapter layers sit on 
 | `crates/koi-mdns/`        | `koi-mdns`        | mDNS domain - daemon, registry, protocol, HTTP routes              | ~3,662 |
 | `crates/koi-certmesh/`    | `koi-certmesh`    | Certificate mesh - CA, enrollment, roster, failover                | ~12,162|
 | `crates/koi-crypto/`      | `koi-crypto`      | Crypto primitives - keys, TOTP, auth adapters, unlock slots        | ~3,162 |
-| `crates/koi-truststore/`  | `koi-truststore`  | Platform trust store installation                                  | ~566   |
 | `crates/koi-config/`      | `koi-config`      | Config, state, breadcrumb discovery                                | ~574   |
 | `crates/koi-dns/`         | `koi-dns`         | Local DNS resolver - zone, resolution, rate limiting               | ~1,931 |
 | `crates/koi-health/`      | `koi-health`      | Health monitoring - HTTP/TCP checks, transitions                   | ~1,041 |
@@ -62,9 +61,8 @@ koi-embedded     → koi-compose, koi-common, koi-client (+ axum, reqwest, tokio
     │              orchestrator, capability ladder, certmesh loops, integration bridges)
     ├── koi-common
     ├── koi-mdns        → koi-common, mdns-sd, axum, tokio
-    ├── koi-certmesh    → koi-common, koi-crypto, koi-truststore, axum, tokio
+    ├── koi-certmesh    → koi-common, koi-crypto, os-truststore (external git dep), axum, tokio
     ├── koi-crypto      → ring, rcgen, totp-rs, p256
-    ├── koi-truststore  → platform cert APIs
     ├── koi-config      → koi-common
     ├── koi-dns         → koi-common, koi-config, hickory-server, hickory-resolver, axum, tokio
     ├── koi-health      → koi-common, koi-config, axum, tokio

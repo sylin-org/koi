@@ -26,7 +26,7 @@ koi-certmesh.workspace = true
 # explicitly so a future default-features flip cannot silently strip Docker / the
 # credential store / QR from the daemon.
 koi-crypto = { workspace = true, features = ["keyring", "qr"] }
-koi-truststore.workspace = true
+os-truststore.workspace = true
 koi-config.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true
