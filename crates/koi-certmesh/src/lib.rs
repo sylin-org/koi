@@ -13,6 +13,8 @@ pub mod ca;
 pub mod certfiles;
 pub mod certmesh_paths;
 pub mod client;
+#[cfg(test)]
+mod conformance;
 pub mod csr;
 pub mod diagnosis;
 pub mod enrollment;

@@ -32,7 +32,8 @@ pub const FRESHNESS_WINDOW_SECS: i64 = 300;
 
 /// The exact bytes an Envelope's signature covers (v1). Deterministic and
 /// trivially reproducible in another language (the cross-sibling wire contract).
-fn canonical_bytes(v: u8, payload: &str, nonce: &str, ts: i64) -> Vec<u8> {
+/// `pub(crate)` so the conformance-vector validator checks the real construction.
+pub(crate) fn canonical_bytes(v: u8, payload: &str, nonce: &str, ts: i64) -> Vec<u8> {
     format!("{ENVELOPE_DOMAIN_V1}\n{v}\n{payload}\n{nonce}\n{ts}").into_bytes()
 }
 

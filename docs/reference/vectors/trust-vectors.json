@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "description": "ADR-020 conformance vectors — deterministic and certless, so any language can run them without X.509 machinery. See ../trust-protocol.md. Each entry has a graded `expect` and a `flags` list (a sibling may feature-skip a section it has not implemented yet). Signed-envelope verification (carry-cert) is covered by the reference impl's adversarial unit tests, not here, because ES256 signatures are non-deterministic.",
+  "envelope_canonical": [
+    {
+      "desc": "v1 empty payload and nonce, ts 0",
+      "flags": [],
+      "v": 1,
+      "payload": "",
+      "nonce": "",
+      "ts": 0,
+      "expect": { "canonical": "koi-envelope-v1\n1\n\n\n0" }
+    },
+    {
+      "desc": "v1 typical fields",
+      "flags": [],
+      "v": 1,
+      "payload": "aGk",
+      "nonce": "bm9uY2U",
+      "ts": 1700000000,
+      "expect": { "canonical": "koi-envelope-v1\n1\naGk\nbm9uY2U\n1700000000" }
+    },
+    {
+      "desc": "v1 negative ts (clock before epoch is still well-defined)",
+      "flags": [],
+      "v": 1,
+      "payload": "eA",
+      "nonce": "eQ",
+      "ts": -5,
+      "expect": { "canonical": "koi-envelope-v1\n1\neA\neQ\n-5" }
+    }
+  ],
+  "payload_roundtrip": [
+    {
+      "desc": "ascii hello",
+      "flags": [],
+      "payload_b64": "aGVsbG8=",
+      "expect": {
+        "bytes_hex": "68656c6c6f",
+        "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+      }
+    },
+    {
+      "desc": "empty payload",
+      "flags": [],
+      "payload_b64": "",
+      "expect": {
+        "bytes_hex": "",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ],
+  "posture_level": [
+    { "desc": "open", "flags": [], "signed": false, "encrypted": false, "expect": { "level": "open" } },
+    { "desc": "authenticated", "flags": [], "signed": true, "encrypted": false, "expect": { "level": "authenticated" } },
+    { "desc": "confidential", "flags": [], "signed": true, "encrypted": true, "expect": { "level": "confidential" } },
+    { "desc": "encrypted-without-signed degrades to open", "flags": [], "signed": false, "encrypted": true, "expect": { "level": "open" } }
+  ],
+  "sealed_confidentiality": [
+    { "desc": "v0 passthrough", "flags": [], "v": 0, "expect": { "confidentiality": "passthrough" } },
+    { "desc": "v1 group-key (reserved)", "flags": [], "v": 1, "expect": { "confidentiality": "groupkey" } },
+    { "desc": "unknown version is conservatively not-encrypted", "flags": [], "v": 99, "expect": { "confidentiality": "passthrough" } }
+  ]
+}
