@@ -15,6 +15,7 @@ pub mod certmesh_paths;
 pub mod csr;
 pub mod enrollment;
 pub mod entropy;
+pub mod envelope;
 pub mod error;
 pub mod failover;
 pub mod health;
@@ -1078,6 +1079,67 @@ impl CertmeshCore {
             }
         }
         self.local_identity().await
+    }
+
+    /// Sign `bytes` into an [`Envelope`](koi_common::envelope::Envelope) (ADR-020 §3).
+    ///
+    /// Mode-transparent: Open posture → a freshness-stamped passthrough (no
+    /// signature); Authenticated → ES256-signed, carrying this node's leaf cert so
+    /// any holder of the CA can verify it. The consumer calls this identically in
+    /// both postures.
+    pub async fn sign(&self, bytes: &[u8]) -> koi_common::envelope::Envelope {
+        use rand::RngCore;
+        let mut nonce = [0u8; 16];
+        rand::rng().fill_bytes(&mut nonce);
+        let ts = chrono::Utc::now().timestamp();
+        let identity = self.local_identity().await;
+        let signer = identity
+            .as_ref()
+            .map(|id| (id.key_pem.as_str(), id.cert_pem.as_str()));
+        envelope::build_envelope(signer, bytes, &nonce, ts)
+    }
+
+    /// Verify an [`Envelope`](koi_common::envelope::Envelope) → an
+    /// [`Assurance`](koi_common::envelope::Assurance) (ADR-020 §3).
+    ///
+    /// Self-contained (carry-cert): validates the carried leaf against this node's
+    /// pinned CA + checks freshness + best-effort revocation. Read a trusted
+    /// identity only via `Assurance::identity()`. On an Open node (no anchor) any
+    /// envelope verifies as `Anonymous`.
+    pub async fn verify(
+        &self,
+        env: &koi_common::envelope::Envelope,
+    ) -> koi_common::envelope::Assurance {
+        let ca_cert_pem = self.local_ca_cert_pem().await;
+        let revoked = self.revoked_fingerprints().await;
+        let now = chrono::Utc::now().timestamp();
+        envelope::verify_envelope(env, ca_cert_pem.as_deref(), &revoked, now)
+    }
+
+    /// The CA certificate this node trusts as its verification anchor: the leaf's
+    /// `ca.pem` (member or CA node), falling back to the CA cert on disk. `None`
+    /// on an Open node with no anchor.
+    async fn local_ca_cert_pem(&self) -> Option<String> {
+        if let Some(hostname) = Self::local_hostname() {
+            let leaf_ca = self.paths().certs_dir().join(&hostname).join("ca.pem");
+            if let Ok(pem) = std::fs::read_to_string(&leaf_ca) {
+                return Some(pem);
+            }
+        }
+        std::fs::read_to_string(self.paths().ca_cert_path()).ok()
+    }
+
+    /// Best-effort revoked-leaf fingerprints from the local roster. A CA node holds
+    /// the full roster; a pure member's roster is empty, so revocation there is
+    /// eventual-consistent — the CA chain remains the hard gate (ADR-020 §3).
+    async fn revoked_fingerprints(&self) -> Vec<String> {
+        let roster = self.state.roster.lock().await;
+        roster
+            .members
+            .iter()
+            .filter(|m| m.status == roster::MemberStatus::Revoked)
+            .map(|m| m.cert_fingerprint.clone())
+            .collect()
     }
 
     /// Set the post-renewal reload hook for a member.
