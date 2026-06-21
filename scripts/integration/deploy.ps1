@@ -95,6 +95,10 @@ foreach ($s in $Servers) {
         $hk = Get-HostKey $s
         if ($null -eq $hk) { throw "could not reach SSH (host down / auth failed)" }
         Remote $s $hk "mkdir -p $RemoteDir/data"
+        # Stop a running koi first: pscp can't overwrite a live ELF ("text file
+        # busy" / ETXTBSY). `pkill -x koi` matches by name (self-safe); the
+        # integration test (re)starts the daemon anyway.
+        Remote $s $hk "pkill -x koi 2>/dev/null; sleep 1; true" | Out-Null
         if ($hk) { & pscp -batch -q -hostkey $hk -pw $Password $bin "${User}@${s}:$RemoteDir/koi" }
         else { & pscp -batch -q -pw $Password $bin "${User}@${s}:$RemoteDir/koi" }
         if ($LASTEXITCODE -ne 0) { throw "pscp failed (exit $LASTEXITCODE)" }
@@ -102,7 +106,7 @@ foreach ($s in $Servers) {
 
         if ($Setup) {
             Say "setup -> $s (disable garden-moss/avahi; install jq/dnsutils/nc)"
-            Remote $s $hk "echo $Password | sudo -S systemctl disable --now garden-moss.service avahi-daemon.service avahi-daemon.socket 2>/dev/null; echo $Password | sudo -S apt-get install -y -qq jq dnsutils netcat-openbsd 2>/dev/null | tail -1; echo setup-ok" | Out-Null
+            Remote $s $hk "echo $Password | sudo -S systemctl disable --now garden-moss.service avahi-daemon.service avahi-daemon.socket 2>/dev/null; echo $Password | sudo -S apt-get install -y -qq curl jq dnsutils netcat-openbsd 2>/dev/null | tail -1; echo setup-ok" | Out-Null
         }
         $results += [pscustomobject]@{ Server = $s; Status = 'OK'; Version = ($ver | Select-Object -Last 1) }
     } catch {

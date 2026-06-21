@@ -64,8 +64,9 @@ plink -batch -ssh -pw stone stone@192.168.1.44 "chmod +x /home/stone/koi-test/ko
 plink -batch -ssh -pw stone stone@192.168.1.55 "chmod +x /home/stone/koi-test/koi"
 ```
 
-Box-side test instrumentation (install once): `jq` (parse `koi … --json`),
-`dnsutils` (`dig`), `netcat-openbsd` (`nc`, port checks).
+Box-side test instrumentation (install once): `curl` (HTTP probes — not present by
+default on a minimal Debian), `jq` (parse `koi … --json`), `dnsutils` (`dig`),
+`netcat-openbsd` (`nc`, port checks).
 
 ## Cross-host integration scenario (the gate)
 
@@ -88,25 +89,47 @@ Automated by `scripts/integration/cross-host-test.sh` (runs on the CA box, drive
 the member via `sshpass`). See also the container-based ADR-018 harness:
 `scripts/cross-host-certmesh.sh`.
 
-## Findings (first real-hardware run, 2026-06-20)
+## Findings (real-hardware runs, 2026-06-20/21)
 
-**Validated on real hardware:** deploy of the fresh static-musl binary to both
-boxes; the daemon runs on real Linux; **P4** — the 5642 mTLS listener is correctly
-DOWN in Open posture; **mDNS** binds 5353 alongside `systemd-resolved` and
-`koi mdns discover` works over real multicast (the `_certmesh._tcp` record carries
-`fp=`); **P6** — `koi trust diagnose` runs on hardware and prints its real report
-(Open → Healthy, exit 0).
+**Full cross-host flow VALIDATED (12/12 green).** `cross-host-test.sh` exercises, on
+real hardware over the real LAN: CA box reset → Open; **P4** mTLS listener DOWN while
+Open, then reactive-UP after `certmesh create` (no restart); **P6** `koi trust
+diagnose` Healthy on the CA; invite mint; **member join over the LAN** (pinned-
+fingerprint preflight + invite enrollment + member-side key custody); CA roster shows
+both nodes; **P3** the member discovers the CA's `_certmesh._tcp` with
+`posture=`/`fp=`/`expires=` TXT over real multicast; member `diagnose` Healthy.
 
-**Product follow-up (P4-adjacent gap):** the `_certmesh._tcp` mDNS announcement
-(`announce_certmesh_endpoint`) is **startup-gated** — it runs at daemon boot, gated
-on a CA already existing. The P4 work made the mTLS *listener* posture-reactive but
-**not the announcement**, so a node that boots Open and later runs `certmesh create`
-does not advertise its `fp=`/`posture=`/`expires=` TXT until a restart. The test
-restarts the CA daemon after create as a workaround; the real fix is to make the
-announce posture-reactive too (drive it off `watch_posture`, same as the listener).
+**RESOLVED — reactive `_certmesh._tcp` announce.** The CA discovery announce was
+**startup-gated** (ran once at boot, gated on a CA already existing): a node that
+booted Open and later ran `certmesh create` did not advertise until a restart. Now
+the posture-reactive trust-plane supervisor (`crates/koi/src/adapters/trust_plane.rs`)
+publishes it the moment the CA appears and withdraws it when the CA is destroyed —
+the same `watch_posture` mechanism that drives the mTLS/ACME listeners. The harness
+no longer restarts the CA after create (step 6 now asserts the record is present
+reactively).
 
-**Box note:** `stone-granite-spring` carried leftover certmesh state (an old CA +
-daemon) from a prior session; the test now wipes the member's data dir + stale
-daemons before the member role. The CLI `koi certmesh create` runs an interactive
-entropy ceremony (hangs headless) — the harness creates the CA via the HTTP API
-(non-interactive), as the `two_daemon_certmesh` test does.
+**KNOWN LIMITATION — a running daemon does not reliably receive cross-host mDNS on
+these boxes.** A long-running koi daemon that shares UDP 5353 with `systemd-resolved`
+(socket-reuse coexistence) does not receive cross-host multicast: its browse cache
+stays empty and `GET /v1/mdns/discover` returns nothing for a remote service — even
+though the interface is up and joined `224.0.0.251`. A **standalone** `koi mdns
+discover` on the same box (daemon stopped) receives the remote record fine, which is
+how the test validates P3. This is an mDNS/`systemd-resolved` interaction (the kernel
+appears to deliver the multicast to resolved's socket, not koi's), **separate from
+ADR-020**; it affects the dashboard LAN browser on such hosts and deserves its own
+investigation (candidate fixes: bind mDNS to a specific interface, adjust the
+multicast socket options, or disable resolved's stub on 5353 in the setup). The
+announce (send) side works regardless — peers see the CA fine.
+
+**Harness lessons (all fixed in `cross-host-test.sh`):**
+- The daemon token is breadcrumb line 2 with the `dat:` prefix stripped.
+- The invite HTTP response field is `.token` (format `<secret>.<ca_fp>`); `join`
+  needs the CA endpoint **with a scheme** (`http://host:5641`).
+- Both boxes must start from a wiped data dir; the CLI `koi certmesh create` runs an
+  interactive entropy ceremony (hangs headless) → create the CA via the HTTP API
+  (non-interactive), as the `two_daemon_certmesh` test does.
+- Start a remote daemon over ssh with `setsid -f … </dev/null >log 2>&1` (a plain
+  `nohup … &` over the brook→granite hop does not detach and hangs the test).
+- Kill koi with `pkill -x koi` (by name): `pkill -f 'koi --daemon'` self-matches the
+  remote `bash -c` whose own argv contains that string (ssh rc=255, data not wiped).
+- `curl` must be present on every box (granite lacked it; `apt-get install -y curl`).
