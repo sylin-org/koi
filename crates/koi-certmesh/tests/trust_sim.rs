@@ -46,9 +46,14 @@ const NUM_NODES: usize = 4;
 const BASE_CLOCK: i64 = 1_700_000_000;
 
 /// How far before the earliest leaf expiry the dynamic state-machine clock starts.
-/// 30 days: early `Send`s land inside validity (Authenticated/Anonymous), while a
-/// run with enough `AdvanceClock { 100_000 }` steps (≈1.16 days each) crosses the
-/// expiry edge and exercises the `Expired` arm of `verify_envelope` dynamically.
+/// 30 days: every `Send`/`Seal` in a bounded (length 1..40) run lands comfortably
+/// inside leaf validity, so the dynamic machine exercises the in-validity verdicts
+/// (Anonymous / Authenticated / UnknownSigner / Revoked) and their freshness
+/// sub-field — never the leaf-expiry edge. The `Expired` arm is owned by the targeted
+/// `expired_arm_verify_and_open` test, which drives a real leaf to and past its
+/// `not_after` deterministically. (Crossing 30 days here would need ≈26 of the rare
+/// `AdvanceClock { 100_000 }` steps back-to-back — vanishingly improbable in 256
+/// bounded cases — so the dynamic run is NOT a reliable Expired-arm exerciser.)
 const CLOCK_START_BEFORE_EXPIRY_SECS: i64 = 30 * 24 * 3600;
 
 // ── Immutable shared fixtures (minted ONCE per test binary, then read-only) ────
@@ -76,8 +81,9 @@ struct Fixtures {
     /// A leaf minted under a SECOND, independent CA — never chains to `ca_pem`.
     foreign_leaf: Leaf,
     /// The earliest `notAfter` across all mesh + foreign leaves (unix seconds). The
-    /// dynamic clock origin is derived from this so the simulation can deterministically
-    /// reach (and cross) the leaf-expiry edge.
+    /// dynamic clock origin is derived from this (30 days earlier) so every send in a
+    /// bounded run lands inside validity — the dynamic machine stays short of the expiry
+    /// edge by construction; the `Expired` arm is covered by the targeted test.
     earliest_expiry: i64,
 }
 
@@ -212,9 +218,10 @@ struct Model {
 }
 
 impl Model {
-    /// Start the dynamic clock 30 days before the earliest leaf expiry so early
-    /// sends land inside validity, and a long-enough `AdvanceClock` run crosses the
-    /// expiry edge — exercising both the in-validity verdicts and the `Expired` arm.
+    /// Start the dynamic clock 30 days before the earliest leaf expiry so every send in
+    /// a bounded run lands inside leaf validity — the machine exercises the in-validity
+    /// verdicts and their freshness sub-field, not the expiry edge. The `Expired` arm is
+    /// covered deterministically by the targeted `expired_arm_verify_and_open` test.
     fn new(fx: &Fixtures) -> Self {
         Model {
             nodes: (0..NUM_NODES).map(|_| Node::open()).collect(),
@@ -254,7 +261,9 @@ enum Transition {
 /// instant the envelope was built (an envelope signs iff the node was signed then).
 /// `leaf` is what the sender signed with (`None` when unsigned).
 ///
-/// Mirrors the impl's order exactly:
+/// Mirrors only the impl arms REACHABLE from this state machine — which builds genuine,
+/// well-formed, untampered, v1/ES256 envelopes via `build_envelope` and never mutates
+/// the bytes:
 /// 1. unsigned → `Anonymous{freshness}` (freshness only).
 /// 2. receiver has no anchor → `Anonymous{freshness}`.
 /// 3. leaf does not chain to the mesh anchor (foreign CA) → `UnknownSigner`.
@@ -262,6 +271,14 @@ enum Transition {
 /// 5. leaf fingerprint in receiver.revoked → `Revoked`.
 /// 6. otherwise → `Authenticated{cn, freshness}` (freshness is a sub-field; a
 ///    valid-but-stale signed envelope is STILL `Authenticated`, just `Stale`).
+///
+/// Explicitly OUT OF SCOPE here (the oracle does not model these arms because this
+/// machine cannot reach them — it only builds genuine, well-formed, untampered v1/ES256
+/// envelopes): the impl's `UnsupportedVersion` (a non-v1 / non-ES256 envelope),
+/// `Malformed` (un-decodable base64 / DER fields), and the explicit `BadSignature` arm
+/// (a tampered payload or swapped signature). They are unreachable from these
+/// transitions, so the oracle deliberately omits them; this test makes no claim about
+/// where else they are covered.
 fn expected_verdict(
     signed_at_send: bool,
     leaf: Option<&Leaf>,
@@ -592,10 +609,11 @@ fn node_idx() -> impl Strategy<Value = usize> {
 
 /// Clock deltas chosen to straddle the freshness window edge (300s): 0, mid,
 /// just-inside (299), just-outside (301), well-outside (600), and a large jump
-/// (100000s ≈ 1.16 days). The big jump lets a long enough sequence cross the leaf
-/// expiry edge (the dynamic clock starts 30 days before it; ≈26 big jumps reach
-/// it), so the `Expired` arm of `verify_envelope` is exercised inside the state
-/// machine — while short sequences stay comfortably inside validity.
+/// (100000s ≈ 1.16 days). The big jump exercises deep staleness (a long gap between a
+/// message's `ts` and the verify-time clock → `Stale` + the closed identity door)
+/// without ever reaching leaf expiry: with a 30-day head start and bounded (1..40)
+/// runs, crossing validity would take ≈26 back-to-back big jumps and effectively never
+/// happens — the `Expired` arm is owned by `expired_arm_verify_and_open` instead.
 fn clock_delta() -> impl Strategy<Value = i64> {
     prop_oneof![
         Just(0i64),
@@ -719,6 +737,102 @@ proptest! {
                     "I5: Stale closes the identity door (off={})", off
                 );
             }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+    /// Expired-arm (targeted): the `lan_trust_state_machine` dynamic run stays inside
+    /// leaf validity (its bounded clock never reaches expiry — see that test's note), so
+    /// the `now > leaf.not_after` arm of the REAL `verify_envelope` / `open_sealed` is
+    /// proven here against a real mesh leaf and the real anchor:
+    ///
+    /// - `now == leaf.expires` (== `not_after`) → `Authenticated` (the impl rejects only
+    ///   strictly `now > not_after`; equality is still valid). We sign at `ts = expires`
+    ///   so freshness is `Fresh` at the edge → the identity door is open.
+    /// - `now == expires + 1` → `Rejected { Expired }` (the first second past validity).
+    /// - `now == expires + large` → still `Rejected { Expired }` (never re-authenticates).
+    ///
+    /// The expiry gate fires before freshness, so a past-expiry verdict is `Expired`
+    /// regardless of `|now - ts|`. `node`/`big` are randomized to spread the leaf used and
+    /// the "large" overshoot; the asserted edges are deterministic.
+    #[test]
+    fn expired_arm_verify_and_open(
+        node in 0..NUM_NODES,
+        big in 10_000i64..10_000_000i64,
+    ) {
+        let fx = fixtures();
+        let leaf = &fx.leaves[node];
+        let anchor = Some(fx.ca_pem.as_str());
+        let expires = leaf.expires;
+
+        // Sign at exactly the expiry instant so freshness is Fresh at `now == expires`.
+        let env = build_envelope(
+            Some((leaf.key_pem.as_str(), leaf.cert_pem.as_str())),
+            b"expiring-message",
+            &[3u8; 16],
+            expires,
+        );
+
+        // At the expiry edge: still Authenticated (the impl rejects only `now > not_after`).
+        let at_edge = verify_envelope(&env, anchor, &[], expires);
+        prop_assert_eq!(
+            &at_edge,
+            &Assurance::Authenticated { cn: leaf.cn.clone(), freshness: Freshness::Fresh },
+            "Expired arm: now == not_after is NOT expired (equality is valid)"
+        );
+        prop_assert_eq!(
+            at_edge.identity(),
+            Some(leaf.cn.as_str()),
+            "Expired arm: the at-edge Authenticated+Fresh verdict opens the identity door"
+        );
+
+        // One second past validity → Expired.
+        let just_past = verify_envelope(&env, anchor, &[], expires + 1);
+        prop_assert_eq!(
+            &just_past,
+            &reject(koi_common::envelope::RejectReason::Expired),
+            "Expired arm: now == expires + 1 must be Rejected{{Expired}}"
+        );
+        prop_assert_eq!(just_past.identity(), None, "Expired arm: Expired closes the door");
+
+        // Far past validity → still Expired (never re-authenticates with more elapsed time).
+        let far_past = verify_envelope(&env, anchor, &[], expires + big);
+        prop_assert_eq!(
+            &far_past,
+            &reject(koi_common::envelope::RejectReason::Expired),
+            "Expired arm: now == expires + {} must still be Rejected{{Expired}}", big
+        );
+
+        // Symmetric `open_sealed` expired case: a Rejected{Expired} inner verdict yields
+        // an Err and NEVER the bytes (misuse-resistance), at +1 and far past.
+        let sealed = seal_passthrough(
+            Some((leaf.key_pem.as_str(), leaf.cert_pem.as_str())),
+            b"expiring-secret",
+            &[4u8; 16],
+            expires,
+        );
+
+        // At the edge it still opens (Authenticated) and the bytes survive.
+        let opened_at_edge = open_sealed(&sealed, anchor, &[], expires)
+            .expect("open_sealed at the expiry edge succeeds (not yet expired)");
+        prop_assert_eq!(
+            &opened_at_edge.payload,
+            &b"expiring-secret".to_vec(),
+            "Expired arm: at the edge the sealed payload survives"
+        );
+
+        for off in [1i64, big] {
+            let err = open_sealed(&sealed, anchor, &[], expires + off)
+                .expect_err("open_sealed past expiry must Err, never return bytes");
+            prop_assert!(
+                err.to_string().contains("Expired"),
+                "Expired arm: open_sealed past expiry must report Expired (off={}), got: {}",
+                off,
+                err
+            );
         }
     }
 }
