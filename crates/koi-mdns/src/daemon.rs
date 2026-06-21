@@ -868,7 +868,10 @@ mod tests {
         let before = daemon.receive_health().0;
         daemon.inject(TEST_KEY, resolved("alpha"));
         let (events, age, active) = daemon.receive_health();
-        assert!(events > before, "an inbound event must increment the counter");
+        assert!(
+            events > before,
+            "an inbound event must increment the counter"
+        );
         assert!(age.is_some(), "age is set once something is received");
         assert!(active);
         drop(sub);
