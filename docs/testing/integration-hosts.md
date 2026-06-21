@@ -108,18 +108,45 @@ the same `watch_posture` mechanism that drives the mTLS/ACME listeners. The harn
 no longer restarts the CA after create (step 6 now asserts the record is present
 reactively).
 
-**KNOWN LIMITATION — a running daemon does not reliably receive cross-host mDNS on
-these boxes.** A long-running koi daemon that shares UDP 5353 with `systemd-resolved`
-(socket-reuse coexistence) does not receive cross-host multicast: its browse cache
-stays empty and `GET /v1/mdns/discover` returns nothing for a remote service — even
-though the interface is up and joined `224.0.0.251`. A **standalone** `koi mdns
-discover` on the same box (daemon stopped) receives the remote record fine, which is
-how the test validates P3. This is an mDNS/`systemd-resolved` interaction (the kernel
-appears to deliver the multicast to resolved's socket, not koi's), **separate from
-ADR-020**; it affects the dashboard LAN browser on such hosts and deserves its own
-investigation (candidate fixes: bind mDNS to a specific interface, adjust the
-multicast socket options, or disable resolved's stub on 5353 in the setup). The
-announce (send) side works regardless — peers see the CA fine.
+**KNOWN LIMITATION — the long-running daemon's mdns-sd drops ALL inbound mDNS
+in-process (an `mdns-sd` interface-index bug, NOT systemd-resolved).** A long-running
+koi daemon receives zero inbound mDNS: its browse + LAN meta-browse cache stay empty
+for every remote service, while a **standalone** `koi mdns discover` (same binary,
+same NIC, daemon stopped) receives everything — which is how the test validates P3.
+The *send/announce* side works regardless (peers discover the daemon's records).
+
+Root cause (source-verified + observed on hardware, 2026-06-21):
+- **systemd-resolved is NOT the cause.** 2×2 bisection: daemon = 0 with resolved both
+  UP and DOWN; standalone = 2 with resolved both UP and DOWN. With resolved stopped
+  koi is the *sole* 5353 binder and still gets 0 — there is no other socket to "steal"
+  the packets, and on Linux inbound multicast is copied to *every* `SO_REUSEPORT`
+  member anyway (only unicast is hash-balanced). So the earlier "resolved/kernel
+  steering" attribution here was wrong.
+- **The loss is in-process, observed:** during a 9 s window `tcpdump` on the daemon
+  box captured **266** mDNS frames at the NIC while the daemon's meta-browse snapshot
+  read `total_instances:0`; a standalone process on the same NIC saw **16** service
+  types. Packets reach the host; the daemon's mdns-sd discards them.
+- **Mechanism (`mdns-sd` 0.20.0):** `handle_read` (service_daemon.rs:2459-2467)
+  silently drops every datagram whose kernel `IP_PKTINFO` `ipi_ifindex` is absent
+  from `my_intfs`; but `my_intfs` is keyed by the **if-addrs** index
+  (`intf.index.unwrap_or(0)`). When those two index sources disagree (e.g. if-addrs
+  yields `None`→0 vs the kernel's real index), **all** inbound multicast is dropped.
+  *Send* is unaffected because the send path selects the egress interface by **IP
+  address**, not index — exactly the observed send-OK / receive-0 split. The
+  daemon-vs-standalone difference is lifecycle: the short-lived standalone process
+  keeps the consistent snapshot it took at start; the long-lived daemon's `my_intfs`
+  ends up desynced (the precise trigger — boot-snapshot vs a `check_ip_changes`
+  re-key — was not byte-captured because koi has no `log`→`tracing` bridge for
+  mdns-sd's debug line; capturing it needs a small mdns-sd repro with the `logging`
+  feature).
+
+**Separate from ADR-020.** It affects the dashboard LAN browser on these hosts.
+Candidate fixes: (a) the durable one is upstream — `mdns-sd` should key `my_intfs` by
+the same index source the recv path uses (file an issue); (b) koi-side, pin the NIC
+via `ServiceDaemon::enable_interface` in `crates/koi-mdns/src/daemon.rs` (the sole
+mdns-sd importer) behind a `--mdns-interface`/`KOI_MDNS_INTERFACE` config; (c) add a
+browse-reachability check to `koi status`/`koi trust diagnose` so an empty cache on a
+live interface is a loud RED, not silent (matches ADR-020's anti-silence ethos).
 
 **Harness lessons (all fixed in `cross-host-test.sh`):**
 - The daemon token is breadcrumb line 2 with the `dat:` prefix stripped.
