@@ -2071,6 +2071,7 @@ name = "koi-compose"
 version = "0.4.2"
 dependencies = [
  "hickory-proto",
+ "hostname",
  "koi-certmesh",
  "koi-common",
  "koi-config",
@@ -2082,6 +2083,7 @@ dependencies = [
  "koi-proxy",
  "koi-runtime",
  "koi-udp",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-util",

@@ -22,8 +22,9 @@ pub struct KoiConfig {
     /// Translate runtime (container) lifecycle events into mDNS/DNS/health/proxy entries.
     /// Opt-in (default false): a leaf embedded host usually only wants the event stream.
     pub orchestrator_enabled: bool,
-    /// Run the certmesh role-driven background loops (renewal / roster sync / heartbeat /
-    /// failover). Opt-in (default false): only a clustered embedded CA host needs them.
+    /// Run the certmesh role-driven background loop (trust-bundle pull — policy refresh +
+    /// revocation detection — plus cert renewal). Opt-in (default false): only a clustered
+    /// embedded CA host needs it.
     pub certmesh_background_enabled: bool,
     pub http_port: u16,
     pub dashboard_enabled: bool,

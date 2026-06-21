@@ -19,6 +19,12 @@ use koi_proxy::{ProxyEntry, ProxyRuntime};
 
 use crate::{map_join_error, KoiError, KoiEvent};
 
+/// Hard ceiling on ordered teardown — bounds the cancel/drain/join sequence so a wedged
+/// task can never hang the host application's shutdown (mirrors the daemon's limit).
+const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// Grace period after cancellation for in-flight work to drain before tasks are joined.
+const SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::from_millis(500);
+
 enum HandleBackend {
     Embedded {
         mdns: Option<Arc<MdnsCore>>,
@@ -297,37 +303,46 @@ impl KoiHandle {
     }
 
     pub async fn shutdown(mut self) -> Result<(), KoiError> {
-        self.cancel.cancel();
-        for task in self.tasks.drain(..) {
-            let _ = task.await;
-        }
+        let tasks = std::mem::take(&mut self.tasks);
+        let http_announce_id = self.http_announce_id.take();
 
         if let HandleBackend::Embedded {
             mdns,
             dns,
             health,
+            certmesh,
             proxy,
-            ..
+            udp,
+            runtime,
         } = &self.backend
         {
-            if let Some(runtime) = proxy {
-                runtime.stop_all().await;
-            }
-            if let Some(runtime) = health {
-                let _ = runtime.stop().await;
-            }
-            if let Some(runtime) = dns {
-                let _ = runtime.stop().await;
-            }
-            if let Some(id) = &self.http_announce_id {
-                if let Some(core) = mdns {
-                    if let Err(e) = core.unregister(id) {
-                        tracing::warn!(error = %e, "Failed to withdraw HTTP mDNS announcement");
-                    }
-                }
-            }
-            if let Some(core) = mdns {
-                core.shutdown().await?;
+            // Route through the shared ordered teardown so embedded inherits the same
+            // cancel → drain → join → withdraw-announce → per-core goodbye sequence the
+            // daemon runs, including the UDP shutdown + drain + hard timeout it omitted.
+            let cores = koi_compose::cores::Cores {
+                mdns: mdns.clone(),
+                certmesh: certmesh.clone(),
+                dns: dns.clone(),
+                health: health.clone(),
+                proxy: proxy.clone(),
+                udp: udp.clone(),
+                runtime: runtime.clone(),
+                mdns_snapshot: None,
+            };
+            koi_compose::cores::ordered_shutdown(
+                &self.cancel,
+                tasks,
+                &cores,
+                http_announce_id,
+                SHUTDOWN_TIMEOUT,
+                SHUTDOWN_DRAIN,
+            )
+            .await;
+        } else {
+            // Remote backend: no local cores to tear down — just stop the tasks.
+            self.cancel.cancel();
+            for task in tasks {
+                let _ = task.await;
             }
         }
 

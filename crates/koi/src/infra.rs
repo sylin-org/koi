@@ -91,6 +91,19 @@ pub(crate) async fn shutdown_signal(cancel: CancellationToken) {
     }
 }
 
+// ── Daemon Access Token ─────────────────────────────────────────────
+
+/// Mint a fresh Daemon Access Token (DAT): 32 random bytes, URL-safe base64 (no pad).
+/// Used to authenticate mutation requests. Shared by the foreground daemon and the Windows
+/// service so the two boot paths generate it identically.
+pub(crate) fn mint_dat() -> String {
+    use base64::Engine;
+    use rand::RngCore;
+    let mut token_bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut token_bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes)
+}
+
 // ── Daemon startup diagnostics ──────────────────────────────────────
 
 pub(crate) fn startup_diagnostics(config: &Config, http_bind_ip: Option<std::net::IpAddr>) {
@@ -257,11 +270,11 @@ pub(crate) fn announce_mcp_endpoint(
 /// a trust source (the authoritative check is the joiner's pinned-fingerprint
 /// preflight). Returns `None` when no CA is initialized yet.
 ///
-/// Posture-reactive: the trust-plane supervisor calls this when the CA appears
-/// (Open→Authenticated) and withdraws the record (via `MdnsCore::unregister`) when
-/// the CA is destroyed — so a node that boots Open and later runs `certmesh create`
-/// advertises without a restart (ADR-020 P4-adjacent; this announce was startup-gated
-/// before). The record is also withdrawn by the mDNS goodbye on shutdown.
+/// Posture-reactive: published when the CA appears, withdrawn when destroyed. The
+/// trust-plane supervisor calls this when the CA appears (Open→Authenticated) and
+/// withdraws the record (via `MdnsCore::unregister`) when the CA is destroyed — so a
+/// node that boots Open and later runs `certmesh create` advertises without a
+/// restart. The record is also withdrawn by the mDNS goodbye on shutdown.
 pub(crate) async fn register_certmesh_record(
     certmesh: &std::sync::Arc<koi_certmesh::CertmeshCore>,
     mdns: &std::sync::Arc<koi_mdns::MdnsCore>,

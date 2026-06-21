@@ -42,6 +42,11 @@ pub struct Cores {
 
 /// Capability flags + inputs needed to build the cores. A daemon-`Config` subset, kept here
 /// (rather than depending on the binary's `Config`) so koi-compose stays standalone.
+///
+/// The daemon and the Windows service fill it via [`CoreSpec::daemon`]; `koi-embedded` sets
+/// the embedded-only forks (data-dir-scoped proxy, pinned DNS state path, the auto-start +
+/// background-loop opt-ins) directly. Every field has a daemon default so the two boot paths
+/// build the identical graph.
 pub struct CoreSpec {
     pub no_mdns: bool,
     pub no_certmesh: bool,
@@ -50,14 +55,68 @@ pub struct CoreSpec {
     pub no_proxy: bool,
     pub no_udp: bool,
     pub no_runtime: bool,
-    /// Data directory for certmesh state (resolved by the caller).
-    pub data_dir: std::path::PathBuf,
+    /// Data directory for certmesh state. `None` uses the platform default (embedded leaves
+    /// it unset when the host did not pin one); the daemon always resolves a concrete dir.
+    pub data_dir: Option<std::path::PathBuf>,
     /// DNS configuration (the caller's resolved `DnsConfig`).
     pub dns_config: koi_dns::DnsConfig,
     /// Runtime backend selector string ("auto", "docker", "podman", …).
     pub runtime: String,
     /// Daemon HTTP port (the local management/API port the daemon binds).
     pub http_port: u16,
+    /// Override the DNS state file path (embedded pins it to its data dir to be immune to
+    /// `KOI_DATA_DIR` races in parallel tests). `None` keeps the `dns_config` value.
+    pub dns_state_path: Option<std::path::PathBuf>,
+    /// Build the proxy core scoped to this data dir (`ProxyCore::with_data_dir`). `None`
+    /// uses the platform-default proxy state (the daemon's behavior).
+    pub proxy_data_dir: Option<std::path::PathBuf>,
+    /// Start the DNS server after constructing its core. The daemon always does; embedded
+    /// gates it on `dns_auto_start`.
+    pub dns_auto_start: bool,
+    /// Start health checks after constructing the core (daemon: always; embedded: opt-in).
+    pub health_auto_start: bool,
+    /// Start the proxy listeners after constructing the core (daemon: always; embedded: opt-in).
+    pub proxy_auto_start: bool,
+    /// Spawn the runtime orchestrator when the runtime adapter is present (daemon: always;
+    /// embedded: opt-in via the `orchestrator` builder flag).
+    pub spawn_orchestrator: bool,
+    /// Spawn the certmesh role-driven background loop when certmesh is present (daemon:
+    /// always; embedded: opt-in via the `certmesh_background` builder flag).
+    pub spawn_certmesh_loops: bool,
+}
+
+impl CoreSpec {
+    /// The daemon/Windows-service defaults for the embedded-fork fields: platform-default
+    /// proxy/DNS state, always start DNS/health/proxy, always spawn the orchestrator and the
+    /// certmesh loops. Spread it into a struct literal so the daemon only names the
+    /// capability flags + resolved inputs and cannot accidentally diverge from the service.
+    ///
+    /// ```ignore
+    /// CoreSpec { no_mdns, /* … */, data_dir: Some(dir), dns_config, runtime, http_port,
+    ///            ..CoreSpec::daemon_defaults() }
+    /// ```
+    pub fn daemon_defaults() -> Self {
+        Self {
+            no_mdns: false,
+            no_certmesh: false,
+            no_dns: false,
+            no_health: false,
+            no_proxy: false,
+            no_udp: false,
+            no_runtime: false,
+            data_dir: None,
+            dns_config: koi_dns::DnsConfig::default(),
+            runtime: "auto".to_string(),
+            http_port: 0,
+            dns_state_path: None,
+            proxy_data_dir: None,
+            dns_auto_start: true,
+            health_auto_start: true,
+            proxy_auto_start: true,
+            spawn_orchestrator: true,
+            spawn_certmesh_loops: true,
+        }
+    }
 }
 
 /// Initialize the certmesh core, auto-unlocking from the vault when a key is present.
@@ -188,7 +247,7 @@ pub async fn build_cores(
 
     // ── Certmesh ──
     let certmesh_core = if !spec.no_certmesh {
-        init_certmesh_core(Some(&spec.data_dir))
+        init_certmesh_core(spec.data_dir.as_deref())
     } else {
         tracing::info!("Certmesh capability: disabled");
         None
@@ -212,8 +271,14 @@ pub async fn build_cores(
 
     // ── DNS (consumes mdns + certmesh + alias bridges) ──
     let dns_runtime = if !spec.no_dns {
+        // Pin the DNS state path when the caller supplied one (embedded pins it to its data
+        // dir to stay immune to KOI_DATA_DIR env races in parallel tests).
+        let mut dns_config = spec.dns_config.clone();
+        if let Some(ref path) = spec.dns_state_path {
+            dns_config.state_path = Some(path.clone());
+        }
         let core = koi_dns::DnsCore::new(
-            spec.dns_config.clone(),
+            dns_config,
             mdns_bridge.clone(),
             certmesh_bridge.clone(),
             alias_feedback,
@@ -222,8 +287,10 @@ pub async fn build_cores(
         match core {
             Ok(core) => {
                 let runtime = Arc::new(koi_dns::DnsRuntime::new(core));
-                if let Err(e) = runtime.start().await {
-                    tracing::error!(error = %e, "Failed to start DNS server");
+                if spec.dns_auto_start {
+                    if let Err(e) = runtime.start().await {
+                        tracing::error!(error = %e, "Failed to start DNS server");
+                    }
                 }
                 Some(runtime)
             }
@@ -239,11 +306,19 @@ pub async fn build_cores(
 
     // ── Proxy ──
     let proxy_runtime = if !spec.no_proxy {
-        match koi_proxy::ProxyCore::new() {
+        // Scope the proxy state to the caller's data dir when supplied (embedded), else use
+        // the platform-default state (the daemon).
+        let core = match spec.proxy_data_dir {
+            Some(ref dir) => koi_proxy::ProxyCore::with_data_dir(dir),
+            None => koi_proxy::ProxyCore::new(),
+        };
+        match core {
             Ok(core) => {
                 let runtime = Arc::new(koi_proxy::ProxyRuntime::new(Arc::new(core)));
-                if let Err(e) = runtime.start_all().await {
-                    tracing::error!(error = %e, "Failed to start proxy listeners");
+                if spec.proxy_auto_start {
+                    if let Err(e) = runtime.start_all().await {
+                        tracing::error!(error = %e, "Failed to start proxy listeners");
+                    }
                 }
                 Some(runtime)
             }
@@ -277,8 +352,10 @@ pub async fn build_cores(
             .await,
         );
         let runtime = Arc::new(koi_health::HealthRuntime::new(core));
-        if let Err(e) = runtime.start().await {
-            tracing::error!(error = %e, "Failed to start health checks");
+        if spec.health_auto_start {
+            if let Err(e) = runtime.start().await {
+                tracing::error!(error = %e, "Failed to start health checks");
+            }
         }
         Some(runtime)
     } else {
@@ -329,18 +406,21 @@ pub async fn build_cores(
     };
 
     // ── Runtime orchestrator ──
-    // Translates container lifecycle events into mDNS/DNS/health/proxy operations.
-    if let Some(ref rt) = runtime_core {
-        tasks.push(crate::orchestrator::spawn_orchestrator(
-            rt,
-            crate::orchestrator::OrchestrationTargets {
-                mdns: mdns_core.clone(),
-                dns: dns_runtime.clone(),
-                health: health_runtime.clone(),
-                proxy: proxy_runtime.clone(),
-            },
-            cancel.clone(),
-        ));
+    // Translates container lifecycle events into mDNS/DNS/health/proxy operations. The
+    // daemon always spawns it; embedded opts in (a leaf host wants only the event stream).
+    if spec.spawn_orchestrator {
+        if let Some(ref rt) = runtime_core {
+            tasks.push(crate::orchestrator::spawn_orchestrator(
+                rt,
+                crate::orchestrator::OrchestrationTargets {
+                    mdns: mdns_core.clone(),
+                    dns: dns_runtime.clone(),
+                    health: health_runtime.clone(),
+                    proxy: proxy_runtime.clone(),
+                },
+                cancel.clone(),
+            ));
+        }
     }
 
     let cores = Cores {
@@ -354,10 +434,13 @@ pub async fn build_cores(
         mdns_snapshot: mdns_bridge,
     };
 
-    // ── Certmesh role background loops (caller-invariant) ──
-    // The approval pump is spawned by the caller (its decider differs by host).
-    if let Some(ref certmesh) = cores.certmesh {
-        crate::certmesh::spawn_certmesh_background_tasks(certmesh, cancel, tasks);
+    // ── Certmesh role background loops ──
+    // The daemon always runs them; embedded opts in (a leaf does not need renewal/pull). The
+    // approval pump is spawned by the caller in every case (its decider differs by host).
+    if spec.spawn_certmesh_loops {
+        if let Some(ref certmesh) = cores.certmesh {
+            crate::certmesh::spawn_certmesh_background_tasks(certmesh, cancel, tasks);
+        }
     }
 
     tracing::debug!("Domain cores built");

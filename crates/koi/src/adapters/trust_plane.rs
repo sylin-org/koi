@@ -6,25 +6,29 @@
 //! the certmesh CA becomes available and tears them all down when the CA is
 //! destroyed — with no daemon restart. The foreground daemon (`daemon_mode`) and
 //! the Windows service (`run_service`) both spawn the trust plane through this one
-//! function, so the two boot paths cannot drift. (Previously each inlined the
-//! wiring and the Windows path had already silently dropped ACME — the exact class
-//! of parity defect the `koi-compose` layer exists to prevent.)
+//! function, so the two boot paths cannot drift.
 //!
-//! Before ADR-020 these were gated **once at boot** on a CA already existing
-//! (`self_enroll` / `announce_certmesh_endpoint` at startup). A node that booted
-//! Open and later ran `koi certmesh create` then had a dead trust plane AND an
-//! unadvertised CA until restart — ADR-016 §2's "startup-gated mTLS/ACME listeners"
-//! bug, of which the unadvertised `_certmesh._tcp` record was a sibling (found on
-//! hardware, two-box run 2026-06-20). The supervisor keys off
+//! The supervisor keys off
 //! [`CertmeshCore::watch_posture`](koi_certmesh::CertmeshCore::watch_posture) so the
-//! whole trust-plane presence is live whenever the CA exists.
+//! whole trust-plane presence is live whenever the CA exists. A node that boots Open
+//! and later runs `koi certmesh create` brings the trust plane up reactively, and a
+//! node whose CA is **locked at boot** recovers via a bounded retry timer
+//! ([`RETRY_INTERVAL`]) once `koi certmesh unlock` makes the CA usable.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use koi_compose::cores::Cores;
+
+/// How often to re-attempt `start_listeners` while the posture is secure but the
+/// listeners are not yet live. Covers the case where a CA exists but is **locked at
+/// boot**: the posture watch stays `signed: true`, so `koi certmesh unlock` does not
+/// fire a posture change to wake the supervisor — the retry timer does instead, so
+/// the trust plane recovers without a daemon restart.
+const RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Ports + zone the trust-plane presence needs. Host-agnostic — the ACME base
 /// FQDN is derived from the local hostname inside the supervisor.
@@ -71,7 +75,10 @@ pub fn spawn(
                         tracing::info!("trust-plane presence started (CA available)");
                         live = Some(started);
                     }
-                    // If self-enroll is not ready yet, retry on the next posture change.
+                    // If self-enroll is not ready yet (e.g. the CA exists but is locked
+                    // at boot), the retry timer below re-attempts — a `koi certmesh
+                    // unlock` does not change the posture watch, so a posture-change wake
+                    // alone would never recover it.
                 }
                 // CA destroyed → take the trust plane down (drain in-flight first).
                 (false, true) => {
@@ -80,6 +87,10 @@ pub fn spawn(
                 }
                 _ => {}
             }
+
+            // Re-attempt only while we want the listeners up but they are not — the
+            // timer is inert once they are live or while the node is Open.
+            let want_retry = secure && live.is_none();
 
             tokio::select! {
                 _ = cancel.cancelled() => {
@@ -92,6 +103,9 @@ pub fn spawn(
                         stop_listeners(live.take(), &mdns).await;
                         break;
                     }
+                }
+                _ = tokio::time::sleep(RETRY_INTERVAL), if want_retry => {
+                    // Fall through to re-run start_listeners at the top of the loop.
                 }
             }
         }
@@ -125,7 +139,8 @@ async fn stop_listeners(live: Option<Live>, mdns: &Option<Arc<koi_mdns::MdnsCore
 
 /// Self-enroll the local leaf and spawn the mTLS (and ACME, when enabled) listeners
 /// under a fresh child token. `None` when the CA is not yet ready to self-enroll
-/// (the supervisor retries on the next posture change).
+/// (e.g. locked at boot); the supervisor then re-attempts on the next posture change
+/// or after [`RETRY_INTERVAL`], whichever comes first.
 async fn start_listeners(
     certmesh: &Arc<koi_certmesh::CertmeshCore>,
     dns: &Option<Arc<koi_dns::DnsRuntime>>,

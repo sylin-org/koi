@@ -27,13 +27,7 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     startup_diagnostics(&config, http_bind_ip);
 
     // Generate a Daemon Access Token (DAT) for authenticating mutation requests
-    let dat_token = {
-        use base64::Engine;
-        use rand::RngCore;
-        let mut token_bytes = [0u8; 32];
-        rand::rng().fill_bytes(&mut token_bytes);
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes)
-    };
+    let dat_token = crate::infra::mint_dat();
 
     // Write breadcrumb so clients can discover the daemon. Clients connect over a
     // routable address, so an unspecified bind (0.0.0.0) is advertised as loopback.
@@ -58,10 +52,11 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             no_proxy: config.no_proxy,
             no_udp: config.no_udp,
             no_runtime: config.no_runtime,
-            data_dir: config.data_dir.clone(),
+            data_dir: Some(config.data_dir.clone()),
             dns_config: config.dns_config(),
             runtime: config.runtime.clone(),
             http_port: config.http_port,
+            ..koi_compose::cores::CoreSpec::daemon_defaults()
         },
         &cancel,
         &mut tasks,
@@ -157,58 +152,15 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     }
 
     // ── HTTP mDNS announcement (opt-in) ──
-    let mut http_announce_id: Option<String> = None;
-    if config.announce_http && !config.no_http {
-        if let Some(ref mdns) = cores.mdns {
-            let hostname = hostname::get()
-                .ok()
-                .and_then(|os| os.into_string().ok())
-                .unwrap_or_else(|| "unknown".to_string());
-
-            let mut txt = std::collections::HashMap::new();
-            txt.insert("path".to_string(), "/".to_string());
-            txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
-            txt.insert("api".to_string(), "v1".to_string());
-            txt.insert("dashboard".to_string(), "true".to_string());
-
-            // Stamp this node's trust posture so peers discovering it read the
-            // mesh's trust map directly (ADR-020 §8). Advisory hints; verify/mTLS
-            // adjudicates actual trust.
-            if let Some(ref certmesh) = cores.certmesh {
-                let id = certmesh.local_identity().await;
-                koi_common::peer::stamp(
-                    &mut txt,
-                    certmesh.posture(),
-                    id.as_ref().map(|i| i.ca_fingerprint.as_str()),
-                    id.as_ref().map(|i| i.renewal.expires_at),
-                );
-            }
-
-            let payload = koi_mdns::protocol::RegisterPayload {
-                name: format!("Koi ({hostname})"),
-                service_type: "_http._tcp".to_string(),
-                port: config.http_port,
-                ip: None,
-                lease_secs: None,
-                txt,
-            };
-            match mdns.register(payload) {
-                Ok(result) => {
-                    tracing::info!(
-                        id = %result.id,
-                        port = config.http_port,
-                        "HTTP server announced via mDNS"
-                    );
-                    http_announce_id = Some(result.id);
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to announce HTTP server via mDNS");
-                }
-            }
-        } else {
-            tracing::debug!("--announce-http set but mDNS is disabled — skipping");
-        }
-    }
+    // Built by the one shared helper (with the ADR-020 posture stamp) so the daemon, the
+    // Windows service, and embedded cannot diverge. The daemon always serves the dashboard.
+    let http_announce_id = koi_compose::announce::http_record(
+        &cores,
+        config.http_port,
+        true,
+        config.announce_http && !config.no_http,
+    )
+    .await;
 
     // ── MCP endpoint discovery descriptors (one `_mcp._tcp` per host + in-zone TXT) ──
     // Gated on the transport being mounted; withdrawn by the mDNS goodbye on shutdown.

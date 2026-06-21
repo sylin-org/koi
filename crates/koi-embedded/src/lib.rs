@@ -186,10 +186,10 @@ impl Builder {
         self
     }
 
-    /// Run the certmesh role-driven background loops (renewal, standby roster sync, member
-    /// heartbeat, failover/announce) — the same loops the daemon runs. Opt-in; requires
-    /// certmesh (`certmesh`) to be enabled. A clustered embedded CA host wants this; a leaf
-    /// does not. Enrollment approval auto-denies (no interactive console).
+    /// Run the certmesh role-driven background loop (trust-bundle pull — policy refresh +
+    /// revocation detection — plus cert renewal) — the same loop the daemon runs. Opt-in;
+    /// requires certmesh (`certmesh`) to be enabled. A clustered embedded CA host wants
+    /// this; a leaf does not. Enrollment approval auto-denies (no interactive console).
     pub fn certmesh_background(mut self, enabled: bool) -> Self {
         self.config.certmesh_background_enabled = enabled;
         self
@@ -544,64 +544,26 @@ impl KoiEmbedded {
         }
 
         // ── HTTP mDNS announcement (opt-in) ──
-        let http_announce_id =
-            if self.config.announce_http && self.config.http_enabled && self.config.mdns_enabled {
-                if let Some(ref mdns_core) = mdns {
-                    let hostname = hostname::get()
-                        .ok()
-                        .and_then(|os| os.into_string().ok())
-                        .unwrap_or_else(|| "unknown".to_string());
-
-                    let mut txt = std::collections::HashMap::new();
-                    txt.insert("path".to_string(), "/".to_string());
-                    txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
-                    txt.insert("api".to_string(), "v1".to_string());
-                    txt.insert(
-                        "dashboard".to_string(),
-                        self.config.dashboard_enabled.to_string(),
-                    );
-
-                    // Stamp this node's trust posture into its own announcement so
-                    // peers discovering it get fleet-wide trust legibility
-                    // (ADR-020 §8). Advisory hints; `verify`/mTLS adjudicates.
-                    if let Some(ref core) = certmesh {
-                        let id = core.local_identity().await;
-                        koi_common::peer::stamp(
-                            &mut txt,
-                            core.posture(),
-                            id.as_ref().map(|i| i.ca_fingerprint.as_str()),
-                            id.as_ref().map(|i| i.renewal.expires_at),
-                        );
-                    }
-
-                    let payload = koi_mdns::protocol::RegisterPayload {
-                        name: format!("Koi ({hostname})"),
-                        service_type: "_http._tcp".to_string(),
-                        port: self.config.http_port,
-                        ip: None,
-                        lease_secs: None,
-                        txt,
-                    };
-                    match mdns_core.register(payload) {
-                        Ok(result) => {
-                            tracing::info!(
-                                id = %result.id,
-                                port = self.config.http_port,
-                                "HTTP server announced via mDNS"
-                            );
-                            Some(result.id)
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "Failed to announce HTTP server via mDNS");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+        // Built by the one shared helper (with the ADR-020 posture stamp) so embedded,
+        // the daemon, and the Windows service cannot diverge. Embedded advertises the
+        // dashboard hint it actually serves (its config flag, not a hardcoded `true`).
+        let announce_cores = koi_compose::cores::Cores {
+            mdns: mdns.clone(),
+            certmesh: certmesh.clone(),
+            dns: dns.clone(),
+            health: health.clone(),
+            proxy: proxy.clone(),
+            udp: udp.clone(),
+            runtime: runtime.clone(),
+            mdns_snapshot: mdns_bridge.clone(),
+        };
+        let http_announce_id = koi_compose::announce::http_record(
+            &announce_cores,
+            self.config.http_port,
+            self.config.dashboard_enabled,
+            self.config.announce_http && self.config.http_enabled && self.config.mdns_enabled,
+        )
+        .await;
 
         // ── Domain event → host KoiEvent forwarders ──
         // One shared spawn helper instead of six copies of the streaming select! skeleton.
@@ -701,8 +663,9 @@ impl KoiEmbedded {
         }
 
         // ── Certmesh background tasks (opt-in) ──
-        // Renewal / roster sync / heartbeat / failover, same as the daemon. Off by default;
-        // a clustered embedded CA host opts in. No console, so enrollment auto-denies.
+        // Trust-bundle pull (policy refresh + revocation detection) + cert renewal, same as
+        // the daemon. Off by default; a clustered embedded CA host opts in. No console, so
+        // enrollment auto-denies.
         if self.config.certmesh_background_enabled {
             if let Some(ref certmesh_core) = certmesh {
                 koi_compose::certmesh::spawn_enrollment_approval(
@@ -884,6 +847,10 @@ pub(crate) fn map_join_error(err: tokio::task::JoinError) -> KoiError {
 }
 
 /// Build a dashboard snapshot from the embedded domain cores.
+///
+/// Delegates to `koi_compose::snapshot::build_dashboard_snapshot`, the one detail projection
+/// shared with the daemon dashboard, so the embedded snapshot now carries the same
+/// health / DNS / certmesh / proxy / UDP detail (not just the capability ladder).
 async fn build_embedded_snapshot(
     mdns: Option<Arc<koi_mdns::MdnsCore>>,
     certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
@@ -893,8 +860,6 @@ async fn build_embedded_snapshot(
     udp: Option<Arc<koi_udp::UdpRuntime>>,
     runtime: Option<Arc<koi_runtime::RuntimeCore>>,
 ) -> serde_json::Value {
-    // The capability ladder is assembled once in koi-compose, shared with `/v1/status` and
-    // the dashboard snapshot. The embedded snapshot includes `enabled` like the dashboard.
     let cores = koi_compose::cores::Cores {
         mdns,
         certmesh,
@@ -905,19 +870,7 @@ async fn build_embedded_snapshot(
         runtime,
         mdns_snapshot: None,
     };
-    let capabilities: Vec<serde_json::Value> = koi_compose::status::assemble_capabilities(&cores)
-        .await
-        .into_iter()
-        .map(|c| {
-            serde_json::json!({
-                "name": c.status.name,
-                "enabled": c.enabled,
-                "healthy": c.status.healthy,
-                "summary": c.status.summary,
-            })
-        })
-        .collect();
-    serde_json::json!({ "capabilities": capabilities })
+    koi_compose::snapshot::build_dashboard_snapshot(&cores).await
 }
 
 #[cfg(test)]

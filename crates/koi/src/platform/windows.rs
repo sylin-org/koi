@@ -438,10 +438,11 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 no_proxy: config.no_proxy,
                 no_udp: config.no_udp,
                 no_runtime: config.no_runtime,
-                data_dir: config.data_dir.clone(),
+                data_dir: Some(config.data_dir.clone()),
                 dns_config: config.dns_config(),
                 runtime: config.runtime.clone(),
                 http_port: config.http_port,
+                ..koi_compose::cores::CoreSpec::daemon_defaults()
             },
             &cancel,
             &mut tasks,
@@ -449,13 +450,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         .await;
 
         // Generate a Daemon Access Token (DAT) for authenticating mutation requests
-        let dat_token = {
-            use base64::Engine;
-            use rand::RngCore;
-            let mut token_bytes = [0u8; 32];
-            rand::rng().fill_bytes(&mut token_bytes);
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes)
-        };
+        let dat_token = crate::infra::mint_dat();
 
         // Ensure data directory exists
         koi_config::dirs::ensure_data_dir();
@@ -582,46 +577,18 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             }
         }
 
-        // HTTP mDNS announcement (opt-in)
-        let mut http_announce_id: Option<String> = None;
-        if config.announce_http && !config.no_http {
-            if let Some(ref mdns) = cores.mdns {
-                let hostname = hostname::get()
-                    .ok()
-                    .and_then(|os| os.into_string().ok())
-                    .unwrap_or_else(|| "unknown".to_string());
-
-                let mut txt = std::collections::HashMap::new();
-                txt.insert("path".to_string(), "/".to_string());
-                txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
-                txt.insert("api".to_string(), "v1".to_string());
-                txt.insert("dashboard".to_string(), "true".to_string());
-
-                let payload = koi_mdns::protocol::RegisterPayload {
-                    name: format!("Koi ({hostname})"),
-                    service_type: "_http._tcp".to_string(),
-                    port: config.http_port,
-                    ip: None,
-                    lease_secs: None,
-                    txt,
-                };
-                match mdns.register(payload) {
-                    Ok(result) => {
-                        tracing::info!(
-                            id = %result.id,
-                            port = config.http_port,
-                            "HTTP server announced via mDNS"
-                        );
-                        http_announce_id = Some(result.id);
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to announce HTTP server via mDNS");
-                    }
-                }
-            } else {
-                tracing::debug!("KOI_ANNOUNCE_HTTP set but mDNS is disabled — skipping");
-            }
-        }
+        // HTTP mDNS announcement (opt-in).
+        // The one shared helper builds the TXT *and* the ADR-020 posture stamp, so the
+        // Windows service no longer omits it (the verified parity defect) — it advertises
+        // its posture/fp/expires identically to the foreground daemon. The service always
+        // serves the dashboard.
+        let http_announce_id = koi_compose::announce::http_record(
+            &cores,
+            config.http_port,
+            true,
+            config.announce_http && !config.no_http,
+        )
+        .await;
 
         // MCP endpoint discovery descriptors (one `_mcp._tcp` per host + in-zone TXT),
         // gated on the transport; shared with the foreground daemon to avoid drift.

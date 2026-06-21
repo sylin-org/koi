@@ -12,6 +12,11 @@
 //! wires. Nothing depends on it except the top-level consumers, so the `koi-common`
 //! kernel and the domain crates keep clean dependency closures.
 
+/// Per-host mDNS announce records (`_http._tcp` self-announcement with the ADR-020 trust
+/// stamp) shared by the daemon, the Windows service, and embedded so the stamp is present by
+/// construction on every boot path.
+pub mod announce;
+
 /// The cross-domain integration-trait bridges (moved from the binary's `integrations.rs`).
 pub mod bridges;
 
@@ -31,6 +36,10 @@ pub mod cores;
 /// Unified capability-status assembly (`assemble_capabilities`) — the single capability
 /// ladder shared by `/v1/status`, the dashboard snapshot, and the embedded snapshot.
 pub mod status;
+
+/// The rich dashboard snapshot (`build_dashboard_snapshot`) — the one detail projection of
+/// the live cores shared by the daemon's dashboard adapter and the embedded snapshot.
+pub mod snapshot;
 
 #[cfg(test)]
 mod parity_tests {
