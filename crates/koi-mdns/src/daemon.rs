@@ -79,6 +79,13 @@ pub(crate) struct MdnsDaemon {
     /// Core-wide event channel (every active pump feeds this).
     event_tx: broadcast::Sender<KoiEvent>,
     next_gen: AtomicU64,
+    /// Receive-health signal (ADR-020 anti-silence): every translated INBOUND mDNS
+    /// event bumps these, so `MdnsCore::status` can distinguish a healthy browse from
+    /// "browsing but receiving nothing" (inbound multicast not reaching this daemon —
+    /// e.g. the mdns-sd interface-index drop, or a multicast-filtering switch). A
+    /// silently-empty LAN browser is exactly the failure koi's own thesis forbids.
+    events_seen: AtomicU64,
+    last_event_ms: AtomicU64,
     /// Test-only instrumentation: counts real mdns-sd browse starts and
     /// stop_browse calls so tests can assert the N-subscribers→1-browse collapse
     /// and stop-on-last-drop behaviorally at the boundary (not via the fan-out
@@ -104,6 +111,8 @@ impl MdnsDaemon {
             types: Mutex::new(HashMap::new()),
             event_tx,
             next_gen: AtomicU64::new(0),
+            events_seen: AtomicU64::new(0),
+            last_event_ms: AtomicU64::new(0),
             #[cfg(test)]
             browse_starts: AtomicU64::new(0),
             #[cfg(test)]
@@ -298,9 +307,32 @@ impl MdnsDaemon {
         types.get(key)?.records.get(target_name).cloned()
     }
 
+    /// Record that an inbound mDNS event arrived (receive-health signal).
+    fn note_inbound(&self) {
+        self.events_seen.fetch_add(1, Ordering::Relaxed);
+        self.last_event_ms.store(now_ms(), Ordering::Relaxed);
+    }
+
+    /// Receive-health snapshot for `MdnsCore::status`:
+    /// `(events_seen, secs_since_last_event, has_active_browse)`. The age is `None`
+    /// when nothing has ever been received. A live browse with `events_seen == 0`
+    /// for a long time on a routable NIC means inbound multicast isn't reaching us.
+    pub(crate) fn receive_health(&self) -> (u64, Option<u64>, bool) {
+        let events = self.events_seen.load(Ordering::Relaxed);
+        let last = self.last_event_ms.load(Ordering::Relaxed);
+        let age = (last != 0).then(|| now_ms().saturating_sub(last) / 1000);
+        let active = !self
+            .types
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty();
+        (events, age, active)
+    }
+
     /// Pump output: update the records cache and fan out to the per-type channel
     /// and the core-wide channel exactly once each. Skips stale-generation pumps.
     fn pump_emit(&self, key: &str, gen: u64, event: KoiEvent) {
+        self.note_inbound();
         {
             let mut types = self.types.lock().unwrap_or_else(|e| e.into_inner());
             let Some(entry) = types.get_mut(key) else {
@@ -360,6 +392,7 @@ impl MdnsDaemon {
 
     #[cfg(test)]
     pub(crate) fn inject(&self, key: &str, event: KoiEvent) {
+        self.note_inbound();
         {
             let mut types = self.types.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(entry) = types.get_mut(key) {
@@ -693,6 +726,21 @@ pub(crate) fn resolved_to_record(resolved: &ResolvedService) -> ServiceRecord {
     }
 }
 
+/// Current wall-clock time in epoch milliseconds (0 on the impossible pre-epoch case).
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Whether this host has a routable (non-loopback, non-link-local IPv4) interface —
+/// i.e. an interface on which inbound mDNS multicast would be expected. Used by the
+/// receive-health check to avoid false alarms on a host with no real LAN NIC.
+pub(crate) fn has_live_lan_nic() -> bool {
+    lan_ip().is_some()
+}
+
 /// Return the first non-loopback, non-link-local IPv4 address on this machine.
 fn lan_ip() -> Option<std::net::IpAddr> {
     if_addrs::get_if_addrs()
@@ -767,6 +815,35 @@ mod tests {
             "3 subscribers must share a single real browse, not start 3"
         );
         drop((sub1, sub2, sub3));
+    }
+
+    #[tokio::test]
+    async fn receive_health_tracks_inbound_events() {
+        let daemon = test_daemon();
+
+        // Fresh daemon (no browse): nothing received, no active browse.
+        let (events0, age0, active0) = daemon.receive_health();
+        assert_eq!(events0, 0);
+        assert_eq!(age0, None);
+        assert!(!active0, "no subscribers → no active browse");
+
+        // An active subscription makes the browse active.
+        let sub = daemon.subscribe_type(TEST_KEY, false);
+        assert!(
+            wait_until(|| daemon.receive_health().2).await,
+            "browse should be active with a subscriber"
+        );
+
+        // A received (injected) event bumps the receive-health signal — the counter
+        // rises and the last-event age becomes set. (Uses `> before`/`is_some` so it
+        // is robust to incidental real mDNS traffic on the test host.)
+        let before = daemon.receive_health().0;
+        daemon.inject(TEST_KEY, resolved("alpha"));
+        let (events, age, active) = daemon.receive_health();
+        assert!(events > before, "an inbound event must increment the counter");
+        assert!(age.is_some(), "age is set once something is received");
+        assert!(active);
+        drop(sub);
     }
 
     #[tokio::test]

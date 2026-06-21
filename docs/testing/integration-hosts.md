@@ -108,12 +108,22 @@ the same `watch_posture` mechanism that drives the mTLS/ACME listeners. The harn
 no longer restarts the CA after create (step 6 now asserts the record is present
 reactively).
 
-**KNOWN LIMITATION — the long-running daemon's mdns-sd drops ALL inbound mDNS
-in-process (an `mdns-sd` interface-index bug, NOT systemd-resolved).** A long-running
-koi daemon receives zero inbound mDNS: its browse + LAN meta-browse cache stay empty
-for every remote service, while a **standalone** `koi mdns discover` (same binary,
-same NIC, daemon stopped) receives everything — which is how the test validates P3.
-The *send/announce* side works regardless (peers discover the daemon's records).
+**KNOWN LIMITATION (OPEN) — the long-lived daemon's mDNS browse never resolves on
+Linux.** A long-running koi daemon's browse only ever emits `SearchStarted` (no
+`ServiceResolved`); a **standalone** `koi mdns discover` (fresh engine, same NIC)
+resolves reliably, and a **Windows** long-lived daemon also resolves. So it is Linux +
+long-lived-engine specific. The suite validates P3 via the standalone path (step 10).
+
+> **Root cause (confirmed on hardware, mechanism still being pinned): the Linux
+> long-lived `ServiceDaemon` does NOT emit the browse query on the wire** — tcpdump
+> shows 0 query frames for the browsed type while the daemon sends other mDNS; no query
+> → the announcer never replies → never resolves. `handle_read` RECEIVE works
+> (matched 536/536). **Ruled out:** systemd-resolved (2×2 bisection); the mdns-sd
+> IP_PKTINFO index-drop (receive works); and Known-Answer Suppression (a fork fix that
+> omitted known-answers on the browse query did NOT flip it — there is no query to
+> suppress). The send-path/querier mechanism is under active investigation; the real
+> fix is pending. **The detailed analysis below is SUPERSEDED by this finding** (it
+> describes the index-drop theory, since disproven).
 
 Root cause (source-verified + observed on hardware, 2026-06-21):
 - **systemd-resolved is NOT the cause.** 2×2 bisection: daemon = 0 with resolved both

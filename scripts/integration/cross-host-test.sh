@@ -110,18 +110,30 @@ curl -s "$CA/v1/certmesh/status" -H "x-koi-token: $TOKEN" 2>/dev/null | jq -r '.
 if curl -s "$CA/v1/certmesh/status" -H "x-koi-token: $TOKEN" 2>/dev/null | jq -e ".members[]? | select(.hostname==\"$MEMBER_HOST\")" >/dev/null 2>&1; then ok "roster has $MEMBER_HOST"; else bad "roster missing member"; fi
 
 echo "== 10. P3: member discovers the CA's posture TXT over real mDNS (standalone) =="
-# Stop the member daemon and discover STANDALONE. A long-running daemon that shares
-# UDP 5353 with systemd-resolved does not reliably receive cross-host multicast on
-# these Debian boxes (a known mDNS coexistence limitation, separate from ADR-020 —
-# see docs/testing/integration-hosts.md "Findings"). Standalone discover is a real
-# koi mode and proves the CA's posture/fp/expires TXT crosses the LAN.
+# Validated via a STANDALONE discover. OPEN BUG (under investigation): the long-lived
+# DAEMON's browse does NOT resolve on Linux — it never emits the browse query on the
+# wire (an mdns-sd long-lived-ServiceDaemon defect; Windows + Linux-standalone both
+# work). See docs/testing/integration-hosts.md "Findings". Standalone is a real koi
+# mode and proves the CA's posture/fp/expires TXT crosses the LAN.
 mssh "pkill -x koi 2>/dev/null; rm -f /run/user/1000/koi.endpoint; sleep 1"
 DISC=$(mssh "KOI_DATA_DIR=/home/stone/koi-test/data timeout 12 /home/stone/koi-test/koi mdns discover _certmesh._tcp 2>&1" || true)
 echo "$DISC" | grep -iE 'posture=|fp=' | head -5 | sed 's/^/    /'
-if echo "$DISC" | grep -qiE 'posture=|fp='; then ok "discover sees the CA posture/fp TXT over the LAN"; else bad "no posture TXT seen"; fi
+if echo "$DISC" | grep -qiE 'posture=|fp='; then ok "standalone discover sees the CA posture/fp TXT over the LAN"; else bad "no posture TXT seen"; fi
+# Restart the member daemon so the koi-status check (step 12) has a live daemon.
+mssh "cd /home/stone/koi-test && setsid -f env KOI_DATA_DIR=\$PWD/data KOI_NO_CREDENTIAL_STORE=1 KOI_HTTP_BIND=0.0.0.0 /home/stone/koi-test/koi --daemon --no-runtime --no-proxy --no-udp --no-mcp-http --no-acme </dev/null >/home/stone/koi-test/daemon.log 2>&1"
+for _ in $(seq 1 15); do mssh "curl -s --max-time 2 localhost:5641/healthz 2>/dev/null" | grep -q OK && break; sleep 1; done
 
 echo "== 11. P6: koi trust diagnose on the member =="
 mssh "KOI_DATA_DIR=/home/stone/koi-test/data KOI_NO_CREDENTIAL_STORE=1 /home/stone/koi-test/koi trust diagnose 2>&1" | sed 's/^/    /'
+
+echo "== 12. A: koi status surfaces mDNS receive-health (anti-silence) =="
+# With a browse active, koi status must report the daemon is actually RECEIVING — not a
+# silently-empty browser. Start a background browse, then read the daemon's status.
+mssh "KOI_DATA_DIR=/home/stone/koi-test/data timeout 10 /home/stone/koi-test/koi mdns discover _certmesh._tcp >/dev/null 2>&1 &"
+sleep 5
+ST=$(mssh "curl -s http://localhost:5641/v1/status" 2>/dev/null)
+echo "$ST" | tr ',{}' '\n' | grep -iE 'browse receiving|browse active|mdns_browse' | head -4 | sed 's/^/    /'
+if echo "$ST" | grep -qiE 'browse receiving|browse active'; then ok "koi status surfaces mDNS receive-health"; else bad "status not surfacing receive-health (A)"; fi
 
 echo
 echo "==================== RESULT: $PASS passed, $FAIL failed ===================="
