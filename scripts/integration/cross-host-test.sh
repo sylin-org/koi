@@ -109,19 +109,17 @@ echo "== 9. CA roster shows the member =="
 curl -s "$CA/v1/certmesh/status" -H "x-koi-token: $TOKEN" 2>/dev/null | jq -r '.members[]?.hostname' 2>/dev/null | sed 's/^/    roster: /'
 if curl -s "$CA/v1/certmesh/status" -H "x-koi-token: $TOKEN" 2>/dev/null | jq -e ".members[]? | select(.hostname==\"$MEMBER_HOST\")" >/dev/null 2>&1; then ok "roster has $MEMBER_HOST"; else bad "roster missing member"; fi
 
-echo "== 10. P3: member discovers the CA's posture TXT over real mDNS (standalone) =="
-# Validated via a STANDALONE discover. OPEN BUG (under investigation): the long-lived
-# DAEMON's browse does NOT resolve on Linux — it never emits the browse query on the
-# wire (an mdns-sd long-lived-ServiceDaemon defect; Windows + Linux-standalone both
-# work). See docs/testing/integration-hosts.md "Findings". Standalone is a real koi
-# mode and proves the CA's posture/fp/expires TXT crosses the LAN.
-mssh "pkill -x koi 2>/dev/null; rm -f /run/user/1000/koi.endpoint; sleep 1"
-DISC=$(mssh "KOI_DATA_DIR=/home/stone/koi-test/data timeout 12 /home/stone/koi-test/koi mdns discover _certmesh._tcp 2>&1" || true)
+echo "== 10. P3: member's DAEMON discovers the CA's posture TXT over real mDNS =="
+# Client-mode discover streams the member daemon's OWN long-lived browse (the real
+# product path). Fixed by the koi-mdns hub warm-cache replay: a discover that joins a
+# type already cached/held by the daemon (e.g. by the LAN-wide meta-browse) now surfaces
+# the services mdns-sd resolved before subscribing — previously it saw future events
+# only and returned nothing, while a cold standalone resolved fine. Give the daemon a
+# moment to warm its cache from the CA's announce, then discover via the daemon.
+sleep 6
+DISC=$(mssh "KOI_DATA_DIR=/home/stone/koi-test/data timeout 14 /home/stone/koi-test/koi mdns discover _certmesh._tcp 2>&1" || true)
 echo "$DISC" | grep -iE 'posture=|fp=' | head -5 | sed 's/^/    /'
-if echo "$DISC" | grep -qiE 'posture=|fp='; then ok "standalone discover sees the CA posture/fp TXT over the LAN"; else bad "no posture TXT seen"; fi
-# Restart the member daemon so the koi-status check (step 12) has a live daemon.
-mssh "cd /home/stone/koi-test && setsid -f env KOI_DATA_DIR=\$PWD/data KOI_NO_CREDENTIAL_STORE=1 KOI_HTTP_BIND=0.0.0.0 /home/stone/koi-test/koi --daemon --no-runtime --no-proxy --no-udp --no-mcp-http --no-acme </dev/null >/home/stone/koi-test/daemon.log 2>&1"
-for _ in $(seq 1 15); do mssh "curl -s --max-time 2 localhost:5641/healthz 2>/dev/null" | grep -q OK && break; sleep 1; done
+if echo "$DISC" | grep -qiE 'posture=|fp='; then ok "member daemon discovers the CA posture/fp TXT over the LAN"; else bad "no posture TXT seen (daemon discover)"; fi
 
 echo "== 11. P6: koi trust diagnose on the member =="
 mssh "KOI_DATA_DIR=/home/stone/koi-test/data KOI_NO_CREDENTIAL_STORE=1 /home/stone/koi-test/koi trust diagnose 2>&1" | sed 's/^/    /'

@@ -1,5 +1,5 @@
 use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent as MdnsServiceEvent, ServiceInfo};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -223,7 +223,7 @@ impl MdnsDaemon {
     /// `key` must already be canonical (see [`canonical_key`]); `is_meta` is
     /// `true` only for the meta-query type.
     pub fn subscribe_type(self: &Arc<Self>, key: &str, is_meta: bool) -> BrowseSubscription {
-        let (rx, gen) = {
+        let (rx, gen, replay) = {
             let mut types = self.types.lock().unwrap_or_else(|e| e.into_inner());
             let entry = types.entry(key.to_string()).or_insert_with(|| {
                 let (tx, _rx0) = broadcast::channel(TYPE_BROADCAST_CAPACITY);
@@ -238,11 +238,26 @@ impl MdnsDaemon {
                 }
             });
             entry.refcount += 1;
-            (entry.tx.subscribe(), entry.gen)
+            // Replay the warm cache to THIS subscriber only. mdns-sd replays its cache
+            // synchronously to the FIRST listener of a type; the hub then shares that one
+            // browse across N subscribers via a future-only broadcast. So a discover that
+            // joins a type already being browsed (the lazy LAN-wide meta-browse, or an
+            // earlier discover) would get future events only and never surface services
+            // mdns-sd already resolved — exactly why a long-lived daemon's browse found
+            // nothing while a cold standalone resolved fine. Replaying `records` here
+            // closes that gap deterministically, without re-broadcasting to peers.
+            let replay: VecDeque<KoiEvent> = entry
+                .records
+                .values()
+                .cloned()
+                .map(KoiEvent::Resolved)
+                .collect();
+            (entry.tx.subscribe(), entry.gen, replay)
         };
 
         BrowseSubscription {
             rx: tokio::sync::Mutex::new(rx),
+            replay: std::sync::Mutex::new(replay),
             _guard: Arc::new(TypeGuard {
                 daemon: self.clone(),
                 key: key.to_string(),
@@ -443,6 +458,10 @@ impl MdnsDaemon {
 /// underlying browse only when the last subscription drops.
 pub struct BrowseSubscription {
     rx: tokio::sync::Mutex<broadcast::Receiver<KoiEvent>>,
+    /// Warm-cache records (as `Resolved` events) replayed to THIS subscriber before
+    /// live events, so a browse that joins an already-cached type still surfaces the
+    /// services mdns-sd resolved before we subscribed. Drained once, then empty.
+    replay: std::sync::Mutex<VecDeque<KoiEvent>>,
     _guard: Arc<TypeGuard>,
 }
 
@@ -452,6 +471,15 @@ impl BrowseSubscription {
     /// A lagging subscriber (slow SSE client) drops the oldest missed events and
     /// continues — it never stalls the shared pump or other subscribers.
     pub async fn recv(&self) -> Option<KoiEvent> {
+        // Warm-cache replay first (cached resolved services), then live events.
+        if let Some(event) = self
+            .replay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
+        {
+            return Some(event);
+        }
         let mut rx = self.rx.lock().await;
         loop {
             match rx.recv().await {
@@ -1004,6 +1032,28 @@ mod tests {
         .expect("resolve returns promptly")
         .expect("resolve succeeds");
         assert_eq!(record.name, "epsilon");
+    }
+
+    #[tokio::test]
+    async fn new_subscriber_replays_warm_cache() {
+        let daemon = test_daemon();
+        // First subscriber starts the browse; warm the cache with a resolved service.
+        let sub1 = daemon.subscribe_type(TEST_KEY, false);
+        daemon.inject(TEST_KEY, resolved("zeta"));
+        let _ = recv_timeout(&sub1).await; // sub1 saw it live
+
+        // A discover that JOINS the already-warm type (the real daemon case: the
+        // LAN-wide meta-browse or an earlier discover already cached the service)
+        // must still surface it — not just future events. This is the regression
+        // guard for "long-lived daemon browse finds nothing, cold standalone resolves".
+        let sub2 = daemon.subscribe_type(TEST_KEY, false);
+        let replayed = recv_timeout(&sub2)
+            .await
+            .expect("a new subscriber replays the warm cache");
+        assert!(
+            matches!(replayed, KoiEvent::Resolved(r) if r.name == "zeta"),
+            "joining a warm browse replays the cached resolved service"
+        );
     }
 
     // ── Boundary parsing ──────────────────────────────────────────
