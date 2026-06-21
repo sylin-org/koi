@@ -408,7 +408,7 @@ pub fn migrate_to_envelope(
     Ok((new_encrypted, slot_table, master_key))
 }
 
-/// Encrypt a CA key with envelope encryption from scratch (for new ponds).
+/// Encrypt a CA key with envelope encryption from scratch (for a new CA).
 ///
 /// Returns `(encrypted_key, slot_table, master_key)`.
 pub fn envelope_encrypt_new(

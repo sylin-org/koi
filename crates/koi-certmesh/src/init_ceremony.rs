@@ -140,7 +140,7 @@ fn eval_init_profile(bag: &mut serde_json::Map<String, serde_json::Value>) -> Op
             return Some(EvalResult::NeedInput {
                 prompts: vec![Prompt::select_one(
                     "profile",
-                    "Who is this pond for?",
+                    "Who is this certificate authority for?",
                     vec![
                         SelectOption::with_description(
                             "just_me",
@@ -168,8 +168,8 @@ fn eval_init_profile(bag: &mut serde_json::Map<String, serde_json::Value>) -> Op
                     ],
                 )],
                 messages: vec![Message::info(
-                    "Initialize Pond",
-                    "A pond is a private certificate authority for your garden. \
+                    "Initialize Certificate Authority",
+                    "This is a private certificate authority for your network. \
                      Choose a trust profile that matches how you'll use it.",
                 )],
             });
@@ -192,7 +192,7 @@ fn eval_init_custom_posture(
         return Some(EvalResult::NeedInput {
             prompts: vec![Prompt::select_one(
                 "enrollment_open",
-                "Enrollment when pond is created",
+                "Enrollment when the CA is created",
                 vec![
                     SelectOption::with_description(
                         "open",
@@ -404,8 +404,8 @@ fn eval_init_passphrase(
                 )],
                 messages: vec![Message::info(
                     "Custom Passphrase",
-                    "This passphrase protects your pond's private key. \
-                     Write it down - you'll need it if the keystone stone reboots.\n\n\
+                    "This passphrase protects your CA's private key. \
+                     Write it down - you'll need it if the keystone member reboots.\n\n\
                      Minimum 8 characters.",
                 )],
             });
@@ -467,9 +467,9 @@ fn passphrase_choice_prompt(bag: &serde_json::Map<String, serde_json::Value>) ->
         hint_text.push_str(&format!("\nMemorization hint: *{hint}*"));
     }
     hint_text.push_str(
-        "\n\nThis passphrase protects your pond's private key. \
+        "\n\nThis passphrase protects your CA's private key. \
          Write it down somewhere safe - you'll need it if the \
-         keystone stone reboots.",
+         keystone member reboots.",
     );
 
     EvalResult::NeedInput {
@@ -498,7 +498,7 @@ fn passphrase_choice_prompt(bag: &serde_json::Map<String, serde_json::Value>) ->
             Message::info("Your Passphrase", &hint_text),
             Message::info(
                 "⚠ No recovery",
-                "If you lose this passphrase, the pond must be \
+                "If you lose this passphrase, the certificate authority must be \
                  recreated from scratch. There is no reset.",
             ),
         ],
@@ -525,8 +525,8 @@ fn eval_init_unlock_method(
                     SelectOption::with_description(
                         "auto",
                         "Auto-unlock (recommended)",
-                        "The passphrase is saved locally so the pond \
-                         unlocks automatically when the stone reboots. \
+                        "The passphrase is saved locally so the CA \
+                         unlocks automatically when the member reboots. \
                          Best for headless machines.",
                     ),
                     SelectOption::with_description(
@@ -574,7 +574,7 @@ fn eval_init_auth_mode(
         None => Err(EvalResult::NeedInput {
             prompts: vec![Prompt::select_one(
                 "auth_mode",
-                "Choose how stones will authenticate when joining the pond",
+                "Choose how members will authenticate when joining the mesh",
                 vec![SelectOption::with_description(
                     "totp",
                     "TOTP (Authenticator App)",
@@ -590,7 +590,7 @@ fn eval_init_auth_mode(
                 return Err(EvalResult::ValidationError {
                     prompts: vec![Prompt::select_one(
                         "auth_mode",
-                        "Choose how stones will authenticate when joining the pond",
+                        "Choose how members will authenticate when joining the mesh",
                         vec![SelectOption::new("totp", "TOTP (Authenticator App)")],
                     )],
                     messages: Vec::new(),
@@ -620,7 +620,7 @@ fn eval_init_totp(
         let account = bag
             .get("_self_hostname")
             .and_then(|v| v.as_str())
-            .unwrap_or("pond");
+            .unwrap_or("certmesh");
         let uri = koi_crypto::totp::build_totp_uri(&secret, "ZenGarden", account);
 
         bag.insert(
@@ -643,7 +643,7 @@ fn eval_init_totp(
                 Message::qr_code("Scan this QR code with your authenticator app", &qr_content),
                 Message::info(
                     "Save this now",
-                    "This secret will not be shown again after pond creation. \
+                    "This secret will not be shown again after CA creation. \
                      You can rotate it later with the rotate-auth command.",
                 ),
             ],
@@ -757,7 +757,7 @@ fn ensure_unlock_totp_secret(bag: &mut serde_json::Map<String, serde_json::Value
     let account = bag
         .get("_self_hostname")
         .and_then(|v| v.as_str())
-        .unwrap_or("pond");
+        .unwrap_or("certmesh");
     let uri = koi_crypto::totp::build_totp_uri(&secret, "ZenGarden-Unlock", account);
 
     bag.insert(
@@ -835,7 +835,7 @@ fn eval_init_summary(
 
     EvalResult::Complete {
         messages: vec![Message::summary(
-            "Pond initialization ready",
+            "Certificate authority ready",
             summary_lines.join("\n"),
         )],
     }
@@ -854,8 +854,8 @@ fn eval_join(
                 "Enter the join code from your invitation",
             )],
             messages: vec![Message::info(
-                "Join Pond",
-                "Enter the join code you received from the pond administrator.",
+                "Join Certmesh",
+                "Enter the join code you received from the certmesh administrator.",
             )],
         };
     }
@@ -873,7 +873,7 @@ fn eval_join(
     EvalResult::Complete {
         messages: vec![Message::summary(
             "Join ready",
-            "Your stone will be enrolled in the pond.",
+            "Your member will be enrolled in the certmesh.",
         )],
     }
 }
@@ -888,11 +888,11 @@ fn eval_invite(
         return EvalResult::NeedInput {
             prompts: vec![Prompt::secret(
                 "passphrase",
-                "Enter the pond passphrase to generate an invitation",
+                "Enter the CA passphrase to generate an invitation",
             )],
             messages: vec![Message::info(
                 "Create Invitation",
-                "You'll need the pond passphrase to prove administrator authority.",
+                "You'll need the CA passphrase to prove administrator authority.",
             )],
         };
     }
@@ -929,7 +929,7 @@ fn eval_unlock(
 
     let summary = match method {
         "totp" => "The CA key will be decrypted using your authenticator code.",
-        _ => "The CA key will be decrypted and pond operations resumed.",
+        _ => "The CA key will be decrypted and certmesh operations resumed.",
     };
 
     EvalResult::Complete {
@@ -958,7 +958,7 @@ fn unlock_totp_available(paths: &crate::CertmeshPaths) -> bool {
 /// Build the passphrase-vs-TOTP unlock-method selection prompt.
 fn eval_unlock_method_choice() -> EvalResult {
     let options = vec![
-        SelectOption::with_description("passphrase", "Passphrase", "Enter your pond passphrase"),
+        SelectOption::with_description("passphrase", "Passphrase", "Enter your CA passphrase"),
         SelectOption::with_description(
             "totp",
             "Authenticator code",
@@ -968,12 +968,12 @@ fn eval_unlock_method_choice() -> EvalResult {
     EvalResult::NeedInput {
         prompts: vec![Prompt::select_one(
             "_unlock_choice",
-            "How do you want to unlock the pond?",
+            "How do you want to unlock the CA?",
             options,
         )],
         messages: vec![Message::info(
-            "Unlock Pond",
-            "The pond CA is locked. Choose how to unlock it.",
+            "Unlock Certificate Authority",
+            "The CA is locked. Choose how to unlock it.",
         )],
     }
 }
@@ -995,7 +995,7 @@ fn eval_unlock_collect_credential(
                     messages: vec![Message::info(
                         "TOTP Unlock",
                         "Enter the current code from the authenticator app you \
-                         registered during pond setup.",
+                         registered during CA setup.",
                     )],
                 });
             }
@@ -1006,11 +1006,11 @@ fn eval_unlock_collect_credential(
                 return Some(EvalResult::NeedInput {
                     prompts: vec![Prompt::secret(
                         "passphrase",
-                        "Enter the pond passphrase to unlock",
+                        "Enter the CA passphrase to unlock",
                     )],
                     messages: vec![Message::info(
-                        "Unlock Pond",
-                        "The pond CA is locked. Enter the passphrase to decrypt the CA key \
+                        "Unlock Certificate Authority",
+                        "The CA is locked. Enter the passphrase to decrypt the CA key \
                          and resume operations.",
                     )],
                 });
@@ -1037,9 +1037,9 @@ fn preset_label(profile_raw: &str) -> &'static str {
 fn profile_prompt() -> Prompt {
     Prompt::select_one(
         "profile",
-        "Who is this pond for?",
+        "Who is this certificate authority for?",
         vec![
-            SelectOption::with_description("just_me", "Just me", "Single admin, personal garden."),
+            SelectOption::with_description("just_me", "Just me", "Single admin, personal network."),
             SelectOption::with_description("my_team", "My team", "Small group with shared trust."),
             SelectOption::with_description(
                 "my_organization",
