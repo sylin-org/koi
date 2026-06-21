@@ -313,34 +313,44 @@ impl Capability for MdnsCore {
         );
 
         // Receive-health (ADR-020 anti-silence): a browse that has been active on a
-        // routable LAN for a while yet has received ZERO inbound mDNS means inbound
-        // multicast is not reaching this daemon (the mdns-sd interface-index drop, a
-        // multicast-filtering switch, etc.). Report it loudly instead of a silently
-        // empty browser. `koi mdns discover` standalone confirms (it bypasses the
-        // long-lived daemon's engine).
-        const RECEIVE_STALL_SECS: u64 = 90;
-        let (events_seen, last_age, active) = self.daemon.receive_health();
-        let uptime = self.started_at.elapsed().as_secs();
-        let receive_broken = active
-            && events_seen == 0
-            && uptime >= RECEIVE_STALL_SECS
-            && crate::daemon::has_live_lan_nic();
+        // routable LAN yet whose inbound mDNS has gone stale means inbound multicast is
+        // not reaching this daemon (the mdns-sd interface-index drop, a multicast
+        // -filtering switch, a NIC change). The verdict is driven by how long the BROWSE
+        // has been active (and the age of the last inbound event), never core uptime —
+        // so the lazy meta-browse and the first discover-after-idle are not false
+        // -flagged. It never latches: once-working-then-silent IS caught (a growing
+        // last-event age crosses the stall threshold). Report it loudly instead of a
+        // silently empty browser. `koi mdns discover` standalone confirms (it bypasses
+        // the long-lived daemon's engine). `events_seen` is a display counter only.
+        let health = self.daemon.receive_health();
+        let receive_broken = health.is_broken(crate::daemon::has_live_lan_nic());
 
         let (summary, healthy) = if receive_broken {
+            // browse_active_secs is Some here (is_broken returns false otherwise).
+            let active_secs = health.browse_active_secs.unwrap_or(0);
+            let detail = match health.last_event_age_secs {
+                Some(age) => format!(
+                    "browse active {active_secs}s on a live LAN but last mDNS was {age}s ago"
+                ),
+                None => format!("browse active {active_secs}s on a live LAN but received 0 mDNS"),
+            };
             (
                 format!(
-                    "{reg}; browse active {uptime}s on a live LAN but received 0 mDNS — \
-                     inbound multicast is not reaching this daemon (confirm with `koi mdns discover`)"
+                    "{reg}; {detail} — inbound multicast is not reaching this daemon \
+                     (confirm with `koi mdns discover`)"
                 ),
                 false,
             )
         } else {
-            let recv = match (active, last_age) {
-                (true, Some(age)) => {
-                    format!("; browse receiving ({events_seen} events, last {age}s ago)")
+            let recv = match (health.browse_active_secs, health.last_event_age_secs) {
+                (Some(active_secs), Some(age)) => format!(
+                    "; browse active {active_secs}s, receiving ({} events, last {age}s ago)",
+                    health.events_seen
+                ),
+                (Some(active_secs), None) => {
+                    format!("; browse active {active_secs}s, awaiting first record")
                 }
-                (true, None) => "; browse active, awaiting first record".to_string(),
-                (false, _) => String::new(),
+                (None, _) => String::new(),
             };
             (format!("{reg}{recv}"), true)
         };
