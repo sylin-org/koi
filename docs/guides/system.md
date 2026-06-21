@@ -56,7 +56,7 @@ koi launch           # open the web dashboard in your browser
 ```
 Koi v0.2.x - status
 
-  mDNS       running    0 registrations, 0 discovered
+  mDNS       running    0 registered (0 alive, 0 draining)
   Certmesh   running    ready - run certmesh create
   DNS        running    0 static, 0 certmesh, 0 mdns
   Health     running    0 services up (0 total)
@@ -69,7 +69,7 @@ Once you've been using Koi for a while, the numbers fill in:
 ```
 Koi v0.2.x - status
 
-  mDNS       running    3 registrations, 12 discovered
+  mDNS       running    3 registered (3 alive, 0 draining); browse active 142s, receiving (12 events, last 4s ago)
   Certmesh   running    CA active, 4 members, enrollment open
   DNS        running    8 local names
   Health     running    5 checks (4 healthy, 1 unhealthy)

@@ -32,7 +32,7 @@ Global flags work with any subcommand:
 | `--no-mcp-http`   | `KOI_NO_MCP_HTTP` | false            | Disable the in-process MCP HTTP transport (`/v1/mcp`) |
 | `--runtime KIND`  | `KOI_RUNTIME`     | `auto`           | Runtime backend (docker/podman/auto) |
 | `--dns-port`      | `KOI_DNS_PORT`    | `53`             | DNS server port                    |
-| `--dns-zone`      | `KOI_DNS_ZONE`    | `lan`            | Local DNS zone                     |
+| `--dns-zone`      | `KOI_DNS_ZONE`    | `internal`       | Local DNS zone                     |
 | `--dns-public`    | `KOI_DNS_PUBLIC`  | false            | Allow non-private DNS clients      |
 
 ---
@@ -66,7 +66,8 @@ koi mdns admin unregister ID                      # force-remove
 koi certmesh create [--profile just-me|team|organization]
                     [--operator NAME]             # interactive ceremony
 koi certmesh status                               # show mesh status
-koi certmesh join [ENDPOINT]                      # join existing mesh
+koi certmesh join [ENDPOINT] [--invite TOKEN]     # join existing mesh
+koi certmesh invite HOSTNAME [--ttl MINUTES]      # mint a single-use, hostname-bound invite
 koi certmesh unlock                               # decrypt CA key
 koi certmesh log                                  # show audit log
 koi certmesh set-hook --reload "COMMAND"          # set renewal hook
@@ -190,6 +191,7 @@ privileges. See the [trust guide](../guides/trust.md).
 
 ```
 koi status                                        # unified capability status
+koi launch                                        # open the dashboard in a web browser
 koi token show                                    # print the daemon access token (tty only)
 koi token write /run/koi/token                    # write the token to a 0600 file for containers
 koi factory-reset                                 # destroy data directory

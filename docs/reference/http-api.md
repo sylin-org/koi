@@ -111,7 +111,7 @@ is unique to Koi — no other LAN SD source exposes certificate expiry.
 
 ```json
 {
-  "version": "0.3.x",
+  "version": "0.4.2",
   "platform": "windows",
   "uptime_secs": 3600,
   "daemon": true,
@@ -247,13 +247,18 @@ data: {"event":"removed","service":{"name":"...","type":"..."}}
 
 ### Core operations
 
-| Method | Path                      | Description               |
-| ------ | ------------------------- | ------------------------- |
-| POST   | `/v1/certmesh/create`     | Create a new CA           |
-| POST   | `/v1/certmesh/join`       | Enroll into existing mesh |
-| POST   | `/v1/certmesh/unlock`     | Unlock a locked CA        |
-| GET    | `/v1/certmesh/status`     | Mesh status               |
-| GET    | `/v1/certmesh/log`        | Audit log                 |
+| Method | Path                         | Description                                          |
+| ------ | ---------------------------- | ---------------------------------------------------- |
+| POST   | `/v1/certmesh/create`        | Create a new CA                                      |
+| POST   | `/v1/certmesh/join`          | Enroll into existing mesh                            |
+| POST   | `/v1/certmesh/invite`        | Mint a single-use, hostname-bound enrollment invite |
+| POST   | `/v1/certmesh/member-csr`    | Generate this member's keypair + CSR                 |
+| POST   | `/v1/certmesh/member-cert`   | Install a CA-signed cert next to the member key      |
+| POST   | `/v1/certmesh/unlock`        | Unlock a locked CA                                   |
+| GET    | `/v1/certmesh/status`        | Mesh status                                          |
+| GET    | `/v1/certmesh/diagnose`      | Trust-doctor report (posture, identity, integrity)  |
+| GET    | `/v1/certmesh/trust-bundle`  | Signed, monotonic mesh-truth bundle                 |
+| GET    | `/v1/certmesh/log`           | Audit log                                            |
 
 ### Enrollment management
 

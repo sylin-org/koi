@@ -450,27 +450,41 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 
 ## Error Codes (`koi_common::error::ErrorCode`)
 
-| Code                  | HTTP Status | Meaning                         |
-| --------------------- | ----------- | ------------------------------- |
-| `invalid_type`        | 400         | Bad service type format         |
-| `invalid_name`        | 400         | Bad service name                |
-| `invalid_payload`     | 400         | Malformed request body          |
-| `not_found`           | 404         | Registration not found          |
-| `conflict`            | 409         | Duplicate registration          |
-| `session_mismatch`    | 403         | Wrong session for operation     |
-| `shutting_down`       | 503         | Daemon is shutting down         |
-| `internal`            | 500         | Internal error                  |
-| `ca_not_initialized`  | 503         | CA not yet created              |
-| `ca_locked`           | 503         | CA key is locked                |
-| `invalid_auth`        | 401         | Bad auth credential             |
-| `rate_limited`        | 429         | Too many requests               |
-| `enrollment_closed`   | 403         | Enrollment not open             |
-| `capability_disabled` | 503         | Capability disabled at runtime  |
-| `not_standby`         | 403         | Node is not a standby           |
-| `promotion_failed`    | 500         | CA key transfer failed          |
-| `renewal_failed`      | 500         | Certificate renewal failed      |
-| `invalid_manifest`    | 400         | Bad roster manifest signature   |
-| `scope_violation`     | 403         | Enrollment outside policy scope |
+`koi-common/src/error.rs` is the source of truth (the `http_status()` match + the
+exhaustive variant test). The full set:
+
+| Code                   | HTTP Status | Meaning                          |
+| ---------------------- | ----------- | -------------------------------- |
+| `invalid_type`         | 400         | Bad service type format          |
+| `invalid_name`         | 400         | Bad service name                 |
+| `invalid_payload`      | 400         | Malformed request body           |
+| `ambiguous_id`         | 400         | ID prefix matched multiple       |
+| `parse_error`          | 400         | Could not parse request          |
+| `invalid_manifest`     | 400         | Bad roster manifest signature    |
+| `invalid_auth`         | 401         | Bad auth credential              |
+| `session_mismatch`     | 403         | Wrong session for operation      |
+| `enrollment_closed`    | 403         | Enrollment not open              |
+| `not_standby`          | 403         | Node is not a standby            |
+| `scope_violation`      | 403         | Enrollment outside policy scope  |
+| `revoked`              | 403         | Member has been revoked          |
+| `approval_denied`      | 403         | Join approval was denied         |
+| `not_found`            | 404         | Registration not found           |
+| `conflict`             | 409         | Duplicate registration           |
+| `already_draining`     | 409         | Registration already draining    |
+| `not_draining`         | 409         | Registration not draining        |
+| `rate_limited`         | 429         | Too many requests                |
+| `daemon_error`         | 500         | Internal daemon failure          |
+| `io_error`             | 500         | I/O failure                      |
+| `internal`             | 500         | Internal error                   |
+| `promotion_failed`     | 500         | CA key transfer failed           |
+| `renewal_failed`       | 500         | Certificate renewal failed       |
+| `shutting_down`        | 503         | Daemon is shutting down          |
+| `ca_not_initialized`   | 503         | CA not yet created               |
+| `ca_locked`            | 503         | CA key is locked                 |
+| `capability_disabled`  | 503         | Capability disabled at runtime   |
+| `approval_unavailable` | 503         | No approver available            |
+| `resolve_timeout`      | 504         | mDNS resolve timed out           |
+| `approval_timeout`     | 504         | Join approval timed out          |
 
 ---
 

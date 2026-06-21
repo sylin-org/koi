@@ -11,7 +11,7 @@ docker run -d -p 3000:3000 --label koi.announce=grafana grafana/grafana
 That single label triggers:
 
 1. **mDNS**: `grafana._http._tcp` announced on the LAN (port 3000 → HTTP heuristic)
-2. **DNS**: `grafana.lan` resolves to the host IP
+2. **DNS**: `grafana.internal` resolves to the host IP
 3. **Health**: TCP check registered on port 3000
 
 Stop the container → all three are removed. Start it again → all three are recreated.
@@ -90,7 +90,7 @@ docker run -d -p 8080:80 -e KOI_MDNS_ANNOUNCE=pi-hole pihole/pihole
 Both produce the same result:
 
 - mDNS: `pi-hole._http._tcp` announced on host port 8080 (container port 80 → `_http._tcp` heuristic)
-- DNS: `pi-hole.lan` added to the local resolver
+- DNS: `pi-hole.internal` added to the local resolver
 - Health: TCP check registered on host port 8080
 
 For containers with multiple published ports, each TCP port gets its own mDNS announcement:
@@ -161,7 +161,7 @@ services:
       koi.announce: grafana
 ```
 
-Result: `grafana._http._tcp` on port 3000, `grafana.lan` DNS, TCP health check.
+Result: `grafana._http._tcp` on port 3000, `grafana.internal` DNS, TCP health check.
 
 ### With health check
 
@@ -184,7 +184,7 @@ Result: same as above, but health check is HTTP GET on `/api/health` instead of 
 docker run -d -p 5432:5432 --label koi.announce=db postgres:16
 ```
 
-Result: `db._postgresql._tcp` on port 5432 (heuristic), `db.lan` DNS, TCP health check.
+Result: `db._postgresql._tcp` on port 5432 (heuristic), `db.internal` DNS, TCP health check.
 
 ### Multiple services
 
@@ -227,7 +227,7 @@ services:
       KOI_MDNS_ANNOUNCE: cache
 ```
 
-Result: `cache._redis._tcp` on port 6379, `cache.lan` DNS, TCP health check. The Redis image is used unmodified.
+Result: `cache._redis._tcp` on port 6379, `cache.internal` DNS, TCP health check. The Redis image is used unmodified.
 
 ---
 
@@ -377,7 +377,7 @@ use koi_embedded::{Builder, RuntimeBackendKind};
 let koi = Builder::new()
     .runtime(RuntimeBackendKind::Docker)
     .mdns(true)
-    .dns(|cfg| cfg.zone("lan"))
+    .dns(|cfg| cfg.zone("internal"))
     .build()?;
 
 let handle = koi.start().await?;

@@ -35,7 +35,7 @@ The top-level key determines the operation:
 ```json
 { "error": "invalid_type", "message": "Service type must be _name._tcp or _name._udp" }
 { "error": "not_found", "message": "No registration with id 'xyz'" }
-{ "error": "resolve_timeout", "message": "Could not resolve within 3s" }
+{ "error": "resolve_timeout", "message": "Could not resolve within 5s" }
 ```
 
 ---

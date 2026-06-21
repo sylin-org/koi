@@ -24,7 +24,7 @@ already run. You keep Caddy/Traefik; Koi is just the CA they talk to.
 - **EC / ES256 only (v1).** Account keys must be P-256 ECDSA. `RS256` is rejected with
   `badSignatureAlgorithm`. (Most modern ACME clients default to or support EC keys.)
 - **In-zone names only.** Koi issues **only** for identifiers inside your Koi DNS zone
-  (default `lan`). An order for `evil.example.com` is rejected with `rejectedIdentifier`.
+  (default `internal`). An order for `evil.example.com` is rejected with `rejectedIdentifier`.
   The wildcard `*.<zone>` is allowed.
 - **No OCSP, no CT, no pre-authorization.** This is a homelab/LAN CA facade, not a public CA.
 - **CA-admin ops stay off ACME.** ACME issues leaf certs; it never touches CA creation,
@@ -96,12 +96,12 @@ Caddy points at a custom ACME CA with `acme_ca`, and trusts its root with `acme_
     acme_ca_root    <ca-root>
 }
 
-grafana.lan {
+grafana.internal {
     reverse_proxy localhost:3000
 }
 ```
 
-Caddy will request `grafana.lan` from Koi over ACME, solve the dns-01 challenge, and renew
+Caddy will request `grafana.internal` from Koi over ACME, solve the dns-01 challenge, and renew
 automatically. (Caddy's internal issuer also accepts `dir`/`trusted_roots_pem_files` under
 `tls { issuer acme { … } }` for per-site control.)
 
@@ -144,7 +144,7 @@ lego \
   --server <dir> \
   --email you@example.invalid \
   --dns exec \
-  --domains grafana.lan \
+  --domains grafana.internal \
   run
 ```
 

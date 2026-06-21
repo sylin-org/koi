@@ -18,6 +18,7 @@ Interactive API docs: `GET /docs` (Scalar UI). OpenAPI spec: `GET /openapi.json`
 | GET | `/v1/status` | Unified capability status (version, uptime, capabilities) |
 | POST | `/v1/admin/shutdown` | Initiate graceful shutdown |
 | GET | `/v1/host` | Host identity (hostname, FQDN, OS, arch, network interfaces) |
+| GET | `/v1/sd/prometheus` | Prometheus HTTP service discovery (target groups) |
 | GET/POST | `/v1/mcp` | MCP server over Streamable HTTP (JSON-RPC; token-authenticated) |
 | GET | `/.well-known/mcp/server-card.json` | Public MCP discovery descriptor (unauthenticated) |
 | GET | `/openapi.json` | OpenAPI specification |
@@ -76,7 +77,12 @@ Route handlers: `crates/koi-certmesh/src/http.rs`
 |--------|----------|---------|
 | POST | `/v1/certmesh/create` | Initialize CA (create key, cert, auth credential) |
 | POST | `/v1/certmesh/join` | Join the certificate mesh (TOTP-authorized enrollment; the one mutation exempt from the `x-koi-token` requirement — a joining node can't know the CA host's local token) |
+| POST | `/v1/certmesh/invite` | Mint a single-use, hostname-bound enrollment invite |
+| POST | `/v1/certmesh/member-csr` | Generate this member's keypair + CSR |
+| POST | `/v1/certmesh/member-cert` | Install a CA-signed cert next to the member key |
 | GET | `/v1/certmesh/status` | Mesh status overview |
+| GET | `/v1/certmesh/diagnose` | Trust-doctor report (posture, identity, integrity, revocation, CA-trust) |
+| GET | `/v1/certmesh/trust-bundle` | Signed, monotonic mesh-truth bundle |
 | POST | `/v1/certmesh/unlock` | Decrypt CA key with passphrase |
 | PUT | `/v1/certmesh/set-hook` | Set reload hook for a member |
 | POST | `/v1/certmesh/promote` | Promote standby (CA key transfer) |
@@ -100,6 +106,7 @@ Route handlers: `crates/koi-dns/src/http.rs`
 | GET | `/v1/dns/status` | Resolver status (running, zone, port, record counts) |
 | GET | `/v1/dns/lookup?name=grafana&type=A` | Resolve a local name |
 | GET | `/v1/dns/list` | List all resolvable names |
+| GET | `/v1/dns/zone?format=hosts\|dnsmasq\|json` | Export the resolvable zone (hosts / dnsmasq / json) |
 | GET | `/v1/dns/entries` | List static entries with details |
 | POST | `/v1/dns/add` | Add static entry (name, ip, optional ttl) |
 | DELETE | `/v1/dns/remove/{name}` | Remove static entry |
@@ -275,6 +282,7 @@ Streaming responses include a `status` field:
 | `koi mdns admin revive <id>` | Client | Cancel drain |
 | `koi certmesh create` | Client | Initialize private CA |
 | `koi certmesh join [endpoint]` | Client | Join existing mesh (mDNS CA discovery) |
+| `koi certmesh invite <hostname>` | Client | Mint a single-use, hostname-bound invite |
 | `koi certmesh status` | Client | Show mesh status |
 | `koi certmesh unlock` | Client | Decrypt CA key |
 | `koi certmesh log` | Client | Show audit log |
@@ -287,6 +295,7 @@ Streaming responses include a `status` field:
 | `koi certmesh restore <path>` | Client | Restore from backup |
 | `koi certmesh revoke <hostname>` | Client | Revoke a member |
 | `koi certmesh destroy` | Client | Destroy all certmesh state |
+| `koi certmesh acme enable` | Client | Show the ACME directory URL + client bootstrap recipe |
 | `koi dns serve` | Client | Start DNS resolver |
 | `koi dns stop` | Client | Stop DNS resolver |
 | `koi dns status` | Client | DNS resolver status |
@@ -309,6 +318,12 @@ Streaming responses include a `status` field:
 | `koi udp status` | Client | Show active bindings |
 | `koi udp heartbeat <id>` | Client | Renew binding lease |
 | `koi status` | Standalone/Client | Unified capability status |
+| `koi trust install <pem>` | - | Install a CA certificate into the OS trust store |
+| `koi trust list` | - | List the CA roots Koi installed |
+| `koi trust remove <name>` | - | Remove a Koi-installed CA root |
+| `koi trust export [--ca]` | - | Export a CA certificate (PEM) to stdout |
+| `koi trust diagnose [--fix]` | - | Trust-doctor: posture, identity, integrity, revocation, CA-trust |
+| `koi mcp serve` | - | Serve the MCP protocol over stdio (for AI agent hosts) |
 | `koi token show` | - | Print the daemon access token (tty-guarded) |
 | `koi token write <path>` | - | Write the token to a 0600 file for containers |
 | `koi launch` | - | Open dashboard in browser |

@@ -114,7 +114,7 @@ cargo tree -e normal | grep -E ' (bollard|keyring|image|qrcode) '   # empty == l
 
 ```rust
 let koi = Builder::new()
-    .dns(|cfg| cfg.zone("lan").port(5353))
+    .dns(|cfg| cfg.zone("internal").port(5353))
     .dns_auto_start(true)
     .build()?;
 ```

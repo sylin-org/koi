@@ -7,7 +7,7 @@ zone (`lab.internal` in the examples below) to Koi. Stop forwarding and nothing
 breaks — Koi is purely additive.
 
 Koi's DNS resolver listens on `0.0.0.0:53` by default and is authoritative for its
-zone (default `lan`; the examples use `lab.internal` — set it with `--dns-zone`).
+zone (default `internal`; the examples use `lab.internal` — set it with `--dns-zone`).
 Replace `<koi-ip>` with the host running Koi.
 
 You can also pull a snapshot of the zone for resolvers that prefer a static file:

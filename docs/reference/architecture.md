@@ -66,7 +66,7 @@ koi-embedded     → koi-compose, koi-common, koi-client (+ axum, reqwest, tokio
     ├── koi-config      → koi-common
     ├── koi-dns         → koi-common, koi-config, hickory-server, hickory-resolver, axum, tokio
     ├── koi-health      → koi-common, koi-config, axum, tokio
-    ├── koi-proxy       → koi-common, koi-config, axum-server, rustls, reqwest, tokio
+    ├── koi-proxy       → koi-common, koi-config, axum, tokio-rustls, rustls, rcgen, tokio
     ├── koi-udp         → koi-common, axum, tokio
     ├── koi-runtime     → koi-common, bollard, axum, utoipa, tokio, chrono
     ├── koi-client      → koi-common, ureq (blocking)
@@ -127,30 +127,41 @@ the kernel and domain closures stay clean.
 ```
 crates/koi/src/
 ├── main.rs          # CLI entry point and top-level execution routing
-├── integrations.rs  # Re-export shim for koi-compose's integration bridges (moved to koi-compose)
 ├── cli.rs           # clap definitions (Cli, Command, Config)
+├── daemon.rs        # Daemon-mode bring-up (adapters, capability ladder, shutdown)
+├── dispatch.rs      # Top-level command dispatch (subcommand → handler routing)
+├── infra.rs         # Infrastructure wiring (logging, signals, runtime setup)
+├── integrations.rs  # Re-export shim for koi-compose's integration bridges (live in koi-compose)
 ├── client.rs        # client utility wrappers
 ├── format.rs        # All human-readable CLI output
 ├── admin.rs         # Admin command execution
-├── openapi.rs       # OpenAPI spec generation
-├── surface.rs       # Command manifest population
 ├── commands/
-│   ├── mod.rs       # Shared helpers (detect_mode, run_streaming, print_json)
-│   ├── mdns.rs      # mDNS commands
-│   ├── certmesh.rs  # Certmesh commands
+│   ├── mod.rs            # Shared helpers (detect_mode, run_streaming, print_json)
+│   ├── mdns.rs          # mDNS commands
+│   ├── certmesh.rs      # Certmesh commands
 │   ├── ceremony_cli.rs  # Generic ceremony render loop
-│   ├── dns.rs       # DNS commands
-│   ├── health.rs    # Health commands
-│   ├── proxy.rs     # Proxy commands
-│   ├── udp.rs       # UDP commands
-│   └── status.rs    # Unified status command
+│   ├── dns.rs           # DNS commands
+│   ├── health.rs        # Health commands
+│   ├── proxy.rs         # Proxy commands
+│   ├── udp.rs           # UDP commands
+│   ├── trust.rs         # `koi trust` (OS trust store install/list/remove/export/diagnose)
+│   ├── mcp.rs           # `koi mcp serve` (stdio MCP server launch)
+│   ├── token.rs         # `koi token` (daemon access token show/write)
+│   ├── factory_reset.rs # `koi factory-reset` (destroy all Koi data)
+│   └── status.rs        # Unified status command
 ├── adapters/
-│   ├── http.rs      # HTTP server (Axum router, domain nesting, OpenAPI)
-│   ├── dashboard.rs # Dashboard wiring: snapshot builder + DashboardState (HTML/SSE/forwarder in koi-dashboard)
-│   ├── mtls.rs      # mTLS server/client configuration for inter-node communication
-│   ├── pipe.rs      # Named Pipe (Windows) / UDS (Unix)
-│   ├── cli.rs       # stdin/stdout NDJSON
-│   └── dispatch.rs  # Shared NDJSON dispatch logic
+│   ├── mod.rs           # Adapter module declarations
+│   ├── http.rs          # HTTP server (Axum router, domain nesting, OpenAPI generation)
+│   ├── acme.rs          # ACME (RFC 8555) TLS listener wiring (port 5643)
+│   ├── mcp_http.rs      # In-process MCP over Streamable HTTP (/v1/mcp)
+│   ├── prometheus_sd.rs # Prometheus HTTP service discovery (/v1/sd/prometheus)
+│   ├── trust_plane.rs   # Posture-reactive mTLS/ACME listener supervisor (ports 5642/5643)
+│   ├── dashboard.rs     # Dashboard wiring: snapshot builder + DashboardState (HTML/SSE/forwarder in koi-dashboard)
+│   ├── mtls.rs          # mTLS server/client configuration for inter-node communication
+│   ├── pipe.rs          # Named Pipe (Windows) / UDS (Unix)
+│   ├── cli.rs           # stdin/stdout NDJSON
+│   └── dispatch.rs      # Shared NDJSON dispatch logic
+├── help/                # Terminal-profile-aware help rendering + command/API metadata
 └── platform/
     ├── windows.rs   # Windows Service (SCM), firewall rules, registry access
     ├── unix.rs      # systemd integration, Unix service paths

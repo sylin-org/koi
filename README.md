@@ -132,8 +132,8 @@ Supporting cast:
 | **Proxy** | TLS endpoint for certmesh certs | `koi proxy …` | [Proxy guide](docs/guides/proxy.md) |
 | **Health** | HTTP/TCP checks feeding status & dashboard | `koi health …` | [Health guide](docs/guides/health.md) |
 | **UDP** | Host UDP sockets for bridge-networked containers | `koi udp …` | [UDP guide](docs/guides/udp.md) |
-| **Trust** | Install/list/remove CA roots in the OS trust store; export the certmesh root | `koi trust …` | [Certmesh guide](docs/guides/certmesh.md) |
-| **MCP** | Expose the LAN to AI agents — stdio, or Streamable HTTP at `/v1/mcp` (token-authed) | `koi mcp serve` | [MCP guide](docs/guides/mcp.md) |
+| **Trust** | Install/list/remove CA roots in the OS trust store; export the certmesh root; `koi trust diagnose` is the one-command trust-doctor | `koi trust …` | [Trust protocol](docs/reference/trust-protocol.md) |
+| **MCP** | Expose the LAN to AI agents. `koi mcp serve` is the **stdio** transport; the running daemon also serves the same surface over **Streamable HTTP** at `/v1/mcp` (token-authed; default on, `--no-mcp-http` to disable) | `koi mcp serve` | [MCP guide](docs/guides/mcp.md) |
 | **ACME** | RFC 8555 server (dns-01, port 5643) so standard clients get certs from the CA | `koi certmesh acme …` | [ACME guide](docs/guides/acme.md) |
 
 Every capability is runtime-toggleable (`--no-dns`, `KOI_NO_DNS=1`, …). The daemon
@@ -141,6 +141,18 @@ also exports for tools you already run — a **Prometheus HTTP-SD** endpoint
 (`GET /v1/sd/prometheus`) and a **DNS zone export** (`GET /v1/dns/zone?format=hosts|dnsmasq|json`) —
 and serves the **dashboard** (`/`), the **mDNS network browser** (`/mdns-browser`),
 and **interactive API docs** (`/docs`).
+
+### A trust plane that's never silent
+
+Every node carries a **posture** — Open until it has a mesh identity, mTLS once it
+does — and the *same* API behaves the same in both modes: messages can be signed
+(verified offline against the mesh root) or sealed, and listeners flip live between
+plaintext and mTLS without dropping connections. The category's defining failure is
+silent trust state (certs that expire unnoticed, mesh that's secretly plaintext), so
+Koi makes it loud: `koi trust diagnose` is the one-command health check — posture,
+identity and renewal health, integrity, revocation, CA-trust-install, clock skew, each
+with an exact remedy, exiting non-zero on anything red. The language-neutral wire
+contract is in the [trust protocol reference](docs/reference/trust-protocol.md).
 
 ### Embedding: optional heavy backends
 
@@ -209,10 +221,14 @@ cargo build --release
 Koi is **pre-1.0, feasibility-validated, and consolidating**. The architecture and
 the end-to-end pipeline are real; a thorough June 2026 assessment
 ([docs/assessment/](docs/assessment/README.md)) mapped what's solid, what's broken,
-and what's being cut in the name of *less but more meaningful parts*. The work plan
-is public ([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until
-1.0; don't run it as load-bearing infrastructure yet — do play with it, and file
-issues when reality disagrees with the docs.
+and what's being cut in the name of *less but more meaningful parts*. The latest
+release, **v0.4.2**, lands the mode-transparent trust plane, the MCP server, the ACME
+server, Prometheus/DNS-zone export, and a roughly-halved, consolidated certificate mesh
+([CHANGELOG](CHANGELOG.md)). The work plan is public
+([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until 1.0 (0.4.2
+itself carries some, despite the patch version); don't run it as load-bearing
+infrastructure yet — do play with it, and file issues when reality disagrees with the
+docs.
 
 ## Documentation
 

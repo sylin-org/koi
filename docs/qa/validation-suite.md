@@ -5,6 +5,14 @@
 **Companion to:** `koi-spec.md`, `koi-implementation-prompt.md`
 **Date:** February 2026
 
+> **Reflects v0.4.2 (2026-06-21).** This suite was authored against the original
+> eight-phase plan; v0.4.2 (ADR-016 lean-and-reach + ADR-020 trust plane) **removed**
+> several features it tests. Rows that assert a removed feature are now marked
+> **REMOVED in 0.4.2** inline — do not treat them as expected-pass. The default DNS
+> zone is now **`.internal`** (not `.lan`); read every `.lan` below as `.internal`.
+> Enrollment is now invite-token + posture based (no FIDO2, no trust profiles, no
+> CIDR/domain scope, no automatic CA failover, no compliance endpoint).
+
 > **Status (2026-03-25):** All eight implementation phases (0-8) are code-complete
 > with 779+ passing unit tests. The checkboxes in this document track **manual
 > acceptance testing**, not implementation status. Run through each phase's tests
@@ -106,7 +114,7 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 | P2-05 | Verify cert file permissions (Unix)              | `key.pem` is 0600, others are 0644                                                                                                         | ✓      |
 | P2-06 | Verify self-signed cert SANs                     | Certificate includes: hostname, FQDN, mDNS name, all LAN IPs                                                                               | ✓      |
 | P2-07 | Verify mDNS advertisement                        | `_certmesh._tcp` appears on the network                                                                                                    | Manual |
-| P2-08 | Verify audit log first entry                     | `pond_initialized` with operator and profile                                                                                               | ✓      |
+| P2-08 | Verify audit log first entry                     | `ca_initialized` with operator and profile                                                                                                | ✓      |
 | P2-09 | Verify trust store installation                  | Root CA cert is in OS trust store (`update-ca-certificates` ran on Linux)                                                                  | Manual |
 | P2-10 | Run `koi certmesh status`                        | Shows roster with self, cert expiry, CA health                                                                                             | ✓      |
 
@@ -120,61 +128,82 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 
 ### P2 - Enrollment Auth
 
+> **Auth model (0.4.2):** enrollment is **invite-token** based (`<secret>.<ca_fp>`,
+> pinned-fingerprint) with TOTP as a TOFU fallback. **FIDO2 enrollment was removed in
+> 0.4.2.** Where a row says "TOTP code / security key", read it as the invite token (or
+> a TOTP code); FIDO2 no longer applies.
+
 | ID    | Test                                         | Expected                                                                                                         | Auto?  |
 | ----- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------ |
-| P2-30 | Run `koi certmesh join` on Machine B         | Discovers CA via mDNS, prompts for auth                                                                          | Manual |
-| P2-31 | Enter valid auth credential (e.g. TOTP code) | Enrollment succeeds, cert files written to `/var/lib/koi/certs/stone-05/` or `%ProgramData%\koi\certs\stone-05\` | ✓      |
+| P2-30 | Run `koi certmesh join` on Machine B         | Discovers CA via mDNS, prompts for the invite token (or TOTP code)                                              | Manual |
+| P2-31 | Enter a valid invite token (or TOTP code)    | Enrollment succeeds, cert files written to `/var/lib/koi/certs/stone-05/` or `%ProgramData%\koi\certs\stone-05\` | ✓      |
 | P2-32 | Enter invalid auth credential                | Enrollment fails with clear error message                                                                        | ✓      |
 | P2-33 | Enter 3 invalid codes                        | 5-minute lockout triggered, subsequent valid codes rejected                                                      | ✓      |
 | P2-34 | Wait for lockout to expire, enter valid code | Enrollment succeeds                                                                                              | ✓      |
 | P2-35 | Verify auth comparison is constant-time      | No timing difference between valid and invalid codes (use statistical test)                                      | ✓      |
 | P2-36 | Verify Machine B's cert SANs                 | Includes stone-05's hostname, FQDN, mDNS name, all LAN IPs                                                       | ✓      |
-| P2-37 | Verify Machine B has root CA in trust store  | `curl https://stone-01.lan` succeeds without `--insecure`                                                        | Manual |
-| P2-38 | Verify audit log entry                       | `stone_joined` with host and approver                                                                            | ✓      |
+| P2-37 | Verify Machine B has root CA in trust store  | `curl https://stone-01.internal` succeeds without `--insecure`                                                   | Manual |
+| P2-38 | Verify audit log entry                       | `member_joined` with host and approver                                                                           | ✓      |
 
-### P2 - Trust Profiles
+### P2 - Trust Profiles — **REMOVED in 0.4.2 (ADR-016)**
+
+> The "Just Me / My Team / My Organization" trust-profile selection and the
+> `trust_profile` roster field were **removed in 0.4.2**. There is no `TrustProfile`
+> enum (see `crates/koi-certmesh/src/profiles.rs`, which is now least-privilege *cert*
+> profiles, not trust tiers). Enrollment is invite-token + posture based: open the
+> enrollment window (`open-enrollment`) and/or set approval at create time. The rows
+> below are kept only as a record of removed behavior — **do not run them as
+> expected-pass.**
 
 | ID    | Test                                       | Expected                                                           | Auto? |
 | ----- | ------------------------------------------ | ------------------------------------------------------------------ | ----- |
-| P2-40 | Create mesh with "Just Me" profile         | No approval prompt, enrollment always open                         | ✓     |
-| P2-41 | Create mesh with "My Team" profile         | Approval prompted, operator name prompted                          | ✓     |
-| P2-42 | Create mesh with "My Organization" profile | Enrollment closed by default, approval required, operator required | ✓     |
-| P2-43 | Verify profile stored in roster metadata   | `trust_profile` field matches selection                            | ✓     |
+| ~~P2-40~~ | ~~Create mesh with "Just Me" profile~~         | ~~No approval prompt, enrollment always open~~ (**REMOVED in 0.4.2**)                         | -     |
+| ~~P2-41~~ | ~~Create mesh with "My Team" profile~~         | ~~Approval prompted, operator name prompted~~ (**REMOVED in 0.4.2**)                          | -     |
+| ~~P2-42~~ | ~~Create mesh with "My Organization" profile~~ | ~~Enrollment closed by default, approval required, operator required~~ (**REMOVED in 0.4.2**) | -     |
+| ~~P2-43~~ | ~~Verify profile stored in roster metadata~~   | ~~`trust_profile` field matches selection~~ (**REMOVED in 0.4.2 — no `trust_profile` field**) | -     |
 
 ### P2 - Cross-Machine TLS
 
 | ID    | Test                                                | Expected                                  | Auto?  |
 | ----- | --------------------------------------------------- | ----------------------------------------- | ------ |
-| P2-50 | From Machine B, `curl https://stone-01.lan`         | 200 OK, no cert warnings                  | Manual |
-| P2-51 | From Machine A, `curl https://stone-05.lan`         | 200 OK, no cert warnings                  | Manual |
-| P2-52 | Open `https://stone-05.lan` in Chrome on Machine A  | Green lock, no security warnings          | Manual |
-| P2-53 | Open `https://stone-05.lan` in Firefox on Machine A | Green lock (if NSS trust store installed) | Manual |
+| P2-50 | From Machine B, `curl https://stone-01.internal`         | 200 OK, no cert warnings                  | Manual |
+| P2-51 | From Machine A, `curl https://stone-05.internal`         | 200 OK, no cert warnings                  | Manual |
+| P2-52 | Open `https://stone-05.internal` in Chrome on Machine A  | Green lock, no security warnings          | Manual |
+| P2-53 | Open `https://stone-05.internal` in Firefox on Machine A | Green lock (if NSS trust store installed) | Manual |
 
 ---
 
 ## Phase 3: Failover + Lifecycle
 
-### P3 - Promotion
+> **Automatic CA failover / standby / tiebreaker — REMOVED in 0.4.2 (ADR-016).** The
+> automatic standby-promotion-on-primary-loss machinery (and its deterministic
+> tiebreaker / split-brain handling) was cut. `koi certmesh promote` survives as a
+> **manual, operator-driven** CA key transfer (validated against the received key,
+> ADR-015 F14) — there is no automatic election. The P3 - Promotion and P3 - Failover
+> rows that assert *automatic* failover are marked **REMOVED in 0.4.2** below; only the
+> manual `promote` (P3-01) + roster integrity (P3-02/03/04) remain meaningful.
+
+### P3 - Promotion (manual only)
 
 | ID    | Test                                    | Expected                                                             | Auto?  |
 | ----- | --------------------------------------- | -------------------------------------------------------------------- | ------ |
-| P3-01 | Run `koi certmesh promote` on Machine B | Auth verified, CA key transferred, Machine B becomes standby         | Manual |
+| P3-01 | Run `koi certmesh promote` on Machine B | Auth verified, received CA key validated, Machine B becomes a standby CA (manual) | Manual |
 | P3-02 | Verify standby has full roster          | Roster on Machine B matches Machine A                                | ✓      |
 | P3-03 | Verify standby syncs periodically       | Add Machine C to mesh on primary, verify standby picks up new member | ✓      |
 | P3-04 | Verify roster sync integrity            | Signed manifest validates on standby                                 | ✓      |
 
-### P3 - Failover
+### P3 - Failover — **AUTOMATIC FAILOVER REMOVED in 0.4.2 (ADR-016)**
 
 | ID    | Test                                                 | Expected                                                       | Auto?  |
 | ----- | ---------------------------------------------------- | -------------------------------------------------------------- | ------ |
 | P3-10 | Stop Koi on primary (Machine A)                      | `_certmesh._tcp` disappears from mDNS                          | Manual |
-| P3-11 | Wait 60 seconds                                      | Standby (Machine B) promotes to primary, logs failover event   | Manual |
-| P3-12 | Verify new primary serves enrollments                | Machine C can `koi certmesh join` against Machine B            | Manual |
+| ~~P3-11~~ | ~~Wait 60 seconds~~                                  | ~~Standby (Machine B) promotes to primary, logs failover event~~ (**REMOVED in 0.4.2 — no automatic promotion**)   | -      |
+| P3-12 | Verify a promoted primary serves enrollments         | Machine C can `koi certmesh join` against Machine B (after a manual `promote`) | Manual |
 | P3-13 | Verify new primary renews certs                      | Existing members receive renewed certs from Machine B          | ✓      |
-| P3-14 | Restart Machine A                                    | Machine A discovers Machine B is primary, defers to standby    | Manual |
+| P3-14 | Restart Machine A                                    | Machine A boots; clone-refusal applies if machine binding changed (ADR-015 F11) | Manual |
 | P3-15 | Verify Machine A pulls current roster from Machine B | Machine A has Machine C in roster (added during A's absence)   | ✓      |
-| P3-16 | Verify no split-brain                                | Only one `_certmesh._tcp` primary on the network at any time   | Manual |
-| P3-17 | Start both A and B simultaneously (cold start)       | Deterministic tiebreaker: lower hostname wins primary          | ✓      |
+| ~~P3-16~~ | ~~Verify no split-brain~~                            | ~~Only one `_certmesh._tcp` primary on the network at any time~~ (**REMOVED in 0.4.2 — no automatic election**)   | -      |
+| ~~P3-17~~ | ~~Start both A and B simultaneously (cold start)~~   | ~~Deterministic tiebreaker: lower hostname wins primary~~ (**REMOVED in 0.4.2 — no tiebreaker**)          | -      |
 | P3-18 | Both CAs down, verify members still work             | Existing certs valid, HTTPS between members works, no renewals | Manual |
 
 ### P3 - Cert Renewal
@@ -207,19 +236,25 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 
 ## Phase 4: Institutional Controls
 
+> **Removed in 0.4.2 (ADR-016):** the enrollment **deadline/`--duration`** (open-enrollment
+> is now a bare on/off toggle — no auto-close timer), the **CIDR/domain enrollment scope**
+> (`--subnet`/`--domain` and the scope-violation refusal), and the **`koi certmesh
+> compliance`** endpoint/command. Approval, `--operator`, and `rotate-auth` survive. Rows
+> for removed features are marked **REMOVED in 0.4.2** below.
+
 | ID    | Test                                                       | Expected                                                                 | Auto?  |
 | ----- | ---------------------------------------------------------- | ------------------------------------------------------------------------ | ------ |
 | P4-01 | Enrollment with approval required                          | CA terminal shows approval prompt, enrollment waits for y/N              | Manual |
 | P4-02 | Deny enrollment                                            | Enrolling machine gets rejection, audit log records denial               | ✓      |
-| P4-03 | Open enrollment window `--duration 1m`                     | Enrollment succeeds within window                                        | ✓      |
-| P4-04 | Attempt enrollment after window closes                     | Valid auth rejected with "enrollment closed" message                     | ✓      |
-| P4-05 | Auto-close after duration expires                          | Window closes without manual intervention                                | ✓      |
+| P4-03 | Open enrollment window (`koi certmesh open-enrollment`)    | Enrollment succeeds while the window is open                              | ✓      |
+| P4-04 | Attempt enrollment after `close-enrollment`                | Valid auth rejected with "enrollment closed" message                     | ✓      |
+| ~~P4-05~~ | ~~Auto-close after duration expires~~                     | ~~Window closes without manual intervention~~ (**REMOVED in 0.4.2 — no `--duration` auto-close; close with `close-enrollment`**) | -      |
 | P4-06 | Create mesh with `--operator "Test User"`                  | Operator name in roster metadata and audit log                           | ✓      |
-| P4-07 | Create mesh with `--subnet 192.168.1.0/24`                 | Cert request from IP outside subnet refused                              | ✓      |
-| P4-08 | Create mesh with `--domain "test.local"`                   | Cert request for hostname outside domain refused                         | ✓      |
-| P4-09 | Scope violation logged                                     | Audit log records refused request with reason                            | ✓      |
-| P4-10 | `koi certmesh compliance` with personal profile            | Simple health check output                                               | ✓      |
-| P4-11 | `koi certmesh compliance` with organization profile        | Full audit-ready summary with all fields                                 | ✓      |
+| ~~P4-07~~ | ~~Create mesh with `--subnet 192.168.1.0/24`~~            | ~~Cert request from IP outside subnet refused~~ (**REMOVED in 0.4.2 — no CIDR scope**)                              | -      |
+| ~~P4-08~~ | ~~Create mesh with `--domain "test.local"`~~             | ~~Cert request for hostname outside domain refused~~ (**REMOVED in 0.4.2 — no domain scope**)                         | -      |
+| ~~P4-09~~ | ~~Scope violation logged~~                                | ~~Audit log records refused request with reason~~ (**REMOVED in 0.4.2 — no enrollment scope**)                            | -      |
+| ~~P4-10~~ | ~~`koi certmesh compliance` with personal profile~~      | ~~Simple health check output~~ (**REMOVED in 0.4.2 — no compliance command; use `koi trust diagnose`**)                                               | -      |
+| ~~P4-11~~ | ~~`koi certmesh compliance` with organization profile~~  | ~~Full audit-ready summary with all fields~~ (**REMOVED in 0.4.2 — no compliance command; see `koi certmesh log`**)                                     | -      |
 | P4-12 | `koi certmesh rotate-auth`                                 | New auth credential, old credential invalid, existing members unaffected | Manual |
 | P4-13 | Attempt enrollment with old auth credential after rotation | Rejected                                                                 | ✓      |
 | P4-14 | Enroll new member with new auth credential after rotation  | Succeeds                                                                 | ✓      |
@@ -447,7 +482,7 @@ These are the "it all works" tests. Run as final acceptance after Phase 8.
 | Step | Command                                                                         | Expected                                            |
 | ---- | ------------------------------------------------------------------------------- | --------------------------------------------------- |
 | 1    | Machine A: `koi certmesh create` (profile: Just Me)                             | CA created, QR code displayed                       |
-| 2    | Scan QR code into authenticator (or register FIDO2 key)                         | Auth credential stored                              |
+| 2    | Scan QR code into an authenticator (TOTP) — **FIDO2 enrollment removed in 0.4.2** | Auth credential stored                              |
 | 3    | Machine B: `koi certmesh join`                                                  | Discovers CA, prompts for auth, enrolls             |
 | 4    | Machine A: `koi dns serve`                                                      | DNS resolver starts                                 |
 | 5    | Verify: `koi dns list`                                                          | Shows `stone-01.lan`, `stone-05.lan`, `grafana.lan` |
@@ -457,33 +492,43 @@ These are the "it all works" tests. Run as final acceptance after Phase 8.
 
 **Time to complete steps 1–7:** Under 5 minutes, without reading documentation.
 
-### E2E-02: Failover Resilience
+### E2E-02: Failover Resilience — **AUTOMATIC FAILOVER REMOVED in 0.4.2 (ADR-016)**
 
-**Setup:** E2E-01 complete. Machine B promoted to standby.
+> Automatic standby promotion was cut in 0.4.2 (see Phase 3). `koi certmesh promote`
+> is now a **manual** CA key transfer; there is no 60-second auto-election and no
+> automatic deferral on the original primary's return. The scenario below is kept as a
+> record; steps 3, 6, and 7 assert removed automatic behavior.
+
+**Setup:** E2E-01 complete. Machine B promoted (manually) to standby.
 
 | Step | Action                                    | Expected                                    |
 | ---- | ----------------------------------------- | ------------------------------------------- |
-| 1    | Promote Machine B: `koi certmesh promote` | Standby established                         |
+| 1    | Promote Machine B: `koi certmesh promote` | Standby established (manual; received key validated) |
 | 2    | Kill Koi on Machine A                     | Primary goes dark                           |
-| 3    | Wait 60 seconds                           | Machine B becomes primary                   |
-| 4    | Machine C: `koi certmesh join`            | Joins via Machine B (new primary)           |
-| 5    | `https://grafana.lan` still works         | Proxy + DNS + TLS all unaffected            |
-| 6    | Restart Machine A                         | Defers to Machine B, becomes standby        |
-| 7    | `koi certmesh status` on Machine A        | Shows self as standby, Machine B as primary |
+| ~~3~~    | ~~Wait 60 seconds~~                   | ~~Machine B becomes primary~~ (**REMOVED in 0.4.2 — no auto-election; promote manually**) |
+| 4    | Machine C: `koi certmesh join`            | Joins via Machine B (after a manual promote) |
+| 5    | `https://grafana.internal` still works    | Proxy + DNS + TLS all unaffected            |
+| ~~6~~    | ~~Restart Machine A~~                 | ~~Defers to Machine B, becomes standby~~ (**REMOVED in 0.4.2 — no automatic deferral**)        |
+| ~~7~~    | ~~`koi certmesh status` on Machine A~~ | ~~Shows self as standby, Machine B as primary~~ (**REMOVED in 0.4.2 — no primary/standby election state**) |
 
-### E2E-03: Organization Enrollment Ceremony
+### E2E-03: Organization Enrollment Ceremony — **PARTIALLY REMOVED in 0.4.2 (ADR-016)**
+
+> The CIDR/domain enrollment scope, the `--duration` auto-close, and `koi certmesh
+> compliance` were **removed in 0.4.2**. The remaining flow is: create with
+> `--operator` + `--enrollment closed` + `--require-approval true`, open/close the
+> window manually, approve, and read the audit log. The removed steps are marked below.
 
 **Setup:** Fresh Machine A.
 
 | Step | Command                                                                                                        | Expected                                     |
 | ---- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| 1    | `koi certmesh create --operator "Maria Santos"` (profile: Organization, scope: `test.local`, `192.168.1.0/24`) | Enrollment closed by default                 |
-| 2    | `koi certmesh open-enrollment --duration 5m`                                                                   | Window opens                                 |
+| 1    | `koi certmesh create --operator "Maria Santos" --enrollment closed --require-approval true` (~~scope: `test.local`, `192.168.1.0/24`~~ **REMOVED in 0.4.2**) | Enrollment closed by default                 |
+| 2    | `koi certmesh open-enrollment` (~~`--duration 5m`~~ **REMOVED in 0.4.2 — bare toggle**)                       | Window opens                                 |
 | 3    | Machine B: `koi certmesh join`                                                                                 | Auth accepted, approval prompt on Machine A  |
 | 4    | Machine A: approve                                                                                             | Machine B enrolled with operator attribution |
-| 5    | Wait 5 minutes                                                                                                 | Window auto-closes                           |
+| 5    | ~~Wait 5 minutes~~ → `koi certmesh close-enrollment`                                                          | Window closes (manual — **no auto-close in 0.4.2**) |
 | 6    | Machine C: `koi certmesh join`                                                                                 | Auth rejected: "enrollment closed"           |
-| 7    | `koi certmesh compliance`                                                                                      | Full audit summary with all details          |
+| 7    | ~~`koi certmesh compliance`~~ → `koi trust diagnose`                                                          | **`compliance` REMOVED in 0.4.2**; use `koi trust diagnose` for trust health |
 | 8    | `koi certmesh log`                                                                                             | Every step audited with operator names       |
 
 ### E2E-04: Cert Renewal Lifecycle
@@ -522,13 +567,13 @@ These verify that security boundaries hold.
 | ID     | Test                                                                        | Expected                                                                                            |
 | ------ | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | NEG-01 | Attempt enrollment with invalid auth credential (e.g., random 6-digit code) | Rejected                                                                                            |
-| NEG-02 | Attempt enrollment from IP outside subnet scope                             | Rejected with scope violation logged                                                                |
+| ~~NEG-02~~ | ~~Attempt enrollment from IP outside subnet scope~~                     | ~~Rejected with scope violation logged~~ (**REMOVED in 0.4.2 — no CIDR/domain enrollment scope**)   |
 | NEG-03 | Attempt enrollment when window is closed (organization profile)             | Rejected with "enrollment closed"                                                                   |
 | NEG-04 | Extract CA private key from enrolled member's filesystem                    | Key is NOT on member machines - only public CA cert and own service cert                            |
 | NEG-05 | Add DNS static entry with public IP (e.g., 8.8.8.8) to local zone           | Rejected: RFC 1918 enforcement                                                                      |
 | NEG-06 | Set proxy backend to remote host without `--backend-remote`                 | Rejected                                                                                            |
 | NEG-07 | Access certmesh API with revoked member's certificate                       | Rejected                                                                                            |
-| NEG-08 | Two CAs claim primary simultaneously                                        | Deterministic tiebreaker resolves within seconds, one defers                                        |
+| ~~NEG-08~~ | ~~Two CAs claim primary simultaneously~~                                | ~~Deterministic tiebreaker resolves within seconds, one defers~~ (**REMOVED in 0.4.2 — no automatic CA election/tiebreaker**)                        |
 | NEG-09 | `koi certmesh backup` without typing "EXPORT"                               | Backup aborted                                                                                      |
 | NEG-10 | Grep all log files for auth secrets, private keys, passphrases              | Zero matches                                                                                        |
 | NEG-11 | Run `koi certmesh create` on a machine that is already in a mesh            | Error: "Already part of a mesh. Run `koi certmesh revoke` first or use a different data directory." |

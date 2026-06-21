@@ -46,6 +46,8 @@ crates/
 ├── koi-udp/          # UDP datagram bridging - HTTP/SSE tunneling, binding lifecycle
 ├── koi-runtime/      # Container/service runtime adapter - Docker, Podman lifecycle events
 ├── koi-client/       # HTTP client for daemon communication (blocking ureq)
+├── koi-compose/      # Composition root - build_cores, cross-domain bridges, orchestrator, ordered_shutdown, snapshot, announce, status
+├── koi-mcp/          # MCP server (stdio) - exposes the LAN substrate to AI agents
 ├── koi-dashboard/    # Presentation - dashboard + mDNS browser (HTML, SSE, event forwarder, lazy meta-browse)
 └── koi-embedded/     # Embed Koi in Rust applications - builder, handles, events
 ```
@@ -69,17 +71,19 @@ Each domain crate exposes three faces:
 - **State**: Read-only snapshots of current domain state.
 - **Events**: `tokio::sync::broadcast` channel for subscribers.
 - **Routes**: Each domain owns its HTTP handlers via `fn routes(state) -> axum::Router`.
-- Cross-domain wiring happens in the **binary crate only**. Domain crates never import each other.
+- Cross-domain wiring happens in the **koi-compose composition crate** (consumed by the binary, the Windows service, and koi-embedded); domain crates reach each other only via the integration traits in `koi-common` and never import each other directly.
 
 ### 3. Crate Dependency Graph
 
 ```
-koi (bin) → koi-common, koi-dashboard, koi-mdns, koi-certmesh, koi-crypto, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, koi-embedded, os-truststore (external)
+koi (bin) → koi-compose, koi-common, koi-mcp, koi-dashboard, koi-mdns, koi-certmesh, koi-crypto, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, os-truststore (external)
+koi-compose   → koi-common, koi-config, koi-crypto, koi-dashboard, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, hickory-proto, tokio
+koi-mcp       → koi-common, koi-client, koi-config, rmcp, hickory-proto, if-addrs, tokio  (depends on NO domain crate)
 koi-mdns      → koi-common, mdns-sd, axum, utoipa, tokio
 koi-certmesh  → koi-common, koi-crypto, os-truststore (external), axum, utoipa, tokio
 koi-crypto    → (standalone: ring/rcgen/totp-rs/p256)
 # os-truststore: platform trust-store install — spun out to the os-tools repo (ADR-019);
-# consumed via a git dependency, not a workspace member.
+# consumed via a crates.io version dependency, not a workspace member.
 koi-config    → koi-common
 koi-dns       → koi-common, koi-config, hickory-server, hickory-resolver, axum, utoipa, tokio
 koi-health    → koi-common, koi-config, axum, utoipa, tokio
@@ -88,7 +92,7 @@ koi-udp       → koi-common, axum, utoipa, tokio
 koi-runtime   → koi-common, bollard, axum, utoipa, tokio, chrono, async-trait
 koi-client    → koi-common, ureq (blocking)
 koi-dashboard → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-runtime, axum, tokio
-koi-embedded  → koi-common, koi-dashboard, koi-crypto, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, koi-client, tokio
+koi-embedded  → koi-compose, koi-common, koi-dashboard, koi-crypto, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, koi-client, reqwest, tokio
 ```
 
 **Domain** crates depend on `koi-common` but **never** on each other.
@@ -161,6 +165,7 @@ All domain capabilities are compiled into a **single binary**. Enable/disable at
 | `--no-dns`      | `KOI_NO_DNS=1`      | Disable DNS capability       |
 | `--no-health`   | `KOI_NO_HEALTH=1`   | Disable health capability    |
 | `--no-proxy`    | `KOI_NO_PROXY=1`    | Disable proxy capability     |
+| `--no-acme`     | `KOI_NO_ACME=1`     | Disable the ACME server / TLS listener (port 5643) |
 | `--no-udp`      | `KOI_NO_UDP=1`      | Disable UDP bridging         |
 | `--no-runtime`  | `KOI_NO_RUNTIME=1`  | Disable runtime adapter      |
 | `--no-http`     | `KOI_NO_HTTP=1`     | Disable the HTTP adapter     |
