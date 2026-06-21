@@ -276,7 +276,7 @@ mod tests {
         let (auth_state, challenge, bad_response) = make_auth_and_code(&secret, false);
 
         let request = JoinRequest {
-            hostname: "stone-05".to_string(),
+            hostname: "node-05".to_string(),
             auth: Some(bad_response),
             invite_token: None,
             csr: None,
@@ -290,8 +290,8 @@ mod tests {
             &challenge,
             &mut rl,
             &request,
-            "stone-05",
-            &["stone-05".to_string(), "stone-05.local".to_string()],
+            "node-05",
+            &["node-05".to_string(), "node-05.local".to_string()],
             None,
             &test_paths(),
         );
@@ -316,7 +316,7 @@ mod tests {
 
         let (auth_state, challenge, _) = make_auth_and_code(&secret, true);
         let request = JoinRequest {
-            hostname: "stone-05".to_string(),
+            hostname: "node-05".to_string(),
             auth: Some(koi_crypto::auth::AuthResponse::Totp {
                 code: "123456".to_string(),
             }),
@@ -332,8 +332,8 @@ mod tests {
             &challenge,
             &mut rl,
             &request,
-            "stone-05",
-            &["stone-05".to_string()],
+            "node-05",
+            &["node-05".to_string()],
             None,
             &test_paths(),
         );
@@ -350,7 +350,7 @@ mod tests {
 
         let (auth_state, challenge, _) = make_auth_and_code(&secret, false);
         let bad_request = JoinRequest {
-            hostname: "stone-05".to_string(),
+            hostname: "node-05".to_string(),
             auth: Some(koi_crypto::auth::AuthResponse::Totp {
                 code: "000000".to_string(),
             }),
@@ -368,8 +368,8 @@ mod tests {
                 &challenge,
                 &mut rl,
                 &bad_request,
-                "stone-05",
-                &["stone-05".to_string()],
+                "node-05",
+                &["node-05".to_string()],
                 None,
                 &test_paths(),
             );
@@ -383,8 +383,8 @@ mod tests {
             &challenge,
             &mut rl,
             &bad_request,
-            "stone-05",
-            &["stone-05".to_string()],
+            "node-05",
+            &["node-05".to_string()],
             None,
             &test_paths(),
         );
@@ -402,14 +402,14 @@ mod tests {
         // Mint an invite bound to the joining hostname. No TOTP auth is supplied
         // (auth_state = None) — the invite is the sole credential. The joiner also
         // supplies its own CSR (ADR-015 F1); the CA never generates the key.
-        let token = crate::invite::mint(&paths.invites_path(), "stone-invited", 60)
+        let token = crate::invite::mint(&paths.invites_path(), "node-invited", 60)
             .unwrap()
             .token;
         let (_key_pem, csr_pem) =
-            crate::csr::generate_keypair_and_csr("stone-invited", &["stone-invited".to_string()])
+            crate::csr::generate_keypair_and_csr("node-invited", &["node-invited".to_string()])
                 .unwrap();
         let request = JoinRequest {
-            hostname: "stone-invited".to_string(),
+            hostname: "node-invited".to_string(),
             auth: None,
             invite_token: Some(token.clone()),
             csr: Some(csr_pem),
@@ -423,8 +423,8 @@ mod tests {
             &AuthChallenge::Totp,
             &mut rl,
             &request,
-            "stone-invited",
-            &["stone-invited".to_string()],
+            "node-invited",
+            &["node-invited".to_string()],
             None,
             &paths,
         );
@@ -444,7 +444,7 @@ mod tests {
         // Single-use: the now-spent token is rejected on a second attempt.
         let mut roster2 = Roster::new(JUST_ME.0, JUST_ME.1, None);
         let request2 = JoinRequest {
-            hostname: "stone-invited".to_string(),
+            hostname: "node-invited".to_string(),
             auth: None,
             invite_token: Some(token),
             csr: None,
@@ -457,8 +457,8 @@ mod tests {
             &AuthChallenge::Totp,
             &mut rl,
             &request2,
-            "stone-invited",
-            &["stone-invited".to_string()],
+            "node-invited",
+            &["node-invited".to_string()],
             None,
             &paths,
         );

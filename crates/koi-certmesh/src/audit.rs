@@ -70,7 +70,7 @@ mod tests {
         append_entry_to(
             &path,
             "member_joined",
-            &[("host", "stone-05"), ("approved_by", "Alice")],
+            &[("host", "node-05"), ("approved_by", "Alice")],
         )
         .unwrap();
 
@@ -80,7 +80,7 @@ mod tests {
         assert!(lines[0].contains("ca_initialized"));
         assert!(lines[0].contains("operator=Alice"));
         assert!(lines[1].contains("member_joined"));
-        assert!(lines[1].contains("host=stone-05"));
+        assert!(lines[1].contains("host=node-05"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

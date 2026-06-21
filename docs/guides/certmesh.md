@@ -109,15 +109,15 @@ The CLI accepts these `create` flags (the JSON/non-interactive path requires `--
 The recommended way to add a member is for the operator to mint a single-use **invite** on the CA host, then hand it to the joining machine out of band:
 
 ```
-koi certmesh invite stone-02 --ttl 60
+koi certmesh invite node-02 --ttl 60
 ```
 
 ```
-Invite minted for stone-02 (single-use, expires 2026-02-11T11:05:00Z):
+Invite minted for node-02 (single-use, expires 2026-02-11T11:05:00Z):
 
   9f3a…d7c1.a1b2c3d4…
 
-On stone-02, run:
+On node-02, run:
   koi certmesh join <ca-endpoint> --invite 9f3a…d7c1.a1b2c3d4…
 ```
 
@@ -128,7 +128,7 @@ An invite is a code of the form `<secret>.<ca_fingerprint>`. It is **bound to th
 From a second machine, joining is a single command. The preferred form passes the CA endpoint **positionally** and supplies the invite from the step above - fully non-interactive:
 
 ```
-koi certmesh join http://stone-01:5641 --invite 9f3a…d7c1.a1b2c3d4…
+koi certmesh join http://node-01:5641 --invite 9f3a…d7c1.a1b2c3d4…
 ```
 
 Without an invite, Koi falls back to a TOTP join: with no endpoint it browses the LAN for a `_certmesh._tcp` CA via mDNS (see "Finding the CA"); if it can't find exactly one, it asks you to pass the endpoint directly, then prompts for the mesh TOTP code:
@@ -139,11 +139,11 @@ koi certmesh join
 
 ```
 Searching for certmesh CA on the local network...
-Found CA: stone-01 Certmesh CA at http://192.168.1.10:5641
+Found CA: node-01 Certmesh CA at http://192.168.1.10:5641
 Enter the TOTP code from your authenticator app:
 123456
-Enrolled as: stone-02
-Key + certificate stored locally: /var/lib/koi/certs/stone-02
+Enrolled as: node-02
+Key + certificate stored locally: /var/lib/koi/certs/node-02
 ```
 
 The positional `<ca-endpoint>` (or the mDNS-discovered address) is always the **remote CA**. The joining host's own running daemon - resolved locally via the breadcrumb - keeps custody of the new member's private key: it generates the keypair and CSR, the CA signs only the CSR (it never sees or returns a private key), and the local daemon installs the signed certificate next to the key. The CA's global `--endpoint`/`--token` are *not* how you point `join` at the CA; the positional argument is.
@@ -187,7 +187,7 @@ Certificate mesh: active
   CA locked:  false
   Enrollment: open (no approval)
   Members:    1
-    stone-01 (primary) - active
+    node-01 (primary) - active
 ```
 
 This is your at-a-glance view: whether the CA is locked, whether enrollment is open or closed (and whether joins need approval), and who's in the mesh. The posture line reflects the two stored booleans (`enrollment_open` + `requires_approval`) - there is no "profile" field to display, because none is persisted. JSON output (`--json`) is available for monitoring integrations.
@@ -201,8 +201,8 @@ koi certmesh log
 ```
 
 ```
-2026-02-11T10:00:00Z pond_initialized enrollment_open=open requires_approval=no operator=none
-2026-02-11T10:05:00Z member_joined hostname=stone-02 fingerprint=b2c3d4e5... role=member
+2026-02-11T10:00:00Z ca_initialized enrollment_open=open requires_approval=no operator=none
+2026-02-11T10:05:00Z member_joined hostname=node-02 fingerprint=b2c3d4e5... role=member
 ```
 
 This is your paper trail. When something goes wrong three months from now, the log tells you what happened and when.
@@ -273,14 +273,14 @@ The joining host generates its own key + CSR locally and sends only the CSR to t
 POST /v1/certmesh/join
 Content-Type: application/json
 
-{"hostname": "stone-02", "csr": "-----BEGIN CERTIFICATE REQUEST-----\n...", "invite_token": "9f3a…d7c1"}
+{"hostname": "node-02", "csr": "-----BEGIN CERTIFICATE REQUEST-----\n...", "invite_token": "9f3a…d7c1"}
 ```
 
 The CA signs the CSR and returns the certificate chain - never a private key (the key stays on the joining host):
 
 ```json
 {
-  "hostname": "stone-02",
+  "hostname": "node-02",
   "ca_cert": "-----BEGIN CERTIFICATE-----\n...",
   "service_cert": "-----BEGIN CERTIFICATE-----\n...",
   "ca_fingerprint": "a1b2c3d4...",
@@ -355,7 +355,7 @@ The `fullchain.pem` is what most applications want - it includes both the servic
 
 ```
 koi certmesh join                       # browse for the CA
-koi certmesh join http://stone-01:5641  # or point at it directly
+koi certmesh join http://node-01:5641  # or point at it directly
 ```
 
 When you join with an invite, the CA's advertised `fp=` TXT record is cross-checked against the invite's pinned fingerprint, so a discovered CA from the wrong mesh is dropped before it can be used (the authoritative pin check is still the preflight in "Joining the mesh").
@@ -369,7 +369,7 @@ The CA does **not** run a background self-announce / absence-watch loop - that m
 If a machine is compromised, decommissioned, or simply no longer trusted, revoke its certificate:
 
 ```
-koi certmesh revoke stone-02 --reason "decommissioned"
+koi certmesh revoke node-02 --reason "decommissioned"
 ```
 
 This marks the member as revoked in the roster and records the event in the audit log. The revoked host's certificate remains on disk and will no longer be renewed - so it stops working once it expires (within the 90-day leaf lifetime). Revocation also takes effect immediately at the CA boundary: a revoked member's `/renew` and `/health` calls over mTLS are rejected with `403`, so it can neither pull a fresh leaf nor report healthy. Revocation is otherwise **roster state**, not a network-wide CRL or OCSP push: there is no revocation list distributed to other members, and an already-issued, still-valid leaf keeps working against third parties until it expires. The leaf lifetime is the bound on that residual access (see "What certmesh deliberately does not do").
@@ -381,7 +381,7 @@ This marks the member as revoked in the roster and records the event in the audi
 Certmesh has one continuity primitive: **manual promotion**. You promote a member to a standby CA, which transfers an encrypted copy of the CA signing key so that node can issue certificates if the original CA goes away:
 
 ```
-koi certmesh promote http://stone-01:5641
+koi certmesh promote http://node-01:5641
 ```
 
 As with `join`, the positional `<ca-endpoint>` (or mDNS) is the **remote CA** being promoted from, while the standby's own running daemon is resolved locally via the breadcrumb. The CA signing key is transferred encrypted via Diffie-Hellman - the passphrase never goes on the wire.

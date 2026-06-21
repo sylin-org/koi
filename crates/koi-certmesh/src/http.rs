@@ -1312,7 +1312,7 @@ mod tests {
         let req = Request::post("/join")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"hostname":"stone-05","auth":{"method":"totp","code":"123456"}}"#,
+                r#"{"hostname":"node-05","auth":{"method":"totp","code":"123456"}}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1372,7 +1372,7 @@ mod tests {
         let req = Request::post("/health")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"hostname":"stone-01","pinned_ca_fingerprint":"abc"}"#,
+                r#"{"hostname":"node-01","pinned_ca_fingerprint":"abc"}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1438,7 +1438,7 @@ mod tests {
         let req = Request::post("/join")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"hostname":"stone-05","auth":{"method":"totp","code":"123456"}}"#,
+                r#"{"hostname":"node-05","auth":{"method":"totp","code":"123456"}}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1470,7 +1470,7 @@ mod tests {
         let req = Request::post("/health")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"hostname":"stone-01","pinned_ca_fingerprint":"abc"}"#,
+                r#"{"hostname":"node-01","pinned_ca_fingerprint":"abc"}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1543,7 +1543,7 @@ mod tests {
         let req = Request::put("/set-hook")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"hostname":"stone-01","reload":"systemctl restart nginx"}"#,
+                r#"{"hostname":"node-01","reload":"systemctl restart nginx"}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();

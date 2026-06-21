@@ -165,7 +165,7 @@ envelope.** A v1 (or unknown) version is rejected by a node that does not implem
 it (anti-downgrade extension point).
 
 When the group-key rung lands it will derive keys with the new, K3-distinct HKDF
-label `koi-seal-group-v1` (the frozen `pond-*` labels are never touched).
+label `koi-seal-group-v1` — each HKDF use has its own frozen, versioned `koi-*-v1` label.
 
 ---
 

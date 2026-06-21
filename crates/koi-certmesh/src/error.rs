@@ -161,7 +161,7 @@ mod tests {
                 404,
             ),
             (
-                CertmeshError::Revoked("stone-01".into()),
+                CertmeshError::Revoked("node-01".into()),
                 ErrorCode::Revoked,
                 403,
             ),
@@ -197,7 +197,7 @@ mod tests {
             ),
             (
                 CertmeshError::RenewalFailed {
-                    hostname: "stone-05".into(),
+                    hostname: "node-05".into(),
                     reason: "cert expired".into(),
                 },
                 ErrorCode::RenewalFailed,

@@ -69,7 +69,7 @@ pub fn build_aliases(zone: &DnsZone, records: &[ServiceRecord]) -> AliasResult {
             }
 
             // Also generate an alias from the mDNS hostname (e.g.
-            // "stone-azure-pool.local." → "stone-azure-pool.zengarden.").
+            // "node-azure-pool.local." → "node-azure-pool.internal.").
             // The hostname is stable — unlike the instance name it never
             // gets an mDNS conflict suffix like "(2)".
             if let Some(host) = record.host.as_deref() {

@@ -2930,7 +2930,7 @@ mod tests {
         let base = koi_common::test::ensure_data_dir("koi-certmesh-autounlock-tests");
         let paths = CertmeshPaths::with_data_dir(base.join("autounlock-roundtrip"));
 
-        CertmeshCore::save_auto_unlock_key_at(&paths, "pond-secret-pass").unwrap();
+        CertmeshCore::save_auto_unlock_key_at(&paths, "test-secret-pass").unwrap();
 
         // The plaintext key file must not be the source of truth.
         assert!(
@@ -2941,7 +2941,7 @@ mod tests {
         let recovered = CertmeshCore::read_auto_unlock_key(&paths).unwrap();
         assert_eq!(
             recovered.as_ref().map(|z| z.as_str()),
-            Some("pond-secret-pass"),
+            Some("test-secret-pass"),
             "the auto-unlock passphrase must round-trip through the vault"
         );
 
@@ -2958,7 +2958,7 @@ mod tests {
     async fn renew_self_if_due_is_noop_without_member_state() {
         // A node that never joined a mesh (no member.json) has nothing to pull.
         let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
         let outcome = core.renew_self_if_due().await.expect("no-op succeeds");
         assert!(matches!(outcome, RenewOutcome::NotApplicable));
@@ -3374,10 +3374,10 @@ mod tests {
 
     #[tokio::test]
     async fn health_check_returns_error_when_ca_locked() {
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         let core = make_locked_core(roster);
         let request = protocol::HealthRequest {
-            hostname: "stone-01".to_string(),
+            hostname: "node-01".to_string(),
             pinned_ca_fingerprint: "some-fp".to_string(),
         };
         let result = core.health_check(&request).await;
@@ -3388,11 +3388,11 @@ mod tests {
     async fn health_check_validates_matching_fingerprint() {
         let ca = make_test_ca();
         let ca_fp = ca::ca_fingerprint(&ca);
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
 
         let request = protocol::HealthRequest {
-            hostname: "stone-01".to_string(),
+            hostname: "node-01".to_string(),
             pinned_ca_fingerprint: ca_fp,
         };
         let result = core.health_check(&request).await.unwrap();
@@ -3403,11 +3403,11 @@ mod tests {
     #[tokio::test]
     async fn health_check_rejects_mismatched_fingerprint() {
         let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
 
         let request = protocol::HealthRequest {
-            hostname: "stone-01".to_string(),
+            hostname: "node-01".to_string(),
             pinned_ca_fingerprint: "wrong-fingerprint".to_string(),
         };
         let result = core.health_check(&request).await.unwrap();
@@ -3418,13 +3418,13 @@ mod tests {
     async fn health_check_updates_last_seen() {
         let ca = make_test_ca();
         let ca_fp = ca::ca_fingerprint(&ca);
-        let mut roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let mut roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         // Ensure last_seen is None initially
         roster.members[0].last_seen = None;
         let core = make_unlocked_core(ca, roster);
 
         let request = protocol::HealthRequest {
-            hostname: "stone-01".to_string(),
+            hostname: "node-01".to_string(),
             pinned_ca_fingerprint: ca_fp,
         };
         core.health_check(&request).await.unwrap();
@@ -3438,7 +3438,7 @@ mod tests {
 
     #[tokio::test]
     async fn promote_returns_error_when_ca_locked() {
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         let core = make_locked_core(roster);
         let dummy_pk = [0u8; 32];
         let result = core.promote(&dummy_pk).await;
@@ -3448,7 +3448,7 @@ mod tests {
     #[tokio::test]
     async fn promote_returns_encrypted_material() {
         let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
 
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
@@ -3465,7 +3465,7 @@ mod tests {
     #[tokio::test]
     async fn promote_response_can_be_accepted_with_dh() {
         let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
 
         let client_kp = koi_crypto::key_agreement::EphemeralKeyPair::generate();
@@ -3498,7 +3498,7 @@ mod tests {
         let label63 = "a".repeat(63);
         for ok in [
             "web-01",
-            "stone-granite-spring",
+            "node-granite-spring",
             "a",
             "a.b.c",
             "x1.local",
@@ -3599,12 +3599,12 @@ mod tests {
 
     #[test]
     fn build_status_locked_ca() {
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         let status = build_status(&test_paths(), &None, &roster, None);
         assert!(status.ca_locked);
         assert_eq!(status.member_count, 1);
         assert_eq!(status.members.len(), 1);
-        assert_eq!(status.members[0].hostname, "stone-01");
+        assert_eq!(status.members[0].hostname, "node-01");
         assert_eq!(status.members[0].role, "primary");
     }
 
@@ -3714,7 +3714,7 @@ mod tests {
     async fn uninitialized_core_enroll_returns_error() {
         let core = CertmeshCore::uninitialized_with_paths(test_paths());
         let request = protocol::JoinRequest {
-            hostname: "stone-05".to_string(),
+            hostname: "node-05".to_string(),
             auth: Some(koi_crypto::auth::AuthResponse::Totp {
                 code: "123456".to_string(),
             }),
@@ -3824,7 +3824,7 @@ mod tests {
 
     #[tokio::test]
     async fn capability_status_locked() {
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         let core = make_locked_core(roster);
         let status = core.status().await;
         assert_eq!(status.name, "certmesh");
@@ -3834,7 +3834,7 @@ mod tests {
     #[tokio::test]
     async fn capability_status_unlocked() {
         let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
         let status = core.status().await;
         assert_eq!(status.name, "certmesh");
@@ -3882,9 +3882,9 @@ mod tests {
     #[tokio::test]
     async fn set_reload_hook_sets_hook_for_known_member() {
         let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
-        core.set_reload_hook("stone-01", ABS_HOOK).await.unwrap();
+        core.set_reload_hook("node-01", ABS_HOOK).await.unwrap();
         let roster = core.state.roster.lock().await;
         assert_eq!(roster.members[0].reload_hook.as_deref(), Some(ABS_HOOK));
     }
@@ -3895,11 +3895,11 @@ mod tests {
     #[tokio::test]
     async fn set_reload_hook_rejects_relative_path() {
         let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
         // A bare command name with no path separator is PATH-relative.
         let result = core
-            .set_reload_hook("stone-01", "systemctl restart nginx")
+            .set_reload_hook("node-01", "systemctl restart nginx")
             .await;
         assert!(
             result.is_err(),
@@ -3914,10 +3914,10 @@ mod tests {
     #[tokio::test]
     async fn set_reload_hook_rejects_shell_metacharacters() {
         let ca = make_test_ca();
-        let roster = make_test_roster_with_member("stone-01", MemberRole::Primary);
+        let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
         let core = make_unlocked_core(ca, roster);
         let malicious = format!("{ABS_HOOK}; rm -rf /");
-        let result = core.set_reload_hook("stone-01", &malicious).await;
+        let result = core.set_reload_hook("node-01", &malicious).await;
         assert!(result.is_err());
     }
 
@@ -3942,7 +3942,7 @@ mod tests {
 
     /// Direct unit coverage of the relocated CA-creation orchestration
     /// (previously only reachable via the HTTP create_handler). Verifies a
-    /// fresh, uninitialized pond becomes initialized, unlocked, and
+    /// fresh, uninitialized CA becomes initialized, unlocked, and
     /// self-enrolls the CA node as the primary member.
     #[tokio::test]
     async fn create_initializes_ca_and_self_enrolls_primary() {
@@ -3959,7 +3959,7 @@ mod tests {
         let core = CertmeshCore::uninitialized_with_paths(paths.clone());
 
         let req = protocol::CreateCaRequest {
-            passphrase: "pond-pass-strong".to_string(),
+            passphrase: "test-pass-strong".to_string(),
             entropy_hex: koi_common::encoding::hex_encode(&[7u8; 32]),
             operator: Some("ops".to_string()),
             enrollment_open: true,
@@ -3988,14 +3988,14 @@ mod tests {
 
     /// create() rejects a second initialization with a Conflict (→ 409).
     #[tokio::test]
-    async fn create_on_initialized_pond_returns_conflict() {
+    async fn create_on_initialized_ca_returns_conflict() {
         let base = koi_common::test::ensure_data_dir("koi-certmesh-create-tests");
         let paths = CertmeshPaths::with_data_dir(base.join("create-conflict"));
         let _ = std::fs::remove_dir_all(paths.data_dir());
         let core = CertmeshCore::uninitialized_with_paths(paths.clone());
 
         let mk_req = || protocol::CreateCaRequest {
-            passphrase: "pond-pass-strong".to_string(),
+            passphrase: "test-pass-strong".to_string(),
             entropy_hex: koi_common::encoding::hex_encode(&[9u8; 32]),
             operator: None,
             enrollment_open: true,
@@ -4025,7 +4025,7 @@ mod tests {
         let core = CertmeshCore::uninitialized_with_paths(paths);
 
         let req = protocol::CreateCaRequest {
-            passphrase: "pond-pass-strong".to_string(),
+            passphrase: "test-pass-strong".to_string(),
             entropy_hex: "bad".to_string(),
             operator: None,
             enrollment_open: true,

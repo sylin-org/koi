@@ -734,9 +734,9 @@ mod tests {
 
     #[test]
     fn promote_success_output() {
-        let out = promote_success("stone-05");
+        let out = promote_success("node-05");
         assert!(out.contains("Promotion complete!"));
-        assert!(out.contains("Hostname: stone-05"));
+        assert!(out.contains("Hostname: node-05"));
         assert!(out.contains("Role:     standby"));
         assert!(out.contains("encrypted copy of the CA key"));
         assert!(out.contains("take over automatically"));

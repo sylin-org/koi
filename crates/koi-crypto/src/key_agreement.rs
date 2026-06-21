@@ -17,9 +17,9 @@ const PROMOTE_INFO: &[u8] = b"koi-promote-v1";
 ///
 /// **Reserved** — the passthrough rung (today) performs no key derivation; this
 /// stakes out a new, distinct, versioned label so the group-key encryption rung
-/// can land without ever touching the frozen STACK-0001 K3 labels
-/// (`pond-unlock-slot-totp-v1`, `pond-fido2-storage-key-v1`). A new algorithm is a
-/// new label, never a reuse.
+/// can land later. Every HKDF use gets its own versioned `koi-…-v1` label —
+/// here `koi-seal-group-v1`, alongside `koi-promote-v1` and the at-rest
+/// `koi-unlock-slot-totp-v1`; a new algorithm is a new label, never a reuse.
 pub const SEAL_GROUP_KEY_HKDF_INFO_V1: &[u8] = b"koi-seal-group-v1";
 
 /// An ephemeral X25519 key pair for one-time Diffie-Hellman exchange.

@@ -184,7 +184,7 @@ token yourself:
 
 ```bash
 # CLI against a remote daemon, with its token
-koi --endpoint http://stone-01:5641 --token "$REMOTE_TOKEN" dns list
+koi --endpoint http://node-01:5641 --token "$REMOTE_TOKEN" dns list
 ```
 
 There are no per-client accounts or scopes: one token per daemon authorizes all

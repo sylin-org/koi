@@ -64,8 +64,8 @@ Interactive API docs are available at `GET /docs` (Scalar UI).
 
 ```json
 {
-  "hostname": "stone-azure-pool",
-  "hostname_fqdn": "stone-azure-pool.local",
+  "hostname": "node-azure-pool",
+  "hostname_fqdn": "node-azure-pool.local",
   "os": "windows",
   "arch": "x86_64",
   "interfaces": {

@@ -38,9 +38,9 @@ Run the tests relevant to your current phase after completing it. Run the full s
 Unless noted otherwise, tests assume:
 
 - Two machines (or two VMs/containers simulating separate machines) on the same LAN subnet
-- Machine A: `stone-01` at `192.168.1.10`
-- Machine B: `stone-05` at `192.168.1.15`
-- A third machine C (`stone-09` at `192.168.1.22`) for multi-member tests
+- Machine A: `node-01` at `192.168.1.10`
+- Machine B: `node-05` at `192.168.1.15`
+- A third machine C (`node-09` at `192.168.1.22`) for multi-member tests
 - A plain HTTP service (e.g., `python3 -m http.server 3000`) available on Machine B for proxy tests
 - Auth credential available (TOTP authenticator app or FIDO2 security key, or a test harness that generates codes from a known secret)
 
@@ -107,7 +107,7 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 
 | ID    | Test                                             | Expected                                                                                                                                   | Auto?  |
 | ----- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
-| P2-01 | Run `koi certmesh create` with profile "Just Me" | CA created, QR code displayed, self-signed cert written to `/var/lib/koi/certs/stone-01/` or `%ProgramData%\koi\certs\stone-01\`           | Manual |
+| P2-01 | Run `koi certmesh create` with profile "Just Me" | CA created, QR code displayed, self-signed cert written to `/var/lib/koi/certs/node-01/` or `%ProgramData%\koi\certs\node-01\`           | Manual |
 | P2-02 | Verify CA key is encrypted at rest               | `/var/lib/koi/certmesh/ca/` or `%ProgramData%\koi\certmesh\ca\` contains encrypted key file, not plaintext PEM                             | ✓      |
 | P2-03 | Verify cert files at standard path               | `cert.pem`, `key.pem`, `ca.pem`, `fullchain.pem` all exist under `/var/lib/koi/certs/<hostname>/` or `%ProgramData%\koi\certs\<hostname>\` | ✓      |
 | P2-04 | Verify `fullchain.pem` = `cert.pem` + `ca.pem`   | Concatenation matches                                                                                                                      | ✓      |
@@ -136,13 +136,13 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 | ID    | Test                                         | Expected                                                                                                         | Auto?  |
 | ----- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------ |
 | P2-30 | Run `koi certmesh join` on Machine B         | Discovers CA via mDNS, prompts for the invite token (or TOTP code)                                              | Manual |
-| P2-31 | Enter a valid invite token (or TOTP code)    | Enrollment succeeds, cert files written to `/var/lib/koi/certs/stone-05/` or `%ProgramData%\koi\certs\stone-05\` | ✓      |
+| P2-31 | Enter a valid invite token (or TOTP code)    | Enrollment succeeds, cert files written to `/var/lib/koi/certs/node-05/` or `%ProgramData%\koi\certs\node-05\` | ✓      |
 | P2-32 | Enter invalid auth credential                | Enrollment fails with clear error message                                                                        | ✓      |
 | P2-33 | Enter 3 invalid codes                        | 5-minute lockout triggered, subsequent valid codes rejected                                                      | ✓      |
 | P2-34 | Wait for lockout to expire, enter valid code | Enrollment succeeds                                                                                              | ✓      |
 | P2-35 | Verify auth comparison is constant-time      | No timing difference between valid and invalid codes (use statistical test)                                      | ✓      |
-| P2-36 | Verify Machine B's cert SANs                 | Includes stone-05's hostname, FQDN, mDNS name, all LAN IPs                                                       | ✓      |
-| P2-37 | Verify Machine B has root CA in trust store  | `curl https://stone-01.internal` succeeds without `--insecure`                                                   | Manual |
+| P2-36 | Verify Machine B's cert SANs                 | Includes node-05's hostname, FQDN, mDNS name, all LAN IPs                                                       | ✓      |
+| P2-37 | Verify Machine B has root CA in trust store  | `curl https://node-01.internal` succeeds without `--insecure`                                                   | Manual |
 | P2-38 | Verify audit log entry                       | `member_joined` with host and approver                                                                           | ✓      |
 
 ### P2 - Trust Profiles — **REMOVED in 0.4.2 (ADR-016)**
@@ -166,10 +166,10 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 
 | ID    | Test                                                | Expected                                  | Auto?  |
 | ----- | --------------------------------------------------- | ----------------------------------------- | ------ |
-| P2-50 | From Machine B, `curl https://stone-01.internal`         | 200 OK, no cert warnings                  | Manual |
-| P2-51 | From Machine A, `curl https://stone-05.internal`         | 200 OK, no cert warnings                  | Manual |
-| P2-52 | Open `https://stone-05.internal` in Chrome on Machine A  | Green lock, no security warnings          | Manual |
-| P2-53 | Open `https://stone-05.internal` in Firefox on Machine A | Green lock (if NSS trust store installed) | Manual |
+| P2-50 | From Machine B, `curl https://node-01.internal`         | 200 OK, no cert warnings                  | Manual |
+| P2-51 | From Machine A, `curl https://node-05.internal`         | 200 OK, no cert warnings                  | Manual |
+| P2-52 | Open `https://node-05.internal` in Chrome on Machine A  | Green lock, no security warnings          | Manual |
+| P2-53 | Open `https://node-05.internal` in Firefox on Machine A | Green lock (if NSS trust store installed) | Manual |
 
 ---
 
@@ -271,10 +271,10 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 | P5-04 | `koi certmesh restore` with wrong passphrase                      | Restore fails, clear error message                                                 | ✓      |
 | P5-05 | After restore, existing members can connect                       | Cert chain still valid, heartbeat succeeds                                         | Manual |
 | P5-06 | After restore, new members can join                               | Enrollment works with the restored auth credential                                 | Manual |
-| P5-07 | `koi certmesh revoke stone-05`                                    | stone-05 added to revocation list                                                  | ✓      |
-| P5-08 | Revocation list pushed to members                                 | Other members see stone-05 as revoked                                              | ✓      |
-| P5-09 | Revoked member's certmesh connections rejected                    | stone-05 cannot connect to CA's certmesh API                                       | ✓      |
-| P5-10 | Revoked member's existing cert still works for TLS (until expiry) | HTTPS to stone-05 still works (cert is technically valid)                          | Manual |
+| P5-07 | `koi certmesh revoke node-05`                                    | node-05 added to revocation list                                                  | ✓      |
+| P5-08 | Revocation list pushed to members                                 | Other members see node-05 as revoked                                              | ✓      |
+| P5-09 | Revoked member's certmesh connections rejected                    | node-05 cannot connect to CA's certmesh API                                       | ✓      |
+| P5-10 | Revoked member's existing cert still works for TLS (until expiry) | HTTPS to node-05 still works (cert is technically valid)                          | Manual |
 | P5-11 | After 30-day cert expiry, revoked member's TLS fails              | Cert expired, not renewed (member is revoked)                                      | Manual |
 | P5-12 | Verify `zeroize` on key material                                  | Key structs implement `ZeroizeOnDrop` (compile-time check)                         | ✓      |
 | P5-13 | Verify no secrets in logs                                         | `RUST_LOG=trace`, run enrollment - no auth secrets, keys, or passphrases in output | ✓      |
@@ -301,10 +301,10 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 | ID    | Test                                                             | Expected                                                      | Auto? |
 | ----- | ---------------------------------------------------------------- | ------------------------------------------------------------- | ----- |
 | P6-10 | Add static entry, also have certmesh SAN for same name           | Static entry wins (priority 1)                                | ✓     |
-| P6-11 | Certmesh member `stone-05` enrolled                              | `stone-05.lan` resolves to stone-05's IP (from certmesh SANs) | ✓     |
-| P6-12 | mDNS discovers `_grafana._tcp` on stone-05                       | `grafana.lan` resolves to stone-05's IP (service alias)       | ✓     |
+| P6-11 | Certmesh member `node-05` enrolled                              | `node-05.lan` resolves to node-05's IP (from certmesh SANs) | ✓     |
+| P6-12 | mDNS discovers `_grafana._tcp` on node-05                       | `grafana.lan` resolves to node-05's IP (service alias)       | ✓     |
 | P6-13 | Two machines advertise `_grafana._tcp`                           | `grafana.lan` returns both IPs (round-robin)                  | ✓     |
-| P6-14 | Two instances: `grafana-stone-05.lan` and `grafana-stone-09.lan` | Each resolves to its specific machine's IP                    | ✓     |
+| P6-14 | Two instances: `grafana-node-05.lan` and `grafana-node-09.lan` | Each resolves to its specific machine's IP                    | ✓     |
 | P6-15 | `koi dns list` shows source for each name                        | Static, certmesh, or mDNS clearly labeled                     | ✓     |
 
 ### P6 - Upstream Forwarding
@@ -329,8 +329,8 @@ For CI, use loopback interfaces with different ports to simulate separate machin
 
 | ID    | Test                                            | Expected                                  | Auto?  |
 | ----- | ----------------------------------------------- | ----------------------------------------- | ------ |
-| P6-40 | DNS creates alias `grafana.lan` for stone-05    | Certmesh is notified of new alias         | ✓      |
-| P6-41 | Trigger cert renewal on stone-05                | New cert includes `grafana.lan` in SANs   | ✓      |
+| P6-40 | DNS creates alias `grafana.lan` for node-05    | Certmesh is notified of new alias         | ✓      |
+| P6-41 | Trigger cert renewal on node-05                | New cert includes `grafana.lan` in SANs   | ✓      |
 | P6-42 | Verify `curl https://grafana.lan` after renewal | TLS validates (cert SAN matches DNS name) | Manual |
 
 ---
@@ -436,7 +436,7 @@ These tests verify that capabilities compose correctly. Run after all relevant p
 
 | ID     | Test                                                                          | Expected                                              | Auto?  |
 | ------ | ----------------------------------------------------------------------------- | ----------------------------------------------------- | ------ |
-| INT-10 | Enroll Machine B, start DNS                                                   | `stone-05.lan` resolves from certmesh SAN data        | ✓      |
+| INT-10 | Enroll Machine B, start DNS                                                   | `node-05.lan` resolves from certmesh SAN data        | ✓      |
 | INT-11 | DNS generates alias `grafana.lan` → cert renewed → SAN includes `grafana.lan` | Full feedback loop completes within one renewal cycle | ✓      |
 | INT-12 | `curl https://grafana.lan` after SAN feedback                                 | TLS validates (cert SAN matches DNS name)             | Manual |
 
@@ -444,7 +444,7 @@ These tests verify that capabilities compose correctly. Run after all relevant p
 
 | ID     | Test                                                | Expected                                                                | Auto? |
 | ------ | --------------------------------------------------- | ----------------------------------------------------------------------- | ----- |
-| INT-20 | DNS name `stone-05.lan` resolves, machine goes down | Health detects down, DNS still returns the A record (stale but present) | ✓     |
+| INT-20 | DNS name `node-05.lan` resolves, machine goes down | Health detects down, DNS still returns the A record (stale but present) | ✓     |
 | INT-21 | Health service check uses DNS name                  | `koi health add grafana --http https://grafana.lan:3000/health` works   | ✓     |
 
 ### INT - Certmesh + Proxy (Phase 8+)
@@ -485,7 +485,7 @@ These are the "it all works" tests. Run as final acceptance after Phase 8.
 | 2    | Scan QR code into an authenticator (TOTP) — **FIDO2 enrollment removed in 0.4.2** | Auth credential stored                              |
 | 3    | Machine B: `koi certmesh join`                                                  | Discovers CA, prompts for auth, enrolls             |
 | 4    | Machine A: `koi dns serve`                                                      | DNS resolver starts                                 |
-| 5    | Verify: `koi dns list`                                                          | Shows `stone-01.lan`, `stone-05.lan`, `grafana.lan` |
+| 5    | Verify: `koi dns list`                                                          | Shows `node-01.lan`, `node-05.lan`, `grafana.lan` |
 | 6    | Machine B: `koi proxy add grafana --listen 443 --backend http://localhost:3000` | Proxy starts                                        |
 | 7    | Any device on LAN: open `https://grafana.lan` in browser                        | Green lock, Grafana dashboard, no warnings          |
 | 8    | `koi status` on Machine A                                                       | All 5 capabilities show healthy                     |
@@ -537,7 +537,7 @@ These are the "it all works" tests. Run as final acceptance after Phase 8.
 
 | Step | Action                                                                            | Expected                    |
 | ---- | --------------------------------------------------------------------------------- | --------------------------- |
-| 1    | Note cert serial: `openssl x509 -in /var/lib/koi/certs/stone-05/cert.pem -serial` | Record serial A             |
+| 1    | Note cert serial: `openssl x509 -in /var/lib/koi/certs/node-05/cert.pem -serial` | Record serial A             |
 | 2    | Wait for renewal (at 80% of lifetime)                                             | Cert files overwritten      |
 | 3    | Check serial again                                                                | Different serial B          |
 | 4    | Verify `fullchain.pem` updated                                                    | New cert in fullchain       |

@@ -405,7 +405,7 @@ fn eval_init_passphrase(
                 messages: vec![Message::info(
                     "Custom Passphrase",
                     "This passphrase protects your CA's private key. \
-                     Write it down - you'll need it if the keystone member reboots.\n\n\
+                     Write it down - you'll need it if the CA host reboots.\n\n\
                      Minimum 8 characters.",
                 )],
             });
@@ -469,7 +469,7 @@ fn passphrase_choice_prompt(bag: &serde_json::Map<String, serde_json::Value>) ->
     hint_text.push_str(
         "\n\nThis passphrase protects your CA's private key. \
          Write it down somewhere safe - you'll need it if the \
-         keystone member reboots.",
+         CA host reboots.",
     );
 
     EvalResult::NeedInput {
@@ -621,7 +621,7 @@ fn eval_init_totp(
             .get("_self_hostname")
             .and_then(|v| v.as_str())
             .unwrap_or("certmesh");
-        let uri = koi_crypto::totp::build_totp_uri(&secret, "ZenGarden", account);
+        let uri = koi_crypto::totp::build_totp_uri(&secret, "Koi Certmesh", account);
 
         bag.insert(
             "_totp_secret_hex".into(),
@@ -713,7 +713,7 @@ fn eval_init_token(
                     "Separate Token",
                     "This is a **separate** token from your enrollment code. \
                      Add it as a second entry in your authenticator app. \
-                     It will be labeled 'ZenGarden-Unlock'.",
+                     It will be labeled 'Koi Certmesh Unlock'.",
                 ),
             ],
         });
@@ -758,7 +758,7 @@ fn ensure_unlock_totp_secret(bag: &mut serde_json::Map<String, serde_json::Value
         .get("_self_hostname")
         .and_then(|v| v.as_str())
         .unwrap_or("certmesh");
-    let uri = koi_crypto::totp::build_totp_uri(&secret, "ZenGarden-Unlock", account);
+    let uri = koi_crypto::totp::build_totp_uri(&secret, "Koi Certmesh Unlock", account);
 
     bag.insert(
         "_unlock_totp_secret".into(),

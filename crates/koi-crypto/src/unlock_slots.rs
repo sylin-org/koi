@@ -37,7 +37,7 @@ use koi_common::encoding::{hex_decode, hex_encode};
 const MASTER_KEY_LEN: usize = 32;
 
 /// HKDF info string for TOTP-based slot key derivation.
-const TOTP_SLOT_HKDF_INFO: &[u8] = b"pond-unlock-slot-totp-v1";
+const TOTP_SLOT_HKDF_INFO: &[u8] = b"koi-unlock-slot-totp-v1";
 
 /// Platform credential store label for the sealed TOTP shared secret.
 const TOTP_CREDENTIAL_LABEL: &str = "koi-certmesh-unlock-totp";
@@ -65,7 +65,7 @@ pub enum UnlockSlot {
     },
 
     /// Auto-unlock slot - master key stored in a local file.
-    /// The file path is managed externally (Moss writes/reads it).
+    /// The file path is managed externally (the host application writes/reads it).
     /// This slot records that auto-unlock is enabled.
     #[serde(rename = "auto_unlock")]
     AutoUnlock,

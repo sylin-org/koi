@@ -341,7 +341,7 @@ mod tests {
 
         // Flip to secure on the LIVE core (create → self-enroll → posture watch).
         let req = koi_certmesh::protocol::CreateCaRequest {
-            passphrase: "pond-pass-strong".to_string(),
+            passphrase: "test-pass-strong".to_string(),
             entropy_hex: koi_common::encoding::hex_encode(&[8u8; 32]),
             operator: None,
             enrollment_open: false,

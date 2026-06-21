@@ -229,7 +229,7 @@ impl Builder {
     }
 
     /// Register additional firewall ports that the host application needs
-    /// opened (e.g. Moss discovery UDP, HTTP API).  These are merged with
+    /// opened (e.g. an application's discovery UDP, HTTP API).  These are merged with
     /// the ports from enabled Koi capabilities when `ensure_firewall_rules`
     /// is called.
     pub fn extra_firewall_ports(mut self, ports: Vec<koi_common::firewall::FirewallPort>) -> Self {
@@ -246,7 +246,7 @@ impl Builder {
     /// * No-op on non-Windows platforms.
     ///
     /// `prefix` is used in the firewall rule display-names
-    /// (e.g. `"Zen Garden"` → `"Zen Garden mDNS (UDP 5353)"`).
+    /// (e.g. `"My App"` → `"My App mDNS (UDP 5353)"`).
     pub fn ensure_firewall_rules(self, prefix: &str) -> Self {
         let mut all_ports = self.config.firewall_ports();
         all_ports.extend(self.extra_firewall_ports.iter().cloned());
@@ -921,7 +921,7 @@ mod tests {
         // data_dir gets the CA created, discovered, and unlocked under THAT
         // dir — never a split between the injected dir and an ambient default.
         let base = koi_common::test::ensure_data_dir("koi-embedded-datadir-tests");
-        let data_dir = base.join("custom-pond");
+        let data_dir = base.join("custom-data");
         let paths = koi_certmesh::CertmeshPaths::with_data_dir(data_dir.clone());
 
         // Fresh machine: no CA yet. The uninitialized early-return must still
@@ -936,7 +936,7 @@ mod tests {
         );
 
         // Create a CA + roster UNDER the injected dir.
-        koi_certmesh::ca::create_ca("pond-pass-strong", &[7u8; 32], &paths)
+        koi_certmesh::ca::create_ca("test-pass-strong", &[7u8; 32], &paths)
             .expect("create CA under injected dir");
         // My Organization posture: closed enrollment, approval required.
         let roster = koi_certmesh::roster::Roster::new(false, true, Some("ops".to_string()));
@@ -949,7 +949,7 @@ mod tests {
             koi_compose::cores::init_certmesh_core(Some(&data_dir)).expect("locked core");
         assert_eq!(reopened.paths().data_dir(), data_dir.as_path());
         reopened
-            .unlock("pond-pass-strong")
+            .unlock("test-pass-strong")
             .await
             .expect("unlock CA from the injected data_dir");
     }

@@ -328,7 +328,7 @@ impl DnsCore {
         let local_zone = self.local_zone.as_ref()?;
         let normalized = local_zone.normalize_name(name)?;
 
-        // Extract bare hostname: "stone-azure-pool.local." → "stone-azure-pool"
+        // Extract bare hostname: "node-azure-pool.local." → "node-azure-pool"
         let hostname = normalized.trim_end_matches('.').trim_end_matches(".local");
         if hostname.is_empty() {
             return None;
@@ -611,7 +611,7 @@ impl RequestHandler for DnsHandler {
             );
             answers.push(record);
         } else if self.core.zone.is_local_name(&query_str) {
-            // Primary zone (.zengarden / .lan): static + certmesh + mDNS aliases
+            // Primary zone (.internal): static + certmesh + mDNS aliases
             authoritative = true;
             match self.core.resolve_local(&query_str, query_type) {
                 Some(result) => {

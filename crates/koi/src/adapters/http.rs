@@ -334,9 +334,9 @@ struct ShutdownResponse {
 /// Host identity and network interfaces.
 #[derive(Debug, Serialize, ToSchema)]
 struct HostInfoResponse {
-    /// Raw hostname (e.g. "stone-azure-pool").
+    /// Raw hostname (e.g. "node-azure-pool").
     hostname: String,
-    /// Fully-qualified mDNS name (e.g. "stone-azure-pool.local").
+    /// Fully-qualified mDNS name (e.g. "node-azure-pool.local").
     hostname_fqdn: String,
     /// Operating system (e.g. "linux", "windows").
     os: String,
