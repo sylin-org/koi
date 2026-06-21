@@ -33,6 +33,11 @@ pub struct Cores {
     pub proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
     pub udp: Option<Arc<koi_udp::UdpRuntime>>,
     pub runtime: Option<Arc<koi_runtime::RuntimeCore>>,
+    /// The shared mDNS cached-records snapshot bridge (same instance DNS/health
+    /// consume). Exposed so presentation adapters (e.g. the Prometheus SD endpoint's
+    /// `?include=discovered` slice) can read cached records without spawning a second
+    /// meta-browse. `None` when mDNS is disabled.
+    pub mdns_snapshot: Option<Arc<dyn MdnsSnapshot>>,
 }
 
 /// Capability flags + inputs needed to build the cores. A daemon-`Config` subset, kept here
@@ -51,7 +56,7 @@ pub struct CoreSpec {
     pub dns_config: koi_dns::DnsConfig,
     /// Runtime backend selector string ("auto", "docker", "podman", …).
     pub runtime: String,
-    /// HTTP port — used by the certmesh CA announcement / heartbeat loops.
+    /// Daemon HTTP port (the local management/API port the daemon binds).
     pub http_port: u16,
 }
 
@@ -90,52 +95,69 @@ pub fn init_certmesh_core(data_dir: Option<&Path>) -> Option<Arc<koi_certmesh::C
         }
     };
 
-    let profile = roster.metadata.trust_profile;
+    // ── F11 machine binding: refuse auto-unlock on a changed host ───────
+    // Checked BEFORE reading the vault key so a VM clone / disk restore onto new
+    // hardware (different machine-id) boots LOCKED instead of auto-unlocking with
+    // the copied vault key. Fail-safe + audited; a legitimate migration recovers
+    // with a one-time manual `koi certmesh unlock`.
+    let machine_ok = koi_certmesh::machine_binding_ok(&paths);
+    if !machine_ok {
+        let _ = koi_certmesh::audit::append_entry_to(
+            &paths.audit_log_path(),
+            "auto_unlock_refused_machine_changed",
+            &[],
+        );
+        tracing::error!(
+            "Certmesh: machine fingerprint changed since CA creation (clone/restore?) — \
+             booting LOCKED; run `koi certmesh unlock` to unlock manually on this host"
+        );
+    }
 
     // ── Auto-unlock at init: single source of truth ─────────────
     // The auto-unlock passphrase lives in the koi-crypto vault (written by
     // CertmeshCore::save_auto_unlock_key_at, which deletes any legacy plaintext file).
     // Retrieve it through the domain crate so this boot path can never drift from where the
     // key is actually stored. When a key is present, boot the core already unlocked.
-    if let Ok(Some(pp)) = koi_certmesh::CertmeshCore::read_auto_unlock_key(&paths) {
-        match koi_certmesh::ca::load_ca(&pp, &paths) {
-            Ok(ca_state) => {
-                // Reload roster (fresh copy for the new Arc)
-                if let Ok(fresh_roster) = koi_certmesh::roster::load_roster(&roster_path) {
-                    let auth_path = paths.auth_path();
-                    let auth = if auth_path.exists() {
-                        std::fs::read_to_string(&auth_path)
-                            .ok()
-                            .and_then(|json| {
-                                serde_json::from_str::<koi_crypto::auth::StoredAuth>(&json).ok()
-                            })
-                            .and_then(|stored| stored.unlock(&pp).ok())
-                    } else {
-                        None
-                    };
+    if machine_ok {
+        if let Ok(Some(pp)) = koi_certmesh::CertmeshCore::read_auto_unlock_key(&paths) {
+            match koi_certmesh::ca::load_ca(&pp, &paths) {
+                Ok(ca_state) => {
+                    // Reload roster (fresh copy for the new Arc)
+                    if let Ok(fresh_roster) = koi_certmesh::roster::load_roster(&roster_path) {
+                        let auth_path = paths.auth_path();
+                        let auth = if auth_path.exists() {
+                            std::fs::read_to_string(&auth_path)
+                                .ok()
+                                .and_then(|json| {
+                                    serde_json::from_str::<koi_crypto::auth::StoredAuth>(&json).ok()
+                                })
+                                .and_then(|stored| stored.unlock(&pp).ok())
+                        } else {
+                            None
+                        };
 
-                    tracing::info!("Certmesh CA auto-unlocked at init from vault");
-                    return Some(Arc::new(koi_certmesh::CertmeshCore::new_with_paths(
-                        ca_state,
-                        fresh_roster,
-                        auth,
-                        profile,
-                        paths,
-                    )));
+                        tracing::info!("Certmesh CA auto-unlocked at init from vault");
+                        return Some(Arc::new(koi_certmesh::CertmeshCore::new_with_paths(
+                            ca_state,
+                            fresh_roster,
+                            auth,
+                            paths,
+                        )));
+                    }
                 }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "Auto-unlock key exists in vault but CA decryption failed"
-                );
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Auto-unlock key exists in vault but CA decryption failed"
+                    );
+                }
             }
         }
     }
 
     // No auto-unlock key - boot locked
     tracing::info!("Certmesh: CA initialized (locked, use `koi certmesh unlock` to decrypt)");
-    let core = koi_certmesh::CertmeshCore::locked_with_paths(roster, profile, paths);
+    let core = koi_certmesh::CertmeshCore::locked_with_paths(roster, paths);
     Some(Arc::new(core))
 }
 
@@ -274,23 +296,30 @@ pub async fn build_cores(
 
     // ── Runtime adapter ──
     let runtime_core = if !spec.no_runtime {
-        let backend_kind = koi_runtime::RuntimeBackendKind::from_str_loose(&spec.runtime)
-            .unwrap_or_else(|| {
-                tracing::warn!(
+        // No silent fallback: an unrecognized backend selector disables the
+        // runtime adapter rather than quietly running Auto. The CLI rejects bad
+        // values at parse time; this guards the service/env path.
+        match koi_runtime::RuntimeBackendKind::from_str_loose(&spec.runtime) {
+            Some(backend_kind) => {
+                let rt_config = koi_runtime::RuntimeConfig {
+                    backend_kind,
+                    socket_path: None,
+                };
+                let core = Arc::new(koi_runtime::RuntimeCore::new(rt_config));
+                match core.start_watching(cancel.clone()).await {
+                    Ok(()) => Some(core),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Runtime adapter unavailable, continuing without it");
+                        None
+                    }
+                }
+            }
+            None => {
+                tracing::error!(
                     value = %spec.runtime,
-                    "Unknown runtime backend, falling back to auto"
+                    accepted = ?koi_runtime::RuntimeBackendKind::ACCEPTED,
+                    "Unknown runtime backend; disabling runtime adapter"
                 );
-                koi_runtime::RuntimeBackendKind::Auto
-            });
-        let rt_config = koi_runtime::RuntimeConfig {
-            backend_kind,
-            socket_path: None,
-        };
-        let core = Arc::new(koi_runtime::RuntimeCore::new(rt_config));
-        match core.start_watching(cancel.clone()).await {
-            Ok(()) => Some(core),
-            Err(e) => {
-                tracing::warn!(error = %e, "Runtime adapter unavailable, continuing without it");
                 None
             }
         }
@@ -322,18 +351,13 @@ pub async fn build_cores(
         proxy: proxy_runtime,
         udp: udp_runtime,
         runtime: runtime_core,
+        mdns_snapshot: mdns_bridge,
     };
 
     // ── Certmesh role background loops (caller-invariant) ──
     // The approval pump is spawned by the caller (its decider differs by host).
     if let Some(ref certmesh) = cores.certmesh {
-        crate::certmesh::spawn_certmesh_background_tasks(
-            certmesh,
-            cores.mdns.clone(),
-            spec.http_port,
-            cancel,
-            tasks,
-        );
+        crate::certmesh::spawn_certmesh_background_tasks(certmesh, cancel, tasks);
     }
 
     tracing::debug!("Domain cores built");
@@ -383,5 +407,55 @@ pub async fn ordered_shutdown(
     };
     if tokio::time::timeout(timeout, shutdown).await.is_err() {
         tracing::warn!("Shutdown timed out after {:?} - forcing exit", timeout);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koi_certmesh::{CertmeshCore, CertmeshPaths};
+
+    /// Regression guard for ADR-017 F11: the **real boot path** (`init_certmesh_core`,
+    /// not the unused `try_auto_unlock`) must refuse to auto-unlock when the machine
+    /// fingerprint changed since CA creation (a VM clone / disk restore). The fix
+    /// that wires `machine_binding_ok` into this path is exactly what an earlier
+    /// implementation missed — this test ensures it can't silently un-wire again.
+    #[tokio::test]
+    async fn init_certmesh_core_refuses_auto_unlock_on_machine_change() {
+        let base = koi_common::test::ensure_data_dir("koi-compose-cores-tests").join("f11-boot");
+        let _ = std::fs::remove_dir_all(&base);
+        let paths = CertmeshPaths::with_data_dir(base.clone());
+
+        // Create a CA with auto-unlock — records the vault key + machine.bind.
+        let core = CertmeshCore::uninitialized_with_paths(paths.clone());
+        core.create(koi_certmesh::protocol::CreateCaRequest {
+            passphrase: "f11-boot-pass".into(),
+            entropy_hex: "11".repeat(32),
+            operator: None,
+            enrollment_open: true,
+            requires_approval: false,
+            auto_unlock: true,
+            totp_secret_hex: None,
+        })
+        .await
+        .expect("CA create");
+
+        // Same host (machine.bind matches) → the boot path auto-unlocks.
+        let booted = init_certmesh_core(Some(&base)).expect("core");
+        assert!(
+            !booted.certmesh_status().await.ca_locked,
+            "matching machine binding should auto-unlock at boot"
+        );
+
+        // Simulate a clone/restore: overwrite the recorded fingerprint. The boot
+        // path must now refuse auto-unlock and come up LOCKED.
+        std::fs::write(paths.machine_bind_path(), b"not-this-host-fingerprint").unwrap();
+        let booted_after = init_certmesh_core(Some(&base)).expect("core");
+        assert!(
+            booted_after.certmesh_status().await.ca_locked,
+            "a changed machine fingerprint must refuse auto-unlock at boot (F11)"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

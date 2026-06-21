@@ -1,0 +1,3 @@
+# The koi binary is built + staged here at test time by scripts/cross-host-certmesh.sh
+# (never committed).
+koi

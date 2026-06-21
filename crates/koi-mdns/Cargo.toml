@@ -14,6 +14,7 @@ categories = ["network-programming"]
 
 [dependencies]
 koi-common.workspace = true
+async-trait.workspace = true
 utoipa.workspace = true
 mdns-sd = "0.20"
 axum.workspace = true

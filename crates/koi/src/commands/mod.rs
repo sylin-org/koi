@@ -1,7 +1,7 @@
 //! CLI command handlers, organized by domain.
 //!
 //! - `mdns` - mDNS commands (discover, announce, unregister, resolve, subscribe).
-//! - `certmesh` - Certificate mesh commands (create, join, status, log, compliance, unlock, set-hook).
+//! - `certmesh` - Certificate mesh commands (create, join, status, log, unlock, set-hook).
 //! - `dns` - DNS commands (serve, lookup, add/remove/list).
 //! - `health` - Health commands (status, watch, add/remove, log).
 //! - `proxy` - Proxy commands (add/remove/list/status).
@@ -13,10 +13,12 @@ pub mod certmesh;
 pub mod dns;
 pub mod factory_reset;
 pub mod health;
+pub mod mcp;
 pub mod mdns;
 pub mod proxy;
 pub mod status;
 pub mod token;
+pub mod trust;
 pub mod udp;
 
 use std::collections::HashMap;
@@ -43,6 +45,25 @@ pub(crate) enum Mode {
     },
 }
 
+/// The explicit access token, if any: the `--token` flag (which also reads
+/// `KOI_TOKEN` via clap's `env`, flag winning). Returned only when non-empty so
+/// an empty `KOI_TOKEN=""` does not masquerade as a real token.
+pub(crate) fn cli_token(cli: &Cli) -> Option<&str> {
+    cli.token.as_deref().filter(|t| !t.is_empty())
+}
+
+/// The uniform token-selection rule, factored out so it is unit-testable
+/// without a live daemon or breadcrumb.
+///
+/// - **Explicit endpoint** present → use the `--token`/`KOI_TOKEN` value if set,
+///   otherwise **tokenless** (empty). NEVER the breadcrumb token: pairing the
+///   local daemon's token with a remote URL would leak it to that host.
+/// - **No explicit endpoint** → caller falls back to the breadcrumb (endpoint +
+///   its matching token), which is the local daemon and trusted.
+pub(crate) fn token_for_explicit_endpoint(explicit_token: Option<&str>) -> String {
+    explicit_token.unwrap_or("").to_string()
+}
+
 /// Determine whether to run standalone (local mDNS core) or as a client
 /// talking to an already-running daemon.
 pub(crate) fn detect_mode(cli: &Cli) -> Mode {
@@ -50,9 +71,11 @@ pub(crate) fn detect_mode(cli: &Cli) -> Mode {
         return Mode::Standalone;
     }
     if let Some(endpoint) = &cli.endpoint {
+        // Explicit endpoint: use the explicit --token/KOI_TOKEN if set, else
+        // tokenless. Never the breadcrumb token (would leak to a remote host).
         return Mode::Client {
             endpoint: endpoint.clone(),
-            token: String::new(),
+            token: token_for_explicit_endpoint(cli_token(cli)),
         };
     }
     // Check breadcrumb - if a daemon is advertising its endpoint, use client mode
@@ -71,7 +94,11 @@ pub(crate) fn detect_mode(cli: &Cli) -> Mode {
 /// Resolve an endpoint for admin commands (which always need a daemon).
 pub(crate) fn resolve_endpoint(cli: &Cli) -> anyhow::Result<(String, String)> {
     if let Some(endpoint) = &cli.endpoint {
-        return Ok((endpoint.clone(), String::new()));
+        // Explicit endpoint: explicit token or tokenless, never the breadcrumb.
+        return Ok((
+            endpoint.clone(),
+            token_for_explicit_endpoint(cli_token(cli)),
+        ));
     }
     if let Some(bc) = koi_config::breadcrumb::read_breadcrumb() {
         return Ok((bc.endpoint, bc.token));
@@ -325,5 +352,25 @@ mod tests {
     fn build_register_payload_always_has_no_lease() {
         let payload = build_register_payload("X", "_tcp", 80, None, &[]);
         assert!(payload.lease_secs.is_none());
+    }
+
+    // ── token-selection tests ────────────────────────────────────────
+    //
+    // The security-critical rule: an explicit --endpoint must NEVER be paired
+    // with the local breadcrumb token. token_for_explicit_endpoint encodes that
+    // rule and is unit-testable without a live daemon or breadcrumb.
+
+    #[test]
+    fn explicit_endpoint_without_token_is_tokenless() {
+        // No --token/KOI_TOKEN → empty string (tokenless), never the breadcrumb.
+        assert_eq!(token_for_explicit_endpoint(None), "");
+    }
+
+    #[test]
+    fn explicit_endpoint_uses_provided_token() {
+        assert_eq!(
+            token_for_explicit_endpoint(Some("remote-secret")),
+            "remote-secret"
+        );
     }
 }

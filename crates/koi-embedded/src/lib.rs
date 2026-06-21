@@ -2,6 +2,8 @@ mod config;
 mod events;
 mod handle;
 pub(crate) mod http;
+mod serve;
+pub mod testkit;
 
 use std::sync::Arc;
 
@@ -16,16 +18,27 @@ use koi_compose::bridges::{
 
 pub use config::{DnsConfigBuilder, KoiConfig, ServiceMode};
 pub use events::KoiEvent;
-pub use handle::{CertmeshHandle, DnsHandle, HealthHandle, KoiHandle, MdnsHandle, ProxyHandle};
+pub use handle::{
+    CertmeshHandle, DnsHandle, HealthHandle, KoiHandle, MdnsHandle, ProxyHandle,
+    DEFAULT_DISCOVER_WINDOW,
+};
 
 // Re-export types needed by downstream consumers (registration, discovery, DNS, proxy, health)
 pub use koi_common::firewall::{FirewallPort, FirewallProtocol};
+// Mode-transparent trust primitives (ADR-020): typed discovery + posture + posture-keyed client.
+pub use koi_certmesh::PeerClient;
+pub use koi_common::diagnosis::{CheckStatus, DiagnosisCheck, DiagnosisStatus, TrustDiagnosis};
+pub use koi_common::peer::Peer;
+pub use koi_common::posture::{Posture, PostureLevel};
+pub use koi_common::sealed::{Confidentiality, Opened, Sealed};
 pub use koi_common::types::ServiceRecord;
 pub use koi_config::state::DnsEntry;
 pub use koi_health::{HealthCheck, HealthSnapshot, ServiceCheckKind};
 pub use koi_mdns::protocol::{RegisterPayload, RegistrationResult};
 pub use koi_mdns::MdnsEvent;
 pub use koi_proxy::ProxyEntry;
+// Same-port posture dial (ADR-020 §5): plain↔mTLS on one socket, live-flipping.
+pub use serve::serve_adaptive;
 
 // Vault: general-purpose encrypted secret storage
 pub use koi_crypto::vault::{Vault, VaultError};
@@ -548,6 +561,19 @@ impl KoiEmbedded {
                         self.config.dashboard_enabled.to_string(),
                     );
 
+                    // Stamp this node's trust posture into its own announcement so
+                    // peers discovering it get fleet-wide trust legibility
+                    // (ADR-020 §8). Advisory hints; `verify`/mTLS adjudicates.
+                    if let Some(ref core) = certmesh {
+                        let id = core.local_identity().await;
+                        koi_common::peer::stamp(
+                            &mut txt,
+                            core.posture(),
+                            id.as_ref().map(|i| i.ca_fingerprint.as_str()),
+                            id.as_ref().map(|i| i.renewal.expires_at),
+                        );
+                    }
+
                     let payload = koi_mdns::protocol::RegisterPayload {
                         name: format!("Koi ({hostname})"),
                         service_type: "_http._tcp".to_string(),
@@ -620,6 +646,16 @@ impl KoiEmbedded {
                 cancel.clone(),
                 &mut tasks,
             );
+            // Posture transitions (Open↔Authenticated) surface as PostureChanged —
+            // the live trust-state signal the consumer's serve supervisor and any
+            // observer react to (ADR-020 §5/§13).
+            spawn_posture_watcher(
+                core.watch_posture(),
+                event_tx.clone(),
+                self.event_handler.clone(),
+                cancel.clone(),
+                &mut tasks,
+            );
         }
         if let Some(runtime_proxy) = &proxy {
             spawn_event_mapper(
@@ -678,8 +714,6 @@ impl KoiEmbedded {
                 .await;
                 koi_compose::certmesh::spawn_certmesh_background_tasks(
                     certmesh_core,
-                    mdns.clone(),
-                    self.config.http_port,
                     &cancel,
                     &mut tasks,
                 );
@@ -802,6 +836,38 @@ fn spawn_event_mapper<E, F>(
     }));
 }
 
+/// Spawn a task translating this node's posture-watch transitions into
+/// `KoiEvent::PostureChanged` until cancellation (ADR-020 §5). A `watch` (which
+/// holds the latest value and coalesces) rather than a broadcast, so it needs its
+/// own loop instead of [`spawn_event_mapper`]. The first borrow seeds the baseline
+/// so the initial value is not mis-reported as a transition.
+fn spawn_posture_watcher(
+    mut rx: tokio::sync::watch::Receiver<koi_common::posture::Posture>,
+    tx: broadcast::Sender<KoiEvent>,
+    handler: Option<Arc<dyn Fn(KoiEvent) + Send + Sync>>,
+    cancel: CancellationToken,
+    tasks: &mut Vec<JoinHandle<()>>,
+) {
+    tasks.push(tokio::spawn(async move {
+        let mut last = *rx.borrow_and_update();
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                res = rx.changed() => {
+                    if res.is_err() {
+                        break; // the certmesh core was dropped
+                    }
+                    let to = *rx.borrow_and_update();
+                    if to != last {
+                        emit_event(&tx, handler.as_ref(), KoiEvent::PostureChanged { from: last, to });
+                        last = to;
+                    }
+                }
+            }
+        }
+    }));
+}
+
 fn emit_event(
     tx: &broadcast::Sender<KoiEvent>,
     handler: Option<&Arc<dyn Fn(KoiEvent) + Send + Sync>>,
@@ -837,6 +903,7 @@ async fn build_embedded_snapshot(
         proxy,
         udp,
         runtime,
+        mdns_snapshot: None,
     };
     let capabilities: Vec<serde_json::Value> = koi_compose::status::assemble_capabilities(&cores)
         .await
@@ -918,10 +985,8 @@ mod tests {
         // Create a CA + roster UNDER the injected dir.
         koi_certmesh::ca::create_ca("pond-pass-strong", &[7u8; 32], &paths)
             .expect("create CA under injected dir");
-        let roster = koi_certmesh::roster::Roster::new(
-            koi_certmesh::profiles::TrustProfile::MyOrganization,
-            Some("ops".to_string()),
-        );
+        // My Organization posture: closed enrollment, approval required.
+        let roster = koi_certmesh::roster::Roster::new(false, true, Some("ops".to_string()));
         koi_certmesh::roster::save_roster(&roster, &paths.roster_path())
             .expect("save roster under injected dir");
 
@@ -1088,6 +1153,47 @@ mod tests {
         let event = koi_certmesh::CertmeshEvent::Destroyed;
         let mapped = map_certmesh_event(event);
         assert!(matches!(mapped, KoiEvent::CertmeshDestroyed));
+    }
+
+    #[tokio::test]
+    async fn posture_watcher_emits_upgrade_and_degrade() {
+        use koi_common::posture::Posture;
+        let (tx_p, rx_p) = tokio::sync::watch::channel(Posture::OPEN);
+        let (ev_tx, mut ev_rx) = broadcast::channel(16);
+        let cancel = CancellationToken::new();
+        let mut tasks = Vec::new();
+        spawn_posture_watcher(rx_p, ev_tx, None, cancel.clone(), &mut tasks);
+        // Let the watcher run to its first await so it captures OPEN as the
+        // baseline before we send (current-thread test runtime: yield runs the
+        // spawned task up to `rx.changed()`).
+        tokio::task::yield_now().await;
+
+        // Open→Authenticated → an upgrade PostureChanged.
+        tx_p.send(Posture::new(true, false)).unwrap();
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(1), ev_rx.recv())
+            .await
+            .expect("event arrives")
+            .expect("recv ok");
+        assert!(
+            matches!(ev, KoiEvent::PostureChanged { from, to } if !from.signed && to.signed),
+            "expected upgrade, got {ev:?}"
+        );
+
+        // Authenticated→Open → a degrade PostureChanged (as loud as the upgrade).
+        tx_p.send(Posture::OPEN).unwrap();
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(1), ev_rx.recv())
+            .await
+            .expect("event arrives")
+            .expect("recv ok");
+        assert!(
+            matches!(ev, KoiEvent::PostureChanged { from, to } if from.signed && !to.signed),
+            "expected degrade, got {ev:?}"
+        );
+
+        cancel.cancel();
+        for t in tasks {
+            let _ = t.await;
+        }
     }
 
     // ── map_proxy_event ────────────────────────────────────────────
@@ -1264,7 +1370,7 @@ mod tests {
     #[test]
     fn result_type_works_with_ok() {
         let result: Result<i32> = Ok(42);
-        assert_eq!(result.unwrap(), 42);
+        assert!(matches!(result, Ok(42)));
     }
 
     #[test]

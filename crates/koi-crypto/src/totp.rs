@@ -4,9 +4,10 @@
 //! 6-digit codes, 30-second time steps. Verification uses constant-time
 //! comparison via the `subtle` crate.
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
@@ -207,9 +208,17 @@ pub fn decrypt_secret(
 ///
 /// After `MAX_FAILURES` consecutive failures, locks out for
 /// `LOCKOUT_DURATION` (5 minutes). Resets on successful verification.
+///
+/// Uses wall-clock [`SystemTime`] (not monotonic `Instant`) and derives serde so
+/// the lockout can be **persisted across a restart** (ADR-017 F7) — a daemon
+/// bounce must not reset an active lockout. The wall-clock tradeoff (a backwards
+/// clock change could shorten a lockout) is accepted: the high-entropy single-use
+/// invite is the real brute-force defense, and a clock-set requires host (or, on a
+/// VM, hypervisor) access.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimiter {
     failures: u32,
-    locked_until: Option<Instant>,
+    locked_until: Option<SystemTime>,
 }
 
 impl RateLimiter {
@@ -223,7 +232,7 @@ impl RateLimiter {
     /// Check if currently locked out.
     pub fn is_locked(&self) -> bool {
         self.locked_until
-            .map(|until| Instant::now() < until)
+            .map(|until| SystemTime::now() < until)
             .unwrap_or(false)
     }
 
@@ -234,8 +243,8 @@ impl RateLimiter {
         if self.is_locked() {
             let remaining = self
                 .locked_until
-                .unwrap_or_else(Instant::now)
-                .saturating_duration_since(Instant::now());
+                .and_then(|until| until.duration_since(SystemTime::now()).ok())
+                .unwrap_or_default();
             return Err(RateLimitError::LockedOut {
                 remaining_secs: remaining.as_secs(),
             });
@@ -254,7 +263,7 @@ impl RateLimiter {
         } else {
             self.failures += 1;
             if self.failures >= MAX_FAILURES {
-                self.locked_until = Some(Instant::now() + LOCKOUT_DURATION);
+                self.locked_until = Some(SystemTime::now() + LOCKOUT_DURATION);
                 Err(RateLimitError::LockedOut {
                     remaining_secs: LOCKOUT_DURATION.as_secs(),
                 })

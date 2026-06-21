@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use tokio::sync::{broadcast, RwLock};
-use tokio_util::sync::CancellationToken;
 
 use koi_common::capability::{Capability, CapabilityStatus};
 use koi_common::integration::{CertmeshSnapshot, DnsProbe, MdnsSnapshot, ProxySnapshot};
+use koi_common::runtime_state::DomainRuntime;
 
 use crate::checker::{run_checks_loop, run_checks_once, ServiceCheckState};
 use crate::machine::{collect_machine_health, MdnsTracker};
@@ -31,9 +31,6 @@ pub use state::HealthCheckConfig as HealthCheck;
 
 /// Default machine health threshold (seconds since last seen).
 pub const DEFAULT_MACHINE_THRESHOLD_SECS: u64 = 60;
-
-/// Capacity for the health event broadcast channel.
-const BROADCAST_CHANNEL_CAPACITY: usize = 256;
 
 /// Events emitted by the health subsystem when service status changes.
 #[derive(Debug, Clone)]
@@ -109,7 +106,7 @@ impl HealthCore {
             None => None,
         };
 
-        let (event_tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
+        let (event_tx, _) = koi_common::events::event_channel();
 
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(HTTP_CLIENT_TIMEOUT_SECS))
@@ -253,60 +250,62 @@ impl HealthCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::ServiceCheckKind;
+    use crate::state::HealthCheckConfig;
 
-    #[test]
-    fn subscribe_receives_emitted_status_changed() {
-        let (tx, _) = broadcast::channel::<HealthEvent>(16);
-        let mut rx = tx.subscribe();
+    /// Drives a real status transition through HealthCore: subscribe → add a TCP
+    /// check pointing at a closed local port → run_checks_once() (real TCP attempt
+    /// fails) → the Unknown→Down transition emits StatusChanged through the core's
+    /// own channel. Fails if the checker stops emitting (tests Koi, not tokio).
+    #[tokio::test]
+    async fn run_checks_emits_status_changed_through_core() {
+        let _ = koi_common::test::ensure_data_dir("koi-health-event-tests");
 
-        let _ = tx.send(HealthEvent::StatusChanged {
-            name: "my-tcp".to_string(),
-            status: ServiceStatus::Up,
-        });
+        let core = HealthCore::new(None, None, None, None).await;
+        let mut rx = core.subscribe();
 
-        let event = rx.try_recv().expect("should receive event");
-        match event {
-            HealthEvent::StatusChanged { name, status } => {
-                assert_eq!(name, "my-tcp");
-                assert!(matches!(status, ServiceStatus::Up));
-            }
-        }
-    }
+        // Unique name so concurrent / repeated tests in the same process don't
+        // collide on the persisted check list. Port 1 is effectively never
+        // listening, so the TCP connect fails fast on localhost (no network).
+        let name = format!("evt-{}", koi_common::id::generate_short_id());
+        core.add_check(HealthCheckConfig {
+            name: name.clone(),
+            kind: ServiceCheckKind::Tcp,
+            target: "127.0.0.1:1".to_string(),
+            interval_secs: 1,
+            timeout_secs: 1,
+        })
+        .await
+        .expect("add_check should succeed");
 
-    #[test]
-    fn subscribe_receives_status_down() {
-        let (tx, _) = broadcast::channel::<HealthEvent>(16);
-        let mut rx = tx.subscribe();
+        // First run: Unknown -> Down, which emits a StatusChanged for our check.
+        core.run_checks_once().await;
 
-        let _ = tx.send(HealthEvent::StatusChanged {
-            name: "my-http".to_string(),
-            status: ServiceStatus::Down,
-        });
+        let event = rx
+            .try_recv()
+            .expect("a StatusChanged should have been emitted");
+        let HealthEvent::StatusChanged {
+            name: evt_name,
+            status,
+        } = event;
+        assert_eq!(evt_name, name);
+        assert!(
+            matches!(status, ServiceStatus::Down),
+            "closed local port should report Down, got {status:?}"
+        );
 
-        let event = rx.try_recv().expect("should receive event");
-        match event {
-            HealthEvent::StatusChanged { name, status } => {
-                assert_eq!(name, "my-http");
-                assert!(matches!(status, ServiceStatus::Down));
-            }
-        }
-    }
-
-    #[test]
-    fn no_event_when_no_send() {
-        let (tx, _) = broadcast::channel::<HealthEvent>(16);
-        let mut rx = tx.subscribe();
-        assert!(rx.try_recv().is_err());
-        drop(tx);
+        // Cleanup the persisted check so the shared state file stays tidy.
+        let _ = core.remove_check(&name).await;
     }
 }
 
+#[async_trait::async_trait]
 impl Capability for HealthCore {
     fn name(&self) -> &str {
         "health"
     }
 
-    fn status(&self) -> CapabilityStatus {
+    async fn status(&self) -> CapabilityStatus {
         let (total, up) = match self.service_states.try_read() {
             Ok(services) => {
                 let total = services.len();
@@ -328,9 +327,12 @@ impl Capability for HealthCore {
 }
 
 /// Runtime controller for the background service checks.
+///
+/// A thin wrapper over the shared [`DomainRuntime`] start/stop machine; the only
+/// health-specific piece is the spawned loop (`run_checks_loop(core, token)`).
+#[derive(Clone)]
 pub struct HealthRuntime {
-    core: Arc<HealthCore>,
-    state: Arc<tokio::sync::Mutex<RuntimeState>>,
+    inner: DomainRuntime<HealthCore>,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
@@ -338,63 +340,36 @@ pub struct HealthRuntimeStatus {
     pub running: bool,
 }
 
-struct RuntimeState {
-    running: bool,
-    cancel: Option<CancellationToken>,
-}
-
 impl HealthRuntime {
     pub fn new(core: Arc<HealthCore>) -> Self {
         Self {
-            core,
-            state: Arc::new(tokio::sync::Mutex::new(RuntimeState {
-                running: false,
-                cancel: None,
-            })),
+            inner: DomainRuntime::new(core),
         }
     }
 
     pub fn core(&self) -> Arc<HealthCore> {
-        Arc::clone(&self.core)
+        self.inner.core()
     }
 
     pub async fn start(&self) -> Result<bool, HealthError> {
-        let mut state = self.state.lock().await;
-        if state.running {
-            return Ok(false);
-        }
-        let token = CancellationToken::new();
-        state.cancel = Some(token.clone());
-        state.running = true;
-        drop(state);
-
-        let core = Arc::clone(&self.core);
-        let state = Arc::clone(&self.state);
-        tokio::spawn(async move {
-            run_checks_loop(core, token).await;
-            let mut guard = state.lock().await;
-            guard.running = false;
-            guard.cancel = None;
-        });
-
-        Ok(true)
+        let core = self.inner.core();
+        // DomainRuntime::start signals already-running via Ok(false) and never yields
+        // AlreadyRunning for this launcher; the Result<_, HealthError> shape is preserved.
+        let started = self
+            .inner
+            .start(move |token| tokio::spawn(run_checks_loop(core, token)))
+            .await
+            .unwrap_or(false);
+        Ok(started)
     }
 
     pub async fn stop(&self) -> bool {
-        let mut state = self.state.lock().await;
-        if let Some(token) = state.cancel.take() {
-            token.cancel();
-            state.running = false;
-            true
-        } else {
-            false
-        }
+        self.inner.stop().await
     }
 
     pub async fn status(&self) -> HealthRuntimeStatus {
-        let state = self.state.lock().await;
         HealthRuntimeStatus {
-            running: state.running,
+            running: self.inner.status().await.running,
         }
     }
 }

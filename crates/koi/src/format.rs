@@ -211,6 +211,9 @@ pub fn unified_status(json: &serde_json::Value) -> String {
             if active { "active" } else { "idle" }
         );
     }
+    if let Some(seal) = json.get("seal").and_then(|v| v.as_str()) {
+        let _ = writeln!(out, "  Seal:      {seal}");
+    }
 
     if let Some(caps) = json.get("capabilities").and_then(|v| v.as_array()) {
         for cap in caps {
@@ -222,6 +225,36 @@ pub fn unified_status(json: &serde_json::Value) -> String {
                 .unwrap_or(false);
             let marker = if healthy { "+" } else { "-" };
             let _ = writeln!(out, "  [{marker}] {name}:  {summary}");
+        }
+    }
+    out
+}
+
+/// Render a [`TrustDiagnosis`](koi_common::diagnosis::TrustDiagnosis) as a loud,
+/// scannable report (ADR-020 §13). Each check shows a marker, its detail, and —
+/// for anything actionable — the exact remedy on an indented `→ fix:` line.
+pub fn trust_diagnosis(d: &koi_common::diagnosis::TrustDiagnosis) -> String {
+    use koi_common::diagnosis::{CheckStatus, DiagnosisStatus};
+    let overall = match d.overall {
+        DiagnosisStatus::Healthy => "HEALTHY",
+        DiagnosisStatus::Degraded => "DEGRADED",
+        DiagnosisStatus::Red => "RED",
+    };
+    let mut out = format!("Trust diagnosis: {overall}\n");
+    for c in &d.checks {
+        let marker = match c.status {
+            CheckStatus::Ok => "+",
+            CheckStatus::Warn => "!",
+            CheckStatus::Red => "x",
+            CheckStatus::NotApplicable => "-",
+        };
+        let _ = writeln!(out, "  [{marker}] {}: {}", c.name, c.detail);
+        // Surface the remedy for anything that isn't plainly Ok (so warnings/reds
+        // and the actionable hints are visible without --json).
+        if let Some(remedy) = &c.remedy {
+            if c.status != CheckStatus::Ok {
+                let _ = writeln!(out, "      → fix: {remedy}");
+            }
         }
     }
     out
@@ -240,31 +273,6 @@ pub fn promote_success(hostname: &str) -> String {
         out,
         "It will take over automatically if the primary goes offline."
     );
-    out
-}
-
-/// Format the result of a certificate renewal for a member.
-/// Used by the renewal push flow when displaying results.
-#[allow(dead_code)]
-pub fn renewal_result(
-    hostname: &str,
-    success: bool,
-    hook_result: Option<&koi_certmesh::protocol::HookResult>,
-) -> String {
-    let mut out = if success {
-        format!("  [ok] {hostname}")
-    } else {
-        format!("  [fail] {hostname}")
-    };
-    if let Some(hr) = hook_result {
-        if hr.success {
-            out.push_str(" (hook: ok)\n");
-        } else {
-            out.push_str(" (hook: failed)\n");
-        }
-    } else {
-        out.push('\n');
-    }
     out
 }
 
@@ -687,6 +695,39 @@ mod tests {
         assert!(out.contains("Koi vunknown"));
         assert!(out.contains("Platform:  unknown"));
         assert!(!out.contains("Uptime:"));
+        // No certmesh → no seal line (the field is absent).
+        assert!(!out.contains("Seal:"));
+    }
+
+    #[test]
+    fn trust_diagnosis_renders_markers_and_remedies() {
+        use koi_common::diagnosis::{DiagnosisCheck, TrustDiagnosis};
+        use koi_common::posture::Posture;
+        let d = TrustDiagnosis::from_checks(
+            Posture::new(true, false),
+            vec![
+                DiagnosisCheck::ok("posture", "Authenticated"),
+                DiagnosisCheck::red("self_revocation", "REVOKED by the CA")
+                    .with_remedy("koi certmesh join <endpoint>"),
+            ],
+        );
+        let out = trust_diagnosis(&d);
+        assert!(out.contains("Trust diagnosis: RED"));
+        assert!(out.contains("[+] posture: Authenticated"));
+        assert!(out.contains("[x] self_revocation: REVOKED"));
+        assert!(out.contains("→ fix: koi certmesh join <endpoint>"));
+    }
+
+    #[test]
+    fn unified_status_shows_seal_level() {
+        let json = serde_json::json!({
+            "version": "0.4.2",
+            "platform": "linux",
+            "seal": "passthrough",
+            "capabilities": []
+        });
+        let out = unified_status(&json);
+        assert!(out.contains("Seal:      passthrough"), "got: {out}");
     }
 
     // ── promote_success ─────────────────────────────────────────────
@@ -699,52 +740,5 @@ mod tests {
         assert!(out.contains("Role:     standby"));
         assert!(out.contains("encrypted copy of the CA key"));
         assert!(out.contains("take over automatically"));
-    }
-
-    // ── renewal_result ──────────────────────────────────────────────
-
-    #[test]
-    fn renewal_result_success_no_hook() {
-        let out = renewal_result("stone-01", true, None);
-        assert_eq!(out, "  [ok] stone-01\n");
-    }
-
-    #[test]
-    fn renewal_result_failure_no_hook() {
-        let out = renewal_result("stone-01", false, None);
-        assert_eq!(out, "  [fail] stone-01\n");
-    }
-
-    #[test]
-    fn renewal_result_success_hook_ok() {
-        let hr = koi_certmesh::protocol::HookResult {
-            success: true,
-            command: "systemctl reload nginx".into(),
-            output: None,
-        };
-        let out = renewal_result("stone-01", true, Some(&hr));
-        assert_eq!(out, "  [ok] stone-01 (hook: ok)\n");
-    }
-
-    #[test]
-    fn renewal_result_success_hook_failed() {
-        let hr = koi_certmesh::protocol::HookResult {
-            success: false,
-            command: "bad-cmd".into(),
-            output: Some("not found".into()),
-        };
-        let out = renewal_result("stone-01", true, Some(&hr));
-        assert_eq!(out, "  [ok] stone-01 (hook: failed)\n");
-    }
-
-    #[test]
-    fn renewal_result_failure_hook_failed() {
-        let hr = koi_certmesh::protocol::HookResult {
-            success: false,
-            command: "bad-cmd".into(),
-            output: None,
-        };
-        let out = renewal_result("stone-01", false, Some(&hr));
-        assert_eq!(out, "  [fail] stone-01 (hook: failed)\n");
     }
 }

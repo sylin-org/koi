@@ -104,11 +104,11 @@ Koi is the substrate *under* the tools you already run, not a replacement for th
   devices resolve your LAN names; Koi covers the printers, TVs, and guests the
   tailnet can't see.
 - **Keep your reverse proxy.** Certmesh certs land as files with reload hooks for
-  Caddy/Traefik/NPM today; an ACME endpoint (so your proxy renews against Koi like
-  a local Let's Encrypt) is on the roadmap.
-- **Coming:** Prometheus service-discovery export, MCP tools so AI agents can
-  discover and trust local services, and reading the `traefik.*` labels your
-  containers already carry.
+  Caddy/Traefik/NPM today; an ACME endpoint (RFC 8555, dns-01, port 5643) lets your
+  proxy renew against Koi like a local Let's Encrypt — see the [ACME guide](docs/guides/acme.md).
+- **Ships now:** Prometheus service-discovery export (`GET /v1/sd/prometheus`),
+  MCP tools so AI agents can discover and trust local services, and reading the
+  `traefik.*` / caddy labels your containers already carry.
 
 The doctrine: export in *their* formats, consume what you already wrote, and make
 every capability easy to leave — tools that are easy to stop using are easy to
@@ -132,9 +132,14 @@ Supporting cast:
 | **Proxy** | TLS endpoint for certmesh certs | `koi proxy …` | [Proxy guide](docs/guides/proxy.md) |
 | **Health** | HTTP/TCP checks feeding status & dashboard | `koi health …` | [Health guide](docs/guides/health.md) |
 | **UDP** | Host UDP sockets for bridge-networked containers | `koi udp …` | [UDP guide](docs/guides/udp.md) |
+| **Trust** | Install/list/remove CA roots in the OS trust store; export the certmesh root | `koi trust …` | [Certmesh guide](docs/guides/certmesh.md) |
+| **MCP** | Expose the LAN to AI agents — stdio, or Streamable HTTP at `/v1/mcp` (token-authed) | `koi mcp serve` | [MCP guide](docs/guides/mcp.md) |
+| **ACME** | RFC 8555 server (dns-01, port 5643) so standard clients get certs from the CA | `koi certmesh acme …` | [ACME guide](docs/guides/acme.md) |
 
 Every capability is runtime-toggleable (`--no-dns`, `KOI_NO_DNS=1`, …). The daemon
-also serves the **dashboard** (`/`), the **mDNS network browser** (`/mdns-browser`),
+also exports for tools you already run — a **Prometheus HTTP-SD** endpoint
+(`GET /v1/sd/prometheus`) and a **DNS zone export** (`GET /v1/dns/zone?format=hosts|dnsmasq|json`) —
+and serves the **dashboard** (`/`), the **mDNS network browser** (`/mdns-browser`),
 and **interactive API docs** (`/docs`).
 
 ### Embedding: optional heavy backends
@@ -196,8 +201,8 @@ cd koi
 cargo build --release
 ```
 
-> Note: the crates.io packages are currently stale pending the v0.3 release reset —
-> install from Releases or source for now.
+> Note: the crates.io package is published as `koi-net` (see [Name](#name) below) —
+> install from Releases or source for the prebuilt binary.
 
 ## Project status
 
@@ -206,20 +211,35 @@ the end-to-end pipeline are real; a thorough June 2026 assessment
 ([docs/assessment/](docs/assessment/README.md)) mapped what's solid, what's broken,
 and what's being cut in the name of *less but more meaningful parts*. The work plan
 is public ([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until
-0.3; don't run it as load-bearing infrastructure yet — do play with it, and file
+1.0; don't run it as load-bearing infrastructure yet — do play with it, and file
 issues when reality disagrees with the docs.
 
 ## Documentation
+
+**Start here:** the [documentation hub](docs/index.md) is the goal-keyed map of every
+guide and reference. New to Koi? The [Getting started](docs/tutorials/getting-started.md)
+tutorial goes from install to a visible result in about a minute, and
+[Trusted HTTPS across two machines](docs/tutorials/trusted-https.md) is the headline
+end-to-end journey.
 
 **Using Koi:** [User Guide](GUIDE.md) ·
 [Container Guide](CONTAINERS.md) ·
 [Security model](docs/reference/security-model.md)
 
 **Capability deep-dives:** [mDNS](docs/guides/mdns.md) ·
-[DNS](docs/guides/dns.md) · [Certmesh](docs/guides/certmesh.md) ·
+[DNS](docs/guides/dns.md) · [DNS coexistence](docs/guides/dns-coexistence.md) ·
+[Certmesh](docs/guides/certmesh.md) · [ACME](docs/guides/acme.md) ·
 [Runtime](docs/guides/runtime.md) · [Proxy](docs/guides/proxy.md) ·
 [Health](docs/guides/health.md) · [UDP](docs/guides/udp.md) ·
+[MCP](docs/guides/mcp.md) · [Integrations](docs/guides/integrations.md) ·
 [System](docs/guides/system.md) · [Embedded (Rust)](docs/guides/embedded.md)
+
+**For AI agents:** `koi mcp serve` runs a [Model Context Protocol](docs/guides/mcp.md)
+server over stdio (the daemon also serves the same surface over Streamable HTTP at
+`/v1/mcp`, token-authed), turning the LAN into a substrate an agent can read and act on —
+discover services, resolve and add names, take inventory, and announce the agent's
+own service (auto-heartbeated, auto-retracted on exit). See the [MCP guide](docs/guides/mcp.md)
+for the copy-paste client config.
 
 **Reference:** [Architecture](docs/reference/architecture.md) ·
 [HTTP API](docs/reference/http-api.md) · [CLI](docs/reference/cli.md) ·

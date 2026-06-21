@@ -5,6 +5,125 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-06-21
+
+A large lean-and-reach release: the certificate mesh is roughly halved, the CLI surface
+is unified on clap, and Koi gains four ways to feed the tools you already run — an MCP
+server for AI agents, an ACME server, Prometheus discovery, and label/DNS/trust doors.
+It also lands the **ADR-020 mode-transparent trust plane** (every node carries a
+*posture*, with signed/sealed messages, posture-reactive listeners, and a trust-doctor),
+**hardens enrollment** (pinned-fingerprint invites, a sequenced signed roster, machine
+binding), spins the OS trust-store installer out to the external `os-truststore` crate,
+and fixes a long-standing mDNS browse bug on long-lived daemons.
+It carries **breaking changes** despite the patch version (pre-1.0, 0.x): see *Removed*
+and *Changed* below — existing certmesh `roster.json` files may need a
+`koi certmesh create` re-run.
+
+### Added
+- **`koi mcp serve`** — an MCP server over stdio so AI agents get a first-class door into
+  the LAN (discover/announce/resolve/inventory/health/runtime tools, heartbeat-leased
+  announcements that clean up on agent crash). One-line config in any MCP client. New
+  `koi-mcp` crate; `docs/guides/mcp.md`.
+- **`koi certmesh acme enable`** — an RFC 8555 ACME server (dns-01, self-served in-process
+  through Koi's own DNS zone — wildcards + offline issuance, no propagation wait). Caddy,
+  Traefik, lego, acme.sh get certs from Koi's CA with one config line; `docs/guides/acme.md`.
+- **`GET /v1/sd/prometheus`** — Prometheus HTTP service discovery, including the unique
+  `__meta_koi_cert_expiry_days` per-service certificate-expiry label.
+- **Traefik / caddy-docker-proxy label ingestion** — a container labelled only for Traefik
+  or Caddy gets a Koi DNS name with zero relabeling.
+- **`GET /v1/dns/zone?format=hosts|dnsmasq|json`** + `docs/guides/dns-coexistence.md`
+  (conditional-forwarding recipes for AdGuard Home, Pi-hole, dnsmasq, Unbound, Technitium).
+- **`koi trust install|list|remove|export`** — install/track/remove any CA root (not just
+  certmesh's) in the OS trust store.
+- `koi-common::runtime_state::DomainRuntime` + `events` + an async `Capability` trait, and
+  `docs/reference/domain-template.md` — the documented contract for adding a domain.
+- **Mode-transparent trust plane (ADR-020).** Every node carries a *posture* (Open ↔
+  Authenticated) derived from its local identity, with one API that behaves the same in
+  both modes: a `Posture`/`PostureLevel` oracle; `ensure_identity()`, an idempotent
+  identity maintainer; signed `Envelope`s (carry-cert ES256 — verify offline against the
+  mesh root); `Sealed` confidentiality; a typed `Peer` + `discover()` + a posture-keyed
+  `client_for`; and a **same-port posture dial** — one listener serves plaintext while
+  Open and mTLS once Authenticated, flipping live with no dropped connections — that
+  drives the mTLS (5642) and ACME (5643) listeners reactively. `participate()` is the
+  three-line trusted service. Exposed across `koi-common`, `koi-certmesh`, and
+  `koi-embedded`; the language-neutral wire contract is in `docs/reference/trust-protocol.md`.
+- **`koi trust diagnose [--fix]`** (`GET /v1/certmesh/diagnose`) — a trust-doctor that
+  reports posture, identity integrity, self-revocation, renewal health, CA-trust-install,
+  and clock skew, each with a distinct remedy, and exits non-zero on RED.
+- **Hardened enrollment (ADR-015 F1/F2 + ADR-017).** Pinned-fingerprint invites
+  (`<secret>.<ca_fp>` → preflight + install hard-fail on mismatch; TOTP stays TOFU);
+  least-privilege certificate profiles; member-pull rotate-key renewal over mTLS; a signed
+  monotonic trust bundle with a sequenced single-writer roster + boundary revocation;
+  `_certmesh._tcp` fingerprint advertisement + trust-anchor self-heal; machine-binding
+  clone-refusal at boot.
+
+### Changed
+- **certmesh slimmed 18.7k → 9.4k source lines** with zero loss of the create / TOTP-join /
+  renew / unlock / backup / restore / revoke / manual-promote loop.
+- **CLI is now driven by clap as the single source of truth** — catalog drift is a build
+  failure; the generic `command-surface` crate is gone (folded into `koi/src/help/`).
+- Trust profiles collapse to two booleans (`enrollment_open`, `requires_approval`); the
+  named presets survive as ceremony/CLI UX labels only. `CertmeshStatus` drops `profile`
+  and gains the two booleans.
+- The CA boots auto-unlocked from the vault on auto-unlock profiles (the write path, latent
+  in 0.4.1, now functions).
+- **The OS trust-store installer spun out to the external `os-truststore` crate (ADR-019)**
+  — published separately on crates.io with a cert-as-identity API; the in-tree
+  `koi-truststore` crate is removed. No user-facing change.
+- **The `_certmesh._tcp` CA-discovery announcement is now posture-reactive** — a node that
+  boots Open then runs `certmesh create` advertises immediately, with no daemon restart
+  (folded into the same posture-watch supervisor that drives the mTLS/ACME listeners).
+
+### Removed (breaking)
+- **FIDO2** (all three layers — the `AuthAdapter` trait stays as the re-entry path).
+- **Automatic CA failover** (the mDNS absence-watcher / tiebreaker / roster-sync); manual
+  `koi certmesh promote` remains.
+- The **certmesh compliance** endpoint + CLI (use `/status` + `/log`).
+- Enrollment **deadline** + **CIDR/domain scope** (`set-policy`).
+- `RuntimeBackendKind` **Systemd/Incus/Kubernetes** stubs — `koi --runtime k8s` is now a
+  clear parse error instead of a silent fallback.
+
+### Fixed
+- **Destructive commands no longer bypass confirmation in `--json` mode** — `koi --json
+  certmesh destroy` / `factory-reset` previously wiped data silently; they now refuse
+  without `--yes` (one shared confirmation gate).
+- **The `--endpoint` token leak**: an explicit remote endpoint no longer receives the local
+  daemon's breadcrumb token. New `--token` / `KOI_TOKEN`; a 401 prints an actionable hint.
+- Catalog/manifest drift (rotate-totp, phantom flags, wrong dns record types) — fixed by
+  construction via the clap conformance tests.
+- **Certmesh enrollment was blocked by the DAT token.** `POST /v1/certmesh/join` is
+  TOTP-authorized (a joining node can't know the CA host's local token), but the DAT
+  auth middleware required the token on every mutation, so a tokenless `koi certmesh
+  join` was rejected with 401 by the daemon. `/v1/certmesh/join` is now exempt from the
+  token requirement (the handler still enforces the TOTP code + enrollment policy);
+  every other certmesh write remains token-gated.
+- **The ACME server-auth TLS listener would panic on start.** `adapters::acme::build_tls_config`
+  used a bare `rustls::ServerConfig::builder()`; with both aws-lc-rs (rustls) and ring
+  (koi-crypto) linked there is no process-level default crypto provider, so the listener's
+  spawned task panicked and the ACME port silently failed to come up. It now resolves the
+  provider explicitly (aws-lc-rs via `builder_with_provider`), matching `koi_certmesh::mtls`
+  and koi-proxy. Guarded by a new unit test.
+- **`koi certmesh join <endpoint>` misrouted the joiner's key custody to the CA.** The
+  global `--endpoint` and the `join` / `promote` positional CA endpoint collided on clap's
+  arg id, so passing a CA positionally silently populated `--endpoint`; `join` then resolved
+  its LOCAL key-custody daemon (the `member-csr` / `member-cert` calls that generate and
+  keep the member private key) from that and sent them to the remote CA, which rejected
+  them with 401. The positional is now `ca_endpoint` (no id collision) and `join` / `promote`
+  always resolve the local daemon from the breadcrumb. Found by the new ADR-018 cross-host
+  integration test.
+- **A long-lived daemon's `discover` (and the dashboard LAN browser) surfaced nothing**,
+  while a cold standalone `koi mdns discover` resolved fine and `koi mdns resolve` worked
+  on the *same* daemon. The browse hub multiplexes one mdns-sd browse per type across N
+  subscribers via a future-only channel; mdns-sd replays its cache only to the first
+  listener, so any discover that joined an already-cached type (e.g. once the lazy LAN-wide
+  meta-browse held it) received future events only and never saw the already-resolved
+  service. `subscribe_type` now replays the per-type warm record cache to the joining
+  subscriber (that subscriber only). Stock mdns-sd, no fork; root-caused and validated on
+  the two-box hardware gate.
+- **`koi status` now surfaces mDNS receive-health** — a browse that has been active on a
+  live LAN with zero inbound is reported as such instead of a silent "healthy", per
+  ADR-020's anti-silence ethos.
+
 ## [0.4.1] - 2026-06-15
 
 ### Added

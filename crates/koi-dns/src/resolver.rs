@@ -36,9 +36,6 @@ const TCP_RESPONSE_BUFFER: usize = 32;
 /// Alias feedback flush interval.
 const FEEDBACK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Capacity for the DNS event broadcast channel.
-const BROADCAST_CHANNEL_CAPACITY: usize = 256;
-
 /// Events emitted by the DNS subsystem when static entries change.
 #[derive(Debug, Clone)]
 pub enum DnsEvent {
@@ -116,9 +113,22 @@ pub struct DnsCore {
     alias_feedback: Option<Arc<dyn AliasFeedbackTrait>>,
     upstream: Option<TokioResolver>,
     alias_tx: Option<mpsc::Sender<AliasFeedback>>,
-    started_at: std::time::Instant,
     rate_limiter: Arc<RateLimiter>,
     event_tx: broadcast::Sender<DnsEvent>,
+    /// Ephemeral TXT records (ACME `dns-01` challenges). Keyed by normalized
+    /// FQDN (lowercase, trailing dot). Deliberately in-memory only — challenge
+    /// tokens are short-lived and must NOT be persisted.
+    txt_records: Arc<RwLock<HashMap<String, Vec<String>>>>,
+}
+
+/// Normalize a name for the ephemeral TXT store and for matching incoming TXT
+/// queries: lowercase, trim whitespace, ensure exactly one trailing dot. This
+/// mirrors how hickory presents query names (`Name::to_string()` is lowercase,
+/// FQDN with a trailing dot) so an in-process `add_txt` and a real DNS TXT query
+/// resolve to the same key.
+fn normalize_txt_name(name: &str) -> String {
+    let trimmed = name.trim().trim_end_matches('.').to_lowercase();
+    format!("{trimmed}.")
 }
 
 impl DnsCore {
@@ -164,9 +174,9 @@ impl DnsCore {
             alias_feedback,
             upstream,
             alias_tx,
-            started_at: std::time::Instant::now(),
             rate_limiter: Arc::new(RateLimiter::new(max_qps)),
-            event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
+            event_tx: koi_common::events::event_channel().0,
+            txt_records: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -219,6 +229,33 @@ impl DnsCore {
     /// List static DNS entries from the persisted state.
     pub fn list_entries(&self) -> Vec<DnsEntry> {
         self.state.load().entries
+    }
+
+    /// Publish an ephemeral TXT record value for `name` (ACME `dns-01`).
+    ///
+    /// The value is appended to any existing values for the name. TXT records
+    /// are in-memory only and are never persisted.
+    pub fn add_txt(&self, name: &str, value: &str) {
+        let key = normalize_txt_name(name);
+        let mut guard = self.txt_records.write().unwrap_or_else(|e| e.into_inner());
+        let values = guard.entry(key).or_default();
+        if !values.iter().any(|v| v == value) {
+            values.push(value.to_string());
+        }
+    }
+
+    /// Remove all ephemeral TXT record values for `name`.
+    pub fn remove_txt(&self, name: &str) {
+        let key = normalize_txt_name(name);
+        let mut guard = self.txt_records.write().unwrap_or_else(|e| e.into_inner());
+        guard.remove(&key);
+    }
+
+    /// Return the currently published TXT values for `name` (empty if none).
+    pub fn get_txt(&self, name: &str) -> Vec<String> {
+        let key = normalize_txt_name(name);
+        let guard = self.txt_records.read().unwrap_or_else(|e| e.into_inner());
+        guard.get(&key).cloned().unwrap_or_default()
     }
 
     pub fn snapshot(&self) -> RecordsSnapshot {
@@ -389,12 +426,13 @@ impl DnsCore {
     }
 }
 
+#[async_trait::async_trait]
 impl Capability for DnsCore {
     fn name(&self) -> &str {
         "dns"
     }
 
-    fn status(&self) -> CapabilityStatus {
+    async fn status(&self) -> CapabilityStatus {
         let snapshot = self.snapshot();
         let summary = format!(
             "{} static, {} certmesh, {} mdns",
@@ -422,9 +460,9 @@ impl Clone for DnsCore {
             alias_feedback: self.alias_feedback.clone(),
             upstream: self.upstream.clone(),
             alias_tx: self.alias_tx.clone(),
-            started_at: self.started_at,
             rate_limiter: Arc::clone(&self.rate_limiter),
             event_tx: self.event_tx.clone(),
+            txt_records: Arc::clone(&self.txt_records),
         }
     }
 }
@@ -555,7 +593,24 @@ impl RequestHandler for DnsHandler {
         let mut response_code = ResponseCode::NoError;
         let mut authoritative = false;
 
-        if self.core.zone.is_local_name(&query_str) {
+        // ── Ephemeral TXT (ACME dns-01) ──
+        // TXT queries are served from the in-memory challenge store before any
+        // A/AAAA zone logic. A/AAAA behavior below is unchanged.
+        let txt_values = if query_type == RecordType::TXT {
+            self.core.get_txt(&query_str)
+        } else {
+            Vec::new()
+        };
+        if query_type == RecordType::TXT && !txt_values.is_empty() {
+            authoritative = true;
+            let name = Name::from(query_name);
+            let record = Record::from_rdata(
+                name,
+                self.core.config.local_ttl,
+                RData::TXT(hickory_proto::rr::rdata::TXT::new(txt_values)),
+            );
+            answers.push(record);
+        } else if self.core.zone.is_local_name(&query_str) {
             // Primary zone (.zengarden / .lan): static + certmesh + mDNS aliases
             authoritative = true;
             match self.core.resolve_local(&query_str, query_type) {
@@ -743,54 +798,123 @@ async fn alias_feedback_loop(
 mod tests {
     use super::*;
 
-    #[test]
-    fn subscribe_receives_emitted_entry_updated() {
-        let (tx, _) = broadcast::channel::<DnsEvent>(16);
-        let mut rx = tx.subscribe();
+    /// Build a DnsCore backed by a throwaway state file so tests never touch
+    /// real on-disk state.
+    async fn test_core() -> DnsCore {
+        let tmp = std::env::temp_dir().join(format!(
+            "koi-dns-test-{}.json",
+            koi_common::id::generate_short_id()
+        ));
+        let config = DnsConfig {
+            state_path: Some(tmp),
+            ..DnsConfig::default()
+        };
+        DnsCore::new(config, None, None, None)
+            .await
+            .expect("core should build")
+    }
 
-        let _ = tx.send(DnsEvent::EntryUpdated {
-            name: "test.lan".to_string(),
+    /// Drives the real DnsCore command path: subscribe → add_entry → assert the
+    /// EntryUpdated event is broadcast through the core's own channel. Fails if
+    /// `add_entry` stops emitting (i.e. tests Koi wiring, not tokio).
+    #[tokio::test]
+    async fn add_entry_emits_entry_updated_through_core() {
+        let core = test_core().await;
+        let mut rx = core.subscribe();
+
+        core.add_entry(DnsEntry {
+            name: "test.lan.".to_string(),
             ip: "10.0.0.1".to_string(),
-        });
+            ttl: None,
+        })
+        .expect("add_entry should succeed");
 
-        let event = rx.try_recv().expect("should receive event");
-        match event {
+        match rx.try_recv().expect("should receive event") {
             DnsEvent::EntryUpdated { name, ip } => {
-                assert_eq!(name, "test.lan");
+                assert_eq!(name, "test.lan.");
                 assert_eq!(ip, "10.0.0.1");
             }
             other => panic!("expected EntryUpdated, got {other:?}"),
         }
     }
 
-    #[test]
-    fn subscribe_receives_emitted_entry_removed() {
-        let (tx, _) = broadcast::channel::<DnsEvent>(16);
-        let mut rx = tx.subscribe();
+    /// remove_entry on an existing entry emits EntryRemoved through the core.
+    #[tokio::test]
+    async fn remove_entry_emits_entry_removed_through_core() {
+        let core = test_core().await;
+        core.add_entry(DnsEntry {
+            name: "gone.lan.".to_string(),
+            ip: "10.0.0.9".to_string(),
+            ttl: None,
+        })
+        .expect("add_entry should succeed");
 
-        let _ = tx.send(DnsEvent::EntryRemoved {
-            name: "gone.lan".to_string(),
-        });
+        let mut rx = core.subscribe();
+        let removed = core
+            .remove_entry("gone.lan.")
+            .expect("remove_entry should succeed");
+        assert!(removed.is_some(), "entry should have been present");
 
-        let event = rx.try_recv().expect("should receive event");
-        match event {
-            DnsEvent::EntryRemoved { name } => {
-                assert_eq!(name, "gone.lan");
-            }
+        match rx.try_recv().expect("should receive event") {
+            DnsEvent::EntryRemoved { name } => assert_eq!(name, "gone.lan."),
             other => panic!("expected EntryRemoved, got {other:?}"),
         }
     }
 
-    #[test]
-    fn multiple_subscribers_each_receive_event() {
-        let (tx, _) = broadcast::channel::<DnsEvent>(16);
-        let mut rx1 = tx.subscribe();
-        let mut rx2 = tx.subscribe();
+    /// add_txt → get_txt returns the published value.
+    #[tokio::test]
+    async fn add_txt_then_get_txt_returns_value() {
+        let core = test_core().await;
+        core.add_txt("_acme-challenge.host.lan", "token-abc");
+        assert_eq!(
+            core.get_txt("_acme-challenge.host.lan"),
+            vec!["token-abc".to_string()]
+        );
+    }
 
-        let _ = tx.send(DnsEvent::EntryUpdated {
-            name: "multi.lan".to_string(),
+    /// TXT name lookup is normalization-insensitive (case + trailing dot),
+    /// matching how a real DNS query name is presented.
+    #[tokio::test]
+    async fn get_txt_is_normalization_insensitive() {
+        let core = test_core().await;
+        core.add_txt("_acme-challenge.Host.LAN", "token-xyz");
+        // Trailing dot + different case must hit the same key.
+        assert_eq!(
+            core.get_txt("_acme-challenge.host.lan."),
+            vec!["token-xyz".to_string()]
+        );
+    }
+
+    /// remove_txt clears the published value.
+    #[tokio::test]
+    async fn remove_txt_clears_value() {
+        let core = test_core().await;
+        core.add_txt("_acme-challenge.gone.lan", "token-1");
+        assert!(!core.get_txt("_acme-challenge.gone.lan").is_empty());
+        core.remove_txt("_acme-challenge.gone.lan");
+        assert!(core.get_txt("_acme-challenge.gone.lan").is_empty());
+    }
+
+    /// get_txt on an unknown name returns empty.
+    #[tokio::test]
+    async fn get_txt_unknown_is_empty() {
+        let core = test_core().await;
+        assert!(core.get_txt("_acme-challenge.nobody.lan").is_empty());
+    }
+
+    /// Two subscribers to the same core each receive a core-emitted event.
+    #[tokio::test]
+    async fn multiple_subscribers_each_receive_core_event() {
+        let core = test_core().await;
+        let mut rx1 = core.subscribe();
+        let mut rx2 = core.subscribe();
+
+        core.add_entry(DnsEntry {
+            name: "multi.lan.".to_string(),
             ip: "10.0.0.2".to_string(),
-        });
+            ttl: None,
+        })
+        .expect("add_entry should succeed");
 
         assert!(rx1.try_recv().is_ok());
         assert!(rx2.try_recv().is_ok());

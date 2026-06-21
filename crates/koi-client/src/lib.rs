@@ -29,6 +29,12 @@ pub enum ClientError {
     #[error("Daemon not reachable: {0}")]
     Unreachable(String),
 
+    /// HTTP 401 from the daemon: the request needs a Daemon Access Token.
+    /// Surfaced distinctly (instead of a generic `Api`) so the CLI can print an
+    /// actionable hint when talking to an explicit `--endpoint`.
+    #[error("remote daemon requires a token (pass --token or set KOI_TOKEN)")]
+    Unauthorized,
+
     #[error("{error}: {message}")]
     Api { error: String, message: String },
 
@@ -37,6 +43,13 @@ pub enum ClientError {
 
     #[error("Invalid response: {0}")]
     Decode(String),
+}
+
+impl ClientError {
+    /// Whether this error is an HTTP 401 (missing/invalid token).
+    pub fn is_unauthorized(&self) -> bool {
+        matches!(self, ClientError::Unauthorized)
+    }
 }
 
 pub type Result<T> = std::result::Result<T, ClientError>;
@@ -440,46 +453,6 @@ impl KoiClient {
         Ok(())
     }
 
-    // ── Certmesh operations (Phase 3) ──────────────────────────────
-
-    /// GET /v1/certmesh/roster - fetch signed roster manifest.
-    pub fn get_roster_manifest(&self) -> Result<serde_json::Value> {
-        let url = format!("{}/v1/certmesh/roster", self.endpoint);
-        let resp = self.auth_get(&url).call().map_err(map_error)?;
-        resp.into_json()
-            .map_err(|e| ClientError::Decode(e.to_string()))
-    }
-
-    /// POST /v1/certmesh/renew - push renewed cert to a member.
-    ///
-    /// `member_endpoint` is the member's HTTP endpoint, not the CA's.
-    /// Used when the primary pushes renewals to remote members.
-    #[allow(dead_code)]
-    pub fn push_renewal(
-        &self,
-        member_endpoint: &str,
-        request: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let url = format!("{member_endpoint}/v1/certmesh/renew");
-        let resp = self
-            .auth_post(&url)
-            .send_json(request.clone())
-            .map_err(map_error)?;
-        resp.into_json()
-            .map_err(|e| ClientError::Decode(e.to_string()))
-    }
-
-    /// POST /v1/certmesh/health - send health heartbeat.
-    pub fn health_heartbeat(&self, request: &serde_json::Value) -> Result<serde_json::Value> {
-        let url = format!("{}/v1/certmesh/health", self.endpoint);
-        let resp = self
-            .auth_post(&url)
-            .send_json(request.clone())
-            .map_err(map_error)?;
-        resp.into_json()
-            .map_err(|e| ClientError::Decode(e.to_string()))
-    }
-
     // ── Private helpers ───────────────────────────────────────────
 
     /// Agent without read timeout for SSE streams.
@@ -539,6 +512,7 @@ impl Iterator for SseStream {
 
 fn map_error(e: ureq::Error) -> ClientError {
     match e {
+        ureq::Error::Status(401, _resp) => ClientError::Unauthorized,
         ureq::Error::Status(_status, resp) => {
             let body = resp.into_string().unwrap_or_default();
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -606,6 +580,27 @@ mod tests {
     fn cursor_stream(input: &str) -> SseStream {
         let cursor = std::io::Cursor::new(input.as_bytes().to_vec());
         SseStream::new(Box::new(cursor))
+    }
+
+    // ── Unauthorized (401) hint tests ───────────────────────────────
+
+    #[test]
+    fn unauthorized_displays_actionable_hint() {
+        let err = ClientError::Unauthorized;
+        assert_eq!(
+            err.to_string(),
+            "remote daemon requires a token (pass --token or set KOI_TOKEN)"
+        );
+        assert!(err.is_unauthorized());
+    }
+
+    #[test]
+    fn non_401_api_error_is_not_unauthorized() {
+        let err = ClientError::Api {
+            error: "not_found".into(),
+            message: "nope".into(),
+        };
+        assert!(!err.is_unauthorized());
     }
 
     // ── KoiClient::new() tests ──────────────────────────────────────

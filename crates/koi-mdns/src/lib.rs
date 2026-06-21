@@ -36,9 +36,6 @@ use crate::protocol::{
     AdminRegistration, DaemonStatus, LeaseMode, RegisterPayload, RegistrationResult,
 };
 
-/// Capacity for the broadcast channel used by service event subscribers.
-const BROADCAST_CHANNEL_CAPACITY: usize = 256;
-
 /// How often the reaper sweeps for expired registrations.
 const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -67,7 +64,7 @@ impl MdnsCore {
     /// Create a new core with a shared cancellation token.
     /// Used by daemon mode for ordered shutdown.
     pub fn with_cancel(cancel: CancellationToken) -> Result<Self> {
-        let (event_tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
+        let (event_tx, _) = koi_common::events::event_channel();
         let daemon = Arc::new(MdnsDaemon::new(event_tx)?);
         let registry = Arc::new(Registry::new());
         let started_at = Instant::now();
@@ -302,21 +299,56 @@ impl MdnsCore {
     }
 }
 
+#[async_trait::async_trait]
 impl Capability for MdnsCore {
     fn name(&self) -> &str {
         "mdns"
     }
 
-    fn status(&self) -> CapabilityStatus {
+    async fn status(&self) -> CapabilityStatus {
         let counts = self.registry.counts();
-        let summary = format!(
+        let reg = format!(
             "{} registered ({} alive, {} draining)",
             counts.total, counts.alive, counts.draining
         );
+
+        // Receive-health (ADR-020 anti-silence): a browse that has been active on a
+        // routable LAN for a while yet has received ZERO inbound mDNS means inbound
+        // multicast is not reaching this daemon (the mdns-sd interface-index drop, a
+        // multicast-filtering switch, etc.). Report it loudly instead of a silently
+        // empty browser. `koi mdns discover` standalone confirms (it bypasses the
+        // long-lived daemon's engine).
+        const RECEIVE_STALL_SECS: u64 = 90;
+        let (events_seen, last_age, active) = self.daemon.receive_health();
+        let uptime = self.started_at.elapsed().as_secs();
+        let receive_broken = active
+            && events_seen == 0
+            && uptime >= RECEIVE_STALL_SECS
+            && crate::daemon::has_live_lan_nic();
+
+        let (summary, healthy) = if receive_broken {
+            (
+                format!(
+                    "{reg}; browse active {uptime}s on a live LAN but received 0 mDNS — \
+                     inbound multicast is not reaching this daemon (confirm with `koi mdns discover`)"
+                ),
+                false,
+            )
+        } else {
+            let recv = match (active, last_age) {
+                (true, Some(age)) => {
+                    format!("; browse receiving ({events_seen} events, last {age}s ago)")
+                }
+                (true, None) => "; browse active, awaiting first record".to_string(),
+                (false, _) => String::new(),
+            };
+            (format!("{reg}{recv}"), true)
+        };
+
         CapabilityStatus {
             name: "mdns".to_string(),
             summary,
-            healthy: true,
+            healthy,
         }
     }
 }

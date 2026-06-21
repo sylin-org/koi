@@ -119,6 +119,13 @@ pub struct KoiMetadata {
     /// Enable certmesh cert injection.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub certmesh: Option<bool>,
+
+    /// Where the routing metadata came from, for the inventory projection.
+    /// `"traefik-labels"` / `"caddy-labels"` when the hostname/port were derived
+    /// from a partner tool's labels; absent when only `koi.*` labels or port
+    /// heuristics were used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 impl KoiMetadata {
@@ -183,6 +190,18 @@ impl KoiMetadata {
             }
         }
 
+        // 4. Partner-tool routing labels (traefik / caddy). Precedence: explicit
+        // `koi.*` > traefik/caddy-derived > port heuristics; `koi.enable=false`
+        // wins over all (handled by `is_disabled()` downstream — we never override
+        // it here). The derived values only FILL fields the operator left unset, so
+        // an explicit `koi.dns.name`/`koi.type`/`koi.proxy.port` always wins.
+        //
+        // This is passive and safe (we read labels the user already wrote for their
+        // proxy), so it is on by default; `koi.enable=false` opts a container out.
+        if meta.enable != Some(false) {
+            apply_partner_labels(&mut meta, labels);
+        }
+
         meta
     }
 
@@ -190,6 +209,184 @@ impl KoiMetadata {
     pub fn is_disabled(&self) -> bool {
         self.enable == Some(false)
     }
+}
+
+/// Apply Traefik/Caddy routing labels, filling only fields the operator left
+/// unset (explicit `koi.*` always wins). Derived hostname → `dns_name` (and a
+/// `name` when none was given); derived port → `proxy_port`. Sets `source` so the
+/// inventory shows where the routing came from.
+///
+/// Never panics on any label value — malformed rules yield `None`.
+fn apply_partner_labels(meta: &mut KoiMetadata, labels: &HashMap<String, String>) {
+    // Traefik first, then Caddy as a fallback source. A container almost never
+    // carries both; if it does, traefik (checked first) wins, matching the
+    // "first source that yields a hostname" rule.
+    let derived = extract_traefik(labels).or_else(|| extract_caddy(labels));
+    let Some(derived) = derived else {
+        return;
+    };
+
+    let mut used = false;
+    if let Some(host) = derived.host {
+        if meta.dns_name.is_none() {
+            meta.dns_name = Some(host.clone());
+            used = true;
+        }
+        if meta.name.is_none() {
+            meta.name = Some(host);
+            used = true;
+        }
+    }
+    if let Some(port) = derived.port {
+        if meta.proxy_port.is_none() {
+            meta.proxy_port = Some(port);
+            used = true;
+        }
+    }
+
+    // Marking the instance as managed makes a labeled-but-not-koi.enabled container
+    // discoverable, which is the point of reading partner labels. We only do this
+    // when we actually derived something and the operator did not opt out.
+    if used {
+        if meta.enable.is_none() {
+            meta.enable = Some(true);
+        }
+        if meta.source.is_none() {
+            meta.source = Some(derived.source.to_string());
+        }
+    }
+}
+
+/// Routing facts derived from a partner tool's labels.
+struct DerivedRouting {
+    host: Option<String>,
+    port: Option<u16>,
+    source: &'static str,
+}
+
+/// Extract Traefik v3 routing facts. Returns `None` unless at least one
+/// `traefik.*` label is present (so we only treat genuinely Traefik-managed
+/// containers as such) and `traefik.enable` is not `false`.
+fn extract_traefik(labels: &HashMap<String, String>) -> Option<DerivedRouting> {
+    let has_traefik = labels.keys().any(|k| k.starts_with("traefik."));
+    if !has_traefik {
+        return None;
+    }
+    // `traefik.enable=false` means Traefik ignores it — so should we. Absent or
+    // any other value is treated leniently as enabled.
+    if let Some(enable) = labels.get("traefik.enable") {
+        if enable.trim().eq_ignore_ascii_case("false") {
+            return None;
+        }
+    }
+
+    let host = labels
+        .iter()
+        .filter(|(k, _)| is_traefik_rule_key(k))
+        .find_map(|(_, rule)| first_traefik_host(rule));
+
+    let port = labels
+        .iter()
+        .find(|(k, _)| is_traefik_port_key(k))
+        .and_then(|(_, v)| v.trim().parse::<u16>().ok());
+
+    if host.is_none() && port.is_none() {
+        return None;
+    }
+    Some(DerivedRouting {
+        host,
+        port,
+        source: "traefik-labels",
+    })
+}
+
+/// `traefik.http.routers.<r>.rule` (the `<r>` segment is arbitrary).
+fn is_traefik_rule_key(key: &str) -> bool {
+    key.starts_with("traefik.http.routers.") && key.ends_with(".rule")
+}
+
+/// `traefik.http.services.<s>.loadbalancer.server.port` (the `<s>` is arbitrary).
+fn is_traefik_port_key(key: &str) -> bool {
+    key.starts_with("traefik.http.services.") && key.ends_with(".loadbalancer.server.port")
+}
+
+/// Extract the FIRST ``Host(`name`)`` value from a Traefik v3 rule string.
+///
+/// v3 `Host()` takes a single argument. We scan for `Host(` then read the first
+/// back-tick- or double-quote-delimited token. Tolerates `||`, `&&`,
+/// `PathPrefix(...)`, and malformed rules (returns `None` when no parseable
+/// `Host` is present). Never panics. The router/service name is never used as a
+/// hostname source — only the `Host(...)` argument is.
+fn first_traefik_host(rule: &str) -> Option<String> {
+    let bytes = rule.as_bytes();
+    let mut search_from = 0usize;
+    while let Some(rel) = rule[search_from..].find("Host(") {
+        let open = search_from + rel + "Host(".len();
+        // Skip whitespace before the delimiter.
+        let mut i = open;
+        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return None;
+        }
+        let delim = bytes[i] as char;
+        if delim == '`' || delim == '"' {
+            let value_start = i + 1;
+            if let Some(end_rel) = rule[value_start..].find(delim) {
+                let value = rule[value_start..value_start + end_rel].trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+            // Unterminated delimiter → malformed; stop.
+            return None;
+        }
+        // `Host(` not followed by a string delimiter (e.g. `HostRegexp(`-style or
+        // malformed) — keep scanning past this occurrence.
+        search_from = open;
+    }
+    None
+}
+
+/// Extract Caddy (caddy-docker-proxy) routing facts. Returns `None` unless a
+/// `caddy` label is present.
+fn extract_caddy(labels: &HashMap<String, String>) -> Option<DerivedRouting> {
+    let caddy = labels.get("caddy")?;
+    // Hostname = first comma-separated entry (a site address), trimmed.
+    let host = caddy
+        .split(',')
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    // Port = the numeric token inside `caddy.reverse_proxy`'s upstream directive.
+    let port = labels
+        .get("caddy.reverse_proxy")
+        .and_then(|v| caddy_upstream_port(v));
+
+    if host.is_none() && port.is_none() {
+        return None;
+    }
+    Some(DerivedRouting {
+        host,
+        port,
+        source: "caddy-labels",
+    })
+}
+
+/// Parse the port out of a caddy-docker-proxy `reverse_proxy` value such as
+/// `{{upstreams 8080}}`, `{{upstreams http 8080}}`, or `{{upstreams https}}`.
+///
+/// Strips the `{{`/`}}` and the `upstreams` keyword, then returns the first
+/// numeric token (the port). Returns `None` when no numeric token is present
+/// (e.g. `{{upstreams https}}`). Never panics.
+fn caddy_upstream_port(value: &str) -> Option<u16> {
+    let inner = value.trim().trim_start_matches("{{").trim_end_matches("}}");
+    inner
+        .split_whitespace()
+        .filter(|tok| !tok.eq_ignore_ascii_case("upstreams"))
+        .find_map(|tok| tok.parse::<u16>().ok())
 }
 
 /// Compose metadata extracted from Docker Compose labels.
@@ -344,5 +541,226 @@ mod tests {
     fn compose_info_falls_back_to_container_name() {
         let info = ComposeInfo::from_labels(&HashMap::new());
         assert_eq!(info.effective_name("my-container"), "my-container");
+    }
+
+    // ── Traefik / Caddy label ingestion (Door 2) ──────────────────────
+
+    fn labels_of(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    // first_traefik_host: extraction units (never panic on any input).
+
+    #[test]
+    fn traefik_host_simple() {
+        assert_eq!(
+            first_traefik_host("Host(`grafana.lab.internal`)").as_deref(),
+            Some("grafana.lab.internal")
+        );
+    }
+
+    #[test]
+    fn traefik_host_with_and_pathprefix() {
+        let rule = "Host(`api.lab.internal`) && PathPrefix(`/v1`)";
+        assert_eq!(
+            first_traefik_host(rule).as_deref(),
+            Some("api.lab.internal")
+        );
+    }
+
+    #[test]
+    fn traefik_host_with_or_takes_first() {
+        let rule = "Host(`a.lab.internal`) || Host(`b.lab.internal`)";
+        assert_eq!(first_traefik_host(rule).as_deref(), Some("a.lab.internal"));
+    }
+
+    #[test]
+    fn traefik_host_double_quote_form() {
+        assert_eq!(
+            first_traefik_host("Host(\"grafana.lab.internal\")").as_deref(),
+            Some("grafana.lab.internal")
+        );
+    }
+
+    #[test]
+    fn traefik_host_no_host_clause_is_none() {
+        // PathPrefix-only rule: no Host() to extract.
+        assert_eq!(first_traefik_host("PathPrefix(`/api`)"), None);
+    }
+
+    #[test]
+    fn traefik_host_malformed_does_not_panic() {
+        // Unterminated backtick, empty Host, stray Host( — all must be safe.
+        assert_eq!(first_traefik_host("Host(`unterminated"), None);
+        assert_eq!(first_traefik_host("Host(``)"), None);
+        assert_eq!(first_traefik_host("Host("), None);
+        assert_eq!(first_traefik_host("HostSNI(`x`)"), None);
+        assert_eq!(first_traefik_host(""), None);
+    }
+
+    #[test]
+    fn traefik_full_labels_derive_host_and_port() {
+        let labels = labels_of(&[
+            ("traefik.enable", "true"),
+            (
+                "traefik.http.routers.grafana.rule",
+                "Host(`grafana.lab.internal`)",
+            ),
+            (
+                "traefik.http.services.grafana.loadbalancer.server.port",
+                "3000",
+            ),
+        ]);
+        let meta = KoiMetadata::from_labels(&labels);
+        assert_eq!(meta.dns_name.as_deref(), Some("grafana.lab.internal"));
+        assert_eq!(meta.proxy_port, Some(3000));
+        assert_eq!(meta.source.as_deref(), Some("traefik-labels"));
+        assert_eq!(meta.enable, Some(true));
+    }
+
+    #[test]
+    fn traefik_enable_false_is_not_managed() {
+        let labels = labels_of(&[
+            ("traefik.enable", "false"),
+            ("traefik.http.routers.x.rule", "Host(`x.lab.internal`)"),
+        ]);
+        let meta = KoiMetadata::from_labels(&labels);
+        // Traefik disabled → we derive nothing from its labels.
+        assert!(meta.dns_name.is_none());
+        assert!(meta.source.is_none());
+    }
+
+    #[test]
+    fn no_traefik_labels_no_derivation() {
+        // A rule key alone without the `traefik.` namespace is not Traefik.
+        let labels = labels_of(&[("some.other.label", "Host(`x`)")]);
+        let meta = KoiMetadata::from_labels(&labels);
+        assert!(meta.dns_name.is_none());
+        assert!(meta.source.is_none());
+    }
+
+    #[test]
+    fn caddy_bare_host() {
+        let labels = labels_of(&[("caddy", "grafana.lab.internal")]);
+        let meta = KoiMetadata::from_labels(&labels);
+        assert_eq!(meta.dns_name.as_deref(), Some("grafana.lab.internal"));
+        assert_eq!(meta.source.as_deref(), Some("caddy-labels"));
+    }
+
+    #[test]
+    fn caddy_comma_list_takes_first() {
+        let labels = labels_of(&[("caddy", " a.lab.internal , b.lab.internal ")]);
+        let meta = KoiMetadata::from_labels(&labels);
+        assert_eq!(meta.dns_name.as_deref(), Some("a.lab.internal"));
+    }
+
+    #[test]
+    fn caddy_upstreams_port_variants() {
+        assert_eq!(caddy_upstream_port("{{upstreams 8080}}"), Some(8080));
+        assert_eq!(caddy_upstream_port("{{upstreams http 8080}}"), Some(8080));
+        assert_eq!(caddy_upstream_port("{{upstreams https 8443}}"), Some(8443));
+        // No numeric token → no port.
+        assert_eq!(caddy_upstream_port("{{upstreams https}}"), None);
+        assert_eq!(caddy_upstream_port("{{upstreams}}"), None);
+    }
+
+    #[test]
+    fn caddy_full_labels_derive_host_and_port() {
+        let labels = labels_of(&[
+            ("caddy", "grafana.lab.internal"),
+            ("caddy.reverse_proxy", "{{upstreams 3000}}"),
+        ]);
+        let meta = KoiMetadata::from_labels(&labels);
+        assert_eq!(meta.dns_name.as_deref(), Some("grafana.lab.internal"));
+        assert_eq!(meta.proxy_port, Some(3000));
+        assert_eq!(meta.source.as_deref(), Some("caddy-labels"));
+    }
+
+    // ── Precedence ──
+
+    #[test]
+    fn explicit_koi_labels_beat_traefik() {
+        let labels = labels_of(&[
+            ("koi.dns.name", "explicit"),
+            ("koi.name", "Explicit Name"),
+            ("koi.type", "_http._tcp"),
+            ("koi.proxy.port", "9999"),
+            (
+                "traefik.http.routers.x.rule",
+                "Host(`from-traefik.lab.internal`)",
+            ),
+            ("traefik.http.services.x.loadbalancer.server.port", "3000"),
+        ]);
+        let meta = KoiMetadata::from_labels(&labels);
+        // Every explicit koi.* field wins; traefik fills nothing because all the
+        // fields it could supply were already set.
+        assert_eq!(meta.dns_name.as_deref(), Some("explicit"));
+        assert_eq!(meta.name.as_deref(), Some("Explicit Name"));
+        assert_eq!(meta.service_type.as_deref(), Some("_http._tcp"));
+        assert_eq!(meta.proxy_port, Some(9999));
+        // Nothing was derived from traefik → no source marker.
+        assert!(meta.source.is_none());
+    }
+
+    #[test]
+    fn explicit_dns_name_wins_but_traefik_fills_free_fields() {
+        // Operator pinned the DNS name but left name/port to the proxy labels.
+        let labels = labels_of(&[
+            ("koi.dns.name", "pinned"),
+            (
+                "traefik.http.routers.x.rule",
+                "Host(`from-traefik.lab.internal`)",
+            ),
+            ("traefik.http.services.x.loadbalancer.server.port", "3000"),
+        ]);
+        let meta = KoiMetadata::from_labels(&labels);
+        assert_eq!(meta.dns_name.as_deref(), Some("pinned")); // explicit wins
+        assert_eq!(meta.name.as_deref(), Some("from-traefik.lab.internal")); // free
+        assert_eq!(meta.proxy_port, Some(3000)); // free
+        assert_eq!(meta.source.as_deref(), Some("traefik-labels"));
+    }
+
+    #[test]
+    fn traefik_beats_heuristics_marker() {
+        // No explicit koi.* → traefik provides the hostname; the source marker
+        // proves traefik (not heuristics) supplied it.
+        let labels = labels_of(&[("traefik.http.routers.x.rule", "Host(`svc.lab.internal`)")]);
+        let meta = KoiMetadata::from_labels(&labels);
+        assert_eq!(meta.dns_name.as_deref(), Some("svc.lab.internal"));
+        assert_eq!(meta.source.as_deref(), Some("traefik-labels"));
+    }
+
+    #[test]
+    fn koi_enable_false_beats_everything() {
+        let labels = labels_of(&[
+            ("koi.enable", "false"),
+            ("traefik.http.routers.x.rule", "Host(`x.lab.internal`)"),
+            ("caddy", "y.lab.internal"),
+        ]);
+        let meta = KoiMetadata::from_labels(&labels);
+        // Opt-out wins: no partner derivation at all.
+        assert!(meta.is_disabled());
+        assert!(meta.dns_name.is_none());
+        assert!(meta.source.is_none());
+    }
+
+    #[test]
+    fn partner_parsing_never_panics_on_arbitrary_labels() {
+        // Throw a pile of pathological values at the parser; it must not panic.
+        let labels = labels_of(&[
+            ("traefik.enable", "maybe"),
+            ("traefik.http.routers.r.rule", "Host(`)(`weird"),
+            (
+                "traefik.http.services.s.loadbalancer.server.port",
+                "not-a-number",
+            ),
+            ("caddy", ",,, , "),
+            ("caddy.reverse_proxy", "{{garbage"),
+        ]);
+        // Just must not panic; result correctness for these is unspecified.
+        let _ = KoiMetadata::from_labels(&labels);
     }
 }

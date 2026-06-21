@@ -1,0 +1,31 @@
+[package]
+name = "koi-mcp"
+description = "Model Context Protocol (MCP) server over stdio — exposes Koi's LAN substrate to AI agents"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["mcp", "ai", "agent", "mdns", "service-discovery"]
+categories = ["network-programming"]
+
+[dependencies]
+koi-client.workspace = true
+koi-config.workspace = true
+koi-common.workspace = true
+rmcp = { workspace = true }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+# Record-type parsing for dns_lookup and local-IP detection for dns_add.
+hickory-proto.workspace = true
+if-addrs.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }

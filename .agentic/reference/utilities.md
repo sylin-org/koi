@@ -12,11 +12,19 @@ Existing constants and types - don't reinvent these.
 | -------------- | ----- | -------------------------------- |
 | `SHORT_ID_LEN` | 8     | UUID prefix for registration IDs |
 
+### koi-common -- Events (`crates/koi-common/src/events.rs`)
+
+| Constant                     | Value | Purpose                                              |
+| ---------------------------- | ----- | ---------------------------------------------------- |
+| `BROADCAST_CHANNEL_CAPACITY` | 256   | Event subscriber channel size (single source, P10)   |
+
+The matching `event_channel<E: Clone>()` helper builds a `broadcast::channel` sized at this
+const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were removed in P10.
+
 ### koi-mdns -- Core (`crates/koi-mdns/src/lib.rs`)
 
 | Constant                     | Value | Purpose                       |
 | ---------------------------- | ----- | ----------------------------- |
-| `BROADCAST_CHANNEL_CAPACITY` | 256   | Event subscriber channel size |
 | `REAPER_INTERVAL`            | 5s    | Lease expiry sweep frequency  |
 
 ### koi-mdns -- Daemon (`crates/koi-mdns/src/daemon.rs`)
@@ -65,6 +73,13 @@ Existing constants and types - don't reinvent these.
 | Constant            | Value | Purpose                            |
 | ------------------- | ----- | ---------------------------------- |
 | `DEFAULT_HTTP_PORT` | 5641  | Default daemon port ("KOI" keypad) |
+
+### koi -- HTTP Adapter paths (`crates/koi/src/adapters/http.rs` `paths` module)
+
+| Constant                 | Value                                | Purpose                                          |
+| ------------------------ | ------------------------------------ | ------------------------------------------------ |
+| `MCP`                    | `/v1/mcp`                            | In-process MCP server (Streamable HTTP / JSON-RPC); shares port 5641 |
+| `MCP_SERVER_CARD`        | `/.well-known/mcp/server-card.json`  | Public MCP discovery descriptor (unauthenticated) |
 
 ### koi -- Client (`crates/koi/src/client.rs`)
 
@@ -330,7 +345,7 @@ No other module should contain `println!`-based presentation functions.
 | `RotateAuthResponse` | Auth credential rotation response (auth_setup)                    |
 | `AuditLogResponse`   | Audit log read response (entries)                                 |
 | `DestroyResponse`    | Certmesh destroy response (destroyed)                             |
-| `TrustProfile`       | CA policy (key size, validity, enrollment mode)                   |
+| `EnrollmentSummary`  | Open/close-enrollment response (enrollment_state)                 |
 
 ### Internal (not re-exported)
 
@@ -351,7 +366,7 @@ No other module should contain `println!`-based presentation functions.
 | `RuntimeCore`        | Main domain facade (instance tracking, backend lifecycle)    |
 | `RuntimeConfig`      | Configuration (backend_kind, optional socket_path)           |
 | `RuntimeBackend`     | Trait: connect, list_instances, watch lifecycle events        |
-| `RuntimeBackendKind` | Backend selector enum (Auto, Docker, Podman, Systemd, Incus, Kubernetes) |
+| `RuntimeBackendKind` | Backend selector enum (Auto, Docker, Podman)                 |
 | `RuntimeEvent`       | Domain event enum (Started, Stopped, Updated, BackendDisconnected, BackendReconnected) |
 | `RuntimeError`       | Domain error enum (BackendUnavailable, Connection, EventStream, NotFound, Io, Internal) |
 | `Instance`           | Normalized instance (id, name, ports, ips, metadata, state)  |
@@ -373,12 +388,6 @@ No other module should contain `println!`-based presentation functions.
 | `RuntimeState`   | `lib.rs`         | Internal shared state (instances, backend, event_tx)  |
 | `DockerBackend`  | `docker.rs`      | Docker/Podman backend (bollard client)               |
 | `ComposeInfo`    | `instance.rs`    | Docker Compose label extraction (project, service)   |
-
-### `koi_runtime` constants (`lib.rs`)
-
-| Constant                     | Value | Purpose                       |
-| ---------------------------- | ----- | ----------------------------- |
-| `BROADCAST_CHANNEL_CAPACITY` | 256   | Event subscriber channel size |
 
 ### `koi_runtime::heuristics` constants
 

@@ -10,10 +10,12 @@
 
 - [architecture.md](../docs/reference/architecture.md) - crate inventory, boundaries, dependency graph
 - [http-api.md](../docs/reference/http-api.md) - all HTTP endpoints with request/response shapes
-- [wire-protocol.md](../docs/reference/wire-protocol.md) - JSON protocol, serde patterns, service records
+- [wire-protocol.md](../docs/reference/wire-protocol.md) - mDNS NDJSON protocol, serde patterns, service records
+- [trust-protocol.md](../docs/reference/trust-protocol.md) - **ADR-020 cross-sibling wire contract**: Posture, Envelope (sign/verify), Sealed (seal/open), the same-port dual-mode handshake, the diagnose report — language-neutral so a non-Rust sibling implements identical primitives (realizes STACK-0001 D7)
 - [cli.md](../docs/reference/cli.md) - every command, flag, and environment variable
 - [ceremony-protocol.md](../docs/reference/ceremony-protocol.md) - ceremony engine, input types, session flow
 - [envelope-encryption.md](../docs/reference/envelope-encryption.md) - CA key protection, slot types
+- [domain-template.md](../docs/reference/domain-template.md) - **adding a new domain crate**: crate layout, the shared `koi-common` primitives to use (`DomainRuntime`, async `Capability`, `event_channel`, `http::error_response`, `integration` traits), the per-crate conventions that stay, and the binary-side touchpoints
 
 **Check design decisions**: `docs/adr/`
 
@@ -38,7 +40,6 @@ crates/
 ├── koi-config/       # Config & state - breadcrumb discovery
 ├── koi-certmesh/     # Certificate mesh domain - CA, enrollment, roster
 ├── koi-crypto/       # Cryptographic primitives - key gen, signing, TOTP, FIDO2, auth adapters
-├── koi-truststore/   # Trust store - platform cert installation
 ├── koi-dns/          # Local DNS resolver - zone management, resolution, rate limiting
 ├── koi-health/       # Machine & service health monitoring - HTTP/TCP checks, transitions
 ├── koi-proxy/        # TLS-terminating reverse proxy - cert reload, forwarding
@@ -46,9 +47,11 @@ crates/
 ├── koi-runtime/      # Container/service runtime adapter - Docker, Podman lifecycle events
 ├── koi-client/       # HTTP client for daemon communication (blocking ureq)
 ├── koi-dashboard/    # Presentation - dashboard + mDNS browser (HTML, SSE, event forwarder, lazy meta-browse)
-├── koi-embedded/     # Embed Koi in Rust applications - builder, handles, events
-└── command-surface/  # Glyph-based command rendering - semantic metadata, profiles
+└── koi-embedded/     # Embed Koi in Rust applications - builder, handles, events
 ```
+
+> Terminal-profile-aware help rendering (the former standalone `command-surface` crate)
+> was folded into the binary's `crates/koi/src/help/` module in P09.
 
 ### 2. Domain Boundary Model
 
@@ -71,11 +74,12 @@ Each domain crate exposes three faces:
 ### 3. Crate Dependency Graph
 
 ```
-koi (bin) → koi-common, koi-dashboard, koi-mdns, koi-certmesh, koi-crypto, koi-truststore, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, koi-embedded, command-surface
+koi (bin) → koi-common, koi-dashboard, koi-mdns, koi-certmesh, koi-crypto, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, koi-embedded, os-truststore (external)
 koi-mdns      → koi-common, mdns-sd, axum, utoipa, tokio
-koi-certmesh  → koi-common, koi-crypto, koi-truststore, axum, utoipa, tokio
+koi-certmesh  → koi-common, koi-crypto, os-truststore (external), axum, utoipa, tokio
 koi-crypto    → (standalone: ring/rcgen/totp-rs/p256)
-koi-truststore → (standalone: platform cert APIs)
+# os-truststore: platform trust-store install — spun out to the os-tools repo (ADR-019);
+# consumed via a git dependency, not a workspace member.
 koi-config    → koi-common
 koi-dns       → koi-common, koi-config, hickory-server, hickory-resolver, axum, utoipa, tokio
 koi-health    → koi-common, koi-config, axum, utoipa, tokio
@@ -85,7 +89,6 @@ koi-runtime   → koi-common, bollard, axum, utoipa, tokio, chrono, async-trait
 koi-client    → koi-common, ureq (blocking)
 koi-dashboard → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-runtime, axum, tokio
 koi-embedded  → koi-common, koi-dashboard, koi-crypto, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, koi-client, tokio
-command-surface → (standalone: crossterm)
 ```
 
 **Domain** crates depend on `koi-common` but **never** on each other.
@@ -143,7 +146,7 @@ ErrorCode::NotFound → StatusCode::NOT_FOUND
 // Unix-only: Unix domain sockets, systemd
 #[cfg(unix)]
 
-// macOS-only: LaunchAgent
+// macOS-only: LaunchDaemon (system-wide, /Library/LaunchDaemons)
 #[cfg(target_os = "macos")]
 ```
 
@@ -162,6 +165,7 @@ All domain capabilities are compiled into a **single binary**. Enable/disable at
 | `--no-runtime`  | `KOI_NO_RUNTIME=1`  | Disable runtime adapter      |
 | `--no-http`     | `KOI_NO_HTTP=1`     | Disable the HTTP adapter     |
 | `--no-ipc`      | `KOI_NO_IPC=1`      | Disable the IPC adapter      |
+| `--no-mcp-http` | `KOI_NO_MCP_HTTP=1` | Disable the in-process MCP HTTP transport (`/v1/mcp`) |
 
 Additional runtime adapter flags:
 
@@ -226,12 +230,10 @@ koi certmesh join [endpoint]     # Join existing mesh
 koi certmesh status              # Mesh status
 koi certmesh unlock              # Decrypt CA key
 koi certmesh log                 # Audit log
-koi certmesh compliance          # Compliance summary
 koi certmesh set-hook            # Set reload hook
 koi certmesh promote [endpoint]  # Promote standby CA
 koi certmesh open-enrollment     # Open enrollment window
 koi certmesh close-enrollment    # Close enrollment window
-koi certmesh set-policy          # Set scope constraints
 koi certmesh rotate-auth         # Rotate enrollment auth
 koi certmesh backup <path>       # Create encrypted backup
 koi certmesh restore <path>      # Restore from backup
@@ -345,7 +347,8 @@ client.rs          - Re-exports koi-client (HTTP client for client mode)
 format.rs          - ALL human-readable CLI output (single source of truth)
 admin.rs           - Admin command execution (delegates to KoiClient)
 openapi.rs         - Manifest-driven OpenAPI spec builder (utoipa)
-surface.rs         - Command manifest and API endpoint definitions (command-surface)
+help/              - Terminal-profile-aware help rendering + command/API metadata
+                     (folded in from the former command-surface crate in P09)
 commands/
   mod.rs           - Shared helpers (detect_mode, run_streaming, print_json, etc.)
   mdns.rs          - mDNS commands + admin routing (discover, announce, etc.)

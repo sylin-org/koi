@@ -111,11 +111,14 @@ When the daemon is running, health endpoints live under `/v1/health/`:
 ```
 POST /v1/health/add
 Content-Type: application/json
+x-koi-token: <daemon access token>
 
 {"name": "api", "http": "https://localhost:3000/health"}
 ```
 
 For TCP checks, use `{"name": "db", "tcp": "127.0.0.1:5432"}`.
+
+Mutating endpoints (`POST /v1/health/add`, `DELETE /v1/health/remove/{name}`) require the daemon access token in the `x-koi-token` header — see the [security model](../reference/security-model.md) for how to read it from the breadcrumb. `GET` reads (status, list) are unauthenticated.
 
 ---
 

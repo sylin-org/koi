@@ -493,7 +493,6 @@ async fn run_http_tests(
 
     let _ = client
         .post(format!("{base_url}/v1/certmesh/open-enrollment"))
-        .json(&serde_json::json!({"deadline": null}))
         .send()
         .await?;
     let _ = client
@@ -502,15 +501,8 @@ async fn run_http_tests(
         .await?;
     harness.pass("http: certmesh enrollment open/close");
 
-    let _ = client
-        .put(format!("{base_url}/v1/certmesh/policy"))
-        .json(&serde_json::json!({"allowed_domain": "example.com", "allowed_subnet": null}))
-        .send()
-        .await?;
-    harness.pass("http: certmesh set policy");
-
     let rotate: serde_json::Value = client
-        .post(format!("{base_url}/v1/certmesh/rotate-totp"))
+        .post(format!("{base_url}/v1/certmesh/rotate-auth"))
         .json(&serde_json::json!({"passphrase": "http-test-pass"}))
         .send()
         .await?

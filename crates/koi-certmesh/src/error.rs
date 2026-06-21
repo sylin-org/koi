@@ -13,6 +13,12 @@ pub enum CertmeshError {
     #[error("invalid auth credential")]
     InvalidAuth,
 
+    #[error("invalid payload: {0}")]
+    InvalidPayload(String),
+
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     #[error("rate limited - try again in {remaining_secs} seconds")]
     RateLimited { remaining_secs: u64 },
 
@@ -43,22 +49,11 @@ pub enum CertmeshError {
     #[error("invalid backup: {0}")]
     BackupInvalid(String),
 
-    // Phase 3 - Failover + Lifecycle
-    #[error("not a standby: {0}")]
-    NotStandby(String),
-
     #[error("promotion failed: {0}")]
     PromotionFailed(String),
 
     #[error("renewal failed for {hostname}: {reason}")]
     RenewalFailed { hostname: String, reason: String },
-
-    #[error("invalid roster manifest signature")]
-    InvalidManifest,
-
-    // Phase 4 - Enrollment Policy
-    #[error("scope violation: {0}")]
-    ScopeViolation(String),
 
     #[error("unlock slot not configured: {0}")]
     NoSlotFound(String),
@@ -97,6 +92,8 @@ impl From<&CertmeshError> for ErrorCode {
             CertmeshError::CaNotInitialized => ErrorCode::CaNotInitialized,
             CertmeshError::CaLocked => ErrorCode::CaLocked,
             CertmeshError::InvalidAuth => ErrorCode::InvalidAuth,
+            CertmeshError::InvalidPayload(_) => ErrorCode::InvalidPayload,
+            CertmeshError::Conflict(_) => ErrorCode::Conflict,
             CertmeshError::RateLimited { .. } => ErrorCode::RateLimited,
             CertmeshError::EnrollmentClosed => ErrorCode::EnrollmentClosed,
             CertmeshError::AlreadyEnrolled(_) => ErrorCode::Conflict,
@@ -107,11 +104,8 @@ impl From<&CertmeshError> for ErrorCode {
             CertmeshError::Io(_) => ErrorCode::IoError,
             CertmeshError::Internal(_) => ErrorCode::Internal,
             CertmeshError::BackupInvalid(_) => ErrorCode::InvalidPayload,
-            CertmeshError::NotStandby(_) => ErrorCode::NotStandby,
             CertmeshError::PromotionFailed(_) => ErrorCode::PromotionFailed,
             CertmeshError::RenewalFailed { .. } => ErrorCode::RenewalFailed,
-            CertmeshError::InvalidManifest => ErrorCode::InvalidManifest,
-            CertmeshError::ScopeViolation(_) => ErrorCode::ScopeViolation,
             CertmeshError::ApprovalDenied => ErrorCode::ApprovalDenied,
             CertmeshError::ApprovalTimeout => ErrorCode::ApprovalTimeout,
             CertmeshError::ApprovalUnavailable => ErrorCode::ApprovalUnavailable,
@@ -136,6 +130,16 @@ mod tests {
             ),
             (CertmeshError::CaLocked, ErrorCode::CaLocked, 503),
             (CertmeshError::InvalidAuth, ErrorCode::InvalidAuth, 401),
+            (
+                CertmeshError::InvalidPayload("bad entropy".into()),
+                ErrorCode::InvalidPayload,
+                400,
+            ),
+            (
+                CertmeshError::Conflict("already initialized".into()),
+                ErrorCode::Conflict,
+                409,
+            ),
             (
                 CertmeshError::RateLimited { remaining_secs: 60 },
                 ErrorCode::RateLimited,
@@ -186,12 +190,6 @@ mod tests {
                 ErrorCode::InvalidPayload,
                 400,
             ),
-            // Phase 3
-            (
-                CertmeshError::NotStandby("stone-01".into()),
-                ErrorCode::NotStandby,
-                403,
-            ),
             (
                 CertmeshError::PromotionFailed("transfer error".into()),
                 ErrorCode::PromotionFailed,
@@ -204,17 +202,6 @@ mod tests {
                 },
                 ErrorCode::RenewalFailed,
                 500,
-            ),
-            (
-                CertmeshError::InvalidManifest,
-                ErrorCode::InvalidManifest,
-                400,
-            ),
-            // Phase 4
-            (
-                CertmeshError::ScopeViolation("hostname outside domain".into()),
-                ErrorCode::ScopeViolation,
-                403,
             ),
             (
                 CertmeshError::NoSlotFound("TOTP".into()),

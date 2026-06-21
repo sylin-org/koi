@@ -1,8 +1,8 @@
 //! Koi Runtime Adapter — container/service lifecycle integration.
 //!
-//! Watches runtime APIs (Docker, Podman, systemd, Incus, Kubernetes) for
-//! lifecycle events and drives Koi capabilities: mDNS announce, DNS entry,
-//! health check, proxy configuration.
+//! Watches container runtime APIs (Docker, Podman) for lifecycle events and
+//! drives Koi capabilities: mDNS announce, DNS entry, health check, proxy
+//! configuration.
 //!
 //! The adapter uses a trait-based backend system. Each runtime implements
 //! [`RuntimeBackend`] to provide normalized lifecycle events and instance
@@ -11,8 +11,8 @@
 //!
 //! The `docker` feature (default-on) compiles the bollard-backed Docker/Podman backend.
 //! With it off, the runtime capability stays available but Docker/Podman/Auto resolve to
-//! [`RuntimeError::BackendUnavailable`] — like the not-yet-implemented systemd/incus/k8s
-//! backends.
+//! [`RuntimeError::BackendUnavailable`]. The selectable backends are Auto/Docker/Podman;
+//! other runtimes can be added by implementing [`RuntimeBackend`].
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 pub mod backend;
@@ -27,16 +27,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Router;
-use koi_common::capability::CapabilityStatus;
+use koi_common::capability::{Capability, CapabilityStatus};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 pub use backend::{RuntimeBackend, RuntimeBackendKind, RuntimeEvent};
 pub use error::RuntimeError;
 pub use instance::{Instance, InstanceState, KoiMetadata, PortMapping};
-
-/// Capacity for the runtime event broadcast channel.
-const BROADCAST_CHANNEL_CAPACITY: usize = 256;
 
 /// Configuration for the runtime adapter.
 #[derive(Debug, Clone)]
@@ -88,7 +85,7 @@ impl RuntimeCore {
                 instances: Mutex::new(HashMap::new()),
                 backend_name: Mutex::new(None),
                 active: Mutex::new(false),
-                event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
+                event_tx: koi_common::events::event_channel().0,
             }),
             config,
         }
@@ -215,27 +212,6 @@ impl RuntimeCore {
         Ok(())
     }
 
-    /// Capability status for the unified status endpoint.
-    pub async fn capability_status(&self) -> CapabilityStatus {
-        let instances = self.state.instances.lock().await;
-        let backend = self.state.backend_name.lock().await;
-        let active = *self.state.active.lock().await;
-
-        CapabilityStatus {
-            name: "runtime".to_string(),
-            healthy: active,
-            summary: if active {
-                format!(
-                    "{}: {} instances",
-                    backend.as_deref().unwrap_or("none"),
-                    instances.len()
-                )
-            } else {
-                "inactive".to_string()
-            },
-        }
-    }
-
     /// Create a backend based on the configured kind.
     fn create_backend(&self) -> Result<Box<dyn RuntimeBackend>, RuntimeError> {
         match self.config.backend_kind {
@@ -268,15 +244,6 @@ impl RuntimeCore {
                         .into(),
                 ))
             }
-            RuntimeBackendKind::Systemd => Err(RuntimeError::BackendUnavailable(
-                "systemd backend not yet implemented".into(),
-            )),
-            RuntimeBackendKind::Incus => Err(RuntimeError::BackendUnavailable(
-                "incus backend not yet implemented".into(),
-            )),
-            RuntimeBackendKind::Kubernetes => Err(RuntimeError::BackendUnavailable(
-                "kubernetes backend not yet implemented".into(),
-            )),
         }
     }
 
@@ -304,6 +271,35 @@ impl RuntimeCore {
             }
             .into(),
         ))
+    }
+}
+
+#[async_trait::async_trait]
+impl Capability for RuntimeCore {
+    fn name(&self) -> &str {
+        "runtime"
+    }
+
+    /// Capability status for the unified status endpoint. (Was the bespoke
+    /// `capability_status`; folded into the trait in P10.)
+    async fn status(&self) -> CapabilityStatus {
+        let instances = self.state.instances.lock().await;
+        let backend = self.state.backend_name.lock().await;
+        let active = *self.state.active.lock().await;
+
+        CapabilityStatus {
+            name: "runtime".to_string(),
+            healthy: active,
+            summary: if active {
+                format!(
+                    "{}: {} instances",
+                    backend.as_deref().unwrap_or("none"),
+                    instances.len()
+                )
+            } else {
+                "inactive".to_string()
+            },
+        }
     }
 }
 
@@ -357,9 +353,17 @@ mod tests {
             Some(RuntimeBackendKind::Docker)
         );
         assert_eq!(
-            RuntimeBackendKind::from_str_loose("k8s"),
-            Some(RuntimeBackendKind::Kubernetes)
+            RuntimeBackendKind::from_str_loose("podman"),
+            Some(RuntimeBackendKind::Podman)
         );
+        assert_eq!(
+            RuntimeBackendKind::from_str_loose("auto"),
+            Some(RuntimeBackendKind::Auto)
+        );
+        // Removed stub backends are now rejected (no silent fallback).
+        assert_eq!(RuntimeBackendKind::from_str_loose("k8s"), None);
+        assert_eq!(RuntimeBackendKind::from_str_loose("systemd"), None);
+        assert_eq!(RuntimeBackendKind::from_str_loose("incus"), None);
         assert_eq!(RuntimeBackendKind::from_str_loose("unknown"), None);
     }
 }

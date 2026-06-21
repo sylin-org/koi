@@ -12,10 +12,14 @@ readme = "README.md"
 keywords = ["koi", "networking", "types", "pipeline", "service-discovery"]
 categories = ["network-programming"]
 
-# Types-only kernel. axum (wire error responses), utoipa (OpenAPI schemas), and chrono
-# (integration timestamps) have legitimate kernel uses; the presentation deps that the
-# dashboard/browser dragged in (tokio, tokio-stream, tokio-util, async-stream, hostname)
-# left with koi-dashboard in P06.
+# Types + small-utilities kernel. axum (wire error responses), utoipa (OpenAPI schemas), and
+# chrono (integration timestamps) have legitimate kernel uses. P10 adds two tiny shared
+# primitives — runtime_state::DomainRuntime (a start/stop loop controller) and events
+# (one broadcast-channel const + helper) — and the async Capability trait. These pull in
+# tokio (sync/rt/macros), tokio-util (CancellationToken), and async-trait. tokio is already
+# pervasive across the workspace; this is a deliberate, scoped kernel utility, not the
+# presentation stack the dashboard/browser dragged in (tokio-stream, async-stream, hostname)
+# which left with koi-dashboard in P06.
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -25,3 +29,6 @@ tracing.workspace = true
 axum.workspace = true
 utoipa.workspace = true
 chrono.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+tokio-util.workspace = true
+async-trait.workspace = true

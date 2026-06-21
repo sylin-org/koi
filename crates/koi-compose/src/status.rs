@@ -61,26 +61,30 @@ pub async fn assemble_capabilities(cores: &Cores) -> Vec<CapabilityReport> {
 
     // mDNS
     caps.push(match &cores.mdns {
-        Some(core) => CapabilityReport::present(core.status()),
+        Some(core) => CapabilityReport::present(core.status().await),
         None => CapabilityReport::disabled("mdns"),
     });
 
     // Certmesh
     caps.push(match &cores.certmesh {
-        Some(core) => CapabilityReport::present(core.status()),
+        Some(core) => CapabilityReport::present(core.status().await),
         None => CapabilityReport::disabled("certmesh"),
     });
 
     // DNS
     caps.push(match &cores.dns {
-        Some(rt) if rt.status().await.running => CapabilityReport::present(rt.core().status()),
+        Some(rt) if rt.status().await.running => {
+            CapabilityReport::present(rt.core().status().await)
+        }
         Some(_) => CapabilityReport::stopped("dns"),
         None => CapabilityReport::disabled("dns"),
     });
 
     // Health
     caps.push(match &cores.health {
-        Some(rt) if rt.status().await.running => CapabilityReport::present(rt.core().status()),
+        Some(rt) if rt.status().await.running => {
+            CapabilityReport::present(rt.core().status().await)
+        }
         Some(_) => CapabilityReport::stopped("health"),
         None => CapabilityReport::disabled("health"),
     });
@@ -105,13 +109,13 @@ pub async fn assemble_capabilities(cores: &Cores) -> Vec<CapabilityReport> {
 
     // UDP (disambiguate the Capability trait method from UdpRuntime's own status())
     caps.push(match &cores.udp {
-        Some(rt) => CapabilityReport::present(Capability::status(rt.as_ref())),
+        Some(rt) => CapabilityReport::present(Capability::status(rt.as_ref()).await),
         None => CapabilityReport::disabled("udp"),
     });
 
-    // Runtime
+    // Runtime (RuntimeCore's Capability::status; was the bespoke capability_status())
     caps.push(match &cores.runtime {
-        Some(rt) => CapabilityReport::present(rt.capability_status().await),
+        Some(rt) => CapabilityReport::present(Capability::status(rt.as_ref()).await),
         None => CapabilityReport::disabled("runtime"),
     });
 

@@ -16,14 +16,15 @@ containers or other hosts, start the daemon with `--http-bind bridge` / `<ip>` /
 
 **Daemon Access Token (DAT):**
 At startup, the daemon generates a fresh random token and writes it to the breadcrumb file (`koi.endpoint`) with owner-only permissions.
-- **GET / HEAD / OPTIONS** requests are unauthenticated (exempt from token checks).
+- **GET / HEAD / OPTIONS** requests are unauthenticated (exempt from token checks) — **except `/v1/mcp`**, which requires the token on *every* method (including its server→client SSE GET); see the MCP note below.
 - **All mutations (POST, PUT, DELETE)** require the token to be sent in the `x-koi-token` header (except `/v1/certmesh/join`, which uses standard TOTP credentials during bootstrap).
-- **Server-Sent Events (SSE)** endpoints (which cannot set custom headers) accept the token in the `?token=` query parameter.
+- **Server-Sent Events (SSE)** endpoints are `GET`, so they are unauthenticated on the open methods above — except `/v1/mcp`'s server→client SSE stream, which (like the rest of `/v1/mcp`) requires the `x-koi-token` header.
 
-Example header:
+The header value is the **bare token** — the breadcrumb file stores it with a `dat:` line prefix, but that prefix is **not** part of the header value (clients strip it):
 ```http
-x-koi-token: dat:8a31…base64url…
+x-koi-token: 8a31…base64url…
 ```
+See the [API authentication guide](../guides/api-authentication.md) for the per-OS recipe to read the token and make an authenticated write.
 
 Interactive API docs are available at `GET /docs` (Scalar UI).
 
@@ -38,8 +39,15 @@ Interactive API docs are available at `GET /docs` (Scalar UI).
 | GET    | `/v1/status`         | Unified capability status                  |
 | POST   | `/v1/admin/shutdown` | Initiate graceful shutdown                 |
 | GET    | `/v1/host`           | Host identity and network interfaces       |
+| GET    | `/v1/sd/prometheus`  | Prometheus HTTP service discovery (target groups) |
+| GET/POST | `/v1/mcp`          | MCP server (Streamable HTTP / JSON-RPC) — token-required on all methods; **not** in `/openapi.json` (see below) |
+| GET    | `/.well-known/mcp/server-card.json` | Public MCP discovery descriptor (unauthenticated) |
 | GET    | `/openapi.json`      | OpenAPI specification                      |
 | GET    | `/docs`              | Interactive API documentation              |
+
+### MCP over Streamable HTTP (not in OpenAPI)
+
+`/v1/mcp` speaks the Model Context Protocol over the **Streamable HTTP** transport (JSON-RPC 2.0, single endpoint, optional SSE upgrade) — it is **not** part of the utoipa-generated `/openapi.json`, the same way the ACME facade is documented separately. POST carries JSON-RPC requests; a bare GET opens the server→client SSE stream. Both require the `x-koi-token` header (the GET is carved out of the usual GET-exemption — it is a live channel, not a read). Enabled by default; disable with `--no-mcp-http` / `KOI_NO_MCP_HTTP` (then `/v1/mcp` returns `503 capability_disabled`), and `/v1/status` reports the state as the `mcp_http` field. The endpoint exposes the same tools as `koi mcp serve` plus MCP **resources** (`koi://lan/inventory`, `koi://health`, `koi://dns/zone`, `koi://mdns/services`). See [the MCP guide](../guides/mcp.md).
 
 ### Dashboard & Browser
 
@@ -69,6 +77,35 @@ Interactive API docs are available at `GET /docs` (Scalar UI).
 ```
 
 LAN interfaces exclude loopback and link-local addresses.
+
+### GET /v1/sd/prometheus
+
+Prometheus [HTTP service discovery](https://prometheus.io/docs/prometheus/latest/http_sd/)
+endpoint. Returns **200** with `Content-Type: application/json` and a JSON array of
+target groups; the full list is returned on every poll (Prometheus does not diff),
+and an empty result is `[]`. Unauthenticated like `/healthz` (it is a `GET`).
+
+Query: `?include=discovered` also emits LAN-discovered mDNS `_http._tcp` services.
+By default only **Koi-managed** targets are returned (health checks + runtime
+instances with a published port).
+
+```json
+[
+  {
+    "targets": ["10.0.0.5:3000"],
+    "labels": {
+      "__meta_koi_name": "grafana",
+      "__meta_koi_source": "health",
+      "__meta_koi_health": "up",
+      "__meta_koi_cert_expiry_days": "30"
+    }
+  }
+]
+```
+
+See [`docs/guides/integrations.md`](../guides/integrations.md#prometheus) for the
+`prometheus.yml` snippet and the full label table. `__meta_koi_cert_expiry_days`
+is unique to Koi — no other LAN SD source exposes certificate expiry.
 
 ### GET /v1/status
 
@@ -217,16 +254,14 @@ data: {"event":"removed","service":{"name":"...","type":"..."}}
 | POST   | `/v1/certmesh/unlock`     | Unlock a locked CA        |
 | GET    | `/v1/certmesh/status`     | Mesh status               |
 | GET    | `/v1/certmesh/log`        | Audit log                 |
-| GET    | `/v1/certmesh/compliance` | Compliance summary        |
 
 ### Enrollment management
 
-| Method | Path                            | Description                                                |
-| ------ | ------------------------------- | ---------------------------------------------------------- |
-| POST   | `/v1/certmesh/open-enrollment`  | Open enrollment window (optional `deadline` field)         |
-| POST   | `/v1/certmesh/close-enrollment` | Close enrollment                                           |
-| PUT    | `/v1/certmesh/set-policy`       | Set enrollment policy (`allowed_domain`, `allowed_subnet`) |
-| POST   | `/v1/certmesh/rotate-auth`      | Rotate enrollment auth credential                          |
+| Method | Path                            | Description                        |
+| ------ | ------------------------------- | ---------------------------------- |
+| POST   | `/v1/certmesh/open-enrollment`  | Open enrollment window             |
+| POST   | `/v1/certmesh/close-enrollment` | Close enrollment                   |
+| POST   | `/v1/certmesh/rotate-auth`      | Rotate enrollment auth credential  |
 
 ### Lifecycle
 
@@ -235,8 +270,7 @@ data: {"event":"removed","service":{"name":"...","type":"..."}}
 | POST   | `/v1/certmesh/renew`    | Renew a member's certificate  |
 | POST   | `/v1/certmesh/revoke`   | Revoke a member's certificate |
 | PUT    | `/v1/certmesh/set-hook` | Set renewal hook command      |
-| POST   | `/v1/certmesh/promote`  | Promote standby to primary CA |
-| GET    | `/v1/certmesh/roster`   | Signed roster manifest        |
+| POST   | `/v1/certmesh/promote`  | Promote a member to standby CA |
 | POST   | `/v1/certmesh/health`   | CA fingerprint health check   |
 
 ### Backup/restore
@@ -278,7 +312,8 @@ Response:
   "ca_locked": false,
   "ca_fingerprint": "AB:CD:...",
   "auth_method": "totp",
-  "profile": "just_me",
+  "enrollment_open": true,
+  "requires_approval": false,
   "enrollment_state": "open",
   "member_count": 3,
   "members": [
@@ -302,6 +337,7 @@ Response:
 | GET    | `/v1/dns/lookup?name=grafana&type=A` | Resolve a local name                                 |
 | GET    | `/v1/dns/list`                       | List all resolvable names                            |
 | GET    | `/v1/dns/entries`                    | List static entries with details                     |
+| GET    | `/v1/dns/zone?format=hosts\|dnsmasq\|json` | Export the resolvable zone for an incumbent resolver |
 | POST   | `/v1/dns/add`                        | Add static entry (`name`, `ip`, optional `ttl`)      |
 | DELETE | `/v1/dns/remove/{name}`              | Remove static entry                                  |
 | POST   | `/v1/dns/serve`                      | Start the DNS resolver                               |
@@ -313,6 +349,22 @@ Response:
 | --------- | ----- | -------- | ---------------------------------- |
 | `name`    | query | required | Name to resolve                    |
 | `type`    | query | `A`      | Record type: `A`, `AAAA`, or `ANY` |
+
+### GET /v1/dns/zone
+
+Export the full resolvable zone (static + certmesh + mDNS-derived records) so an
+*incumbent* resolver can conditionally forward to or import from Koi. The `format`
+query param selects the shape:
+
+| `format`  | Content-Type | Body |
+| --------- | ------------ | ---- |
+| `hosts`   | `text/plain` | `<ip> <name>` lines (trailing dot stripped) |
+| `dnsmasq` | `text/plain` | `address=/<name>/<ip>` lines (trailing dot stripped) |
+| `json` (default) | `application/json` | `{ static_entries, certmesh_entries, mdns_entries }`, each a map of FQDN → IPs |
+
+See [`docs/guides/dns-coexistence.md`](../guides/dns-coexistence.md) for the
+conditional-forwarding recipes (AdGuard Home, Pi-hole, dnsmasq, Unbound,
+Technitium) that let Koi sit alongside your existing resolver.
 
 ```json
 { "name": "grafana.lan.", "ips": ["192.168.1.42"], "source": "static" }
@@ -541,6 +593,34 @@ Returns all instances currently tracked by the adapter. Each includes resolved p
   }
 ]
 ```
+
+---
+
+## ACME (RFC 8555) — separate TLS port
+
+The ACME facade is **not** part of the main HTTP adapter or its OpenAPI spec. It runs on a
+dedicated server-auth TLS listener (default port **5643**, `--acme-port` / `KOI_ACME_PORT`),
+gated by `--no-acme` / `KOI_NO_ACME`, and only when the certmesh CA is initialized + unlocked
+and the DNS capability is enabled. Endpoints follow the RFC 8555 wire format
+(`application/jose+json` requests, `application/problem+json` errors) — a different content
+model from the Koi pipeline shapes, which is why they are documented here rather than in the
+utoipa-generated `/openapi.json`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/acme/directory` | Directory: endpoint URLs + `meta.externalAccountRequired` |
+| HEAD/GET | `/acme/new-nonce` | Fresh `Replay-Nonce` (200/204) |
+| POST | `/acme/new-account` | Register account (JWS + embedded jwk; EAB in closed mode) |
+| POST | `/acme/new-order` | Create an order (identifiers must be in the DNS zone) |
+| POST | `/acme/authz/{id}` | Authorization object (POST-as-GET) |
+| POST | `/acme/chall/{id}` | Trigger dns-01 validation (in-process TXT check) |
+| POST | `/acme/order/{id}/finalize` | Submit CSR → issue (SAN-authorization enforced) |
+| POST | `/acme/cert/{id}` | Download leaf + CA chain (`application/pem-certificate-chain`) |
+| POST | `/acme/revoke-cert` | Revoke an issued certificate |
+
+Scope: dns-01 only, EC/ES256 only, in-zone names only. Errors use the ACME problem registry
+(`urn:ietf:params:acme:error:*`). Every response carries a fresh `Replay-Nonce`. See
+[guides/acme.md](../guides/acme.md) for client recipes and the security model.
 
 ---
 

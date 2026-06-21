@@ -1975,21 +1975,6 @@ if (-not $Service) {
         Fail 'certmesh roster' $_.Exception.Message
     }
 
-    # 2.CM2 - Certmesh compliance (GET) - returns compliance report
-    try {
-        $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/compliance"
-        $json = $resp.Content | ConvertFrom-Json
-        if ($null -ne $json) {
-            Pass 'certmesh compliance returns OK'
-        }
-        else {
-            Fail 'certmesh compliance' 'Null response'
-        }
-    }
-    catch {
-        Fail 'certmesh compliance' $_.Exception.Message
-    }
-
     # 2.CM3 - Certmesh health (POST) - returns health check
     try {
         $healthBody = @{

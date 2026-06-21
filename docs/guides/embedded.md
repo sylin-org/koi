@@ -173,12 +173,13 @@ let _ = proxy.upsert(koi_proxy::ProxyEntry {
 // UDP
 let udp = handle.udp()?;
 let binding = udp.bind(koi_udp::UdpBindRequest {
-    addr: "0.0.0.0:9999".to_string(),
+    port: 9999,
+    addr: "0.0.0.0".to_string(),
+    lease_secs: 300,
 }).await?;
-let _ = udp.send(koi_udp::UdpSendRequest {
-    binding_id: binding.id.clone(),
-    payload: base64::engine::general_purpose::STANDARD.encode(b"hello"),
+let _bytes_sent = udp.send(&binding.id, koi_udp::UdpSendRequest {
     dest: "127.0.0.1:9998".to_string(),
+    payload: base64::engine::general_purpose::STANDARD.encode(b"hello"),
 }).await?;
 udp.unbind(&binding.id).await?;
 ```
@@ -217,7 +218,9 @@ This validates: mDNS, DNS, health, certmesh, and proxy HTTP routes (including SS
 
 ## Certmesh notes
 
-Certmesh create/destroy touches the trust store and may require elevated permissions. Certmesh initialization checks disk state on startup: no CA → `CertmeshCore::uninitialized()`; roster exists but key not decrypted → `CertmeshCore::locked()`. Use the ceremony protocol to create or unlock.
+Certmesh create/destroy touches the trust store and may require elevated permissions. On startup the core resolves disk state automatically (`koi_compose::cores::init_certmesh_core`): no CA → an uninitialized core; a CA on disk that isn't decrypted → a locked core (machine-bound auto-unlock, or call `core.unlock(passphrase)`).
+
+`koi-embedded` exposes the **full `CertmeshCore`** via `handle.certmesh()?.core()?` (create, invite, join, renew, revoke, trust-bundle, status, …) plus the plain-HTTP routes; the mTLS inter-node listener and the lifecycle background loops are yours to compose. For embedding a mesh **member** or a **CA host** — the auto-wired-vs-you-wire matrix, working code, the renewal options, and the auth caveat (embedded HTTP has no DAT token gate) — see **[Embedding certmesh](certmesh-embedded.md)**.
 
 ---
 

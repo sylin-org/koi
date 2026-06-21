@@ -4,7 +4,6 @@ use crate::resolver::DnsError;
 #[derive(Clone)]
 pub struct DnsZone {
     zone: String,
-    fqdn_suffix: String,
 }
 
 impl DnsZone {
@@ -13,16 +12,11 @@ impl DnsZone {
         if zone.is_empty() || zone.contains(' ') {
             return Err(DnsError::InvalidZone(zone));
         }
-        let fqdn_suffix = format!("{zone}.");
-        Ok(Self { zone, fqdn_suffix })
+        Ok(Self { zone })
     }
 
     pub fn zone(&self) -> &str {
         &self.zone
-    }
-
-    pub fn fqdn_suffix(&self) -> &str {
-        &self.fqdn_suffix
     }
 
     /// Normalize a query name into a local-zone FQDN.
@@ -79,11 +73,10 @@ mod tests {
     }
 
     #[test]
-    fn clone_preserves_zone_and_suffix() {
+    fn clone_preserves_zone() {
         let zone = DnsZone::new("lan").unwrap();
         let cloned = zone.clone();
         assert_eq!(cloned.zone(), zone.zone());
-        assert_eq!(cloned.fqdn_suffix(), zone.fqdn_suffix());
         assert_eq!(
             cloned.normalize_name("grafana"),
             zone.normalize_name("grafana"),

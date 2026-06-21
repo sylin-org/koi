@@ -4,13 +4,13 @@
 use std::sync::Arc;
 
 use crate::cli::{
-    CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, HealthSubcommand, MdnsSubcommand,
-    ProxySubcommand, UdpSubcommand,
+    CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, HealthSubcommand, McpSubcommand,
+    MdnsSubcommand, ProxySubcommand, TrustSubcommand, UdpSubcommand,
 };
 use crate::commands::status::try_daemon_status;
 use crate::daemon::daemon_mode;
 use crate::infra::{is_piped_stdin, print_top_level_help};
-use crate::{adapters, commands, format, surface};
+use crate::{adapters, commands, format, help};
 
 // ── Async entry point ────────────────────────────────────────────────
 
@@ -22,15 +22,15 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 config.require_capability("mdns")?;
                 match &mdns_cmd.command {
                     None => {
-                        surface::print_category_catalog(surface::KoiCategory::Discovery, None)?;
+                        help::print_category_catalog(help::KoiCategory::Discovery, None)?;
                         Ok(())
                     }
                     Some(MdnsSubcommand::Admin(admin_cmd)) => match &admin_cmd.command {
                         Some(admin) => commands::mdns::admin(admin, &cli),
                         None => {
-                            surface::print_category_catalog(
-                                surface::KoiCategory::Discovery,
-                                Some(surface::KoiScope::Admin),
+                            help::print_category_catalog(
+                                help::KoiCategory::Discovery,
+                                Some(help::KoiScope::Admin),
                             )?;
                             Ok(())
                         }
@@ -82,9 +82,12 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             Command::Certmesh(cm_cmd) => {
                 config.require_capability("certmesh")?;
                 let ep = cli.endpoint.as_deref();
+                // Explicit access token for an explicit --endpoint (flag or
+                // KOI_TOKEN). Never the breadcrumb token — see commands::cli_token.
+                let tok = commands::cli_token(&cli);
                 match &cm_cmd.command {
                     None => {
-                        surface::print_category_catalog(surface::KoiCategory::Trust, None)?;
+                        help::print_category_catalog(help::KoiCategory::Trust, None)?;
                         Ok(())
                     }
                     Some(CertmeshSubcommand::Create {
@@ -101,52 +104,68 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         passphrase.as_deref(),
                         cli.json,
                         ep,
+                        tok,
                     ),
-                    Some(CertmeshSubcommand::Status) => commands::certmesh::status(cli.json, ep),
-                    Some(CertmeshSubcommand::Log) => commands::certmesh::log(ep),
-                    Some(CertmeshSubcommand::Compliance) => {
-                        commands::certmesh::compliance(cli.json, ep)
+                    Some(CertmeshSubcommand::Status) => {
+                        commands::certmesh::status(cli.json, ep, tok)
                     }
-                    Some(CertmeshSubcommand::Unlock) => commands::certmesh::unlock(ep),
+                    Some(CertmeshSubcommand::Log) => commands::certmesh::log(ep, tok),
+                    Some(CertmeshSubcommand::Unlock) => commands::certmesh::unlock(ep, tok),
                     Some(CertmeshSubcommand::SetHook { reload }) => {
-                        commands::certmesh::set_hook(reload, cli.json, ep)
+                        commands::certmesh::set_hook(reload, cli.json, ep, tok)
                     }
-                    Some(CertmeshSubcommand::Join { endpoint }) => {
-                        commands::certmesh::join(endpoint.as_deref(), cli.json, ep).await
+                    Some(CertmeshSubcommand::Join {
+                        ca_endpoint,
+                        invite,
+                    }) => {
+                        // No `ep`/`tok` (global --endpoint/--token): `join` resolves its
+                        // LOCAL key-custody daemon from the breadcrumb itself, and the CA
+                        // is `ca_endpoint` (or mDNS). Threading the global endpoint here is
+                        // what misrouted key custody to the CA (ADR-018 Tier 3).
+                        commands::certmesh::join(
+                            ca_endpoint.as_deref(),
+                            invite.as_deref(),
+                            cli.json,
+                        )
+                        .await
                     }
-                    Some(CertmeshSubcommand::Promote { endpoint }) => {
-                        commands::certmesh::promote(endpoint.as_deref(), cli.json, ep).await
+                    Some(CertmeshSubcommand::Invite { hostname, ttl }) => {
+                        commands::certmesh::invite(hostname, *ttl, cli.json, ep, tok)
                     }
-                    Some(CertmeshSubcommand::OpenEnrollment { until }) => {
-                        commands::certmesh::open_enrollment(until.as_deref(), cli.json, ep)
+                    Some(CertmeshSubcommand::Promote { ca_endpoint }) => {
+                        // Local standby daemon resolved from the breadcrumb inside
+                        // `promote`; the CA is `ca_endpoint` (or mDNS). See `Join`.
+                        commands::certmesh::promote(ca_endpoint.as_deref(), cli.json).await
+                    }
+                    Some(CertmeshSubcommand::OpenEnrollment) => {
+                        commands::certmesh::open_enrollment(cli.json, ep, tok)
                     }
                     Some(CertmeshSubcommand::CloseEnrollment) => {
-                        commands::certmesh::close_enrollment(cli.json, ep)
+                        commands::certmesh::close_enrollment(cli.json, ep, tok)
                     }
-                    Some(CertmeshSubcommand::SetPolicy {
-                        domain,
-                        subnet,
-                        clear,
-                    }) => commands::certmesh::set_policy(
-                        domain.as_deref(),
-                        subnet.as_deref(),
-                        *clear,
-                        cli.json,
-                        ep,
-                    ),
                     Some(CertmeshSubcommand::RotateAuth) => {
-                        commands::certmesh::rotate_auth(cli.json, ep)
+                        commands::certmesh::rotate_auth(cli.json, ep, tok)
                     }
                     Some(CertmeshSubcommand::Backup { path }) => {
-                        commands::certmesh::backup(path, cli.json, ep)
+                        commands::certmesh::backup(path, cli.json, ep, tok)
                     }
                     Some(CertmeshSubcommand::Restore { path }) => {
-                        commands::certmesh::restore(path, cli.json, ep)
+                        commands::certmesh::restore(path, cli.json, ep, tok)
                     }
                     Some(CertmeshSubcommand::Revoke { hostname, reason }) => {
-                        commands::certmesh::revoke(hostname, reason.as_deref(), cli.json, ep)
+                        commands::certmesh::revoke(hostname, reason.as_deref(), cli.json, ep, tok)
                     }
-                    Some(CertmeshSubcommand::Destroy) => commands::certmesh::destroy(cli.json, ep),
+                    Some(CertmeshSubcommand::Destroy) => {
+                        commands::certmesh::destroy(cli.json, cli.yes, ep, tok)
+                    }
+                    Some(CertmeshSubcommand::Acme(acme_cmd)) => match &acme_cmd.command {
+                        None | Some(crate::cli::AcmeSubcommand::Enable) => {
+                            commands::certmesh::acme_enable(cli.json, ep, tok)
+                        }
+                        Some(crate::cli::AcmeSubcommand::Status) => {
+                            commands::certmesh::acme_status(cli.json, ep, tok)
+                        }
+                    },
                 }
             }
             Command::Dns(dns_cmd) => {
@@ -154,7 +173,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 let mode = commands::detect_mode(&cli);
                 match &dns_cmd.command {
                     None => {
-                        surface::print_category_catalog(surface::KoiCategory::Dns, None)?;
+                        help::print_category_catalog(help::KoiCategory::Dns, None)?;
                         Ok(())
                     }
                     Some(DnsSubcommand::Serve) => commands::dns::serve(&config, mode).await,
@@ -179,7 +198,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 let mode = commands::detect_mode(&cli);
                 match &health_cmd.command {
                     None => {
-                        surface::print_category_catalog(surface::KoiCategory::Health, None)?;
+                        help::print_category_catalog(help::KoiCategory::Health, None)?;
                         Ok(())
                     }
                     Some(HealthSubcommand::Status) => {
@@ -218,7 +237,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 let mode = commands::detect_mode(&cli);
                 match &proxy_cmd.command {
                     None => {
-                        surface::print_category_catalog(surface::KoiCategory::Proxy, None)?;
+                        help::print_category_catalog(help::KoiCategory::Proxy, None)?;
                         Ok(())
                     }
                     Some(ProxySubcommand::Add {
@@ -249,7 +268,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 let mode = commands::detect_mode(&cli);
                 match &udp_cmd.command {
                     None => {
-                        surface::print_category_catalog(surface::KoiCategory::Udp, None)?;
+                        help::print_category_catalog(help::KoiCategory::Udp, None)?;
                         Ok(())
                     }
                     Some(UdpSubcommand::Bind { port, addr, lease }) => {
@@ -267,6 +286,33 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     }
                 }
             }
+            Command::Trust(trust_cmd) => {
+                // Trust operations are local (OS cert store) — no daemon capability.
+                match &trust_cmd.command {
+                    None => {
+                        help::print_category_catalog(help::KoiCategory::TrustStore, None)?;
+                        Ok(())
+                    }
+                    Some(TrustSubcommand::Install { pem_path }) => {
+                        commands::trust::install(pem_path, cli.json)
+                    }
+                    Some(TrustSubcommand::List) => commands::trust::list(cli.json),
+                    Some(TrustSubcommand::Remove { name }) => {
+                        commands::trust::remove(name, cli.json)
+                    }
+                    Some(TrustSubcommand::Export { ca }) => commands::trust::export(*ca, cli.json),
+                    Some(TrustSubcommand::Diagnose { fix }) => {
+                        commands::trust::diagnose(*fix, cli.json).await
+                    }
+                }
+            }
+            Command::Mcp(mcp_cmd) => match &mcp_cmd.command {
+                None => {
+                    help::print_category_catalog(help::KoiCategory::Mcp, None)?;
+                    Ok(())
+                }
+                Some(McpSubcommand::Serve) => commands::mcp::serve(&cli).await,
+            },
             Command::Token(token_cmd) => commands::token::run(token_cmd, cli.json),
             // Install, Uninstall, Version, Launch, FactoryReset handled before runtime
             Command::Install

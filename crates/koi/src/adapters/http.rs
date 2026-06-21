@@ -36,6 +36,14 @@ pub mod paths {
     pub const UNIFIED_STATUS: &str = "/v1/status";
     pub const SHUTDOWN: &str = "/v1/admin/shutdown";
     pub const HOST: &str = "/v1/host";
+    /// Prometheus HTTP service discovery (their format — see Door 1 / integrations.md).
+    pub const PROMETHEUS_SD: &str = "/v1/sd/prometheus";
+    /// In-process MCP server (Streamable HTTP / JSON-RPC). Token-authenticated for
+    /// all methods (carved out of the GET exemption); not in `/openapi.json`.
+    pub const MCP: &str = "/v1/mcp";
+    /// Public MCP discovery descriptor (the "Door"): an unauthenticated GET
+    /// describing the MCP endpoint, transport, and auth. No secrets.
+    pub const MCP_SERVER_CARD: &str = "/.well-known/mcp/server-card.json";
 }
 
 // ── App state ───────────────────────────────────────────────────────
@@ -55,6 +63,12 @@ struct AppState {
     /// Lazy mDNS meta-browse controller (when mDNS is enabled), so `/v1/status` can
     /// report whether LAN-wide browsing is currently active.
     mdns_browse: Option<Arc<LazyMetaBrowse>>,
+    /// Cached-mDNS snapshot used only by the Prometheus `?include=discovered` slice.
+    /// `None` when mDNS is disabled — the managed slice never touches it.
+    mdns_snapshot: Option<Arc<dyn koi_common::integration::MdnsSnapshot>>,
+    /// Whether the in-process MCP HTTP transport (`/v1/mcp`) is mounted. Reported
+    /// on `/v1/status` as a field (MCP-HTTP is a transport, not a domain rung).
+    mcp_http_enabled: bool,
 }
 
 // ── Entrypoint ──────────────────────────────────────────────────────
@@ -72,6 +86,8 @@ pub async fn start(
     dashboard_state: DashboardState,
     browser_state: Option<BrowserState>,
     dat_token: String,
+    mdns_snapshot: Option<Arc<dyn koi_common::integration::MdnsSnapshot>>,
+    mcp_http_enabled: bool,
 ) -> anyhow::Result<()> {
     let app_state = AppState {
         mdns: cores.mdns.clone(),
@@ -85,6 +101,8 @@ pub async fn start(
         cancel: cancel.clone(),
         http_bind: bind_ip.to_string(),
         mdns_browse: browser_state.as_ref().map(|b| b.meta.clone()),
+        mdns_snapshot,
+        mcp_http_enabled,
     };
 
     // ── Dashboard (always mounted) ──
@@ -93,6 +111,8 @@ pub async fn start(
         .route(paths::UNIFIED_STATUS, get(unified_status_handler))
         .route(paths::SHUTDOWN, post(shutdown_handler))
         .route(paths::HOST, get(host_handler))
+        .route(paths::PROMETHEUS_SD, get(prometheus_sd_handler))
+        .route(paths::MCP_SERVER_CARD, get(mcp_server_card_handler))
         .route("/", get(koi_dashboard::dashboard::get_dashboard))
         .route(
             "/v1/dashboard/snapshot",
@@ -191,6 +211,36 @@ pub async fn start(
         );
     }
 
+    // ── MCP over Streamable HTTP (in-process, mounted on this adapter) ──
+    // A tower Service (rmcp), so use nest_service. Token-authenticated for all
+    // methods via the dat_auth_middleware carve-out below. Not in /openapi.json.
+    if mcp_http_enabled {
+        let source = Arc::new(crate::adapters::mcp_http::CoreSource::new(
+            cores.clone(),
+            started_at,
+            bind_ip.to_string(),
+            cancel.clone(),
+        ));
+        // A loopback bind keeps rmcp's default Host allowlist; a deliberately
+        // exposed bind disables it (the DAT token + TLS are the boundary). MCP
+        // requests are token-authenticated regardless.
+        let allowed_hosts = if bind_ip.is_loopback() {
+            vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "::1".to_string(),
+            ]
+        } else {
+            Vec::new()
+        };
+        app = app.nest_service(
+            paths::MCP,
+            koi_mcp::streamable_http_service(source, allowed_hosts),
+        );
+    } else {
+        app = app.nest(paths::MCP, disabled_fallback_router("mcp-http"));
+    }
+
     // OpenAPI spec - composed from domain-owned specs via nest()
     let openapi = build_openapi();
 
@@ -269,6 +319,10 @@ struct UnifiedStatusResponse {
     daemon: bool,
     /// The HTTP adapter's bind address (e.g. "127.0.0.1" or "0.0.0.0").
     http_bind: String,
+    /// The confidentiality `seal()` produces — `passthrough` | `groupkey` (ADR-020
+    /// §4). Absent when certmesh is disabled. `null`-able.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seal: Option<String>,
     capabilities: Vec<koi_common::capability::CapabilityStatus>,
 }
 
@@ -314,7 +368,13 @@ struct NetworkInterface {
 /// System-level OpenAPI doc with paths for top-level endpoints and schemas.
 #[derive(OpenApi)]
 #[openapi(
-    paths(health, unified_status_handler, shutdown_handler, host_handler),
+    paths(
+        health,
+        unified_status_handler,
+        shutdown_handler,
+        host_handler,
+        prometheus_sd_handler
+    ),
     components(schemas(
         UnifiedStatusResponse,
         ShutdownResponse,
@@ -448,8 +508,7 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
         TagBuilder::new()
             .name("runtime")
             .description(Some(
-                "Runtime adapter - container and service lifecycle \
-                 integration (Docker, Podman, systemd, Incus, Kubernetes).",
+                "Runtime adapter - container lifecycle integration (Docker, Podman).",
             ))
             .external_docs(Some(ExternalDocs::new(format!("{base}/guide-runtime.md"))))
             .build(),
@@ -468,18 +527,29 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
 /// GET and OPTIONS requests are exempt (read-only, CORS preflight).
 /// All other methods require a valid `x-koi-token` header.
 /// Uses constant-time comparison to prevent timing attacks.
-async fn dat_auth_middleware(
+pub(crate) async fn dat_auth_middleware(
     req: Request<Body>,
     next: Next,
     expected_token: Arc<String>,
 ) -> Response {
-    // GET, HEAD, and OPTIONS are exempt from auth.
-    // HEAD is auto-matched to GET handlers by axum, so it must follow the same policy.
+    // GET, HEAD, and OPTIONS are exempt from auth — EXCEPT under /v1/mcp. MCP
+    // Streamable HTTP uses GET for its server→client SSE stream (a live channel,
+    // not a read), so every method on /v1/mcp must carry the token. The public
+    // discovery descriptors (e.g. the server card) live outside /v1/mcp and stay
+    // GET-exempt. OPTIONS preflight is still let through so CORS works.
     let method = req.method().clone();
-    if method == axum::http::Method::GET
+    let path = req.uri().path();
+    let is_mcp = path.starts_with(paths::MCP);
+    // Certmesh enrollment is the one mutation that is NOT DAT-gated: a fresh node
+    // joining a remote CA has no way to know that host's local token, so it
+    // authorizes with a TOTP enrollment code in the request body instead. The
+    // join handler enforces that auth + the enrollment policy itself, so the DAT
+    // middleware must let the request reach it.
+    let is_enrollment = path == koi_certmesh::http::paths::JOIN;
+    let exempt_method = method == axum::http::Method::GET
         || method == axum::http::Method::HEAD
-        || method == axum::http::Method::OPTIONS
-    {
+        || method == axum::http::Method::OPTIONS;
+    if is_enrollment || method == axum::http::Method::OPTIONS || (exempt_method && !is_mcp) {
         return next.run(req).await;
     }
 
@@ -530,6 +600,8 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
         proxy: state.proxy.clone(),
         udp: state.udp.clone(),
         runtime: state.runtime.clone(),
+        // Capability assembly does not read the snapshot bridge.
+        mdns_snapshot: None,
     };
     let capabilities: Vec<koi_common::capability::CapabilityStatus> =
         koi_compose::status::assemble_capabilities(&cores)
@@ -539,6 +611,13 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
             .collect();
 
     let uptime_secs = state.started_at.elapsed().as_secs();
+    // The confidentiality `seal()` currently produces (ADR-020 §4) — `passthrough`
+    // until the group-key rung lands. Reported only when certmesh is present (sealing
+    // needs the identity infra); makes the un-encrypted state observable, not silent.
+    let seal = state
+        .certmesh
+        .as_ref()
+        .map(|_| koi_common::sealed::CURRENT_CONFIDENTIALITY.as_wire());
     Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "platform": std::env::consts::OS,
@@ -546,6 +625,8 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
         "daemon": true,
         "http_bind": state.http_bind,
         "mdns_browse_active": state.mdns_browse.as_ref().map(|m| m.is_active()),
+        "mcp_http": state.mcp_http_enabled,
+        "seal": seal,
         "capabilities": capabilities,
     }))
 }
@@ -616,6 +697,80 @@ async fn host_handler() -> Json<HostInfoResponse> {
     })
 }
 
+/// Query parameters for the Prometheus SD endpoint.
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+struct PrometheusSdParams {
+    /// `discovered` to also include LAN-discovered mDNS `_http._tcp` services.
+    /// Absent/anything else returns only Koi-managed targets.
+    include: Option<String>,
+}
+
+#[utoipa::path(get, path = "/v1/sd/prometheus", tag = "system",
+    summary = "Prometheus HTTP service discovery",
+    params(PrometheusSdParams),
+    responses((status = 200, description = "Array of Prometheus target groups",
+        content_type = "application/json")))]
+async fn prometheus_sd_handler(
+    Extension(state): Extension<AppState>,
+    axum::extract::Query(params): axum::extract::Query<PrometheusSdParams>,
+) -> Response {
+    use crate::adapters::prometheus_sd::{build_target_groups, Slice};
+
+    let slice = Slice::from_query(params.include.as_deref());
+
+    // Snapshot each source (no locks held across await beyond the core's own).
+    let health = match &state.health {
+        Some(rt) => rt.core().snapshot().await.services,
+        None => Vec::new(),
+    };
+    let instances = match &state.runtime {
+        Some(rt) => rt.list_instances().await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    // The certmesh roster is read from disk via the bridge — cheap and lock-free.
+    let members = match &state.certmesh {
+        Some(core) => {
+            use koi_common::integration::CertmeshSnapshot;
+            koi_compose::bridges::CertmeshBridge::new(core.clone()).active_members()
+        }
+        None => Vec::new(),
+    };
+    let discovered = match (slice, &state.mdns_snapshot) {
+        (Slice::WithDiscovered, Some(snap)) => snap.cached_records(),
+        _ => Vec::new(),
+    };
+
+    let groups = build_target_groups(
+        &health,
+        &instances,
+        &members,
+        &discovered,
+        slice,
+        chrono::Utc::now(),
+    );
+
+    // Prometheus http_sd requires a 200 with Content-Type: application/json and a
+    // JSON array body. Build it explicitly so the content type is exact even on the
+    // empty `[]` case.
+    match serde_json::to_string(&groups) {
+        Ok(body) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            body,
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "Prometheus SD serialization failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE, "application/json")],
+                String::from("[]"),
+            )
+                .into_response()
+        }
+    }
+}
+
 #[utoipa::path(post, path = "/v1/admin/shutdown", tag = "system",
     summary = "Request graceful daemon shutdown",
     responses((status = 200, body = ShutdownResponse)))]
@@ -623,6 +778,36 @@ async fn shutdown_handler(Extension(state): Extension<AppState>) -> Json<serde_j
     tracing::info!("Shutdown requested via admin endpoint");
     state.cancel.cancel();
     Json(serde_json::json!({ "status": "shutting_down" }))
+}
+
+// ── MCP discovery descriptor (the public "Door") ─────────────────────
+
+/// Build the MCP server-card document — a public discovery descriptor (no secrets)
+/// describing the in-process MCP endpoint, its transport, and how to authenticate.
+/// Path-relative so it stays correct behind a proxy / under any host:port.
+fn build_server_card(version: &str, mcp_enabled: bool) -> serde_json::Value {
+    serde_json::json!({
+        "name": "koi",
+        "version": version,
+        "mcp": {
+            "enabled": mcp_enabled,
+            "transport": "streamable-http",
+            "path": paths::MCP,
+            "auth": { "scheme": "bearer", "header": DAT_HEADER },
+        }
+    })
+}
+
+/// `GET /.well-known/mcp/server-card.json` — unauthenticated discovery (the Door).
+async fn mcp_server_card_handler(Extension(state): Extension<AppState>) -> Response {
+    let card = build_server_card(env!("CARGO_PKG_VERSION"), state.mcp_http_enabled);
+    let body = serde_json::to_string(&card).unwrap_or_else(|_| "{}".to_string());
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response()
 }
 
 /// Returns a router that responds 503 for any request to a disabled capability.
@@ -746,6 +931,152 @@ mod tests {
         assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
 
+    // ── MCP auth carve-out: /v1/mcp is authenticated for ALL methods ──
+    // MCP Streamable HTTP uses GET for its server→client SSE stream, so unlike
+    // the rest of the API a GET under /v1/mcp must still carry the token.
+
+    /// Router with a non-MCP GET and an MCP route, behind the production middleware.
+    fn mcp_auth_test_router(token: &str) -> Router {
+        let expected = Arc::new(token.to_string());
+        Router::new()
+            .route("/healthz", get(|| async { "ok" }))
+            .route(paths::MCP, get(|| async { "ok" }).post(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let expected = expected.clone();
+                dat_auth_middleware(req, next, expected)
+            }))
+    }
+
+    #[tokio::test]
+    async fn mcp_get_without_token_is_rejected() {
+        let app = mcp_auth_test_router("secret-token");
+        let req = Request::get(paths::MCP).body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn mcp_get_with_token_is_accepted() {
+        let app = mcp_auth_test_router("secret-token");
+        let req = Request::get(paths::MCP)
+            .header(DAT_HEADER, "secret-token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn mcp_post_without_token_is_rejected() {
+        let app = mcp_auth_test_router("secret-token");
+        let req = Request::post(paths::MCP).body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn non_mcp_get_stays_exempt() {
+        // The carve-out must not change the rest of the API: /healthz GET is still free.
+        let app = mcp_auth_test_router("secret-token");
+        let req = Request::get("/healthz").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn mcp_options_preflight_is_not_blocked() {
+        // OPTIONS is always let through so CORS preflight works (the handler has no
+        // OPTIONS method → 405, but crucially NOT 401).
+        let app = mcp_auth_test_router("secret-token");
+        let req = Request::builder()
+            .method("OPTIONS")
+            .uri(paths::MCP)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    // ── Certmesh enrollment is DAT-exempt (TOTP-authorized bootstrap) ──
+    // A fresh node joining a remote CA can't know that host's token, so
+    // /v1/certmesh/join must reach its handler (which enforces TOTP) without one.
+
+    fn certmesh_auth_test_router(token: &str) -> Router {
+        let expected = Arc::new(token.to_string());
+        Router::new()
+            .route(koi_certmesh::http::paths::JOIN, post(|| async { "ok" }))
+            .route("/v1/certmesh/revoke", post(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let expected = expected.clone();
+                dat_auth_middleware(req, next, expected)
+            }))
+    }
+
+    #[tokio::test]
+    async fn certmesh_join_is_exempt_from_dat_auth() {
+        let app = certmesh_auth_test_router("secret-token");
+        let req = Request::post(koi_certmesh::http::paths::JOIN)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::OK,
+            "tokenless enrollment must pass the auth layer (TOTP is the gate)"
+        );
+    }
+
+    #[tokio::test]
+    async fn other_certmesh_mutations_still_require_token() {
+        let app = certmesh_auth_test_router("secret-token");
+        let req = Request::post("/v1/certmesh/revoke")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "non-enrollment certmesh writes still require the token"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_http_disabled_fallback_is_503() {
+        let app = disabled_fallback_router("mcp-http");
+        let req = Request::post("/").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn server_card_describes_streamable_http() {
+        let card = build_server_card("9.9.9", true);
+        assert_eq!(card["mcp"]["transport"], "streamable-http");
+        assert_eq!(card["mcp"]["path"], "/v1/mcp");
+        assert_eq!(card["mcp"]["auth"]["header"], "x-koi-token");
+        assert_eq!(card["mcp"]["enabled"], true);
+        assert_eq!(card["version"], "9.9.9");
+    }
+
+    #[tokio::test]
+    async fn server_card_get_is_unauthenticated() {
+        // The Door is a public GET (NOT under /v1/mcp), so the auth carve-out must
+        // not catch it — discovery metadata carries no secrets.
+        let expected = Arc::new("secret-token".to_string());
+        let app = Router::new()
+            .route(paths::MCP_SERVER_CARD, get(mcp_server_card_handler))
+            .layer(Extension(empty_app_state()))
+            .layer(middleware::from_fn(move |req, next| {
+                let expected = expected.clone();
+                dat_auth_middleware(req, next, expected)
+            }));
+        let req = Request::get(paths::MCP_SERVER_CARD)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
     #[test]
     fn openapi_spec_contains_system_paths() {
         let spec = build_openapi();
@@ -756,6 +1087,12 @@ mod tests {
             "missing /v1/status: {paths:?}"
         );
         assert!(paths.contains(&"/v1/host"), "missing /v1/host: {paths:?}");
+        // MCP is JSON-RPC over Streamable HTTP, not a utoipa surface — like ACME it
+        // is deliberately excluded from /openapi.json.
+        assert!(
+            !paths.contains(&"/v1/mcp"),
+            "/v1/mcp must NOT be in OpenAPI: {paths:?}"
+        );
         assert!(
             paths.contains(&"/v1/admin/shutdown"),
             "missing /v1/admin/shutdown: {paths:?}"
@@ -790,6 +1127,99 @@ mod tests {
         assert!(
             paths.contains(&"/v1/udp/status"),
             "missing /v1/udp/status: {paths:?}"
+        );
+    }
+
+    // ── Prometheus HTTP SD endpoint ──
+    //
+    // An AppState with all-None cores models a fresh daemon: the endpoint must
+    // still return 200 + application/json + an empty array (Prometheus treats a
+    // missing array as an error, so `[]` is the contract for "nothing yet").
+
+    /// AppState with every capability absent — the empty-daemon fixture.
+    fn empty_app_state() -> AppState {
+        AppState {
+            mdns: None,
+            certmesh: None,
+            dns: None,
+            health: None,
+            proxy: None,
+            udp: None,
+            runtime: None,
+            started_at: std::time::Instant::now(),
+            cancel: CancellationToken::new(),
+            http_bind: "127.0.0.1".to_string(),
+            mdns_browse: None,
+            mdns_snapshot: None,
+            mcp_http_enabled: false,
+        }
+    }
+
+    fn prometheus_test_router(state: AppState) -> Router {
+        Router::new()
+            .route(paths::PROMETHEUS_SD, get(prometheus_sd_handler))
+            .layer(Extension(state))
+    }
+
+    #[tokio::test]
+    async fn prometheus_sd_is_json_content_type() {
+        let app = prometheus_test_router(empty_app_state());
+        let req = Request::get(paths::PROMETHEUS_SD)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            ct.starts_with("application/json"),
+            "content-type should be application/json, got: {ct}"
+        );
+    }
+
+    #[tokio::test]
+    async fn prometheus_sd_empty_daemon_returns_empty_array() {
+        let app = prometheus_test_router(empty_app_state());
+        let req = Request::get(paths::PROMETHEUS_SD)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        // Must be a valid JSON array, and empty on a fresh daemon.
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.is_array(), "body should be a JSON array: {json}");
+        assert_eq!(json.as_array().unwrap().len(), 0, "empty daemon → []");
+    }
+
+    #[tokio::test]
+    async fn prometheus_sd_get_is_unauthenticated() {
+        // The endpoint must be reachable without the DAT token (like /healthz).
+        // GET is exempt from the auth middleware; this guards that it stays a GET.
+        let app = prometheus_test_router(empty_app_state()).layer(middleware::from_fn(
+            move |req, next| {
+                let token = Arc::new("never-supplied".to_string());
+                dat_auth_middleware(req, next, token)
+            },
+        ));
+        let req = Request::get(paths::PROMETHEUS_SD)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn openapi_spec_contains_prometheus_sd_path() {
+        let spec = build_openapi();
+        let paths: Vec<&str> = spec.paths.paths.keys().map(|k| k.as_str()).collect();
+        assert!(
+            paths.contains(&"/v1/sd/prometheus"),
+            "missing /v1/sd/prometheus: {paths:?}"
         );
     }
 

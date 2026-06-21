@@ -48,7 +48,8 @@ struct CertmeshDetail {
     ca_initialized: bool,
     ca_locked: bool,
     auth_method: Option<String>,
-    profile: String,
+    enrollment_open: bool,
+    requires_approval: bool,
     member_count: usize,
     enrollment_state: String,
 }
@@ -113,6 +114,7 @@ async fn build_snapshot_value(cores: &DomainCores) -> serde_json::Value {
         proxy: cores.proxy.clone(),
         udp: cores.udp.clone(),
         runtime: cores.runtime.clone(),
+        mdns_snapshot: None,
     };
     let capabilities: Vec<CapabilityCard> =
         koi_compose::status::assemble_capabilities(&domain_cores)
@@ -159,7 +161,8 @@ async fn build_snapshot_value(cores: &DomainCores) -> serde_json::Value {
             ca_initialized: status.ca_initialized,
             ca_locked: status.ca_locked,
             auth_method: status.auth_method,
-            profile: format!("{:?}", status.profile),
+            enrollment_open: status.enrollment_open,
+            requires_approval: status.requires_approval,
             member_count: status.member_count,
             enrollment_state: format!("{:?}", status.enrollment_state),
         })

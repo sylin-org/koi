@@ -31,51 +31,69 @@ Koi is a single binary with a layered architecture. Three adapter layers sit on 
 
 | Crate                     | Package name      | Role                                                               | Lines  |
 | ------------------------- | ----------------- | ------------------------------------------------------------------ | ------ |
-| `crates/koi/`             | `koi-net`         | Binary - CLI entry, adapters, wiring                               | ~12,723|
-| `crates/koi-common/`      | `koi-common`      | Types-only kernel - types, errors, pipeline, ceremony engine       | ~2,460 |
-| `crates/koi-dashboard/`   | `koi-dashboard`   | Presentation - dashboard + mDNS browser (HTML, SSE, forwarder, lazy meta-browse) | ~1,600 |
-| `crates/koi-mdns/`        | `koi-mdns`        | mDNS domain - daemon, registry, protocol, HTTP routes              | ~2,705 |
-| `crates/koi-certmesh/`    | `koi-certmesh`    | Certificate mesh - CA, enrollment, roster, failover                | ~17,420|
-| `crates/koi-crypto/`      | `koi-crypto`      | Crypto primitives - keys, TOTP, FIDO2, auth adapters, unlock slots | ~3,284 |
-| `crates/koi-truststore/`  | `koi-truststore`  | Platform trust store installation                                  | ~256   |
-| `crates/koi-config/`      | `koi-config`      | Config, state, breadcrumb discovery                                | ~440   |
-| `crates/koi-dns/`         | `koi-dns`         | Local DNS resolver - zone, resolution, rate limiting               | ~1,499 |
-| `crates/koi-health/`      | `koi-health`      | Health monitoring - HTTP/TCP checks, transitions                   | ~924   |
-| `crates/koi-proxy/`       | `koi-proxy`       | TLS-terminating reverse proxy - cert reload, forwarding            | ~823   |
-| `crates/koi-client/`      | `koi-client`      | Blocking HTTP client for daemon communication (ureq)               | ~625   |
-| `crates/koi-embedded/`    | `koi-embedded`    | In-process facade - builder, handles, events                       | ~5,227 |
-| `crates/koi-udp/`         | `koi-udp`         | UDP datagram bridging - bind, relay, lease reaper, HTTP routes     | ~589   |
-| `crates/koi-runtime/`     | `koi-runtime`     | Container/service runtime adapter - Docker/Podman lifecycle events | ~1,641 |
-| `crates/command-surface/` | `command-surface` | Glyph-based command rendering, semantic metadata                   | ~901   |
+| `crates/koi/`             | `koi-net`         | Binary - CLI entry, adapters, wiring                               | ~15,978|
+| `crates/koi-common/`      | `koi-common`      | Types-only kernel - types, errors, pipeline, ceremony engine       | ~3,122 |
+| `crates/koi-compose/`     | `koi-compose`     | Composition root - `build_cores`, `Cores`/`DaemonCores`, `ordered_shutdown`, orchestrator, capability ladder, certmesh background loops, integration bridges | ~1,730 |
+| `crates/koi-dashboard/`   | `koi-dashboard`   | Presentation - dashboard + mDNS browser (HTML, SSE, forwarder, lazy meta-browse) | ~1,345 |
+| `crates/koi-mdns/`        | `koi-mdns`        | mDNS domain - daemon, registry, protocol, HTTP routes              | ~3,662 |
+| `crates/koi-certmesh/`    | `koi-certmesh`    | Certificate mesh - CA, enrollment, roster, failover                | ~12,162|
+| `crates/koi-crypto/`      | `koi-crypto`      | Crypto primitives - keys, TOTP, auth adapters, unlock slots        | ~3,162 |
+| `crates/koi-config/`      | `koi-config`      | Config, state, breadcrumb discovery                                | ~574   |
+| `crates/koi-dns/`         | `koi-dns`         | Local DNS resolver - zone, resolution, rate limiting               | ~1,931 |
+| `crates/koi-health/`      | `koi-health`      | Health monitoring - HTTP/TCP checks, transitions                   | ~1,041 |
+| `crates/koi-proxy/`       | `koi-proxy`       | TLS-terminating reverse proxy - cert reload, forwarding            | ~1,656 |
+| `crates/koi-client/`      | `koi-client`      | Blocking HTTP client for daemon communication (ureq)               | ~754   |
+| `crates/koi-embedded/`    | `koi-embedded`    | In-process facade - builder, handles, events                       | ~3,221 |
+| `crates/koi-udp/`         | `koi-udp`         | UDP datagram bridging - bind, relay, lease reaper, HTTP routes     | ~689   |
+| `crates/koi-runtime/`     | `koi-runtime`     | Container/service runtime adapter - Docker/Podman lifecycle events | ~1,964 |
+| `crates/koi-mcp/`         | `koi-mcp`         | MCP server (stdio + in-process Streamable HTTP) - exposes the LAN substrate to AI agents | ~1,452 |
 
 ---
 
 ## Dependency graph
 
 ```
-koi (bin)
-├── koi-common
-├── koi-mdns        → koi-common, mdns-sd, axum, tokio
-├── koi-certmesh    → koi-common, koi-crypto, koi-truststore, axum, tokio
-├── koi-crypto      → ring, rcgen, totp-rs, p256
-├── koi-truststore  → platform cert APIs
-├── koi-config      → koi-common
-├── koi-dns         → koi-common, koi-config, hickory-server, hickory-resolver, axum, tokio
-├── koi-health      → koi-common, koi-config, axum, tokio
-├── koi-proxy       → koi-common, koi-config, axum-server, rustls, reqwest, tokio
-├── koi-udp         → koi-common, axum, tokio
-├── koi-runtime     → koi-common, bollard, axum, utoipa, tokio, chrono
-├── koi-client      → koi-common, ureq (blocking)
-├── koi-dashboard   → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-runtime, axum, tokio
-├── koi-embedded    → koi-common, koi-dashboard, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, tokio
-└── command-surface → crossterm
+koi (bin)        → koi-compose, koi-common, koi-mcp, koi-client (+ axum, clap, tokio)
+koi-embedded     → koi-compose, koi-common, koi-client (+ axum, reqwest, tokio)
+└── koi-compose  → koi-common, koi-config, koi-crypto, koi-dashboard, koi-client,
+                   koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime
+    │             (the composition root: build_cores, Cores/DaemonCores, ordered_shutdown,
+    │              orchestrator, capability ladder, certmesh loops, integration bridges)
+    ├── koi-common
+    ├── koi-mdns        → koi-common, mdns-sd, axum, tokio
+    ├── koi-certmesh    → koi-common, koi-crypto, os-truststore (external, crates.io), axum, tokio
+    ├── koi-crypto      → ring, rcgen, totp-rs, p256
+    ├── koi-config      → koi-common
+    ├── koi-dns         → koi-common, koi-config, hickory-server, hickory-resolver, axum, tokio
+    ├── koi-health      → koi-common, koi-config, axum, tokio
+    ├── koi-proxy       → koi-common, koi-config, axum-server, rustls, reqwest, tokio
+    ├── koi-udp         → koi-common, axum, tokio
+    ├── koi-runtime     → koi-common, bollard, axum, utoipa, tokio, chrono
+    ├── koi-client      → koi-common, ureq (blocking)
+    └── koi-dashboard   → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-runtime, axum, tokio
+
+koi-mcp          → koi-common, koi-client, koi-config, rmcp (+ transport-streamable-http-server), thiserror, async-trait, tokio
 ```
 
+Terminal-profile-aware help rendering (the former standalone `command-surface` crate)
+was folded into the binary's `crates/koi/src/help/` module in P09; it is no longer a
+workspace crate.
+
+`koi-mcp` still depends on **no domain crate** — the in-process Streamable HTTP transport
+serves MCP resources against the live cores via a `CoreSource` bridge that lives in the
+binary crate, not in `koi-mcp` itself.
+
 **Domain** crates depend on `koi-common` but **never on each other**. Cross-domain wiring
-happens in the binary crate and in `koi-dashboard`. `koi-dashboard` is a **composition/
-presentation** crate (not a domain): it depends on the event-bearing domain crates so the
-event forwarder + mDNS browse adapter exist once, shared by `koi` and `koi-embedded`.
-Because nothing else depends on it, the kernel and domain closures stay clean.
+happens in `koi-compose` — the **composition root** that constructs the cores
+(`build_cores` → `Cores`, re-exported by the binary as `DaemonCores`), installs the
+integration bridges, runs the orchestrator + certmesh background loops, assembles the
+capability ladder, and tears everything down via `ordered_shutdown`. Building the
+composition once is what keeps the `koi` daemon, the Windows service, and `koi-embedded` at
+parity by construction. `koi-dashboard` is a **presentation** crate (not a domain): it
+depends on the event-bearing domain crates so the event forwarder + mDNS browse adapter
+exist once, shared by the composition layer's consumers. Because nothing depends on
+`koi-compose` or `koi-dashboard` except the top-level consumers (`koi`, `koi-embedded`),
+the kernel and domain closures stay clean.
 `koi-common` is **types-only** — the dashboard/browser presentation deps (`tokio`,
 `tokio-stream`, `tokio-util`, `async-stream`, `hostname`) moved to `koi-dashboard` in P06.
 
@@ -109,8 +127,7 @@ Because nothing else depends on it, the kernel and domain closures stay clean.
 ```
 crates/koi/src/
 ├── main.rs          # CLI entry point and top-level execution routing
-├── orchestrator.rs  # Daemon orchestrator - coordinates background tasks, domain startup, and graceful shutdown
-├── integrations.rs  # Host integration hooks and capability bridges
+├── integrations.rs  # Re-export shim for koi-compose's integration bridges (moved to koi-compose)
 ├── cli.rs           # clap definitions (Cli, Command, Config)
 ├── client.rs        # client utility wrappers
 ├── format.rs        # All human-readable CLI output

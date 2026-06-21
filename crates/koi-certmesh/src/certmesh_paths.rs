@@ -15,8 +15,14 @@ const CA_CERT_FILENAME: &str = "ca-cert.pem";
 const SLOT_TABLE_FILENAME: &str = "unlock-slots.json";
 const AUTH_FILENAME: &str = "auth.json";
 const ROSTER_FILENAME: &str = "roster.json";
+const MEMBER_STATE_FILENAME: &str = "member.json";
+const INVITES_FILENAME: &str = "invites.json";
+const MACHINE_BIND_FILENAME: &str = "machine.bind";
+const TOTP_THROTTLE_FILENAME: &str = "totp-throttle.json";
 const AUDIT_FILENAME: &str = "certmesh-audit.log";
 const AUTO_UNLOCK_KEY_FILENAME: &str = "auto-unlock-key";
+const ACME_SUBDIR: &str = "acme";
+const ACME_ACCOUNTS_FILENAME: &str = "accounts.json";
 
 /// Resolved filesystem paths for all certmesh operations.
 ///
@@ -69,9 +75,44 @@ impl CertmeshPaths {
         self.certmesh_dir().join(ROSTER_FILENAME)
     }
 
+    /// Member renewal-state file (`data_dir/certmesh/member.json`).
+    ///
+    /// Holds a joined member's CA coordinates + pinned fingerprint so the
+    /// background loop can pull rotate-key renewals (ADR-017 F6). Only present on
+    /// nodes that joined a mesh; the CA itself never writes it.
+    pub fn member_state_path(&self) -> PathBuf {
+        self.certmesh_dir().join(MEMBER_STATE_FILENAME)
+    }
+
+    /// Enrollment invite store (`data_dir/certmesh/invites.json`).
+    ///
+    /// Holds salted hashes of outstanding per-host invite tokens (ADR-015 F2);
+    /// the plaintext tokens are never persisted.
+    pub fn invites_path(&self) -> PathBuf {
+        self.certmesh_dir().join(INVITES_FILENAME)
+    }
+
     /// Unlock slot table file.
     pub fn slot_table_path(&self) -> PathBuf {
         self.ca_dir().join(SLOT_TABLE_FILENAME)
+    }
+
+    /// Machine-binding fingerprint file (`data_dir/certmesh/ca/machine.bind`).
+    ///
+    /// Records the machine fingerprint at `certmesh create` (ADR-017 F11). At boot,
+    /// auto-unlock refuses if the current machine fingerprint no longer matches —
+    /// a VM clone / disk restore onto new hardware fails safe to a manual unlock.
+    pub fn machine_bind_path(&self) -> PathBuf {
+        self.ca_dir().join(MACHINE_BIND_FILENAME)
+    }
+
+    /// Persisted TOTP enrollment rate-limiter state
+    /// (`data_dir/certmesh/ca/totp-throttle.json`).
+    ///
+    /// The lockout survives a daemon restart (ADR-017 F7) so a bounce can't reset
+    /// it. Invite-token enrollment is deliberately not throttled.
+    pub fn rate_limiter_path(&self) -> PathBuf {
+        self.ca_dir().join(TOTP_THROTTLE_FILENAME)
     }
 
     /// Certificate files directory (`data_dir/certs/`).
@@ -92,6 +133,20 @@ impl CertmeshPaths {
     /// Auto-unlock key file.
     pub fn auto_unlock_key_path(&self) -> PathBuf {
         self.certmesh_dir().join(AUTO_UNLOCK_KEY_FILENAME)
+    }
+
+    /// ACME state directory (`data_dir/certmesh/acme/`).
+    ///
+    /// Holds the persisted ACME account registrations. A real ACME client caches
+    /// its account URL + key and renews after a daemon restart, so accounts MUST
+    /// survive restarts (an `accountDoesNotExist` on restart would break renewals).
+    pub fn acme_dir(&self) -> PathBuf {
+        self.certmesh_dir().join(ACME_SUBDIR)
+    }
+
+    /// ACME accounts file (`data_dir/certmesh/acme/accounts.json`).
+    pub fn acme_accounts_path(&self) -> PathBuf {
+        self.acme_dir().join(ACME_ACCOUNTS_FILENAME)
     }
 
     /// Check if CA has been initialized (encrypted key file exists on disk).
@@ -129,6 +184,10 @@ mod tests {
         assert_eq!(
             paths.roster_path(),
             PathBuf::from("/test/root/certmesh/roster.json")
+        );
+        assert_eq!(
+            paths.invites_path(),
+            PathBuf::from("/test/root/certmesh/invites.json")
         );
         assert_eq!(
             paths.slot_table_path(),

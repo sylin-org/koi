@@ -9,11 +9,15 @@ Global flags work with any subcommand:
 | `--json`          | -                 | off              | JSON output (NDJSON for streaming) |
 | `--timeout SECS`  | -                 | varies           | Auto-exit (0 = run forever)        |
 | `--endpoint URL`  | -                 | auto-detect      | Connect to specific daemon         |
+| `--token TOKEN`   | `KOI_TOKEN`       | -                | Auth token for an explicit `--endpoint` |
 | `--standalone`    | -                 | off              | Skip daemon detection              |
+| `--yes`           | -                 | off              | Skip confirmation prompts for destructive commands |
 | `-v`, `-vv`       | -                 | off              | Increase verbosity (debug, trace)  |
 | `--log-file PATH` | `KOI_LOG_FILE`    | -                | Write logs to file                 |
 | `--port PORT`     | `KOI_PORT`        | `5641`           | HTTP API port                      |
 | `--http-bind`     | `KOI_HTTP_BIND`   | `loopback`       | HTTP bind: loopback / bridge / `<ip>` / 0.0.0.0 |
+| `--announce-http` | `KOI_ANNOUNCE_HTTP` | false          | Announce the HTTP server via mDNS (`_http._tcp`) |
+| `--mtls-port`     | `KOI_MTLS_PORT`   | `5642`           | mTLS port for certmesh inter-node traffic |
 | `--pipe PATH`     | `KOI_PIPE`        | platform default | IPC socket/pipe path               |
 | `--log-level`     | `KOI_LOG`         | `info`           | Log level                          |
 | `--no-http`       | `KOI_NO_HTTP`     | false            | Disable HTTP adapter               |
@@ -25,6 +29,7 @@ Global flags work with any subcommand:
 | `--no-proxy`      | `KOI_NO_PROXY`    | false            | Disable proxy                      |
 | `--no-udp`        | `KOI_NO_UDP`      | false            | Disable UDP bridging               |
 | `--no-runtime`    | `KOI_NO_RUNTIME`  | false            | Disable runtime adapter            |
+| `--no-mcp-http`   | `KOI_NO_MCP_HTTP` | false            | Disable the in-process MCP HTTP transport (`/v1/mcp`) |
 | `--runtime KIND`  | `KOI_RUNTIME`     | `auto`           | Runtime backend (docker/podman/auto) |
 | `--dns-port`      | `KOI_DNS_PORT`    | `53`             | DNS server port                    |
 | `--dns-zone`      | `KOI_DNS_ZONE`    | `lan`            | Local DNS zone                     |
@@ -64,18 +69,21 @@ koi certmesh status                               # show mesh status
 koi certmesh join [ENDPOINT]                      # join existing mesh
 koi certmesh unlock                               # decrypt CA key
 koi certmesh log                                  # show audit log
-koi certmesh compliance                           # compliance summary
 koi certmesh set-hook --reload "COMMAND"          # set renewal hook
 koi certmesh promote [ENDPOINT]                   # promote standby CA
-koi certmesh open-enrollment [--until DURATION]   # open enrollment window
+koi certmesh open-enrollment                      # open enrollment window
 koi certmesh close-enrollment                     # close enrollment
-koi certmesh set-policy [--domain ...] [--subnet ...] [--clear]
 koi certmesh rotate-auth                          # rotate auth credential
 koi certmesh backup PATH                          # encrypted backup
 koi certmesh restore PATH                         # restore from backup
 koi certmesh revoke HOSTNAME [--reason REASON]    # revoke a member
 koi certmesh destroy                              # destroy all state (requires typing DESTROY)
+koi certmesh acme enable                          # open the ACME (RFC 8555) server + show client recipe
+koi certmesh acme status                          # ACME server status (directory URL, counts)
 ```
+
+The ACME server (dns-01 only) listens on its own server-auth TLS port `5643`
+(`--acme-port` / `KOI_ACME_PORT`). Disable it with `--no-acme` / `KOI_NO_ACME`.
 
 ---
 
@@ -134,6 +142,47 @@ koi --daemon --runtime docker                     # explicit Docker
 koi --daemon --runtime podman                     # explicit Podman
 koi --daemon --no-runtime                         # disable
 ```
+
+---
+
+## MCP (AI agents)
+
+```
+koi mcp serve                                     # serve MCP over stdio for an agent host
+```
+
+Launched by an MCP host (Claude Code/Desktop, or any stdio MCP client), not run
+interactively. Talks to a running daemon via the breadcrumb, or `KOI_ENDPOINT` /
+`KOI_TOKEN`. Exposes read tools (`lan_discover`, `lan_resolve`, `dns_lookup`,
+`lan_inventory`, `health_snapshot`, `runtime_instances`, `mcp_servers_on_lan`) and
+write tools (`lan_announce`, `lan_unregister`, `dns_add`, `dns_remove`). CA-admin
+operations are not exposed. See the [MCP guide](../guides/mcp.md).
+
+The daemon **also** serves MCP over Streamable HTTP at `/v1/mcp` on port `5641`
+(running against the live cores), alongside the stdio transport. Enabled by default;
+disable with `--no-mcp-http` / `KOI_NO_MCP_HTTP`. It exposes MCP resources
+(`koi://lan/inventory`, `koi://health`, `koi://dns/zone`, `koi://mdns/services`) with
+live subscription deltas, and advertises itself for LAN discovery (a single
+`_mcp._tcp` mDNS record, an in-zone `_mcp.<host>.<zone>` DNS TXT, and a public
+`GET /.well-known/mcp/server-card.json` card). Every method on `/v1/mcp` — including
+the GET SSE stream — requires the `x-koi-token` header.
+
+---
+
+## Trust store
+
+```
+koi trust install ./root.pem                      # install a CA root into the OS store
+koi trust list                                    # list Koi-installed roots
+koi trust remove NAME                             # remove a Koi-installed root
+koi trust export --ca                             # print the certmesh root CA (PEM)
+```
+
+Local-only (touches the OS certificate store directly; no daemon). `install`
+validates that the PEM is a real CA certificate and rejects a server/leaf cert.
+Koi tracks only the roots it installed (`state/trust.json`) and never enumerates
+or mutates the rest of the OS store. `install`/`remove` require elevated
+privileges. See the [trust guide](../guides/trust.md).
 
 ---
 

@@ -6,7 +6,7 @@ use clap::CommandFactory;
 use tokio_util::sync::CancellationToken;
 
 use crate::cli::{Cli, Config};
-use crate::{platform, surface};
+use crate::help;
 
 // ── Infrastructure helpers ──────────────────────────────────────────
 
@@ -18,7 +18,7 @@ pub(crate) fn is_piped_stdin() -> bool {
 
 /// Print the top-level help (command list) without exiting with an error.
 pub(crate) fn print_top_level_help(api_endpoint: &str) {
-    if let Err(err) = surface::print_catalog(api_endpoint) {
+    if let Err(err) = help::print_catalog(api_endpoint) {
         tracing::debug!(error = %err, "Failed to render catalog, falling back to clap help");
         // Clap prints to stdout by default; ignore errors because help display should be best-effort
         let mut cmd = Cli::command();
@@ -146,7 +146,7 @@ pub(crate) fn startup_diagnostics(config: &Config, http_bind_ip: Option<std::net
     }
 
     #[cfg(windows)]
-    platform::windows::check_firewall(config);
+    crate::platform::windows::check_firewall(config);
 }
 
 // ── HTTP bind resolution ────────────────────────────────────────────
@@ -187,6 +187,125 @@ pub(crate) fn breadcrumb_endpoint(http_bind_ip: Option<std::net::IpAddr>, port: 
     match http_bind_ip {
         Some(ip) if !ip.is_unspecified() => format!("http://{ip}:{port}"),
         _ => format!("http://127.0.0.1:{port}"),
+    }
+}
+
+/// Advertise the in-process MCP HTTP endpoint on the LAN, gated on the transport.
+///
+/// Publishes EXACTLY ONE `_mcp._tcp` mDNS record per host (the daemon — never one
+/// per service, which would flood the link) advertising the endpoint, plus an
+/// in-zone `_mcp.<host>.<zone>` unicast TXT when DNS serves the zone. Returns the
+/// mDNS registration id (the record is withdrawn by the mDNS goodbye on shutdown).
+/// No-op when the transport is disabled or mDNS is absent. Shared by the foreground
+/// daemon and the Windows service so the two never diverge.
+pub(crate) fn announce_mcp_endpoint(
+    cores: &crate::DaemonCores,
+    http_port: u16,
+    dns_zone: &str,
+    enabled: bool,
+) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    let hostname = hostname::get()
+        .ok()
+        .and_then(|os| os.into_string().ok())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // Unicast in-zone descriptor (only meaningful when DNS serves the zone).
+    if let Some(ref dns) = cores.dns {
+        let name = format!("_mcp.{hostname}.{dns_zone}");
+        dns.core()
+            .add_txt(&name, "transport=streamable-http;path=/v1/mcp");
+        tracing::debug!(name = %name, "published in-zone MCP TXT descriptor");
+    }
+
+    // One `_mcp._tcp` record per host. TXT vocabulary matches what koi-mcp's own
+    // `mcp_servers_on_lan` tool reads back (transport=/path=/name=).
+    let mdns = cores.mdns.as_ref()?;
+    let mut txt = std::collections::HashMap::new();
+    txt.insert("transport".to_string(), "streamable-http".to_string());
+    txt.insert("path".to_string(), "/v1/mcp".to_string());
+    txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
+    txt.insert("name".to_string(), format!("Koi MCP ({hostname})"));
+    let payload = koi_mdns::protocol::RegisterPayload {
+        name: format!("Koi MCP ({hostname})"),
+        service_type: "_mcp._tcp".to_string(),
+        port: http_port,
+        ip: None,
+        lease_secs: None,
+        txt,
+    };
+    match mdns.register(payload) {
+        Ok(result) => {
+            tracing::info!(id = %result.id, port = http_port, "MCP endpoint announced via mDNS (_mcp._tcp)");
+            Some(result.id)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to announce MCP endpoint via mDNS");
+            None
+        }
+    }
+}
+
+/// Advertise the certmesh CA on the LAN with its fingerprint in TXT (ADR-017 F12).
+///
+/// Publishes EXACTLY ONE `_certmesh._tcp` mDNS record (on the HTTP port, where the
+/// CA serves `/status` and `/trust-bundle`) with `fp=<ca_fingerprint>` in TXT. A
+/// joiner discovers this and cross-checks the fingerprint against the one carried
+/// in its invite (F3) — a **convenience hint** to disambiguate / fail fast, never
+/// a trust source (the authoritative check is the joiner's pinned-fingerprint
+/// preflight). Returns `None` when no CA is initialized yet.
+///
+/// Posture-reactive: the trust-plane supervisor calls this when the CA appears
+/// (Open→Authenticated) and withdraws the record (via `MdnsCore::unregister`) when
+/// the CA is destroyed — so a node that boots Open and later runs `certmesh create`
+/// advertises without a restart (ADR-020 P4-adjacent; this announce was startup-gated
+/// before). The record is also withdrawn by the mDNS goodbye on shutdown.
+pub(crate) async fn register_certmesh_record(
+    certmesh: &std::sync::Arc<koi_certmesh::CertmeshCore>,
+    mdns: &std::sync::Arc<koi_mdns::MdnsCore>,
+    http_port: u16,
+) -> Option<String> {
+    // Only advertise once a CA exists — the fingerprint is the whole point of the
+    // record. An uninitialized node has nothing to advertise.
+    let fingerprint = certmesh.ca_fingerprint().await?;
+
+    let hostname = hostname::get()
+        .ok()
+        .and_then(|os| os.into_string().ok())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let mut txt = std::collections::HashMap::new();
+    txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
+    txt.insert("name".to_string(), format!("Koi CA ({hostname})"));
+    // Stamp the node's trust state (posture/fp/expires) so discoverers read the
+    // mesh's trust map directly (ADR-020 §8 fleet legibility). `fp=` stays the
+    // joiner's disambiguation hint (ADR-017 F12); `posture=`/`expires=` are added
+    // alongside it. All advisory — the joiner's pinned-fingerprint preflight and
+    // `verify` remain the authority (ADR-016 §2 "ask Koi, don't trust the wire").
+    let expires_at = certmesh
+        .local_identity()
+        .await
+        .map(|id| id.renewal.expires_at);
+    koi_common::peer::stamp(&mut txt, certmesh.posture(), Some(&fingerprint), expires_at);
+    let payload = koi_mdns::protocol::RegisterPayload {
+        name: format!("Koi CA ({hostname})"),
+        service_type: koi_certmesh::CERTMESH_SERVICE_TYPE.to_string(),
+        port: http_port,
+        ip: None,
+        lease_secs: None,
+        txt,
+    };
+    match mdns.register(payload) {
+        Ok(result) => {
+            tracing::info!(id = %result.id, port = http_port, fp = %fingerprint, "Certmesh CA announced via mDNS (_certmesh._tcp)");
+            Some(result.id)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to announce certmesh CA via mDNS");
+            None
+        }
     }
 }
 
@@ -240,6 +359,50 @@ fn resolve_bridge_ip() -> anyhow::Result<std::net::IpAddr> {
         "no docker/podman bridge interface found (looked for docker0, podman0, br-*, …). \
          Use --http-bind <ip> with the host IP that containers should reach."
     )
+}
+
+// ── Logging setup ───────────────────────────────────────────────────
+
+/// Initialize tracing with stderr + optional file output.
+/// Returns guards that must be held for the lifetime of the program
+/// to ensure the non-blocking writers flush on shutdown.
+pub(crate) fn init_logging(
+    env_filter: tracing_subscriber::EnvFilter,
+    log_file: Option<&std::path::Path>,
+) -> anyhow::Result<Vec<tracing_appender::non_blocking::WorkerGuard>> {
+    use tracing_subscriber::prelude::*;
+
+    // Always use non-blocking stderr to avoid deadlocks when stderr is a
+    // redirected pipe that nobody reads (e.g. Windows service, test harness).
+    let (nb_stderr, stderr_guard) = tracing_appender::non_blocking(std::io::stderr());
+    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(nb_stderr);
+
+    if let Some(path) = log_file {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        let (nb_file, file_guard) = tracing_appender::non_blocking(file);
+        let file_layer = tracing_subscriber::fmt::layer().with_writer(nb_file);
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(stderr_layer)
+            .with(file_layer)
+            .init();
+
+        Ok(vec![stderr_guard, file_guard])
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(stderr_layer)
+            .init();
+
+        Ok(vec![stderr_guard])
+    }
 }
 
 #[cfg(test)]
@@ -300,49 +463,5 @@ mod http_bind_tests {
             breadcrumb_endpoint(Some(ip), 5641),
             "http://172.17.0.1:5641"
         );
-    }
-}
-
-// ── Logging setup ───────────────────────────────────────────────────
-
-/// Initialize tracing with stderr + optional file output.
-/// Returns guards that must be held for the lifetime of the program
-/// to ensure the non-blocking writers flush on shutdown.
-pub(crate) fn init_logging(
-    env_filter: tracing_subscriber::EnvFilter,
-    log_file: Option<&std::path::Path>,
-) -> anyhow::Result<Vec<tracing_appender::non_blocking::WorkerGuard>> {
-    use tracing_subscriber::prelude::*;
-
-    // Always use non-blocking stderr to avoid deadlocks when stderr is a
-    // redirected pipe that nobody reads (e.g. Windows service, test harness).
-    let (nb_stderr, stderr_guard) = tracing_appender::non_blocking(std::io::stderr());
-    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(nb_stderr);
-
-    if let Some(path) = log_file {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-        let (nb_file, file_guard) = tracing_appender::non_blocking(file);
-        let file_layer = tracing_subscriber::fmt::layer().with_writer(nb_file);
-
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(stderr_layer)
-            .with(file_layer)
-            .init();
-
-        Ok(vec![stderr_guard, file_guard])
-    } else {
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(stderr_layer)
-            .init();
-
-        Ok(vec![stderr_guard])
     }
 }

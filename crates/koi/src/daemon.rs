@@ -101,45 +101,44 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         let ds = dashboard_state.clone();
         let bs = browser_state.clone();
         let dat = dat_token.clone();
+        let mdns_snap = cores.mdns_snapshot.clone();
+        let mcp_http = !config.no_mcp_http;
         tasks.push(tokio::spawn(async move {
-            if let Err(e) =
-                adapters::http::start(c, bind_ip, port, cancel_token, started_at, ds, bs, dat).await
+            if let Err(e) = adapters::http::start(
+                c,
+                bind_ip,
+                port,
+                cancel_token,
+                started_at,
+                ds,
+                bs,
+                dat,
+                mdns_snap,
+                mcp_http,
+            )
+            .await
             {
                 tracing::error!(error = %e, "HTTP adapter failed");
             }
         }));
     }
 
-    // ── mTLS adapter (only if certmesh CA is initialized and unlocked) ──
-    if let Some(ref certmesh) = cores.certmesh {
-        match certmesh.self_enroll().await {
-            Ok(enrollment) => {
-                let cm = certmesh.clone();
-                let port = config.mtls_port;
-                let token = cancel.clone();
-                tasks.push(tokio::spawn(async move {
-                    if let Err(e) = adapters::mtls::start(
-                        port,
-                        cm,
-                        &enrollment.cert_pem,
-                        &enrollment.key_pem,
-                        &enrollment.ca_cert_pem,
-                        token,
-                    )
-                    .await
-                    {
-                        tracing::error!(error = %e, "mTLS adapter failed");
-                    }
-                }));
-            }
-            Err(e) => {
-                tracing::info!(
-                    reason = %e,
-                    "mTLS adapter: skipped (CA not available for self-enrollment)"
-                );
-            }
-        }
-    }
+    // ── Trust-plane presence (mTLS inter-node + ACME + _certmesh._tcp announce) ──
+    // One posture-reactive supervisor owns all three and brings them up/down as the
+    // certmesh CA appears or is destroyed — no restart (ADR-020 P4c / ADR-016 §2).
+    // Shared verbatim with the Windows service so the two boot paths cannot drift.
+    adapters::trust_plane::spawn(
+        &cores,
+        adapters::trust_plane::TrustPlaneConfig {
+            mtls_port: config.mtls_port,
+            acme_port: config.acme_port,
+            no_acme: config.no_acme,
+            dns_zone: config.dns_zone.clone(),
+            announce_http_port: (!config.no_http).then_some(config.http_port),
+        },
+        cancel.clone(),
+        &mut tasks,
+    );
 
     // ── IPC adapter (only if mDNS is enabled - IPC speaks mDNS NDJSON protocol) ──
     if !config.no_ipc {
@@ -172,6 +171,19 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             txt.insert("api".to_string(), "v1".to_string());
             txt.insert("dashboard".to_string(), "true".to_string());
 
+            // Stamp this node's trust posture so peers discovering it read the
+            // mesh's trust map directly (ADR-020 §8). Advisory hints; verify/mTLS
+            // adjudicates actual trust.
+            if let Some(ref certmesh) = cores.certmesh {
+                let id = certmesh.local_identity().await;
+                koi_common::peer::stamp(
+                    &mut txt,
+                    certmesh.posture(),
+                    id.as_ref().map(|i| i.ca_fingerprint.as_str()),
+                    id.as_ref().map(|i| i.renewal.expires_at),
+                );
+            }
+
             let payload = koi_mdns::protocol::RegisterPayload {
                 name: format!("Koi ({hostname})"),
                 service_type: "_http._tcp".to_string(),
@@ -197,6 +209,19 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             tracing::debug!("--announce-http set but mDNS is disabled — skipping");
         }
     }
+
+    // ── MCP endpoint discovery descriptors (one `_mcp._tcp` per host + in-zone TXT) ──
+    // Gated on the transport being mounted; withdrawn by the mDNS goodbye on shutdown.
+    let _mcp_announce_id = crate::infra::announce_mcp_endpoint(
+        &cores,
+        config.http_port,
+        &config.dns_zone,
+        !config.no_mcp_http && !config.no_http,
+    );
+
+    // The `_certmesh._tcp` CA discovery record (ADR-017 F12) is published by the
+    // posture-reactive trust-plane supervisor above (not here), so it appears the
+    // moment a CA is created — even on a node that booted Open — without a restart.
 
     // ── Enrollment-approval pump ──
     // The certmesh role loops are spawned by build_cores (shared with the Windows service).
@@ -236,15 +261,16 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
 
 fn prompt_enrollment_approval(
     hostname: &str,
-    profile: koi_certmesh::profiles::TrustProfile,
+    requires_approval: bool,
 ) -> koi_certmesh::ApprovalDecision {
-    eprintln!("Enrollment approval requested for '{hostname}' (profile: {profile})");
+    eprintln!("Enrollment approval requested for '{hostname}'");
     let approve = read_yes_no("Approve enrollment? [y/N]: ");
     if !approve {
         return koi_certmesh::ApprovalDecision::Denied;
     }
 
-    let operator = if profile.requires_operator() {
+    // When approval is required, an accountable operator name must accompany it.
+    let operator = if requires_approval {
         let operator = read_line("Operator name: ");
         if operator.is_empty() {
             return koi_certmesh::ApprovalDecision::Denied;

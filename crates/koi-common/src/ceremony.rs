@@ -213,8 +213,6 @@ pub enum InputType {
     Code,
     /// Raw entropy input (keyboard mashing, mouse movement).
     Entropy,
-    /// Hardware key interaction (WebAuthn).
-    Fido2,
 }
 
 // ── Messages ────────────────────────────────────────────────────────
@@ -705,17 +703,6 @@ impl Prompt {
             key: key.into(),
             prompt: prompt.into(),
             input_type: InputType::Entropy,
-            options: Vec::new(),
-            required: true,
-        }
-    }
-
-    /// Create a `Fido2` prompt (WebAuthn hardware key interaction).
-    pub fn fido2(key: impl Into<String>, prompt: impl Into<String>) -> Self {
-        Self {
-            key: key.into(),
-            prompt: prompt.into(),
-            input_type: InputType::Fido2,
             options: Vec::new(),
             required: true,
         }

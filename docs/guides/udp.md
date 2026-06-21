@@ -1,6 +1,6 @@
 # UDP - Datagram Bridging
 
-Docker containers on bridge networking can't touch UDP. No multicast, no broadcast, no raw sockets. If your containerized application needs to participate in a Garden mesh, send Wake-on-LAN packets, or receive SSDP discovery traffic, it's out of luck - the bridge network simply doesn't forward those frames.
+Docker containers on bridge networking can't touch UDP. No multicast, no broadcast, no raw sockets. If your containerized application needs to participate in a peer-to-peer UDP mesh, send Wake-on-LAN packets, or receive SSDP discovery traffic, it's out of luck - the bridge network simply doesn't forward those frames.
 
 Koi's UDP capability bridges this gap. It binds real UDP sockets on the host and relays datagrams over HTTP and SSE - the same pattern Koi already uses for mDNS (multicast → HTTP), DNS (UDP/TCP → HTTP), and proxy (TLS listeners → HTTP). UDP bridging extends this philosophy to arbitrary datagram traffic.
 
@@ -73,7 +73,7 @@ curl -X POST -H "x-koi-token: $TOKEN" http://localhost:5641/v1/udp/send/01958f2a
 ```
 
 ```json
-{ "bytes_sent": 102 }
+{ "sent": 102 }
 ```
 
 The payload is base64-encoded. The datagram is sent from the bound socket, so the source address will be the binding's local address.
@@ -85,7 +85,7 @@ curl -X PUT -H "x-koi-token: $TOKEN" http://localhost:5641/v1/udp/heartbeat/0195
 ```
 
 ```json
-{ "status": "ok" }
+{ "renewed": "01958f2a-..." }
 ```
 
 Send heartbeats at roughly half the lease interval. If you set `lease_secs: 300`, heartbeat every ~150 seconds. Note: UDP heartbeat uses `PUT` rather than `POST`.
@@ -117,7 +117,7 @@ curl -X DELETE -H "x-koi-token: $TOKEN" http://localhost:5641/v1/udp/bind/01958f
 ```
 
 ```json
-{ "status": "unbound" }
+{ "unbound": "01958f2a-..." }
 ```
 
 The socket is closed immediately and the relay task stops.
@@ -272,7 +272,7 @@ UDP bridging is for **control-plane and discovery traffic** - small, infrequent 
 
 | Use case                             | Fits | Why                                |
 | ------------------------------------ | ---- | ---------------------------------- |
-| Garden mesh chirps/beacons (`:7184`) | Yes  | ~3 KB datagrams, 10–30s intervals  |
+| Peer-to-peer mesh chirps/beacons     | Yes  | ~3 KB datagrams, 10–30s intervals  |
 | SSDP/UPnP discovery                  | Yes  | Small, infrequent                  |
 | Wake-on-LAN                          | Yes  | Fire-and-forget sends              |
 | CoAP (IoT)                           | Yes  | Small datagrams                    |

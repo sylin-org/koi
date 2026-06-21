@@ -16,6 +16,21 @@ const UNIX_SOCKET_FILENAME: &str = "koi.sock";
 #[cfg(unix)]
 const UNIX_FALLBACK_RUNTIME_DIR: &str = "/var/run";
 
+/// Validate the `--runtime` / `KOI_RUNTIME` value at parse time.
+///
+/// Rejects unknown backends with a helpful error instead of letting the daemon
+/// silently fall back to auto-detection. The accepted set is the single source
+/// of truth in `koi_runtime::RuntimeBackendKind`.
+fn parse_runtime_backend(value: &str) -> Result<String, String> {
+    match koi_runtime::RuntimeBackendKind::from_str_loose(value) {
+        Some(_) => Ok(value.to_string()),
+        None => Err(format!(
+            "unknown runtime backend '{value}' (expected: {})",
+            koi_runtime::RuntimeBackendKind::ACCEPTED.join(", ")
+        )),
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "koi", version, about = "Local service discovery for everyone")]
 pub struct Cli {
@@ -89,8 +104,20 @@ pub struct Cli {
     #[arg(long, env = "KOI_NO_RUNTIME")]
     pub no_runtime: bool,
 
-    /// Runtime backend to use (auto, docker, podman, systemd, incus, kubernetes)
-    #[arg(long, env = "KOI_RUNTIME", default_value = "auto")]
+    /// Disable the ACME (RFC 8555) server capability
+    #[arg(long, env = "KOI_NO_ACME")]
+    pub no_acme: bool,
+
+    /// Disable the in-process MCP HTTP transport (/v1/mcp)
+    #[arg(long, env = "KOI_NO_MCP_HTTP")]
+    pub no_mcp_http: bool,
+
+    /// Port for the ACME (RFC 8555) server-auth TLS listener
+    #[arg(long, env = "KOI_ACME_PORT", default_value = "5643")]
+    pub acme_port: u16,
+
+    /// Runtime backend to use (auto, docker, podman)
+    #[arg(long, env = "KOI_RUNTIME", default_value = "auto", value_parser = parse_runtime_backend)]
     pub runtime: String,
 
     /// DNS port for the local resolver
@@ -98,7 +125,7 @@ pub struct Cli {
     pub dns_port: u16,
 
     /// DNS zone suffix for local records
-    #[arg(long, env = "KOI_DNS_ZONE", default_value = "lan")]
+    #[arg(long, env = "KOI_DNS_ZONE", default_value = "internal")]
     pub dns_zone: String,
 
     /// Allow DNS queries from non-private addresses
@@ -121,9 +148,17 @@ pub struct Cli {
     #[arg(long, env = "KOI_ENDPOINT", global = true)]
     pub endpoint: Option<String>,
 
+    /// Daemon access token for an explicit --endpoint (overrides KOI_TOKEN)
+    #[arg(long, env = "KOI_TOKEN", global = true)]
+    pub token: Option<String>,
+
     /// Force standalone mode (skip daemon detection)
     #[arg(long, global = true)]
     pub standalone: bool,
+
+    /// Skip confirmation prompts for destructive commands
+    #[arg(long, global = true)]
+    pub yes: bool,
 
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -153,6 +188,10 @@ pub enum Command {
     Proxy(ProxyCommand),
     /// UDP datagram bridging
     Udp(UdpCommand),
+    /// OS trust store — install/remove/list CA roots, export the certmesh root
+    Trust(TrustCommand),
+    /// Model Context Protocol server for AI agents
+    Mcp(McpCommand),
     /// Manage the daemon access token (show, write to a file for containers)
     Token(TokenCommand),
     /// Destroy all Koi data and start fresh
@@ -291,6 +330,54 @@ pub struct ProxyCommand {
 pub struct UdpCommand {
     #[command(subcommand)]
     pub command: Option<UdpSubcommand>,
+}
+
+#[derive(Args, Debug)]
+pub struct TrustCommand {
+    #[command(subcommand)]
+    pub command: Option<TrustSubcommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TrustSubcommand {
+    /// Install a CA certificate (PEM) into the OS trust store
+    Install {
+        /// Path to a PEM-encoded CA certificate
+        pem_path: PathBuf,
+    },
+    /// List the CA roots Koi installed
+    List,
+    /// Remove a Koi-installed CA root by name
+    Remove {
+        /// The name shown by `koi trust list`
+        name: String,
+    },
+    /// Export a CA certificate (PEM) to stdout
+    Export {
+        /// Export the certmesh root CA (for ACME bootstrap recipes)
+        #[arg(long)]
+        ca: bool,
+    },
+    /// Run the trust-doctor: posture, identity & renewal health, integrity,
+    /// revocation, and CA trust-install — each with an exact remedy. Exits
+    /// non-zero when anything is RED.
+    Diagnose {
+        /// Repair what can be auto-fixed (install the mesh CA into the OS trust store)
+        #[arg(long)]
+        fix: bool,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct McpCommand {
+    #[command(subcommand)]
+    pub command: Option<McpSubcommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum McpSubcommand {
+    /// Serve the MCP protocol over stdio (for AI agent hosts)
+    Serve,
 }
 
 #[derive(Subcommand, Debug)]
@@ -452,14 +539,29 @@ pub enum CertmeshSubcommand {
     /// Join an existing certificate mesh
     Join {
         /// CA endpoint (e.g. "http://ca-host:5641"). Omit to discover via mDNS.
-        endpoint: Option<String>,
+        ///
+        /// Field name is `ca_endpoint` (not `endpoint`) on purpose: a positional named
+        /// `endpoint` shares clap's arg id with the global `--endpoint`, so the CA address
+        /// would leak into `--endpoint` — which `join` then used to resolve its LOCAL
+        /// key-custody daemon, misrouting member-csr/member-cert to the remote CA
+        /// (ADR-018 Tier 3 found this).
+        ca_endpoint: Option<String>,
+        /// Single-use invite token (from `certmesh invite`). Skips the TOTP prompt.
+        #[arg(long)]
+        invite: Option<String>,
+    },
+    /// Mint a single-use invite token authorizing one host to join
+    Invite {
+        /// Hostname the invite authorizes (bound at mint time)
+        hostname: String,
+        /// Invite lifetime in minutes
+        #[arg(long, default_value_t = 60)]
+        ttl: i64,
     },
     /// Show certificate mesh status
     Status,
     /// Show the audit log
     Log,
-    /// Show compliance summary
-    Compliance,
     /// Unlock the CA (decrypt key from passphrase)
     Unlock,
     /// Set a post-renewal reload hook for this host
@@ -471,29 +573,15 @@ pub enum CertmeshSubcommand {
     /// Promote a member to standby CA (transfers encrypted CA key)
     Promote {
         /// CA endpoint (e.g. "http://ca-host:5641"). Omit to discover via mDNS.
-        endpoint: Option<String>,
+        /// Named `ca_endpoint` (not `endpoint`) to avoid the global `--endpoint`
+        /// clap arg-id collision — see `Join`.
+        ca_endpoint: Option<String>,
     },
-    // Phase 4 - Enrollment Policy
+    // Enrollment toggle
     /// Open the enrollment window
-    OpenEnrollment {
-        /// Auto-close deadline (RFC 3339 or duration like "2h", "1d")
-        #[arg(long)]
-        until: Option<String>,
-    },
+    OpenEnrollment,
     /// Close the enrollment window
     CloseEnrollment,
-    /// Set enrollment scope constraints (domain/subnet)
-    SetPolicy {
-        /// Restrict enrollment to this domain suffix (e.g. "lincoln-elementary.local")
-        #[arg(long)]
-        domain: Option<String>,
-        /// Restrict enrollment to this CIDR subnet (e.g. "192.168.1.0/24")
-        #[arg(long)]
-        subnet: Option<String>,
-        /// Clear all scope constraints
-        #[arg(long)]
-        clear: bool,
-    },
     /// Rotate the enrollment auth credential
     RotateAuth,
     /// Create an encrypted backup bundle
@@ -516,12 +604,30 @@ pub enum CertmeshSubcommand {
     },
     /// Destroy the certificate mesh (removes all CA data, certs, and audit log)
     Destroy,
+    /// ACME (RFC 8555) server — let standard ACME clients get certs from the CA
+    Acme(AcmeCommand),
+}
+
+/// `koi certmesh acme <subcommand>` — the RFC 8555 ACME facade.
+#[derive(clap::Args, Debug)]
+pub struct AcmeCommand {
+    #[command(subcommand)]
+    pub command: Option<AcmeSubcommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AcmeSubcommand {
+    /// Show the ACME directory URL + the client bootstrap recipe
+    Enable,
+    /// Show ACME server status (directory URL, account/issuance counts)
+    Status,
 }
 
 /// Resolved configuration used at runtime.
 pub struct Config {
     pub http_port: u16,
     pub mtls_port: u16,
+    pub acme_port: u16,
     pub pipe_path: PathBuf,
     pub no_http: bool,
     pub no_ipc: bool,
@@ -532,6 +638,8 @@ pub struct Config {
     pub no_proxy: bool,
     pub no_udp: bool,
     pub no_runtime: bool,
+    pub no_acme: bool,
+    pub no_mcp_http: bool,
     pub runtime: String,
     pub announce_http: bool,
     pub dns_port: u16,
@@ -555,6 +663,7 @@ impl Config {
             data_dir,
             http_port: cli.port,
             mtls_port: cli.mtls_port,
+            acme_port: cli.acme_port,
             pipe_path,
             http_bind: cli.http_bind.clone(),
             no_http: cli.no_http,
@@ -566,6 +675,8 @@ impl Config {
             no_proxy: cli.no_proxy,
             no_udp: cli.no_udp,
             no_runtime: cli.no_runtime,
+            no_acme: cli.no_acme,
+            no_mcp_http: cli.no_mcp_http,
             runtime: cli.runtime.clone(),
             announce_http: cli.announce_http,
             dns_port: cli.dns_port,
@@ -584,6 +695,8 @@ impl Config {
             "proxy" => self.no_proxy,
             "udp" => self.no_udp,
             "runtime" => self.no_runtime,
+            "acme" => self.no_acme,
+            "mcp-http" => self.no_mcp_http,
             _ => false,
         };
         if disabled {
@@ -618,6 +731,11 @@ impl Config {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(crate::adapters::mtls::DEFAULT_MTLS_PORT);
+
+        let acme_port = std::env::var("KOI_ACME_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(crate::adapters::acme::DEFAULT_ACME_PORT);
 
         let pipe_path = std::env::var("KOI_PIPE")
             .ok()
@@ -669,6 +787,16 @@ impl Config {
             .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        let no_acme = std::env::var("KOI_NO_ACME")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let no_mcp_http = std::env::var("KOI_NO_MCP_HTTP")
+            .ok()
+            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
         let runtime = std::env::var("KOI_RUNTIME").unwrap_or_else(|_| "auto".to_string());
 
         let announce_http = std::env::var("KOI_ANNOUNCE_HTTP")
@@ -681,7 +809,7 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(53);
 
-        let dns_zone = std::env::var("KOI_DNS_ZONE").unwrap_or_else(|_| "lan".to_string());
+        let dns_zone = std::env::var("KOI_DNS_ZONE").unwrap_or_else(|_| "internal".to_string());
 
         let dns_public = std::env::var("KOI_DNS_PUBLIC")
             .ok()
@@ -698,6 +826,7 @@ impl Config {
             data_dir,
             http_port,
             mtls_port,
+            acme_port,
             pipe_path,
             http_bind,
             no_http,
@@ -709,6 +838,8 @@ impl Config {
             no_proxy,
             no_udp,
             no_runtime,
+            no_acme,
+            no_mcp_http,
             runtime,
             announce_http,
             dns_port,
@@ -726,6 +857,7 @@ impl Default for Config {
             data_dir,
             http_port: DEFAULT_HTTP_PORT,
             mtls_port: crate::adapters::mtls::DEFAULT_MTLS_PORT,
+            acme_port: crate::adapters::acme::DEFAULT_ACME_PORT,
             pipe_path: default_pipe_path(),
             http_bind: "loopback".to_string(),
             no_http: false,
@@ -737,10 +869,12 @@ impl Default for Config {
             no_proxy: false,
             no_udp: false,
             no_runtime: false,
+            no_acme: false,
+            no_mcp_http: false,
             runtime: "auto".to_string(),
             announce_http: false,
             dns_port: 53,
-            dns_zone: "lan".to_string(),
+            dns_zone: "internal".to_string(),
             dns_public: false,
         }
     }
@@ -862,7 +996,7 @@ mod tests {
         assert!(!config.no_health);
         assert!(!config.no_proxy);
         assert_eq!(config.dns_port, 53);
-        assert_eq!(config.dns_zone, "lan");
+        assert_eq!(config.dns_zone, "internal");
         assert!(!config.dns_public);
     }
 
@@ -878,9 +1012,9 @@ mod tests {
         let cli = Cli::try_parse_from(["koi", "certmesh", "promote"]).unwrap();
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
-                command: Some(CertmeshSubcommand::Promote { endpoint }),
+                command: Some(CertmeshSubcommand::Promote { ca_endpoint }),
             })) => {
-                assert!(endpoint.is_none());
+                assert!(ca_endpoint.is_none());
             }
             other => panic!("Expected Certmesh Promote, got: {other:?}"),
         }
@@ -889,13 +1023,109 @@ mod tests {
     #[test]
     fn parse_certmesh_promote_with_endpoint() {
         let cli = Cli::try_parse_from(["koi", "certmesh", "promote", "http://ca:5641"]).unwrap();
+        // The positional CA endpoint must NOT leak into the global --endpoint (clap
+        // arg-id collision — see the join regression below).
+        assert!(
+            cli.endpoint.is_none(),
+            "promote positional must not populate the global --endpoint"
+        );
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
-                command: Some(CertmeshSubcommand::Promote { endpoint }),
+                command: Some(CertmeshSubcommand::Promote { ca_endpoint }),
             })) => {
-                assert_eq!(endpoint.as_deref(), Some("http://ca:5641"));
+                assert_eq!(ca_endpoint.as_deref(), Some("http://ca:5641"));
             }
             other => panic!("Expected Certmesh Promote, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_join_positional_is_not_global_endpoint() {
+        // Regression (ADR-018 Tier 3): the join CA positional shared clap's "endpoint"
+        // arg id with the global `--endpoint`, so it leaked into `--endpoint` — which
+        // `join` used to resolve its LOCAL key-custody daemon, misrouting member-csr /
+        // member-cert to the remote CA (→ 401). Renaming the positional to `ca_endpoint`
+        // breaks the collision; assert the global endpoint stays unset.
+        let cli = Cli::try_parse_from([
+            "koi",
+            "certmesh",
+            "join",
+            "http://ca-host:5641",
+            "--invite",
+            "secret.fp",
+        ])
+        .unwrap();
+        assert!(
+            cli.endpoint.is_none(),
+            "join positional must not populate the global --endpoint"
+        );
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command:
+                    Some(CertmeshSubcommand::Join {
+                        ca_endpoint,
+                        invite,
+                    }),
+            })) => {
+                assert_eq!(ca_endpoint.as_deref(), Some("http://ca-host:5641"));
+                assert_eq!(invite.as_deref(), Some("secret.fp"));
+            }
+            other => panic!("Expected Certmesh Join, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_invite_default_ttl() {
+        let cli = Cli::try_parse_from(["koi", "certmesh", "invite", "web-01"]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: Some(CertmeshSubcommand::Invite { hostname, ttl }),
+            })) => {
+                assert_eq!(hostname, "web-01");
+                assert_eq!(ttl, 60);
+            }
+            other => panic!("Expected Certmesh Invite, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_invite_custom_ttl() {
+        let cli =
+            Cli::try_parse_from(["koi", "certmesh", "invite", "web-01", "--ttl", "15"]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command: Some(CertmeshSubcommand::Invite { hostname, ttl }),
+            })) => {
+                assert_eq!(hostname, "web-01");
+                assert_eq!(ttl, 15);
+            }
+            other => panic!("Expected Certmesh Invite, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_join_with_invite() {
+        let cli = Cli::try_parse_from([
+            "koi",
+            "certmesh",
+            "join",
+            "http://ca:5641",
+            "--invite",
+            "deadbeef",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command:
+                    Some(CertmeshSubcommand::Join {
+                        ca_endpoint,
+                        invite,
+                    }),
+            })) => {
+                assert_eq!(ca_endpoint.as_deref(), Some("http://ca:5641"));
+                assert_eq!(invite.as_deref(), Some("deadbeef"));
+            }
+            other => panic!("Expected Certmesh Join, got: {other:?}"),
         }
     }
 
@@ -1322,31 +1552,15 @@ mod tests {
         );
     }
 
-    // ── Phase 4 - Enrollment policy CLI parsing ─────────────────────
+    // ── Enrollment toggle CLI parsing ───────────────────────────────
 
     #[test]
     fn parse_certmesh_open_enrollment() {
         let cli = Cli::try_parse_from(["koi", "certmesh", "open-enrollment"]).unwrap();
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
-                command: Some(CertmeshSubcommand::OpenEnrollment { until }),
-            })) => {
-                assert!(until.is_none());
-            }
-            other => panic!("Expected OpenEnrollment, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_certmesh_open_enrollment_with_deadline() {
-        let cli =
-            Cli::try_parse_from(["koi", "certmesh", "open-enrollment", "--until", "2h"]).unwrap();
-        match cli.command {
-            Some(Command::Certmesh(CertmeshCommand {
-                command: Some(CertmeshSubcommand::OpenEnrollment { until }),
-            })) => {
-                assert_eq!(until.as_deref(), Some("2h"));
-            }
+                command: Some(CertmeshSubcommand::OpenEnrollment),
+            })) => {}
             other => panic!("Expected OpenEnrollment, got: {other:?}"),
         }
     }
@@ -1359,103 +1573,6 @@ mod tests {
                 command: Some(CertmeshSubcommand::CloseEnrollment),
             })) => {}
             other => panic!("Expected CloseEnrollment, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_certmesh_set_policy_domain() {
-        let cli = Cli::try_parse_from(["koi", "certmesh", "set-policy", "--domain", "lab.local"])
-            .unwrap();
-        match cli.command {
-            Some(Command::Certmesh(CertmeshCommand {
-                command:
-                    Some(CertmeshSubcommand::SetPolicy {
-                        domain,
-                        subnet,
-                        clear,
-                    }),
-            })) => {
-                assert_eq!(domain.as_deref(), Some("lab.local"));
-                assert!(subnet.is_none());
-                assert!(!clear);
-            }
-            other => panic!("Expected SetPolicy, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_certmesh_set_policy_subnet() {
-        let cli = Cli::try_parse_from([
-            "koi",
-            "certmesh",
-            "set-policy",
-            "--subnet",
-            "192.168.1.0/24",
-        ])
-        .unwrap();
-        match cli.command {
-            Some(Command::Certmesh(CertmeshCommand {
-                command:
-                    Some(CertmeshSubcommand::SetPolicy {
-                        domain,
-                        subnet,
-                        clear,
-                    }),
-            })) => {
-                assert!(domain.is_none());
-                assert_eq!(subnet.as_deref(), Some("192.168.1.0/24"));
-                assert!(!clear);
-            }
-            other => panic!("Expected SetPolicy, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_certmesh_set_policy_clear() {
-        let cli = Cli::try_parse_from(["koi", "certmesh", "set-policy", "--clear"]).unwrap();
-        match cli.command {
-            Some(Command::Certmesh(CertmeshCommand {
-                command:
-                    Some(CertmeshSubcommand::SetPolicy {
-                        domain,
-                        subnet,
-                        clear,
-                    }),
-            })) => {
-                assert!(domain.is_none());
-                assert!(subnet.is_none());
-                assert!(clear);
-            }
-            other => panic!("Expected SetPolicy, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_certmesh_set_policy_both() {
-        let cli = Cli::try_parse_from([
-            "koi",
-            "certmesh",
-            "set-policy",
-            "--domain",
-            "lab.local",
-            "--subnet",
-            "10.0.0.0/8",
-        ])
-        .unwrap();
-        match cli.command {
-            Some(Command::Certmesh(CertmeshCommand {
-                command:
-                    Some(CertmeshSubcommand::SetPolicy {
-                        domain,
-                        subnet,
-                        clear,
-                    }),
-            })) => {
-                assert_eq!(domain.as_deref(), Some("lab.local"));
-                assert_eq!(subnet.as_deref(), Some("10.0.0.0/8"));
-                assert!(!clear);
-            }
-            other => panic!("Expected SetPolicy, got: {other:?}"),
         }
     }
 

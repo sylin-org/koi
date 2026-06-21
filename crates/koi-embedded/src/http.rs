@@ -268,106 +268,24 @@ struct NetworkInterface {
 // ── System-level handlers ───────────────────────────────────────────
 
 async fn status_handler(Extension(state): Extension<EmbeddedState>) -> Json<StatusResponse> {
-    use koi_common::capability::{Capability, CapabilityStatus};
-
-    let mut capabilities = Vec::new();
-
-    if let Some(ref core) = state.mdns {
-        capabilities.push(core.status());
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "mdns".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
-
-    if let Some(ref core) = state.certmesh {
-        capabilities.push(core.status());
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "certmesh".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
-
-    if let Some(ref runtime) = state.dns {
-        let running = runtime.status().await.running;
-        if running {
-            capabilities.push(runtime.core().status());
-        } else {
-            capabilities.push(CapabilityStatus {
-                name: "dns".to_string(),
-                summary: "stopped".to_string(),
-                healthy: false,
-            });
-        }
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "dns".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
-
-    if let Some(ref runtime) = state.health {
-        let running = runtime.status().await.running;
-        if running {
-            capabilities.push(runtime.core().status());
-        } else {
-            capabilities.push(CapabilityStatus {
-                name: "health".to_string(),
-                summary: "stopped".to_string(),
-                healthy: false,
-            });
-        }
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "health".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
-
-    if let Some(ref runtime) = state.proxy {
-        let status = runtime.status().await;
-        capabilities.push(CapabilityStatus {
-            name: "proxy".to_string(),
-            summary: if status.is_empty() {
-                "no listeners".to_string()
-            } else {
-                format!("{} listeners", status.len())
-            },
-            healthy: true,
-        });
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "proxy".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
-
-    if let Some(ref udp_runtime) = state.udp {
-        capabilities.push(Capability::status(udp_runtime.as_ref()));
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "udp".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
-
-    if let Some(ref rt) = state.runtime {
-        capabilities.push(rt.capability_status().await);
-    } else {
-        capabilities.push(CapabilityStatus {
-            name: "runtime".to_string(),
-            summary: "disabled".to_string(),
-            healthy: false,
-        });
-    }
+    // Refit onto the shared koi-compose capability ladder (P10, finishing P07's unification):
+    // build a `Cores` from the embedded cores and project the report into `/v1/status`'s
+    // shape — just the `CapabilityStatus`, dropping `enabled` — identical to the daemon.
+    let cores = koi_compose::cores::Cores {
+        mdns: state.mdns.clone(),
+        certmesh: state.certmesh.clone(),
+        dns: state.dns.clone(),
+        health: state.health.clone(),
+        proxy: state.proxy.clone(),
+        udp: state.udp.clone(),
+        runtime: state.runtime.clone(),
+        mdns_snapshot: None,
+    };
+    let capabilities = koi_compose::status::assemble_capabilities(&cores)
+        .await
+        .into_iter()
+        .map(|c| c.status)
+        .collect();
 
     Json(StatusResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),

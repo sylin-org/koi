@@ -68,30 +68,25 @@ pub trait RuntimeBackend: Send + Sync {
 /// Selectable runtime backend kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeBackendKind {
-    /// Auto-detect available runtime (Docker → Podman → systemd → Incus).
+    /// Auto-detect available runtime (Docker → Podman).
     Auto,
     /// Docker Engine API.
     Docker,
     /// Podman (Docker-compatible API, different default socket).
     Podman,
-    /// systemd D-Bus.
-    Systemd,
-    /// Incus/LXD REST API.
-    Incus,
-    /// Kubernetes watch API.
-    Kubernetes,
 }
 
 impl RuntimeBackendKind {
-    /// Parse from a CLI string.
+    /// The accepted CLI values, used for help text and validation errors.
+    pub const ACCEPTED: &'static [&'static str] = &["auto", "docker", "podman"];
+
+    /// Parse from a CLI string. Returns `None` for unrecognized values; callers
+    /// must surface a helpful error rather than falling back silently.
     pub fn from_str_loose(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "auto" => Some(Self::Auto),
             "docker" => Some(Self::Docker),
             "podman" => Some(Self::Podman),
-            "systemd" => Some(Self::Systemd),
-            "incus" | "lxc" | "lxd" => Some(Self::Incus),
-            "kubernetes" | "k8s" => Some(Self::Kubernetes),
             _ => None,
         }
     }
@@ -103,9 +98,6 @@ impl std::fmt::Display for RuntimeBackendKind {
             Self::Auto => write!(f, "auto"),
             Self::Docker => write!(f, "docker"),
             Self::Podman => write!(f, "podman"),
-            Self::Systemd => write!(f, "systemd"),
-            Self::Incus => write!(f, "incus"),
-            Self::Kubernetes => write!(f, "kubernetes"),
         }
     }
 }

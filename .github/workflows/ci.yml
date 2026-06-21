@@ -122,3 +122,30 @@ jobs:
       - uses: actions/checkout@v4
       - name: Lint surface ledger
         run: bash scripts/lint-surfaces.sh docs/SURFACES.md
+      - name: No downstream-consumer names in user-facing docs (STACK-0001)
+        run: bash scripts/check-doc-leaks.sh
+
+  cross-host:
+    # ADR-018 Tier 3: a genuine cross-HOST certmesh exchange — two `koi` daemons in
+    # separate containers (distinct hostnames/IPs on a bridge network) drive
+    # create -> invite -> join -> revoke -> revoked-rejoin over the real container network.
+    # The single-process Tiers 1-2 (cargo test) cannot exercise distinct hosts.
+    #
+    # Gated on `test` + `clippy` so a cross-build (a few minutes; cached warm by
+    # rust-cache, slower on a cold cache) never runs on a tree that does not compile or
+    # lint — a compile error then surfaces with a clearer message there first. To shave
+    # the cross-build entirely, the driver honours KOI_BIN=<prebuilt linux koi>.
+    needs: [test, clippy]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cross-host-musl
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Cross-host certmesh exchange
+        run: bash scripts/cross-host-certmesh.sh

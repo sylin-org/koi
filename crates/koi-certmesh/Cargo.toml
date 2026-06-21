@@ -18,9 +18,12 @@ koi-common.workspace = true
 # this crate re-exposes them default-on (see [features]) so it builds identically
 # standalone, and forwards the choice from its consumers.
 koi-crypto = { workspace = true, default-features = false }
+async-trait.workspace = true
 utoipa.workspace = true
-koi-truststore.workspace = true
-rcgen.workspace = true
+os-truststore.workspace = true
+# `pem` + `x509-parser` enable `CertificateSigningRequestParams::from_pem`, which
+# parses AND verifies a client CSR's self-signature (used by the ACME finalize path).
+rcgen = { workspace = true, features = ["pem", "x509-parser"] }
 time.workspace = true
 pem.workspace = true
 sha2.workspace = true
@@ -36,7 +39,31 @@ crossterm.workspace = true
 indicatif.workspace = true
 rand.workspace = true
 hostname.workspace = true
-ipnet.workspace = true
+# ACME (RFC 8555) JWS verification is ASSEMBLED from primitives — no josekit/jsonwebtoken.
+# `p256` reconstructs the account's ES256 verifying key from the JWK and verifies the raw
+# 64-byte R‖S signature; `base64` decodes the URL_SAFE_NO_PAD JWS members; `hmac`+`subtle`
+# do the const-time EAB MAC check for closed-mode enrollment.
+p256.workspace = true
+base64.workspace = true
+hmac.workspace = true
+subtle.workspace = true
+# Parse the ACME finalize CSR to enforce that every requested SAN is an
+# authorized order identifier before the CA signs anything. Also used by the
+# mtls module to read the peer certificate's CN.
+x509-parser.workspace = true
+# mTLS server primitive (`koi_certmesh::mtls`): a tokio-rustls listener that requires
+# client certs verified against the CA and surfaces the peer CN. Promoted out of the
+# koi binary so consumers reuse the CA/trust wiring instead of duplicating it.
+tokio-util = { workspace = true }
+tokio-rustls.workspace = true
+rustls.workspace = true
+hyper-util.workspace = true
+# mTLS CLIENT primitive (`koi_certmesh::mtls::post_json`): the member-pull
+# rotate-key renewal (ADR-017 F6) dials the CA's mTLS listener presenting its own
+# leaf as the client cert. hyper drives the HTTP/1.1 request over tokio-rustls;
+# http-body-util collects the response body.
+hyper.workspace = true
+http-body-util.workspace = true
 
 [features]
 # Pass-through to koi-crypto's optional backends, default-on (standalone builds and the
@@ -47,3 +74,20 @@ qr = ["koi-crypto/qr"]
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# ACME conformance: drive the in-process ACME router with a real RFC 8555 client.
+# `builder_with_root` (hyper-rustls) pins the test CA root and speaks HTTPS, so the
+# conformance test also stands up a rustls TLS server with the daemon leaf. `rcgen`
+# lets instant-acme auto-generate the order's key + CSR at finalize.
+instant-acme = { version = "0.8.5", features = ["hyper-rustls", "rcgen"] }
+# tokio-rustls / rustls / hyper-util / hyper / http-body-util are now normal deps
+# (the mtls server + client primitives); the ACME conformance test reuses them.
+tempfile = "3"
+# Raw-JWS security tests POST flattened JWS over plain HTTP (no TLS); reqwest is
+# the simplest async client. The conformance test reuses it for nothing — it goes
+# through instant-acme over TLS.
+reqwest = { workspace = true }
+# Build JWS requests + verify the issued chain in tests.
+p256 = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+rcgen = { workspace = true, features = ["pem", "x509-parser"] }

@@ -27,6 +27,7 @@ Stage 0 (truth)          P01 ──► P02                    (independent, do f
 Stage 1 (fix promises)   P03   P04   P05   P06          (independent of each other)
 Stage 2 (consolidate)    P07 ──► P08, P09, P10          (P07 unlocks the rest)
 Stage 3+ (strategic)     P11   P12   P13                (after Stage 1; P12 after P08)
+Stage 4 (deepen)         P14                            (after P11; in-proc MCP HTTP)
 ```
 
 | # | Prompt | Mission | Size | Prereqs |
@@ -44,6 +45,7 @@ Stage 3+ (strategic)     P11   P12   P13                (after Stage 1; P12 afte
 | P11 | [koi-mcp server](P11-koi-mcp.md) | MCP surface over the HTTP API; LAN substrate for agents | M | P03 |
 | P12 | [ACME facade](P12-acme-facade.md) | Certmesh speaks ACME; existing proxies become consumers | L | P08 |
 | P13 | [Ecosystem doors](P13-ecosystem-doors.md) | Prometheus SD, Traefik-label ingestion, DNS recipes, `koi trust` | M | P03 |
+| P14 | [MCP over Streamable HTTP](P14-mcp-http-transport.md) | In-proc MCP HTTP transport at `/v1/mcp`; resources + LAN discovery without flood | L | P11 |
 
 Size: M ≈ one focused session; L ≈ may need a checkpoint/continuation — both sizes
 assume the agent follows the plan-first discipline in the charter.

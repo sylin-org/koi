@@ -22,7 +22,7 @@ CA private keys use envelope encryption, inspired by LUKS. A random 256-bit mast
 | `Passphrase` | Argon2id → KEK → AES-256-GCM wrap | Primary unlock (always present) |
 | `AutoUnlock` | Master key in separate local file (marker slot) | Unattended boot for single-user profiles |
 | `Totp` | HKDF(shared_secret) → KEK → AES-256-GCM wrap | TOTP-based unlock (6-digit code) |
-| `Fido2` | Assertion-gated KEK → AES-256-GCM wrap | Hardware security key unlock |
+| ~~`Fido2`~~ | — | **REMOVED in 0.4.2** — re-add via the `AuthAdapter` trait (`koi-crypto/src/auth.rs`) |
 
 ---
 
@@ -64,8 +64,8 @@ CA private keys use envelope encryption, inspired by LUKS. A random 256-bit mast
 | `add_auto_unlock()` / `remove_auto_unlock()` | Toggle unattended boot |
 | `add_totp_slot(master_key, secret)` | Add TOTP unlock slot |
 | `unwrap_with_totp(code)` | Unlock via TOTP code |
-| `add_fido2_slot(...)` | Add FIDO2 unlock slot |
-| `unwrap_with_fido2(credential_id)` | Unlock via hardware key |
+| ~~`add_fido2_slot(...)`~~ | **REMOVED in 0.4.2** — re-add via the `AuthAdapter` trait (`koi-crypto/src/auth.rs`) |
+| ~~`unwrap_with_fido2(credential_id)`~~ | **REMOVED in 0.4.2** — re-add via the `AuthAdapter` trait (`koi-crypto/src/auth.rs`) |
 | `available_methods()` | List active slot types |
 
 ---

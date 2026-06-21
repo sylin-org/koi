@@ -9,7 +9,7 @@ use chrono::Utc;
 
 /// Append an audit entry to the audit log at `path`.
 ///
-/// Format: `2026-02-11T10:30:00Z | pond_initialized | operator=Maria | profile=just_me`.
+/// Format: `2026-02-11T10:30:00Z | ca_initialized | operator=Maria | profile=just_me`.
 /// The path comes from the injected `CertmeshPaths::audit_log_path()` — there
 /// is no ambient default.
 pub fn append_entry_to(
@@ -62,7 +62,7 @@ mod tests {
 
         append_entry_to(
             &path,
-            "pond_initialized",
+            "ca_initialized",
             &[("operator", "Alice"), ("profile", "just_me")],
         )
         .unwrap();
@@ -77,7 +77,7 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("pond_initialized"));
+        assert!(lines[0].contains("ca_initialized"));
         assert!(lines[0].contains("operator=Alice"));
         assert!(lines[1].contains("member_joined"));
         assert!(lines[1].contains("host=stone-05"));

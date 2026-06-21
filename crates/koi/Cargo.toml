@@ -26,7 +26,7 @@ koi-certmesh.workspace = true
 # explicitly so a future default-features flip cannot silently strip Docker / the
 # credential store / QR from the daemon.
 koi-crypto = { workspace = true, features = ["keyring", "qr"] }
-koi-truststore.workspace = true
+os-truststore.workspace = true
 koi-config.workspace = true
 koi-dns.workspace = true
 koi-health.workspace = true
@@ -34,6 +34,7 @@ koi-proxy.workspace = true
 koi-udp.workspace = true
 koi-runtime = { workspace = true, features = ["docker"] }
 koi-client.workspace = true
+koi-mcp.workspace = true
 chrono.workspace = true
 clap.workspace = true
 tokio.workspace = true
@@ -46,6 +47,7 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+async-trait.workspace = true
 async-stream.workspace = true
 axum.workspace = true
 tower-http.workspace = true
@@ -54,7 +56,12 @@ if-addrs.workspace = true
 hickory-proto.workspace = true
 crossterm.workspace = true
 url.workspace = true
-command-surface = { workspace = true, features = ["render"] }
+# Terminal-profile-aware help rendering (folded in from the former command-surface
+# crate in P09; these were transitive via that crate's `render` feature).
+console.workspace = true
+is-terminal.workspace = true
+supports-color.workspace = true
+terminal_size.workspace = true
 utoipa.workspace = true
 utoipa-scalar = { workspace = true }
 open.workspace = true
@@ -64,11 +71,19 @@ subtle.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 hyper-util.workspace = true
-x509-parser.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 rcgen.workspace = true
+# A real MCP client (over a bound TCP listener) for the /v1/mcp e2e test.
+rmcp = { workspace = true, features = [
+    "client",
+    "transport-streamable-http-client-reqwest",
+] }
+# Async HTTP client for the ADR-018 Tier-2 two-daemon integration test
+# (crates/koi/tests/two_daemon_certmesh.rs). Already in the lockfile via rmcp's
+# reqwest transport, so `--locked` is unaffected.
+reqwest = { workspace = true, features = ["json"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

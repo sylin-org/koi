@@ -301,6 +301,21 @@ fn get_machine_id() -> Result<String, String> {
     }
 }
 
+/// A stable, non-secret fingerprint of this machine's identity.
+///
+/// SHA-256 (hex) of a domain-separated platform machine-id (`/etc/machine-id`,
+/// Windows `MachineGuid`, or macOS `IOPlatformUUID`). Returns `None` when the
+/// machine-id cannot be read. The value is a hash — safe to store at rest — and is
+/// used for clone/restore detection (ADR-017 F11): a VM clone or disk restore
+/// onto new hardware yields a different machine-id, so a recorded fingerprint that
+/// no longer matches signals the host changed.
+pub fn machine_fingerprint() -> Option<String> {
+    let id = get_machine_id().ok()?;
+    Some(crate::pinning::fingerprint_sha256(
+        format!("koi-machine-bind:{id}").as_bytes(),
+    ))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]

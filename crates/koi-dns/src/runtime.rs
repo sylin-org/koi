@@ -1,6 +1,6 @@
-﻿use std::sync::Arc;
+use std::sync::Arc;
 
-use tokio_util::sync::CancellationToken;
+use koi_common::runtime_state::DomainRuntime;
 
 use crate::resolver::{DnsCore, DnsError};
 
@@ -9,81 +9,52 @@ pub struct DnsRuntimeStatus {
     pub running: bool,
 }
 
-struct RuntimeState {
-    running: bool,
-    cancel: Option<CancellationToken>,
-}
-
 /// Runtime controller for starting/stopping the DNS server task.
+///
+/// A thin wrapper over the shared [`DomainRuntime`] start/stop machine; the only
+/// DNS-specific piece is the spawned loop (`core.serve(token)`).
+#[derive(Clone)]
 pub struct DnsRuntime {
-    core: Arc<DnsCore>,
-    state: Arc<tokio::sync::Mutex<RuntimeState>>,
+    inner: DomainRuntime<DnsCore>,
 }
 
 impl DnsRuntime {
     pub fn new(core: DnsCore) -> Self {
         Self {
-            core: Arc::new(core),
-            state: Arc::new(tokio::sync::Mutex::new(RuntimeState {
-                running: false,
-                cancel: None,
-            })),
+            inner: DomainRuntime::new(Arc::new(core)),
         }
     }
 
     pub fn core(&self) -> Arc<DnsCore> {
-        Arc::clone(&self.core)
+        self.inner.core()
     }
 
     pub async fn start(&self) -> Result<bool, DnsError> {
-        let mut state = self.state.lock().await;
-        if state.running {
-            return Ok(false);
-        }
-
-        let token = CancellationToken::new();
-        state.cancel = Some(token.clone());
-        state.running = true;
-        drop(state);
-
-        let core = Arc::clone(&self.core);
-        let state = Arc::clone(&self.state);
-        tokio::spawn(async move {
-            if let Err(e) = core.serve(token).await {
-                tracing::error!(error = %e, "DNS server stopped with error");
-            }
-            let mut guard = state.lock().await;
-            guard.running = false;
-            guard.cancel = None;
-        });
-
-        Ok(true)
+        let core = self.inner.core();
+        // DomainRuntime::start signals already-running via Ok(false) and never yields
+        // AlreadyRunning for this launcher; map that to a started=false no-op. The
+        // Result<_, DnsError> shape is preserved (this start path cannot fail).
+        let started = self
+            .inner
+            .start(move |token| {
+                tokio::spawn(async move {
+                    if let Err(e) = core.serve(token).await {
+                        tracing::error!(error = %e, "DNS server stopped with error");
+                    }
+                })
+            })
+            .await
+            .unwrap_or(false);
+        Ok(started)
     }
 
     pub async fn stop(&self) -> bool {
-        let mut state = self.state.lock().await;
-        if let Some(token) = state.cancel.take() {
-            token.cancel();
-            state.running = false;
-            true
-        } else {
-            false
-        }
+        self.inner.stop().await
     }
 
     pub async fn status(&self) -> DnsRuntimeStatus {
-        let state = self.state.lock().await;
         DnsRuntimeStatus {
-            running: state.running,
-        }
-    }
-}
-
-impl Clone for DnsRuntime {
-    fn clone(&self) -> Self {
-        Self {
-            core: Arc::clone(&self.core),
-            state: Arc::clone(&self.state),
+            running: self.inner.status().await.running,
         }
     }
 }

@@ -11,7 +11,7 @@ Do not write production code until all steps are done.
 ## Step 1: Understand the task
 
 Restate the task in your own words. Identify:
-- What crate this touches: `koi-common`, `koi-client`, `koi-mdns`, `koi-config`, `koi-dns`, `koi-health`, `koi-proxy`, `koi-certmesh`, `koi-crypto`, `koi-truststore`, `koi-embedded`, `koi` binary
+- What crate this touches: `koi-common`, `koi-client`, `koi-mdns`, `koi-config`, `koi-dns`, `koi-health`, `koi-proxy`, `koi-certmesh`, `koi-crypto`, `koi-embedded`, `koi` binary
 - Which layer is involved: transport, business logic, wire format, CLI
 - Expected output: new feature, refactor, bug fix, extension
 

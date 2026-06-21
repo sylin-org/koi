@@ -22,9 +22,6 @@ use listener::{spawn_listener, ListenerStatus};
 pub use config::ProxyEntry;
 pub use safety::{ensure_backend_allowed, parse_backend};
 
-/// Capacity for the proxy event broadcast channel.
-const BROADCAST_CHANNEL_CAPACITY: usize = 256;
-
 /// Events emitted by the proxy subsystem when entries change.
 #[derive(Debug, Clone)]
 pub enum ProxyEvent {
@@ -80,7 +77,7 @@ impl ProxyCore {
         let entries = config::load_entries()?;
         Ok(Self {
             entries: Arc::new(Mutex::new(entries)),
-            event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
+            event_tx: koi_common::events::event_channel().0,
             data_dir: None,
         })
     }
@@ -90,7 +87,7 @@ impl ProxyCore {
         let entries = config::load_entries_with_data_dir(Some(data_dir))?;
         Ok(Self {
             entries: Arc::new(Mutex::new(entries)),
-            event_tx: broadcast::channel(BROADCAST_CHANNEL_CAPACITY).0,
+            event_tx: koi_common::events::event_channel().0,
             data_dir: Some(data_dir.to_path_buf()),
         })
     }
@@ -147,12 +144,13 @@ impl ProxyCore {
     }
 }
 
+#[async_trait::async_trait]
 impl Capability for ProxyCore {
     fn name(&self) -> &str {
         "proxy"
     }
 
-    fn status(&self) -> CapabilityStatus {
+    async fn status(&self) -> CapabilityStatus {
         CapabilityStatus {
             name: "proxy".to_string(),
             summary: "configured".to_string(),
@@ -278,59 +276,75 @@ impl Clone for ProxyRuntime {
 mod tests {
     use super::*;
 
-    #[test]
-    fn subscribe_receives_emitted_entry_updated() {
-        let (tx, _) = broadcast::channel::<ProxyEvent>(16);
-        let mut rx = tx.subscribe();
+    /// Build a ProxyCore backed by a throwaway data dir so tests never touch the
+    /// real on-disk proxy config.
+    fn test_core() -> ProxyCore {
+        let dir = std::env::temp_dir().join(format!(
+            "koi-proxy-test-{}",
+            koi_common::id::generate_short_id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        ProxyCore::with_data_dir(&dir).expect("core should build")
+    }
 
-        let entry = ProxyEntry {
-            name: "test-svc".to_string(),
+    fn sample_entry(name: &str) -> ProxyEntry {
+        ProxyEntry {
+            name: name.to_string(),
             listen_port: 9090,
             backend: "http://127.0.0.1:8080".to_string(),
             allow_remote: false,
-        };
-        let _ = tx.send(ProxyEvent::EntryUpdated {
-            entry: entry.clone(),
-        });
+        }
+    }
 
-        let event = rx.try_recv().expect("should receive event");
-        match event {
-            ProxyEvent::EntryUpdated { entry: received } => {
-                assert_eq!(received.name, "test-svc");
-                assert_eq!(received.listen_port, 9090);
-                assert_eq!(received.backend, "http://127.0.0.1:8080");
+    /// Drives the real ProxyCore command path: subscribe → upsert → assert the
+    /// EntryUpdated event is broadcast through the core's own channel. Fails if
+    /// `upsert` stops emitting (tests Koi wiring, not tokio).
+    #[tokio::test]
+    async fn upsert_emits_entry_updated_through_core() {
+        let core = test_core();
+        let mut rx = core.subscribe();
+
+        core.upsert(sample_entry("test-svc"))
+            .await
+            .expect("upsert should succeed");
+
+        match rx.try_recv().expect("should receive event") {
+            ProxyEvent::EntryUpdated { entry } => {
+                assert_eq!(entry.name, "test-svc");
+                assert_eq!(entry.listen_port, 9090);
+                assert_eq!(entry.backend, "http://127.0.0.1:8080");
             }
             other => panic!("expected EntryUpdated, got {other:?}"),
         }
     }
 
-    #[test]
-    fn subscribe_receives_emitted_entry_removed() {
-        let (tx, _) = broadcast::channel::<ProxyEvent>(16);
-        let mut rx = tx.subscribe();
+    /// remove() on an existing entry emits EntryRemoved through the core.
+    #[tokio::test]
+    async fn remove_emits_entry_removed_through_core() {
+        let core = test_core();
+        core.upsert(sample_entry("rm-svc"))
+            .await
+            .expect("upsert should succeed");
 
-        let _ = tx.send(ProxyEvent::EntryRemoved {
-            name: "rm-svc".to_string(),
-        });
+        let mut rx = core.subscribe();
+        core.remove("rm-svc").await.expect("remove should succeed");
 
-        let event = rx.try_recv().expect("should receive event");
-        match event {
-            ProxyEvent::EntryRemoved { name } => {
-                assert_eq!(name, "rm-svc");
-            }
+        match rx.try_recv().expect("should receive event") {
+            ProxyEvent::EntryRemoved { name } => assert_eq!(name, "rm-svc"),
             other => panic!("expected EntryRemoved, got {other:?}"),
         }
     }
 
-    #[test]
-    fn multiple_subscribers_each_receive_event() {
-        let (tx, _) = broadcast::channel::<ProxyEvent>(16);
-        let mut rx1 = tx.subscribe();
-        let mut rx2 = tx.subscribe();
+    /// Two subscribers to the same core each receive a core-emitted event.
+    #[tokio::test]
+    async fn multiple_subscribers_each_receive_core_event() {
+        let core = test_core();
+        let mut rx1 = core.subscribe();
+        let mut rx2 = core.subscribe();
 
-        let _ = tx.send(ProxyEvent::EntryRemoved {
-            name: "multi".to_string(),
-        });
+        core.upsert(sample_entry("multi"))
+            .await
+            .expect("upsert should succeed");
 
         assert!(rx1.try_recv().is_ok());
         assert!(rx2.try_recv().is_ok());

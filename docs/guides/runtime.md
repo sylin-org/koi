@@ -137,7 +137,7 @@ All labels are optional. Without any `koi.*` labels or `KOI_MDNS_ANNOUNCE` env v
 | `koi.health.timeout` | Check timeout in seconds (default: 5) | `koi.health.timeout=10` |
 | `koi.proxy.port` | Enable TLS proxy on this listen port | `koi.proxy.port=443` |
 | `koi.proxy.remote` | Allow remote proxy connections | `koi.proxy.remote=true` |
-| `koi.certmesh` | Enable certmesh cert injection | `koi.certmesh=true` |
+| `koi.certmesh` | Reserved — parsed but inert (no per-container cert is issued; the proxy uses the host member cert) | `koi.certmesh=true` |
 
 Environment variable alternative:
 
@@ -272,13 +272,16 @@ When you use Compose, `docker compose up grafana` produces an mDNS announcement 
 
 ## Supported runtimes
 
+The selectable backends are `auto`, `docker`, and `podman`. Any other value is
+rejected at startup with a helpful error (no silent fallback to auto-detection).
+
 | Runtime | Status | Socket | Notes |
 |---------|--------|--------|-------|
 | **Docker** | Implemented | `/var/run/docker.sock` (Unix), named pipe (Windows) | Default, auto-detected |
 | **Podman** | Implemented | `/run/user/{uid}/podman/podman.sock` | Docker-compatible API |
-| **systemd** | Planned | D-Bus | Unit lifecycle events |
-| **Incus/LXC** | Planned | REST API | Containers + VMs |
-| **Kubernetes** | Planned | K8s API server | Pod/Service/Ingress watch |
+
+Other runtimes (systemd, Incus/LXC, Kubernetes) are possible future backends but
+are **not** currently selectable; the `RuntimeBackend` trait is the extension point.
 
 Select explicitly:
 

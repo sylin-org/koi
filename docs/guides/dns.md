@@ -78,6 +78,7 @@ When the daemon is running, DNS endpoints live under `/v1/dns/`:
 | `GET`    | `/v1/dns/lookup?name=grafana&type=A` | Query a name                 |
 | `GET`    | `/v1/dns/list`                       | All entries from all sources |
 | `GET`    | `/v1/dns/entries`                    | Static entries only          |
+| `GET`    | `/v1/dns/zone?format=hosts\|dnsmasq\|json` | Export the zone for another resolver |
 | `POST`   | `/v1/dns/add`                        | Add a static entry           |
 | `DELETE` | `/v1/dns/remove/{name}`              | Remove a static entry        |
 | `POST`   | `/v1/dns/serve`                      | Start the resolver           |
@@ -88,9 +89,29 @@ When the daemon is running, DNS endpoints live under `/v1/dns/`:
 ```
 POST /v1/dns/add
 Content-Type: application/json
+x-koi-token: <daemon access token>
 
 {"name": "grafana", "ip": "10.0.0.42"}
 ```
+
+Mutating endpoints (`POST`/`DELETE` — `add`, `remove`, `serve`, `stop`) require the daemon access token in the `x-koi-token` header — see the [security model](../reference/security-model.md) for how to read it from the breadcrumb. `GET` reads (status, lookup, list, entries, zone) are unauthenticated.
+
+---
+
+## Coexisting with an existing resolver
+
+Koi's resolver is meant to sit *alongside* the DNS server you already run, not
+replace it. Point your incumbent resolver (AdGuard Home, Pi-hole, dnsmasq,
+Unbound, Technitium) at Koi for just the Koi zone via **conditional forwarding**,
+and export the zone for resolvers that want a static file:
+
+```sh
+curl -s "http://<koi-ip>:5641/v1/dns/zone?format=hosts"
+curl -s "http://<koi-ip>:5641/v1/dns/zone?format=dnsmasq"
+```
+
+See the [DNS coexistence guide](./dns-coexistence.md) for copy-paste
+conditional-forwarding recipes (one per incumbent) with a `dig` test each.
 
 ---
 
@@ -160,4 +181,4 @@ If the resolver is running but names aren't resolving, make sure your system is 
 
 ### Names from certmesh or mDNS not appearing
 
-These sources only populate when their respective capabilities are enabled and active. Check that mDNS discovery is running (`koi mdns status`) or that certmesh members have SANs on their certificates (`koi certmesh status`).
+These sources only populate when their respective capabilities are enabled and active. Check that mDNS discovery is running (`koi mdns admin status`) or that certmesh members have SANs on their certificates (`koi certmesh status`).

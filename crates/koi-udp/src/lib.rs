@@ -277,14 +277,17 @@ impl UdpRuntime {
 
 // ── Capability trait ────────────────────────────────────────────────
 
+#[async_trait::async_trait]
 impl koi_common::capability::Capability for UdpRuntime {
     fn name(&self) -> &str {
         "udp"
     }
 
-    fn status(&self) -> koi_common::capability::CapabilityStatus {
-        // status() is async but trait is sync - use try_read for non-blocking check.
-        let count = self.bindings.try_read().map(|b| b.len()).unwrap_or(0);
+    async fn status(&self) -> koi_common::capability::CapabilityStatus {
+        // UdpRuntime also has an inherent (non-trait) `status()` returning Vec<BindingInfo>;
+        // this trait impl summarises the binding count. Read the lock directly now that the
+        // trait is async (the old try_read fallback is gone).
+        let count = self.bindings.read().await.len();
 
         let summary = if count == 0 {
             "no bindings".to_string()

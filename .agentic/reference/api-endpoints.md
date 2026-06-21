@@ -18,8 +18,20 @@ Interactive API docs: `GET /docs` (Scalar UI). OpenAPI spec: `GET /openapi.json`
 | GET | `/v1/status` | Unified capability status (version, uptime, capabilities) |
 | POST | `/v1/admin/shutdown` | Initiate graceful shutdown |
 | GET | `/v1/host` | Host identity (hostname, FQDN, OS, arch, network interfaces) |
+| GET/POST | `/v1/mcp` | MCP server over Streamable HTTP (JSON-RPC; token-authenticated) |
+| GET | `/.well-known/mcp/server-card.json` | Public MCP discovery descriptor (unauthenticated) |
 | GET | `/openapi.json` | OpenAPI specification |
 | GET | `/docs` | Interactive API documentation (Scalar UI) |
+
+`/v1/mcp` is MCP JSON-RPC over Streamable HTTP (in-process, against the live cores) —
+like the ACME facade it is **NOT** in `/openapi.json`. Every method, including the GET
+SSE stream, requires the `x-koi-token` header (carved out of the usual GET auth
+exemption). It is a transport, not a domain capability rung: gated by `--no-mcp-http` /
+`KOI_NO_MCP_HTTP` (default enabled; disabled → 503 `capability_disabled`) and reported on
+`/v1/status` as an `mcp_http` boolean. It exposes MCP resources (`koi://lan/inventory`,
+`koi://health`, `koi://dns/zone`, `koi://mdns/services`) with live `resources/updated`
+deltas, and advertises a single `_mcp._tcp` mDNS record, an in-zone `_mcp.<host>.<zone>`
+DNS TXT, and the public server-card above. Port is unchanged (5641, no new port).
 
 ### Dashboard & Browser
 
@@ -63,21 +75,18 @@ Route handlers: `crates/koi-certmesh/src/http.rs`
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | POST | `/v1/certmesh/create` | Initialize CA (create key, cert, auth credential) |
-| POST | `/v1/certmesh/join` | Join the certificate mesh (auth-verified enrollment) |
+| POST | `/v1/certmesh/join` | Join the certificate mesh (TOTP-authorized enrollment; the one mutation exempt from the `x-koi-token` requirement — a joining node can't know the CA host's local token) |
 | GET | `/v1/certmesh/status` | Mesh status overview |
 | POST | `/v1/certmesh/unlock` | Decrypt CA key with passphrase |
 | PUT | `/v1/certmesh/set-hook` | Set reload hook for a member |
 | POST | `/v1/certmesh/promote` | Promote standby (CA key transfer) |
 | POST | `/v1/certmesh/renew` | Trigger certificate renewal |
 | POST | `/v1/certmesh/revoke` | Revoke a member's certificate |
-| GET | `/v1/certmesh/roster` | Get signed roster manifest |
 | POST | `/v1/certmesh/health` | Member health heartbeat (pinned CA fingerprint) |
 | POST | `/v1/certmesh/rotate-auth` | Rotate enrollment auth credential |
 | GET | `/v1/certmesh/log` | Read audit log entries |
-| GET | `/v1/certmesh/compliance` | Compliance summary |
 | POST | `/v1/certmesh/open-enrollment` | Open enrollment window |
 | POST | `/v1/certmesh/close-enrollment` | Close enrollment window |
-| PUT | `/v1/certmesh/set-policy` | Set enrollment scope constraints |
 | POST | `/v1/certmesh/backup` | Create encrypted backup |
 | POST | `/v1/certmesh/restore` | Restore from backup |
 | POST | `/v1/certmesh/destroy` | Destroy all certmesh state (CA, certs, audit log) |
@@ -140,6 +149,26 @@ Route handlers: `crates/koi-runtime/src/http.rs`
 |--------|----------|---------|
 | GET | `/v1/runtime/status` | Runtime adapter status (active, backend, instance count) |
 | GET | `/v1/runtime/instances` | List all tracked runtime instances |
+
+### ACME Operations (`/acme`, separate TLS port 5643)
+
+Route handlers: `crates/koi-certmesh/src/acme/router.rs`. **NOT** on the main HTTP adapter
+and **not** in `/openapi.json` — RFC 8555 wire format (`application/jose+json` requests,
+`application/problem+json` errors). Server-auth TLS listener (default 5643, `--acme-port`),
+gated by `--no-acme` / `KOI_NO_ACME`; starts only when the CA is initialized + unlocked and
+DNS is enabled. dns-01 only, EC/ES256 only, in-zone names only.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/acme/directory` | Directory (endpoint URLs + `meta.externalAccountRequired`) |
+| HEAD/GET | `/acme/new-nonce` | Fresh `Replay-Nonce` (200/204) |
+| POST | `/acme/new-account` | Register account (JWS + jwk; EAB in closed mode) |
+| POST | `/acme/new-order` | Create order (in-zone identifiers only → else `rejectedIdentifier`) |
+| POST | `/acme/authz/{id}` | Authorization (POST-as-GET) |
+| POST | `/acme/chall/{id}` | Trigger dns-01 validation (in-process TXT check) |
+| POST | `/acme/order/{id}/finalize` | Submit CSR → issue (every CSR SAN must be authorized) |
+| POST | `/acme/cert/{id}` | Download leaf + CA chain (`application/pem-certificate-chain`) |
+| POST | `/acme/revoke-cert` | Revoke an issued certificate |
 
 ---
 
@@ -249,12 +278,10 @@ Streaming responses include a `status` field:
 | `koi certmesh status` | Client | Show mesh status |
 | `koi certmesh unlock` | Client | Decrypt CA key |
 | `koi certmesh log` | Client | Show audit log |
-| `koi certmesh compliance` | Client | Show compliance summary |
 | `koi certmesh set-hook --reload CMD` | Client | Set reload hook |
 | `koi certmesh promote [endpoint]` | Client | Promote standby CA |
 | `koi certmesh open-enrollment` | Client | Open enrollment window |
 | `koi certmesh close-enrollment` | Client | Close enrollment window |
-| `koi certmesh set-policy` | Client | Set enrollment scope constraints |
 | `koi certmesh rotate-auth` | Client | Rotate enrollment auth credential |
 | `koi certmesh backup <path>` | Client | Create encrypted backup |
 | `koi certmesh restore <path>` | Client | Restore from backup |
