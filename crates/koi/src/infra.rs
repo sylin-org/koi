@@ -6,7 +6,7 @@ use clap::CommandFactory;
 use tokio_util::sync::CancellationToken;
 
 use crate::cli::{Cli, Config};
-use crate::{help, platform};
+use crate::help;
 
 // ── Infrastructure helpers ──────────────────────────────────────────
 
@@ -146,7 +146,7 @@ pub(crate) fn startup_diagnostics(config: &Config, http_bind_ip: Option<std::net
     }
 
     #[cfg(windows)]
-    platform::windows::check_firewall(config);
+    crate::platform::windows::check_firewall(config);
 }
 
 // ── HTTP bind resolution ────────────────────────────────────────────

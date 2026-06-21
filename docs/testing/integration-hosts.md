@@ -46,21 +46,26 @@ Workspace on each box: `/home/stone/koi-test/` (binary + `data/` for `KOI_DATA_D
 
 ## Build & deploy
 
-The boxes are x86_64 Linux; build **once** and copy the binary to the second box.
-Source is shipped from the dev machine via `git archive` (tracked files only — no
-`target/`, no `.git`), because the `dev` branch is local/unpushed and the boxes
-cannot `git pull` it:
+**Build on the dev machine, never on the boxes.** The dev machine is far more
+powerful and already has the `cross` + Docker toolchain. Build a **static musl**
+binary (the same toolchain the release workflow + `scripts/cross-host-certmesh.sh`
+use) and copy it to the boxes — they then need **no Rust/C toolchain at all** (the
+binary is static, no glibc dependency):
 
 ```sh
-# from the repo root on the dev machine (Git Bash):
-git archive --format=tar.gz -o /tmp/koi-src.tgz HEAD
-pscp -pw stone /tmp/koi-src.tgz stone@192.168.1.44:/home/stone/koi-test/
-# on brook: extract + build the binary (toolchain via apt or a rust container)
-plink -batch -ssh -pw stone stone@192.168.1.44 \
-  "cd /home/stone/koi-test && tar xzf koi-src.tgz && cargo build --release -p koi"
-# distribute the binary to the second box:
-#   pscp brook:/home/stone/koi-test/target/release/koi  →  granite:/home/stone/koi-test/koi
+# dev machine, repo root:
+cross build --locked --target x86_64-unknown-linux-musl -p koi-net
+#   → target/x86_64-unknown-linux-musl/debug/koi   (static x86_64 binary; add --release for release)
+
+# copy to both boxes (PuTTY pscp from Windows; or scp elsewhere):
+pscp -pw stone target/x86_64-unknown-linux-musl/debug/koi stone@192.168.1.44:/home/stone/koi-test/koi
+pscp -pw stone target/x86_64-unknown-linux-musl/debug/koi stone@192.168.1.55:/home/stone/koi-test/koi
+plink -batch -ssh -pw stone stone@192.168.1.44 "chmod +x /home/stone/koi-test/koi"
+plink -batch -ssh -pw stone stone@192.168.1.55 "chmod +x /home/stone/koi-test/koi"
 ```
+
+Box-side test instrumentation (install once): `jq` (parse `koi … --json`),
+`dnsutils` (`dig`), `netcat-openbsd` (`nc`, port checks).
 
 ## Cross-host integration scenario (the gate)
 
