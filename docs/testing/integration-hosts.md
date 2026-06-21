@@ -84,6 +84,29 @@ real LAN:
    (cross-host carry-cert).
 6. Tear down (`koi certmesh destroy`, re-enable nothing — the box stays set up).
 
-Automated by `scripts/integration/` (added once the procedure is proven on
-hardware). See also the container-based ADR-018 harness:
+Automated by `scripts/integration/cross-host-test.sh` (runs on the CA box, drives
+the member via `sshpass`). See also the container-based ADR-018 harness:
 `scripts/cross-host-certmesh.sh`.
+
+## Findings (first real-hardware run, 2026-06-20)
+
+**Validated on real hardware:** deploy of the fresh static-musl binary to both
+boxes; the daemon runs on real Linux; **P4** — the 5642 mTLS listener is correctly
+DOWN in Open posture; **mDNS** binds 5353 alongside `systemd-resolved` and
+`koi mdns discover` works over real multicast (the `_certmesh._tcp` record carries
+`fp=`); **P6** — `koi trust diagnose` runs on hardware and prints its real report
+(Open → Healthy, exit 0).
+
+**Product follow-up (P4-adjacent gap):** the `_certmesh._tcp` mDNS announcement
+(`announce_certmesh_endpoint`) is **startup-gated** — it runs at daemon boot, gated
+on a CA already existing. The P4 work made the mTLS *listener* posture-reactive but
+**not the announcement**, so a node that boots Open and later runs `certmesh create`
+does not advertise its `fp=`/`posture=`/`expires=` TXT until a restart. The test
+restarts the CA daemon after create as a workaround; the real fix is to make the
+announce posture-reactive too (drive it off `watch_posture`, same as the listener).
+
+**Box note:** `stone-granite-spring` carried leftover certmesh state (an old CA +
+daemon) from a prior session; the test now wipes the member's data dir + stale
+daemons before the member role. The CLI `koi certmesh create` runs an interactive
+entropy ceremony (hangs headless) — the harness creates the CA via the HTTP API
+(non-interactive), as the `two_daemon_certmesh` test does.
