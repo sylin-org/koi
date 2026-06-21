@@ -4,10 +4,11 @@
 **Date:** 2026-06-13
 **Deciders:** Enterprise Architect (Epic analysis `epic-assessment/03`–`04`)
 
-> **Cross-repo canonical ADR.** This is a stack-level decision shared by all three Sylin repos, filed here under Koi's `docs/adr/` with the shared `STACK-0001` id rather than the local 3-digit sequence so the same id is greppable in every repo. Identical copies live — and **edits propagate to all three**:
+> **Cross-repo canonical ADR.** This is a stack-level decision shared across the Sylin repos, filed here under Koi's `docs/adr/` with the shared `STACK-0001` id rather than the local 3-digit sequence so the same id is greppable in every repo. Identical copies live — and **edits propagate to all of them** (the three stack layers — Koi, Zen Garden, Koan — plus the `agyo-tools` tooling repo, split out after this ADR was first written):
 > - `koi/docs/adr/STACK-0001-sylin-stack-canon.md`
 > - `zen-garden/docs/decisions/STACK-0001-sylin-stack-canon.md`
 > - `koan-framework/docs/decisions/STACK-0001-sylin-stack-canon.md`
+> - `agyo-tools/docs/decisions/STACK-0001-sylin-stack-canon.md`
 >
 > This is **transcription, not design**: every decision traces to the Epic analysis cited below (the portable `epic-assessment/` set, outside this repo). Do not edit a decision here without an upstream architect decision.
 
