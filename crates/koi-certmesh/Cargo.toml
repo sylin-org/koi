@@ -82,6 +82,10 @@ instant-acme = { version = "0.8.5", features = ["hyper-rustls", "rcgen"] }
 # tokio-rustls / rustls / hyper-util / hyper / http-body-util are now normal deps
 # (the mtls server + client primitives); the ACME conformance test reuses them.
 tempfile = "3"
+# P7 (ADR-020): the deterministic, sans-IO LAN-trust state-machine simulator
+# (`tests/trust_sim.rs`) drives randomized transition sequences against the real
+# sign/verify/seal/open primitives and a pure reference oracle.
+proptest = { workspace = true }
 # Raw-JWS security tests POST flattened JWS over plain HTTP (no TLS); reqwest is
 # the simplest async client. The conformance test reuses it for nothing — it goes
 # through instant-acme over TLS.

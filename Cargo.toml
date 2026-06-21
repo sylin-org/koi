@@ -114,6 +114,7 @@ qrcode = { version = "0.14", default-features = false, features = ["image"] }
 pem = "3"
 rcgen = "0.13"
 time = "0.3"
+proptest = "1"
 crossterm = "0.28"
 indicatif = "0.18"
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
