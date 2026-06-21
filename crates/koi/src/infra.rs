@@ -255,15 +255,18 @@ pub(crate) fn announce_mcp_endpoint(
 /// joiner discovers this and cross-checks the fingerprint against the one carried
 /// in its invite (F3) — a **convenience hint** to disambiguate / fail fast, never
 /// a trust source (the authoritative check is the joiner's pinned-fingerprint
-/// preflight). No-op when certmesh is absent or no CA is initialized. The record is
-/// withdrawn by the mDNS goodbye on shutdown. Shared by the foreground daemon and
-/// the Windows service so the two never diverge.
-pub(crate) async fn announce_certmesh_endpoint(
-    cores: &crate::DaemonCores,
+/// preflight). Returns `None` when no CA is initialized yet.
+///
+/// Posture-reactive: the trust-plane supervisor calls this when the CA appears
+/// (Open→Authenticated) and withdraws the record (via `MdnsCore::unregister`) when
+/// the CA is destroyed — so a node that boots Open and later runs `certmesh create`
+/// advertises without a restart (ADR-020 P4-adjacent; this announce was startup-gated
+/// before). The record is also withdrawn by the mDNS goodbye on shutdown.
+pub(crate) async fn register_certmesh_record(
+    certmesh: &std::sync::Arc<koi_certmesh::CertmeshCore>,
+    mdns: &std::sync::Arc<koi_mdns::MdnsCore>,
     http_port: u16,
 ) -> Option<String> {
-    let certmesh = cores.certmesh.as_ref()?;
-    let mdns = cores.mdns.as_ref()?;
     // Only advertise once a CA exists — the fingerprint is the whole point of the
     // record. An uninitialized node has nothing to advertise.
     let fingerprint = certmesh.ca_fingerprint().await?;

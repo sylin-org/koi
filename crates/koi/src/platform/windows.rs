@@ -548,10 +548,11 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             }));
         }
 
-        // Trust-plane TLS listeners (mTLS inter-node + ACME), posture-reactive —
-        // the SAME supervisor the foreground daemon spawns (ADR-020 P4c / ADR-016
-        // §2). Sharing it fixes a prior parity defect: this path used to start mTLS
-        // but silently omit ACME.
+        // Trust-plane presence (mTLS inter-node + ACME + _certmesh._tcp announce),
+        // posture-reactive — the SAME supervisor the foreground daemon spawns
+        // (ADR-020 P4c / ADR-016 §2). Sharing it fixes prior parity defects: this
+        // path used to start mTLS but silently omit ACME, and announced the CA only
+        // at boot (startup-gated).
         crate::adapters::trust_plane::spawn(
             &cores,
             crate::adapters::trust_plane::TrustPlaneConfig {
@@ -559,6 +560,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 acme_port: config.acme_port,
                 no_acme: config.no_acme,
                 dns_zone: config.dns_zone.clone(),
+                announce_http_port: (!config.no_http).then_some(config.http_port),
             },
             cancel.clone(),
             &mut tasks,
@@ -630,13 +632,9 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             !config.no_mcp_http && !config.no_http,
         );
 
-        // Certmesh CA discovery descriptor (`_certmesh._tcp` with fp= TXT, ADR-017
-        // F12), shared with the foreground daemon. No-op without a CA / HTTP / mDNS.
-        let _certmesh_announce_id = if !config.no_http {
-            crate::infra::announce_certmesh_endpoint(&cores, config.http_port).await
-        } else {
-            None
-        };
+        // The `_certmesh._tcp` CA discovery record (ADR-017 F12) is published by the
+        // posture-reactive trust-plane supervisor above — it appears the moment a CA
+        // is created, even on a node that booted Open, without a restart.
 
         // Write breadcrumb for client discovery
         if !config.no_http {

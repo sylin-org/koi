@@ -123,10 +123,10 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         }));
     }
 
-    // ── Trust-plane TLS listeners (mTLS inter-node + ACME), posture-reactive ──
-    // One supervisor owns both and brings them up/down as the certmesh CA appears
-    // or is destroyed — no restart (ADR-020 P4c / ADR-016 §2). Shared verbatim with
-    // the Windows service so the two boot paths cannot drift.
+    // ── Trust-plane presence (mTLS inter-node + ACME + _certmesh._tcp announce) ──
+    // One posture-reactive supervisor owns all three and brings them up/down as the
+    // certmesh CA appears or is destroyed — no restart (ADR-020 P4c / ADR-016 §2).
+    // Shared verbatim with the Windows service so the two boot paths cannot drift.
     adapters::trust_plane::spawn(
         &cores,
         adapters::trust_plane::TrustPlaneConfig {
@@ -134,6 +134,7 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             acme_port: config.acme_port,
             no_acme: config.no_acme,
             dns_zone: config.dns_zone.clone(),
+            announce_http_port: (!config.no_http).then_some(config.http_port),
         },
         cancel.clone(),
         &mut tasks,
@@ -218,14 +219,9 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         !config.no_mcp_http && !config.no_http,
     );
 
-    // ── Certmesh CA discovery descriptor (one `_certmesh._tcp` with fp= TXT) ──
-    // ADR-017 F12. Gated on certmesh + a CA existing; withdrawn by the mDNS goodbye
-    // on shutdown. A no-op when HTTP/mDNS is disabled (no mdns core to register on).
-    let _certmesh_announce_id = if !config.no_http {
-        crate::infra::announce_certmesh_endpoint(&cores, config.http_port).await
-    } else {
-        None
-    };
+    // The `_certmesh._tcp` CA discovery record (ADR-017 F12) is published by the
+    // posture-reactive trust-plane supervisor above (not here), so it appears the
+    // moment a CA is created — even on a node that booted Open — without a restart.
 
     // ── Enrollment-approval pump ──
     // The certmesh role loops are spawned by build_cores (shared with the Windows service).

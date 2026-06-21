@@ -1,20 +1,23 @@
-//! The daemon's trust-plane TLS listeners — posture-reactive (ADR-020 P4c / ADR-016 §2).
+//! The daemon's trust-plane presence — posture-reactive (ADR-020 P4c / ADR-016 §2).
 //!
-//! One supervisor owns **both** the inter-node mTLS listener (5642) and the ACME
-//! server-auth listener (5643): it brings them up when the certmesh CA becomes
-//! available and tears them down when the CA is destroyed — with no daemon
-//! restart. The foreground daemon (`daemon_mode`) and the Windows service
-//! (`run_service`) both spawn the trust plane through this one function, so the two
-//! boot paths cannot drift. (Previously each inlined the wiring and the Windows
-//! path had already silently dropped ACME — the exact class of parity defect the
-//! `koi-compose` layer exists to prevent.)
+//! One supervisor owns the node's whole trust-plane presence: the inter-node mTLS
+//! listener (5642), the ACME server-auth listener (5643), **and** the
+//! `_certmesh._tcp` mDNS discovery record (ADR-017 F12). It brings them all up when
+//! the certmesh CA becomes available and tears them all down when the CA is
+//! destroyed — with no daemon restart. The foreground daemon (`daemon_mode`) and
+//! the Windows service (`run_service`) both spawn the trust plane through this one
+//! function, so the two boot paths cannot drift. (Previously each inlined the
+//! wiring and the Windows path had already silently dropped ACME — the exact class
+//! of parity defect the `koi-compose` layer exists to prevent.)
 //!
-//! Before ADR-020 these listeners were gated **once at boot** on a CA already
-//! existing (`self_enroll` at startup). A node that booted Open and later ran
-//! `koi certmesh create` then had a dead trust plane until restart — ADR-016 §2's
-//! "startup-gated mTLS/ACME listeners" bug. The supervisor keys off
-//! [`CertmeshCore::watch_posture`](koi_certmesh::CertmeshCore::watch_posture) so
-//! the trust plane is live whenever the CA exists.
+//! Before ADR-020 these were gated **once at boot** on a CA already existing
+//! (`self_enroll` / `announce_certmesh_endpoint` at startup). A node that booted
+//! Open and later ran `koi certmesh create` then had a dead trust plane AND an
+//! unadvertised CA until restart — ADR-016 §2's "startup-gated mTLS/ACME listeners"
+//! bug, of which the unadvertised `_certmesh._tcp` record was a sibling (found on
+//! hardware, two-box run 2026-06-20). The supervisor keys off
+//! [`CertmeshCore::watch_posture`](koi_certmesh::CertmeshCore::watch_posture) so the
+//! whole trust-plane presence is live whenever the CA exists.
 
 use std::sync::Arc;
 
@@ -23,13 +26,16 @@ use tokio_util::sync::CancellationToken;
 
 use koi_compose::cores::Cores;
 
-/// Ports + zone the trust-plane listeners need. Host-agnostic — the ACME base
+/// Ports + zone the trust-plane presence needs. Host-agnostic — the ACME base
 /// FQDN is derived from the local hostname inside the supervisor.
 pub struct TrustPlaneConfig {
     pub mtls_port: u16,
     pub acme_port: u16,
     pub no_acme: bool,
     pub dns_zone: String,
+    /// HTTP port to advertise in the `_certmesh._tcp` discovery record, or `None`
+    /// when HTTP is disabled (then no discovery record is published).
+    pub announce_http_port: Option<u16>,
 }
 
 /// Spawn the posture-reactive trust-plane supervisor (no-op when certmesh is
@@ -46,41 +52,44 @@ pub fn spawn(
         return;
     };
     let dns = cores.dns.clone();
+    let mdns = cores.mdns.clone();
 
     tasks.push(tokio::spawn(async move {
         let mut posture_rx = certmesh.watch_posture();
-        // `live` holds the listeners' shared cancel token + their JoinHandles while
-        // the trust plane is up; `None` while the node is Open.
-        let mut live: Option<(CancellationToken, Vec<JoinHandle<()>>)> = None;
+        // `live` holds the trust-plane presence (listener cancel token + their
+        // JoinHandles + the mDNS announce id) while up; `None` while the node is Open.
+        let mut live: Option<Live> = None;
 
         loop {
             let secure = posture_rx.borrow_and_update().signed;
             match (secure, live.is_some()) {
                 // CA appeared → bring the trust plane up.
                 (true, false) => {
-                    if let Some(started) = start_listeners(&certmesh, &dns, &cfg, &cancel).await {
-                        tracing::info!("trust-plane listeners started (CA available)");
+                    if let Some(started) =
+                        start_listeners(&certmesh, &dns, &mdns, &cfg, &cancel).await
+                    {
+                        tracing::info!("trust-plane presence started (CA available)");
                         live = Some(started);
                     }
                     // If self-enroll is not ready yet, retry on the next posture change.
                 }
                 // CA destroyed → take the trust plane down (drain in-flight first).
                 (false, true) => {
-                    stop_listeners(live.take()).await;
-                    tracing::info!("trust-plane listeners stopped (CA unavailable)");
+                    stop_listeners(live.take(), &mdns).await;
+                    tracing::info!("trust-plane presence stopped (CA unavailable)");
                 }
                 _ => {}
             }
 
             tokio::select! {
                 _ = cancel.cancelled() => {
-                    stop_listeners(live.take()).await;
+                    stop_listeners(live.take(), &mdns).await;
                     break;
                 }
                 changed = posture_rx.changed() => {
                     if changed.is_err() {
                         // The certmesh core was dropped — tear down and exit.
-                        stop_listeners(live.take()).await;
+                        stop_listeners(live.take(), &mdns).await;
                         break;
                     }
                 }
@@ -89,12 +98,26 @@ pub fn spawn(
     }));
 }
 
-/// Cancel the listeners' token and await their tasks (graceful drain). No-op when
-/// the trust plane is already down.
-async fn stop_listeners(live: Option<(CancellationToken, Vec<JoinHandle<()>>)>) {
-    if let Some((token, handles)) = live {
-        token.cancel();
-        for h in handles {
+/// The trust-plane presence while a CA is available: the listeners' shared child
+/// cancel token + their task handles, plus the `_certmesh._tcp` mDNS announce id (if
+/// it was published). Dropped/torn down when the CA goes away.
+struct Live {
+    cancel: CancellationToken,
+    handles: Vec<JoinHandle<()>>,
+    announce_id: Option<String>,
+}
+
+/// Withdraw the mDNS announce, cancel the listeners' token and await their tasks
+/// (graceful drain). No-op when the trust plane is already down.
+async fn stop_listeners(live: Option<Live>, mdns: &Option<Arc<koi_mdns::MdnsCore>>) {
+    if let Some(live) = live {
+        if let (Some(id), Some(mdns)) = (live.announce_id.as_deref(), mdns) {
+            if let Err(e) = mdns.unregister(id) {
+                tracing::debug!(error = %e, "failed to withdraw _certmesh._tcp announce");
+            }
+        }
+        live.cancel.cancel();
+        for h in live.handles {
             let _ = h.await;
         }
     }
@@ -106,9 +129,10 @@ async fn stop_listeners(live: Option<(CancellationToken, Vec<JoinHandle<()>>)>) 
 async fn start_listeners(
     certmesh: &Arc<koi_certmesh::CertmeshCore>,
     dns: &Option<Arc<koi_dns::DnsRuntime>>,
+    mdns: &Option<Arc<koi_mdns::MdnsCore>>,
     cfg: &TrustPlaneConfig,
     parent_cancel: &CancellationToken,
-) -> Option<(CancellationToken, Vec<JoinHandle<()>>)> {
+) -> Option<Live> {
     // The mTLS and ACME listeners both present this self-issued leaf; issue it once.
     let enrollment = match certmesh.self_enroll().await {
         Ok(e) => e,
@@ -177,7 +201,21 @@ async fn start_listeners(
         }
     }
 
-    Some((token, handles))
+    // ── `_certmesh._tcp` discovery announce (ADR-017 F12, on the HTTP port) ──
+    // Reactive: published now that the CA exists; withdrawn in `stop_listeners`.
+    // No-op when HTTP or mDNS is disabled (no port / no core to register on).
+    let announce_id = match (mdns, cfg.announce_http_port) {
+        (Some(mdns), Some(http_port)) => {
+            crate::infra::register_certmesh_record(certmesh, mdns, http_port).await
+        }
+        _ => None,
+    };
+
+    Some(Live {
+        cancel: token,
+        handles,
+        announce_id,
+    })
 }
 
 /// Best-effort local hostname for the ACME base URL. ACME clients reach the
