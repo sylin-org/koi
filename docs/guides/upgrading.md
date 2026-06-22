@@ -169,6 +169,31 @@ all of it.
 
 ---
 
+## The 0.5.0 upgrade
+
+**0.5.0 changes behavior at the network edge — nothing on disk needs migrating.** The
+breaking changes are about *who can call what* once the daemon is exposed off-loopback, and
+about embedding. If you run Koi loopback-only and drive it from the CLI, you're unaffected.
+Review these if you expose the daemon (`--http-bind`), script against it from another host,
+or embed it:
+
+- **Some GET reads now need the token from a remote peer.** `GET /v1/certmesh/diagnose` and
+  `/v1/dns/{list,zone,entries}` stay token-free on loopback, but a **non-loopback** caller
+  must send `-H "x-koi-token: $TOKEN"` (read it with `koi token show`). A remote script that
+  polled `…/v1/dns/zone` unauthenticated now gets a `401` — add the header.
+  `/v1/certmesh/status` and `/v1/certmesh/trust-bundle` stay open (enrollment depends on them).
+- **The audit log and the UDP surface are token-gated on every method.** `GET /v1/certmesh/log`,
+  `GET /v1/udp/status`, and `GET /v1/udp/recv/{id}` now require the token.
+- **UDP binds loopback by default.** `koi udp bind` (and `send` to a non-loopback destination)
+  now needs `--allow-remote`. A binding that used to listen on `0.0.0.0` must pass it explicitly.
+- **Embedding is secure-by-default.** If you build with `announce_http()`, you must now also set
+  `http_token(..)` or `start()` returns `KoiError::InsecureConfig` (it used to warn and continue).
+  Loopback-only embedders are unaffected.
+
+No certmesh re-create or roster migration is required for 0.5.0 (that was a 0.4.2 caveat, below).
+
+---
+
 ## The 0.4.2 upgrade (specific caveat)
 
 **0.4.2 carries breaking changes despite the patch version.** The

@@ -12,11 +12,11 @@
         irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
 
     With options, set an env var first:
-        $env:KOI_VERSION = 'v0.4.2'
+        $env:KOI_VERSION = 'v0.5.0'
         irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
 
 .PARAMETER Version
-    Pin a release tag, e.g. v0.4.2. Defaults to the latest release, or the
+    Pin a release tag, e.g. v0.5.0. Defaults to the latest release, or the
     KOI_VERSION environment variable.
 
 .PARAMETER InstallDir
