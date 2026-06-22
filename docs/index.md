@@ -68,6 +68,30 @@ Cross-cutting journeys that stitch several capabilities together:
 
 ---
 
+## Capability cards
+
+One-screen maps of a single capability — the canonical pattern, the flags you'll use, and
+the proof it works. Faster than a guide when you already know what you want. Full list:
+[cards index](reference/cards/index.md).
+
+**Discovery & naming** — [mDNS discovery](reference/cards/mdns-discovery.md) ·
+[.internal zone](reference/cards/internal-zone.md)
+
+**Trust & serving** — [trusted HTTPS](reference/cards/trusted-https.md) ·
+[certmesh invite](reference/cards/certmesh-invite.md) ·
+[trust doctor & posture](reference/cards/trust-doctor.md) ·
+[ACME issuance](reference/cards/acme-issuance.md) · [TLS proxy](reference/cards/tls-proxy.md)
+
+**Operate** — [health](reference/cards/machine-health.md) ·
+[UDP bridge](reference/cards/udp-bridge.md) ·
+[container auto-wire](reference/cards/container-autowire.md)
+
+**Interfaces & embedding** — [MCP agent door](reference/cards/mcp-agent-door.md) ·
+[install + verify](reference/cards/install-and-verify.md) ·
+[embed Koi](reference/cards/embedded.md)
+
+---
+
 ## Reference
 
 Information-oriented, dry and exact.
