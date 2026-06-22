@@ -2188,7 +2188,6 @@ dependencies = [
  "futures-util",
  "hickory-proto",
  "hostname",
- "if-addrs",
  "koi-certmesh",
  "koi-client",
  "koi-common",
@@ -2201,6 +2200,7 @@ dependencies = [
  "koi-mdns",
  "koi-proxy",
  "koi-runtime",
+ "koi-serve",
  "koi-udp",
  "reqwest 0.12.28",
  "serde",
@@ -2209,10 +2209,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
- "tower-http",
  "tracing",
- "utoipa",
- "utoipa-scalar",
 ]
 
 [[package]]

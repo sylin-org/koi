@@ -69,26 +69,62 @@ struct AppState {
     /// Whether the in-process MCP HTTP transport (`/v1/mcp`) is mounted. Reported
     /// on `/v1/status` as a field (MCP-HTTP is a transport, not a domain rung).
     mcp_http_enabled: bool,
+    /// `/v1/status` `daemon` field — a full daemon (`true`) vs an embedded instance.
+    daemon: bool,
 }
 
 // ── Entrypoint ──────────────────────────────────────────────────────
 
-// Wiring entrypoint: it threads every daemon component through to the HTTP
-// adapter. Pre-existing signature (P03); clippy 0.1.95 (> repo MSRV 1.92) newly
-// flags the arg count. Behaviour-neutral allow to keep the gate green.
-#[allow(clippy::too_many_arguments)]
+/// Declarative description of the HTTP surface to serve. One router builder backs both
+/// the daemon (full surface: DAT auth, MCP, admin-shutdown, OpenAPI) via [`crate::serve`]
+/// and an embedded host (loopback bind, optional auth, no MCP) — one implementation, so
+/// their `/v1/status` shapes and route sets cannot drift.
+pub struct HttpConfig {
+    /// Resolved bind address (loopback by default — the caller owns the bind policy).
+    pub bind_ip: std::net::IpAddr,
+    pub port: u16,
+    pub started_at: std::time::Instant,
+    /// Dashboard state — `Some` mounts the dashboard SPA + snapshot/events routes.
+    pub dashboard: Option<DashboardState>,
+    /// Browser state — `Some` mounts the mDNS browser page + routes (else a 503 fallback).
+    pub browser: Option<BrowserState>,
+    /// DAT for mutation auth — `Some` enforces the `x-koi-token` middleware; `None` leaves
+    /// mutations unauthenticated (only safe behind a loopback bind).
+    pub auth: Option<String>,
+    /// Cached mDNS snapshot for the Prometheus `?include=discovered` slice.
+    pub mdns_snapshot: Option<Arc<dyn koi_common::integration::MdnsSnapshot>>,
+    /// Mount the in-process MCP HTTP transport at `/v1/mcp`.
+    pub mcp_http: bool,
+    /// Mount `POST /v1/admin/shutdown` (cancels the serving token).
+    pub admin_shutdown: bool,
+    /// Mount `/docs` (Scalar) + `/openapi.json`.
+    pub api_docs: bool,
+    /// `/v1/status` `daemon` field — a full daemon (`true`) vs an embedded instance.
+    pub daemon: bool,
+}
+
+/// Build the router for `cores` per `cfg`, bind `bind_ip:port`, and serve until `cancel`
+/// fires. The single HTTP entry point shared by the daemon and the Windows service (both
+/// via [`crate::serve`]) and by koi-embedded.
 pub async fn start(
     cores: DaemonCores,
-    bind_ip: std::net::IpAddr,
-    port: u16,
+    cfg: HttpConfig,
     cancel: CancellationToken,
-    started_at: std::time::Instant,
-    dashboard_state: DashboardState,
-    browser_state: Option<BrowserState>,
-    dat_token: String,
-    mdns_snapshot: Option<Arc<dyn koi_common::integration::MdnsSnapshot>>,
-    mcp_http_enabled: bool,
 ) -> anyhow::Result<()> {
+    let HttpConfig {
+        bind_ip,
+        port,
+        started_at,
+        dashboard: dashboard_state,
+        browser: browser_state,
+        auth,
+        mdns_snapshot,
+        mcp_http: mcp_http_enabled,
+        admin_shutdown,
+        api_docs,
+        daemon,
+    } = cfg;
+
     let app_state = AppState {
         mdns: cores.mdns.clone(),
         certmesh: cores.certmesh.clone(),
@@ -103,25 +139,36 @@ pub async fn start(
         mdns_browse: browser_state.as_ref().map(|b| b.meta.clone()),
         mdns_snapshot,
         mcp_http_enabled,
+        daemon,
     };
 
-    // ── Dashboard (always mounted) ──
+    // ── System endpoints (always mounted) ──
     let mut app = Router::new()
         .route(paths::HEALTHZ, get(health))
         .route(paths::UNIFIED_STATUS, get(unified_status_handler))
-        .route(paths::SHUTDOWN, post(shutdown_handler))
         .route(paths::HOST, get(host_handler))
         .route(paths::PROMETHEUS_SD, get(prometheus_sd_handler))
-        .route(paths::MCP_SERVER_CARD, get(mcp_server_card_handler))
-        .route("/", get(koi_dashboard::dashboard::get_dashboard))
-        .route(
-            "/v1/dashboard/snapshot",
-            get(koi_dashboard::dashboard::get_snapshot),
-        )
-        .route(
-            "/v1/dashboard/events",
-            get(koi_dashboard::dashboard::get_events),
-        );
+        .route(paths::MCP_SERVER_CARD, get(mcp_server_card_handler));
+
+    // ── Admin shutdown (daemon / Windows service only; an embedded host owns its own
+    // lifecycle via its handle, so it does not expose a remote shutdown endpoint) ──
+    if admin_shutdown {
+        app = app.route(paths::SHUTDOWN, post(shutdown_handler));
+    }
+
+    // ── Dashboard (mounted when a DashboardState is supplied) ──
+    if dashboard_state.is_some() {
+        app = app
+            .route("/", get(koi_dashboard::dashboard::get_dashboard))
+            .route(
+                "/v1/dashboard/snapshot",
+                get(koi_dashboard::dashboard::get_snapshot),
+            )
+            .route(
+                "/v1/dashboard/events",
+                get(koi_dashboard::dashboard::get_events),
+            );
+    }
 
     // ── mDNS browser (conditional on mDNS being enabled) ──
     if let Some(bs) = browser_state {
@@ -241,41 +288,49 @@ pub async fn start(
         app = app.nest(paths::MCP, disabled_fallback_router("mcp-http"));
     }
 
-    // OpenAPI spec - composed from domain-owned specs via nest()
-    let openapi = build_openapi();
-
-    // Serve interactive API docs at /docs and raw spec at /openapi.json
-    app = app.merge(Scalar::with_url("/docs", openapi.clone()));
-    let spec_json = match openapi.to_pretty_json() {
-        Ok(json) => json,
-        Err(e) => {
-            tracing::error!(error = %e, "OpenAPI JSON serialization failed");
-            String::from(r#"{"error":"OpenAPI serialization failed"}"#)
-        }
-    };
-    app = app.route(
-        "/openapi.json",
-        get(move || {
-            let json = spec_json.clone();
-            async move {
-                (
-                    [(axum::http::header::CONTENT_TYPE, "application/json")],
-                    json,
-                )
+    // ── OpenAPI spec + Scalar docs (conditional) ──
+    if api_docs {
+        // Composed from domain-owned specs via nest().
+        let openapi = build_openapi();
+        // Serve interactive API docs at /docs and the raw spec at /openapi.json.
+        app = app.merge(Scalar::with_url("/docs", openapi.clone()));
+        let spec_json = match openapi.to_pretty_json() {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::error!(error = %e, "OpenAPI JSON serialization failed");
+                String::from(r#"{"error":"OpenAPI serialization failed"}"#)
             }
-        }),
-    );
+        };
+        app = app.route(
+            "/openapi.json",
+            get(move || {
+                let json = spec_json.clone();
+                async move {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        json,
+                    )
+                }
+            }),
+        );
+    }
 
     app = app.layer(Extension(app_state));
-    app = app.layer(Extension(dashboard_state));
+    if let Some(ds) = dashboard_state {
+        app = app.layer(Extension(ds));
+    }
 
-    // DAT auth middleware: mutation requests (non-GET/OPTIONS) require X-Koi-Token header.
-    // Applied BEFORE CORS so it only sees real requests (CORS handles OPTIONS preflight).
-    let shared_token = Arc::new(dat_token);
-    app = app.layer(middleware::from_fn(move |req, next| {
-        let token = Arc::clone(&shared_token);
-        dat_auth_middleware(req, next, token)
-    }));
+    // DAT auth middleware: mutation requests (non-GET/OPTIONS) require the x-koi-token
+    // header when a token is configured. Applied BEFORE CORS so it only sees real requests
+    // (CORS handles OPTIONS preflight). `None` — an embedded host on a loopback bind —
+    // leaves mutations open to the loopback boundary.
+    if let Some(token) = auth {
+        let shared_token = Arc::new(token);
+        app = app.layer(middleware::from_fn(move |req, next| {
+            let token = Arc::clone(&shared_token);
+            dat_auth_middleware(req, next, token)
+        }));
+    }
 
     // CORS must be the LAST .layer() call (outermost) so OPTIONS preflight
     // is handled before auth middleware strips unauthenticated requests.
@@ -622,7 +677,7 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
         "version": env!("CARGO_PKG_VERSION"),
         "platform": std::env::consts::OS,
         "uptime_secs": uptime_secs,
-        "daemon": true,
+        "daemon": state.daemon,
         "http_bind": state.http_bind,
         "mdns_browse_active": state.mdns_browse.as_ref().map(|m| m.is_active()),
         "mcp_http": state.mcp_http_enabled,
@@ -1152,6 +1207,7 @@ mod tests {
             mdns_browse: None,
             mdns_snapshot: None,
             mcp_http_enabled: false,
+            daemon: true,
         }
     }
 

@@ -31,6 +31,10 @@ pub struct KoiConfig {
     pub api_docs_enabled: bool,
     pub mdns_browser_enabled: bool,
     pub announce_http: bool,
+    /// Optional Daemon Access Token for the embedded HTTP adapter. `Some` requires the
+    /// `x-koi-token` header on every mutation (parity with the daemon); `None` leaves
+    /// mutations unauthenticated — safe only behind the loopback bind that is the default.
+    pub http_token: Option<String>,
     pub dns_config: DnsConfig,
     pub dns_auto_start: bool,
     pub health_auto_start: bool,
@@ -98,6 +102,7 @@ impl Default for KoiConfig {
             api_docs_enabled: false,
             mdns_browser_enabled: false,
             announce_http: false,
+            http_token: None,
             dns_config: DnsConfig::default(),
             dns_auto_start: false,
             health_auto_start: false,

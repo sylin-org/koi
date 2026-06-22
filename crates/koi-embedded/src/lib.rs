@@ -1,7 +1,6 @@
 mod config;
 mod events;
 mod handle;
-pub(crate) mod http;
 mod serve;
 pub mod testkit;
 
@@ -225,8 +224,22 @@ impl Builder {
         self
     }
 
+    /// Advertise this host's `_http._tcp` record on the LAN so peers discover it. Because
+    /// the advertised endpoint must be reachable, enabling this binds the embedded HTTP
+    /// adapter to `0.0.0.0` (all interfaces) instead of the secure loopback default.
+    /// **Strongly pair with [`http_token`](Self::http_token)** — otherwise mutations are
+    /// unauthenticated to the whole LAN (a runtime warning is logged if you do not).
     pub fn announce_http(mut self, enabled: bool) -> Self {
         self.config.announce_http = enabled;
+        self
+    }
+
+    /// Require an `x-koi-token` header for embedded HTTP mutations (parity with the
+    /// daemon's DAT). Optional: by default the embedded HTTP adapter binds loopback and
+    /// leaves mutations unauthenticated. Set a token when exposing the adapter to the LAN
+    /// (see [`announce_http`](Self::announce_http)).
+    pub fn http_token(mut self, token: impl Into<String>) -> Self {
+        self.config.http_token = Some(token.into());
         self
     }
 
@@ -437,34 +450,53 @@ impl KoiEmbedded {
             None
         };
 
-        // Spawn embedded HTTP adapter if enabled
+        // Spawn the embedded HTTP adapter via the shared koi-serve router — the SAME
+        // implementation the daemon uses, so there is no separate embedded server and no
+        // /v1/status drift. Secure-by-default: bind loopback unless the host opts into LAN
+        // exposure via `announce_http`; mutations are unauthenticated unless `http_token`
+        // is set.
         if self.config.http_enabled {
-            let http_port = self.config.http_port;
             let http_cancel = cancel.clone();
-            let http_mdns = mdns.clone();
-            let http_dns = dns.clone();
-            let http_health = health.clone();
-            let http_certmesh = certmesh.clone();
-            let http_proxy = proxy.clone();
-            let http_udp = udp.clone();
-            let http_runtime = runtime.clone();
-            let http_api_docs = self.config.api_docs_enabled;
+            let http_cores = koi_compose::cores::Cores {
+                mdns: mdns.clone(),
+                certmesh: certmesh.clone(),
+                dns: dns.clone(),
+                health: health.clone(),
+                proxy: proxy.clone(),
+                udp: udp.clone(),
+                runtime: runtime.clone(),
+                mdns_snapshot: mdns_bridge.clone(),
+            };
+            let exposed = self.config.announce_http;
+            let bind_ip = if exposed {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+            } else {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+            };
+            if exposed && self.config.http_token.is_none() {
+                tracing::warn!(
+                    port = self.config.http_port,
+                    "embedded HTTP is exposed on 0.0.0.0 with NO token — mutations are \
+                     unauthenticated to the whole LAN; call .http_token(..) to require x-koi-token"
+                );
+            }
+            let http_cfg = koi_serve::http::HttpConfig {
+                bind_ip,
+                port: self.config.http_port,
+                started_at: std::time::Instant::now(),
+                dashboard: dashboard_state,
+                browser: browser_state,
+                auth: self.config.http_token.clone(),
+                mdns_snapshot: mdns_bridge.clone(),
+                mcp_http: false,
+                admin_shutdown: false,
+                api_docs: self.config.api_docs_enabled,
+                daemon: false,
+            };
             tasks.push(tokio::spawn(async move {
-                http::serve(
-                    http_port,
-                    http_mdns,
-                    http_dns,
-                    http_health,
-                    http_certmesh,
-                    http_proxy,
-                    http_udp,
-                    http_runtime,
-                    dashboard_state,
-                    browser_state,
-                    http_api_docs,
-                    http_cancel,
-                )
-                .await;
+                if let Err(e) = koi_serve::http::start(http_cores, http_cfg, http_cancel).await {
+                    tracing::error!(error = %e, "embedded HTTP adapter failed");
+                }
             }));
         }
 

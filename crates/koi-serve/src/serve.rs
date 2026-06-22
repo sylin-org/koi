@@ -87,32 +87,26 @@ pub fn serve(
         .as_ref()
         .map(|mdns| koi_dashboard::browser::build_state(mdns.clone(), cancel.clone()));
 
-    // ── HTTP adapter ──
+    // ── HTTP adapter (the full daemon surface: dashboard, DAT auth, MCP, admin-shutdown,
+    // OpenAPI) ──
     if !cfg.no_http {
         let c = cores.clone();
-        let port = cfg.http_port;
-        let bind_ip = cfg.bind_ip;
         let cancel_token = cancel.clone();
-        let ds = dashboard_state.clone();
-        let bs = browser_state.clone();
-        let dat = cfg.dat_token.clone();
-        let mdns_snap = cores.mdns_snapshot.clone();
-        let mcp_http = !cfg.no_mcp_http;
+        let http_cfg = crate::http::HttpConfig {
+            bind_ip: cfg.bind_ip,
+            port: cfg.http_port,
+            started_at,
+            dashboard: Some(dashboard_state.clone()),
+            browser: browser_state.clone(),
+            auth: Some(cfg.dat_token.clone()),
+            mdns_snapshot: cores.mdns_snapshot.clone(),
+            mcp_http: !cfg.no_mcp_http,
+            admin_shutdown: true,
+            api_docs: true,
+            daemon: true,
+        };
         tasks.push(tokio::spawn(async move {
-            if let Err(e) = crate::http::start(
-                c,
-                bind_ip,
-                port,
-                cancel_token,
-                started_at,
-                ds,
-                bs,
-                dat,
-                mdns_snap,
-                mcp_http,
-            )
-            .await
-            {
+            if let Err(e) = crate::http::start(c, http_cfg, cancel_token).await {
                 tracing::error!(error = %e, "HTTP adapter failed");
             }
         }));
