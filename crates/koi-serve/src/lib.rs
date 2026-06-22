@@ -37,5 +37,10 @@ pub mod mcp_http;
 pub mod mtls;
 pub mod pipe;
 pub mod prometheus_sd;
+pub mod serve;
 pub mod stdio;
 pub mod trust_plane;
+
+/// The unified serving entry point — spawn the full transport + presence stack for a
+/// constructed [`koi_compose::cores::Cores`]. See [`serve`](serve::serve).
+pub use serve::{serve, ServeConfig};

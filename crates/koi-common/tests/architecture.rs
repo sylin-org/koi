@@ -39,8 +39,9 @@ fn classify(pkg: &str) -> Option<Class> {
         // so it is composition (it depends on koi-client, a domain-class crate).
         // `koi-serve` is the serving layer (transports + trust plane); it depends on
         // koi-compose + every domain it mounts, so it is composition too.
-        "koi-dashboard" | "koi-compose" | "koi-serve" | "koi-embedded" | "koi-net"
-        | "koi-mcp" => Class::Composition,
+        "koi-dashboard" | "koi-compose" | "koi-serve" | "koi-embedded" | "koi-net" | "koi-mcp" => {
+            Class::Composition
+        }
         _ => return None, // non-koi crates are out of scope
     })
 }

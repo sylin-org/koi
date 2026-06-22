@@ -490,117 +490,34 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             .await;
         }
 
-        // Dashboard state
-        let dashboard_state =
-            koi_serve::dashboard::build_dashboard_state(&cores, started_at, "daemon");
-        tasks.push(koi_dashboard::forward::spawn_event_forwarder(
-            koi_dashboard::forward::ForwarderCores {
-                mdns: cores.mdns.clone(),
-                certmesh: cores.certmesh.clone(),
-                dns: cores.dns.clone(),
-                health: cores.health.clone(),
-                proxy: cores.proxy.clone(),
-                runtime: cores.runtime.clone(),
-            },
-            dashboard_state.event_tx.clone(),
-            cancel.clone(),
-        ));
-
-        // mDNS browser state (lazy meta-browse; conditional on mDNS being enabled).
-        // No LAN-wide browsing until the first browser request (koi_dashboard::meta_browse).
-        let browser_state = cores
-            .mdns
-            .as_ref()
-            .map(|mdns| koi_dashboard::browser::build_state(mdns.clone(), cancel.clone()));
-
-        // HTTP adapter
-        if !config.no_http {
-            let c = cores.clone();
-            let port = config.http_port;
-            let bind_ip =
-                http_bind_ip.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
-            let cancel_token = cancel.clone();
-            let ds = dashboard_state.clone();
-            let bs = browser_state.clone();
-            let dat = dat_token.clone();
-            let mdns_snap = cores.mdns_snapshot.clone();
-            let mcp_http = !config.no_mcp_http;
-            tasks.push(tokio::spawn(async move {
-                if let Err(e) = koi_serve::http::start(
-                    c,
-                    bind_ip,
-                    port,
-                    cancel_token,
-                    started_at,
-                    ds,
-                    bs,
-                    dat,
-                    mdns_snap,
-                    mcp_http,
-                )
-                .await
-                {
-                    tracing::error!(error = %e, "HTTP adapter failed");
-                }
-            }));
-        }
-
-        // Trust-plane presence (mTLS inter-node + ACME + _certmesh._tcp announce),
-        // posture-reactive — the SAME supervisor the foreground daemon spawns
-        // (ADR-020 P4c / ADR-016 §2). Sharing it fixes prior parity defects: this
-        // path used to start mTLS but silently omit ACME, and announced the CA only
-        // at boot (startup-gated).
-        koi_serve::trust_plane::spawn(
+        // ── Serving stack (shared verbatim with daemon_mode via koi-serve) ──
+        // The SAME stack the foreground daemon spawns (ADR-020 P4c / ADR-016 §2), so the
+        // two boot paths cannot drift — fixing prior parity defects where the service
+        // started mTLS but silently omitted ACME and announced the CA only at boot. The
+        // service always serves the dashboard.
+        koi_serve::serve(
             &cores,
-            koi_serve::trust_plane::TrustPlaneConfig {
+            started_at,
+            koi_serve::ServeConfig {
+                bind_ip: http_bind_ip
+                    .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+                http_port: config.http_port,
+                no_http: config.no_http,
+                no_ipc: config.no_ipc,
+                no_mcp_http: config.no_mcp_http,
+                pipe_path: config.pipe_path.clone(),
                 mtls_port: config.mtls_port,
                 acme_port: config.acme_port,
                 no_acme: config.no_acme,
                 dns_zone: config.dns_zone.clone(),
-                announce_http_port: (!config.no_http).then_some(config.http_port),
+                announce_http: config.announce_http,
+                dashboard: true,
+                mode: "daemon",
+                dat_token: dat_token.clone(),
             },
-            cancel.clone(),
+            &cancel,
             &mut tasks,
         );
-
-        // IPC adapter (mDNS only - skip if mDNS disabled)
-        if !config.no_ipc {
-            if let Some(ref mdns) = cores.mdns {
-                let c = mdns.clone();
-                let path = config.pipe_path.clone();
-                let token = cancel.clone();
-                tasks.push(tokio::spawn(async move {
-                    if let Err(e) = koi_serve::pipe::start(c, path, token).await {
-                        tracing::error!(error = %e, "IPC adapter failed");
-                    }
-                }));
-            } else {
-                tracing::info!("IPC adapter skipped (mDNS disabled)");
-            }
-        }
-
-        // Self-announce supervisor: _http._tcp (+ _mcp._tcp), posture-reactive — the SAME
-        // supervisor the foreground daemon spawns. It re-stamps _http._tcp on every
-        // Open↔Authenticated flip (so the service advertises its current posture without a
-        // restart) and withdraws both records on shutdown. Sharing it keeps the parity the
-        // prior one-shot announce already established (TXT + ADR-020 stamp). The service
-        // always serves the dashboard.
-        koi_compose::self_announce::spawn(
-            &cores,
-            koi_compose::self_announce::SelfAnnounceConfig {
-                http_port: config.http_port,
-                dashboard_enabled: true,
-                announce_http: config.announce_http && !config.no_http,
-                announce_mcp: !config.no_mcp_http && !config.no_http,
-                dns_zone: config.dns_zone.clone(),
-            },
-            cancel.clone(),
-            &mut tasks,
-        );
-
-        // The `_certmesh._tcp` CA discovery record (ADR-017 F12) is published by the
-        // posture-reactive trust-plane supervisor above — it appears the moment a CA
-        // is created, even on a node that booted Open, without a restart.
 
         // Write breadcrumb for client discovery
         if !config.no_http {

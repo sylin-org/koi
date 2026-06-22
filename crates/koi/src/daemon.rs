@@ -1,6 +1,6 @@
-//! Daemon mode — constructs the daemon via koi-compose (`build_cores`), spawns the binary's
-//! transport adapters, writes the breadcrumb, and runs the ordered shutdown; plus the stdin
-//! enrollment-approval prompt. Moved from main.rs (P07 step 6b).
+//! Daemon mode — constructs the daemon via koi-compose (`build_cores`), spawns the serving
+//! stack via koi-serve (`serve`), writes the breadcrumb, and runs the ordered shutdown; plus
+//! the stdin enrollment-approval prompt. Moved from main.rs (P07 step 6b).
 
 use std::sync::Arc;
 
@@ -66,117 +66,33 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     // always returns Ok, so this never falls back — Cores::default() is a panic-free guard.
     .unwrap_or_default();
 
-    // ── Dashboard state ──
-    let dashboard_state = koi_serve::dashboard::build_dashboard_state(&cores, started_at, "daemon");
-    tasks.push(koi_dashboard::forward::spawn_event_forwarder(
-        koi_dashboard::forward::ForwarderCores {
-            mdns: cores.mdns.clone(),
-            certmesh: cores.certmesh.clone(),
-            dns: cores.dns.clone(),
-            health: cores.health.clone(),
-            proxy: cores.proxy.clone(),
-            runtime: cores.runtime.clone(),
-        },
-        dashboard_state.event_tx.clone(),
-        cancel.clone(),
-    ));
-
-    // ── mDNS browser state (conditional on mDNS being enabled) ──
-    // The LAN-wide meta-browse worker is NOT started here: it starts on the first
-    // browser request and idles out (koi_dashboard::meta_browse). Default daemon
-    // startup performs no LAN-wide browsing.
-    let browser_state = cores
-        .mdns
-        .as_ref()
-        .map(|mdns| koi_dashboard::browser::build_state(mdns.clone(), cancel.clone()));
-
-    // ── HTTP adapter ──
-    if !config.no_http {
-        let c = cores.clone();
-        let port = config.http_port;
-        let bind_ip = http_bind_ip.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
-        let cancel_token = cancel.clone();
-        let ds = dashboard_state.clone();
-        let bs = browser_state.clone();
-        let dat = dat_token.clone();
-        let mdns_snap = cores.mdns_snapshot.clone();
-        let mcp_http = !config.no_mcp_http;
-        tasks.push(tokio::spawn(async move {
-            if let Err(e) = koi_serve::http::start(
-                c,
-                bind_ip,
-                port,
-                cancel_token,
-                started_at,
-                ds,
-                bs,
-                dat,
-                mdns_snap,
-                mcp_http,
-            )
-            .await
-            {
-                tracing::error!(error = %e, "HTTP adapter failed");
-            }
-        }));
-    }
-
-    // ── Trust-plane presence (mTLS inter-node + ACME + _certmesh._tcp announce) ──
-    // One posture-reactive supervisor owns all three and brings them up/down as the
-    // certmesh CA appears or is destroyed — no restart (ADR-020 P4c / ADR-016 §2).
-    // Shared verbatim with the Windows service so the two boot paths cannot drift.
-    koi_serve::trust_plane::spawn(
+    // ── Serving stack (shared verbatim with the Windows service via koi-serve) ──
+    // Dashboard + event forwarder, the mDNS browser, the HTTP adapter, the
+    // posture-reactive trust plane (mTLS + ACME + _certmesh._tcp), the IPC adapter, and
+    // the posture-reactive _http/_mcp self-announce — one call so the two boot paths
+    // cannot drift. The daemon always serves the dashboard.
+    koi_serve::serve(
         &cores,
-        koi_serve::trust_plane::TrustPlaneConfig {
+        started_at,
+        koi_serve::ServeConfig {
+            bind_ip: http_bind_ip.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+            http_port: config.http_port,
+            no_http: config.no_http,
+            no_ipc: config.no_ipc,
+            no_mcp_http: config.no_mcp_http,
+            pipe_path: config.pipe_path.clone(),
             mtls_port: config.mtls_port,
             acme_port: config.acme_port,
             no_acme: config.no_acme,
             dns_zone: config.dns_zone.clone(),
-            announce_http_port: (!config.no_http).then_some(config.http_port),
+            announce_http: config.announce_http,
+            dashboard: true,
+            mode: "daemon",
+            dat_token: dat_token.clone(),
         },
-        cancel.clone(),
+        &cancel,
         &mut tasks,
     );
-
-    // ── IPC adapter (only if mDNS is enabled - IPC speaks mDNS NDJSON protocol) ──
-    if !config.no_ipc {
-        if let Some(ref mdns) = cores.mdns {
-            let c = mdns.clone();
-            let path = config.pipe_path.clone();
-            let token = cancel.clone();
-            tasks.push(tokio::spawn(async move {
-                if let Err(e) = koi_serve::pipe::start(c, path, token).await {
-                    tracing::error!(error = %e, "IPC adapter failed");
-                }
-            }));
-        } else {
-            tracing::info!("IPC adapter: skipped (mDNS disabled)");
-        }
-    }
-
-    // ── Self-announce supervisor: _http._tcp (+ _mcp._tcp), posture-reactive ──
-    // One supervisor publishes this host's _http._tcp record (with the ADR-020 posture stamp)
-    // and the _mcp._tcp transport descriptor, re-stamps _http._tcp on every Open↔Authenticated
-    // flip, and withdraws both on shutdown. Shared by all three boot paths so a node that boots
-    // Open and later runs `certmesh create` updates its advertised posture without a restart —
-    // the same reactivity the trust-plane gives _certmesh._tcp. The daemon always serves the
-    // dashboard.
-    koi_compose::self_announce::spawn(
-        &cores,
-        koi_compose::self_announce::SelfAnnounceConfig {
-            http_port: config.http_port,
-            dashboard_enabled: true,
-            announce_http: config.announce_http && !config.no_http,
-            announce_mcp: !config.no_mcp_http && !config.no_http,
-            dns_zone: config.dns_zone.clone(),
-        },
-        cancel.clone(),
-        &mut tasks,
-    );
-
-    // The `_certmesh._tcp` CA discovery record (ADR-017 F12) is published by the
-    // posture-reactive trust-plane supervisor above (not here), so it appears the
-    // moment a CA is created — even on a node that booted Open — without a restart.
 
     // ── Enrollment-approval pump ──
     // The certmesh role loops are spawned by build_cores (shared with the Windows service).
