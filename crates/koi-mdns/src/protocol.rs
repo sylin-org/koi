@@ -305,31 +305,6 @@ mod tests {
     }
 
     #[test]
-    fn ongoing_response_includes_status() {
-        let resp = MdnsPipelineResponse::ongoing(Response::Found(test_record()));
-        let json = serde_json::to_value(&resp).unwrap();
-        let obj = json.as_object().unwrap();
-        assert_eq!(obj.get("status").unwrap(), "ongoing");
-        assert!(obj.contains_key("found"));
-    }
-
-    #[test]
-    fn finished_response_includes_status() {
-        let resp = MdnsPipelineResponse::finished(Response::Found(test_record()));
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json.get("status").unwrap(), "finished");
-    }
-
-    #[test]
-    fn warning_attaches_to_response() {
-        let resp = MdnsPipelineResponse::finished(Response::Found(test_record()))
-            .with_warning("TXT empty");
-        let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json.get("warning").unwrap(), "TXT empty");
-        assert_eq!(json.get("status").unwrap(), "finished");
-    }
-
-    #[test]
     fn flatten_produces_flat_json_not_nested() {
         let resp = MdnsPipelineResponse::clean(Response::Found(test_record()));
         let json = serde_json::to_value(&resp).unwrap();

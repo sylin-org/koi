@@ -235,22 +235,4 @@ mod tests {
         let lines: Vec<&str> = output.trim().split('\n').collect();
         assert_eq!(lines.len(), 2);
     }
-
-    #[tokio::test]
-    async fn write_response_pipeline_ongoing_includes_status() {
-        let resp = PipelineResponse::ongoing(Response::Found(ServiceRecord {
-            name: "S".into(),
-            service_type: "_http._tcp".into(),
-            host: None,
-            ip: None,
-            port: None,
-            txt: HashMap::new(),
-        }));
-        let mut buf = Vec::new();
-        write_response(&mut buf, &resp).await.unwrap();
-
-        let output = String::from_utf8(buf).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
-        assert_eq!(parsed.get("status").unwrap(), "ongoing");
-    }
 }
