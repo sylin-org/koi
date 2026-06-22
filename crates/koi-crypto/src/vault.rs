@@ -220,14 +220,14 @@ impl Vault {
     fn save_secrets(&self, secrets: &SecretsFile) -> Result<(), VaultError> {
         let data = serde_json::to_vec_pretty(secrets)?;
         let path = self.secrets_path();
-        std::fs::write(&path, &data)?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
-
+        // Route through the hardened secret-file writer: Unix 0600-at-create (no
+        // create-then-chmod TOCTOU window) and, on Windows, write-tmp → restrictive
+        // ACL → atomic rename. A plain `fs::write` left secrets.json world-readable
+        // on Windows and briefly racy on Unix — exposing the machine-bound
+        // master-key ciphertext (and thus the CA auto-unlock passphrase) to any
+        // local user. This is the sole at-rest gate, so it must not be lax.
+        crate::keys::write_secret_file(&path, &data)
+            .map_err(|e| VaultError::Io(std::io::Error::other(e.to_string())))?;
         Ok(())
     }
 }

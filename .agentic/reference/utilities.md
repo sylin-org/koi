@@ -49,13 +49,13 @@ const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were remov
 | `META_BROWSE_IDLE`  | 300s  | Stop the lazy LAN-wide meta-browse after this idle |
 | `SUPERVISOR_TICK`   | 30s   | Idle-supervisor check interval                     |
 
-### koi -- Pipe Adapter (`crates/koi/src/adapters/pipe.rs`)
+### koi-serve -- Pipe Adapter (`crates/koi-serve/src/pipe.rs`)
 
 | Constant        | Value | Purpose                  |
 | --------------- | ----- | ------------------------ |
 | `SESSION_GRACE` | 30s   | IPC session grace period |
 
-### koi -- CLI Adapter (`crates/koi/src/adapters/cli.rs`)
+### koi-serve -- Stdio Adapter (`crates/koi-serve/src/stdio.rs`)
 
 | Constant        | Value | Purpose                  |
 | --------------- | ----- | ------------------------ |
@@ -74,7 +74,7 @@ const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were remov
 | ------------------- | ----- | ---------------------------------- |
 | `DEFAULT_HTTP_PORT` | 5641  | Default daemon port ("KOI" keypad) |
 
-### koi -- HTTP Adapter paths (`crates/koi/src/adapters/http.rs` `paths` module)
+### koi-serve -- HTTP Adapter paths (`crates/koi-serve/src/http.rs` `paths` module)
 
 | Constant                 | Value                                | Purpose                                          |
 | ------------------------ | ------------------------------------ | ------------------------------------------------ |
@@ -103,7 +103,7 @@ const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were remov
 
 ## Shared Helpers (Don't Duplicate)
 
-### `adapters::dispatch` (`crates/koi/src/adapters/dispatch.rs`)
+### `koi_serve::dispatch` (`crates/koi-serve/src/dispatch.rs`)
 
 | Function           | Purpose                                                             |
 | ------------------ | ------------------------------------------------------------------- |
@@ -111,7 +111,7 @@ const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were remov
 | `handle_line()`    | Parse NDJSON request, dispatch to MdnsCore, write responses         |
 | `write_response()` | Serialize pipeline response with graceful fallback (no `.unwrap()`) |
 
-Used by both `adapters::pipe` and `adapters::cli` - never duplicate this logic.
+Used by both `koi_serve::pipe` and `koi_serve::stdio` - never duplicate this logic.
 
 ### `commands` (`crates/koi/src/commands/mod.rs`)
 
@@ -450,27 +450,41 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 
 ## Error Codes (`koi_common::error::ErrorCode`)
 
-| Code                  | HTTP Status | Meaning                         |
-| --------------------- | ----------- | ------------------------------- |
-| `invalid_type`        | 400         | Bad service type format         |
-| `invalid_name`        | 400         | Bad service name                |
-| `invalid_payload`     | 400         | Malformed request body          |
-| `not_found`           | 404         | Registration not found          |
-| `conflict`            | 409         | Duplicate registration          |
-| `session_mismatch`    | 403         | Wrong session for operation     |
-| `shutting_down`       | 503         | Daemon is shutting down         |
-| `internal`            | 500         | Internal error                  |
-| `ca_not_initialized`  | 503         | CA not yet created              |
-| `ca_locked`           | 503         | CA key is locked                |
-| `invalid_auth`        | 401         | Bad auth credential             |
-| `rate_limited`        | 429         | Too many requests               |
-| `enrollment_closed`   | 403         | Enrollment not open             |
-| `capability_disabled` | 503         | Capability disabled at runtime  |
-| `not_standby`         | 403         | Node is not a standby           |
-| `promotion_failed`    | 500         | CA key transfer failed          |
-| `renewal_failed`      | 500         | Certificate renewal failed      |
-| `invalid_manifest`    | 400         | Bad roster manifest signature   |
-| `scope_violation`     | 403         | Enrollment outside policy scope |
+`koi-common/src/error.rs` is the source of truth (the `http_status()` match + the
+exhaustive variant test). The full set:
+
+| Code                   | HTTP Status | Meaning                          |
+| ---------------------- | ----------- | -------------------------------- |
+| `invalid_type`         | 400         | Bad service type format          |
+| `invalid_name`         | 400         | Bad service name                 |
+| `invalid_payload`      | 400         | Malformed request body           |
+| `ambiguous_id`         | 400         | ID prefix matched multiple       |
+| `parse_error`          | 400         | Could not parse request          |
+| `invalid_manifest`     | 400         | Bad roster manifest signature    |
+| `invalid_auth`         | 401         | Bad auth credential              |
+| `session_mismatch`     | 403         | Wrong session for operation      |
+| `enrollment_closed`    | 403         | Enrollment not open              |
+| `not_standby`          | 403         | Node is not a standby            |
+| `scope_violation`      | 403         | Enrollment outside policy scope  |
+| `revoked`              | 403         | Member has been revoked          |
+| `approval_denied`      | 403         | Join approval was denied         |
+| `not_found`            | 404         | Registration not found           |
+| `conflict`             | 409         | Duplicate registration           |
+| `already_draining`     | 409         | Registration already draining    |
+| `not_draining`         | 409         | Registration not draining        |
+| `rate_limited`         | 429         | Too many requests                |
+| `daemon_error`         | 500         | Internal daemon failure          |
+| `io_error`             | 500         | I/O failure                      |
+| `internal`             | 500         | Internal error                   |
+| `promotion_failed`     | 500         | CA key transfer failed           |
+| `renewal_failed`       | 500         | Certificate renewal failed       |
+| `shutting_down`        | 503         | Daemon is shutting down          |
+| `ca_not_initialized`   | 503         | CA not yet created               |
+| `ca_locked`            | 503         | CA key is locked                 |
+| `capability_disabled`  | 503         | Capability disabled at runtime   |
+| `approval_unavailable` | 503         | No approver available            |
+| `resolve_timeout`      | 504         | mDNS resolve timed out           |
+| `approval_timeout`     | 504         | Join approval timed out          |
 
 ---
 

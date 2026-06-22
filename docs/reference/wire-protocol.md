@@ -35,7 +35,7 @@ The top-level key determines the operation:
 ```json
 { "error": "invalid_type", "message": "Service type must be _name._tcp or _name._udp" }
 { "error": "not_found", "message": "No registration with id 'xyz'" }
-{ "error": "resolve_timeout", "message": "Could not resolve within 3s" }
+{ "error": "resolve_timeout", "message": "Could not resolve within 5s" }
 ```
 
 ---
@@ -55,22 +55,14 @@ The canonical representation of a discovered or registered service:
 
 ---
 
-## Pipeline properties
+## Response shape
 
-Optional operational metadata attached as sibling keys via `#[serde(flatten)]`:
-
-| Property  | Values                     | Meaning                          |
-| --------- | -------------------------- | -------------------------------- |
-| `status`  | `"ongoing"` / `"finished"` | Whether more data is expected    |
-| `warning` | string                     | Operation succeeded with caveats |
-
-Absence means clean success. Consumer logic:
+A response serializes as its body via `#[serde(flatten)]` — no envelope, no
+wrapper key. Consumer logic:
 
 ```
-if "error"   → something broke
-if "status"  → "ongoing" means keep listening; "finished" means done
-if "warning" → succeeded, but read this
-if none      → clean result
+if "error" key present → something broke (carries a code + message)
+otherwise              → clean result (the data is the top-level object)
 ```
 
 ---

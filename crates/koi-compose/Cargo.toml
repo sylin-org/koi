@@ -32,4 +32,12 @@ hickory-proto.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+thiserror.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+hostname.workspace = true
+
+[dev-dependencies]
+# Orchestrator tests construct a runtime `Instance` (its `discovered_at` is a
+# `chrono::DateTime<Utc>`).
+chrono.workspace = true

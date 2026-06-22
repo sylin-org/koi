@@ -1,10 +1,10 @@
 ﻿# DNS - Local Resolver
 
-Names matter. Typing `grafana.lan` into a browser is a fundamentally different experience from typing `10.0.0.42:3000`. Names are how humans think about services. DNS is how computers translate that thinking into addresses.
+Names matter. Typing `grafana.internal` into a browser is a fundamentally different experience from typing `10.0.0.42:3000`. Names are how humans think about services. DNS is how computers translate that thinking into addresses.
 
 But on a private network, DNS is usually an afterthought. You hard-code IPs in config files, add entries to `/etc/hosts` on each machine, or run a full-blown BIND instance that nobody wants to maintain. Koi's DNS capability fills the gap: a lightweight local resolver that answers queries for your private zone and forwards everything else to the system upstream.
 
-**When to use Koi DNS**: You have services on your LAN that you want to reach by name. You're tired of editing hosts files. You want certmesh SANs and mDNS discoveries to automatically become resolvable DNS names. You need split-horizon behavior where `.lan` names resolve locally but everything else goes to your normal resolver.
+**When to use Koi DNS**: You have services on your LAN that you want to reach by name. You're tired of editing hosts files. You want certmesh SANs and mDNS discoveries to automatically become resolvable DNS names. You need split-horizon behavior where `.internal` names resolve locally but everything else goes to your normal resolver.
 
 ---
 
@@ -13,12 +13,12 @@ But on a private network, DNS is usually an afterthought. You hard-code IPs in c
 This is the key design insight. Koi DNS doesn't just serve a static zone file - it merges three sources into a single consistent view:
 
 1. **Static entries** you add with `koi dns add`. These are your manually declared names - the equivalent of hosts file entries, but centralized.
-2. **Certmesh SANs**. When a certmesh member has Subject Alternative Names on its certificate, those SANs become DNS entries automatically. No extra configuration.
-3. **mDNS aliases**. Services discovered via mDNS get DNS entries too. If `grafana._http._tcp` appears on the network, `grafana.lan` becomes resolvable.
+2. **Certmesh SANs**. When a certmesh member has Subject Alternative Names on its certificate, those SANs become DNS entries automatically. No extra configuration. (A certmesh member's `hostname.local` SAN is an mDNS name, not an entry in this resolver's internal zone — the resolver re-suffixes the mDNS hostname into your zone, e.g. `hostname.internal`, rather than serving the literal `.local` name.)
+3. **mDNS aliases**. Services discovered via mDNS get DNS entries too. If `grafana._http._tcp` appears on the network, `grafana.internal` becomes resolvable.
 
 This layering is deliberate. Static entries give you explicit control. Certmesh SANs ensure TLS names are always resolvable. mDNS aliases mean discovered services "just work" in DNS too. The result is a local zone that stays accurate without constant maintenance.
 
-Anything outside the local zone (`.lan` by default) is forwarded to your system's upstream resolver. Koi doesn't try to be a general-purpose recursive resolver - it stays in its lane.
+Anything outside the local zone (`.internal` by default) is forwarded to your system's upstream resolver. Koi doesn't try to be a general-purpose recursive resolver - it stays in its lane.
 
 ---
 
@@ -94,7 +94,7 @@ x-koi-token: <daemon access token>
 {"name": "grafana", "ip": "10.0.0.42"}
 ```
 
-Mutating endpoints (`POST`/`DELETE` — `add`, `remove`, `serve`, `stop`) require the daemon access token in the `x-koi-token` header — see the [security model](../reference/security-model.md) for how to read it from the breadcrumb. `GET` reads (status, lookup, list, entries, zone) are unauthenticated.
+Mutating endpoints (`POST`/`DELETE` — `add`, `remove`, `serve`, `stop`) require the daemon access token in the `x-koi-token` header — see the [security model](../reference/security-model.md) for how to read it from the breadcrumb. Most `GET` reads (status, lookup) are unauthenticated, but the zone-exposing reads (`/v1/dns/list`, `/v1/dns/zone`, `/v1/dns/entries`) now require the token when the daemon is bound non-loopback and the caller is a remote host — loopback callers stay token-free.
 
 ---
 
@@ -110,6 +110,8 @@ curl -s "http://<koi-ip>:5641/v1/dns/zone?format=hosts"
 curl -s "http://<koi-ip>:5641/v1/dns/zone?format=dnsmasq"
 ```
 
+When the daemon is bound non-loopback, `/v1/dns/zone` (like `/list` and `/entries`) requires the `x-koi-token` header from a remote host; add `-H "x-koi-token: <daemon access token>"` to the `curl` above. A loopback caller needs no token.
+
 See the [DNS coexistence guide](./dns-coexistence.md) for copy-paste
 conditional-forwarding recipes (one per incumbent) with a `dig` test each.
 
@@ -120,11 +122,12 @@ conditional-forwarding recipes (one per incumbent) with a `dig` test each.
 | Flag           | Env var          | Default | Description                              |
 | -------------- | ---------------- | ------- | ---------------------------------------- |
 | `--dns-port`   | `KOI_DNS_PORT`   | `53`    | DNS server port                          |
-| `--dns-zone`   | `KOI_DNS_ZONE`   | `lan`   | Local DNS zone suffix                    |
+| `--dns-zone`   | `KOI_DNS_ZONE`   | `internal` | Local DNS zone suffix                  |
 | `--dns-public` | `KOI_DNS_PUBLIC` | `false` | Allow queries from non-private IP ranges |
+| `--dns-qps`    | `KOI_DNS_QPS`    | `200`   | Max DNS queries per second, per client IP |
 | `--no-dns`     | `KOI_NO_DNS`     | `false` | Disable DNS capability entirely          |
 
-The zone suffix determines what names the resolver claims authority over. The default `.lan` is a good choice for most environments - it's not a real TLD, so there's no collision risk. But if you prefer `.corp` or `.home`, change it:
+The zone suffix determines what names the resolver claims authority over. The default `.internal` is a good choice for most environments - it's a reserved private-use TLD, so there's no collision risk. But if you prefer `.corp` or `.home`, change it:
 
 ```
 koi --dns-zone corp
@@ -137,6 +140,8 @@ koi --dns-port 15353
 ```
 
 The `--dns-public` flag relaxes the client filter. By default, Koi only answers queries from private address ranges (RFC 1918, link-local). Enabling public mode lets any client query your resolver. This is almost never what you want on an open network - it's there for specific environments where the network topology demands it.
+
+Rate limiting is **per source IP**: each client gets its own `--dns-qps` budget, backed by a whole-resolver backstop, so one noisy LAN peer cannot starve resolution for everyone else. Queries past the budget return `REFUSED`.
 
 ---
 
@@ -163,7 +168,7 @@ This is the most common issue. Port 53 requires root/admin privileges. Two optio
 
 On Linux, you may also need to contend with `systemd-resolved` which holds port 53. Either disable it or configure Koi on an alternate port.
 
-### No results for `.lan` names
+### No results for `.internal` names
 
 First, check that the resolver is actually running:
 

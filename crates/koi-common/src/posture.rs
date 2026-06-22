@@ -8,8 +8,8 @@
 //!
 //! Neutral vocabulary only (STACK-0001 K2): `Open` / `Authenticated` /
 //! `Confidential` are standard security terms, never a consumer codename. A
-//! consumer layer may *alias* the level as its own "degree"; that naming never
-//! enters Koi.
+//! consumer layer may *alias* these levels in its own vocabulary; that naming
+//! never enters Koi.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;

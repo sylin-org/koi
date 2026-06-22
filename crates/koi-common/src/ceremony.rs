@@ -39,7 +39,7 @@
 //!
 //! ```ignore
 //! // 1. Implement CeremonyRules for your domain
-//! impl CeremonyRules for PondRules {
+//! impl CeremonyRules for CertmeshRules {
 //!     fn validate_ceremony_type(&self, ceremony: &str) -> Result<(), String> { ... }
 //!     fn evaluate(&self, ceremony_type: &str, bag: &mut Map<String, Value>,
 //!                 render: &RenderHints) -> EvalResult { ... }

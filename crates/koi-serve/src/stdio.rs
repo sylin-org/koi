@@ -5,7 +5,7 @@ use tokio::io::AsyncBufReadExt;
 
 use koi_mdns::MdnsCore;
 
-use super::dispatch;
+use crate::dispatch;
 
 /// CLI session grace period: 5 seconds (short-lived sessions).
 const SESSION_GRACE: Duration = Duration::from_secs(5);

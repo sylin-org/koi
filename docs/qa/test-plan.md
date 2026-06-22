@@ -1,5 +1,21 @@
 ﻿# QA Follow-Up Test Plan
 
+> **Status (2026-06-21): partly superseded.** Two references below are stale:
+> - **`tests/integration.sh` was deleted** (CHANGELOG 0.3.0 — the weekly `qa.yml`
+>   `.sh` scripts were replaced with cross-platform PowerShell Core `.ps1`
+>   invocations). Only `tests/integration.ps1` and `tests/concurrency.ps1` remain;
+>   read every `integration.sh`/`concurrency.sh` below as the `.ps1` equivalent under
+>   `pwsh`.
+> - **Certmesh cross-participant exchange coverage moved to per-PR Rust gates**
+>   (**ADR-018**): `crates/koi/tests/two_daemon_certmesh.rs` (real two-binary daemons
+>   over the DAT-gated HTTP) plus the `cross-host` job in `.github/workflows/ci.yml`
+>   (`scripts/cross-host-certmesh.sh`, two containers). That coverage is **not** in the
+>   scheduled `qa.yml` cron — it gates every PR. See ADR-018.
+>
+> The service-lifecycle, persistence, concurrency, and platform-unit sections below
+> are still accurate (they run from the `.ps1` scripts / Rust unit tests). Verify the
+> exact script names against the repo before relying on a path.
+
 Date: 2026-02-12
 Owner: QA
 Scope: Follow-ups 1-4 (service lifecycle automation, persistence corruption, concurrency/soak, platform-specific unit tests)
@@ -36,7 +52,7 @@ Scope: Follow-ups 1-4 (service lifecycle automation, persistence corruption, con
 - **Pass**: service starts, health endpoint OK, service stops, uninstall succeeds.
 
 ### Linux (systemd)
-- **Script**: `tests/integration.sh --tier3`
+- **Script**: `tests/integration.ps1 -Tier3` under `pwsh` (the `.sh` variant was deleted; CHANGELOG 0.3.0)
 - **Steps**:
   1) `sudo koi install`
   2) `systemctl is-active koi`
@@ -46,7 +62,7 @@ Scope: Follow-ups 1-4 (service lifecycle automation, persistence corruption, con
 - **Skip Conditions**: systemd not available, runner not elevated.
 
 ### macOS (launchd)
-- **Script**: `tests/integration.sh --tier3`
+- **Script**: `tests/integration.ps1 -Tier3` under `pwsh` (the `.sh` variant was deleted; CHANGELOG 0.3.0)
 - **Steps**:
   1) `sudo koi install`
   2) `launchctl list | grep org.sylin.koi`
@@ -87,9 +103,9 @@ Scope: Follow-ups 1-4 (service lifecycle automation, persistence corruption, con
 - **Metrics**: total time, failures, unique ID count.
 
 ### Linux/macOS
-- **Script**: `tests/concurrency.sh`
+- **Script**: `tests/concurrency.ps1` under `pwsh` (the `.sh` variant was deleted; CHANGELOG 0.3.0)
 - **Flow**: same as Windows.
-- **Notes**: uses `curl` and `xargs -P` or falls back to sequential execution.
+- **Notes**: cross-platform PowerShell Core; resolves `koi` vs `koi.exe` and the dynamic breadcrumb endpoint at runtime.
 
 ---
 
@@ -111,9 +127,16 @@ Scope: Follow-ups 1-4 (service lifecycle automation, persistence corruption, con
 
 ## Automation (CI)
 
-- **Workflow**: `.github/workflows/qa.yml`
-- **Jobs**:
-  - Integration tests on Windows/Linux/macOS.
-  - Service lifecycle on Windows; Linux/macOS runs if systemd/launchctl available.
-  - Concurrency harness on Linux and Windows.
-- **Schedule**: manual trigger (workflow_dispatch) plus scheduled run.
+- **Scheduled QA workflow**: `.github/workflows/qa.yml` (cron + `workflow_dispatch`)
+  - Integration + service-lifecycle + concurrency via the cross-platform `.ps1`
+    scripts under PowerShell Core (`pwsh`). The old `.sh` integration scripts were
+    removed (CHANGELOG 0.3.0).
+- **Per-PR gates**: `.github/workflows/ci.yml` (the 3-OS build + test + clippy + fmt +
+  MSRV + audit + the `surfaces` ledger lint). **Certmesh cross-participant coverage
+  lives here, not in the cron** (ADR-018):
+  - `crates/koi-embedded/tests/whole_story.rs` (Tier 1, in-process two-daemon) and
+    `crates/koi/tests/two_daemon_certmesh.rs` (Tier 2, real two-binary daemons over
+    DAT-gated HTTP) run under `cargo test --locked`.
+  - The `cross-host` job (Tier 3) runs `scripts/cross-host-certmesh.sh` across two
+    containers.
+- **Schedule**: `qa.yml` is manual + scheduled; `ci.yml` gates every PR.

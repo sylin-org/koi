@@ -297,6 +297,66 @@ mod tests {
         // Cleanup the persisted check so the shared state file stays tidy.
         let _ = core.remove_check(&name).await;
     }
+
+    /// Probes for a tick must run CONCURRENTLY: N checks against a server that
+    /// accepts but never replies each hang until their own timeout, so the tick
+    /// should take ~one timeout, not N. Guards the regression where a slow /
+    /// timing-out check serialized (delayed) all the others.
+    #[tokio::test]
+    async fn run_checks_probe_concurrently() {
+        let _ = koi_common::test::ensure_data_dir("koi-health-concurrency-tests");
+
+        // Accept connections but never respond, and HOLD the streams open so the
+        // client side blocks until its request timeout. Dropping the streams
+        // would close the connection and fail fast, defeating the measurement.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _server = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+
+        let core = HealthCore::new(None, None, None, None).await;
+
+        let timeout_secs = 1u64;
+        let n = 4usize;
+        let mut names = Vec::new();
+        for _ in 0..n {
+            let name = format!("conc-{}", koi_common::id::generate_short_id());
+            core.add_check(HealthCheckConfig {
+                name: name.clone(),
+                kind: ServiceCheckKind::Http,
+                target: format!("http://{addr}/"),
+                interval_secs: 1,
+                timeout_secs,
+            })
+            .await
+            .expect("add_check should succeed");
+            names.push(name);
+        }
+
+        let start = std::time::Instant::now();
+        core.run_checks_once().await;
+        let elapsed = start.elapsed();
+
+        // Lower bound: the probes really hit their ~1s timeout (not a fast-fail).
+        // Upper bound: well under the sequential floor (n * timeout = 4s).
+        assert!(
+            elapsed >= std::time::Duration::from_millis(700),
+            "probes should have hit their ~1s timeout, took {elapsed:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(3000),
+            "{n} x {timeout_secs}s checks must run concurrently (sequential would be ~{}s), took {elapsed:?}",
+            n as u64 * timeout_secs
+        );
+
+        for name in &names {
+            let _ = core.remove_check(name).await;
+        }
+    }
 }
 
 #[async_trait::async_trait]

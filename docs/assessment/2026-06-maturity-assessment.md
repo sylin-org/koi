@@ -1,5 +1,13 @@
 # Koi Project Assessment — June 2026
 
+> **⚠️ Point-in-time snapshot (2026-06-11) — much has since been resolved.** For the current
+> status of every verified defect, lean-plan move, shed item, and stage — re-audited against
+> `dev` HEAD with commit/file evidence — see
+> **[realignment-2026-06-22.md](realignment-2026-06-22.md)** (headline: **all 12 verified
+> defects fixed** — the last item, the unauthenticated `GET /v1/certmesh/log` audit endpoint,
+> was closed in the engineering sprint that followed the realignment). This document is
+> preserved unchanged as the historical record of what was true on 2026-06-11.
+
 **Status:** Complete · **Date:** 2026-06-11 · **Method:** staged multi-agent assessment
 (10 parallel subsystem deep-reads → adversarial verification of 14 load-bearing claims →
 2 external research tracks → synthesis). All quantitative claims in this document were

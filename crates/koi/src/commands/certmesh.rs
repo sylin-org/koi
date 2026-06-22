@@ -84,31 +84,15 @@ mod color {
 
 // ── Shared helper ────────────────────────────────────────────────────
 
-/// Resolve the daemon endpoint or bail with a clear message.
-///
-/// Token-selection follows the uniform rule in
-/// [`crate::commands::token_for_explicit_endpoint`]:
-///
-/// - **Explicit `endpoint`** → use the explicit `--token`/`KOI_TOKEN` value if
-///   set, else **tokenless**. NEVER the local breadcrumb token — pairing it
-///   with a remote URL would leak the local daemon's token to that host.
-/// - **No explicit endpoint** → use the breadcrumb endpoint + its matching
-///   token (the local, trusted daemon).
+/// Resolve a daemon client or bail with a clear message — a thin alias over the one
+/// [`crate::commands::require_client`] that mDNS admin and every certmesh command share.
+/// That single implementation owns the token-leak rule (explicit endpoint → explicit token
+/// or tokenless, never the local breadcrumb token) and the breadcrumb health-probe.
 fn require_daemon(
     endpoint: Option<&str>,
     explicit_token: Option<&str>,
 ) -> anyhow::Result<KoiClient> {
-    if let Some(ep) = endpoint {
-        let token = crate::commands::token_for_explicit_endpoint(explicit_token);
-        return Ok(KoiClient::with_token(ep, &token));
-    }
-    let info = koi_config::breadcrumb::read_breadcrumb().ok_or_else(|| {
-        anyhow::anyhow!(
-            "No running Koi service found.\n\
-             Install and start the service first: koi install"
-        )
-    })?;
-    Ok(KoiClient::with_token(&info.endpoint, &info.token))
+    crate::commands::require_client(endpoint, explicit_token)
 }
 
 // ── Create ──────────────────────────────────────────────────────────

@@ -6,8 +6,10 @@ use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+use tokio::task::JoinSet;
+
 use crate::log::append_transition;
-use crate::service::{run_check, ServiceStatus};
+use crate::service::{run_check, ServiceCheckOutcome, ServiceStatus};
 use crate::state::HealthCheckConfig;
 use crate::HealthCore;
 
@@ -52,13 +54,43 @@ pub async fn run_checks_once(
         return;
     }
 
-    for check in checks {
-        if !is_due(&check, states).await {
-            continue;
-        }
+    // Snapshot the due checks under a single read guard, then release it before
+    // probing — checks must not serialize behind the state lock.
+    let due: Vec<HealthCheckConfig> = {
+        let guard = states.read().await;
+        checks.into_iter().filter(|c| is_due(c, &guard)).collect()
+    };
+    if due.is_empty() {
+        return;
+    }
 
-        let outcome = run_check(&check, core.http_client()).await;
-        let now = Utc::now();
+    // Probe all due checks CONCURRENTLY. A slow or timing-out check no longer
+    // stalls the rest of the tick — each carries its own per-check timeout in
+    // `run_check`, so the worst tick latency is one timeout, not their sum.
+    // The reqwest client is cheaply cloneable (Arc inside); each task owns its
+    // check + client clone so the futures are `'static`.
+    let client = core.http_client().clone();
+    let mut probes: JoinSet<(HealthCheckConfig, ServiceCheckOutcome, DateTime<Utc>)> =
+        JoinSet::new();
+    for check in due {
+        let client = client.clone();
+        probes.spawn(async move {
+            let outcome = run_check(&check, &client).await;
+            (check, outcome, Utc::now())
+        });
+    }
+
+    // Apply results as each probe completes. Order-independent: every transition
+    // is computed against that check's own previous state, and listeners
+    // subscribe by check name (not by emission order).
+    while let Some(joined) = probes.join_next().await {
+        let (check, outcome, now) = match joined {
+            Ok(triple) => triple,
+            Err(e) => {
+                tracing::warn!(error = %e, "health check probe task failed");
+                continue;
+            }
+        };
 
         let previous = {
             let guard = states.read().await;
@@ -92,12 +124,10 @@ pub async fn run_checks_once(
     }
 }
 
-async fn is_due(
-    check: &HealthCheckConfig,
-    states: &Arc<RwLock<HashMap<String, ServiceCheckState>>>,
-) -> bool {
-    let guard = states.read().await;
-    let Some(state) = guard.get(&check.name) else {
+/// Whether a check is due to run, evaluated against an already-held read guard
+/// of the state map (so the whole due-set can be computed under one lock).
+fn is_due(check: &HealthCheckConfig, states: &HashMap<String, ServiceCheckState>) -> bool {
+    let Some(state) = states.get(&check.name) else {
         return true;
     };
     let Some(last) = state.last_checked else {

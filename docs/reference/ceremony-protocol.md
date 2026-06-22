@@ -102,9 +102,9 @@ First request uses `"data": {}` to begin a session.
 
 ---
 
-## Pond ceremonies
+## Certmesh ceremonies
 
-`PondCeremonyRules` in `koi-certmesh/src/pond_ceremony.rs` implements four ceremonies:
+`InitCeremonyRules` in `koi-certmesh/src/init_ceremony.rs` implements four ceremonies:
 
 | Ceremony | Purpose                   | Key bag entries                                                   |
 | -------- | ------------------------- | ----------------------------------------------------------------- |

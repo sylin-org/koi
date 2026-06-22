@@ -4,7 +4,14 @@ use base64::Engine;
 
 use crate::commands::{print_json, with_mode, Mode};
 
-pub async fn bind(port: u16, addr: &str, lease: u64, mode: Mode, json: bool) -> anyhow::Result<()> {
+pub async fn bind(
+    port: u16,
+    addr: &str,
+    lease: u64,
+    allow_remote: bool,
+    mode: Mode,
+    json: bool,
+) -> anyhow::Result<()> {
     with_mode(
         mode,
         || async {
@@ -17,6 +24,7 @@ pub async fn bind(port: u16, addr: &str, lease: u64, mode: Mode, json: bool) -> 
                     port,
                     addr: addr.to_string(),
                     lease_secs: lease,
+                    allow_remote,
                 })
                 .await?;
             if json {
@@ -31,7 +39,7 @@ pub async fn bind(port: u16, addr: &str, lease: u64, mode: Mode, json: bool) -> 
             Ok(())
         },
         |client| async move {
-            let resp = client.udp_bind(port, addr, lease)?;
+            let resp = client.udp_bind(port, addr, lease, allow_remote)?;
             if json {
                 print_json(&resp);
             } else {

@@ -1,8 +1,15 @@
 # Koi Whole-Story E2E Test Surface — Design Spec
 
-**Status:** Proposed
+**Status:** Implemented (Tier 1 in CI via `whole_story.rs`; Tier 2 manual). The Tier 1
+single-host multi-instance subset ships as
+[crates/koi-embedded/tests/whole_story.rs](../../crates/koi-embedded/tests/whole_story.rs)
+(two embedded daemons exchange the whole certmesh story in one `cargo test`); the
+real-binary two-daemon companion is
+[crates/koi/tests/two_daemon_certmesh.rs](../../crates/koi/tests/two_daemon_certmesh.rs)
+(ADR-018 Tier 2). Tier 2 real-multi-machine is the manual/scheduled two-box run. The
+design content below stands as the spec these realize.
 **Date:** 2026-06-18
-**Relates to:** ADR-015 (Certmesh Enrollment Hardening — its features are validated by this surface), [docs/SURFACES.md](../SURFACES.md) (the surface ledger this feeds), ADR-008 (Embedded Facade — the harness substrate)
+**Relates to:** ADR-015 (Certmesh Enrollment Hardening — its features are validated by this surface), ADR-018 (the integration-test-suite tiers that realize this), [docs/SURFACES.md](../SURFACES.md) (the surface ledger this feeds), ADR-008 (Embedded Facade — the harness substrate)
 
 ---
 
@@ -35,7 +42,7 @@ Ordered **Acts**; each lists *drive → assert (+ events)*. Acts 1–2 and 9 als
 | Act | Drive | Assert (+ events) | Cross-capability point |
 |---|---|---|---|
 | **0. Genesis & isolation** | Bring up A and B with distinct `KOI_DATA_DIR` + ports (`1564x` / `1664x`); `GET /healthz`; read breadcrumb. | 200 OK; breadcrumb carries endpoint + DAT; A and B cannot see each other's state. | per-daemon isolation |
-| **1. Pond genesis** | A `POST /v1/certmesh/create` (fixed entropy → reproducible CA), unlock, `GET /v1/certmesh/status`. | `ca_initialized`; issued CA cert profile correct (basicConstraints `pathlen:0`, KeyUsage) — **ADR-015 F10**. | — |
+| **1. CA genesis** | A `POST /v1/certmesh/create` (fixed entropy → reproducible CA), unlock, `GET /v1/certmesh/status`. | `ca_initialized`; issued CA cert profile correct (basicConstraints `pathlen:0`, KeyUsage) — **ADR-015 F10**. | — |
 | **2. Enrollment** | A mints an invite for B (**ADR-015 F2**); B generates keypair+CSR locally and joins (**F1**); verify fingerprint from invite (**F3**). | Chain verifies to CA; **mechanically assert no `PRIVATE KEY` bytes in any response** (F1); roster has B; `member_joined` audited; idempotent retry returns same cert (**F8**); bad hostnames rejected (**F15**). `CertmeshMemberJoined`. | enrollment custody |
 | **3. DNS** | A `POST /v1/dns/add` in-zone names; `GET /v1/dns/lookup`; start resolver on `15353`; query it. | entries resolve via stub and real resolver; member names in zone. `DnsEntryUpdated`. | dns ↔ certmesh (in-zone) |
 | **4. mDNS** | A announce service; B discover (SSE) + resolve; heartbeat; unregister. | Found/Resolved/Removed; lease renews. `MdnsFound/Resolved/Removed`. | discovery |
@@ -45,7 +52,7 @@ Ordered **Acts**; each lists *drive → assert (+ events)*. Acts 1–2 and 9 als
 | **8. UDP bridge** | A bind (`port:0`), B `GET /v1/udp/recv/{id}` (SSE); A `POST /v1/udp/send`; round-trip; heartbeat; unbind. | datagram arrives (base64 payload); lease renews. | datagram bridge |
 | **9. Trust dynamics** | Fetch `GET /v1/certmesh/trust-bundle`; verify signature + sequence (**ADR-015 F4**); revoke B; re-fetch; B attempts mTLS + health. | bundle verifies; replayed lower-sequence bundle rejected (anti-rollback); after revoke the **sequence increments** and B is **rejected** at mTLS + health; renewal pull within grace succeeds, past grace refused (**F6**); `RenewResponse.ca_fingerprint` refreshes the pin (**F5**); promote validates the received key (**F14**). `CertmeshMemberRevoked`. | revocation propagation |
 | **10. Aggregation** | `GET /v1/status`; subscribe `/v1/dashboard/events`; read MCP resources at `/v1/mcp` (`koi://lan/inventory`, `koi://health`, `koi://dns/zone`, `koi://mdns/services`); `GET /.well-known/mcp/server-card.json`; `GET /v1/host`. | status lists every enabled cap with `running` truth; the dashboard feed shows the cross-domain events emitted by Acts 2–9 (forwarder maps all 6 domain types — [forward.rs](../../crates/koi-dashboard/src/forward.rs)); MCP inventory reflects live runtime/health/dns/mdns; server-card unauthenticated, `/v1/mcp` token-gated. | **unified observability** |
-| **11. Teardown & reverse cleanup** | Stop the container (or inject `RuntimeEvent::Stopped`); destroy the pond. | orchestrator reverses every registration (mDNS unregister, DNS remove, health remove, proxy remove); `koi.enable=false` containers are skipped; B unaffected by A's destroy (isolation). | reverse auto-wiring |
+| **11. Teardown & reverse cleanup** | Stop the container (or inject `RuntimeEvent::Stopped`); destroy the certmesh (`POST /v1/certmesh/destroy`). | orchestrator reverses every registration (mDNS unregister, DNS remove, health remove, proxy remove); `koi.enable=false` containers are skipped; B unaffected by A's destroy (isolation). | reverse auto-wiring |
 
 A dedicated **ACME dns-01** mini-act (optional, when DNS + certmesh are both up): trigger an in-zone cert order, observe the `_acme-challenge.<name>` TXT published via DNS, assert issuance — exercising the real `AcmeDnsBridge → DnsCore` path the `acme.rs` suite only mocks.
 

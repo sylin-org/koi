@@ -91,6 +91,19 @@ pub(crate) async fn shutdown_signal(cancel: CancellationToken) {
     }
 }
 
+// ── Daemon Access Token ─────────────────────────────────────────────
+
+/// Mint a fresh Daemon Access Token (DAT): 32 random bytes, URL-safe base64 (no pad).
+/// Used to authenticate mutation requests. Shared by the foreground daemon and the Windows
+/// service so the two boot paths generate it identically.
+pub(crate) fn mint_dat() -> String {
+    use base64::Engine;
+    use rand::RngCore;
+    let mut token_bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut token_bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes)
+}
+
 // ── Daemon startup diagnostics ──────────────────────────────────────
 
 pub(crate) fn startup_diagnostics(config: &Config, http_bind_ip: Option<std::net::IpAddr>) {
@@ -190,124 +203,13 @@ pub(crate) fn breadcrumb_endpoint(http_bind_ip: Option<std::net::IpAddr>, port: 
     }
 }
 
-/// Advertise the in-process MCP HTTP endpoint on the LAN, gated on the transport.
-///
-/// Publishes EXACTLY ONE `_mcp._tcp` mDNS record per host (the daemon — never one
-/// per service, which would flood the link) advertising the endpoint, plus an
-/// in-zone `_mcp.<host>.<zone>` unicast TXT when DNS serves the zone. Returns the
-/// mDNS registration id (the record is withdrawn by the mDNS goodbye on shutdown).
-/// No-op when the transport is disabled or mDNS is absent. Shared by the foreground
-/// daemon and the Windows service so the two never diverge.
-pub(crate) fn announce_mcp_endpoint(
-    cores: &crate::DaemonCores,
-    http_port: u16,
-    dns_zone: &str,
-    enabled: bool,
-) -> Option<String> {
-    if !enabled {
-        return None;
-    }
-    let hostname = hostname::get()
-        .ok()
-        .and_then(|os| os.into_string().ok())
-        .unwrap_or_else(|| "unknown".to_string());
+// `announce_mcp_endpoint` moved to `koi_compose::announce::mcp_record` and is now owned by the
+// posture-reactive `koi_compose::self_announce` supervisor, which also withdraws it — plus the
+// in-zone DNS TXT — on shutdown (closing the prior leak where its registration id was dropped).
 
-    // Unicast in-zone descriptor (only meaningful when DNS serves the zone).
-    if let Some(ref dns) = cores.dns {
-        let name = format!("_mcp.{hostname}.{dns_zone}");
-        dns.core()
-            .add_txt(&name, "transport=streamable-http;path=/v1/mcp");
-        tracing::debug!(name = %name, "published in-zone MCP TXT descriptor");
-    }
-
-    // One `_mcp._tcp` record per host. TXT vocabulary matches what koi-mcp's own
-    // `mcp_servers_on_lan` tool reads back (transport=/path=/name=).
-    let mdns = cores.mdns.as_ref()?;
-    let mut txt = std::collections::HashMap::new();
-    txt.insert("transport".to_string(), "streamable-http".to_string());
-    txt.insert("path".to_string(), "/v1/mcp".to_string());
-    txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
-    txt.insert("name".to_string(), format!("Koi MCP ({hostname})"));
-    let payload = koi_mdns::protocol::RegisterPayload {
-        name: format!("Koi MCP ({hostname})"),
-        service_type: "_mcp._tcp".to_string(),
-        port: http_port,
-        ip: None,
-        lease_secs: None,
-        txt,
-    };
-    match mdns.register(payload) {
-        Ok(result) => {
-            tracing::info!(id = %result.id, port = http_port, "MCP endpoint announced via mDNS (_mcp._tcp)");
-            Some(result.id)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to announce MCP endpoint via mDNS");
-            None
-        }
-    }
-}
-
-/// Advertise the certmesh CA on the LAN with its fingerprint in TXT (ADR-017 F12).
-///
-/// Publishes EXACTLY ONE `_certmesh._tcp` mDNS record (on the HTTP port, where the
-/// CA serves `/status` and `/trust-bundle`) with `fp=<ca_fingerprint>` in TXT. A
-/// joiner discovers this and cross-checks the fingerprint against the one carried
-/// in its invite (F3) — a **convenience hint** to disambiguate / fail fast, never
-/// a trust source (the authoritative check is the joiner's pinned-fingerprint
-/// preflight). Returns `None` when no CA is initialized yet.
-///
-/// Posture-reactive: the trust-plane supervisor calls this when the CA appears
-/// (Open→Authenticated) and withdraws the record (via `MdnsCore::unregister`) when
-/// the CA is destroyed — so a node that boots Open and later runs `certmesh create`
-/// advertises without a restart (ADR-020 P4-adjacent; this announce was startup-gated
-/// before). The record is also withdrawn by the mDNS goodbye on shutdown.
-pub(crate) async fn register_certmesh_record(
-    certmesh: &std::sync::Arc<koi_certmesh::CertmeshCore>,
-    mdns: &std::sync::Arc<koi_mdns::MdnsCore>,
-    http_port: u16,
-) -> Option<String> {
-    // Only advertise once a CA exists — the fingerprint is the whole point of the
-    // record. An uninitialized node has nothing to advertise.
-    let fingerprint = certmesh.ca_fingerprint().await?;
-
-    let hostname = hostname::get()
-        .ok()
-        .and_then(|os| os.into_string().ok())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let mut txt = std::collections::HashMap::new();
-    txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
-    txt.insert("name".to_string(), format!("Koi CA ({hostname})"));
-    // Stamp the node's trust state (posture/fp/expires) so discoverers read the
-    // mesh's trust map directly (ADR-020 §8 fleet legibility). `fp=` stays the
-    // joiner's disambiguation hint (ADR-017 F12); `posture=`/`expires=` are added
-    // alongside it. All advisory — the joiner's pinned-fingerprint preflight and
-    // `verify` remain the authority (ADR-016 §2 "ask Koi, don't trust the wire").
-    let expires_at = certmesh
-        .local_identity()
-        .await
-        .map(|id| id.renewal.expires_at);
-    koi_common::peer::stamp(&mut txt, certmesh.posture(), Some(&fingerprint), expires_at);
-    let payload = koi_mdns::protocol::RegisterPayload {
-        name: format!("Koi CA ({hostname})"),
-        service_type: koi_certmesh::CERTMESH_SERVICE_TYPE.to_string(),
-        port: http_port,
-        ip: None,
-        lease_secs: None,
-        txt,
-    };
-    match mdns.register(payload) {
-        Ok(result) => {
-            tracing::info!(id = %result.id, port = http_port, fp = %fingerprint, "Certmesh CA announced via mDNS (_certmesh._tcp)");
-            Some(result.id)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to announce certmesh CA via mDNS");
-            None
-        }
-    }
-}
+// `register_certmesh_record` moved to `koi_serve::trust_plane` — the posture-reactive
+// supervisor that owns the `_certmesh._tcp` announce end-to-end, alongside the mTLS/ACME
+// listeners it gates (P1 of the koi-serve extraction).
 
 /// Resolves the `--http-bind` mode string to a concrete bind address:
 /// `loopback` → 127.0.0.1, `0.0.0.0` → all interfaces, `bridge` → the

@@ -63,6 +63,91 @@ For automation, the indefinite mode is powerful: pipe the output to a script tha
 
 ---
 
+## Network browser
+
+`koi mdns discover` is a CLI tool: you ask a question, you get an answer (a one-shot scan or a stream you read until you stop it). The **network browser** is the opposite end of the same idea - a live, always-current HTML page that explores _every_ service type on the LAN at once, grouped by type, updating in place as services come and go.
+
+Open it in your default browser:
+
+```
+koi launch
+```
+
+This opens the dashboard at `http://localhost:5641`; the mDNS card has a **Browse network →** link to the browser page. You can also navigate straight to it:
+
+```
+GET /mdns-browser
+```
+
+A single-page app that renders the whole LAN: each discovered service type, its instances, their addresses, ports, and TXT records, refreshing as the network changes.
+
+### Lazy by design
+
+The browser is backed by a **LAN-wide meta-browse** - a query across every service type, which is chatty multicast. The daemon does **not** run it on startup. It starts on the **first** browser request and idles itself out after **~300 seconds** of no requests. So a daemon nobody is watching does no LAN-wide browsing at all; the moment someone opens the page, discovery spins up; once they close it, it winds back down.
+
+`koi status` reports the current state:
+
+```
+koi status
+```
+
+```
+Koi v0.4.2
+  ...
+  Browse:    idle      # or "active" while the meta-browse is running
+```
+
+### Browser endpoints
+
+The page is driven by two endpoints (both `GET`, both touch the lazy meta-browse, so hitting either one is enough to start it):
+
+| Method | Path                        | Purpose                            |
+| ------ | --------------------------- | ---------------------------------- |
+| `GET`  | `/v1/mdns/browser/snapshot` | Full network cache as JSON         |
+| `GET`  | `/v1/mdns/browser/events`   | SSE feed of discovery events       |
+
+The snapshot is the current cache - every type, every instance, with counts and timestamps:
+
+```json
+{
+  "total_types": 7,
+  "total_instances": 23,
+  "service_types": [
+    { "service_type": "_http._tcp", "count": 5, "first_seen": "2026-06-22T10:14:02Z" }
+  ],
+  "instances": [
+    {
+      "name": "My NAS",
+      "service_type": "_http._tcp",
+      "host": "nas.local",
+      "ip": "192.168.1.50",
+      "port": 8080,
+      "txt": { "version": "2.1" },
+      "resolved": true
+    }
+  ]
+}
+```
+
+The events feed is Server-Sent Events. Each `resolved` event carries a service record; `removed` carries the name and type; a periodic `heartbeat` carries running totals:
+
+```
+event: resolved
+data: {"name":"My NAS","service_type":"_http._tcp","ip":"192.168.1.50","port":8080,...}
+
+event: removed
+data: {"name":"My NAS._http._tcp.local.","service_type":"_http._tcp"}
+
+event: heartbeat
+data: {"total_types":7,"total_instances":23}
+```
+
+**Browser vs `koi mdns discover`:** discover is for a script or a single answer - one type (or all types), read and done. The browser is for a human watching the whole LAN at once, continuously. Same underlying mDNS engine; different shape. Use discover in automation, the browser when you want to _see_ the network.
+
+For per-service details, the [mDNS discovery card](../reference/cards/mdns-discovery.md) summarizes the full surface at a glance.
+
+---
+
 ## Resolving a specific instance
 
 If you know the full instance name and just need its address:

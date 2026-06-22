@@ -424,6 +424,10 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
     rt.block_on(async {
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut tasks = Vec::new();
+        // Start the uptime clock before build_cores (as daemon_mode does), so `/v1/status`
+        // uptime matches the foreground daemon — build_cores can take seconds (the certmesh
+        // CA Argon2 auto-unlock), which would otherwise be silently undercounted.
+        let started_at = std::time::Instant::now();
 
         // ── Build all domain cores + bridges + domain background tasks ──
         // Shared with daemon_mode via koi-compose, so `koi install` constructs the identical
@@ -438,24 +442,21 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 no_proxy: config.no_proxy,
                 no_udp: config.no_udp,
                 no_runtime: config.no_runtime,
-                data_dir: config.data_dir.clone(),
+                data_dir: Some(config.data_dir.clone()),
                 dns_config: config.dns_config(),
                 runtime: config.runtime.clone(),
                 http_port: config.http_port,
+                ..koi_compose::cores::CoreSpec::daemon_defaults()
             },
             &cancel,
             &mut tasks,
         )
-        .await;
+        .await
+        // fail_fast = false (daemon default) → always Ok; default is a panic-free guard.
+        .unwrap_or_default();
 
         // Generate a Daemon Access Token (DAT) for authenticating mutation requests
-        let dat_token = {
-            use base64::Engine;
-            use rand::RngCore;
-            let mut token_bytes = [0u8; 32];
-            rand::rng().fill_bytes(&mut token_bytes);
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes)
-        };
+        let dat_token = crate::infra::mint_dat();
 
         // Ensure data directory exists
         koi_config::dirs::ensure_data_dir();
@@ -477,8 +478,6 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         // Startup diagnostics (logged to file)
         crate::infra::startup_diagnostics(&config, http_bind_ip);
 
-        let started_at = std::time::Instant::now();
-
         // ── Enrollment-approval pump ──
         // The certmesh role loops + orchestrator are spawned by build_cores (shared with
         // daemon_mode). Only the approval pump is host-specific: with no interactive console
@@ -493,148 +492,34 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             .await;
         }
 
-        // Dashboard state
-        let dashboard_state =
-            crate::adapters::dashboard::build_dashboard_state(&cores, started_at, "daemon");
-        tasks.push(koi_dashboard::forward::spawn_event_forwarder(
-            koi_dashboard::forward::ForwarderCores {
-                mdns: cores.mdns.clone(),
-                certmesh: cores.certmesh.clone(),
-                dns: cores.dns.clone(),
-                health: cores.health.clone(),
-                proxy: cores.proxy.clone(),
-                runtime: cores.runtime.clone(),
-            },
-            dashboard_state.event_tx.clone(),
-            cancel.clone(),
-        ));
-
-        // mDNS browser state (lazy meta-browse; conditional on mDNS being enabled).
-        // No LAN-wide browsing until the first browser request (koi_dashboard::meta_browse).
-        let browser_state = cores
-            .mdns
-            .as_ref()
-            .map(|mdns| koi_dashboard::browser::build_state(mdns.clone(), cancel.clone()));
-
-        // HTTP adapter
-        if !config.no_http {
-            let c = cores.clone();
-            let port = config.http_port;
-            let bind_ip =
-                http_bind_ip.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
-            let cancel_token = cancel.clone();
-            let ds = dashboard_state.clone();
-            let bs = browser_state.clone();
-            let dat = dat_token.clone();
-            let mdns_snap = cores.mdns_snapshot.clone();
-            let mcp_http = !config.no_mcp_http;
-            tasks.push(tokio::spawn(async move {
-                if let Err(e) = crate::adapters::http::start(
-                    c,
-                    bind_ip,
-                    port,
-                    cancel_token,
-                    started_at,
-                    ds,
-                    bs,
-                    dat,
-                    mdns_snap,
-                    mcp_http,
-                )
-                .await
-                {
-                    tracing::error!(error = %e, "HTTP adapter failed");
-                }
-            }));
-        }
-
-        // Trust-plane presence (mTLS inter-node + ACME + _certmesh._tcp announce),
-        // posture-reactive — the SAME supervisor the foreground daemon spawns
-        // (ADR-020 P4c / ADR-016 §2). Sharing it fixes prior parity defects: this
-        // path used to start mTLS but silently omit ACME, and announced the CA only
-        // at boot (startup-gated).
-        crate::adapters::trust_plane::spawn(
+        // ── Serving stack (shared verbatim with daemon_mode via koi-serve) ──
+        // The SAME stack the foreground daemon spawns (ADR-020 P4c / ADR-016 §2), so the
+        // two boot paths cannot drift — fixing prior parity defects where the service
+        // started mTLS but silently omitted ACME and announced the CA only at boot. The
+        // service always serves the dashboard.
+        koi_serve::serve(
             &cores,
-            crate::adapters::trust_plane::TrustPlaneConfig {
+            started_at,
+            koi_serve::ServeConfig {
+                bind_ip: http_bind_ip
+                    .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+                http_port: config.http_port,
+                no_http: config.no_http,
+                no_ipc: config.no_ipc,
+                no_mcp_http: config.no_mcp_http,
+                pipe_path: config.pipe_path.clone(),
                 mtls_port: config.mtls_port,
                 acme_port: config.acme_port,
                 no_acme: config.no_acme,
                 dns_zone: config.dns_zone.clone(),
-                announce_http_port: (!config.no_http).then_some(config.http_port),
+                announce_http: config.announce_http,
+                dashboard: true,
+                mode: "daemon",
+                dat_token: dat_token.clone(),
             },
-            cancel.clone(),
+            &cancel,
             &mut tasks,
         );
-
-        // IPC adapter (mDNS only - skip if mDNS disabled)
-        if !config.no_ipc {
-            if let Some(ref mdns) = cores.mdns {
-                let c = mdns.clone();
-                let path = config.pipe_path.clone();
-                let token = cancel.clone();
-                tasks.push(tokio::spawn(async move {
-                    if let Err(e) = crate::adapters::pipe::start(c, path, token).await {
-                        tracing::error!(error = %e, "IPC adapter failed");
-                    }
-                }));
-            } else {
-                tracing::info!("IPC adapter skipped (mDNS disabled)");
-            }
-        }
-
-        // HTTP mDNS announcement (opt-in)
-        let mut http_announce_id: Option<String> = None;
-        if config.announce_http && !config.no_http {
-            if let Some(ref mdns) = cores.mdns {
-                let hostname = hostname::get()
-                    .ok()
-                    .and_then(|os| os.into_string().ok())
-                    .unwrap_or_else(|| "unknown".to_string());
-
-                let mut txt = std::collections::HashMap::new();
-                txt.insert("path".to_string(), "/".to_string());
-                txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
-                txt.insert("api".to_string(), "v1".to_string());
-                txt.insert("dashboard".to_string(), "true".to_string());
-
-                let payload = koi_mdns::protocol::RegisterPayload {
-                    name: format!("Koi ({hostname})"),
-                    service_type: "_http._tcp".to_string(),
-                    port: config.http_port,
-                    ip: None,
-                    lease_secs: None,
-                    txt,
-                };
-                match mdns.register(payload) {
-                    Ok(result) => {
-                        tracing::info!(
-                            id = %result.id,
-                            port = config.http_port,
-                            "HTTP server announced via mDNS"
-                        );
-                        http_announce_id = Some(result.id);
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to announce HTTP server via mDNS");
-                    }
-                }
-            } else {
-                tracing::debug!("KOI_ANNOUNCE_HTTP set but mDNS is disabled — skipping");
-            }
-        }
-
-        // MCP endpoint discovery descriptors (one `_mcp._tcp` per host + in-zone TXT),
-        // gated on the transport; shared with the foreground daemon to avoid drift.
-        let _mcp_announce_id = crate::infra::announce_mcp_endpoint(
-            &cores,
-            config.http_port,
-            &config.dns_zone,
-            !config.no_mcp_http && !config.no_http,
-        );
-
-        // The `_certmesh._tcp` CA discovery record (ADR-017 F12) is published by the
-        // posture-reactive trust-plane supervisor above — it appears the moment a CA
-        // is created, even on a node that booted Open, without a restart.
 
         // Write breadcrumb for client discovery
         if !config.no_http {
@@ -675,7 +560,6 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             &cancel,
             tasks,
             &cores,
-            http_announce_id,
             SHUTDOWN_TIMEOUT,
             SHUTDOWN_DRAIN,
         )

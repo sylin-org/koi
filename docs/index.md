@@ -5,7 +5,9 @@ Koi is one binary that gives your local network a toolbox it doesn't ship with:
 certificate authority + OS trust-store install), and **serve** them (a TLS endpoint) —
 all reachable over a CLI, an HTTP API, and as an embeddable Rust library.
 
-New here? Start with the tutorial, then jump to the guide for whatever you're doing.
+New here? **[What is Koi — and is it for you?](overview.md)** is the short orientation
+(the model, the trust boundary, and when *not* to use it). Then the tutorial, then the
+guide for whatever you're doing.
 
 ---
 
@@ -68,6 +70,30 @@ Cross-cutting journeys that stitch several capabilities together:
 
 ---
 
+## Capability cards
+
+One-screen maps of a single capability — the canonical pattern, the flags you'll use, and
+the proof it works. Faster than a guide when you already know what you want. Full list:
+[cards index](reference/cards/index.md).
+
+**Discovery & naming** — [mDNS discovery](reference/cards/mdns-discovery.md) ·
+[.internal zone](reference/cards/internal-zone.md)
+
+**Trust & serving** — [trusted HTTPS](reference/cards/trusted-https.md) ·
+[certmesh invite](reference/cards/certmesh-invite.md) ·
+[trust doctor & posture](reference/cards/trust-doctor.md) ·
+[ACME issuance](reference/cards/acme-issuance.md) · [TLS proxy](reference/cards/tls-proxy.md)
+
+**Operate** — [health](reference/cards/machine-health.md) ·
+[UDP bridge](reference/cards/udp-bridge.md) ·
+[container auto-wire](reference/cards/container-autowire.md)
+
+**Interfaces & embedding** — [MCP agent door](reference/cards/mcp-agent-door.md) ·
+[install + verify](reference/cards/install-and-verify.md) ·
+[embed Koi](reference/cards/embedded.md)
+
+---
+
 ## Reference
 
 Information-oriented, dry and exact.
@@ -76,6 +102,7 @@ Information-oriented, dry and exact.
 - [CLI](reference/cli.md) — every command, flag, and environment variable.
 - [Wire protocol](reference/wire-protocol.md) — the mDNS NDJSON verb protocol over IPC/stdin.
 - [Security model](reference/security-model.md) — the daemon access token, bind addresses, what is and isn't protected.
+- [Ports & firewall](reference/ports.md) — every listening port, its bind default, the `--no-*` gate, and the firewall story.
 - [Ceremony protocol](reference/ceremony-protocol.md) — the interactive setup engine.
 - [Envelope encryption](reference/envelope-encryption.md) — how the CA key is protected.
 - [Architecture](reference/architecture.md) — crate inventory, boundaries, dependency graph.

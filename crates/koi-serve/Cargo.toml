@@ -1,0 +1,61 @@
+[package]
+name = "koi-serve"
+description = "Serving layer for Koi: the transport adapters (HTTP router, IPC/stdio NDJSON, in-process MCP, mTLS, ACME, Prometheus SD, dashboard wiring) and the trust-plane presence supervisor that expose composed cores over the network"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["koi", "serving", "http", "transport", "networking"]
+categories = ["network-programming"]
+
+[dependencies]
+# Serving crate: depends on the composition root (koi-compose) for the constructed
+# `Cores` + capability/status/bridge projections, the presentation crate (koi-dashboard)
+# for the dashboard/browser routes, every domain it mounts routes for, and koi-mcp for
+# the in-process MCP HTTP transport. Nothing depends on koi-serve except the top-level
+# consumers (the koi binary and koi-embedded), so the kernel and domain closures stay clean.
+koi-common.workspace = true
+koi-compose.workspace = true
+koi-dashboard.workspace = true
+koi-mdns.workspace = true
+koi-certmesh.workspace = true
+koi-config.workspace = true
+koi-dns.workspace = true
+koi-health.workspace = true
+koi-proxy.workspace = true
+koi-udp.workspace = true
+koi-runtime.workspace = true
+koi-mcp.workspace = true
+
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+utoipa.workspace = true
+utoipa-scalar = { workspace = true }
+subtle.workspace = true
+chrono.workspace = true
+hickory-proto.workspace = true
+if-addrs.workspace = true
+hostname.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+hyper-util.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+rcgen.workspace = true
+# A real MCP client (over a bound TCP listener) for the in-process /v1/mcp transport test.
+rmcp = { workspace = true, features = [
+    "client",
+    "transport-streamable-http-client-reqwest",
+] }

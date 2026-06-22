@@ -8,8 +8,8 @@
 //!   kernel (trust-store install was spun out to the external `os-truststore` crate);
 //! - **domain** crates (and the lean `koi-client`) depend only on the kernel +
 //!   foundation — **never on another domain** (the boundary model);
-//! - **composition** crates (`koi-dashboard`, `koi-embedded`, the `koi-net` binary) may
-//!   depend on anything — they are the wiring layer.
+//! - **composition** crates (`koi-dashboard`, `koi-compose`, `koi-serve`, `koi-mcp`,
+//!   `koi-embedded`, the `koi-net` binary) may depend on anything — the wiring/serving layer.
 //!
 //! This locks in P06's kernel restoration (koi-common stays clean) and P0x's
 //! koi-client decoupling, and turns "a domain accidentally depends on another domain"
@@ -37,7 +37,9 @@ fn classify(pkg: &str) -> Option<Class> {
         | "koi-certmesh" | "koi-client" => Class::Domain,
         // Wiring layer. `koi-mcp` composes the koi-client surface into an MCP adapter,
         // so it is composition (it depends on koi-client, a domain-class crate).
-        "koi-dashboard" | "koi-compose" | "koi-embedded" | "koi-net" | "koi-mcp" => {
+        // `koi-serve` is the serving layer (transports + trust plane); it depends on
+        // koi-compose + every domain it mounts, so it is composition too.
+        "koi-dashboard" | "koi-compose" | "koi-serve" | "koi-embedded" | "koi-net" | "koi-mcp" => {
             Class::Composition
         }
         _ => return None, // non-koi crates are out of scope

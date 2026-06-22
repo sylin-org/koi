@@ -3,10 +3,11 @@
 //! Mounts domain routes, health check, unified status, CORS, and OpenAPI docs.
 //! Called by `daemon_mode()` in `main.rs` and `run_service()` in `platform/windows.rs`.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::Extension;
+use axum::extract::{ConnectInfo, Extension};
 use axum::http::{header, HeaderName, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
@@ -20,7 +21,7 @@ use utoipa::OpenApi;
 use utoipa::ToSchema;
 use utoipa_scalar::{Scalar, Servable};
 
-use crate::DaemonCores;
+use koi_compose::cores::Cores as DaemonCores;
 use koi_dashboard::browser::BrowserState;
 use koi_dashboard::dashboard::DashboardState;
 use koi_dashboard::meta_browse::LazyMetaBrowse;
@@ -69,26 +70,67 @@ struct AppState {
     /// Whether the in-process MCP HTTP transport (`/v1/mcp`) is mounted. Reported
     /// on `/v1/status` as a field (MCP-HTTP is a transport, not a domain rung).
     mcp_http_enabled: bool,
+    /// `/v1/status` `daemon` field — a full daemon (`true`) vs an embedded instance.
+    daemon: bool,
 }
 
 // ── Entrypoint ──────────────────────────────────────────────────────
 
-// Wiring entrypoint: it threads every daemon component through to the HTTP
-// adapter. Pre-existing signature (P03); clippy 0.1.95 (> repo MSRV 1.92) newly
-// flags the arg count. Behaviour-neutral allow to keep the gate green.
-#[allow(clippy::too_many_arguments)]
+/// Declarative description of the HTTP surface to serve. One router builder backs both
+/// the daemon (full surface: DAT auth, MCP, admin-shutdown, OpenAPI) via [`crate::serve`]
+/// and an embedded host (loopback bind, optional auth, no MCP) — one implementation, so
+/// their `/v1/status` shapes and route sets cannot drift.
+pub struct HttpConfig {
+    /// Resolved bind address (loopback by default — the caller owns the bind policy).
+    pub bind_ip: std::net::IpAddr,
+    pub port: u16,
+    pub started_at: std::time::Instant,
+    /// Dashboard state — `Some` mounts the dashboard SPA + snapshot/events routes.
+    pub dashboard: Option<DashboardState>,
+    /// Browser state — `Some` mounts the mDNS browser page + routes (else a 503 fallback).
+    pub browser: Option<BrowserState>,
+    /// DAT for mutation auth — `Some` enforces the `x-koi-token` middleware; `None` leaves
+    /// mutations unauthenticated (only safe behind a loopback bind).
+    pub auth: Option<String>,
+    /// Cached mDNS snapshot for the Prometheus `?include=discovered` slice.
+    pub mdns_snapshot: Option<Arc<dyn koi_common::integration::MdnsSnapshot>>,
+    /// Mount the in-process MCP HTTP transport at `/v1/mcp`.
+    pub mcp_http: bool,
+    /// Mount `POST /v1/admin/shutdown` (cancels the serving token).
+    pub admin_shutdown: bool,
+    /// Mount `/docs` (Scalar) + `/openapi.json`.
+    pub api_docs: bool,
+    /// `/v1/status` `daemon` field — a full daemon (`true`) vs an embedded instance.
+    pub daemon: bool,
+    /// One-shot to report the actually-bound `SocketAddr` once the listener is up.
+    /// Lets an embedded host that passed `port: 0` learn the OS-assigned port. The
+    /// daemon leaves this `None` — it already knows its fixed port.
+    pub ready: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
+}
+
+/// Build the router for `cores` per `cfg`, bind `bind_ip:port`, and serve until `cancel`
+/// fires. The single HTTP entry point shared by the daemon and the Windows service (both
+/// via [`crate::serve`]) and by koi-embedded.
 pub async fn start(
     cores: DaemonCores,
-    bind_ip: std::net::IpAddr,
-    port: u16,
+    cfg: HttpConfig,
     cancel: CancellationToken,
-    started_at: std::time::Instant,
-    dashboard_state: DashboardState,
-    browser_state: Option<BrowserState>,
-    dat_token: String,
-    mdns_snapshot: Option<Arc<dyn koi_common::integration::MdnsSnapshot>>,
-    mcp_http_enabled: bool,
 ) -> anyhow::Result<()> {
+    let HttpConfig {
+        bind_ip,
+        port,
+        started_at,
+        dashboard: dashboard_state,
+        browser: browser_state,
+        auth,
+        mdns_snapshot,
+        mcp_http: mcp_http_enabled,
+        admin_shutdown,
+        api_docs,
+        daemon,
+        ready,
+    } = cfg;
+
     let app_state = AppState {
         mdns: cores.mdns.clone(),
         certmesh: cores.certmesh.clone(),
@@ -103,25 +145,36 @@ pub async fn start(
         mdns_browse: browser_state.as_ref().map(|b| b.meta.clone()),
         mdns_snapshot,
         mcp_http_enabled,
+        daemon,
     };
 
-    // ── Dashboard (always mounted) ──
+    // ── System endpoints (always mounted) ──
     let mut app = Router::new()
         .route(paths::HEALTHZ, get(health))
         .route(paths::UNIFIED_STATUS, get(unified_status_handler))
-        .route(paths::SHUTDOWN, post(shutdown_handler))
         .route(paths::HOST, get(host_handler))
         .route(paths::PROMETHEUS_SD, get(prometheus_sd_handler))
-        .route(paths::MCP_SERVER_CARD, get(mcp_server_card_handler))
-        .route("/", get(koi_dashboard::dashboard::get_dashboard))
-        .route(
-            "/v1/dashboard/snapshot",
-            get(koi_dashboard::dashboard::get_snapshot),
-        )
-        .route(
-            "/v1/dashboard/events",
-            get(koi_dashboard::dashboard::get_events),
-        );
+        .route(paths::MCP_SERVER_CARD, get(mcp_server_card_handler));
+
+    // ── Admin shutdown (daemon / Windows service only; an embedded host owns its own
+    // lifecycle via its handle, so it does not expose a remote shutdown endpoint) ──
+    if admin_shutdown {
+        app = app.route(paths::SHUTDOWN, post(shutdown_handler));
+    }
+
+    // ── Dashboard (mounted when a DashboardState is supplied) ──
+    if dashboard_state.is_some() {
+        app = app
+            .route("/", get(koi_dashboard::dashboard::get_dashboard))
+            .route(
+                "/v1/dashboard/snapshot",
+                get(koi_dashboard::dashboard::get_snapshot),
+            )
+            .route(
+                "/v1/dashboard/events",
+                get(koi_dashboard::dashboard::get_events),
+            );
+    }
 
     // ── mDNS browser (conditional on mDNS being enabled) ──
     if let Some(bs) = browser_state {
@@ -215,7 +268,7 @@ pub async fn start(
     // A tower Service (rmcp), so use nest_service. Token-authenticated for all
     // methods via the dat_auth_middleware carve-out below. Not in /openapi.json.
     if mcp_http_enabled {
-        let source = Arc::new(crate::adapters::mcp_http::CoreSource::new(
+        let source = Arc::new(crate::mcp_http::CoreSource::new(
             cores.clone(),
             started_at,
             bind_ip.to_string(),
@@ -241,41 +294,49 @@ pub async fn start(
         app = app.nest(paths::MCP, disabled_fallback_router("mcp-http"));
     }
 
-    // OpenAPI spec - composed from domain-owned specs via nest()
-    let openapi = build_openapi();
-
-    // Serve interactive API docs at /docs and raw spec at /openapi.json
-    app = app.merge(Scalar::with_url("/docs", openapi.clone()));
-    let spec_json = match openapi.to_pretty_json() {
-        Ok(json) => json,
-        Err(e) => {
-            tracing::error!(error = %e, "OpenAPI JSON serialization failed");
-            String::from(r#"{"error":"OpenAPI serialization failed"}"#)
-        }
-    };
-    app = app.route(
-        "/openapi.json",
-        get(move || {
-            let json = spec_json.clone();
-            async move {
-                (
-                    [(axum::http::header::CONTENT_TYPE, "application/json")],
-                    json,
-                )
+    // ── OpenAPI spec + Scalar docs (conditional) ──
+    if api_docs {
+        // Composed from domain-owned specs via nest().
+        let openapi = build_openapi();
+        // Serve interactive API docs at /docs and the raw spec at /openapi.json.
+        app = app.merge(Scalar::with_url("/docs", openapi.clone()));
+        let spec_json = match openapi.to_pretty_json() {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::error!(error = %e, "OpenAPI JSON serialization failed");
+                String::from(r#"{"error":"OpenAPI serialization failed"}"#)
             }
-        }),
-    );
+        };
+        app = app.route(
+            "/openapi.json",
+            get(move || {
+                let json = spec_json.clone();
+                async move {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        json,
+                    )
+                }
+            }),
+        );
+    }
 
     app = app.layer(Extension(app_state));
-    app = app.layer(Extension(dashboard_state));
+    if let Some(ds) = dashboard_state {
+        app = app.layer(Extension(ds));
+    }
 
-    // DAT auth middleware: mutation requests (non-GET/OPTIONS) require X-Koi-Token header.
-    // Applied BEFORE CORS so it only sees real requests (CORS handles OPTIONS preflight).
-    let shared_token = Arc::new(dat_token);
-    app = app.layer(middleware::from_fn(move |req, next| {
-        let token = Arc::clone(&shared_token);
-        dat_auth_middleware(req, next, token)
-    }));
+    // DAT auth middleware: mutation requests (non-GET/OPTIONS) require the x-koi-token
+    // header when a token is configured. Applied BEFORE CORS so it only sees real requests
+    // (CORS handles OPTIONS preflight). `None` — an embedded host on a loopback bind —
+    // leaves mutations open to the loopback boundary.
+    if let Some(token) = auth {
+        let shared_token = Arc::new(token);
+        app = app.layer(middleware::from_fn(move |req, next| {
+            let token = Arc::clone(&shared_token);
+            dat_auth_middleware(req, next, token)
+        }));
+    }
 
     // CORS must be the LAST .layer() call (outermost) so OPTIONS preflight
     // is handled before auth middleware strips unauthenticated requests.
@@ -289,21 +350,31 @@ pub async fn start(
         ])
         .allow_headers([header::CONTENT_TYPE, HeaderName::from_static("x-koi-token")])
         .allow_origin(tower_http::cors::AllowOrigin::predicate(|origin, _| {
-            let s = origin.to_str().unwrap_or("");
-            s.starts_with("http://localhost") || s.starts_with("http://127.0.0.1")
+            is_loopback_origin(origin.to_str().unwrap_or(""))
         }));
     app = app.layer(cors);
 
     // Bind to the resolved address (loopback by default; see --http-bind).
     // Exposure does not relax auth — mutations still require the DAT token.
     let listener = tokio::net::TcpListener::bind((bind_ip, port)).await?;
-    tracing::info!("HTTP adapter listening on {}:{}", bind_ip, port);
+    let local_addr = listener.local_addr()?;
+    tracing::info!("HTTP adapter listening on {local_addr}");
+    // Report the bound address to a caller that asked (e.g. an embedded host that
+    // passed port 0 and needs the OS-assigned port). Ignore a dropped receiver.
+    if let Some(tx) = ready {
+        let _ = tx.send(local_addr);
+    }
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            cancel.cancelled().await;
-        })
-        .await?;
+    // ConnectInfo carries the peer address so the auth middleware can keep the
+    // trust/zone reads token-free for loopback callers but gated for remote peers.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        cancel.cancelled().await;
+    })
+    .await?;
 
     tracing::debug!("HTTP adapter stopped");
     Ok(())
@@ -334,9 +405,9 @@ struct ShutdownResponse {
 /// Host identity and network interfaces.
 #[derive(Debug, Serialize, ToSchema)]
 struct HostInfoResponse {
-    /// Raw hostname (e.g. "stone-azure-pool").
+    /// Raw hostname (e.g. "node-azure-pool").
     hostname: String,
-    /// Fully-qualified mDNS name (e.g. "stone-azure-pool.local").
+    /// Fully-qualified mDNS name (e.g. "node-azure-pool.local").
     hostname_fqdn: String,
     /// Operating system (e.g. "linux", "windows").
     os: String,
@@ -520,13 +591,40 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
     openapi
 }
 
+/// Exact loopback-origin check for CORS. Accepts only `http://` origins whose host
+/// authority is exactly `localhost`, `127.0.0.1`, or `::1` (optional port). A prefix
+/// match would let an attacker-registrable name like `http://localhost.evil.com`
+/// through and have it reflected into `Access-Control-Allow-Origin`, exposing the
+/// GET-readable surface cross-origin.
+fn is_loopback_origin(origin: &str) -> bool {
+    let Some(rest) = origin.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        // IPv6 literal: "[::1]:port" → "::1"
+        match v6.split_once(']') {
+            Some((h, _)) => h,
+            None => return false,
+        }
+    } else {
+        // "host" or "host:port"
+        authority.split(':').next().unwrap_or("")
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
 // ── DAT auth middleware ──────────────────────────────────────────────
 
 /// Daemon Access Token (DAT) authentication middleware.
 ///
-/// GET and OPTIONS requests are exempt (read-only, CORS preflight).
-/// All other methods require a valid `x-koi-token` header.
-/// Uses constant-time comparison to prevent timing attacks.
+/// GET, HEAD, and OPTIONS requests are exempt (read-only, CORS preflight) —
+/// except for `/v1/mcp` and `/v1/certmesh/log` (token required even on GET), the
+/// `/v1/udp/` surface, and the protected zone/posture reads
+/// (`/v1/certmesh/diagnose`, `/v1/dns/{list,zone}`) which stay exempt only for a
+/// loopback peer and require the token from a remote one. All other methods
+/// require a valid `x-koi-token` header. Uses constant-time comparison to
+/// prevent timing attacks.
 pub(crate) async fn dat_auth_middleware(
     req: Request<Body>,
     next: Next,
@@ -540,16 +638,58 @@ pub(crate) async fn dat_auth_middleware(
     let method = req.method().clone();
     let path = req.uri().path();
     let is_mcp = path.starts_with(paths::MCP);
+    // The CA audit log is the one GET that is NOT read-safe to expose: it
+    // narrates the full trust history (member joins/revocations, auth rotations,
+    // failed unlock attempts, backup/restore). Carve it out of the GET exemption
+    // so reading it requires the daemon token — exactly like /v1/mcp, on every
+    // peer. status and trust-bundle stay GET-exempt on every peer (load-bearing in
+    // the unauthenticated cross-host protocol); diagnose is loopback-gated below.
+    // The `koi certmesh log` CLI already sends the token (require_daemon → auth_get).
+    let is_audit_log = path == koi_certmesh::http::paths::LOG;
+    // The UDP surface is carved out of the GET exemption too: `/v1/udp/status`
+    // enumerates every binding's id and `/v1/udp/recv/{id}` streams a binding's
+    // inbound datagrams — both expose other token-holders' bindings, so reading
+    // them requires the daemon token (the mutations already do). Gating the whole
+    // `/v1/udp/` prefix keeps the surface coherent.
+    let is_udp = path.starts_with("/v1/udp/");
     // Certmesh enrollment is the one mutation that is NOT DAT-gated: a fresh node
     // joining a remote CA has no way to know that host's local token, so it
     // authorizes with a TOTP enrollment code in the request body instead. The
     // join handler enforces that auth + the enrollment policy itself, so the DAT
     // middleware must let the request reach it.
     let is_enrollment = path == koi_certmesh::http::paths::JOIN;
+    // These reads expose the DNS zone (every resolvable name) and the full trust
+    // posture (the diagnose / trust-doctor report). Fine on loopback — local
+    // tooling like the CLI and dashboard — but not safe to leave world-readable
+    // to a remote LAN peer when the adapter is bound to a routable address. So
+    // they stay GET-exempt only for a loopback peer; a non-loopback peer must
+    // present the token. When the peer address is unknown we fail closed.
+    //
+    // NOT gated, deliberately: `/v1/certmesh/status` and `/v1/certmesh/trust-bundle`
+    // are load-bearing in the *unauthenticated* cross-host protocol — a joining
+    // node reads `status.ca_fingerprint` to pin the CA before it holds any
+    // credential, and members pull the trust-bundle (an ES256-signed, self-
+    // verifying document) over plain HTTP. Gating either breaks enrollment / sync.
+    let is_protected_read = path == koi_certmesh::http::paths::DIAGNOSE
+        || path == "/v1/dns/list"
+        || path == "/v1/dns/zone"
+        || path == "/v1/dns/entries";
+    let peer_is_loopback = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().is_loopback())
+        .unwrap_or(false);
     let exempt_method = method == axum::http::Method::GET
         || method == axum::http::Method::HEAD
         || method == axum::http::Method::OPTIONS;
-    if is_enrollment || method == axum::http::Method::OPTIONS || (exempt_method && !is_mcp) {
+    // A protected read is exempt only from a loopback peer.
+    let protected_ok = peer_is_loopback || !is_protected_read;
+    let read_exempt = exempt_method && !is_mcp && !is_audit_log && !is_udp && protected_ok;
+    // OPTIONS is always let through, even on a gated path: a CORS preflight carries no
+    // credentials by web standard, and a preflight against a GET-only/gated route returns
+    // only CORS headers or 405 — never the resource body — so it cannot leak gated content.
+    // Gating it would instead break legitimate preflights for /v1/mcp and the protected reads.
+    if is_enrollment || method == axum::http::Method::OPTIONS || read_exempt {
         return next.run(req).await;
     }
 
@@ -592,7 +732,7 @@ async fn health() -> &'static str {
 async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<serde_json::Value> {
     // The capability ladder is assembled once in koi-compose, shared with the dashboard and
     // embedded snapshots. `/v1/status` emits just the status (no `enabled` field).
-    let cores = crate::DaemonCores {
+    let cores = DaemonCores {
         mdns: state.mdns.clone(),
         certmesh: state.certmesh.clone(),
         dns: state.dns.clone(),
@@ -622,7 +762,7 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
         "version": env!("CARGO_PKG_VERSION"),
         "platform": std::env::consts::OS,
         "uptime_secs": uptime_secs,
-        "daemon": true,
+        "daemon": state.daemon,
         "http_bind": state.http_bind,
         "mdns_browse_active": state.mdns_browse.as_ref().map(|m| m.is_active()),
         "mcp_http": state.mcp_http_enabled,
@@ -714,7 +854,7 @@ async fn prometheus_sd_handler(
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<PrometheusSdParams>,
 ) -> Response {
-    use crate::adapters::prometheus_sd::{build_target_groups, Slice};
+    use crate::prometheus_sd::{build_target_groups, Slice};
 
     let slice = Slice::from_query(params.include.as_deref());
 
@@ -997,6 +1137,209 @@ mod tests {
         assert_ne!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
 
+    // ── Audit-log carve-out: /v1/certmesh/log is authenticated on GET ──
+    // The CA audit log narrates the full trust history (joins, revocations, auth
+    // rotations, failed unlocks), so unlike the other certmesh read GETs it must
+    // carry the token even though it is a GET.
+
+    /// Router with the audit-log route and a sibling exempt GET, behind the
+    /// production middleware.
+    fn audit_log_test_router(token: &str) -> Router {
+        let expected = Arc::new(token.to_string());
+        Router::new()
+            .route("/healthz", get(|| async { "ok" }))
+            .route(koi_certmesh::http::paths::LOG, get(|| async { "ok" }))
+            .route("/v1/certmesh/status", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let expected = expected.clone();
+                dat_auth_middleware(req, next, expected)
+            }))
+    }
+
+    #[tokio::test]
+    async fn audit_log_get_without_token_is_rejected() {
+        let app = audit_log_test_router("secret-token");
+        let req = Request::get(koi_certmesh::http::paths::LOG)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn audit_log_get_with_token_is_accepted() {
+        let app = audit_log_test_router("secret-token");
+        let req = Request::get(koi_certmesh::http::paths::LOG)
+            .header(DAT_HEADER, "secret-token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn certmesh_sibling_read_get_stays_exempt() {
+        // The audit-log carve-out is surgical: it gates LOG specifically.
+        // /v1/certmesh/status stays token-free on every peer (it is load-bearing
+        // in the unauthenticated cross-host enrollment preflight).
+        let app = audit_log_test_router("secret-token");
+        let req = Request::get("/v1/certmesh/status")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    // ── UDP GET surface is token-gated (binding enumeration / datagram read) ──
+
+    fn udp_carveout_test_router(token: &str) -> Router {
+        let expected = Arc::new(token.to_string());
+        Router::new()
+            .route("/v1/udp/status", get(|| async { "ok" }))
+            .route("/v1/udp/recv/abc", get(|| async { "ok" }))
+            .route("/v1/mdns/discover", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let expected = expected.clone();
+                dat_auth_middleware(req, next, expected)
+            }))
+    }
+
+    #[tokio::test]
+    async fn udp_get_surface_requires_token() {
+        for path in ["/v1/udp/status", "/v1/udp/recv/abc"] {
+            let app = udp_carveout_test_router("secret-token");
+            let req = Request::get(path).body(Body::empty()).unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+                "{path} must require the token even on GET"
+            );
+        }
+        // With the token the request reaches the handler.
+        let app = udp_carveout_test_router("secret-token");
+        let req = Request::get("/v1/udp/status")
+            .header(DAT_HEADER, "secret-token")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            axum::http::StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn non_udp_sibling_get_stays_exempt() {
+        // The carve-out is surgical: an unprotected sibling read GET stays token-free.
+        let app = udp_carveout_test_router("secret-token");
+        let req = Request::get("/v1/mdns/discover")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            axum::http::StatusCode::OK
+        );
+    }
+
+    // ── Protected zone/posture reads: loopback-exempt, remote-gated ──
+    // /v1/certmesh/diagnose and /v1/dns/{list,zone,entries} carry zone + trust-posture
+    // info: token-free for a loopback peer (local tooling), token-required from a
+    // remote peer, and fail-closed when the peer is unknown. (status + trust-bundle
+    // are deliberately NOT here — they are part of the unauthenticated protocol.)
+
+    const PROTECTED_READS: [&str; 4] = [
+        "/v1/dns/list",
+        "/v1/dns/zone",
+        "/v1/dns/entries",
+        koi_certmesh::http::paths::DIAGNOSE,
+    ];
+
+    fn protected_read_test_router(token: &str) -> Router {
+        let expected = Arc::new(token.to_string());
+        let mut router = Router::new();
+        for path in PROTECTED_READS {
+            router = router.route(path, get(|| async { "ok" }));
+        }
+        router.layer(middleware::from_fn(move |req, next| {
+            let expected = expected.clone();
+            dat_auth_middleware(req, next, expected)
+        }))
+    }
+
+    fn get_with_peer(path: &str, peer: SocketAddr) -> Request<Body> {
+        let mut req = Request::get(path).body(Body::empty()).unwrap();
+        req.extensions_mut().insert(ConnectInfo(peer));
+        req
+    }
+
+    #[tokio::test]
+    async fn protected_read_exempt_for_loopback_peer() {
+        for path in PROTECTED_READS {
+            let app = protected_read_test_router("secret-token");
+            let req = get_with_peer(path, "127.0.0.1:54321".parse().unwrap());
+            assert_eq!(
+                app.oneshot(req).await.unwrap().status(),
+                axum::http::StatusCode::OK,
+                "{path} must stay token-free for a loopback peer"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn protected_read_requires_token_for_remote_peer() {
+        for path in PROTECTED_READS {
+            // Remote peer, no token → 401.
+            let app = protected_read_test_router("secret-token");
+            let req = get_with_peer(path, "192.168.1.50:40000".parse().unwrap());
+            assert_eq!(
+                app.oneshot(req).await.unwrap().status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+                "{path} must require the token for a remote peer"
+            );
+            // Remote peer with the token → reaches the handler.
+            let app = protected_read_test_router("secret-token");
+            let mut req = Request::get(path)
+                .header(DAT_HEADER, "secret-token")
+                .body(Body::empty())
+                .unwrap();
+            req.extensions_mut().insert(ConnectInfo(
+                "192.168.1.50:40000".parse::<SocketAddr>().unwrap(),
+            ));
+            assert_eq!(
+                app.oneshot(req).await.unwrap().status(),
+                axum::http::StatusCode::OK,
+                "{path} must accept the token from a remote peer"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn protected_read_fails_closed_without_peer_info() {
+        // No ConnectInfo extension (peer unknown) → require the token.
+        let app = protected_read_test_router("secret-token");
+        let req = Request::get("/v1/dns/list").body(Body::empty()).unwrap();
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            axum::http::StatusCode::UNAUTHORIZED
+        );
+    }
+
+    // ── CORS loopback-origin check is an exact host-authority match ──
+
+    #[test]
+    fn cors_origin_accepts_only_exact_loopback_hosts() {
+        assert!(is_loopback_origin("http://localhost:5641"));
+        assert!(is_loopback_origin("http://127.0.0.1:5641"));
+        assert!(is_loopback_origin("http://localhost"));
+        assert!(is_loopback_origin("http://[::1]:5641"));
+        // Attacker-registrable look-alikes must be rejected (the prefix-match bug).
+        assert!(!is_loopback_origin("http://localhost.evil.com"));
+        assert!(!is_loopback_origin("http://127.0.0.1.evil.com"));
+        assert!(!is_loopback_origin("http://localhostfoo:9999"));
+        assert!(!is_loopback_origin("https://localhost:5641"));
+        assert!(!is_loopback_origin("http://evil.com/http://localhost"));
+    }
+
     // ── Certmesh enrollment is DAT-exempt (TOTP-authorized bootstrap) ──
     // A fresh node joining a remote CA can't know that host's token, so
     // /v1/certmesh/join must reach its handler (which enforces TOTP) without one.
@@ -1152,6 +1495,7 @@ mod tests {
             mdns_browse: None,
             mdns_snapshot: None,
             mcp_http_enabled: false,
+            daemon: true,
         }
     }
 

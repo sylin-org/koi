@@ -17,10 +17,12 @@ a language SDK, a CI job, a sidecar container.
 The daemon's HTTP API listens on `127.0.0.1:5641` (loopback) by default, so only
 processes on the same machine can reach it. Within that boundary:
 
-- **`GET` / `HEAD` / `OPTIONS` are unauthenticated.** Any local process can read
-  status, discovered services, DNS entries, certmesh status, the roster, and the
-  audit log without a token. (The one exception is `/v1/mcp`, which requires the
-  token on every method, including its `GET` SSE stream — see the [MCP guide](./mcp.md).)
+- **Most `GET` / `HEAD` / `OPTIONS` are unauthenticated.** Any local process can read
+  status, discovered services, DNS entries, certmesh status, and the signed trust
+  bundle without a token. The exceptions require the token on *every* method,
+  including `GET`: `/v1/mcp` (its live SSE channel — see the [MCP guide](./mcp.md)),
+  the CA audit log `/v1/certmesh/log` (it narrates the full trust history), and the
+  `/v1/udp/*` surface (it enumerates and streams other token-holders' bindings).
 - **`POST` / `PUT` / `DELETE` require the daemon access token.** Send it in the
   `x-koi-token` HTTP header. Without it you get a `401`. Comparison is constant-time.
 
@@ -184,7 +186,7 @@ token yourself:
 
 ```bash
 # CLI against a remote daemon, with its token
-koi --endpoint http://stone-01:5641 --token "$REMOTE_TOKEN" dns list
+koi --endpoint http://node-01:5641 --token "$REMOTE_TOKEN" dns list
 ```
 
 There are no per-client accounts or scopes: one token per daemon authorizes all

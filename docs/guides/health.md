@@ -80,6 +80,33 @@ This is your incident timeline. When you come back Monday morning and a service 
 
 ---
 
+## Machine health
+
+Alongside the service checks you register, the snapshot also reports **machine health** - one row per machine Koi has seen on the LAN. You don't configure these; they're derived automatically from the mDNS tracker (hosts currently advertising on the network) and, when certmesh is running, the CA roster (enrolled members). Both `koi health status` and `GET /v1/health/status` return machines alongside services.
+
+Each machine carries:
+
+| Field          | Meaning                                                                  |
+| -------------- | ----------------------------------------------------------------------- |
+| `hostname`     | The machine's name                                                       |
+| `status`       | `up`, `down`, or `unknown`                                               |
+| `sources`      | Where Koi learned about it - `mdns`, `certmesh`, or both                 |
+| `last_seen_secs` | Seconds since the machine was last observed (absent if never seen)     |
+| `cert_expires` | When this member's certmesh certificate expires (certmesh members only) |
+| `dns_resolves` | Whether the local DNS zone resolves this hostname (when DNS is running)  |
+| `warnings`     | Notable conditions worth attention (see below)                          |
+
+**Status and staleness.** A machine is `up` when it was last seen within the staleness threshold (60 seconds by default). Past that, it goes `down`; a machine known only from the roster but never observed reports `unknown`. The status, not a warning, is what tells you a machine has gone quiet.
+
+**Warnings.** The warnings list flags certificate-trust conditions:
+
+- `cert_expiring` - the member's certmesh certificate expires within 7 days
+- `cert_expired` - the certificate has already lapsed
+
+A machine that has gone stale shows up as a `down` (or `unknown`) status rather than a warning, so scan the status column for "is it reachable?" and the warnings for "is its trust about to break?".
+
+---
+
 ## CLI commands
 
 ```

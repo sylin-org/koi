@@ -91,19 +91,35 @@ pub(crate) fn detect_mode(cli: &Cli) -> Mode {
     Mode::Standalone
 }
 
-/// Resolve an endpoint for admin commands (which always need a daemon).
-pub(crate) fn resolve_endpoint(cli: &Cli) -> anyhow::Result<(String, String)> {
-    if let Some(endpoint) = &cli.endpoint {
-        // Explicit endpoint: explicit token or tokenless, never the breadcrumb.
-        return Ok((
-            endpoint.clone(),
-            token_for_explicit_endpoint(cli_token(cli)),
-        ));
+/// Build a [`KoiClient`] for a command that always needs a running daemon (mDNS admin and
+/// every certmesh command), folding the token-leak rule and the breadcrumb health-probe
+/// into one place.
+///
+/// - **Explicit `endpoint`** → use the explicit `--token`/`KOI_TOKEN` value if set, else
+///   **tokenless** (never the local breadcrumb token — pairing it with a remote URL would
+///   leak the local daemon's token to that host). No health-probe: the operator named the
+///   target deliberately.
+/// - **No explicit endpoint** → use the breadcrumb (endpoint + its matching token) only
+///   after a health-probe confirms a daemon is actually answering there; otherwise bail
+///   with an actionable message. The probe matches the breadcrumb path in [`detect_mode`]
+///   so a stale breadcrumb never routes a command at a dead endpoint.
+pub(crate) fn require_client(
+    endpoint: Option<&str>,
+    explicit_token: Option<&str>,
+) -> anyhow::Result<KoiClient> {
+    if let Some(ep) = endpoint {
+        let token = token_for_explicit_endpoint(explicit_token);
+        return Ok(KoiClient::with_token(ep, &token));
     }
     if let Some(bc) = koi_config::breadcrumb::read_breadcrumb() {
-        return Ok((bc.endpoint, bc.token));
+        if KoiClient::new(&bc.endpoint).health().is_ok() {
+            return Ok(KoiClient::with_token(&bc.endpoint, &bc.token));
+        }
     }
-    anyhow::bail!("No daemon endpoint found. Is the daemon running? Use --endpoint to specify.")
+    anyhow::bail!(
+        "No running Koi service found.\n\
+         Install and start the service first: koi install (or pass --endpoint)."
+    )
 }
 
 pub(crate) async fn with_mode<T, LFut, CFut, L, C>(

@@ -282,19 +282,19 @@ async fn new_account(State(state): State<Arc<AcmeState>>, body: Bytes) -> Respon
         );
     };
 
-    // Closed mode requires External Account Binding. If enrollment is closed and
-    // the request carries no EAB, reject with externalAccountRequired.
+    // Closed enrollment: External Account Binding would be the gate, but Koi does
+    // not yet implement an EAB key store / HMAC verification. A presence-only check
+    // (`externalAccountBinding` is Some) is NO gate at all — any value passes — so
+    // while closed the ACME server issues NO new accounts rather than falsely admit
+    // one. Fail closed. The directory still advertises `externalAccountRequired`
+    // so compliant clients know an EAB is required; we simply cannot verify one yet.
     if !state.enrollment_open().await {
-        let payload: Value = serde_json::from_slice(&req.jws.payload).unwrap_or(Value::Null);
-        if payload.get("externalAccountBinding").is_none() {
-            return problem(
-                &state,
-                AcmeErrorType::ExternalAccountRequired,
-                "this mesh is in closed enrollment; an external account binding is required",
-            );
-        }
-        // NOTE: full EAB HMAC verification is implemented for the closed-mode path
-        // but open mode (the default) is the exercised gate. See module docs.
+        return problem(
+            &state,
+            AcmeErrorType::ExternalAccountRequired,
+            "this mesh is in closed enrollment; the ACME server does not accept new \
+             accounts while closed (external account binding is not yet supported)",
+        );
     }
 
     // Parse contacts (optional).

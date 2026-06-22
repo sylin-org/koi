@@ -6,6 +6,32 @@ You ran `koi --daemon` to try it, and it works — but it dies when you close th
 
 ---
 
+## Get the binary
+
+`koi install` assumes the `koi` binary is already on your `PATH`. The fastest way to get it is the one-line installer — it downloads the latest release archive for your OS/arch, verifies its checksum, and puts the binary on your `PATH`. It never compiles anything and doesn't need root for the default per-user location.
+
+```sh
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh
+```
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
+```
+
+Both installers honor the same knobs as environment variables: `KOI_VERSION` (pin a release tag, e.g. `v0.4.2`), `KOI_INSTALL_DIR` (install location), and `KOI_NO_MODIFY_PATH` (skip the PATH change).
+
+Prefer a container? The image runs the daemon via its default command — no install needed:
+
+```sh
+docker run -d --name koi -p 5641:5641 ghcr.io/sylin-org/koi:latest
+```
+
+Just trying Koi out, or want the full first-run walkthrough? Start with the [getting-started tutorial](../tutorials/getting-started.md) — it goes from nothing installed to a visible result in about a minute. Come back here when you're ready to run Koi as a service that survives reboots.
+
+---
+
 ## Install
 
 ```
@@ -269,6 +295,7 @@ If the daemon was killed ungracefully (power loss, `taskkill /F`), the breadcrum
 
 ## See also
 
+- [Getting started](../tutorials/getting-started.md) — install and a first visible result in about a minute.
 - [System: daemon lifecycle](./system.md) — status, dashboard, modules, factory reset.
 - [Security model](../reference/security-model.md) — bind addresses, the daemon access token, what's exposed when you bind off-loopback.
 - [CLI reference](../reference/cli.md) — every flag and environment variable.

@@ -24,6 +24,7 @@ mssh(){ sshpass -p stone ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/
 start_ca_daemon() {
   pkill -f 'koi --daemon' 2>/dev/null; sleep 1
   ( cd /home/stone/koi-test && KOI_DATA_DIR="$DATA" KOI_NO_CREDENTIAL_STORE=1 KOI_HTTP_BIND=0.0.0.0 \
+      KOI_ANNOUNCE_HTTP=true \
       nohup "$KOI" --daemon --no-runtime --no-proxy --no-udp --no-mcp-http --no-acme \
       </dev/null >/home/stone/koi-test/daemon.log 2>&1 & )
   # A daemon booting with a CA already on disk must unlock the vault before HTTP
@@ -47,6 +48,9 @@ echo "== 0. (re)start the CA daemon (Open) =="
 start_ca_daemon && ok "CA daemon up" || bad "CA daemon"
 # Breadcrumb line 2 is "dat:<token>"; the x-koi-token header wants the raw token.
 TOKEN="$(sed -n 2p /run/user/1000/koi.endpoint | sed 's/^dat://')"
+# Capture the self-announced _http._tcp record while still Open (KOI_ANNOUNCE_HTTP=1) — step
+# 2b proves the self-announce supervisor re-stamps its posture reactively on CA create.
+HTTP_OBJ_OPEN=$(curl -s "$CA/v1/mdns/admin/ls" -H "x-koi-token: $TOKEN" 2>/dev/null | jq -c '.. | objects | select(.type=="_http._tcp" or .service_type=="_http._tcp")' 2>/dev/null)
 
 echo "== 1. P4: mTLS listener DOWN while Open =="
 ss -tln | grep -q :5642 && bad "5642 up before CA (unexpected)" || ok "5642 down (Open)"
@@ -57,6 +61,25 @@ CREATE=$(curl -s -X POST "$CA/v1/certmesh/create" -H "x-koi-token: $TOKEN" -H 'c
   -d "{\"passphrase\":\"test-pass-2026\",\"entropy_hex\":\"$ENTROPY\",\"operator\":\"ops\",\"enrollment_open\":true,\"requires_approval\":false,\"auto_unlock\":true,\"totp_secret_hex\":null}")
 CA_FP=$(echo "$CREATE" | jq -r '.ca_fingerprint // empty' 2>/dev/null)
 if [ -n "$CA_FP" ]; then ok "CA created (fp ${CA_FP:0:16}...)"; else bad "CA create"; echo "    $CREATE" | head -c 300; echo; fi
+
+echo "== 2b. ADR-020: _http._tcp re-stamped reactively on CA create (no restart) =="
+# The CA daemon booted Open (step 0, KOI_ANNOUNCE_HTTP=1) and created the CA over HTTP (step 2)
+# with no restart; the self-announce supervisor must have re-stamped its own _http._tcp record
+# posture=open -> posture=authenticated on the posture flip (mirrors _certmesh._tcp reactivity).
+# Poll (not a fixed sleep) for the supervisor's re-stamp to land — robust under load.
+HTTP_OBJ_AUTH=""
+for _ in $(seq 1 10); do
+  HTTP_OBJ_AUTH=$(curl -s "$CA/v1/mdns/admin/ls" -H "x-koi-token: $TOKEN" 2>/dev/null | jq -c '.. | objects | select(.type=="_http._tcp" or .service_type=="_http._tcp")' 2>/dev/null)
+  echo "$HTTP_OBJ_AUTH" | grep -qi 'authenticated' && break
+  sleep 1
+done
+echo "    open-obj=${HTTP_OBJ_OPEN:0:140}"
+echo "    auth-obj=${HTTP_OBJ_AUTH:0:140}"
+if echo "$HTTP_OBJ_AUTH" | grep -qi 'authenticated'; then
+  ok "_http._tcp re-stamped to posture=authenticated (reactive self-announce, no restart)"
+else
+  bad "_http._tcp not re-stamped to authenticated"
+fi
 
 echo "== 3. P4: mTLS listener reactive-UP after CA (no restart) =="
 sleep 2
@@ -132,6 +155,78 @@ sleep 5
 ST=$(mssh "curl -s http://localhost:5641/v1/status" 2>/dev/null)
 echo "$ST" | tr ',{}' '\n' | grep -iE 'browse receiving|browse active|mdns_browse' | head -4 | sed 's/^/    /'
 if echo "$ST" | grep -qiE 'browse receiving|browse active'; then ok "koi status surfaces mDNS receive-health"; else bad "status not surfacing receive-health (A)"; fi
+
+echo "== 13. P3: unified HTTP router — rich /v1/status (daemon, seal, mcp_http, mdns_browse_active) =="
+# The koi-serve router unification (P3) must keep the daemon's FULL /v1/status shape — the
+# same fields koi-embedded used to silently drop. Assert daemon=true + the rich fields.
+ST2=$(curl -s "$CA/v1/status" -H "x-koi-token: $TOKEN" 2>/dev/null)
+echo "    ${ST2:0:200}"
+if echo "$ST2" | jq -e '.daemon==true and has("seal") and has("mcp_http") and has("mdns_browse_active") and (.capabilities|type=="array")' >/dev/null 2>&1; then
+  ok "/v1/status carries the full daemon shape (no embedded drift)"
+else
+  bad "/v1/status missing rich fields (router regression)"
+fi
+
+echo "== 14. P3: unified router — /v1/host, /v1/sd/prometheus, /openapi.json, /docs =="
+HOSTJSON=$(curl -s "$CA/v1/host" 2>/dev/null)
+PROM=$(curl -s -o /dev/null -w '%{http_code}' "$CA/v1/sd/prometheus" 2>/dev/null)
+OAPI=$(curl -s "$CA/openapi.json" 2>/dev/null)
+DOCS=$(curl -s -o /dev/null -w '%{http_code}' "$CA/docs" 2>/dev/null)
+H_OK=$(echo "$HOSTJSON" | jq -e 'has("hostname") and has("interfaces")' >/dev/null 2>&1 && echo 1 || echo 0)
+OAPI_OK=$(echo "$OAPI" | jq -e '.paths | has("/v1/certmesh/status")' >/dev/null 2>&1 && echo 1 || echo 0)
+echo "    host_ok=$H_OK prometheus=$PROM openapi_ok=$OAPI_OK docs=$DOCS"
+if [ "$H_OK" = 1 ] && [ "$PROM" = 200 ] && [ "$OAPI_OK" = 1 ] && [ "$DOCS" = 200 ]; then
+  ok "system + OpenAPI endpoints served by the unified router"
+else
+  bad "a unified-router endpoint regressed (host/prometheus/openapi/docs)"
+fi
+
+echo "== 15. P3: DAT auth on the unified router (mutation 401 without token, 2xx with) =="
+# The conditional auth middleware (auth: Some on the daemon) must still gate mutations.
+NOTOK=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CA/v1/mdns/announce" \
+  -H 'content-type: application/json' -d '{"name":"authprobe","type":"_http._tcp","port":9999}' 2>/dev/null)
+WITHTOK=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CA/v1/mdns/announce" -H "x-koi-token: $TOKEN" \
+  -H 'content-type: application/json' -d '{"name":"authprobe2","type":"_http._tcp","port":9999}' 2>/dev/null)
+echo "    no-token=$NOTOK with-token=$WITHTOK"
+if [ "$NOTOK" = 401 ] && [ "${WITHTOK:0:1}" = 2 ]; then
+  ok "DAT auth: mutation rejected without token, accepted with"
+else
+  bad "DAT auth regressed (no-token=$NOTOK with-token=$WITHTOK)"
+fi
+
+echo "== 16. P3: MCP disabled → /v1/mcp 503; /healthz still 200 (router intact under --no-mcp-http) =="
+MCPCODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CA/v1/mcp" -H "x-koi-token: $TOKEN" \
+  -H 'content-type: application/json' -d '{}' 2>/dev/null)
+HZ=$(curl -s -o /dev/null -w '%{http_code}' "$CA/healthz" 2>/dev/null)
+echo "    mcp=$MCPCODE healthz=$HZ"
+if [ "$MCPCODE" = 503 ] && [ "$HZ" = 200 ]; then
+  ok "/v1/mcp disabled→503; /healthz 200"
+else
+  bad "mcp/healthz unexpected (mcp=$MCPCODE healthz=$HZ)"
+fi
+
+echo "== 17. P3: unified router reachable over the real LAN (member → CA :5641/healthz) =="
+# The serve() stack binds + serves the same router on 0.0.0.0; confirm it answers across
+# the network, not just loopback.
+LANHZ=$(mssh "curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://$CA_IP:5641/healthz 2>/dev/null" || echo "000")
+echo "    member->CA /healthz = $LANHZ"
+[ "$LANHZ" = 200 ] && ok "unified router reachable over the LAN" || bad "CA HTTP not reachable over LAN ($LANHZ)"
+
+echo "== 18. Stage-3 b1: trust/zone reads gated for a REMOTE peer, open on loopback =="
+# A remote peer (member granite) must NOT read /v1/dns/list without the token, but MUST
+# with it. /v1/certmesh/status stays open even for a remote peer (the join preflight reads
+# ca_fingerprint from it BEFORE holding any credential — gating it would break enrollment).
+# A loopback caller (this CA box) reads /v1/dns/list token-free.
+REMOTE_DNS_NOTOK=$(mssh "curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://$CA_IP:5641/v1/dns/list 2>/dev/null" || echo 000)
+REMOTE_DNS_TOK=$(mssh "curl -s -o /dev/null -w '%{http_code}' --max-time 4 -H 'x-koi-token: $TOKEN' http://$CA_IP:5641/v1/dns/list 2>/dev/null" || echo 000)
+REMOTE_STATUS=$(mssh "curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://$CA_IP:5641/v1/certmesh/status 2>/dev/null" || echo 000)
+LOOPBACK_DNS=$(curl -s -o /dev/null -w '%{http_code}' "$CA/v1/dns/list" 2>/dev/null)
+echo "    remote dns/list no-token=$REMOTE_DNS_NOTOK with-token=$REMOTE_DNS_TOK; remote status=$REMOTE_STATUS; loopback dns/list=$LOOPBACK_DNS"
+if [ "$REMOTE_DNS_NOTOK" = 401 ] && [ "${REMOTE_DNS_TOK:0:1}" = 2 ] && [ "$REMOTE_STATUS" = 200 ] && [ "$LOOPBACK_DNS" = 200 ]; then
+  ok "b1: remote zone-read gated (401→2xx), status stays open, loopback free"
+else
+  bad "b1 gate wrong (remote no-tok=$REMOTE_DNS_NOTOK tok=$REMOTE_DNS_TOK status=$REMOTE_STATUS loop=$LOOPBACK_DNS)"
+fi
 
 echo
 echo "==================== RESULT: $PASS passed, $FAIL failed ===================="

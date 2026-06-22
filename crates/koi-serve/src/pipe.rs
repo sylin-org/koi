@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use koi_mdns::MdnsCore;
 
-use super::dispatch;
+use crate::dispatch;
 
 /// IPC session grace period: 30 seconds.
 const SESSION_GRACE: Duration = Duration::from_secs(30);

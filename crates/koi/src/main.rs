@@ -1,4 +1,3 @@
-mod adapters;
 mod admin;
 pub(crate) mod cli;
 mod client;
@@ -18,11 +17,6 @@ use clap::Parser;
 use cli::{Cli, Command, Config};
 use dispatch::run;
 use infra::{extract_help_query, init_logging};
-
-/// Runtime state for a running daemon — the set of constructed domain cores. Defined in
-/// koi-compose (built by `build_cores`); re-exported under the historical `DaemonCores`
-/// name so the binary's adapters keep their existing references.
-pub(crate) use koi_compose::cores::Cores as DaemonCores;
 
 /// Maximum time to wait for orderly shutdown before forcing exit.
 pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);

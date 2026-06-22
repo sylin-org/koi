@@ -37,7 +37,7 @@ use koi_common::encoding::{hex_decode, hex_encode};
 const MASTER_KEY_LEN: usize = 32;
 
 /// HKDF info string for TOTP-based slot key derivation.
-const TOTP_SLOT_HKDF_INFO: &[u8] = b"pond-unlock-slot-totp-v1";
+const TOTP_SLOT_HKDF_INFO: &[u8] = b"koi-unlock-slot-totp-v1";
 
 /// Platform credential store label for the sealed TOTP shared secret.
 const TOTP_CREDENTIAL_LABEL: &str = "koi-certmesh-unlock-totp";
@@ -65,7 +65,7 @@ pub enum UnlockSlot {
     },
 
     /// Auto-unlock slot - master key stored in a local file.
-    /// The file path is managed externally (Moss writes/reads it).
+    /// The file path is managed externally (the host application writes/reads it).
     /// This slot records that auto-unlock is enabled.
     #[serde(rename = "auto_unlock")]
     AutoUnlock,
@@ -309,12 +309,12 @@ pub fn generate_master_key() -> Zeroizing<[u8; MASTER_KEY_LEN]> {
     key
 }
 
-/// Derive a TOTP slot KEK from the TOTP shared secret using HKDF-like
-/// construction (SHA-256).
+/// Derive a TOTP slot KEK from the TOTP shared secret: `SHA-256(secret || info)`.
 ///
-/// We use a simple HKDF-extract + expand since we don't have hkdf as
-/// a dependency. The shared_secret has enough entropy (256 bits) that
-/// a single SHA-256 pass is sufficient.
+/// This is a hash-based KDF (not HKDF — no extract/expand, no salt), which is
+/// sufficient ONLY because `shared_secret` is a full 256-bit random TOTP secret
+/// and `TOTP_SLOT_HKDF_INFO` provides domain separation. Do not reuse this helper
+/// with a low-entropy input; use `hkdf::Hkdf::<Sha256>` if you need a real KDF.
 fn derive_totp_slot_kek(shared_secret: &[u8]) -> Zeroizing<[u8; 32]> {
     let mut hasher = Sha256::new();
     hasher.update(shared_secret);
@@ -408,7 +408,7 @@ pub fn migrate_to_envelope(
     Ok((new_encrypted, slot_table, master_key))
 }
 
-/// Encrypt a CA key with envelope encryption from scratch (for new ponds).
+/// Encrypt a CA key with envelope encryption from scratch (for a new CA).
 ///
 /// Returns `(encrypted_key, slot_table, master_key)`.
 pub fn envelope_encrypt_new(

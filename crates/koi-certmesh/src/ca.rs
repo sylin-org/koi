@@ -440,8 +440,8 @@ mod tests {
 
         let issued = issue_certificate(
             &ca,
-            "stone-05",
-            &["stone-05".to_string(), "stone-05.local".to_string()],
+            "node-05",
+            &["node-05".to_string(), "node-05.local".to_string()],
             0,
         )
         .unwrap();

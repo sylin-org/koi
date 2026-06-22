@@ -27,8 +27,7 @@ const MIN_HEARTBEAT_LEASE_FLOOR: u64 = 4;
 
 /// Route admin subcommands to the appropriate handler.
 pub fn admin(subcmd: &AdminSubcommand, cli: &crate::cli::Cli) -> anyhow::Result<()> {
-    let (endpoint, token) = super::resolve_endpoint(cli)?;
-    let client = crate::client::KoiClient::with_token(&endpoint, &token);
+    let client = super::require_client(cli.endpoint.as_deref(), super::cli_token(cli))?;
     match subcmd {
         AdminSubcommand::Status => crate::admin::status(&client, cli.json),
         AdminSubcommand::List => crate::admin::list(&client, cli.json),

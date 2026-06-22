@@ -454,8 +454,8 @@ mod tests {
     #[test]
     fn totp_uri_format() {
         let secret = generate_secret();
-        let uri = build_totp_uri(&secret, "Koi Certmesh", "admin@stone-01");
-        assert!(uri.starts_with("otpauth://totp/Koi Certmesh:admin@stone-01?secret="));
+        let uri = build_totp_uri(&secret, "Koi Certmesh", "admin@node-01");
+        assert!(uri.starts_with("otpauth://totp/Koi Certmesh:admin@node-01?secret="));
         assert!(uri.contains("algorithm=SHA1"));
         assert!(uri.contains("digits=6"));
         assert!(uri.contains("period=30"));

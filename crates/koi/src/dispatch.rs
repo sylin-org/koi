@@ -10,7 +10,7 @@ use crate::cli::{
 use crate::commands::status::try_daemon_status;
 use crate::daemon::daemon_mode;
 use crate::infra::{is_piped_stdin, print_top_level_help};
-use crate::{adapters, commands, format, help};
+use crate::{commands, format, help};
 
 // ── Async entry point ────────────────────────────────────────────────
 
@@ -271,8 +271,14 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         help::print_category_catalog(help::KoiCategory::Udp, None)?;
                         Ok(())
                     }
-                    Some(UdpSubcommand::Bind { port, addr, lease }) => {
-                        commands::udp::bind(*port, addr, *lease, mode, cli.json).await
+                    Some(UdpSubcommand::Bind {
+                        port,
+                        addr,
+                        lease,
+                        allow_remote,
+                    }) => {
+                        commands::udp::bind(*port, addr, *lease, *allow_remote, mode, cli.json)
+                            .await
                     }
                     Some(UdpSubcommand::Unbind { id }) => {
                         commands::udp::unbind(id, mode, cli.json).await
@@ -339,7 +345,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             );
         }
         let core = Arc::new(koi_mdns::MdnsCore::new()?);
-        adapters::cli::start(core.clone()).await?;
+        koi_serve::stdio::start(core.clone()).await?;
         let _ = core.shutdown().await;
         return Ok(());
     }

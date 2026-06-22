@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn join_request_serde_round_trip() {
         let req = JoinRequest {
-            hostname: "stone-05".to_string(),
+            hostname: "node-05".to_string(),
             auth: Some(koi_crypto::auth::AuthResponse::Totp {
                 code: "123456".to_string(),
             }),
@@ -493,7 +493,7 @@ mod tests {
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: JoinRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.hostname, "stone-05");
+        assert_eq!(parsed.hostname, "node-05");
         assert!(
             matches!(parsed.auth, Some(koi_crypto::auth::AuthResponse::Totp { ref code }) if code == "123456")
         );
@@ -503,9 +503,9 @@ mod tests {
 
     #[test]
     fn join_request_with_invite_token_round_trip() {
-        let json = r#"{"hostname":"stone-06","invite_token":"deadbeef"}"#;
+        let json = r#"{"hostname":"node-06","invite_token":"deadbeef"}"#;
         let parsed: JoinRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.hostname, "stone-06");
+        assert_eq!(parsed.hostname, "node-06");
         assert!(parsed.auth.is_none());
         assert_eq!(parsed.invite_token.as_deref(), Some("deadbeef"));
         assert!(parsed.sans.is_empty());
@@ -587,50 +587,50 @@ mod tests {
     #[test]
     fn join_request_without_sans_deserializes() {
         // auth field is a tagged enum; sans defaults to empty
-        let json = r#"{"hostname":"stone-05","auth":{"method":"totp","code":"123456"}}"#;
+        let json = r#"{"hostname":"node-05","auth":{"method":"totp","code":"123456"}}"#;
         let parsed: JoinRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.hostname, "stone-05");
+        assert_eq!(parsed.hostname, "node-05");
         assert!(parsed.sans.is_empty());
     }
 
     #[test]
     fn join_response_serializes() {
         let resp = JoinResponse {
-            hostname: "stone-05".to_string(),
+            hostname: "node-05".to_string(),
             ca_cert: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n".to_string(),
             service_cert: "-----BEGIN CERTIFICATE-----\nsvc\n-----END CERTIFICATE-----\n"
                 .to_string(),
             service_key: "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n"
                 .to_string(),
             ca_fingerprint: "abc123".to_string(),
-            cert_path: "/home/koi/.koi/certs/stone-05".to_string(),
+            cert_path: "/home/koi/.koi/certs/node-05".to_string(),
             policy: CertPolicy::default(),
         };
         let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("stone-05"));
+        assert!(json.contains("node-05"));
         assert!(json.contains("ca_fingerprint"));
     }
 
     #[test]
     fn set_hook_request_serde_round_trip() {
         let req = SetHookRequest {
-            hostname: "stone-01".to_string(),
+            hostname: "node-01".to_string(),
             reload: "systemctl restart nginx".to_string(),
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: SetHookRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.hostname, "stone-01");
+        assert_eq!(parsed.hostname, "node-01");
         assert_eq!(parsed.reload, "systemctl restart nginx");
     }
 
     #[test]
     fn set_hook_response_serializes() {
         let resp = SetHookResponse {
-            hostname: "stone-01".to_string(),
+            hostname: "node-01".to_string(),
             reload: "systemctl restart nginx".to_string(),
         };
         let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("stone-01"));
+        assert!(json.contains("node-01"));
         assert!(json.contains("systemctl restart nginx"));
     }
 
@@ -713,7 +713,7 @@ mod tests {
         // ADR-017 F6: the renewal request carries ONLY a CSR — never a private
         // key. The struct has no `key_pem` field; assert the wire shape too.
         let req = RenewRequest {
-            hostname: "stone-05".to_string(),
+            hostname: "node-05".to_string(),
             csr: "-----BEGIN CERTIFICATE REQUEST-----\nx\n-----END CERTIFICATE REQUEST-----\n"
                 .to_string(),
         };
@@ -723,14 +723,14 @@ mod tests {
             "renew request must never carry a key"
         );
         let parsed: RenewRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.hostname, "stone-05");
+        assert_eq!(parsed.hostname, "node-05");
         assert!(parsed.csr.contains("CERTIFICATE REQUEST"));
     }
 
     #[test]
     fn renew_response_carries_cert_not_key() {
         let resp = RenewResponse {
-            hostname: "stone-05".to_string(),
+            hostname: "node-05".to_string(),
             service_cert: "-----BEGIN CERTIFICATE-----\nsvc\n-----END CERTIFICATE-----\n"
                 .to_string(),
             ca_cert: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n".to_string(),
@@ -743,7 +743,7 @@ mod tests {
             "renew response must never carry a private key"
         );
         let parsed: RenewResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.hostname, "stone-05");
+        assert_eq!(parsed.hostname, "node-05");
         assert!(parsed.service_cert.contains("BEGIN CERTIFICATE"));
         assert_eq!(parsed.ca_fingerprint, "abc123");
     }
@@ -762,12 +762,12 @@ mod tests {
     #[test]
     fn health_request_serde_round_trip() {
         let req = HealthRequest {
-            hostname: "stone-05".to_string(),
+            hostname: "node-05".to_string(),
             pinned_ca_fingerprint: "abcdef".to_string(),
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: HealthRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.hostname, "stone-05");
+        assert_eq!(parsed.hostname, "node-05");
         assert_eq!(parsed.pinned_ca_fingerprint, "abcdef");
     }
 
@@ -799,7 +799,7 @@ mod tests {
             seq: 0,
             policy: CertPolicy::default(),
             members: vec![MemberSummary {
-                hostname: "stone-01".to_string(),
+                hostname: "node-01".to_string(),
                 role: "primary".to_string(),
                 status: "active".to_string(),
                 cert_fingerprint: "abc".to_string(),
@@ -979,14 +979,14 @@ mod tests {
             policy: CertPolicy::default(),
             members: vec![
                 MemberSummary {
-                    hostname: "stone-01".to_string(),
+                    hostname: "node-01".to_string(),
                     role: "primary".to_string(),
                     status: "active".to_string(),
                     cert_fingerprint: "fp1".to_string(),
                     cert_expires: "2026-06-01".to_string(),
                 },
                 MemberSummary {
-                    hostname: "stone-02".to_string(),
+                    hostname: "node-02".to_string(),
                     role: "member".to_string(),
                     status: "active".to_string(),
                     cert_fingerprint: "fp2".to_string(),
@@ -1002,8 +1002,8 @@ mod tests {
         assert!(parsed.requires_approval);
         assert_eq!(parsed.member_count, 2);
         assert_eq!(parsed.members.len(), 2);
-        assert_eq!(parsed.members[0].hostname, "stone-01");
-        assert_eq!(parsed.members[1].hostname, "stone-02");
+        assert_eq!(parsed.members[0].hostname, "node-01");
+        assert_eq!(parsed.members[1].hostname, "node-02");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! ACME (RFC 8555) server-auth TLS listener.
 //!
-//! A near-clone of [`super::mtls`] MINUS the client-cert verifier: ACME clients
+//! A near-clone of [`crate::mtls`] MINUS the client-cert verifier: ACME clients
 //! (Caddy, Traefik, lego, certbot) have no Koi certificate yet — they are trying
 //! to *get* one — so the listener authenticates only the server side
 //! (`with_no_client_auth`). The server certificate is a daemon self-issued leaf

@@ -120,6 +120,49 @@ mod tests {
         );
     }
 
+    /// Every leaf command NAME round-trips through `Cli::try_parse_from`: `koi
+    /// <leaf> --help` must route to that command (clap returns the `DisplayHelp`
+    /// "error"), never an `UnknownArgument` / `InvalidSubcommand`. This exercises
+    /// the names through the real parser end-to-end — complementing the structural
+    /// bijection above (which uses clap introspection, not parsing) — and unlike a
+    /// bare `koi <leaf>` it is immune to required positional args.
+    #[test]
+    fn every_command_name_routes_through_clap() {
+        use clap::error::ErrorKind;
+
+        let mut failures: Vec<String> = Vec::new();
+        for leaf in clap_leaf_paths() {
+            let mut argv = vec!["koi".to_string()];
+            argv.extend(leaf.split(' ').map(str::to_string));
+            argv.push("--help".to_string());
+            match Cli::try_parse_from(&argv) {
+                // `--help` short-circuits clap with DisplayHelp once the command
+                // is reached — proof the name routed to a real command.
+                Err(e) if e.kind() == ErrorKind::DisplayHelp => {}
+                Err(e) => failures.push(format!("`{leaf} --help` → {:?}", e.kind())),
+                Ok(_) => failures.push(format!("`{leaf} --help` parsed without showing help")),
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "command names that did not route to their clap command:\n  - {}",
+            failures.join("\n  - ")
+        );
+    }
+
+    /// Guard against a vacuous `every_example_parses` (if the example corpus were
+    /// emptied, that test would pass having checked nothing). The catalog is large;
+    /// a generous floor catches accidental wholesale loss without being brittle.
+    #[test]
+    fn example_corpus_is_populated() {
+        let total: usize = meta::META.values().map(|m| m.examples.len()).sum();
+        assert!(
+            total >= 30,
+            "expected a populated example corpus, found only {total} examples"
+        );
+    }
+
     /// Minimal shell-style splitter: splits on whitespace but keeps
     /// double-quoted and single-quoted runs together (quotes stripped). Enough
     /// for the example corpus (`mdns announce "My App" …`, `udp send … 'hello'`).

@@ -31,9 +31,10 @@ Koi is a single binary with a layered architecture. Three adapter layers sit on 
 
 | Crate                     | Package name      | Role                                                               | Lines  |
 | ------------------------- | ----------------- | ------------------------------------------------------------------ | ------ |
-| `crates/koi/`             | `koi-net`         | Binary - CLI entry, adapters, wiring                               | ~15,978|
+| `crates/koi/`             | `koi-net`         | Binary - CLI entry, command dispatch, platform/service, wiring (serving moved to koi-serve) | ~12,400|
 | `crates/koi-common/`      | `koi-common`      | Types-only kernel - types, errors, pipeline, ceremony engine       | ~3,122 |
-| `crates/koi-compose/`     | `koi-compose`     | Composition root - `build_cores`, `Cores`/`DaemonCores`, `ordered_shutdown`, orchestrator, capability ladder, certmesh background loops, integration bridges | ~1,730 |
+| `crates/koi-compose/`     | `koi-compose`     | Composition root - `build_cores`, `Cores`/`DaemonCores`, `ordered_shutdown`, orchestrator, capability ladder, certmesh background loops, self-announce, integration bridges | ~1,900 |
+| `crates/koi-serve/`       | `koi-serve`       | Serving layer - the one HTTP/OpenAPI router (`HttpConfig` + `start`), `serve()`, IPC pipe + piped stdio (NDJSON), in-process MCP HTTP, inter-node mTLS + ACME listeners, Prometheus SD, dashboard wiring, posture-reactive trust plane | ~3,600 |
 | `crates/koi-dashboard/`   | `koi-dashboard`   | Presentation - dashboard + mDNS browser (HTML, SSE, forwarder, lazy meta-browse) | ~1,345 |
 | `crates/koi-mdns/`        | `koi-mdns`        | mDNS domain - daemon, registry, protocol, HTTP routes              | ~3,662 |
 | `crates/koi-certmesh/`    | `koi-certmesh`    | Certificate mesh - CA, enrollment, roster, failover                | ~12,162|
@@ -53,41 +54,51 @@ Koi is a single binary with a layered architecture. Three adapter layers sit on 
 ## Dependency graph
 
 ```
-koi (bin)        → koi-compose, koi-common, koi-mcp, koi-client (+ axum, clap, tokio)
-koi-embedded     → koi-compose, koi-common, koi-client (+ axum, reqwest, tokio)
-└── koi-compose  → koi-common, koi-config, koi-crypto, koi-dashboard, koi-client,
-                   koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime
-    │             (the composition root: build_cores, Cores/DaemonCores, ordered_shutdown,
-    │              orchestrator, capability ladder, certmesh loops, integration bridges)
-    ├── koi-common
-    ├── koi-mdns        → koi-common, mdns-sd, axum, tokio
-    ├── koi-certmesh    → koi-common, koi-crypto, os-truststore (external, crates.io), axum, tokio
-    ├── koi-crypto      → ring, rcgen, totp-rs, p256
-    ├── koi-config      → koi-common
-    ├── koi-dns         → koi-common, koi-config, hickory-server, hickory-resolver, axum, tokio
-    ├── koi-health      → koi-common, koi-config, axum, tokio
-    ├── koi-proxy       → koi-common, koi-config, axum-server, rustls, reqwest, tokio
-    ├── koi-udp         → koi-common, axum, tokio
-    ├── koi-runtime     → koi-common, bollard, axum, utoipa, tokio, chrono
-    ├── koi-client      → koi-common, ureq (blocking)
-    └── koi-dashboard   → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-runtime, axum, tokio
+koi (bin)        → koi-serve, koi-compose, koi-common, koi-mcp, koi-client (+ axum, clap, tokio)
+koi-embedded     → koi-serve, koi-compose, koi-common, koi-client (+ axum, reqwest, tokio)
+└── koi-serve    → koi-compose, koi-dashboard, koi-mcp, koi-common, koi-config,
+    │              koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime
+    │             (the serving layer: the one HTTP/OpenAPI router + serve(), IPC/stdio NDJSON,
+    │              in-process MCP HTTP, inter-node mTLS + ACME listeners, Prometheus SD,
+    │              dashboard wiring, the posture-reactive trust plane)
+    └── koi-compose  → koi-common, koi-config, koi-crypto, koi-dashboard, koi-client,
+        │             koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime
+        │            (the composition root: build_cores, Cores/DaemonCores, ordered_shutdown,
+        │             orchestrator, capability ladder, certmesh loops, self-announce, bridges)
+        ├── koi-common
+        ├── koi-mdns        → koi-common, mdns-sd, axum, tokio
+        ├── koi-certmesh    → koi-common, koi-crypto, os-truststore (external, crates.io), axum, tokio
+        ├── koi-crypto      → ring, rcgen, totp-rs, p256
+        ├── koi-config      → koi-common
+        ├── koi-dns         → koi-common, koi-config, hickory-server, hickory-resolver, axum, tokio
+        ├── koi-health      → koi-common, koi-config, axum, tokio
+        ├── koi-proxy       → koi-common, koi-config, axum, tokio-rustls, rustls, rcgen, tokio
+        ├── koi-udp         → koi-common, axum, tokio
+        ├── koi-runtime     → koi-common, bollard, axum, utoipa, tokio, chrono
+        ├── koi-client      → koi-common, ureq (blocking)
+        └── koi-dashboard   → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-runtime, axum, tokio
 
 koi-mcp          → koi-common, koi-client, koi-config, rmcp (+ transport-streamable-http-server), thiserror, async-trait, tokio
 ```
 
-Terminal-profile-aware help rendering (the former standalone `command-surface` crate)
-was folded into the binary's `crates/koi/src/help/` module in P09; it is no longer a
-workspace crate.
+Terminal-profile-aware help rendering lives in the binary's `crates/koi/src/help/`
+module, not a separate workspace crate.
 
 `koi-mcp` still depends on **no domain crate** — the in-process Streamable HTTP transport
-serves MCP resources against the live cores via a `CoreSource` bridge that lives in the
-binary crate, not in `koi-mcp` itself.
+serves MCP resources against the live cores via a `CoreSource` bridge that lives in
+`koi-serve` (`koi_serve::mcp_http`), not in `koi-mcp` itself.
 
 **Domain** crates depend on `koi-common` but **never on each other**. Cross-domain wiring
 happens in `koi-compose` — the **composition root** that constructs the cores
 (`build_cores` → `Cores`, re-exported by the binary as `DaemonCores`), installs the
 integration bridges, runs the orchestrator + certmesh background loops, assembles the
-capability ladder, and tears everything down via `ordered_shutdown`. Building the
+capability ladder, and tears everything down via `ordered_shutdown`. Above it, **`koi-serve`**
+is the **serving layer**: it owns every transport (the one HTTP/OpenAPI router + `serve()`,
+IPC and piped-stdio NDJSON, the in-process MCP HTTP transport, the inter-node mTLS + ACME
+listeners, Prometheus SD, and the dashboard wiring) plus the posture-reactive trust plane.
+`serve(cores, ServeConfig, cancel, tasks)` spawns the whole stack into a shared task set;
+each consumer owns only its lifecycle edge (the daemon blocks on a signal, the Windows
+service reports SCM status, `koi-embedded` returns a non-blocking handle). Building the
 composition once is what keeps the `koi` daemon, the Windows service, and `koi-embedded` at
 parity by construction. `koi-dashboard` is a **presentation** crate (not a domain): it
 depends on the event-bearing domain crates so the event forwarder + mDNS browse adapter
@@ -127,36 +138,43 @@ the kernel and domain closures stay clean.
 ```
 crates/koi/src/
 ├── main.rs          # CLI entry point and top-level execution routing
-├── integrations.rs  # Re-export shim for koi-compose's integration bridges (moved to koi-compose)
 ├── cli.rs           # clap definitions (Cli, Command, Config)
+├── daemon.rs        # Daemon-mode bring-up: pre-serve setup + koi_serve::serve + the lifecycle edge
+├── dispatch.rs      # Top-level command dispatch (subcommand → handler routing)
+├── infra.rs         # Infrastructure wiring (logging, signals, runtime setup)
+├── integrations.rs  # Re-export shim for koi-compose's integration bridges (live in koi-compose)
 ├── client.rs        # client utility wrappers
 ├── format.rs        # All human-readable CLI output
 ├── admin.rs         # Admin command execution
-├── openapi.rs       # OpenAPI spec generation
-├── surface.rs       # Command manifest population
 ├── commands/
-│   ├── mod.rs       # Shared helpers (detect_mode, run_streaming, print_json)
-│   ├── mdns.rs      # mDNS commands
-│   ├── certmesh.rs  # Certmesh commands
+│   ├── mod.rs            # Shared helpers (detect_mode, run_streaming, print_json)
+│   ├── mdns.rs          # mDNS commands
+│   ├── certmesh.rs      # Certmesh commands
 │   ├── ceremony_cli.rs  # Generic ceremony render loop
-│   ├── dns.rs       # DNS commands
-│   ├── health.rs    # Health commands
-│   ├── proxy.rs     # Proxy commands
-│   ├── udp.rs       # UDP commands
-│   └── status.rs    # Unified status command
-├── adapters/
-│   ├── http.rs      # HTTP server (Axum router, domain nesting, OpenAPI)
-│   ├── dashboard.rs # Dashboard wiring: snapshot builder + DashboardState (HTML/SSE/forwarder in koi-dashboard)
-│   ├── mtls.rs      # mTLS server/client configuration for inter-node communication
-│   ├── pipe.rs      # Named Pipe (Windows) / UDS (Unix)
-│   ├── cli.rs       # stdin/stdout NDJSON
-│   └── dispatch.rs  # Shared NDJSON dispatch logic
+│   ├── dns.rs           # DNS commands
+│   ├── health.rs        # Health commands
+│   ├── proxy.rs         # Proxy commands
+│   ├── udp.rs           # UDP commands
+│   ├── trust.rs         # `koi trust` (OS trust store install/list/remove/export/diagnose)
+│   ├── mcp.rs           # `koi mcp serve` (stdio MCP server launch)
+│   ├── token.rs         # `koi token` (daemon access token show/write)
+│   ├── factory_reset.rs # `koi factory-reset` (destroy all Koi data)
+│   └── status.rs        # Unified status command
+│                        # (transport adapters + the trust plane moved to the koi-serve
+│                        #  crate; the binary calls koi_serve::serve — see daemon.rs)
+├── help/                # Terminal-profile-aware help rendering + command/API metadata
 └── platform/
     ├── windows.rs   # Windows Service (SCM), firewall rules, registry access
     ├── unix.rs      # systemd integration, Unix service paths
     └── macos.rs     # launchd integration, macOS service paths
 ```
 
+> Note: The transport adapters (the HTTP router, IPC pipe, piped stdio, MCP HTTP, mTLS,
+> ACME, Prometheus SD, dashboard wiring) and the posture-reactive trust plane now live in
+> the **`koi-serve`** crate. The binary calls `koi_serve::serve(..)` (see `daemon.rs` and
+> `platform/windows.rs`) and keeps only CLI dispatch, the piped standalone mode, help,
+> install/uninstall, and the platform/service shells.
+>
 > Note: The single-file, zero-build HTML for the **Web dashboard** (`dashboard.html`) and
 > the **mDNS browser** (`mdns-browser.html`) live as static assets in
 > `crates/koi-dashboard/assets/` and are embedded into the binary at compile time. The
@@ -173,7 +191,7 @@ Platform-conditional compilation (`#[cfg(target_os)]`) lives exclusively in `pla
 
 **One model.** There is one `ServiceRecord` type. Not a `CoreService` and an `ApiService` and an `HttpService`. This type flows everywhere - the core produces it, adapters serialize it, events carry it.
 
-**Adapters share protocol, not code.** The HTTP, IPC, and CLI adapters all speak the same JSON shapes but are independent modules (~150 lines each). The pipe and CLI adapters share NDJSON dispatch logic via `adapters::dispatch`.
+**Adapters share protocol, not code.** The HTTP, IPC, and piped-stdio adapters all speak the same JSON shapes but are independent modules in the `koi-serve` crate. The pipe and stdio adapters share NDJSON dispatch logic via `koi_serve::dispatch`.
 
 **Runtime capability control.** All domain capabilities are compiled into one binary. Enable/disable at runtime with `--no-mdns`, `--no-certmesh`, `--no-runtime`, etc. No `#[cfg(feature)]` for domain capabilities.
 

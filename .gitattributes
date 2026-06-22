@@ -1,0 +1,10 @@
+# Normalize line endings. Default: let Git decide per-file.
+* text=auto
+
+# These MUST stay LF regardless of a checkout's core.autocrlf: shell scripts run
+# on Linux/macOS and are served verbatim (install.sh via raw.githubusercontent
+# for `curl | sh`); a CRLF would break the shebang. Dockerfiles break RUN line
+# continuations and shell-form CMD/ENTRYPOINT under CRLF.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.dockerfile text eol=lf

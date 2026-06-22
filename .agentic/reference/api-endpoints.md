@@ -10,6 +10,23 @@ For full request/response schemas, see `docs/reference/http-api.md`.
 Each domain crate owns its routes; the binary crate mounts them at `/v1/<domain>/`.
 Interactive API docs: `GET /docs` (Scalar UI). OpenAPI spec: `GET /openapi.json`.
 
+The HTTP adapter binds **loopback** (`127.0.0.1`) by default, so only local
+processes reach it. Expose it to the LAN/containers with `--http-bind bridge` /
+`--http-bind 0.0.0.0` / `--http-bind <ip>` (env `KOI_HTTP_BIND`); mutations always
+require the `x-koi-token` header regardless of bind address.
+
+GET/HEAD are token-exempt (OPTIONS preflight always passes), with carve-outs:
+`/v1/mcp` (live SSE channel), `/v1/certmesh/log` (audit trail), and the whole
+`/v1/udp/*` surface (binding enumeration + datagram streams) require the token on
+**every** method. `/v1/certmesh/diagnose` and `/v1/dns/{list,zone,entries}` are
+peer-gated — token-free for a loopback peer, token-required from a non-loopback
+peer, and fail-closed when the peer address is unknown. `/v1/certmesh/status` and
+`/v1/certmesh/trust-bundle` stay open on every peer: they are load-bearing in the
+unauthenticated cross-host protocol (a joining node reads `ca_fingerprint` from
+status before it holds a credential; members pull the ES256-signed, self-verifying
+trust-bundle over plain HTTP). `/v1/certmesh/join` is the one DAT-exempt mutation
+(TOTP bootstrap).
+
 ### System
 
 | Method | Endpoint | Purpose |
@@ -18,6 +35,7 @@ Interactive API docs: `GET /docs` (Scalar UI). OpenAPI spec: `GET /openapi.json`
 | GET | `/v1/status` | Unified capability status (version, uptime, capabilities) |
 | POST | `/v1/admin/shutdown` | Initiate graceful shutdown |
 | GET | `/v1/host` | Host identity (hostname, FQDN, OS, arch, network interfaces) |
+| GET | `/v1/sd/prometheus` | Prometheus HTTP service discovery (target groups) |
 | GET/POST | `/v1/mcp` | MCP server over Streamable HTTP (JSON-RPC; token-authenticated) |
 | GET | `/.well-known/mcp/server-card.json` | Public MCP discovery descriptor (unauthenticated) |
 | GET | `/openapi.json` | OpenAPI specification |
@@ -76,7 +94,12 @@ Route handlers: `crates/koi-certmesh/src/http.rs`
 |--------|----------|---------|
 | POST | `/v1/certmesh/create` | Initialize CA (create key, cert, auth credential) |
 | POST | `/v1/certmesh/join` | Join the certificate mesh (TOTP-authorized enrollment; the one mutation exempt from the `x-koi-token` requirement — a joining node can't know the CA host's local token) |
+| POST | `/v1/certmesh/invite` | Mint a single-use, hostname-bound enrollment invite |
+| POST | `/v1/certmesh/member-csr` | Generate this member's keypair + CSR |
+| POST | `/v1/certmesh/member-cert` | Install a CA-signed cert next to the member key |
 | GET | `/v1/certmesh/status` | Mesh status overview |
+| GET | `/v1/certmesh/diagnose` | Trust-doctor report (posture, identity, integrity, revocation, CA-trust) |
+| GET | `/v1/certmesh/trust-bundle` | Signed, monotonic mesh-truth bundle |
 | POST | `/v1/certmesh/unlock` | Decrypt CA key with passphrase |
 | PUT | `/v1/certmesh/set-hook` | Set reload hook for a member |
 | POST | `/v1/certmesh/promote` | Promote standby (CA key transfer) |
@@ -84,7 +107,7 @@ Route handlers: `crates/koi-certmesh/src/http.rs`
 | POST | `/v1/certmesh/revoke` | Revoke a member's certificate |
 | POST | `/v1/certmesh/health` | Member health heartbeat (pinned CA fingerprint) |
 | POST | `/v1/certmesh/rotate-auth` | Rotate enrollment auth credential |
-| GET | `/v1/certmesh/log` | Read audit log entries |
+| GET | `/v1/certmesh/log` | Read audit log entries (token-authenticated even on GET — like `/v1/mcp`, carved out of the GET exemption: the audit log narrates the full trust history) |
 | POST | `/v1/certmesh/open-enrollment` | Open enrollment window |
 | POST | `/v1/certmesh/close-enrollment` | Close enrollment window |
 | POST | `/v1/certmesh/backup` | Create encrypted backup |
@@ -100,6 +123,7 @@ Route handlers: `crates/koi-dns/src/http.rs`
 | GET | `/v1/dns/status` | Resolver status (running, zone, port, record counts) |
 | GET | `/v1/dns/lookup?name=grafana&type=A` | Resolve a local name |
 | GET | `/v1/dns/list` | List all resolvable names |
+| GET | `/v1/dns/zone?format=hosts\|dnsmasq\|json` | Export the resolvable zone (hosts / dnsmasq / json) |
 | GET | `/v1/dns/entries` | List static entries with details |
 | POST | `/v1/dns/add` | Add static entry (name, ip, optional ttl) |
 | DELETE | `/v1/dns/remove/{name}` | Remove static entry |
@@ -211,14 +235,11 @@ Used over Named Pipe (Windows), Unix Domain Socket, and piped stdin/stdout.
 {"error": "not_found", "message": "Registration not found"}
 ```
 
-### Pipeline Responses (streaming)
-Streaming responses include a `status` field:
-```json
-{"found": {...}, "status": "ongoing"}
-{"found": {...}, "status": "finished"}
-```
-- `status` is absent on non-streaming responses (happy path = no extra fields)
-- `warning` field appears only when relevant
+### Response shape (streaming + non-streaming)
+A response serializes as its body via `#[serde(flatten)]` — no envelope or wrapper
+key. SSE/streaming responses use the same per-event body shape as the one-shot JSON
+responses above. The happy path is just the data; an error is a flat
+`{"error": <code>, "message": <msg>}`.
 
 ---
 
@@ -275,6 +296,7 @@ Streaming responses include a `status` field:
 | `koi mdns admin revive <id>` | Client | Cancel drain |
 | `koi certmesh create` | Client | Initialize private CA |
 | `koi certmesh join [endpoint]` | Client | Join existing mesh (mDNS CA discovery) |
+| `koi certmesh invite <hostname>` | Client | Mint a single-use, hostname-bound invite |
 | `koi certmesh status` | Client | Show mesh status |
 | `koi certmesh unlock` | Client | Decrypt CA key |
 | `koi certmesh log` | Client | Show audit log |
@@ -287,6 +309,7 @@ Streaming responses include a `status` field:
 | `koi certmesh restore <path>` | Client | Restore from backup |
 | `koi certmesh revoke <hostname>` | Client | Revoke a member |
 | `koi certmesh destroy` | Client | Destroy all certmesh state |
+| `koi certmesh acme enable` | Client | Show the ACME directory URL + client bootstrap recipe |
 | `koi dns serve` | Client | Start DNS resolver |
 | `koi dns stop` | Client | Stop DNS resolver |
 | `koi dns status` | Client | DNS resolver status |
@@ -309,6 +332,12 @@ Streaming responses include a `status` field:
 | `koi udp status` | Client | Show active bindings |
 | `koi udp heartbeat <id>` | Client | Renew binding lease |
 | `koi status` | Standalone/Client | Unified capability status |
+| `koi trust install <pem>` | - | Install a CA certificate into the OS trust store |
+| `koi trust list` | - | List the CA roots Koi installed |
+| `koi trust remove <name>` | - | Remove a Koi-installed CA root |
+| `koi trust export [--ca]` | - | Export a CA certificate (PEM) to stdout |
+| `koi trust diagnose [--fix]` | - | Trust-doctor: posture, identity, integrity, revocation, CA-trust |
+| `koi mcp serve` | - | Serve the MCP protocol over stdio (for AI agent hosts) |
 | `koi token show` | - | Print the daemon access token (tty-guarded) |
 | `koi token write <path>` | - | Write the token to a 0600 file for containers |
 | `koi launch` | - | Open dashboard in browser |

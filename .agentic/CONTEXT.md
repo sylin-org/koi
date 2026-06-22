@@ -20,7 +20,7 @@
 **Check design decisions**: `docs/adr/`
 
 - Architecture Decision Records documenting why things are built the way they are
-- **Stack canon (cross-repo)**: [../docs/adr/STACK-0001-sylin-stack-canon.md](../docs/adr/STACK-0001-sylin-stack-canon.md) — Koi is the **base layer** of the Sylin stack (Koi → Zen Garden → Koan). STACK-0001 is canon: Koi may not name, special-case, or document its consumers (the K2 vocabulary leakage), the HKDF domain-separation byte strings are **frozen** (K3, never renamed), and the contract surface is mdns/dns/certmesh/udp/truststore (the TLS proxy is excluded until tested). Do not contradict it without an upstream architect decision.
+- **Stack canon (cross-repo)**: [../docs/adr/STACK-0001-sylin-stack-canon.md](../docs/adr/STACK-0001-sylin-stack-canon.md) — Koi is the **base layer** of the Sylin stack (Koi → Zen Garden → Koan). STACK-0001 is canon: Koi may not name, special-case, or document its consumers (the K2 vocabulary leakage), the HKDF domain-separation byte strings are **frozen** at the `koi-*-v1` namespace (K3 — a new algorithm gets a new versioned label, never a rename/reuse), and the contract surface is mdns/dns/certmesh/udp/truststore (the TLS proxy is excluded until tested). Do not contradict it without an upstream architect decision.
 
 **Surface ledger (cross-repo)**: [../docs/SURFACES.md](../docs/SURFACES.md) — records which surfaces are exercised by what, when last, and what guard protects them. Its top is the **rotation contract** (binding): before a lane leaves a surface, leave a tripwire and update that surface's row (`Last exercised` → today, `Guard` → the tripwire). The `surfaces` job in `.github/workflows/ci.yml` lints that the ledger parses. Honesty rule: unknown exercise status is written `unknown since <date>`, never a guessed "works" — the proxy row reads guard `none` (truth).
 
@@ -34,7 +34,7 @@ Koi v0.2 is a multi-crate Cargo workspace. Each domain has its own crate.
 
 ```
 crates/
-├── koi/              # Binary crate - CLI entry, wiring, adapters
+├── koi/              # Binary crate - CLI entry, command dispatch, platform/service (serving in koi-serve)
 ├── koi-common/       # Shared kernel - types, errors, pipeline, id, paths, ceremony
 ├── koi-mdns/         # mDNS domain - core, daemon, registry, protocol, http routes
 ├── koi-config/       # Config & state - breadcrumb discovery
@@ -46,6 +46,9 @@ crates/
 ├── koi-udp/          # UDP datagram bridging - HTTP/SSE tunneling, binding lifecycle
 ├── koi-runtime/      # Container/service runtime adapter - Docker, Podman lifecycle events
 ├── koi-client/       # HTTP client for daemon communication (blocking ureq)
+├── koi-compose/      # Composition root - build_cores, cross-domain bridges, orchestrator, ordered_shutdown, snapshot, self-announce, status
+├── koi-serve/        # Serving layer - the one HTTP/OpenAPI router + serve(), IPC/stdio NDJSON, MCP HTTP, inter-node mTLS + ACME, Prometheus SD, dashboard wiring, posture-reactive trust plane
+├── koi-mcp/          # MCP server (stdio) - exposes the LAN substrate to AI agents
 ├── koi-dashboard/    # Presentation - dashboard + mDNS browser (HTML, SSE, event forwarder, lazy meta-browse)
 └── koi-embedded/     # Embed Koi in Rust applications - builder, handles, events
 ```
@@ -69,17 +72,20 @@ Each domain crate exposes three faces:
 - **State**: Read-only snapshots of current domain state.
 - **Events**: `tokio::sync::broadcast` channel for subscribers.
 - **Routes**: Each domain owns its HTTP handlers via `fn routes(state) -> axum::Router`.
-- Cross-domain wiring happens in the **binary crate only**. Domain crates never import each other.
+- Cross-domain wiring happens in the **koi-compose composition crate** (consumed by the binary, the Windows service, and koi-embedded); domain crates reach each other only via the integration traits in `koi-common` and never import each other directly.
 
 ### 3. Crate Dependency Graph
 
 ```
-koi (bin) → koi-common, koi-dashboard, koi-mdns, koi-certmesh, koi-crypto, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, koi-embedded, os-truststore (external)
+koi (bin) → koi-serve, koi-compose, koi-common, koi-mcp, koi-dashboard, koi-mdns, koi-certmesh, koi-crypto, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, os-truststore (external)
+koi-compose   → koi-common, koi-config, koi-crypto, koi-dashboard, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, hickory-proto, tokio
+koi-serve     → koi-compose, koi-common, koi-config, koi-dashboard, koi-mcp, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, axum, utoipa, utoipa-scalar, tokio-rustls, rustls, hyper-util, subtle, tokio  (the serving layer; depends on koi-compose, not the reverse)
+koi-mcp       → koi-common, koi-client, koi-config, rmcp, hickory-proto, if-addrs, tokio  (depends on NO domain crate)
 koi-mdns      → koi-common, mdns-sd, axum, utoipa, tokio
 koi-certmesh  → koi-common, koi-crypto, os-truststore (external), axum, utoipa, tokio
 koi-crypto    → (standalone: ring/rcgen/totp-rs/p256)
 # os-truststore: platform trust-store install — spun out to the os-tools repo (ADR-019);
-# consumed via a git dependency, not a workspace member.
+# consumed via a crates.io version dependency, not a workspace member.
 koi-config    → koi-common
 koi-dns       → koi-common, koi-config, hickory-server, hickory-resolver, axum, utoipa, tokio
 koi-health    → koi-common, koi-config, axum, utoipa, tokio
@@ -88,15 +94,18 @@ koi-udp       → koi-common, axum, utoipa, tokio
 koi-runtime   → koi-common, bollard, axum, utoipa, tokio, chrono, async-trait
 koi-client    → koi-common, ureq (blocking)
 koi-dashboard → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-runtime, axum, tokio
-koi-embedded  → koi-common, koi-dashboard, koi-crypto, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, koi-client, tokio
+koi-embedded  → koi-serve, koi-compose, koi-common, koi-dashboard, koi-crypto, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, koi-client, reqwest, tokio
 ```
 
 **Domain** crates depend on `koi-common` but **never** on each other.
-`koi-dashboard` is a **composition/presentation** crate (a peer of the binary's
-adapters, not a domain): it depends on the event-bearing domain crates so it can host a
-single event forwarder + mDNS browse adapter. Nothing depends on it except the two
-top-level consumers (`koi`, `koi-embedded`), so the kernel and domain closures stay
-clean. `koi-common` is a **types-only kernel** — it carries no presentation deps
+`koi-serve` is the **serving layer** — it owns every transport (the one HTTP/OpenAPI router
++ `serve()`, IPC/stdio NDJSON, MCP HTTP, inter-node mTLS + ACME, Prometheus SD, dashboard
+wiring) plus the posture-reactive trust plane; it depends on `koi-compose` (never the
+reverse). `koi-dashboard` is a **composition/presentation** crate (not a domain): it
+depends on the event-bearing domain crates so the single event forwarder + mDNS browse
+adapter exist once. Only the serving/composition layers and the two top-level consumers
+(`koi`, `koi-embedded`) depend on these wiring crates, so the kernel and domain closures
+stay clean. `koi-common` is a **types-only kernel** — it carries no presentation deps
 (`tokio`/`tokio-stream`/`tokio-util`/`async-stream`/`hostname` left with the dashboard in
 P06); the dashboard/browser HTML, SSE, and browse cache live in `koi-dashboard`.
 
@@ -161,6 +170,7 @@ All domain capabilities are compiled into a **single binary**. Enable/disable at
 | `--no-dns`      | `KOI_NO_DNS=1`      | Disable DNS capability       |
 | `--no-health`   | `KOI_NO_HEALTH=1`   | Disable health capability    |
 | `--no-proxy`    | `KOI_NO_PROXY=1`    | Disable proxy capability     |
+| `--no-acme`     | `KOI_NO_ACME=1`     | Disable the ACME server / TLS listener (port 5643) |
 | `--no-udp`      | `KOI_NO_UDP=1`      | Disable UDP bridging         |
 | `--no-runtime`  | `KOI_NO_RUNTIME=1`  | Disable runtime adapter      |
 | `--no-http`     | `KOI_NO_HTTP=1`     | Disable the HTTP adapter     |

@@ -45,8 +45,9 @@ pub mod paths {
     /// Local: install a CA-signed cert next to the member key.
     pub const MEMBER_CERT: &str = "/v1/certmesh/member-cert";
     pub const STATUS: &str = "/v1/certmesh/status";
-    /// Trust-doctor report (ADR-020 §13). A GET, so the DAT middleware exempts it —
-    /// it carries no secrets (the same posture/renewal state the dashboard shows).
+    /// Trust-doctor report (ADR-020 §13). Loopback-exempt; the DAT middleware
+    /// requires the token from a remote peer (gated alongside `/v1/dns/{list,zone,entries}`)
+    /// since the full posture is operational detail a remote peer needn't read.
     pub const DIAGNOSE: &str = "/v1/certmesh/diagnose";
     /// Signed, monotonic trust bundle (ADR-017 P1). A GET, so the DAT middleware
     /// exempts it — it is integrity-protected by its own signature, like a CRL.
@@ -347,6 +348,25 @@ async fn set_hook_handler(
                     "CN mismatch: authenticated as '{}' but requesting hook for '{}'",
                     caller, request.hostname
                 )),
+            );
+        }
+    }
+
+    // Boundary revocation (ADR-017 F9/F14): a revoked member retains a valid leaf
+    // until expiry, so it could still authenticate over mTLS — but it must keep no
+    // roster-mutation capability, not even for its own hostname. Refuse + audit,
+    // mirroring the renew/health handlers (the missing check here was a gap).
+    {
+        let roster = state.roster.lock().await;
+        if roster.is_revoked(&request.hostname) {
+            let _ = crate::audit::append_entry_to(
+                &state.paths.audit_log_path(),
+                "mtls_revoked_rejected",
+                &[("hostname", request.hostname.as_str()), ("op", "set_hook")],
+            );
+            return error_response(
+                StatusCode::FORBIDDEN,
+                &CertmeshError::Revoked(request.hostname.clone()),
             );
         }
     }
@@ -795,6 +815,25 @@ async fn promote_handler(
     }
 
     let roster = state.roster.lock().await;
+
+    // Boundary revocation (ADR-017 F9/F14): a revoked member must NOT be able to
+    // recover the CA private key, even holding a still-valid leaf and the
+    // enrollment secret. The mTLS handshake admits an unexpired revoked leaf (no
+    // CRL at the TLS layer), so enforce revocation here — refuse + audit. This was
+    // the one inter-node mutation missing the check that renew/health already have.
+    if let Some(Extension(ClientCn(ref caller))) = client_cn {
+        if roster.is_revoked(caller) {
+            let _ = crate::audit::append_entry_to(
+                &state.paths.audit_log_path(),
+                "mtls_revoked_rejected",
+                &[("hostname", caller.as_str()), ("op", "promote")],
+            );
+            return error_response(
+                StatusCode::FORBIDDEN,
+                &CertmeshError::Revoked(caller.clone()),
+            );
+        }
+    }
 
     let Some(client_pk) = request.ephemeral_public.as_ref() else {
         return error_response(
@@ -1312,7 +1351,7 @@ mod tests {
         let req = Request::post("/join")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"hostname":"stone-05","auth":{"method":"totp","code":"123456"}}"#,
+                r#"{"hostname":"node-05","auth":{"method":"totp","code":"123456"}}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1372,7 +1411,7 @@ mod tests {
         let req = Request::post("/health")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"hostname":"stone-01","pinned_ca_fingerprint":"abc"}"#,
+                r#"{"hostname":"node-01","pinned_ca_fingerprint":"abc"}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1438,7 +1477,7 @@ mod tests {
         let req = Request::post("/join")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"hostname":"stone-05","auth":{"method":"totp","code":"123456"}}"#,
+                r#"{"hostname":"node-05","auth":{"method":"totp","code":"123456"}}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1470,7 +1509,7 @@ mod tests {
         let req = Request::post("/health")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"hostname":"stone-01","pinned_ca_fingerprint":"abc"}"#,
+                r#"{"hostname":"node-01","pinned_ca_fingerprint":"abc"}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1543,7 +1582,7 @@ mod tests {
         let req = Request::put("/set-hook")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"hostname":"stone-01","reload":"systemctl restart nginx"}"#,
+                r#"{"hostname":"node-01","reload":"systemctl restart nginx"}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();

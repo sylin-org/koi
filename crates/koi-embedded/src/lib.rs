@@ -1,7 +1,6 @@
 mod config;
 mod events;
 mod handle;
-pub(crate) mod http;
 mod serve;
 pub mod testkit;
 
@@ -12,9 +11,6 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use koi_client::KoiClient;
-use koi_compose::bridges::{
-    AliasFeedbackBridge, CertmeshBridge, DnsBridge, MdnsBridge, ProxyBridge,
-};
 
 pub use config::{DnsConfigBuilder, KoiConfig, ServiceMode};
 pub use events::KoiEvent;
@@ -70,6 +66,21 @@ pub enum KoiError {
     Client(#[from] koi_client::ClientError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("insecure configuration: {0}")]
+    InsecureConfig(String),
+}
+
+impl From<koi_compose::cores::BuildCoresError> for KoiError {
+    fn from(e: koi_compose::cores::BuildCoresError) -> Self {
+        use koi_compose::cores::BuildCoresError as B;
+        match e {
+            B::Mdns(e) => KoiError::Mdns(e),
+            B::Dns(e) => KoiError::Dns(e),
+            B::Proxy(e) => KoiError::Proxy(e),
+            B::Health(e) => KoiError::Health(e),
+            B::CertmeshInit(s) => KoiError::Io(std::io::Error::other(s)),
+        }
+    }
 }
 
 pub struct Builder {
@@ -186,15 +197,19 @@ impl Builder {
         self
     }
 
-    /// Run the certmesh role-driven background loops (renewal, standby roster sync, member
-    /// heartbeat, failover/announce) — the same loops the daemon runs. Opt-in; requires
-    /// certmesh (`certmesh`) to be enabled. A clustered embedded CA host wants this; a leaf
-    /// does not. Enrollment approval auto-denies (no interactive console).
+    /// Run the certmesh role-driven background loop (trust-bundle pull — policy refresh +
+    /// revocation detection — plus cert renewal) — the same loop the daemon runs. Opt-in;
+    /// requires certmesh (`certmesh`) to be enabled. A clustered embedded CA host wants
+    /// this; a leaf does not. Enrollment approval auto-denies (no interactive console).
     pub fn certmesh_background(mut self, enabled: bool) -> Self {
         self.config.certmesh_background_enabled = enabled;
         self
     }
 
+    /// Set the embedded HTTP adapter's port. Pass `0` to bind an OS-assigned
+    /// ephemeral port and read the actual one back with
+    /// [`KoiHandle::bound_http_port`] after [`start`](KoiEmbedded::start) — the
+    /// supported way to run on a free port without racing to pick one.
     pub fn http_port(mut self, port: u16) -> Self {
         self.config.http_port = port;
         self
@@ -215,8 +230,22 @@ impl Builder {
         self
     }
 
+    /// Advertise this host's `_http._tcp` record on the LAN so peers discover it. Because
+    /// the advertised endpoint must be reachable, enabling this binds the embedded HTTP
+    /// adapter to `0.0.0.0` (all interfaces) instead of the secure loopback default.
+    /// **Strongly pair with [`http_token`](Self::http_token)** — otherwise mutations are
+    /// unauthenticated to the whole LAN (a runtime warning is logged if you do not).
     pub fn announce_http(mut self, enabled: bool) -> Self {
         self.config.announce_http = enabled;
+        self
+    }
+
+    /// Require an `x-koi-token` header for embedded HTTP mutations (parity with the
+    /// daemon's DAT). Optional: by default the embedded HTTP adapter binds loopback and
+    /// leaves mutations unauthenticated. Set a token when exposing the adapter to the LAN
+    /// (see [`announce_http`](Self::announce_http)).
+    pub fn http_token(mut self, token: impl Into<String>) -> Self {
+        self.config.http_token = Some(token.into());
         self
     }
 
@@ -229,7 +258,7 @@ impl Builder {
     }
 
     /// Register additional firewall ports that the host application needs
-    /// opened (e.g. Moss discovery UDP, HTTP API).  These are merged with
+    /// opened (e.g. an application's discovery UDP, HTTP API).  These are merged with
     /// the ports from enabled Koi capabilities when `ensure_firewall_rules`
     /// is called.
     pub fn extra_firewall_ports(mut self, ports: Vec<koi_common::firewall::FirewallPort>) -> Self {
@@ -246,7 +275,7 @@ impl Builder {
     /// * No-op on non-Windows platforms.
     ///
     /// `prefix` is used in the firewall rule display-names
-    /// (e.g. `"Zen Garden"` → `"Zen Garden mDNS (UDP 5353)"`).
+    /// (e.g. `"My App"` → `"My App mDNS (UDP 5353)"`).
     pub fn ensure_firewall_rules(self, prefix: &str) -> Self {
         let mut all_ports = self.config.firewall_ports();
         all_ports.extend(self.extra_firewall_ports.iter().cloned());
@@ -309,138 +338,67 @@ impl KoiEmbedded {
             }
         }
 
-        let mdns = if self.config.mdns_enabled {
-            Some(Arc::new(koi_mdns::MdnsCore::with_cancel(cancel.clone())?))
-        } else {
-            None
-        };
-
-        let certmesh = if self.config.certmesh_enabled {
-            let data_dir = self.config.data_dir.clone();
-            tokio::task::spawn_blocking(move || {
-                koi_compose::cores::init_certmesh_core(data_dir.as_deref())
-            })
-            .await
-            .map_err(|e| std::io::Error::other(format!("certmesh init: {e}")))?
-        } else {
-            None
-        };
-
-        // Integration bridges for cross-domain communication
-        let mdns_bridge: Option<Arc<dyn koi_common::integration::MdnsSnapshot>> =
-            if let Some(ref core) = mdns {
-                Some(MdnsBridge::spawn(core.clone()).await)
-            } else {
-                None
-            };
-
-        let certmesh_bridge: Option<Arc<dyn koi_common::integration::CertmeshSnapshot>> =
-            certmesh.as_ref().map(|core| {
-                CertmeshBridge::new(core.clone())
-                    as Arc<dyn koi_common::integration::CertmeshSnapshot>
-            });
-
-        let alias_feedback: Option<Arc<dyn koi_common::integration::AliasFeedback>> =
-            certmesh.as_ref().map(|core| {
-                AliasFeedbackBridge::new(core.clone())
-                    as Arc<dyn koi_common::integration::AliasFeedback>
-            });
-
-        let dns = if self.config.dns_enabled {
-            let mut dns_config = self.config.dns_config.clone();
-            // Pin the state path to the data dir captured at construction time
-            // so it is immune to KOI_DATA_DIR env var races in parallel tests.
-            if let Some(dir) = &self.config.data_dir {
-                dns_config.state_path = Some(dir.join("state").join("dns.json"));
-            }
-            let core = koi_dns::DnsCore::new(
-                dns_config,
-                mdns_bridge.clone(),
-                certmesh_bridge.clone(),
-                alias_feedback,
-            )
-            .await?;
-            Some(Arc::new(koi_dns::DnsRuntime::new(core)))
-        } else {
-            None
-        };
-
-        let proxy = if self.config.proxy_enabled {
-            let core = if let Some(dir) = &self.config.data_dir {
-                Arc::new(koi_proxy::ProxyCore::with_data_dir(dir)?)
-            } else {
-                Arc::new(koi_proxy::ProxyCore::new()?)
-            };
-            Some(Arc::new(koi_proxy::ProxyRuntime::new(core)))
-        } else {
-            None
-        };
-
-        let dns_bridge: Option<Arc<dyn koi_common::integration::DnsProbe>> = dns
-            .as_ref()
-            .map(|rt| DnsBridge::new(rt.clone()) as Arc<dyn koi_common::integration::DnsProbe>);
-
-        let proxy_bridge: Option<Arc<dyn koi_common::integration::ProxySnapshot>> =
-            proxy.as_ref().map(|rt| {
-                ProxyBridge::new(rt.core()) as Arc<dyn koi_common::integration::ProxySnapshot>
-            });
-
-        let health = if self.config.health_enabled {
-            let core = koi_health::HealthCore::new(
-                mdns_bridge.clone(),
-                dns_bridge,
-                certmesh_bridge,
-                proxy_bridge,
-            )
-            .await;
-            Some(Arc::new(koi_health::HealthRuntime::new(Arc::new(core))))
-        } else {
-            None
-        };
-
-        if let Some(runtime) = &dns {
-            if self.config.dns_auto_start {
-                let _ = runtime.start().await?;
-            }
+        // Secure-by-default: refuse to expose the embedded HTTP adapter on a
+        // non-loopback bind without a token. `announce_http` binds 0.0.0.0, which
+        // would otherwise serve unauthenticated mutations to the whole LAN — the
+        // host must set `.http_token(..)` to expose it (loopback-only needs none).
+        // Fail fast, before any core or socket is created.
+        if self.config.http_enabled && self.config.announce_http && self.config.http_token.is_none()
+        {
+            return Err(KoiError::InsecureConfig(
+                "announce_http exposes the embedded HTTP adapter on 0.0.0.0; call \
+                 .http_token(..) to require x-koi-token, or drop announce_http to bind loopback"
+                    .into(),
+            ));
         }
 
-        if let Some(runtime) = &health {
-            if self.config.health_auto_start {
-                let _ = runtime.start().await?;
-            }
-        }
-
-        if let Some(runtime) = &proxy {
-            if self.config.proxy_auto_start {
-                runtime.start_all().await?;
-            }
-        }
-
-        let udp = if self.config.udp_enabled {
-            Some(Arc::new(koi_udp::UdpRuntime::new(cancel.clone())))
-        } else {
-            None
-        };
-
-        let runtime = if self.config.runtime_enabled {
-            let config = koi_runtime::RuntimeConfig {
-                backend_kind: self.config.runtime_backend,
-                socket_path: None,
-            };
-            let core = Arc::new(koi_runtime::RuntimeCore::new(config));
-            match core.start_watching(cancel.clone()).await {
-                Ok(()) => {
-                    tracing::info!("Runtime adapter started");
-                    Some(core)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Runtime backend unavailable — continuing without runtime adapter");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        // Build every domain core + cross-domain bridge + the domain background tasks
+        // (orchestrator, certmesh role loops) through the one shared composition root the
+        // daemon and the Windows service use, so the three boot paths construct an identical
+        // graph. `fail_fast` is the only embedded-specific knob: a library surfaces a failed
+        // capability as an error rather than logging it and dropping the capability.
+        let cores = koi_compose::cores::build_cores(
+            &koi_compose::cores::CoreSpec {
+                no_mdns: !self.config.mdns_enabled,
+                no_certmesh: !self.config.certmesh_enabled,
+                no_dns: !self.config.dns_enabled,
+                no_health: !self.config.health_enabled,
+                no_proxy: !self.config.proxy_enabled,
+                no_udp: !self.config.udp_enabled,
+                no_runtime: !self.config.runtime_enabled,
+                data_dir: self.config.data_dir.clone(),
+                dns_config: self.config.dns_config.clone(),
+                runtime: self.config.runtime_backend.to_string(),
+                http_port: self.config.http_port,
+                // Pin the DNS state path to the data dir captured at construction time so it is
+                // immune to KOI_DATA_DIR env-var races in parallel tests.
+                dns_state_path: self
+                    .config
+                    .data_dir
+                    .as_ref()
+                    .map(|dir| dir.join("state").join("dns.json")),
+                proxy_data_dir: self.config.data_dir.clone(),
+                dns_auto_start: self.config.dns_auto_start,
+                health_auto_start: self.config.health_auto_start,
+                proxy_auto_start: self.config.proxy_auto_start,
+                spawn_orchestrator: self.config.orchestrator_enabled,
+                spawn_certmesh_loops: self.config.certmesh_background_enabled,
+                fail_fast: true,
+            },
+            &cancel,
+            &mut tasks,
+        )
+        .await?;
+        let koi_compose::cores::Cores {
+            mdns,
+            certmesh,
+            dns,
+            health,
+            proxy,
+            udp,
+            runtime,
+            mdns_snapshot: mdns_bridge,
+        } = cores;
 
         // Build dashboard state if enabled
         let dashboard_state = if self.config.dashboard_enabled && self.config.http_enabled {
@@ -512,96 +470,97 @@ impl KoiEmbedded {
             None
         };
 
-        // Spawn embedded HTTP adapter if enabled
+        // Spawn the embedded HTTP adapter via the shared koi-serve router — the SAME
+        // implementation the daemon uses, so there is no separate embedded server and no
+        // /v1/status drift. Secure-by-default: bind loopback unless the host opts into LAN
+        // exposure via `announce_http`; mutations are unauthenticated unless `http_token`
+        // is set.
+        //
+        // The actually-bound address is captured so the handle can report it — the
+        // root fix for ephemeral binding: `Builder::http_port(0)` lets the OS assign
+        // a free port and `KoiHandle::bound_http_port()` reports it (no probing).
+        let mut http_addr: Option<std::net::SocketAddr> = None;
         if self.config.http_enabled {
-            let http_port = self.config.http_port;
             let http_cancel = cancel.clone();
-            let http_mdns = mdns.clone();
-            let http_dns = dns.clone();
-            let http_health = health.clone();
-            let http_certmesh = certmesh.clone();
-            let http_proxy = proxy.clone();
-            let http_udp = udp.clone();
-            let http_runtime = runtime.clone();
-            let http_api_docs = self.config.api_docs_enabled;
+            let http_cores = koi_compose::cores::Cores {
+                mdns: mdns.clone(),
+                certmesh: certmesh.clone(),
+                dns: dns.clone(),
+                health: health.clone(),
+                proxy: proxy.clone(),
+                udp: udp.clone(),
+                runtime: runtime.clone(),
+                mdns_snapshot: mdns_bridge.clone(),
+            };
+            // Exposure is gated at the top of start(): announce_http without a token
+            // fails closed before we get here, so an exposed bind always carries auth.
+            let exposed = self.config.announce_http;
+            let bind_ip = if exposed {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+            } else {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+            };
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            let http_cfg = koi_serve::http::HttpConfig {
+                bind_ip,
+                port: self.config.http_port,
+                started_at: std::time::Instant::now(),
+                dashboard: dashboard_state,
+                browser: browser_state,
+                auth: self.config.http_token.clone(),
+                mdns_snapshot: mdns_bridge.clone(),
+                mcp_http: false,
+                admin_shutdown: false,
+                api_docs: self.config.api_docs_enabled,
+                daemon: false,
+                ready: Some(ready_tx),
+            };
             tasks.push(tokio::spawn(async move {
-                http::serve(
-                    http_port,
-                    http_mdns,
-                    http_dns,
-                    http_health,
-                    http_certmesh,
-                    http_proxy,
-                    http_udp,
-                    http_runtime,
-                    dashboard_state,
-                    browser_state,
-                    http_api_docs,
-                    http_cancel,
-                )
-                .await;
+                if let Err(e) = koi_serve::http::start(http_cores, http_cfg, http_cancel).await {
+                    tracing::error!(error = %e, "embedded HTTP adapter failed");
+                }
             }));
+            // Wait for the listener to bind so the handle reports the real port
+            // (the OS-assigned one when http_port == 0). A bind failure drops the
+            // sender → `None` here; the spawned task has already logged the error.
+            http_addr = ready_rx.await.ok();
         }
 
-        // ── HTTP mDNS announcement (opt-in) ──
-        let http_announce_id =
-            if self.config.announce_http && self.config.http_enabled && self.config.mdns_enabled {
-                if let Some(ref mdns_core) = mdns {
-                    let hostname = hostname::get()
-                        .ok()
-                        .and_then(|os| os.into_string().ok())
-                        .unwrap_or_else(|| "unknown".to_string());
-
-                    let mut txt = std::collections::HashMap::new();
-                    txt.insert("path".to_string(), "/".to_string());
-                    txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
-                    txt.insert("api".to_string(), "v1".to_string());
-                    txt.insert(
-                        "dashboard".to_string(),
-                        self.config.dashboard_enabled.to_string(),
-                    );
-
-                    // Stamp this node's trust posture into its own announcement so
-                    // peers discovering it get fleet-wide trust legibility
-                    // (ADR-020 §8). Advisory hints; `verify`/mTLS adjudicates.
-                    if let Some(ref core) = certmesh {
-                        let id = core.local_identity().await;
-                        koi_common::peer::stamp(
-                            &mut txt,
-                            core.posture(),
-                            id.as_ref().map(|i| i.ca_fingerprint.as_str()),
-                            id.as_ref().map(|i| i.renewal.expires_at),
-                        );
-                    }
-
-                    let payload = koi_mdns::protocol::RegisterPayload {
-                        name: format!("Koi ({hostname})"),
-                        service_type: "_http._tcp".to_string(),
-                        port: self.config.http_port,
-                        ip: None,
-                        lease_secs: None,
-                        txt,
-                    };
-                    match mdns_core.register(payload) {
-                        Ok(result) => {
-                            tracing::info!(
-                                id = %result.id,
-                                port = self.config.http_port,
-                                "HTTP server announced via mDNS"
-                            );
-                            Some(result.id)
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "Failed to announce HTTP server via mDNS");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+        // ── Self-announce supervisor: _http._tcp, posture-reactive ──
+        // One supervisor publishes this host's _http._tcp record (with the ADR-020 posture
+        // stamp) and re-stamps it on every Open↔Authenticated flip — the same reactivity the
+        // daemon and the Windows service get, shared via koi-compose. `_mcp._tcp` stays off:
+        // embedded mounts no /v1/mcp transport, so it must not advertise one.
+        let announce_cores = koi_compose::cores::Cores {
+            mdns: mdns.clone(),
+            certmesh: certmesh.clone(),
+            dns: dns.clone(),
+            health: health.clone(),
+            proxy: proxy.clone(),
+            udp: udp.clone(),
+            runtime: runtime.clone(),
+            mdns_snapshot: mdns_bridge.clone(),
+        };
+        // Advertise the ACTUAL bound port: with http_port(0) the OS picked an
+        // ephemeral port at bind time, so announcing the configured 0 would publish
+        // an unreachable _http._tcp/_mcp._tcp record. `http_addr` holds the resolved
+        // address (Some whenever the HTTP adapter bound); fall back to the configured
+        // port when HTTP is disabled (announce_http requires http_enabled anyway).
+        let announce_http_port = http_addr.map(|a| a.port()).unwrap_or(self.config.http_port);
+        koi_compose::self_announce::spawn(
+            &announce_cores,
+            koi_compose::self_announce::SelfAnnounceConfig {
+                http_port: announce_http_port,
+                dashboard_enabled: self.config.dashboard_enabled,
+                announce_http: self.config.announce_http
+                    && self.config.http_enabled
+                    && self.config.mdns_enabled,
+                announce_mcp: false,
+                dns_zone: self.config.dns_config.zone.clone(),
+            },
+            cancel.clone(),
+            &mut tasks,
+        );
 
         // ── Domain event → host KoiEvent forwarders ──
         // One shared spawn helper instead of six copies of the streaming select! skeleton.
@@ -678,31 +637,20 @@ impl KoiEmbedded {
             );
         }
 
-        // ── Runtime orchestrator (opt-in) ──
-        // Translate container lifecycle events into mDNS/DNS/health/proxy entries — the
-        // same orchestrator the daemon runs. Off by default; a leaf host only wants events.
-        if self.config.orchestrator_enabled {
-            if let Some(ref runtime_core) = runtime {
-                tasks.push(koi_compose::orchestrator::spawn_orchestrator(
-                    runtime_core,
-                    koi_compose::orchestrator::OrchestrationTargets {
-                        mdns: mdns.clone(),
-                        dns: dns.clone(),
-                        health: health.clone(),
-                        proxy: proxy.clone(),
-                    },
-                    cancel.clone(),
-                ));
-            } else {
-                tracing::warn!(
-                    "orchestrator enabled but the runtime adapter is not — skipping orchestrator"
-                );
-            }
+        // The runtime orchestrator and the certmesh role loops (trust-bundle pull + renewal)
+        // are spawned inside `build_cores` (gated on the spec's `spawn_orchestrator` /
+        // `spawn_certmesh_loops`, set from the builder opt-ins above). Only the opt-in-without-
+        // prerequisite warnings stay here.
+        if self.config.orchestrator_enabled && runtime.is_none() {
+            tracing::warn!(
+                "orchestrator enabled but the runtime adapter is not — skipping orchestrator"
+            );
         }
 
-        // ── Certmesh background tasks (opt-in) ──
-        // Renewal / roster sync / heartbeat / failover, same as the daemon. Off by default;
-        // a clustered embedded CA host opts in. No console, so enrollment auto-denies.
+        // ── Certmesh enrollment-approval pump (opt-in) ──
+        // The trust-bundle pull + cert-renewal loops are spawned by `build_cores`; the approval
+        // pump is NOT (its decider is host-specific). Embedded has no console, so it
+        // auto-denies. Off by default; a clustered embedded CA host opts in.
         if self.config.certmesh_background_enabled {
             if let Some(ref certmesh_core) = certmesh {
                 koi_compose::certmesh::spawn_enrollment_approval(
@@ -712,11 +660,6 @@ impl KoiEmbedded {
                     &mut tasks,
                 )
                 .await;
-                koi_compose::certmesh::spawn_certmesh_background_tasks(
-                    certmesh_core,
-                    &cancel,
-                    &mut tasks,
-                );
             } else {
                 tracing::warn!(
                     "certmesh_background enabled but certmesh is not — skipping certmesh loops"
@@ -732,11 +675,11 @@ impl KoiEmbedded {
             proxy,
             udp,
             runtime,
+            http_addr,
             self.config.data_dir.clone(),
             event_tx,
             cancel,
             tasks,
-            http_announce_id,
         ))
     }
 }
@@ -884,6 +827,10 @@ pub(crate) fn map_join_error(err: tokio::task::JoinError) -> KoiError {
 }
 
 /// Build a dashboard snapshot from the embedded domain cores.
+///
+/// Delegates to `koi_compose::snapshot::build_dashboard_snapshot`, the one detail projection
+/// shared with the daemon dashboard, so the embedded snapshot now carries the same
+/// health / DNS / certmesh / proxy / UDP detail (not just the capability ladder).
 async fn build_embedded_snapshot(
     mdns: Option<Arc<koi_mdns::MdnsCore>>,
     certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
@@ -893,8 +840,6 @@ async fn build_embedded_snapshot(
     udp: Option<Arc<koi_udp::UdpRuntime>>,
     runtime: Option<Arc<koi_runtime::RuntimeCore>>,
 ) -> serde_json::Value {
-    // The capability ladder is assembled once in koi-compose, shared with `/v1/status` and
-    // the dashboard snapshot. The embedded snapshot includes `enabled` like the dashboard.
     let cores = koi_compose::cores::Cores {
         mdns,
         certmesh,
@@ -905,19 +850,7 @@ async fn build_embedded_snapshot(
         runtime,
         mdns_snapshot: None,
     };
-    let capabilities: Vec<serde_json::Value> = koi_compose::status::assemble_capabilities(&cores)
-        .await
-        .into_iter()
-        .map(|c| {
-            serde_json::json!({
-                "name": c.status.name,
-                "enabled": c.enabled,
-                "healthy": c.status.healthy,
-                "summary": c.status.summary,
-            })
-        })
-        .collect();
-    serde_json::json!({ "capabilities": capabilities })
+    koi_compose::snapshot::build_dashboard_snapshot(&cores).await
 }
 
 #[cfg(test)]
@@ -968,7 +901,7 @@ mod tests {
         // data_dir gets the CA created, discovered, and unlocked under THAT
         // dir — never a split between the injected dir and an ambient default.
         let base = koi_common::test::ensure_data_dir("koi-embedded-datadir-tests");
-        let data_dir = base.join("custom-pond");
+        let data_dir = base.join("custom-data");
         let paths = koi_certmesh::CertmeshPaths::with_data_dir(data_dir.clone());
 
         // Fresh machine: no CA yet. The uninitialized early-return must still
@@ -983,7 +916,7 @@ mod tests {
         );
 
         // Create a CA + roster UNDER the injected dir.
-        koi_certmesh::ca::create_ca("pond-pass-strong", &[7u8; 32], &paths)
+        koi_certmesh::ca::create_ca("test-pass-strong", &[7u8; 32], &paths)
             .expect("create CA under injected dir");
         // My Organization posture: closed enrollment, approval required.
         let roster = koi_certmesh::roster::Roster::new(false, true, Some("ops".to_string()));
@@ -996,7 +929,7 @@ mod tests {
             koi_compose::cores::init_certmesh_core(Some(&data_dir)).expect("locked core");
         assert_eq!(reopened.paths().data_dir(), data_dir.as_path());
         reopened
-            .unlock("pond-pass-strong")
+            .unlock("test-pass-strong")
             .await
             .expect("unlock CA from the injected data_dir");
     }

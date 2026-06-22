@@ -22,7 +22,11 @@ CA private keys use envelope encryption, inspired by LUKS. A random 256-bit mast
 | `Passphrase` | Argon2id → KEK → AES-256-GCM wrap | Primary unlock (always present) |
 | `AutoUnlock` | Master key in separate local file (marker slot) | Unattended boot for single-user profiles |
 | `Totp` | HKDF(shared_secret) → KEK → AES-256-GCM wrap | TOTP-based unlock (6-digit code) |
-| ~~`Fido2`~~ | — | **REMOVED in 0.4.2** — re-add via the `AuthAdapter` trait (`koi-crypto/src/auth.rs`) |
+
+`Passphrase`, `AutoUnlock`, and `Totp` are the shipped slot types. The
+`AuthAdapter` trait (`koi-crypto/src/auth.rs`) is the extension point for adding
+further unlock methods (e.g. FIDO2) without changing the slot format — but no such
+method ships today; FIDO2 unlock is not yet implemented.
 
 ---
 
@@ -64,15 +68,13 @@ CA private keys use envelope encryption, inspired by LUKS. A random 256-bit mast
 | `add_auto_unlock()` / `remove_auto_unlock()` | Toggle unattended boot |
 | `add_totp_slot(master_key, secret)` | Add TOTP unlock slot |
 | `unwrap_with_totp(code)` | Unlock via TOTP code |
-| ~~`add_fido2_slot(...)`~~ | **REMOVED in 0.4.2** — re-add via the `AuthAdapter` trait (`koi-crypto/src/auth.rs`) |
-| ~~`unwrap_with_fido2(credential_id)`~~ | **REMOVED in 0.4.2** — re-add via the `AuthAdapter` trait (`koi-crypto/src/auth.rs`) |
 | `available_methods()` | List active slot types |
 
 ---
 
 ## Migration
 
-Legacy single-passphrase keys (pre-envelope) are auto-migrated on first load via `migrate_to_envelope()`. The function decrypts with the old method, generates a fresh master key, re-encrypts under the master key, and creates a slot table with a passphrase slot.
+A single-passphrase key is transparently upgraded to the envelope format on first load via `migrate_to_envelope()`: it decrypts with the passphrase, generates a fresh master key, re-encrypts under that master key, and writes a slot table with a passphrase slot.
 
 ---
 
@@ -82,7 +84,7 @@ Legacy single-passphrase keys (pre-envelope) are auto-migrated on first load via
 |---|---|
 | Algorithm | ECDSA P-256 (CA and member certs) |
 | CA validity | 10 years |
-| Member validity | 30 days (auto-renewed) |
+| Member validity | 90-day leaf; pull-renewed at 30 days remaining, 14-day post-expiry grace |
 | SANs | Hostname, hostname.{zone}, custom entries |
 
 Implementation lives in `koi-crypto/src/keys.rs` (key generation), `koi-crypto/src/unlock_slots.rs` (slot management), and `koi-certmesh/src/ca.rs` (CA operations).

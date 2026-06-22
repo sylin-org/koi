@@ -165,13 +165,13 @@ mod tests {
     fn make_test_roster() -> Roster {
         let mut r = Roster::new(JUST_ME.0, JUST_ME.1, None);
         r.members.push(RosterMember {
-            hostname: "stone-01".to_string(),
+            hostname: "node-01".to_string(),
             role: MemberRole::Primary,
             enrolled_at: Utc::now(),
             enrolled_by: None,
             cert_fingerprint: "fp-abc".to_string(),
             cert_expires: Utc::now(),
-            cert_sans: vec!["stone-01".to_string()],
+            cert_sans: vec!["node-01".to_string()],
             cert_path: String::new(),
             status: MemberStatus::Active,
             reload_hook: None,
@@ -217,7 +217,7 @@ mod tests {
         assert_eq!(accepted_auth.method_name(), "totp");
         // Verify roster survived
         assert_eq!(accepted_roster.members.len(), 1);
-        assert_eq!(accepted_roster.members[0].hostname, "stone-01");
+        assert_eq!(accepted_roster.members[0].hostname, "node-01");
     }
 
     #[test]

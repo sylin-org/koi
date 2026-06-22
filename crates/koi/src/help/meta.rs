@@ -522,7 +522,7 @@ output.",
         see_also: &["status"],
         api: &[ApiEndpoint {
             method: "GET",
-            path: crate::adapters::http::paths::UNIFIED_STATUS,
+            path: koi_serve::http::paths::UNIFIED_STATUS,
         }],
         confirmation: None,
     },
@@ -581,7 +581,7 @@ mode, it reads local state files directly.",
         see_also: &["version"],
         api: &[ApiEndpoint {
             method: "GET",
-            path: crate::adapters::http::paths::UNIFIED_STATUS,
+            path: koi_serve::http::paths::UNIFIED_STATUS,
         }],
         confirmation: None,
     },
@@ -991,7 +991,7 @@ only the named host, once, and only until it expires.",
         scope: KoiScope::Admin,
         examples: &[
             Example {
-                command: "koi certmesh invite stone-leaded-sparkle",
+                command: "koi certmesh invite laptop-01",
                 description: "Mint a 60-minute invite for a host",
             },
             Example {

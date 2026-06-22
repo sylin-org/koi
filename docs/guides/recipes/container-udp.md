@@ -49,7 +49,7 @@ curl -s "http://$KOI_HOST:5641/healthz"   # → OK
 
 ## 2. Source the token
 
-`POST`/`PUT`/`DELETE` on `/v1/udp/*` require the daemon access token in the `x-koi-token` header, or they return `401`. The recv `GET` does not. The daemon mints a fresh token on every start; read it from a mounted file rather than baking it into the image.
+Every `/v1/udp/*` endpoint — including the `GET` status and recv streams — requires the daemon access token in the `x-koi-token` header, or it returns `401`. (These endpoints enumerate binding ids and stream other token-holders' inbound datagrams, so they are not read-safe to leave open.) The daemon mints a fresh token on every start; read it from a mounted file rather than baking it into the image.
 
 On the host, write a 0600 token file and mount it as a Compose secret:
 
@@ -74,7 +74,7 @@ TOKEN=$(cat /run/secrets/koi_token)
 curl -s -X POST -H "x-koi-token: $TOKEN" \
   -H 'Content-Type: application/json' \
   "http://$KOI_HOST:5641/v1/udp/bind" \
-  -d '{"port": 7184, "addr": "0.0.0.0", "lease_secs": 300}'
+  -d '{"port": 7184, "addr": "0.0.0.0", "allow_remote": true, "lease_secs": 300}'
 ```
 
 Response (`201 Created`):
@@ -85,20 +85,21 @@ Response (`201 Created`):
   "local_addr": "0.0.0.0:7184",
   "created_at": "2026-06-13T12:00:00Z",
   "last_heartbeat": "2026-06-13T12:00:00Z",
-  "lease_secs": 300
+  "lease_secs": 300,
+  "allow_remote": true
 }
 ```
 
-Keep the `id` — every subsequent call references it. Use `"port": 0` for an OS-assigned ephemeral port. `addr` defaults to `0.0.0.0` and `lease_secs` to `300` (max `86400`).
+Keep the `id` — every subsequent call references it. Use `"port": 0` for an OS-assigned ephemeral port. `addr` defaults to `127.0.0.1` (loopback); binding `0.0.0.0` so containers on the bridge can reach it requires `"allow_remote": true`. `lease_secs` defaults to `300` (max `86400`).
 
 ---
 
 ## 4. Receive datagrams (SSE)
 
-Subscribe to the binding's SSE stream. This is a `GET`, so no token is required:
+Subscribe to the binding's SSE stream. Like the rest of `/v1/udp/*`, this requires the token even though it is a `GET`:
 
 ```bash
-curl -sN "http://$KOI_HOST:5641/v1/udp/recv/01958f2a-..."
+curl -sN -H "x-koi-token: $TOKEN" "http://$KOI_HOST:5641/v1/udp/recv/01958f2a-..."
 ```
 
 Each incoming datagram arrives as a `datagram` event:
@@ -168,16 +169,16 @@ TOKEN=$(cat /run/secrets/koi_token)
 
 until curl -sf "$KOI_URL/healthz" >/dev/null 2>&1; do sleep 2; done
 
-# Bind a host UDP port
+# Bind a host UDP port (0.0.0.0 so LAN devices can reach it → needs allow_remote)
 BIND=$(curl -sf -X POST -H "x-koi-token: $TOKEN" \
   -H 'Content-Type: application/json' \
   "$KOI_URL/v1/udp/bind" \
-  -d '{"port": 7184, "lease_secs": 300}')
+  -d '{"port": 7184, "addr": "0.0.0.0", "allow_remote": true, "lease_secs": 300}')
 ID=$(echo "$BIND" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
 echo "bound: $ID"
 
-# Receive datagrams (GET — no token)
-curl -sN "$KOI_URL/v1/udp/recv/$ID" &
+# Receive datagrams (GET — needs the token, like all /v1/udp/*)
+curl -sN -H "x-koi-token: $TOKEN" "$KOI_URL/v1/udp/recv/$ID" &
 RECV_PID=$!
 
 # Heartbeat at ~half the lease (PUT — token)
@@ -235,16 +236,16 @@ docker compose up -d
 
 ## Endpoint reference
 
-All UDP endpoints live under `/v1/udp/`. Mutations carry `x-koi-token`; the recv `GET` does not.
+All UDP endpoints live under `/v1/udp/` and **every** one carries `x-koi-token` — including the `GET` recv and status streams, which expose other token-holders' bindings.
 
 | Method | Path | Auth | Returns |
 | ------ | ---- | ---- | ------- |
 | `POST` | `/v1/udp/bind` | token | `201` + binding info |
-| `GET` | `/v1/udp/recv/{id}` | none | SSE stream of `datagram` events |
+| `GET` | `/v1/udp/recv/{id}` | token | SSE stream of `datagram` events |
 | `POST` | `/v1/udp/send/{id}` | token | `{"sent": <bytes>}` |
 | `PUT` | `/v1/udp/heartbeat/{id}` | token | `{"renewed": "<id>"}` |
 | `DELETE` | `/v1/udp/bind/{id}` | token | `{"unbound": "<id>"}` |
-| `GET` | `/v1/udp/status` | none | `{"bindings": [...]}` |
+| `GET` | `/v1/udp/status` | token | `{"bindings": [...]}` |
 
 Full request/response schemas: [http-api.md](../../reference/http-api.md). The capability concepts, lease model, and design scope: the [UDP guide](../udp.md). General container patterns (reaching the host, distributing the token, the runtime adapter): the [container guide](../../../CONTAINERS.md).
 

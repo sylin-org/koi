@@ -415,14 +415,14 @@ mod tests {
     fn roster_serde_round_trip() {
         let mut r = Roster::new(MY_TEAM.0, MY_TEAM.1, Some("Alice".to_string()));
         r.members.push(RosterMember {
-            hostname: "stone-01".to_string(),
+            hostname: "node-01".to_string(),
             role: MemberRole::Primary,
             enrolled_at: Utc::now(),
             enrolled_by: Some("Alice".to_string()),
             cert_fingerprint: "abc123".to_string(),
             cert_expires: Utc::now(),
-            cert_sans: vec!["stone-01".to_string(), "stone-01.local".to_string()],
-            cert_path: "/home/koi/.koi/certs/stone-01".to_string(),
+            cert_sans: vec!["node-01".to_string(), "node-01.local".to_string()],
+            cert_path: "/home/koi/.koi/certs/node-01".to_string(),
             status: MemberStatus::Active,
             reload_hook: None,
             last_seen: Some(Utc::now()),
@@ -434,7 +434,7 @@ mod tests {
         let deserialized: Roster = serde_json::from_str(&json).unwrap();
 
         assert_eq!(deserialized.members.len(), 1);
-        assert_eq!(deserialized.members[0].hostname, "stone-01");
+        assert_eq!(deserialized.members[0].hostname, "node-01");
         assert_eq!(deserialized.members[0].role, MemberRole::Primary);
     }
 
@@ -459,10 +459,10 @@ mod tests {
     fn find_and_count_members() {
         let mut r = Roster::new(JUST_ME.0, JUST_ME.1, None);
         assert_eq!(r.active_count(), 0);
-        assert!(!r.is_enrolled("stone-01"));
+        assert!(!r.is_enrolled("node-01"));
 
         r.members.push(RosterMember {
-            hostname: "stone-01".to_string(),
+            hostname: "node-01".to_string(),
             role: MemberRole::Primary,
             enrolled_at: Utc::now(),
             enrolled_by: None,
@@ -478,9 +478,9 @@ mod tests {
         });
 
         assert_eq!(r.active_count(), 1);
-        assert!(r.is_enrolled("stone-01"));
-        assert!(r.find_member("stone-01").is_some());
-        assert!(r.find_member("stone-99").is_none());
+        assert!(r.is_enrolled("node-01"));
+        assert!(r.find_member("node-01").is_some());
+        assert!(r.find_member("node-99").is_none());
     }
 
     #[test]
@@ -548,23 +548,23 @@ mod tests {
             proxy_entries: Vec::new(),
         };
 
-        r.members.push(make_member("stone-01", MemberRole::Primary));
-        r.members.push(make_member("stone-02", MemberRole::Standby));
-        r.members.push(make_member("stone-03", MemberRole::Member));
-        r.members.push(make_member("stone-04", MemberRole::Standby));
+        r.members.push(make_member("node-01", MemberRole::Primary));
+        r.members.push(make_member("node-02", MemberRole::Standby));
+        r.members.push(make_member("node-03", MemberRole::Member));
+        r.members.push(make_member("node-04", MemberRole::Standby));
 
-        assert_eq!(r.primary().unwrap().hostname, "stone-01");
+        assert_eq!(r.primary().unwrap().hostname, "node-01");
         let standbys = r.standbys();
         assert_eq!(standbys.len(), 2);
-        assert!(standbys.iter().any(|m| m.hostname == "stone-02"));
-        assert!(standbys.iter().any(|m| m.hostname == "stone-04"));
+        assert!(standbys.iter().any(|m| m.hostname == "node-02"));
+        assert!(standbys.iter().any(|m| m.hostname == "node-04"));
     }
 
     #[test]
     fn find_member_mut_and_touch() {
         let mut r = Roster::new(JUST_ME.0, JUST_ME.1, None);
         r.members.push(RosterMember {
-            hostname: "stone-01".to_string(),
+            hostname: "node-01".to_string(),
             role: MemberRole::Primary,
             enrolled_at: Utc::now(),
             enrolled_by: None,
@@ -583,14 +583,14 @@ mod tests {
         assert!(r.members[0].last_seen.is_none());
 
         // touch_member updates last_seen
-        r.touch_member("stone-01");
+        r.touch_member("node-01");
         assert!(r.members[0].last_seen.is_some());
 
         // touch_member on unknown host is a no-op
         r.touch_member("nonexistent");
 
         // find_member_mut allows direct mutation
-        let m = r.find_member_mut("stone-01").unwrap();
+        let m = r.find_member_mut("node-01").unwrap();
         m.reload_hook = Some("systemctl restart nginx".to_string());
         assert_eq!(
             r.members[0].reload_hook.as_deref(),
@@ -618,7 +618,7 @@ mod tests {
     #[test]
     fn new_fields_skip_serialization_when_none() {
         let member = RosterMember {
-            hostname: "stone-01".to_string(),
+            hostname: "node-01".to_string(),
             role: MemberRole::Primary,
             enrolled_at: Utc::now(),
             enrolled_by: None,
@@ -627,7 +627,7 @@ mod tests {
             cert_sans: vec![],
             // A non-empty path proves F13's `#[serde(skip)]` (not merely empty-skip):
             // the CA host's local cert dir must never leak into roster.json.
-            cert_path: "/var/lib/koi/certs/stone-01".to_string(),
+            cert_path: "/var/lib/koi/certs/node-01".to_string(),
             status: MemberStatus::Active,
             reload_hook: None,
             last_seen: None,

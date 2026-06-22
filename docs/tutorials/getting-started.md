@@ -18,42 +18,50 @@ No accounts, no cloud, nothing to sign up for. Open a terminal and follow along.
 
 ## 1. Get the binary
 
-Download a prebuilt binary from
-[GitHub Releases](https://github.com/sylin-org/koi/releases) and put it on your
-`PATH`.
+One line installs Koi — it detects your OS/arch, downloads the right release
+archive, verifies its SHA-256, and puts `koi` on your `PATH`. No root needed for
+the default per-user location.
 
-**Linux / macOS** — extract and move it onto your `PATH`:
+**Linux / macOS:**
 
 ```bash
-# adjust the filename to the asset you downloaded
-tar -xzf koi-*.tar.gz
-sudo mv koi /usr/local/bin/
+curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh
 ```
 
-**Windows** — extract `koi.exe` to a folder (for example `C:\Tools\koi`), then add
-that folder to your `PATH` so you can run `koi` from any terminal:
+**Windows:**
 
 ```powershell
-# add C:\Tools\koi to PATH for the current user (open a new terminal afterwards)
-[Environment]::SetEnvironmentVariable(
-  'Path', $env:Path + ';C:\Tools\koi', 'User')
+irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
 ```
 
-Prefer building it yourself? With [Rust](https://rustup.rs/) 1.92 or later:
+The installer finishes by running `koi status`, so you'll see it work right away.
+Pin a version or change the location with `KOI_VERSION` and `KOI_INSTALL_DIR`
+(`KOI_NO_MODIFY_PATH` skips the PATH guidance).
 
-```bash
-git clone https://github.com/sylin-org/koi.git
-cd koi
-cargo build --release   # binary lands in target/release/
-```
-
-Confirm it works:
+Confirm it's reachable from a fresh terminal:
 
 ```bash
 koi version
 ```
 
-If that prints a version, you're ready.
+### Alternatives
+
+Prefer to do it by hand? Download a prebuilt archive from
+[GitHub Releases](https://github.com/sylin-org/koi/releases), extract it, and move
+`koi` (or `koi.exe`) onto your `PATH`:
+
+```bash
+tar -xzf koi-*.tar.gz       # adjust to the asset you downloaded
+sudo mv koi /usr/local/bin/
+```
+
+Or build it yourself with [Rust](https://rustup.rs/) 1.92 or later:
+
+```bash
+git clone https://github.com/sylin-org/koi.git
+cd koi
+cargo build --release       # binary lands in target/release/
+```
 
 ---
 
@@ -162,7 +170,7 @@ If `koi launch` can't open a browser (a headless server, say), just visit
 
 ## 5. One real task: give a machine a name
 
-Time to *use* the toolbox. Typing `myapp.lan` into a browser is a different
+Time to *use* the toolbox. Typing `myapp.internal` into a browser is a different
 experience from remembering `10.0.0.42`. Koi's local DNS resolver makes that
 mapping, and it's already running inside the daemon you started.
 
@@ -174,7 +182,7 @@ koi dns lookup myapp
 koi dns list                    # everything currently resolvable
 ```
 
-`koi dns add myapp 10.0.0.42` makes `myapp.lan` resolve to that address (`.lan` is
+`koi dns add myapp 10.0.0.42` makes `myapp.internal` resolve to that address (`.internal` is
 the default zone). `koi dns lookup myapp` asks Koi's resolver and shows the answer;
 `koi dns list` shows the whole zone — your static entries plus anything Koi learns
 from discovery and certificates.

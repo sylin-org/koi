@@ -23,7 +23,7 @@ embedded API, [embedded.md](embedded.md); one-screen map: the
 | **The whole `CertmeshCore`** — create, unlock, `mint_invite`, `enroll`, `prepare_member_csr`, `install_member_cert`, `revoke_member`, `renew_self_if_due`, `pull_trust_bundle`, `self_enroll`, open/close-enrollment, `certmesh_status`, audit log, destroy | **Yes — automatic** | `handle.certmesh()?.core()?` → `Arc<CertmeshCore>` |
 | **Plain-HTTP routes** (`/v1/certmesh/{create,status,join,trust-bundle,revoke,member-csr,member-cert,invite,…}`) | **Yes** when `.http(true)` | Mounted at `/v1/certmesh`. **No DAT token gate** — see [Authentication](#authentication) |
 | **mTLS inter-node listener** (`/renew`, `/promote`, `/health`, `/set-hook` — how a CA serves member renewals) | **You wire it** | `koi_certmesh::mtls::serve(core.inter_node_routes(), …)` |
-| **Lifecycle background loops** (auto-renewal, roster sync, heartbeat, failover/announce) | **Opt-in** | `.certmesh_background(true)` |
+| **Lifecycle background loop** (auto-renewal + trust-bundle pull: policy refresh + revocation detection) | **Opt-in** | `.certmesh_background(true)` |
 | **ACME (RFC 8555) facade** | **No** | Binary-only adapter |
 | **mDNS `_certmesh._tcp` `fp=` CA advertise** | **No** (auto) | Register via the mDNS core if you want discovery |
 

@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **One-line install scripts** — `install.sh` (Linux/macOS) and `install.ps1`
+  (Windows) detect your OS/arch, download the matching release archive, verify
+  its SHA-256, and install `koi` onto your `PATH`. No root for the default
+  per-user location; `KOI_VERSION` / `KOI_INSTALL_DIR` override the tag and path.
+- **Published container image** — `ghcr.io/sylin-org/koi`, multi-arch
+  (linux/amd64 + linux/arm64), assembled on each release from the exact musl
+  binaries. `docker run -d ghcr.io/sylin-org/koi:latest` (daemon via default CMD).
+- **Signed build provenance** — every release archive and the container image carry
+  a GitHub Artifact Attestation (Sigstore, keyless). Verify a build was produced by
+  this repo's workflow with one line:
+  `gh attestation verify <file|oci://…> --repo sylin-org/koi`.
+- **`--dns-qps` / `KOI_DNS_QPS`** — configure the DNS query rate limit (default 200).
+
+### Changed
+- **The install scripts finish with a live result, not a blank prompt** — they run
+  `koi status` to confirm the binary works and hand off to `koi mdns discover` /
+  `koi install`, so onboarding lands on something visible.
+
+### Security
+- **DNS rate limiting is now per source IP** with a whole-resolver backstop, so a
+  single noisy (or hostile) LAN peer can no longer starve resolution for everyone —
+  the previous single global bucket's failure mode. The tracked-client map is bounded
+  (spoofable UDP sources can't grow it without limit).
+- **Trust/zone reads are gated for remote peers on a non-loopback bind.**
+  `GET /v1/certmesh/diagnose`, `/v1/dns/list`, and `/v1/dns/zone` now require the
+  `x-koi-token` from a non-loopback peer (loopback callers — the CLI, the dashboard —
+  stay token-free). `/v1/certmesh/status` and `/v1/certmesh/trust-bundle` stay open by
+  design: they are load-bearing in the unauthenticated cross-host enrollment / trust-sync
+  protocol (and the trust-bundle is ES256-signed and self-verifying).
+
 ## [0.4.2] - 2026-06-21
 
 A large lean-and-reach release: the certificate mesh is roughly halved, the CLI surface

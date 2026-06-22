@@ -19,6 +19,12 @@ use koi_proxy::{ProxyEntry, ProxyRuntime};
 
 use crate::{map_join_error, KoiError, KoiEvent};
 
+/// Hard ceiling on ordered teardown — bounds the cancel/drain/join sequence so a wedged
+/// task can never hang the host application's shutdown (mirrors the daemon's limit).
+const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// Grace period after cancellation for in-flight work to drain before tasks are joined.
+const SHUTDOWN_DRAIN: std::time::Duration = std::time::Duration::from_millis(500);
+
 enum HandleBackend {
     Embedded {
         mdns: Option<Arc<MdnsCore>>,
@@ -36,11 +42,14 @@ enum HandleBackend {
 
 pub struct KoiHandle {
     backend: HandleBackend,
+    /// The address the embedded HTTP adapter bound to (`None` if HTTP is disabled
+    /// or in remote mode). Populated even for a fixed port; with `http_port(0)` it
+    /// carries the OS-assigned ephemeral port.
+    http_addr: Option<std::net::SocketAddr>,
     data_dir: Option<std::path::PathBuf>,
     events: broadcast::Sender<KoiEvent>,
     cancel: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
-    http_announce_id: Option<String>,
 }
 
 impl KoiHandle {
@@ -53,11 +62,11 @@ impl KoiHandle {
         proxy: Option<Arc<ProxyRuntime>>,
         udp: Option<Arc<koi_udp::UdpRuntime>>,
         runtime: Option<Arc<koi_runtime::RuntimeCore>>,
+        http_addr: Option<std::net::SocketAddr>,
         data_dir: Option<std::path::PathBuf>,
         events: broadcast::Sender<KoiEvent>,
         cancel: CancellationToken,
         tasks: Vec<JoinHandle<()>>,
-        http_announce_id: Option<String>,
     ) -> Self {
         Self {
             backend: HandleBackend::Embedded {
@@ -69,11 +78,11 @@ impl KoiHandle {
                 udp,
                 runtime,
             },
+            http_addr,
             data_dir,
             events,
             cancel,
             tasks,
-            http_announce_id,
         }
     }
 
@@ -85,16 +94,30 @@ impl KoiHandle {
     ) -> Self {
         Self {
             backend: HandleBackend::Remote { client },
+            http_addr: None,
             data_dir: None,
             events,
             cancel,
             tasks,
-            http_announce_id: None,
         }
     }
 
     pub fn events(&self) -> BroadcastStream<KoiEvent> {
         BroadcastStream::new(self.events.subscribe())
+    }
+
+    /// The address the embedded HTTP adapter bound to, or `None` when HTTP is
+    /// disabled or this is a remote handle. With `Builder::http_port(0)` this
+    /// reports the OS-assigned ephemeral port — the supported way to run an
+    /// embedded HTTP surface on a free port without racing to pick one.
+    pub fn http_addr(&self) -> Option<std::net::SocketAddr> {
+        self.http_addr
+    }
+
+    /// The port the embedded HTTP adapter bound to (convenience over
+    /// [`http_addr`](Self::http_addr)). `None` if HTTP is disabled / remote.
+    pub fn bound_http_port(&self) -> Option<u16> {
+        self.http_addr.map(|addr| addr.port())
     }
 
     /// Serve `router` on `addr` with the same-port posture dial (ADR-020 §5):
@@ -297,37 +320,44 @@ impl KoiHandle {
     }
 
     pub async fn shutdown(mut self) -> Result<(), KoiError> {
-        self.cancel.cancel();
-        for task in self.tasks.drain(..) {
-            let _ = task.await;
-        }
+        let tasks = std::mem::take(&mut self.tasks);
 
         if let HandleBackend::Embedded {
             mdns,
             dns,
             health,
+            certmesh,
             proxy,
-            ..
+            udp,
+            runtime,
         } = &self.backend
         {
-            if let Some(runtime) = proxy {
-                runtime.stop_all().await;
-            }
-            if let Some(runtime) = health {
-                let _ = runtime.stop().await;
-            }
-            if let Some(runtime) = dns {
-                let _ = runtime.stop().await;
-            }
-            if let Some(id) = &self.http_announce_id {
-                if let Some(core) = mdns {
-                    if let Err(e) = core.unregister(id) {
-                        tracing::warn!(error = %e, "Failed to withdraw HTTP mDNS announcement");
-                    }
-                }
-            }
-            if let Some(core) = mdns {
-                core.shutdown().await?;
+            // Route through the shared ordered teardown so embedded inherits the same
+            // cancel → drain → join → withdraw-announce → per-core goodbye sequence the
+            // daemon runs, including the UDP shutdown + drain + hard timeout it omitted.
+            let cores = koi_compose::cores::Cores {
+                mdns: mdns.clone(),
+                certmesh: certmesh.clone(),
+                dns: dns.clone(),
+                health: health.clone(),
+                proxy: proxy.clone(),
+                udp: udp.clone(),
+                runtime: runtime.clone(),
+                mdns_snapshot: None,
+            };
+            koi_compose::cores::ordered_shutdown(
+                &self.cancel,
+                tasks,
+                &cores,
+                SHUTDOWN_TIMEOUT,
+                SHUTDOWN_DRAIN,
+            )
+            .await;
+        } else {
+            // Remote backend: no local cores to tear down — just stop the tasks.
+            self.cancel.cancel();
+            for task in tasks {
+                let _ = task.await;
             }
         }
 

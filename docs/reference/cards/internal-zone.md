@@ -4,10 +4,10 @@ domain: dns
 title: ".internal zone — capability card"
 audience: [operators, developers, ai-agents]
 status: current
-last_updated: 2026-06-18
+last_updated: 2026-06-22
 koi_version: v0.4.2
 validation:
-  date_last_tested: 2026-06-18
+  date_last_tested: 2026-06-22
   status: verified
   scope: "unit (cli.rs dns_zone default = \"internal\"); live default + override (KOI_DNS_ZONE) exercised on the Linux test host"
 ---
@@ -40,6 +40,7 @@ A name issued in-zone is the same name certmesh/ACME will sign — so `https://g
 | Command / flag | What it does |
 |---|---|
 | `--dns-zone <zone>` (`KOI_DNS_ZONE`) | Local zone suffix. **Default `internal`.** |
+| `--dns-qps <n>` (`KOI_DNS_QPS`) | Max DNS queries/sec per client. **Default `200`.** Limiting is per source IP with a whole-resolver backstop; shed queries return `REFUSED`. |
 | `koi dns add <name> <ip>` | Add a static record under the zone (`<name>.<zone>`). |
 | `koi dns lookup <name>` | Resolve a local name (`A`/`AAAA`/`ANY`). |
 | `koi dns list` / `koi dns status` | List resolvable names / show zone + record counts. |

@@ -1,31 +1,17 @@
-//! Dashboard wiring — connects the daemon's domain cores to the shared dashboard
-//! infrastructure in `koi_dashboard::dashboard`.
+//! The rich dashboard snapshot — the one detail projection of the live domain cores.
 //!
-//! This module provides:
-//! - A snapshot closure that queries all domain cores (the injected `SnapshotFn`)
-//! - A builder that produces the `DashboardState` consumed by `koi-dashboard`
-//!
-//! The event forwarder lives in `koi_dashboard::forward` (the single, deduplicated
-//! superset shared with koi-embedded).
-
-use std::sync::Arc;
-use std::time::Instant;
-
-use tokio::sync::broadcast;
-
-use koi_dashboard::dashboard::{DashboardIdentity, DashboardState};
-
-// ── Snapshot detail types (private — serialized into opaque JSON) ────
+//! Both the daemon's dashboard adapter and `koi-embedded` serve their dashboard JSON through
+//! an injected `SnapshotFn`; both now call [`build_dashboard_snapshot`] so the embedded
+//! snapshot is no longer a `{capabilities}`-only stub but carries the same health / DNS /
+//! certmesh / proxy / UDP detail the daemon dashboard renders. The capability ladder itself
+//! comes from [`crate::status::assemble_capabilities`] (shared with `/v1/status`), projected
+//! into the four-field card via [`crate::status::CapabilityReport::into_card`].
 
 use serde::Serialize;
 
-#[derive(Debug, Serialize)]
-struct CapabilityCard {
-    name: String,
-    enabled: bool,
-    healthy: bool,
-    summary: String,
-}
+use crate::cores::Cores;
+
+// ── Snapshot detail types (private — serialized into opaque JSON) ────
 
 #[derive(Debug, Serialize)]
 struct HealthDetail {
@@ -88,45 +74,17 @@ struct UdpBindingDetail {
     local_addr: String,
 }
 
-// ── Domain core references (cloned into the snapshot closure) ────────
-
-#[derive(Clone)]
-struct DomainCores {
-    mdns: Option<Arc<koi_mdns::MdnsCore>>,
-    certmesh: Option<Arc<koi_certmesh::CertmeshCore>>,
-    dns: Option<Arc<koi_dns::DnsRuntime>>,
-    health: Option<Arc<koi_health::HealthRuntime>>,
-    proxy: Option<Arc<koi_proxy::ProxyRuntime>>,
-    udp: Option<Arc<koi_udp::UdpRuntime>>,
-    runtime: Option<Arc<koi_runtime::RuntimeCore>>,
-}
-
-// ── Build snapshot (domain-specific) ────────────────────────────────
-
-async fn build_snapshot_value(cores: &DomainCores) -> serde_json::Value {
-    // The capability ladder is assembled once in koi-compose, shared with `/v1/status` and
-    // the embedded snapshot. The dashboard card adds `enabled` (false only when disabled).
-    let domain_cores = koi_compose::cores::Cores {
-        mdns: cores.mdns.clone(),
-        certmesh: cores.certmesh.clone(),
-        dns: cores.dns.clone(),
-        health: cores.health.clone(),
-        proxy: cores.proxy.clone(),
-        udp: cores.udp.clone(),
-        runtime: cores.runtime.clone(),
-        mdns_snapshot: None,
-    };
-    let capabilities: Vec<CapabilityCard> =
-        koi_compose::status::assemble_capabilities(&domain_cores)
-            .await
-            .into_iter()
-            .map(|c| CapabilityCard {
-                name: c.status.name,
-                enabled: c.enabled,
-                healthy: c.status.healthy,
-                summary: c.status.summary,
-            })
-            .collect();
+/// Build the dashboard snapshot JSON from the live domain cores: the capability ladder plus
+/// the per-domain detail (health, DNS, certmesh, proxy, UDP). Each detail is `null` when its
+/// capability is disabled.
+pub async fn build_dashboard_snapshot(cores: &Cores) -> serde_json::Value {
+    // The capability ladder is assembled once in koi-compose, shared with `/v1/status`.
+    // The dashboard card adds `enabled` (false only when disabled).
+    let capabilities: Vec<serde_json::Value> = crate::status::assemble_capabilities(cores)
+        .await
+        .into_iter()
+        .map(|c| c.into_card())
+        .collect();
 
     // Domain details
     let health = if let Some(ref runtime) = cores.health {
@@ -220,45 +178,4 @@ async fn build_snapshot_value(cores: &DomainCores) -> serde_json::Value {
         "proxy": proxy,
         "udp": udp,
     })
-}
-
-// ── Build dashboard state ───────────────────────────────────────────
-//
-// The event forwarder lives in `koi_dashboard::forward` (the single, deduplicated
-// superset). Only the snapshot builder (the injected `SnapshotFn`) stays here, since it
-// is the binary's own domain-detail projection.
-
-/// Construct the `DashboardState` for the daemon.
-pub(crate) fn build_dashboard_state(
-    cores: &crate::DaemonCores,
-    started_at: Instant,
-    mode: &'static str,
-) -> DashboardState {
-    let domain = DomainCores {
-        mdns: cores.mdns.clone(),
-        certmesh: cores.certmesh.clone(),
-        dns: cores.dns.clone(),
-        health: cores.health.clone(),
-        proxy: cores.proxy.clone(),
-        udp: cores.udp.clone(),
-        runtime: cores.runtime.clone(),
-    };
-
-    let snapshot_fn: koi_dashboard::dashboard::SnapshotFn = Arc::new(move || {
-        let d = domain.clone();
-        Box::pin(async move { build_snapshot_value(&d).await })
-    });
-
-    let (event_tx, _) = broadcast::channel(256);
-
-    DashboardState {
-        identity: DashboardIdentity {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            platform: std::env::consts::OS.to_string(),
-        },
-        mode,
-        snapshot_fn,
-        event_tx,
-        started_at,
-    }
 }

@@ -63,10 +63,14 @@ fn write_cert(name: &str, extra_san: &str) -> Vec<u8> {
     generated.cert.der().as_ref().to_vec()
 }
 
-/// Wait (up to 5s) for the listener to report a given state. Returns false if the
-/// sender is dropped first (e.g. the listener task panicked).
+/// Wait for the listener to report a given state. Returns false if the sender is dropped
+/// first (e.g. the listener task panicked). The budget is generous (30s) because every
+/// data-plane test runs a `multi_thread` runtime, so the full `cargo test --workspace`
+/// parallel run heavily oversubscribes cores — a tight timeout flaked on listener
+/// bring-up under that load, not on a real failure. This is a correctness wait, not a
+/// latency assertion: a real "never starts" still fails (just later).
 async fn wait_for_state(rx: &mut watch::Receiver<ListenerStatus>, target: ListenerState) -> bool {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if rx.borrow_and_update().state == target {
                 return true;

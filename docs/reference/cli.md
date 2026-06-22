@@ -32,8 +32,9 @@ Global flags work with any subcommand:
 | `--no-mcp-http`   | `KOI_NO_MCP_HTTP` | false            | Disable the in-process MCP HTTP transport (`/v1/mcp`) |
 | `--runtime KIND`  | `KOI_RUNTIME`     | `auto`           | Runtime backend (docker/podman/auto) |
 | `--dns-port`      | `KOI_DNS_PORT`    | `53`             | DNS server port                    |
-| `--dns-zone`      | `KOI_DNS_ZONE`    | `lan`            | Local DNS zone                     |
+| `--dns-zone`      | `KOI_DNS_ZONE`    | `internal`       | Local DNS zone                     |
 | `--dns-public`    | `KOI_DNS_PUBLIC`  | false            | Allow non-private DNS clients      |
+| `--dns-qps`       | `KOI_DNS_QPS`     | `200`            | Max DNS queries/sec per client IP (rate-limited → REFUSED) |
 
 ---
 
@@ -66,7 +67,8 @@ koi mdns admin unregister ID                      # force-remove
 koi certmesh create [--profile just-me|team|organization]
                     [--operator NAME]             # interactive ceremony
 koi certmesh status                               # show mesh status
-koi certmesh join [ENDPOINT]                      # join existing mesh
+koi certmesh join [ENDPOINT] [--invite TOKEN]     # join existing mesh
+koi certmesh invite HOSTNAME [--ttl MINUTES]      # mint a single-use, hostname-bound invite
 koi certmesh unlock                               # decrypt CA key
 koi certmesh log                                  # show audit log
 koi certmesh set-hook --reload "COMMAND"          # set renewal hook
@@ -78,12 +80,15 @@ koi certmesh backup PATH                          # encrypted backup
 koi certmesh restore PATH                         # restore from backup
 koi certmesh revoke HOSTNAME [--reason REASON]    # revoke a member
 koi certmesh destroy                              # destroy all state (requires typing DESTROY)
-koi certmesh acme enable                          # open the ACME (RFC 8555) server + show client recipe
+koi certmesh acme enable                          # print the ACME (RFC 8555) directory URL + client recipe
 koi certmesh acme status                          # ACME server status (directory URL, counts)
 ```
 
-The ACME server (dns-01 only) listens on its own server-auth TLS port `5643`
-(`--acme-port` / `KOI_ACME_PORT`). Disable it with `--no-acme` / `KOI_NO_ACME`.
+The daemon serves ACME automatically once the CA is initialized and unlocked;
+`acme enable` only prints the directory URL and a client bootstrap recipe (it does
+not start a server). The ACME server (dns-01 only) listens on its own server-auth
+TLS port `5643` (`--acme-port` / `KOI_ACME_PORT`). Disable it with `--no-acme` /
+`KOI_NO_ACME`.
 
 ---
 
@@ -117,11 +122,31 @@ koi health log                                    # transition history
 ## Proxy
 
 ```
-koi proxy add NAME --listen PORT --backend URL    # add proxy entry
+koi proxy add NAME --listen PORT --backend URL [--backend-remote]  # add proxy entry
 koi proxy remove NAME                             # remove entry
 koi proxy status                                  # active proxy status
 koi proxy list                                    # list entries
 ```
+
+The backend defaults to loopback; `--backend-remote` is required to forward to a
+non-loopback backend — off by default so a proxy entry cannot be pointed at an
+arbitrary off-host destination.
+
+---
+
+## UDP
+
+```
+koi udp bind [--port PORT] [--addr ADDR] [--lease SECS] [--allow-remote]  # bind a host UDP port
+koi udp unbind ID                                 # close a binding
+koi udp send ID --dest HOST:PORT PAYLOAD          # send a datagram (payload base64-encoded)
+koi udp status                                    # list active bindings
+koi udp heartbeat ID                              # renew a binding's lease
+```
+
+`--addr` defaults to `127.0.0.1` (loopback); `--allow-remote` is required to bind a
+non-loopback address or send to a non-loopback destination — off by default so a
+binding cannot be used as an SSRF / egress relay.
 
 ---
 
@@ -190,9 +215,10 @@ privileges. See the [trust guide](../guides/trust.md).
 
 ```
 koi status                                        # unified capability status
+koi launch                                        # open the dashboard in a web browser
 koi token show                                    # print the daemon access token (tty only)
 koi token write /run/koi/token                    # write the token to a 0600 file for containers
-koi factory-reset                                 # destroy data directory
+koi factory-reset                                 # DESTRUCTIVE: wipe the entire data directory
 koi install                                       # install system service
 koi uninstall                                     # remove system service
 koi version                                       # show version
@@ -204,6 +230,25 @@ refuses to print into a non-tty unless `--force`; `write` creates the file
 owner-only (0600 on Unix, ACL-restricted on Windows). See
 [CONTAINERS.md](../../CONTAINERS.md) and the
 [security model](security-model.md) for `--http-bind` exposure and the token recipe.
+
+> **`koi factory-reset` is destructive and irreversible** — it wipes the entire
+> data directory (CA keys, certs, audit log, DNS entries, and all other state).
+> There is no undo; back up first (`koi certmesh backup`) if you need to keep the
+> mesh.
+
+### Environment-only knobs
+
+Not flags — read directly from the environment:
+
+| Env var              | Default              | Description                                            |
+| -------------------- | -------------------- | ------------------------------------------------------ |
+| `KOI_DATA_DIR`       | platform data dir    | Override the machine-scoped data directory             |
+| `KOI_VERSION`        | latest               | Pin a release tag for the install script (e.g. `v0.4.2`) |
+| `KOI_INSTALL_DIR`    | platform bin dir     | Install location for the install script                |
+| `KOI_NO_MODIFY_PATH` | unset                | Any non-empty value: `install.sh` skips PATH guidance (on `install.ps1` use `-NoModifyPath`) |
+
+`KOI_VERSION` / `KOI_INSTALL_DIR` / `KOI_NO_MODIFY_PATH` are consumed by the
+install scripts (`install.sh` / `install.ps1`), not by the `koi` binary itself.
 
 ---
 

@@ -21,6 +21,19 @@ pub struct CapabilityReport {
 }
 
 impl CapabilityReport {
+    /// Project this report into the dashboard/embedded capability card shape:
+    /// `{name, enabled, healthy, summary}`. The single source both the daemon's
+    /// dashboard snapshot and the embedded snapshot serialize, so the four-field card
+    /// cannot drift between the two presentations.
+    pub fn into_card(self) -> serde_json::Value {
+        serde_json::json!({
+            "name": self.status.name,
+            "enabled": self.enabled,
+            "healthy": self.status.healthy,
+            "summary": self.status.summary,
+        })
+    }
+
     fn present(status: CapabilityStatus) -> Self {
         Self {
             status,

@@ -22,14 +22,19 @@ pub struct KoiConfig {
     /// Translate runtime (container) lifecycle events into mDNS/DNS/health/proxy entries.
     /// Opt-in (default false): a leaf embedded host usually only wants the event stream.
     pub orchestrator_enabled: bool,
-    /// Run the certmesh role-driven background loops (renewal / roster sync / heartbeat /
-    /// failover). Opt-in (default false): only a clustered embedded CA host needs them.
+    /// Run the certmesh role-driven background loop (trust-bundle pull — policy refresh +
+    /// revocation detection — plus cert renewal). Opt-in (default false): only a clustered
+    /// embedded CA host needs it.
     pub certmesh_background_enabled: bool,
     pub http_port: u16,
     pub dashboard_enabled: bool,
     pub api_docs_enabled: bool,
     pub mdns_browser_enabled: bool,
     pub announce_http: bool,
+    /// Optional Daemon Access Token for the embedded HTTP adapter. `Some` requires the
+    /// `x-koi-token` header on every mutation (parity with the daemon); `None` leaves
+    /// mutations unauthenticated — safe only behind the loopback bind that is the default.
+    pub http_token: Option<String>,
     pub dns_config: DnsConfig,
     pub dns_auto_start: bool,
     pub health_auto_start: bool,
@@ -48,7 +53,9 @@ impl KoiConfig {
         if self.mdns_enabled {
             ports.extend(koi_mdns::firewall_ports());
         }
-        if self.http_enabled {
+        // Skip an ephemeral port (http_port == 0): the OS assigns it at bind time,
+        // so there is no fixed port to pre-open a firewall rule for.
+        if self.http_enabled && self.http_port != 0 {
             ports.push(FirewallPort::new(
                 "HTTP",
                 FirewallProtocol::Tcp,
@@ -97,6 +104,7 @@ impl Default for KoiConfig {
             api_docs_enabled: false,
             mdns_browser_enabled: false,
             announce_http: false,
+            http_token: None,
             dns_config: DnsConfig::default(),
             dns_auto_start: false,
             health_auto_start: false,
