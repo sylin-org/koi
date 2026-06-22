@@ -9,13 +9,13 @@
 # the default per-user install location.
 #
 # Knobs (environment variables):
-#   KOI_VERSION        pin a release tag, e.g. v0.4.2   (default: latest)
+#   KOI_VERSION        pin a release tag, e.g. v0.5.0   (default: latest)
 #   KOI_INSTALL_DIR    install location                 (default: /usr/local/bin
 #                                                         as root, else ~/.local/bin)
 #   KOI_NO_MODIFY_PATH any non-empty value: don't print PATH guidance
 #
 # Example, pinning a version to a custom dir:
-#   curl -fsSL .../install.sh | KOI_INSTALL_DIR=$HOME/bin KOI_VERSION=v0.4.2 sh
+#   curl -fsSL .../install.sh | KOI_INSTALL_DIR=$HOME/bin KOI_VERSION=v0.5.0 sh
 
 set -eu
 

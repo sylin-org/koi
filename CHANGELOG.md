@@ -5,38 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-06-22
+
+A consolidation-and-hardening release: a unified serving layer, security hardening (with a
+few deliberate behavior changes), one-line install + a signed multi-arch container image,
+and a documentation overhaul. Pre-1.0, so a minor bump — but it carries behavior changes
+(see **Changed** / **Security**); review the [upgrade guide](docs/guides/upgrading.md)
+before upgrading a non-loopback or scripted deployment.
 
 ### Added
-- **One-line install scripts** — `install.sh` (Linux/macOS) and `install.ps1`
-  (Windows) detect your OS/arch, download the matching release archive, verify
-  its SHA-256, and install `koi` onto your `PATH`. No root for the default
-  per-user location; `KOI_VERSION` / `KOI_INSTALL_DIR` override the tag and path.
-- **Published container image** — `ghcr.io/sylin-org/koi`, multi-arch
-  (linux/amd64 + linux/arm64), assembled on each release from the exact musl
-  binaries. `docker run -d ghcr.io/sylin-org/koi:latest` (daemon via default CMD).
-- **Signed build provenance** — every release archive and the container image carry
-  a GitHub Artifact Attestation (Sigstore, keyless). Verify a build was produced by
-  this repo's workflow with one line:
+- **One-line install scripts** — `install.sh` (Linux/macOS) and `install.ps1` (Windows)
+  detect your OS/arch, download the matching release archive, verify its SHA-256, and
+  install `koi` onto your `PATH`. No root for the default per-user location;
+  `KOI_VERSION` / `KOI_INSTALL_DIR` override the tag and path.
+- **Published container image** — `ghcr.io/sylin-org/koi`, multi-arch (linux/amd64 +
+  linux/arm64), assembled on each release from the exact musl binaries.
+  `docker run -d ghcr.io/sylin-org/koi:latest`.
+- **Signed build provenance** — every release archive and the container image carry a
+  GitHub Artifact Attestation (Sigstore, keyless); the image also ships an SBOM. Verify:
   `gh attestation verify <file|oci://…> --repo sylin-org/koi`.
-- **`--dns-qps` / `KOI_DNS_QPS`** — configure the DNS query rate limit (default 200).
+- **`koi-serve` crate** — the serving layer (the one HTTP/OpenAPI router, IPC, MCP HTTP,
+  inter-node mTLS + ACME, Prometheus SD, dashboard wiring, and the posture-reactive trust
+  plane) extracted from the binary; one `koi_serve::serve()` is shared by the daemon, the
+  Windows service, and `koi-embedded`. New crate on crates.io.
+- **`--dns-qps` / `KOI_DNS_QPS`** — configure the DNS query-rate limit (default 200).
+- **Embedded:** `http_port(0)` ephemeral binding read back via `KoiHandle::bound_http_port()`,
+  and the `koi_embedded::testkit` module for in-process integration tests.
+- Lenient boolean parsing for the `--no-*` / `KOI_NO_*` env family (`1`/`true`/`yes`/`on`).
 
 ### Changed
-- **The install scripts finish with a live result, not a blank prompt** — they run
-  `koi status` to confirm the binary works and hand off to `koi mdns discover` /
-  `koi install`, so onboarding lands on something visible.
+- **The install scripts finish with a live result** — they run `koi status` and hand off to
+  `koi mdns discover` / `koi install`, so onboarding lands on something visible.
+- **Embedded HTTP is secure-by-default** — it binds loopback; `announce_http()` now
+  **requires** `http_token(..)` or `start()` fails closed with `KoiError::InsecureConfig`
+  (was a warning). *Breaking for embedders that exposed HTTP without a token.*
+- **Rate-limited DNS queries return `REFUSED`** (was `SERVFAIL`, which invites retries).
+- **`GET /v1/certmesh/log` requires the token on every method** — the CA audit log is no
+  longer a token-free read. *Breaking for scripts that read it unauthenticated.*
 
 ### Security
-- **DNS rate limiting is now per source IP** with a whole-resolver backstop, so a
-  single noisy (or hostile) LAN peer can no longer starve resolution for everyone —
-  the previous single global bucket's failure mode. The tracked-client map is bounded
-  (spoofable UDP sources can't grow it without limit).
-- **Trust/zone reads are gated for remote peers on a non-loopback bind.**
-  `GET /v1/certmesh/diagnose`, `/v1/dns/list`, and `/v1/dns/zone` now require the
-  `x-koi-token` from a non-loopback peer (loopback callers — the CLI, the dashboard —
-  stay token-free). `/v1/certmesh/status` and `/v1/certmesh/trust-bundle` stay open by
-  design: they are load-bearing in the unauthenticated cross-host enrollment / trust-sync
-  protocol (and the trust-bundle is ES256-signed and self-verifying).
+- **DNS rate limiting is now per source IP** — each client gets its own budget
+  (`--dns-qps`) with a whole-resolver backstop and a hard-bounded client map, so one noisy
+  or hostile LAN peer can no longer starve resolution for everyone (the old single global
+  bucket's failure mode; spoofable UDP sources can't grow the map without limit).
+- **Trust/zone reads are peer-gated on a non-loopback bind** — `GET /v1/certmesh/diagnose`
+  and `/v1/dns/{list,zone,entries}` require the `x-koi-token` from a non-loopback peer
+  (loopback callers stay token-free; an unknown peer fails closed). `/v1/certmesh/status`
+  and `/v1/certmesh/trust-bundle` stay open by design — they are load-bearing in the
+  unauthenticated cross-host enrollment / trust-sync protocol (the trust-bundle is
+  ES256-signed and self-verifying). *Breaking for remote scripts that read these tokenless.*
+- **The whole `/v1/udp/*` surface is token-gated on every method** — `GET /v1/udp/status`
+  and `/v1/udp/recv/{id}` expose other token-holders' bindings and datagrams.
+- **UDP binds loopback by default** — a non-loopback bind or destination now requires
+  `--allow-remote` (an SSRF / egress-relay guard). *Breaking for `koi udp bind` to `0.0.0.0`.*
+- Certmesh `/promote` + `/set-hook` reject revoked members; the mDNS→DNS alias bridge drops
+  non-private IPs; CORS is restricted to exact loopback origins; the data directory is created
+  `0700` (Unix) / ACL-restricted (Windows); CA-vault secrets are written owner-only; ACME
+  refuses new accounts while enrollment is closed.
+
+### Fixed
+- The Windows-service uptime clock now starts before core build (it had been undercounting by
+  the CA auto-unlock time).
+
+### Internal
+- `impl CertmeshCore` split into eight cohesive submodules; dropped unused dependencies; shed
+  the production-dead pipeline streaming-status machinery; de-flaked the embedded-UDP and proxy
+  data-plane tests under parallel load.
+
+### Documentation
+- A full capability-coverage audit drove a three-wave doc pass: a reference truth-pass (auth
+  model, cert policy, DNS rate limit, embedded API), **11 new capability cards** + a cards
+  index, an [overview / "is it for you?"](docs/overview.md), and a
+  [ports & firewall reference](docs/reference/ports.md).
 
 ## [0.4.2] - 2026-06-21
 

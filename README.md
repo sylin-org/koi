@@ -250,8 +250,8 @@ build-provenance attestation. A trust tool should let you verify its own supply
 chain in one line:
 
 ```bash
-gh attestation verify koi-v0.4.2-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
-gh attestation verify oci://ghcr.io/sylin-org/koi:0.4.2 --repo sylin-org/koi
+gh attestation verify koi-v0.5.0-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
+gh attestation verify oci://ghcr.io/sylin-org/koi:0.5.0 --repo sylin-org/koi
 ```
 
 ## Project status
@@ -260,13 +260,15 @@ Koi is **pre-1.0, feasibility-validated, and consolidating**. The architecture a
 the end-to-end pipeline are real; a thorough June 2026 assessment
 ([docs/assessment/](docs/assessment/README.md)) mapped what's solid, what's broken,
 and what's being cut in the name of *less but more meaningful parts*. The latest
-release, **v0.4.2**, lands the mode-transparent trust plane, the MCP server, the ACME
-server, Prometheus/DNS-zone export, and a roughly-halved, consolidated certificate mesh
+release, **v0.5.0**, adds one-line install, a signed multi-arch container image, a
+unified serving layer (`koi-serve`), and security hardening (peer-gated reads,
+per-client DNS rate limiting, secure-by-default embedding); v0.4.2 before it landed the
+mode-transparent trust plane, the MCP server, and the ACME server
 ([CHANGELOG](CHANGELOG.md)). The work plan is public
-([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until 1.0 (0.4.2
-itself carries some, despite the patch version); don't run it as load-bearing
-infrastructure yet — do play with it, and file issues when reality disagrees with the
-docs.
+([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until 1.0 (0.5.0
+carries some — see the CHANGELOG and the [upgrade guide](docs/guides/upgrading.md));
+don't run it as load-bearing infrastructure yet — do play with it, and file issues when
+reality disagrees with the docs.
 
 ## Documentation
 
