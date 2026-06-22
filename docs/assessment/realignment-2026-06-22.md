@@ -14,7 +14,7 @@
 
 (D3, originally flagged as docs-staleness, was **re-verified DONE on 2026-06-22**: every live mutation example carries `x-koi-token`; only archived/historical docs still quote the old tokenless examples.)
 
-All five *original* critical defects (D1, D2, D4, D5, D6) are closed. The five structural moves are landed or substantially landed (M2 PARTIAL). The shed list is mostly executed, with two maintainer-decision items still open.
+All five *original* critical defects (D1, D2, D4, D5, D6) are closed. All five structural moves are landed (M2 — the certmesh decomposition — completed in the engineering sprint). The shed list is mostly executed, with two maintainer-decision items still open.
 
 ---
 
@@ -48,7 +48,7 @@ The dominant structural change since 2026-06-11 is the **`koi-serve` extraction*
 | Move | Status | Evidence |
 |------|--------|----------|
 | **M1 — one orchestrator** | DONE | Shared `koi_compose::cores::build_cores`; daemon + Windows service serve through the single `koi_serve::serve` path; parity tests. |
-| **M2 — certmesh diet** | **PARTIAL (advanced)** | CA-creation extraction, `HOOK_FORBIDDEN` hardening, and `init_ceremony` as its own module shipped earlier. The engineering sprint then extracted the ~1.3k-line unit-test block to `crates/koi-certmesh/src/core_tests.rs` (a crate-root child module, so it keeps access to the private items it exercises), cutting `lib.rs` from **4043 → 2717 lines** — and fixed a latent test-isolation bug it surfaced (`capability_status_locked` now creates its own CA on disk in an isolated dir instead of depending on shared-dir scheduling order). **Remaining:** the ~2000-line `impl CertmeshCore` block (and the interleaved free-helper functions) are not yet split — deferred to a dedicated pass with the two-box gate, since restructuring the trust core warrants its own focused, reviewed change rather than rushed churn. |
+| **M2 — certmesh diet** | **DONE** | CA-creation extraction, `HOOK_FORBIDDEN` hardening, and `init_ceremony` as its own module shipped earlier. The engineering sprint then (a) extracted the ~1.3k-line unit-test block to `crates/koi-certmesh/src/core_tests.rs` (cutting `lib.rs` 4043 → 2717) + fixed a latent test-isolation bug it surfaced (`capability_status_locked` now makes its own CA on disk in an isolated dir), and (b) split the ~2000-line `impl CertmeshCore` into **8 cohesive submodules** (`core_{setup,lifecycle,enroll,identity,auth,member,admin,renewal}.rs`, each `use super::*; impl CertmeshCore {…}`), cutting `lib.rs` **2717 → 736 lines** (now the facade: types, `CertmeshState`, free helpers, `impl Capability`, module decls). Verified a **pure move** by an adversarial relocation-fidelity review (60-method 1:1 census, token-identical multiset, all visibilities/attributes preserved); 296 certmesh tests unchanged, fmt + workspace clippy clean, two-box hardware gate 19/0. |
 | **M3 — manifest truth** | DONE | clap is the single source; conformance test validates the vectors. |
 | **M4 — koi-common kernel** | DONE | Kernel carries only axum/utoipa/chrono/tokio — no presentation stack. |
 | **M5 — DomainRuntime template** | DONE | `DomainRuntime<C>` in `runtime_state.rs`; DNS and Health wrap it. |
@@ -101,7 +101,7 @@ The dominant structural change since 2026-06-11 is the **`koi-serve` extraction*
 2. ~~**D3 — docs staleness on auth.**~~ **RESOLVED on re-verify (2026-06-22)** — every live mutation example already carries `x-koi-token`; the only tokenless POSTs left are in `docs/archive/` (historical, covered by S-archive). No action.
 3. **Stage 3 hardening completion.** Finish the security audit pass behind the new test scaffolding (~50-60% done).
 4. **Stage 4 packaging.** Complete distribution/packaging beyond MCP + crates.io publish (installers, release artifacts).
-5. **M2 — certmesh core decomposition (remaining).** The sprint extracted the unit-test block to `core_tests.rs` (`lib.rs` 4043 → 2717). What's left: split the ~2000-line `impl CertmeshCore` block (and the interleaved free helpers) into the planned cohesive submodules — a dedicated, two-box-gated pass.
+5. **M2 — certmesh core decomposition. DONE.** The unit-test block moved to `core_tests.rs` and the ~2000-line `impl CertmeshCore` was split into 8 cohesive submodules (`lib.rs` 4043 → 736 across both moves), verified as a pure relocation by an adversarial review + the two-box gate.
 6. **T-health — concurrent checks.** Run health checks concurrently rather than sequentially per loop.
 7. **S-archive.** Move `docs/archive/` out of the repo and fix reference drift.
 8. **S-deadcode.** Remove the remaining 5 `#[allow(dead_code)]` sites or justify each in-line.
