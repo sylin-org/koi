@@ -121,7 +121,7 @@ crossterm = "0.28"
 indicatif = "0.18"
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
-hkdf = "0.12"
+hkdf = "0.13"
 
 # OpenAPI
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }
