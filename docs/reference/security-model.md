@@ -42,15 +42,34 @@ Every daemon start generates a fresh random token. **All HTTP requests except
 the **bare token** — the breadcrumb file stores it with a `dat:` line prefix, but that
 prefix is not part of the header value.
 
-Two carve-outs to that rule:
+Carve-outs to that rule:
 
 - **`/v1/mcp`** (the in-process MCP transport) requires the token on *every* method —
   including its `GET` server→client SSE stream, which is a live channel, not a read.
+- **`/v1/certmesh/log`** (the CA audit log) requires the token on *every* method. The
+  log narrates the full trust history — member joins/revocations, auth rotations, failed
+  unlock attempts, backup/restore — so reading it is not read-safe.
+- **The whole `/v1/udp/*` surface** requires the token on *every* method. `GET
+  /v1/udp/status` enumerates every binding's id and `GET /v1/udp/recv/{id}` streams a
+  binding's inbound datagrams — both expose other token-holders' bindings.
+- **`/v1/certmesh/diagnose` and `/v1/dns/{list,zone,entries}`** are token-free for a
+  **loopback** peer (local tooling, the CLI, the dashboard) but require the token from a
+  **non-loopback** peer — the trust-doctor report and the full DNS zone are fine to read
+  locally but not safe to leave world-readable once the adapter is bound to a routable
+  address. When the peer address is unknown, these fail closed (token required).
+- **`/v1/certmesh/status` and `/v1/certmesh/trust-bundle` stay open on every peer** — by
+  design. They are load-bearing in the *unauthenticated* cross-host protocol: a joining
+  node reads `status.ca_fingerprint` to pin the CA before it holds any credential, and
+  members pull the trust-bundle (an ES256-signed, self-verifying document) over plain
+  HTTP. Gating either would break enrollment and sync.
 - **`POST /v1/certmesh/join`** does *not* require the token. A node enrolling against a
   remote CA has no way to know that host's local token, so enrollment is authorized by
   the TOTP code in the request body instead — the join handler verifies it along with
   the open/closed enrollment policy and rate limiting. This is the one mutation the DAT
   layer deliberately lets through.
+
+`OPTIONS` is always let through (a CORS preflight carries no credentials and returns
+only CORS headers, never a resource body).
 
 The token is distributed via the **breadcrumb file**, written at daemon startup
 (owner-only permissions on Unix):
@@ -111,15 +130,39 @@ origins (any port). The API is **not** open to arbitrary web origins.
 
 Be aware of the trade-offs in the current model:
 
-- **`GET` endpoints are unauthenticated on loopback.** Any local process (or any
-  localhost-origin web page, via CORS) can read daemon status, discovered services,
-  DNS entries, certmesh status, the roster, and the audit log. Treat local processes
-  as trusted readers; if that doesn't fit your machine, don't run the daemon there.
+- **Most `GET` endpoints are unauthenticated on loopback.** Any local process (or any
+  localhost-origin web page, via CORS) can read daemon status, discovered services, and
+  certmesh status. Treat local processes as trusted readers; if that doesn't fit your
+  machine, don't run the daemon there. The audit log (`/v1/certmesh/log`) and the
+  `/v1/udp/*` surface are the exception — they require the token even on loopback (see
+  the carve-outs above), and the DNS zone / diagnose reads require it from a remote peer.
 - **The token authorizes writes, not identities.** There is one token per daemon —
   no per-client accounts or scopes.
 - **Certificate revocation is roster-level.** Revoking a member stops Koi-mediated
   renewal and enrollment; it does not invalidate the already-issued certificate for
-  TLS verifiers until its (30-day) expiry. There is no CRL/OCSP distribution.
+  TLS verifiers until its (90-day) expiry. There is no CRL/OCSP distribution.
+
+## DNS rate limiting
+
+The resolver rate-limits queries **per source IP**: each client gets its own
+per-second budget (`--dns-qps`, env `KOI_DNS_QPS`, default 200), so one noisy or hostile
+LAN peer can't starve resolution for everyone else. A whole-resolver backstop
+(`10 ×` the per-client budget) caps aggregate load — the only meaningful guard against
+spoofed-source floods — and the tracked-client map is hard-bounded so a burst of distinct
+source IPs can't grow it without limit. Shed queries return `REFUSED` (not `SERVFAIL`,
+which would invite immediate retries and amplify a flood).
+
+## Supply chain
+
+Every release archive **and** the GHCR image (`ghcr.io/sylin-org/koi`) carry a signed
+build-provenance attestation (GitHub Artifact Attestations / Sigstore, keyless) proving
+the artifact was built by this repository's release workflow. The container image also
+ships an SBOM. Verify before trusting:
+
+```bash
+gh attestation verify koi-<target>.tar.gz --repo sylin-org/koi
+gh attestation verify oci://ghcr.io/sylin-org/koi:<version> --repo sylin-org/koi
+```
 
 ## Threat-model summary
 

@@ -25,6 +25,35 @@ This guide starts with the simplest setup and builds toward production patterns.
 
 ---
 
+## Run Koi as a container
+
+The simplest way to run Koi on a Linux node is the published image:
+
+```bash
+docker run -d --name koi -p 5641:5641 ghcr.io/sylin-org/koi:latest
+```
+
+The image is multi-arch (`linux/amd64` + `linux/arm64`), built from the static
+musl release binary — the exact artifact you'd download by hand, nothing is
+compiled in Docker. It bakes in `KOI_NO_CREDENTIAL_STORE=1` (no OS keychain inside
+a container; the CA is sealed with the machine-bound vault) and
+`KOI_HTTP_BIND=0.0.0.0` so the bridge network can reach the daemon. It `EXPOSE`s
+`5641` (HTTP API) and `5642` (inter-node mTLS), and carries a `/healthz`
+`HEALTHCHECK`. Tags are published as `version`, `major.minor`, and `latest`.
+
+Binding `0.0.0.0` does **not** relax auth — every non-GET request still needs the
+`x-koi-token` header (see [Distributing the token](#distributing-the-token)).
+
+The ACME TLS listener (`5643`) binds only once the CA is initialized and DNS is
+active, so it isn't exposed by default; add `-p 5643:5643` if you use it. Override
+the daemon arguments to trim capabilities:
+
+```bash
+docker run -d --name koi -p 5641:5641 ghcr.io/sylin-org/koi:latest --daemon --no-proxy --no-udp
+```
+
+---
+
 ## The basic setup
 
 You need two things: Koi running on the host, and containers that can reach it.
@@ -850,7 +879,7 @@ spec:
       hostNetwork: true
       containers:
         - name: koi
-          image: your-registry/koi:latest
+          image: ghcr.io/sylin-org/koi:latest
           args: ["--daemon"]
           ports:
             - containerPort: 5641

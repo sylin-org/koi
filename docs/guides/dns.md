@@ -94,7 +94,7 @@ x-koi-token: <daemon access token>
 {"name": "grafana", "ip": "10.0.0.42"}
 ```
 
-Mutating endpoints (`POST`/`DELETE` — `add`, `remove`, `serve`, `stop`) require the daemon access token in the `x-koi-token` header — see the [security model](../reference/security-model.md) for how to read it from the breadcrumb. `GET` reads (status, lookup, list, entries, zone) are unauthenticated.
+Mutating endpoints (`POST`/`DELETE` — `add`, `remove`, `serve`, `stop`) require the daemon access token in the `x-koi-token` header — see the [security model](../reference/security-model.md) for how to read it from the breadcrumb. Most `GET` reads (status, lookup) are unauthenticated, but the zone-exposing reads (`/v1/dns/list`, `/v1/dns/zone`, `/v1/dns/entries`) now require the token when the daemon is bound non-loopback and the caller is a remote host — loopback callers stay token-free.
 
 ---
 
@@ -110,6 +110,8 @@ curl -s "http://<koi-ip>:5641/v1/dns/zone?format=hosts"
 curl -s "http://<koi-ip>:5641/v1/dns/zone?format=dnsmasq"
 ```
 
+When the daemon is bound non-loopback, `/v1/dns/zone` (like `/list` and `/entries`) requires the `x-koi-token` header from a remote host; add `-H "x-koi-token: <daemon access token>"` to the `curl` above. A loopback caller needs no token.
+
 See the [DNS coexistence guide](./dns-coexistence.md) for copy-paste
 conditional-forwarding recipes (one per incumbent) with a `dig` test each.
 
@@ -122,6 +124,7 @@ conditional-forwarding recipes (one per incumbent) with a `dig` test each.
 | `--dns-port`   | `KOI_DNS_PORT`   | `53`    | DNS server port                          |
 | `--dns-zone`   | `KOI_DNS_ZONE`   | `internal` | Local DNS zone suffix                  |
 | `--dns-public` | `KOI_DNS_PUBLIC` | `false` | Allow queries from non-private IP ranges |
+| `--dns-qps`    | `KOI_DNS_QPS`    | `200`   | Max DNS queries per second, per client IP |
 | `--no-dns`     | `KOI_NO_DNS`     | `false` | Disable DNS capability entirely          |
 
 The zone suffix determines what names the resolver claims authority over. The default `.internal` is a good choice for most environments - it's a reserved private-use TLD, so there's no collision risk. But if you prefer `.corp` or `.home`, change it:
@@ -137,6 +140,8 @@ koi --dns-port 15353
 ```
 
 The `--dns-public` flag relaxes the client filter. By default, Koi only answers queries from private address ranges (RFC 1918, link-local). Enabling public mode lets any client query your resolver. This is almost never what you want on an open network - it's there for specific environments where the network topology demands it.
+
+Rate limiting is **per source IP**: each client gets its own `--dns-qps` budget, backed by a whole-resolver backstop, so one noisy LAN peer cannot starve resolution for everyone else. Queries past the budget return `REFUSED`.
 
 ---
 

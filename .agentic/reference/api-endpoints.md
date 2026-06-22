@@ -15,6 +15,18 @@ processes reach it. Expose it to the LAN/containers with `--http-bind bridge` /
 `--http-bind 0.0.0.0` / `--http-bind <ip>` (env `KOI_HTTP_BIND`); mutations always
 require the `x-koi-token` header regardless of bind address.
 
+GET/HEAD are token-exempt (OPTIONS preflight always passes), with carve-outs:
+`/v1/mcp` (live SSE channel), `/v1/certmesh/log` (audit trail), and the whole
+`/v1/udp/*` surface (binding enumeration + datagram streams) require the token on
+**every** method. `/v1/certmesh/diagnose` and `/v1/dns/{list,zone,entries}` are
+peer-gated — token-free for a loopback peer, token-required from a non-loopback
+peer, and fail-closed when the peer address is unknown. `/v1/certmesh/status` and
+`/v1/certmesh/trust-bundle` stay open on every peer: they are load-bearing in the
+unauthenticated cross-host protocol (a joining node reads `ca_fingerprint` from
+status before it holds a credential; members pull the ES256-signed, self-verifying
+trust-bundle over plain HTTP). `/v1/certmesh/join` is the one DAT-exempt mutation
+(TOTP bootstrap).
+
 ### System
 
 | Method | Endpoint | Purpose |

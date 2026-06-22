@@ -13,9 +13,17 @@ Replace `<koi-ip>` with the host running Koi.
 You can also pull a snapshot of the zone for resolvers that prefer a static file:
 
 ```sh
-curl -s "http://<koi-ip>:5641/v1/dns/zone?format=hosts"    # <ip> <name> lines
-curl -s "http://<koi-ip>:5641/v1/dns/zone?format=dnsmasq"  # address=/<name>/<ip> lines
+TOKEN=$(koi token show)   # run on the Koi host; or `koi token write <path>` for a 0600 file
+curl -s -H "x-koi-token: $TOKEN" "http://<koi-ip>:5641/v1/dns/zone?format=hosts"    # <ip> <name> lines
+curl -s -H "x-koi-token: $TOKEN" "http://<koi-ip>:5641/v1/dns/zone?format=dnsmasq"  # address=/<name>/<ip> lines
 ```
+
+> **Auth note.** `/v1/dns/zone` (and `/v1/dns/list`, `/v1/dns/entries`) is
+> token-gated for **non-loopback** callers — so a `curl` run *from another host*
+> (the resolver box) must pass `-H "x-koi-token: $TOKEN"` or it gets a `401`.
+> Read the token with `koi token show` on the Koi host (`koi token write <path>`
+> writes a 0600 file for containers/scripts). A `curl` run **on the Koi host
+> itself** (loopback) needs no token.
 
 Each recipe below ends with a `dig` test you can run from any client of that
 resolver.
@@ -120,4 +128,5 @@ queries to Koi, so Koi's records are always current with zero sync. *Push*
 adapters that write Koi's records *into* another resolver (e.g. the Pi-hole admin
 API, or RFC 2136 dynamic DNS updates) are an explicit follow-up and not yet
 provided. For static imports today, poll `GET /v1/dns/zone?format=hosts` (or
-`dnsmasq`) on a timer and feed the file to your resolver.
+`dnsmasq`) on a timer and feed the file to your resolver — pass
+`-H "x-koi-token: $TOKEN"` when polling from a remote host (see the auth note above).
