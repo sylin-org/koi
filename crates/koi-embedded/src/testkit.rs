@@ -122,14 +122,14 @@ mod tests {
     async fn open_node_is_open_and_secured_node_is_authenticated() {
         let open = open().await;
         assert!(
-            !open.certmesh().unwrap().posture().unwrap().signed,
+            !open.certmesh().unwrap().posture().await.unwrap().signed,
             "open() must yield an Open node"
         );
         open.shutdown().await;
 
         let secured = secured().await;
         assert!(
-            secured.certmesh().unwrap().posture().unwrap().signed,
+            secured.certmesh().unwrap().posture().await.unwrap().signed,
             "secured() must yield an Authenticated node"
         );
         secured.shutdown().await;

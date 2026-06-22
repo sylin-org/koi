@@ -135,24 +135,42 @@ impl CertmeshCore {
         let identity = self.local_identity().await;
         select_client(peer, identity.as_ref(), host, port)
     }
+
+    /// Resolve the **posture-keyed TLS config** for a peer, for consumers that
+    /// drive their own HTTP/transport stack (wishlist 3.1).
+    ///
+    /// Returns:
+    /// - `Ok(None)` — the peer is **Open**: dial it in plain HTTP, no TLS.
+    /// - `Ok(Some(config))` — the peer is **secure**: a `rustls::ClientConfig`
+    ///   presenting this node's leaf and pinning the mesh CA, ready to hand to
+    ///   reqwest (`use_preconfigured_tls`), hyper, or a tower service.
+    ///
+    /// This is the lower-level dual of [`client_for`](Self::client_for): koi owns
+    /// the *transport policy* (which leaf, which pin, plain-vs-mTLS by posture); the
+    /// consumer owns the *request shape* (verbs, headers, streaming, large bodies)
+    /// — so zen can route REST + SSE + large transfers through one mode-transparent
+    /// client without koi re-implementing an HTTP client. Same loud errors as
+    /// `client_for` (missing identity, different mesh).
+    pub async fn tls_client_config_for(
+        &self,
+        peer: &Peer,
+    ) -> Result<Option<rustls::ClientConfig>, CertmeshError> {
+        let identity = self.local_identity().await;
+        resolve_tls_config(peer, identity.as_ref())
+    }
 }
 
-/// Resolve the transport for a peer given our (optional) local identity. Pure —
-/// no I/O, no `self` — so the policy is unit-testable without a live CA. Building
-/// the rustls client config is the only non-trivial step (validates our PEMs).
-fn select_client(
+/// Resolve the posture-keyed TLS config for a peer given our (optional) local
+/// identity. Pure — no I/O, no `self` — so the policy is unit-testable without a
+/// live CA. `None` = Open peer (plain HTTP); `Some` = secure peer (mTLS config).
+/// Building the rustls config validates our PEMs.
+fn resolve_tls_config(
     peer: &Peer,
     identity: Option<&Identity>,
-    host: String,
-    port: u16,
-) -> Result<PeerClient, CertmeshError> {
-    // Open peer → plain HTTP. No identity required on either side.
+) -> Result<Option<rustls::ClientConfig>, CertmeshError> {
+    // Open peer → no TLS. No identity required on either side.
     if !peer.posture.signed {
-        return Ok(PeerClient {
-            host,
-            port,
-            transport: Transport::Plain,
-        });
+        return Ok(None);
     }
 
     // Secure peer → we must present a client certificate, so we need an identity.
@@ -178,10 +196,26 @@ fn select_client(
     }
 
     let config = mtls::build_client_config(&id.cert_pem, &id.key_pem, &id.ca_cert_pem)?;
+    Ok(Some(config))
+}
+
+/// Resolve the transport for a peer given our (optional) local identity. Pure —
+/// no I/O, no `self` — so the policy is unit-testable without a live CA. Shares
+/// [`resolve_tls_config`] with the public `tls_client_config_for`.
+fn select_client(
+    peer: &Peer,
+    identity: Option<&Identity>,
+    host: String,
+    port: u16,
+) -> Result<PeerClient, CertmeshError> {
+    let transport = match resolve_tls_config(peer, identity)? {
+        None => Transport::Plain,
+        Some(config) => Transport::Mtls(Arc::new(config)),
+    };
     Ok(PeerClient {
         host,
         port,
-        transport: Transport::Mtls(Arc::new(config)),
+        transport,
     })
 }
 
@@ -319,6 +353,46 @@ mod tests {
         let peer = peer_with(Posture::new(true, false), Some(&id.ca_fp));
         let client = select_client(&peer, Some(&id.identity), "127.0.0.1".into(), 8443).unwrap();
         assert!(client.is_secure(), "same-mesh secure peer → mTLS");
+    }
+
+    // ── tls_client_config_for (wishlist 3.1) ─────────────────────────────
+
+    #[test]
+    fn tls_config_is_none_for_open_peer() {
+        let peer = peer_with(Posture::OPEN, None);
+        // Open peer → no TLS, even with an identity in hand.
+        let id = test_identity();
+        let config = resolve_tls_config(&peer, Some(&id.identity)).unwrap();
+        assert!(
+            config.is_none(),
+            "an Open peer is dialed in plaintext (no config)"
+        );
+    }
+
+    #[test]
+    fn tls_config_is_some_for_same_mesh_secure_peer() {
+        let id = test_identity();
+        let peer = peer_with(Posture::new(true, false), Some(&id.ca_fp));
+        let config = resolve_tls_config(&peer, Some(&id.identity)).unwrap();
+        assert!(
+            config.is_some(),
+            "same-mesh secure peer → a usable mTLS config"
+        );
+    }
+
+    #[test]
+    fn tls_config_errors_for_secure_peer_without_identity() {
+        let peer = peer_with(Posture::new(true, false), Some("SOMEFP"));
+        let err = resolve_tls_config(&peer, None).unwrap_err();
+        assert!(err.to_string().contains("requires authentication"));
+    }
+
+    #[test]
+    fn tls_config_errors_for_different_mesh() {
+        let id = test_identity();
+        let peer = peer_with(Posture::new(true, false), Some("DIFFERENT-MESH-FP"));
+        let err = resolve_tls_config(&peer, Some(&id.identity)).unwrap_err();
+        assert!(err.to_string().contains("different mesh"));
     }
 
     #[test]

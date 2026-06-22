@@ -9,6 +9,12 @@ use koi_runtime::RuntimeBackendKind;
 pub struct KoiConfig {
     pub data_dir: Option<PathBuf>,
     pub service_endpoint: String,
+    /// Daemon Access Token for a remote (client) handle's authenticated calls.
+    /// `None` → the remote client adopts the local breadcrumb's token when its
+    /// endpoint matches `service_endpoint`; set this explicitly when targeting a
+    /// remote daemon whose token is not in the local breadcrumb. Without a token,
+    /// DAT-gated reads (e.g. posture) and all mutations fail from a remote handle.
+    pub service_token: Option<String>,
     pub service_mode: ServiceMode,
     pub http_enabled: bool,
     pub mdns_enabled: bool,
@@ -87,6 +93,7 @@ impl Default for KoiConfig {
         Self {
             data_dir: None,
             service_endpoint: "http://127.0.0.1:5641".to_string(),
+            service_token: None,
             service_mode: ServiceMode::Auto,
             http_enabled: false,
             mdns_enabled: true,

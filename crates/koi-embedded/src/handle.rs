@@ -861,13 +861,30 @@ impl CertmeshHandle {
 
     /// This node's current trust posture — the mode oracle (ADR-020 §0).
     ///
-    /// Embedded only: a remote handle has no endpoint to query the daemon's
-    /// posture yet (that arrives with the diagnose/status surface in a later
-    /// ADR-020 phase), so it returns `DisabledCapability`.
-    pub fn posture(&self) -> Result<koi_common::posture::Posture, KoiError> {
+    /// Works in **both** modes (wishlist 1.3): embedded reads the live watch value;
+    /// a remote handle queries the daemon's `GET /v1/certmesh/posture` (DAT-gated, so
+    /// the handle must carry a token — adopted from the local breadcrumb or set via
+    /// `Builder::service_token`). A remote query needs the network, hence `async`.
+    pub async fn posture(&self) -> Result<koi_common::posture::Posture, KoiError> {
         match &self.backend {
             CertmeshBackend::Embedded { core } => Ok(core.posture()),
-            CertmeshBackend::Remote { .. } => Err(KoiError::DisabledCapability("certmesh")),
+            CertmeshBackend::Remote { client } => {
+                let client = Arc::clone(client);
+                let json = tokio::task::spawn_blocking(move || {
+                    client.get_json(koi_certmesh::http::paths::POSTURE)
+                })
+                .await
+                .map_err(map_join_error)??;
+                let signed = json
+                    .get("signed")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let encrypted = json
+                    .get("encrypted")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                Ok(koi_common::posture::Posture::new(signed, encrypted))
+            }
         }
     }
 
@@ -970,6 +987,40 @@ impl CertmeshHandle {
             CertmeshBackend::Embedded { core } => Ok(core.client_for(peer).await?),
             CertmeshBackend::Remote { .. } => Err(KoiError::DisabledCapability("certmesh")),
         }
+    }
+
+    /// Build a posture-keyed [`reqwest::Client`] for a discovered [`Peer`] — the
+    /// full-traffic dual of [`client_for`](Self::client_for) (wishlist 3.1).
+    ///
+    /// Unlike [`PeerClient`](koi_certmesh::PeerClient) (GET + JSON-POST only), the
+    /// returned `reqwest::Client` carries koi's *transport policy* (plain HTTP to an
+    /// Open peer; mTLS presenting this node's leaf + pinning the mesh CA to a secure
+    /// peer) while the consumer drives the full request surface itself — every verb,
+    /// custom headers, SSE/streaming, large bodies. One mode-transparent client for
+    /// *all* inter-node traffic, not just trivial GETs.
+    ///
+    /// An Open peer yields a plain `reqwest::Client` (no TLS); a secure peer yields
+    /// one configured with `use_preconfigured_tls`. Same loud errors as `client_for`
+    /// (missing identity, different mesh). Embedded only.
+    ///
+    /// The raw `rustls::ClientConfig` is available via
+    /// `certmesh().core()?.tls_client_config_for(peer)` for consumers driving hyper
+    /// or a tower service directly.
+    pub async fn reqwest_client_for(&self, peer: &Peer) -> Result<reqwest::Client, KoiError> {
+        let core = match &self.backend {
+            CertmeshBackend::Embedded { core } => core,
+            CertmeshBackend::Remote { .. } => return Err(KoiError::DisabledCapability("certmesh")),
+        };
+        let builder = match core.tls_client_config_for(peer).await? {
+            // Secure peer → hand the posture-keyed rustls config to reqwest. The
+            // workspace pins a single rustls version, so the `Any` downcast matches.
+            Some(config) => reqwest::Client::builder().use_preconfigured_tls(config),
+            // Open peer → plain HTTP, no TLS.
+            None => reqwest::Client::builder(),
+        };
+        builder
+            .build()
+            .map_err(|e| KoiError::Certmesh(koi_certmesh::CertmeshError::Internal(e.to_string())))
     }
 }
 
