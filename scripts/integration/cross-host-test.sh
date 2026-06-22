@@ -156,6 +156,62 @@ ST=$(mssh "curl -s http://localhost:5641/v1/status" 2>/dev/null)
 echo "$ST" | tr ',{}' '\n' | grep -iE 'browse receiving|browse active|mdns_browse' | head -4 | sed 's/^/    /'
 if echo "$ST" | grep -qiE 'browse receiving|browse active'; then ok "koi status surfaces mDNS receive-health"; else bad "status not surfacing receive-health (A)"; fi
 
+echo "== 13. P3: unified HTTP router — rich /v1/status (daemon, seal, mcp_http, mdns_browse_active) =="
+# The koi-serve router unification (P3) must keep the daemon's FULL /v1/status shape — the
+# same fields koi-embedded used to silently drop. Assert daemon=true + the rich fields.
+ST2=$(curl -s "$CA/v1/status" -H "x-koi-token: $TOKEN" 2>/dev/null)
+echo "    ${ST2:0:200}"
+if echo "$ST2" | jq -e '.daemon==true and has("seal") and has("mcp_http") and has("mdns_browse_active") and (.capabilities|type=="array")' >/dev/null 2>&1; then
+  ok "/v1/status carries the full daemon shape (no embedded drift)"
+else
+  bad "/v1/status missing rich fields (router regression)"
+fi
+
+echo "== 14. P3: unified router — /v1/host, /v1/sd/prometheus, /openapi.json, /docs =="
+HOSTJSON=$(curl -s "$CA/v1/host" 2>/dev/null)
+PROM=$(curl -s -o /dev/null -w '%{http_code}' "$CA/v1/sd/prometheus" 2>/dev/null)
+OAPI=$(curl -s "$CA/openapi.json" 2>/dev/null)
+DOCS=$(curl -s -o /dev/null -w '%{http_code}' "$CA/docs" 2>/dev/null)
+H_OK=$(echo "$HOSTJSON" | jq -e 'has("hostname") and has("interfaces")' >/dev/null 2>&1 && echo 1 || echo 0)
+OAPI_OK=$(echo "$OAPI" | jq -e '.paths | has("/v1/certmesh/status")' >/dev/null 2>&1 && echo 1 || echo 0)
+echo "    host_ok=$H_OK prometheus=$PROM openapi_ok=$OAPI_OK docs=$DOCS"
+if [ "$H_OK" = 1 ] && [ "$PROM" = 200 ] && [ "$OAPI_OK" = 1 ] && [ "$DOCS" = 200 ]; then
+  ok "system + OpenAPI endpoints served by the unified router"
+else
+  bad "a unified-router endpoint regressed (host/prometheus/openapi/docs)"
+fi
+
+echo "== 15. P3: DAT auth on the unified router (mutation 401 without token, 2xx with) =="
+# The conditional auth middleware (auth: Some on the daemon) must still gate mutations.
+NOTOK=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CA/v1/mdns/announce" \
+  -H 'content-type: application/json' -d '{"name":"authprobe","type":"_http._tcp","port":9999}' 2>/dev/null)
+WITHTOK=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CA/v1/mdns/announce" -H "x-koi-token: $TOKEN" \
+  -H 'content-type: application/json' -d '{"name":"authprobe2","type":"_http._tcp","port":9999}' 2>/dev/null)
+echo "    no-token=$NOTOK with-token=$WITHTOK"
+if [ "$NOTOK" = 401 ] && [ "${WITHTOK:0:1}" = 2 ]; then
+  ok "DAT auth: mutation rejected without token, accepted with"
+else
+  bad "DAT auth regressed (no-token=$NOTOK with-token=$WITHTOK)"
+fi
+
+echo "== 16. P3: MCP disabled → /v1/mcp 503; /healthz still 200 (router intact under --no-mcp-http) =="
+MCPCODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CA/v1/mcp" -H "x-koi-token: $TOKEN" \
+  -H 'content-type: application/json' -d '{}' 2>/dev/null)
+HZ=$(curl -s -o /dev/null -w '%{http_code}' "$CA/healthz" 2>/dev/null)
+echo "    mcp=$MCPCODE healthz=$HZ"
+if [ "$MCPCODE" = 503 ] && [ "$HZ" = 200 ]; then
+  ok "/v1/mcp disabled→503; /healthz 200"
+else
+  bad "mcp/healthz unexpected (mcp=$MCPCODE healthz=$HZ)"
+fi
+
+echo "== 17. P3: unified router reachable over the real LAN (member → CA :5641/healthz) =="
+# The serve() stack binds + serves the same router on 0.0.0.0; confirm it answers across
+# the network, not just loopback.
+LANHZ=$(mssh "curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://$CA_IP:5641/healthz 2>/dev/null" || echo "000")
+echo "    member->CA /healthz = $LANHZ"
+[ "$LANHZ" = 200 ] && ok "unified router reachable over the LAN" || bad "CA HTTP not reachable over LAN ($LANHZ)"
+
 echo
 echo "==================== RESULT: $PASS passed, $FAIL failed ===================="
 [ "$FAIL" -eq 0 ]

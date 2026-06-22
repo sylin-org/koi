@@ -34,7 +34,7 @@ Koi v0.2 is a multi-crate Cargo workspace. Each domain has its own crate.
 
 ```
 crates/
-├── koi/              # Binary crate - CLI entry, wiring, adapters
+├── koi/              # Binary crate - CLI entry, command dispatch, platform/service (serving in koi-serve)
 ├── koi-common/       # Shared kernel - types, errors, pipeline, id, paths, ceremony
 ├── koi-mdns/         # mDNS domain - core, daemon, registry, protocol, http routes
 ├── koi-config/       # Config & state - breadcrumb discovery
@@ -46,7 +46,8 @@ crates/
 ├── koi-udp/          # UDP datagram bridging - HTTP/SSE tunneling, binding lifecycle
 ├── koi-runtime/      # Container/service runtime adapter - Docker, Podman lifecycle events
 ├── koi-client/       # HTTP client for daemon communication (blocking ureq)
-├── koi-compose/      # Composition root - build_cores, cross-domain bridges, orchestrator, ordered_shutdown, snapshot, announce, status
+├── koi-compose/      # Composition root - build_cores, cross-domain bridges, orchestrator, ordered_shutdown, snapshot, self-announce, status
+├── koi-serve/        # Serving layer - the one HTTP/OpenAPI router + serve(), IPC/stdio NDJSON, MCP HTTP, inter-node mTLS + ACME, Prometheus SD, dashboard wiring, posture-reactive trust plane
 ├── koi-mcp/          # MCP server (stdio) - exposes the LAN substrate to AI agents
 ├── koi-dashboard/    # Presentation - dashboard + mDNS browser (HTML, SSE, event forwarder, lazy meta-browse)
 └── koi-embedded/     # Embed Koi in Rust applications - builder, handles, events
@@ -76,8 +77,9 @@ Each domain crate exposes three faces:
 ### 3. Crate Dependency Graph
 
 ```
-koi (bin) → koi-compose, koi-common, koi-mcp, koi-dashboard, koi-mdns, koi-certmesh, koi-crypto, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, os-truststore (external)
+koi (bin) → koi-serve, koi-compose, koi-common, koi-mcp, koi-dashboard, koi-mdns, koi-certmesh, koi-crypto, koi-config, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-client, os-truststore (external)
 koi-compose   → koi-common, koi-config, koi-crypto, koi-dashboard, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, hickory-proto, tokio
+koi-serve     → koi-compose, koi-common, koi-config, koi-dashboard, koi-mcp, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, axum, utoipa, utoipa-scalar, tokio-rustls, rustls, hyper-util, subtle, tokio  (the serving layer; depends on koi-compose, not the reverse)
 koi-mcp       → koi-common, koi-client, koi-config, rmcp, hickory-proto, if-addrs, tokio  (depends on NO domain crate)
 koi-mdns      → koi-common, mdns-sd, axum, utoipa, tokio
 koi-certmesh  → koi-common, koi-crypto, os-truststore (external), axum, utoipa, tokio
@@ -92,15 +94,18 @@ koi-udp       → koi-common, axum, utoipa, tokio
 koi-runtime   → koi-common, bollard, axum, utoipa, tokio, chrono, async-trait
 koi-client    → koi-common, ureq (blocking)
 koi-dashboard → koi-common, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-runtime, axum, tokio
-koi-embedded  → koi-compose, koi-common, koi-dashboard, koi-crypto, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, koi-client, reqwest, tokio
+koi-embedded  → koi-serve, koi-compose, koi-common, koi-dashboard, koi-crypto, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, koi-config, koi-client, reqwest, tokio
 ```
 
 **Domain** crates depend on `koi-common` but **never** on each other.
-`koi-dashboard` is a **composition/presentation** crate (a peer of the binary's
-adapters, not a domain): it depends on the event-bearing domain crates so it can host a
-single event forwarder + mDNS browse adapter. Nothing depends on it except the two
-top-level consumers (`koi`, `koi-embedded`), so the kernel and domain closures stay
-clean. `koi-common` is a **types-only kernel** — it carries no presentation deps
+`koi-serve` is the **serving layer** — it owns every transport (the one HTTP/OpenAPI router
++ `serve()`, IPC/stdio NDJSON, MCP HTTP, inter-node mTLS + ACME, Prometheus SD, dashboard
+wiring) plus the posture-reactive trust plane; it depends on `koi-compose` (never the
+reverse). `koi-dashboard` is a **composition/presentation** crate (not a domain): it
+depends on the event-bearing domain crates so the single event forwarder + mDNS browse
+adapter exist once. Only the serving/composition layers and the two top-level consumers
+(`koi`, `koi-embedded`) depend on these wiring crates, so the kernel and domain closures
+stay clean. `koi-common` is a **types-only kernel** — it carries no presentation deps
 (`tokio`/`tokio-stream`/`tokio-util`/`async-stream`/`hostname` left with the dashboard in
 P06); the dashboard/browser HTML, SSE, and browse cache live in `koi-dashboard`.
 

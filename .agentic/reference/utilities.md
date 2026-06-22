@@ -49,13 +49,13 @@ const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were remov
 | `META_BROWSE_IDLE`  | 300s  | Stop the lazy LAN-wide meta-browse after this idle |
 | `SUPERVISOR_TICK`   | 30s   | Idle-supervisor check interval                     |
 
-### koi -- Pipe Adapter (`crates/koi/src/adapters/pipe.rs`)
+### koi-serve -- Pipe Adapter (`crates/koi-serve/src/pipe.rs`)
 
 | Constant        | Value | Purpose                  |
 | --------------- | ----- | ------------------------ |
 | `SESSION_GRACE` | 30s   | IPC session grace period |
 
-### koi -- CLI Adapter (`crates/koi/src/adapters/cli.rs`)
+### koi-serve -- Stdio Adapter (`crates/koi-serve/src/stdio.rs`)
 
 | Constant        | Value | Purpose                  |
 | --------------- | ----- | ------------------------ |
@@ -74,7 +74,7 @@ const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were remov
 | ------------------- | ----- | ---------------------------------- |
 | `DEFAULT_HTTP_PORT` | 5641  | Default daemon port ("KOI" keypad) |
 
-### koi -- HTTP Adapter paths (`crates/koi/src/adapters/http.rs` `paths` module)
+### koi-serve -- HTTP Adapter paths (`crates/koi-serve/src/http.rs` `paths` module)
 
 | Constant                 | Value                                | Purpose                                          |
 | ------------------------ | ------------------------------------ | ------------------------------------------------ |
@@ -103,7 +103,7 @@ const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were remov
 
 ## Shared Helpers (Don't Duplicate)
 
-### `adapters::dispatch` (`crates/koi/src/adapters/dispatch.rs`)
+### `koi_serve::dispatch` (`crates/koi-serve/src/dispatch.rs`)
 
 | Function           | Purpose                                                             |
 | ------------------ | ------------------------------------------------------------------- |
@@ -111,7 +111,7 @@ const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were remov
 | `handle_line()`    | Parse NDJSON request, dispatch to MdnsCore, write responses         |
 | `write_response()` | Serialize pipeline response with graceful fallback (no `.unwrap()`) |
 
-Used by both `adapters::pipe` and `adapters::cli` - never duplicate this logic.
+Used by both `koi_serve::pipe` and `koi_serve::stdio` - never duplicate this logic.
 
 ### `commands` (`crates/koi/src/commands/mod.rs`)
 
