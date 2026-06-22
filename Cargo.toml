@@ -106,7 +106,7 @@ libc = "0.2"
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 aes-gcm = "0.10"
 argon2 = "0.5"
-sha2 = "0.10"
+sha2 = "0.11"
 rand = "0.9"
 zeroize = { version = "1", features = ["derive"] }
 subtle = "2"
