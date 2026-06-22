@@ -203,63 +203,9 @@ pub(crate) fn breadcrumb_endpoint(http_bind_ip: Option<std::net::IpAddr>, port: 
     }
 }
 
-/// Advertise the in-process MCP HTTP endpoint on the LAN, gated on the transport.
-///
-/// Publishes EXACTLY ONE `_mcp._tcp` mDNS record per host (the daemon — never one
-/// per service, which would flood the link) advertising the endpoint, plus an
-/// in-zone `_mcp.<host>.<zone>` unicast TXT when DNS serves the zone. Returns the
-/// mDNS registration id (the record is withdrawn by the mDNS goodbye on shutdown).
-/// No-op when the transport is disabled or mDNS is absent. Shared by the foreground
-/// daemon and the Windows service so the two never diverge.
-pub(crate) fn announce_mcp_endpoint(
-    cores: &crate::DaemonCores,
-    http_port: u16,
-    dns_zone: &str,
-    enabled: bool,
-) -> Option<String> {
-    if !enabled {
-        return None;
-    }
-    let hostname = hostname::get()
-        .ok()
-        .and_then(|os| os.into_string().ok())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    // Unicast in-zone descriptor (only meaningful when DNS serves the zone).
-    if let Some(ref dns) = cores.dns {
-        let name = format!("_mcp.{hostname}.{dns_zone}");
-        dns.core()
-            .add_txt(&name, "transport=streamable-http;path=/v1/mcp");
-        tracing::debug!(name = %name, "published in-zone MCP TXT descriptor");
-    }
-
-    // One `_mcp._tcp` record per host. TXT vocabulary matches what koi-mcp's own
-    // `mcp_servers_on_lan` tool reads back (transport=/path=/name=).
-    let mdns = cores.mdns.as_ref()?;
-    let mut txt = std::collections::HashMap::new();
-    txt.insert("transport".to_string(), "streamable-http".to_string());
-    txt.insert("path".to_string(), "/v1/mcp".to_string());
-    txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
-    txt.insert("name".to_string(), format!("Koi MCP ({hostname})"));
-    let payload = koi_mdns::protocol::RegisterPayload {
-        name: format!("Koi MCP ({hostname})"),
-        service_type: "_mcp._tcp".to_string(),
-        port: http_port,
-        ip: None,
-        lease_secs: None,
-        txt,
-    };
-    match mdns.register(payload) {
-        Ok(result) => {
-            tracing::info!(id = %result.id, port = http_port, "MCP endpoint announced via mDNS (_mcp._tcp)");
-            Some(result.id)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to announce MCP endpoint via mDNS");
-            None
-        }
-    }
-}
+// `announce_mcp_endpoint` moved to `koi_compose::announce::mcp_record` and is now owned by the
+// posture-reactive `koi_compose::self_announce` supervisor, which also withdraws it — plus the
+// in-zone DNS TXT — on shutdown (closing the prior leak where its registration id was dropped).
 
 /// Advertise the certmesh CA on the LAN with its fingerprint in TXT (ADR-017 F12).
 ///

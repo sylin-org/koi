@@ -579,26 +579,23 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             }
         }
 
-        // HTTP mDNS announcement (opt-in).
-        // The one shared helper builds the TXT *and* the ADR-020 posture stamp, so the
-        // Windows service no longer omits it (the verified parity defect) — it advertises
-        // its posture/fp/expires identically to the foreground daemon. The service always
-        // serves the dashboard.
-        let http_announce_id = koi_compose::announce::http_record(
+        // Self-announce supervisor: _http._tcp (+ _mcp._tcp), posture-reactive — the SAME
+        // supervisor the foreground daemon spawns. It re-stamps _http._tcp on every
+        // Open↔Authenticated flip (so the service advertises its current posture without a
+        // restart) and withdraws both records on shutdown. Sharing it keeps the parity the
+        // prior one-shot announce already established (TXT + ADR-020 stamp). The service
+        // always serves the dashboard.
+        koi_compose::self_announce::spawn(
             &cores,
-            config.http_port,
-            true,
-            config.announce_http && !config.no_http,
-        )
-        .await;
-
-        // MCP endpoint discovery descriptors (one `_mcp._tcp` per host + in-zone TXT),
-        // gated on the transport; shared with the foreground daemon to avoid drift.
-        let _mcp_announce_id = crate::infra::announce_mcp_endpoint(
-            &cores,
-            config.http_port,
-            &config.dns_zone,
-            !config.no_mcp_http && !config.no_http,
+            koi_compose::self_announce::SelfAnnounceConfig {
+                http_port: config.http_port,
+                dashboard_enabled: true,
+                announce_http: config.announce_http && !config.no_http,
+                announce_mcp: !config.no_mcp_http && !config.no_http,
+                dns_zone: config.dns_zone.clone(),
+            },
+            cancel.clone(),
+            &mut tasks,
         );
 
         // The `_certmesh._tcp` CA discovery record (ADR-017 F12) is published by the
@@ -644,7 +641,6 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             &cancel,
             tasks,
             &cores,
-            http_announce_id,
             SHUTDOWN_TIMEOUT,
             SHUTDOWN_DRAIN,
         )

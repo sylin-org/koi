@@ -24,6 +24,7 @@ mssh(){ sshpass -p stone ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/
 start_ca_daemon() {
   pkill -f 'koi --daemon' 2>/dev/null; sleep 1
   ( cd /home/stone/koi-test && KOI_DATA_DIR="$DATA" KOI_NO_CREDENTIAL_STORE=1 KOI_HTTP_BIND=0.0.0.0 \
+      KOI_ANNOUNCE_HTTP=true \
       nohup "$KOI" --daemon --no-runtime --no-proxy --no-udp --no-mcp-http --no-acme \
       </dev/null >/home/stone/koi-test/daemon.log 2>&1 & )
   # A daemon booting with a CA already on disk must unlock the vault before HTTP
@@ -47,6 +48,9 @@ echo "== 0. (re)start the CA daemon (Open) =="
 start_ca_daemon && ok "CA daemon up" || bad "CA daemon"
 # Breadcrumb line 2 is "dat:<token>"; the x-koi-token header wants the raw token.
 TOKEN="$(sed -n 2p /run/user/1000/koi.endpoint | sed 's/^dat://')"
+# Capture the self-announced _http._tcp record while still Open (KOI_ANNOUNCE_HTTP=1) — step
+# 2b proves the self-announce supervisor re-stamps its posture reactively on CA create.
+HTTP_OBJ_OPEN=$(curl -s "$CA/v1/mdns/admin/ls" -H "x-koi-token: $TOKEN" 2>/dev/null | jq -c '.. | objects | select(.type=="_http._tcp" or .service_type=="_http._tcp")' 2>/dev/null)
 
 echo "== 1. P4: mTLS listener DOWN while Open =="
 ss -tln | grep -q :5642 && bad "5642 up before CA (unexpected)" || ok "5642 down (Open)"
@@ -57,6 +61,25 @@ CREATE=$(curl -s -X POST "$CA/v1/certmesh/create" -H "x-koi-token: $TOKEN" -H 'c
   -d "{\"passphrase\":\"test-pass-2026\",\"entropy_hex\":\"$ENTROPY\",\"operator\":\"ops\",\"enrollment_open\":true,\"requires_approval\":false,\"auto_unlock\":true,\"totp_secret_hex\":null}")
 CA_FP=$(echo "$CREATE" | jq -r '.ca_fingerprint // empty' 2>/dev/null)
 if [ -n "$CA_FP" ]; then ok "CA created (fp ${CA_FP:0:16}...)"; else bad "CA create"; echo "    $CREATE" | head -c 300; echo; fi
+
+echo "== 2b. ADR-020: _http._tcp re-stamped reactively on CA create (no restart) =="
+# The CA daemon booted Open (step 0, KOI_ANNOUNCE_HTTP=1) and created the CA over HTTP (step 2)
+# with no restart; the self-announce supervisor must have re-stamped its own _http._tcp record
+# posture=open -> posture=authenticated on the posture flip (mirrors _certmesh._tcp reactivity).
+# Poll (not a fixed sleep) for the supervisor's re-stamp to land — robust under load.
+HTTP_OBJ_AUTH=""
+for _ in $(seq 1 10); do
+  HTTP_OBJ_AUTH=$(curl -s "$CA/v1/mdns/admin/ls" -H "x-koi-token: $TOKEN" 2>/dev/null | jq -c '.. | objects | select(.type=="_http._tcp" or .service_type=="_http._tcp")' 2>/dev/null)
+  echo "$HTTP_OBJ_AUTH" | grep -qi 'authenticated' && break
+  sleep 1
+done
+echo "    open-obj=${HTTP_OBJ_OPEN:0:140}"
+echo "    auth-obj=${HTTP_OBJ_AUTH:0:140}"
+if echo "$HTTP_OBJ_AUTH" | grep -qi 'authenticated'; then
+  ok "_http._tcp re-stamped to posture=authenticated (reactive self-announce, no restart)"
+else
+  bad "_http._tcp not re-stamped to authenticated"
+fi
 
 echo "== 3. P4: mTLS listener reactive-UP after CA (no restart) =="
 sleep 2

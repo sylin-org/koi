@@ -13,9 +13,14 @@
 //! kernel and the domain crates keep clean dependency closures.
 
 /// Per-host mDNS announce records (`_http._tcp` self-announcement with the ADR-020 trust
-/// stamp) shared by the daemon, the Windows service, and embedded so the stamp is present by
-/// construction on every boot path.
+/// stamp, `_mcp._tcp` transport descriptor) shared by the daemon, the Windows service, and
+/// embedded so the stamp is present by construction on every boot path.
 pub mod announce;
+
+/// The posture-reactive self-announce supervisor: keeps the `_http._tcp` posture stamp current
+/// across Open↔Authenticated flips and owns the `_mcp._tcp` lifecycle. Spawned identically by
+/// all three boot paths (mirrors the trust-plane's `_certmesh._tcp` reactivity).
+pub mod self_announce;
 
 /// The cross-domain integration-trait bridges (moved from the binary's `integrations.rs`).
 pub mod bridges;

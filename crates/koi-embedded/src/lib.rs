@@ -468,10 +468,11 @@ impl KoiEmbedded {
             }));
         }
 
-        // ── HTTP mDNS announcement (opt-in) ──
-        // Built by the one shared helper (with the ADR-020 posture stamp) so embedded,
-        // the daemon, and the Windows service cannot diverge. Embedded advertises the
-        // dashboard hint it actually serves (its config flag, not a hardcoded `true`).
+        // ── Self-announce supervisor: _http._tcp, posture-reactive ──
+        // One supervisor publishes this host's _http._tcp record (with the ADR-020 posture
+        // stamp) and re-stamps it on every Open↔Authenticated flip — the same reactivity the
+        // daemon and the Windows service get, shared via koi-compose. `_mcp._tcp` stays off:
+        // embedded mounts no /v1/mcp transport, so it must not advertise one.
         let announce_cores = koi_compose::cores::Cores {
             mdns: mdns.clone(),
             certmesh: certmesh.clone(),
@@ -482,13 +483,20 @@ impl KoiEmbedded {
             runtime: runtime.clone(),
             mdns_snapshot: mdns_bridge.clone(),
         };
-        let http_announce_id = koi_compose::announce::http_record(
+        koi_compose::self_announce::spawn(
             &announce_cores,
-            self.config.http_port,
-            self.config.dashboard_enabled,
-            self.config.announce_http && self.config.http_enabled && self.config.mdns_enabled,
-        )
-        .await;
+            koi_compose::self_announce::SelfAnnounceConfig {
+                http_port: self.config.http_port,
+                dashboard_enabled: self.config.dashboard_enabled,
+                announce_http: self.config.announce_http
+                    && self.config.http_enabled
+                    && self.config.mdns_enabled,
+                announce_mcp: false,
+                dns_zone: self.config.dns_config.zone.clone(),
+            },
+            cancel.clone(),
+            &mut tasks,
+        );
 
         // ── Domain event → host KoiEvent forwarders ──
         // One shared spawn helper instead of six copies of the streaming select! skeleton.
@@ -607,7 +615,6 @@ impl KoiEmbedded {
             event_tx,
             cancel,
             tasks,
-            http_announce_id,
         ))
     }
 }

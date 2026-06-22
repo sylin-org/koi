@@ -154,24 +154,24 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         }
     }
 
-    // ── HTTP mDNS announcement (opt-in) ──
-    // Built by the one shared helper (with the ADR-020 posture stamp) so the daemon, the
-    // Windows service, and embedded cannot diverge. The daemon always serves the dashboard.
-    let http_announce_id = koi_compose::announce::http_record(
+    // ── Self-announce supervisor: _http._tcp (+ _mcp._tcp), posture-reactive ──
+    // One supervisor publishes this host's _http._tcp record (with the ADR-020 posture stamp)
+    // and the _mcp._tcp transport descriptor, re-stamps _http._tcp on every Open↔Authenticated
+    // flip, and withdraws both on shutdown. Shared by all three boot paths so a node that boots
+    // Open and later runs `certmesh create` updates its advertised posture without a restart —
+    // the same reactivity the trust-plane gives _certmesh._tcp. The daemon always serves the
+    // dashboard.
+    koi_compose::self_announce::spawn(
         &cores,
-        config.http_port,
-        true,
-        config.announce_http && !config.no_http,
-    )
-    .await;
-
-    // ── MCP endpoint discovery descriptors (one `_mcp._tcp` per host + in-zone TXT) ──
-    // Gated on the transport being mounted; withdrawn by the mDNS goodbye on shutdown.
-    let _mcp_announce_id = crate::infra::announce_mcp_endpoint(
-        &cores,
-        config.http_port,
-        &config.dns_zone,
-        !config.no_mcp_http && !config.no_http,
+        koi_compose::self_announce::SelfAnnounceConfig {
+            http_port: config.http_port,
+            dashboard_enabled: true,
+            announce_http: config.announce_http && !config.no_http,
+            announce_mcp: !config.no_mcp_http && !config.no_http,
+            dns_zone: config.dns_zone.clone(),
+        },
+        cancel.clone(),
+        &mut tasks,
     );
 
     // The `_certmesh._tcp` CA discovery record (ADR-017 F12) is published by the
@@ -203,7 +203,6 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         &cancel,
         tasks,
         &cores,
-        http_announce_id,
         crate::SHUTDOWN_TIMEOUT,
         crate::SHUTDOWN_DRAIN,
     )

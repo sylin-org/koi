@@ -500,13 +500,14 @@ pub async fn build_cores(
     Ok(cores)
 }
 
-/// Ordered teardown: cancel → drain in-flight → join tasks → withdraw the HTTP mDNS
-/// announcement → core goodbye (mDNS, DNS, health, proxy, UDP). Bounded by `timeout`.
+/// Ordered teardown: cancel → drain in-flight → join tasks → core goodbye (mDNS, DNS, health,
+/// proxy, UDP). Bounded by `timeout`. The self-announce and trust-plane supervisors (in
+/// `tasks`) own their mDNS records and withdraw them on cancel — during the task-join step
+/// here — so no announce id is threaded through this teardown.
 pub async fn ordered_shutdown(
     cancel: &CancellationToken,
     tasks: Vec<JoinHandle<()>>,
     cores: &Cores,
-    http_announce_id: Option<String>,
     timeout: Duration,
     drain: Duration,
 ) {
@@ -515,13 +516,6 @@ pub async fn ordered_shutdown(
         tokio::time::sleep(drain).await;
         for task in tasks {
             let _ = task.await;
-        }
-        if let Some(ref id) = http_announce_id {
-            if let Some(ref core) = cores.mdns {
-                if let Err(e) = core.unregister(id) {
-                    tracing::warn!(error = %e, "Failed to withdraw HTTP mDNS announcement");
-                }
-            }
         }
         if let Some(ref core) = cores.mdns {
             if let Err(e) = core.shutdown().await {

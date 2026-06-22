@@ -46,7 +46,6 @@ pub struct KoiHandle {
     events: broadcast::Sender<KoiEvent>,
     cancel: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
-    http_announce_id: Option<String>,
 }
 
 impl KoiHandle {
@@ -63,7 +62,6 @@ impl KoiHandle {
         events: broadcast::Sender<KoiEvent>,
         cancel: CancellationToken,
         tasks: Vec<JoinHandle<()>>,
-        http_announce_id: Option<String>,
     ) -> Self {
         Self {
             backend: HandleBackend::Embedded {
@@ -79,7 +77,6 @@ impl KoiHandle {
             events,
             cancel,
             tasks,
-            http_announce_id,
         }
     }
 
@@ -95,7 +92,6 @@ impl KoiHandle {
             events,
             cancel,
             tasks,
-            http_announce_id: None,
         }
     }
 
@@ -304,7 +300,6 @@ impl KoiHandle {
 
     pub async fn shutdown(mut self) -> Result<(), KoiError> {
         let tasks = std::mem::take(&mut self.tasks);
-        let http_announce_id = self.http_announce_id.take();
 
         if let HandleBackend::Embedded {
             mdns,
@@ -333,7 +328,6 @@ impl KoiHandle {
                 &self.cancel,
                 tasks,
                 &cores,
-                http_announce_id,
                 SHUTDOWN_TIMEOUT,
                 SHUTDOWN_DRAIN,
             )
