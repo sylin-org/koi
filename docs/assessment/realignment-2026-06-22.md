@@ -8,9 +8,9 @@
 
 ## 1. Headline
 
-**11 of 12 verified defects are fully resolved.** The lone remaining item is PARTIAL and is *not* a live code bug:
+**All 12 verified defects are resolved.** D7's last sub-item — the unauthenticated `GET /v1/certmesh/log` audit endpoint — was closed in the post-`32f6533` engineering sprint:
 
-- **D7** — dashboard XSS is structurally fixed; one sub-item, the **unauthenticated `GET /v1/certmesh/log` audit endpoint**, is still open by design (GET-exempt).
+- **D7** — dashboard XSS is structurally fixed; the **`GET /v1/certmesh/log` audit endpoint** is now token-authenticated (carved out of the GET exemption, exactly like `/v1/mcp`).
 
 (D3, originally flagged as docs-staleness, was **re-verified DONE on 2026-06-22**: every live mutation example carries `x-koi-token`; only archived/historical docs still quote the old tokenless examples.)
 
@@ -34,7 +34,7 @@ The dominant structural change since 2026-06-11 is the **`koi-serve` extraction*
 | **D4** | Crates.io publish silently broken (no pipefail; crates missing from list) | **DONE** | `.github/workflows/publish.yml:37` `set -euo pipefail`; CRATES array (lines 42-60) now includes `koi-serve` (commit `32f6533`); dynamic crates.io inventory phase + `--verify`. |
 | **D5** | Windows service never spawns the runtime orchestrator / certmesh renewal-roster-failover tasks (drifted wiring) | **DONE** | `platform/windows.rs:436-456` `run_service` calls `koi_compose::cores::build_cores` (same as daemon — spawns all orchestrator/renewal/roster/failover tasks); `485-493` `spawn_enrollment_approval`; `500-522` `koi_serve::serve`. Wiring is now identical to the foreground daemon (refactors `ca9d938`/`3160ec5`/`b22cc90`). |
 | **D6** | mDNS browse facade hands out independent handles but mdns-sd keeps one querier per type (concurrent discovers kill each other; resolve kills subscribers) | **DONE** | `koi-mdns/src/daemon.rs:54-67` `TypeBrowse` refcount + per-type `broadcast::Sender`; `subscribe_type` (288-342) shares one real browse via `Arc<TypeGuard>`; `TypeGuard::drop` (598-634) stops/aborts only on last ref; `resolve()` (349-392) uses a temporary subscription that never kills subscribers; warm-cache replay (324-329) cures cold-resolve. (Cross-checked by the two-box integration suite, 13/0.) |
-| **D7** | Dashboard XSS and unauthenticated CA audit GETs | **PARTIAL** | XSS structurally fixed — `koi-dashboard/tests/xss.rs`. **Still open:** `GET /v1/certmesh/log` is GET-exempt under `dat_auth_middleware` (`koi-serve/src/http.rs:605-609`), so the audit log is readable without a token. |
+| **D7** | Dashboard XSS and unauthenticated CA audit GETs | **DONE** | XSS structurally fixed — `koi-dashboard/tests/xss.rs`. Audit GET closed in the engineering sprint: `dat_auth_middleware` (`koi-serve/src/http.rs`) now carves `GET /v1/certmesh/log` out of the GET exemption (like `/v1/mcp`) so the audit log requires the daemon token; the `koi certmesh log` CLI already sends it. Tests: `audit_log_get_{without,with}_token_*` + `certmesh_sibling_read_get_stays_exempt` (status/diagnose/trust-bundle stay exempt — no secrets). |
 | **D8** | `qa.yml` invokes deleted scripts | **DONE** | `tests/integration.ps1` (modified 2026-06-21) and `tests/concurrency.ps1` (modified 2026-06-12) both exist; QA workflow operational. |
 | **D9** | `surface.rs` manifest drift | **SUPERSEDED** | The `surface.rs` design was removed wholesale. clap is now the single source (see M3); factory-reset shipped as `crates/koi/src/commands/factory_reset.rs`; rotate-auth lives in `cli.rs`. The drifting layer no longer exists. |
 | **D10** | No `--token`/`KOI_TOKEN`; breadcrumb token leak | **DONE** | `cli.rs:149-152` defines `--token` + `KOI_TOKEN`; `commands/mod.rs:63-79` guards against the breadcrumb leak. |
@@ -48,7 +48,7 @@ The dominant structural change since 2026-06-11 is the **`koi-serve` extraction*
 | Move | Status | Evidence |
 |------|--------|----------|
 | **M1 — one orchestrator** | DONE | Shared `koi_compose::cores::build_cores`; daemon + Windows service serve through the single `koi_serve::serve` path; parity tests. |
-| **M2 — certmesh diet** | **PARTIAL** | CA-creation extraction and `HOOK_FORBIDDEN` hardening shipped; `init_ceremony` is its own module. But the certmesh core (`lib.rs` ~2400 lines) was **not** fully decomposed into the smaller modules the plan called for. |
+| **M2 — certmesh diet** | **PARTIAL (advanced)** | CA-creation extraction, `HOOK_FORBIDDEN` hardening, and `init_ceremony` as its own module shipped earlier. The engineering sprint then extracted the ~1.3k-line unit-test block to `crates/koi-certmesh/src/core_tests.rs` (a crate-root child module, so it keeps access to the private items it exercises), cutting `lib.rs` from **4043 → 2717 lines** — and fixed a latent test-isolation bug it surfaced (`capability_status_locked` now creates its own CA on disk in an isolated dir instead of depending on shared-dir scheduling order). **Remaining:** the ~2000-line `impl CertmeshCore` block (and the interleaved free-helper functions) are not yet split — deferred to a dedicated pass with the two-box gate, since restructuring the trust core warrants its own focused, reviewed change rather than rushed churn. |
 | **M3 — manifest truth** | DONE | clap is the single source; conformance test validates the vectors. |
 | **M4 — koi-common kernel** | DONE | Kernel carries only axum/utoipa/chrono/tokio — no presentation stack. |
 | **M5 — DomainRuntime template** | DONE | `DomainRuntime<C>` in `runtime_state.rs`; DNS and Health wrap it. |
@@ -101,7 +101,7 @@ The dominant structural change since 2026-06-11 is the **`koi-serve` extraction*
 2. ~~**D3 — docs staleness on auth.**~~ **RESOLVED on re-verify (2026-06-22)** — every live mutation example already carries `x-koi-token`; the only tokenless POSTs left are in `docs/archive/` (historical, covered by S-archive). No action.
 3. **Stage 3 hardening completion.** Finish the security audit pass behind the new test scaffolding (~50-60% done).
 4. **Stage 4 packaging.** Complete distribution/packaging beyond MCP + crates.io publish (installers, release artifacts).
-5. **M2 — certmesh core decomposition.** Split the remaining ~2400-line `koi-certmesh/src/lib.rs` into the planned smaller modules (CA-creation and init_ceremony already extracted).
+5. **M2 — certmesh core decomposition (remaining).** The sprint extracted the unit-test block to `core_tests.rs` (`lib.rs` 4043 → 2717). What's left: split the ~2000-line `impl CertmeshCore` block (and the interleaved free helpers) into the planned cohesive submodules — a dedicated, two-box-gated pass.
 6. **T-health — concurrent checks.** Run health checks concurrently rather than sequentially per loop.
 7. **S-archive.** Move `docs/archive/` out of the repo and fix reference drift.
 8. **S-deadcode.** Remove the remaining 5 `#[allow(dead_code)]` sites or justify each in-line.

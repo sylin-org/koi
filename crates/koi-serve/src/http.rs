@@ -101,6 +101,10 @@ pub struct HttpConfig {
     pub api_docs: bool,
     /// `/v1/status` `daemon` field — a full daemon (`true`) vs an embedded instance.
     pub daemon: bool,
+    /// One-shot to report the actually-bound `SocketAddr` once the listener is up.
+    /// Lets an embedded host that passed `port: 0` learn the OS-assigned port. The
+    /// daemon leaves this `None` — it already knows its fixed port.
+    pub ready: Option<tokio::sync::oneshot::Sender<std::net::SocketAddr>>,
 }
 
 /// Build the router for `cores` per `cfg`, bind `bind_ip:port`, and serve until `cancel`
@@ -123,6 +127,7 @@ pub async fn start(
         admin_shutdown,
         api_docs,
         daemon,
+        ready,
     } = cfg;
 
     let app_state = AppState {
@@ -352,7 +357,13 @@ pub async fn start(
     // Bind to the resolved address (loopback by default; see --http-bind).
     // Exposure does not relax auth — mutations still require the DAT token.
     let listener = tokio::net::TcpListener::bind((bind_ip, port)).await?;
-    tracing::info!("HTTP adapter listening on {}:{}", bind_ip, port);
+    let local_addr = listener.local_addr()?;
+    tracing::info!("HTTP adapter listening on {local_addr}");
+    // Report the bound address to a caller that asked (e.g. an embedded host that
+    // passed port 0 and needs the OS-assigned port). Ignore a dropped receiver.
+    if let Some(tx) = ready {
+        let _ = tx.send(local_addr);
+    }
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -579,9 +590,10 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
 
 /// Daemon Access Token (DAT) authentication middleware.
 ///
-/// GET and OPTIONS requests are exempt (read-only, CORS preflight).
-/// All other methods require a valid `x-koi-token` header.
-/// Uses constant-time comparison to prevent timing attacks.
+/// GET, HEAD, and OPTIONS requests are exempt (read-only, CORS preflight) —
+/// except for `/v1/mcp` and `/v1/certmesh/log`, which require the token even on
+/// GET. All other methods require a valid `x-koi-token` header. Uses
+/// constant-time comparison to prevent timing attacks.
 pub(crate) async fn dat_auth_middleware(
     req: Request<Body>,
     next: Next,
@@ -595,6 +607,14 @@ pub(crate) async fn dat_auth_middleware(
     let method = req.method().clone();
     let path = req.uri().path();
     let is_mcp = path.starts_with(paths::MCP);
+    // The CA audit log is the one GET that is NOT read-safe to expose: it
+    // narrates the full trust history (member joins/revocations, auth rotations,
+    // failed unlock attempts, backup/restore). Carve it out of the GET exemption
+    // so reading it requires the daemon token — exactly like /v1/mcp. The sibling
+    // read GETs (status, diagnose, trust-bundle) stay exempt: they carry no
+    // secrets or are integrity-protected. The `koi certmesh log` CLI already
+    // sends the token (require_daemon → auth_get).
+    let is_audit_log = path == koi_certmesh::http::paths::LOG;
     // Certmesh enrollment is the one mutation that is NOT DAT-gated: a fresh node
     // joining a remote CA has no way to know that host's local token, so it
     // authorizes with a TOTP enrollment code in the request body instead. The
@@ -604,7 +624,10 @@ pub(crate) async fn dat_auth_middleware(
     let exempt_method = method == axum::http::Method::GET
         || method == axum::http::Method::HEAD
         || method == axum::http::Method::OPTIONS;
-    if is_enrollment || method == axum::http::Method::OPTIONS || (exempt_method && !is_mcp) {
+    if is_enrollment
+        || method == axum::http::Method::OPTIONS
+        || (exempt_method && !is_mcp && !is_audit_log)
+    {
         return next.run(req).await;
     }
 
@@ -1050,6 +1073,58 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_ne!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    // ── Audit-log carve-out: /v1/certmesh/log is authenticated on GET ──
+    // The CA audit log narrates the full trust history (joins, revocations, auth
+    // rotations, failed unlocks), so unlike the other certmesh read GETs it must
+    // carry the token even though it is a GET.
+
+    /// Router with the audit-log route and a sibling exempt GET, behind the
+    /// production middleware.
+    fn audit_log_test_router(token: &str) -> Router {
+        let expected = Arc::new(token.to_string());
+        Router::new()
+            .route("/healthz", get(|| async { "ok" }))
+            .route(koi_certmesh::http::paths::LOG, get(|| async { "ok" }))
+            .route("/v1/certmesh/status", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let expected = expected.clone();
+                dat_auth_middleware(req, next, expected)
+            }))
+    }
+
+    #[tokio::test]
+    async fn audit_log_get_without_token_is_rejected() {
+        let app = audit_log_test_router("secret-token");
+        let req = Request::get(koi_certmesh::http::paths::LOG)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn audit_log_get_with_token_is_accepted() {
+        let app = audit_log_test_router("secret-token");
+        let req = Request::get(koi_certmesh::http::paths::LOG)
+            .header(DAT_HEADER, "secret-token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn certmesh_sibling_read_get_stays_exempt() {
+        // The carve-out is surgical: the other certmesh read GETs (status,
+        // diagnose, trust-bundle) carry no secrets and must remain token-free.
+        let app = audit_log_test_router("secret-token");
+        let req = Request::get("/v1/certmesh/status")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
     }
 
     // ── Certmesh enrollment is DAT-exempt (TOTP-authorized bootstrap) ──

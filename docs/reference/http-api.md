@@ -258,7 +258,7 @@ data: {"event":"removed","service":{"name":"...","type":"..."}}
 | GET    | `/v1/certmesh/status`        | Mesh status                                          |
 | GET    | `/v1/certmesh/diagnose`      | Trust-doctor report (posture, identity, integrity)  |
 | GET    | `/v1/certmesh/trust-bundle`  | Signed, monotonic mesh-truth bundle                 |
-| GET    | `/v1/certmesh/log`           | Audit log                                            |
+| GET    | `/v1/certmesh/log`           | Audit log (**token-authenticated** even on GET — carved out of the GET exemption, like `/v1/mcp`) |
 
 ### Enrollment management
 

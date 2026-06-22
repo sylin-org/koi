@@ -47,7 +47,10 @@ impl Harness {
         println!("[FAIL] {name} - {reason}");
     }
 
-    #[allow(dead_code)]
+    // Only the `#[cfg(not(windows))]` IPC path calls `skip`; on Windows it is
+    // genuinely unreachable, so scope the allow to that target instead of a
+    // blanket suppression (it stays a real dead-code check everywhere else).
+    #[cfg_attr(windows, allow(dead_code))]
     fn skip(&mut self, name: &str, reason: &str) {
         self.skipped += 1;
         println!("[SKIP] {name} - {reason}");

@@ -42,6 +42,10 @@ enum HandleBackend {
 
 pub struct KoiHandle {
     backend: HandleBackend,
+    /// The address the embedded HTTP adapter bound to (`None` if HTTP is disabled
+    /// or in remote mode). Populated even for a fixed port; with `http_port(0)` it
+    /// carries the OS-assigned ephemeral port.
+    http_addr: Option<std::net::SocketAddr>,
     data_dir: Option<std::path::PathBuf>,
     events: broadcast::Sender<KoiEvent>,
     cancel: CancellationToken,
@@ -58,6 +62,7 @@ impl KoiHandle {
         proxy: Option<Arc<ProxyRuntime>>,
         udp: Option<Arc<koi_udp::UdpRuntime>>,
         runtime: Option<Arc<koi_runtime::RuntimeCore>>,
+        http_addr: Option<std::net::SocketAddr>,
         data_dir: Option<std::path::PathBuf>,
         events: broadcast::Sender<KoiEvent>,
         cancel: CancellationToken,
@@ -73,6 +78,7 @@ impl KoiHandle {
                 udp,
                 runtime,
             },
+            http_addr,
             data_dir,
             events,
             cancel,
@@ -88,6 +94,7 @@ impl KoiHandle {
     ) -> Self {
         Self {
             backend: HandleBackend::Remote { client },
+            http_addr: None,
             data_dir: None,
             events,
             cancel,
@@ -97,6 +104,20 @@ impl KoiHandle {
 
     pub fn events(&self) -> BroadcastStream<KoiEvent> {
         BroadcastStream::new(self.events.subscribe())
+    }
+
+    /// The address the embedded HTTP adapter bound to, or `None` when HTTP is
+    /// disabled or this is a remote handle. With `Builder::http_port(0)` this
+    /// reports the OS-assigned ephemeral port — the supported way to run an
+    /// embedded HTTP surface on a free port without racing to pick one.
+    pub fn http_addr(&self) -> Option<std::net::SocketAddr> {
+        self.http_addr
+    }
+
+    /// The port the embedded HTTP adapter bound to (convenience over
+    /// [`http_addr`](Self::http_addr)). `None` if HTTP is disabled / remote.
+    pub fn bound_http_port(&self) -> Option<u16> {
+        self.http_addr.map(|addr| addr.port())
     }
 
     /// Serve `router` on `addr` with the same-port posture dial (ADR-020 §5):

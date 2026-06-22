@@ -53,7 +53,9 @@ impl KoiConfig {
         if self.mdns_enabled {
             ports.extend(koi_mdns::firewall_ports());
         }
-        if self.http_enabled {
+        // Skip an ephemeral port (http_port == 0): the OS assigns it at bind time,
+        // so there is no fixed port to pre-open a firewall rule for.
+        if self.http_enabled && self.http_port != 0 {
             ports.push(FirewallPort::new(
                 "HTTP",
                 FirewallProtocol::Tcp,

@@ -525,7 +525,6 @@ async fn udp_with_http_adapter() {
 
 /// A parsed SSE event.
 #[derive(Debug)]
-#[allow(dead_code)]
 struct SseEvent {
     event_type: String,
     id: String,

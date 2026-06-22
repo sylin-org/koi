@@ -90,7 +90,7 @@ Route handlers: `crates/koi-certmesh/src/http.rs`
 | POST | `/v1/certmesh/revoke` | Revoke a member's certificate |
 | POST | `/v1/certmesh/health` | Member health heartbeat (pinned CA fingerprint) |
 | POST | `/v1/certmesh/rotate-auth` | Rotate enrollment auth credential |
-| GET | `/v1/certmesh/log` | Read audit log entries |
+| GET | `/v1/certmesh/log` | Read audit log entries (token-authenticated even on GET — like `/v1/mcp`, carved out of the GET exemption: the audit log narrates the full trust history) |
 | POST | `/v1/certmesh/open-enrollment` | Open enrollment window |
 | POST | `/v1/certmesh/close-enrollment` | Close enrollment window |
 | POST | `/v1/certmesh/backup` | Create encrypted backup |

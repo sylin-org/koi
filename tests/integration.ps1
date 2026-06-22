@@ -403,6 +403,24 @@ if ($Service) {
     }
     Pass 'service health check'
 
+    # Acquire the daemon token so token-gated endpoints work against the installed
+    # service. An installed daemon ALWAYS mints a token, and the audit-log GET
+    # (and every mutation) requires it. The service uses the real %ProgramData%
+    # breadcrumb — not the test-local $breadcrumbFile — so read it via the CLI,
+    # which resolves the same path. Without this, S.8 and the gated mutations 401.
+    $script:daemonToken = $null
+    try {
+        $tok = (& $KoiBin token show --force 2>$null | Out-String).Trim()
+        if ($tok) { $script:daemonToken = $tok }
+    }
+    catch {}
+    if ($script:daemonToken) {
+        Pass 'service token acquired'
+    }
+    else {
+        Write-Host 'WARN: could not read service token; token-gated tests may 401' -ForegroundColor Yellow
+    }
+
     # S.1 - Unified status endpoint
     $unifiedJson = $null
     try {
@@ -600,12 +618,12 @@ if ($Service) {
                 $json = $resp.Content | ConvertFrom-Json
                 Pass "certmesh audit log ($(($json.entries -split "`n").Count) entries)"
 
-                # Validate audit log contains pond_initialized after create
-                if ($weCreatedCa -and $json.entries -match 'pond_initialized') {
-                    Pass 'audit log contains pond_initialized entry'
+                # Validate audit log contains ca_initialized after create
+                if ($weCreatedCa -and $json.entries -match 'ca_initialized') {
+                    Pass 'audit log contains ca_initialized entry'
                 }
                 elseif ($weCreatedCa) {
-                    Fail 'audit log contains pond_initialized entry' 'pond_initialized not found in log entries'
+                    Fail 'audit log contains ca_initialized entry' 'ca_initialized not found in log entries'
                 }
             }
             catch {
@@ -1727,8 +1745,8 @@ if (-not $Service) {
     try {
         $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/log"
         $json = $resp.Content | ConvertFrom-Json
-        if ($json.entries -match 'pond_initialized') {
-            Pass 'certmesh audit log shows pond_initialized'
+        if ($json.entries -match 'ca_initialized') {
+            Pass 'certmesh audit log shows ca_initialized'
         }
         else {
             Pass 'certmesh audit log returns OK'

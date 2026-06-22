@@ -104,6 +104,7 @@ pub fn serve(
             admin_shutdown: true,
             api_docs: true,
             daemon: true,
+            ready: None,
         };
         tasks.push(tokio::spawn(async move {
             if let Err(e) = crate::http::start(c, http_cfg, cancel_token).await {

@@ -257,7 +257,7 @@ All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 | `POST` | `/v1/certmesh/renew`            | Force certificate renewal             |
 | `POST` | `/v1/certmesh/health`           | Mesh health check                     |
 | `POST` | `/v1/certmesh/rotate-auth`      | Rotate the enrollment auth credential |
-| `GET`  | `/v1/certmesh/log`              | Audit log                             |
+| `GET`  | `/v1/certmesh/log`              | Audit log (requires the daemon token) |
 | `POST` | `/v1/certmesh/open-enrollment`  | Re-open enrollment                    |
 | `POST` | `/v1/certmesh/close-enrollment` | Close enrollment                      |
 | `POST` | `/v1/certmesh/backup`           | Create an encrypted backup bundle     |

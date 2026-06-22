@@ -709,7 +709,9 @@ store and cert files live in the host data directory.
 
 ```bash
 curl -s http://$KOI_HOST:5641/v1/certmesh/status
-curl -s http://$KOI_HOST:5641/v1/certmesh/log
+# The audit log narrates the full trust history, so it requires the daemon token
+# even though it is a GET (like /v1/mcp; the other read GETs stay token-free):
+curl -s -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/certmesh/log
 # Mutations require the daemon token:
 curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/certmesh/open-enrollment -H 'Content-Type: application/json' -d '{}'
 curl -s -X POST -H "x-koi-token: $TOKEN" http://$KOI_HOST:5641/v1/certmesh/close-enrollment

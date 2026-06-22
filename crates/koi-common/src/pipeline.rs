@@ -37,7 +37,6 @@ impl<B: Serialize> PipelineResponse<B> {
     }
 
     /// Wrap a response with an ongoing status.
-    #[allow(dead_code)]
     pub fn ongoing(body: B) -> Self {
         Self {
             body,
@@ -47,7 +46,6 @@ impl<B: Serialize> PipelineResponse<B> {
     }
 
     /// Wrap a response with a finished status.
-    #[allow(dead_code)]
     pub fn finished(body: B) -> Self {
         Self {
             body,
@@ -57,7 +55,6 @@ impl<B: Serialize> PipelineResponse<B> {
     }
 
     /// Attach a warning to this response.
-    #[allow(dead_code)]
     pub fn with_warning(mut self, warning: impl Into<String>) -> Self {
         self.warning = Some(warning.into());
         self

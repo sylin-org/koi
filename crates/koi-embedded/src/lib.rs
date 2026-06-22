@@ -204,6 +204,10 @@ impl Builder {
         self
     }
 
+    /// Set the embedded HTTP adapter's port. Pass `0` to bind an OS-assigned
+    /// ephemeral port and read the actual one back with
+    /// [`KoiHandle::bound_http_port`] after [`start`](KoiEmbedded::start) — the
+    /// supported way to run on a free port without racing to pick one.
     pub fn http_port(mut self, port: u16) -> Self {
         self.config.http_port = port;
         self
@@ -455,6 +459,11 @@ impl KoiEmbedded {
         // /v1/status drift. Secure-by-default: bind loopback unless the host opts into LAN
         // exposure via `announce_http`; mutations are unauthenticated unless `http_token`
         // is set.
+        //
+        // The actually-bound address is captured so the handle can report it — the
+        // root fix for ephemeral binding: `Builder::http_port(0)` lets the OS assign
+        // a free port and `KoiHandle::bound_http_port()` reports it (no probing).
+        let mut http_addr: Option<std::net::SocketAddr> = None;
         if self.config.http_enabled {
             let http_cancel = cancel.clone();
             let http_cores = koi_compose::cores::Cores {
@@ -480,6 +489,7 @@ impl KoiEmbedded {
                      unauthenticated to the whole LAN; call .http_token(..) to require x-koi-token"
                 );
             }
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
             let http_cfg = koi_serve::http::HttpConfig {
                 bind_ip,
                 port: self.config.http_port,
@@ -492,12 +502,17 @@ impl KoiEmbedded {
                 admin_shutdown: false,
                 api_docs: self.config.api_docs_enabled,
                 daemon: false,
+                ready: Some(ready_tx),
             };
             tasks.push(tokio::spawn(async move {
                 if let Err(e) = koi_serve::http::start(http_cores, http_cfg, http_cancel).await {
                     tracing::error!(error = %e, "embedded HTTP adapter failed");
                 }
             }));
+            // Wait for the listener to bind so the handle reports the real port
+            // (the OS-assigned one when http_port == 0). A bind failure drops the
+            // sender → `None` here; the spawned task has already logged the error.
+            http_addr = ready_rx.await.ok();
         }
 
         // ── Self-announce supervisor: _http._tcp, posture-reactive ──
@@ -515,10 +530,16 @@ impl KoiEmbedded {
             runtime: runtime.clone(),
             mdns_snapshot: mdns_bridge.clone(),
         };
+        // Advertise the ACTUAL bound port: with http_port(0) the OS picked an
+        // ephemeral port at bind time, so announcing the configured 0 would publish
+        // an unreachable _http._tcp/_mcp._tcp record. `http_addr` holds the resolved
+        // address (Some whenever the HTTP adapter bound); fall back to the configured
+        // port when HTTP is disabled (announce_http requires http_enabled anyway).
+        let announce_http_port = http_addr.map(|a| a.port()).unwrap_or(self.config.http_port);
         koi_compose::self_announce::spawn(
             &announce_cores,
             koi_compose::self_announce::SelfAnnounceConfig {
-                http_port: self.config.http_port,
+                http_port: announce_http_port,
                 dashboard_enabled: self.config.dashboard_enabled,
                 announce_http: self.config.announce_http
                     && self.config.http_enabled
@@ -643,6 +664,7 @@ impl KoiEmbedded {
             proxy,
             udp,
             runtime,
+            http_addr,
             self.config.data_dir.clone(),
             event_tx,
             cancel,

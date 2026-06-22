@@ -31,6 +31,43 @@ fn parse_runtime_backend(value: &str) -> Result<String, String> {
     }
 }
 
+/// Parse a boolean flag / env value leniently.
+///
+/// Accepts `1`/`true`/`yes`/`on` as true and `0`/`false`/`no`/`off`/`""` as
+/// false (case-insensitive); anything else is an error. clap's built-in `bool`
+/// parser only accepts literal `true`/`false`, so `KOI_NO_MDNS=1` (the natural
+/// `=1` form, and what the Windows-service `from_env` path already accepted)
+/// was rejected on the CLI/daemon path. Wiring this as the `value_parser` for
+/// every `--no-*`-style flag — and routing `from_env` through it too — makes a
+/// single truthy vocabulary work uniformly across both paths.
+fn parse_bool_flag(value: &str) -> Result<bool, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" | "" => Ok(false),
+        other => Err(format!(
+            "expected a boolean (1/true/yes/on or 0/false/no/off), got '{other}'"
+        )),
+    }
+}
+
+/// Read a boolean env var for the Windows-service `from_env` path.
+///
+/// Parses with [`parse_bool_flag`]; an **unrecognized** value is logged and
+/// treated as false. The CLI/daemon path fails closed on a bad value (clap
+/// errors and the daemon refuses to start); the service path fails open so a
+/// typo can't block startup — but it must be observable, so we `warn!` rather
+/// than swallow it silently. Unset → false.
+#[cfg(windows)]
+fn env_bool(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(s) => parse_bool_flag(&s).unwrap_or_else(|e| {
+            tracing::warn!(var = name, value = %s, "ignoring {name}: {e}; treating as false");
+            false
+        }),
+        Err(_) => false,
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "koi", version, about = "Local service discovery for everyone")]
 pub struct Cli {
@@ -69,47 +106,47 @@ pub struct Cli {
     pub log_file: Option<PathBuf>,
 
     /// Disable the HTTP adapter
-    #[arg(long, env = "KOI_NO_HTTP")]
+    #[arg(long, env = "KOI_NO_HTTP", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_http: bool,
 
     /// Disable the IPC adapter
-    #[arg(long, env = "KOI_NO_IPC")]
+    #[arg(long, env = "KOI_NO_IPC", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_ipc: bool,
 
     /// Disable the mDNS capability
-    #[arg(long, env = "KOI_NO_MDNS")]
+    #[arg(long, env = "KOI_NO_MDNS", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_mdns: bool,
 
     /// Disable the certmesh capability
-    #[arg(long, env = "KOI_NO_CERTMESH")]
+    #[arg(long, env = "KOI_NO_CERTMESH", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_certmesh: bool,
 
     /// Disable the DNS capability
-    #[arg(long, env = "KOI_NO_DNS")]
+    #[arg(long, env = "KOI_NO_DNS", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_dns: bool,
 
     /// Disable the health capability
-    #[arg(long, env = "KOI_NO_HEALTH")]
+    #[arg(long, env = "KOI_NO_HEALTH", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_health: bool,
 
     /// Disable the proxy capability
-    #[arg(long, env = "KOI_NO_PROXY")]
+    #[arg(long, env = "KOI_NO_PROXY", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_proxy: bool,
 
     /// Disable the UDP bridging capability
-    #[arg(long, env = "KOI_NO_UDP")]
+    #[arg(long, env = "KOI_NO_UDP", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_udp: bool,
 
     /// Disable the runtime adapter capability
-    #[arg(long, env = "KOI_NO_RUNTIME")]
+    #[arg(long, env = "KOI_NO_RUNTIME", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_runtime: bool,
 
     /// Disable the ACME (RFC 8555) server capability
-    #[arg(long, env = "KOI_NO_ACME")]
+    #[arg(long, env = "KOI_NO_ACME", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_acme: bool,
 
     /// Disable the in-process MCP HTTP transport (/v1/mcp)
-    #[arg(long, env = "KOI_NO_MCP_HTTP")]
+    #[arg(long, env = "KOI_NO_MCP_HTTP", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_mcp_http: bool,
 
     /// Port for the ACME (RFC 8555) server-auth TLS listener
@@ -129,11 +166,11 @@ pub struct Cli {
     pub dns_zone: String,
 
     /// Allow DNS queries from non-private addresses
-    #[arg(long, env = "KOI_DNS_PUBLIC")]
+    #[arg(long, env = "KOI_DNS_PUBLIC", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub dns_public: bool,
 
     /// Announce the HTTP server on the local network via mDNS (_http._tcp)
-    #[arg(long, env = "KOI_ANNOUNCE_HTTP")]
+    #[arg(long, env = "KOI_ANNOUNCE_HTTP", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub announce_http: bool,
 
     /// Output JSON instead of human-readable text
@@ -742,67 +779,21 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(default_pipe_path);
 
-        let no_http = std::env::var("KOI_NO_HTTP")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        let no_ipc = std::env::var("KOI_NO_IPC")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        let no_mdns = std::env::var("KOI_NO_MDNS")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        let no_certmesh = std::env::var("KOI_NO_CERTMESH")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        let no_dns = std::env::var("KOI_NO_DNS")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        let no_health = std::env::var("KOI_NO_HEALTH")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        let no_proxy = std::env::var("KOI_NO_PROXY")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        let no_udp = std::env::var("KOI_NO_UDP")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        let no_runtime = std::env::var("KOI_NO_RUNTIME")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        let no_acme = std::env::var("KOI_NO_ACME")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-
-        let no_mcp_http = std::env::var("KOI_NO_MCP_HTTP")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let no_http = env_bool("KOI_NO_HTTP");
+        let no_ipc = env_bool("KOI_NO_IPC");
+        let no_mdns = env_bool("KOI_NO_MDNS");
+        let no_certmesh = env_bool("KOI_NO_CERTMESH");
+        let no_dns = env_bool("KOI_NO_DNS");
+        let no_health = env_bool("KOI_NO_HEALTH");
+        let no_proxy = env_bool("KOI_NO_PROXY");
+        let no_udp = env_bool("KOI_NO_UDP");
+        let no_runtime = env_bool("KOI_NO_RUNTIME");
+        let no_acme = env_bool("KOI_NO_ACME");
+        let no_mcp_http = env_bool("KOI_NO_MCP_HTTP");
 
         let runtime = std::env::var("KOI_RUNTIME").unwrap_or_else(|_| "auto".to_string());
 
-        let announce_http = std::env::var("KOI_ANNOUNCE_HTTP")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let announce_http = env_bool("KOI_ANNOUNCE_HTTP");
 
         let dns_port = std::env::var("KOI_DNS_PORT")
             .ok()
@@ -811,10 +802,7 @@ impl Config {
 
         let dns_zone = std::env::var("KOI_DNS_ZONE").unwrap_or_else(|_| "internal".to_string());
 
-        let dns_public = std::env::var("KOI_DNS_PUBLIC")
-            .ok()
-            .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let dns_public = env_bool("KOI_DNS_PUBLIC");
 
         let http_bind = std::env::var("KOI_HTTP_BIND").unwrap_or_else(|_| "loopback".to_string());
 
@@ -1657,5 +1645,59 @@ mod tests {
             "MSRV in Cargo.toml ({}) does not match README.md ({})",
             rust_version, readme_version
         );
+    }
+
+    // ── Boolean flag / env parsing (parse_bool_flag) ────────────────
+    //
+    // parse_bool_flag is the single source of truth shared by BOTH the clap
+    // `value_parser` (the CLI/daemon path, via `from_cli`) and the Windows
+    // service `from_env` path. Testing it directly is the conformance check
+    // for both: env vars are process-global so driving `KOI_NO_*` through
+    // `Cli::try_parse_from` would race other tests in this binary that also
+    // read those vars — so the shared parser carries the coverage instead.
+
+    #[test]
+    fn parse_bool_flag_accepts_truthy_set() {
+        for v in [
+            "1", "true", "TRUE", "True", "yes", "YES", "on", "ON", " on ",
+        ] {
+            assert_eq!(parse_bool_flag(v), Ok(true), "{v:?} should be true");
+        }
+    }
+
+    #[test]
+    fn parse_bool_flag_accepts_falsy_set() {
+        for v in ["0", "false", "FALSE", "no", "NO", "off", "OFF", "", "  "] {
+            assert_eq!(parse_bool_flag(v), Ok(false), "{v:?} should be false");
+        }
+    }
+
+    #[test]
+    fn parse_bool_flag_rejects_garbage() {
+        assert!(parse_bool_flag("banana").is_err());
+        assert!(parse_bool_flag("2").is_err());
+        assert!(parse_bool_flag("truthy").is_err());
+    }
+
+    #[test]
+    fn no_capability_flag_form_still_works() {
+        // The flag form stays a pure presence flag (SetTrue, no value): `--no-http`
+        // must parse without an argument and not consume the following subcommand.
+        let cli = Cli::try_parse_from(["koi", "--no-http", "mdns", "discover"]).unwrap();
+        assert!(cli.no_http);
+        assert!(!cli.no_ipc);
+        assert!(matches!(cli.command, Some(Command::Mdns(_))));
+    }
+
+    #[test]
+    fn capability_flags_default_off() {
+        let cli = Cli::try_parse_from(["koi"]).unwrap();
+        let cfg = Config::from_cli(&cli);
+        assert!(!cfg.no_http);
+        assert!(!cfg.no_mdns);
+        assert!(!cfg.no_certmesh);
+        assert!(!cfg.no_mcp_http);
+        assert!(!cfg.announce_http);
+        assert!(!cfg.dns_public);
     }
 }
