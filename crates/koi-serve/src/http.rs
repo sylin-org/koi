@@ -349,8 +349,7 @@ pub async fn start(
         ])
         .allow_headers([header::CONTENT_TYPE, HeaderName::from_static("x-koi-token")])
         .allow_origin(tower_http::cors::AllowOrigin::predicate(|origin, _| {
-            let s = origin.to_str().unwrap_or("");
-            s.starts_with("http://localhost") || s.starts_with("http://127.0.0.1")
+            is_loopback_origin(origin.to_str().unwrap_or(""))
         }));
     app = app.layer(cors);
 
@@ -586,6 +585,29 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
     openapi
 }
 
+/// Exact loopback-origin check for CORS. Accepts only `http://` origins whose host
+/// authority is exactly `localhost`, `127.0.0.1`, or `::1` (optional port). A prefix
+/// match would let an attacker-registrable name like `http://localhost.evil.com`
+/// through and have it reflected into `Access-Control-Allow-Origin`, exposing the
+/// GET-readable surface cross-origin.
+fn is_loopback_origin(origin: &str) -> bool {
+    let Some(rest) = origin.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        // IPv6 literal: "[::1]:port" → "::1"
+        match v6.split_once(']') {
+            Some((h, _)) => h,
+            None => return false,
+        }
+    } else {
+        // "host" or "host:port"
+        authority.split(':').next().unwrap_or("")
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
 // ── DAT auth middleware ──────────────────────────────────────────────
 
 /// Daemon Access Token (DAT) authentication middleware.
@@ -615,6 +637,12 @@ pub(crate) async fn dat_auth_middleware(
     // secrets or are integrity-protected. The `koi certmesh log` CLI already
     // sends the token (require_daemon → auth_get).
     let is_audit_log = path == koi_certmesh::http::paths::LOG;
+    // The UDP surface is carved out of the GET exemption too: `/v1/udp/status`
+    // enumerates every binding's id and `/v1/udp/recv/{id}` streams a binding's
+    // inbound datagrams — both expose other token-holders' bindings, so reading
+    // them requires the daemon token (the mutations already do). Gating the whole
+    // `/v1/udp/` prefix keeps the surface coherent.
+    let is_udp = path.starts_with("/v1/udp/");
     // Certmesh enrollment is the one mutation that is NOT DAT-gated: a fresh node
     // joining a remote CA has no way to know that host's local token, so it
     // authorizes with a TOTP enrollment code in the request body instead. The
@@ -626,7 +654,7 @@ pub(crate) async fn dat_auth_middleware(
         || method == axum::http::Method::OPTIONS;
     if is_enrollment
         || method == axum::http::Method::OPTIONS
-        || (exempt_method && !is_mcp && !is_audit_log)
+        || (exempt_method && !is_mcp && !is_audit_log && !is_udp)
     {
         return next.run(req).await;
     }
@@ -1125,6 +1153,71 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    // ── UDP GET surface is token-gated (binding enumeration / datagram read) ──
+
+    fn udp_carveout_test_router(token: &str) -> Router {
+        let expected = Arc::new(token.to_string());
+        Router::new()
+            .route("/v1/udp/status", get(|| async { "ok" }))
+            .route("/v1/udp/recv/abc", get(|| async { "ok" }))
+            .route("/v1/dns/list", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let expected = expected.clone();
+                dat_auth_middleware(req, next, expected)
+            }))
+    }
+
+    #[tokio::test]
+    async fn udp_get_surface_requires_token() {
+        for path in ["/v1/udp/status", "/v1/udp/recv/abc"] {
+            let app = udp_carveout_test_router("secret-token");
+            let req = Request::get(path).body(Body::empty()).unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+                "{path} must require the token even on GET"
+            );
+        }
+        // With the token the request reaches the handler.
+        let app = udp_carveout_test_router("secret-token");
+        let req = Request::get("/v1/udp/status")
+            .header(DAT_HEADER, "secret-token")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            axum::http::StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn non_udp_sibling_get_stays_exempt() {
+        // The carve-out is surgical: a sibling read GET stays token-free.
+        let app = udp_carveout_test_router("secret-token");
+        let req = Request::get("/v1/dns/list").body(Body::empty()).unwrap();
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            axum::http::StatusCode::OK
+        );
+    }
+
+    // ── CORS loopback-origin check is an exact host-authority match ──
+
+    #[test]
+    fn cors_origin_accepts_only_exact_loopback_hosts() {
+        assert!(is_loopback_origin("http://localhost:5641"));
+        assert!(is_loopback_origin("http://127.0.0.1:5641"));
+        assert!(is_loopback_origin("http://localhost"));
+        assert!(is_loopback_origin("http://[::1]:5641"));
+        // Attacker-registrable look-alikes must be rejected (the prefix-match bug).
+        assert!(!is_loopback_origin("http://localhost.evil.com"));
+        assert!(!is_loopback_origin("http://127.0.0.1.evil.com"));
+        assert!(!is_loopback_origin("http://localhostfoo:9999"));
+        assert!(!is_loopback_origin("https://localhost:5641"));
+        assert!(!is_loopback_origin("http://evil.com/http://localhost"));
     }
 
     // ── Certmesh enrollment is DAT-exempt (TOTP-authorized bootstrap) ──

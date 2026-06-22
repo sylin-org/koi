@@ -66,6 +66,8 @@ pub enum KoiError {
     Client(#[from] koi_client::ClientError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("insecure configuration: {0}")]
+    InsecureConfig(String),
 }
 
 impl From<koi_compose::cores::BuildCoresError> for KoiError {
@@ -336,6 +338,20 @@ impl KoiEmbedded {
             }
         }
 
+        // Secure-by-default: refuse to expose the embedded HTTP adapter on a
+        // non-loopback bind without a token. `announce_http` binds 0.0.0.0, which
+        // would otherwise serve unauthenticated mutations to the whole LAN — the
+        // host must set `.http_token(..)` to expose it (loopback-only needs none).
+        // Fail fast, before any core or socket is created.
+        if self.config.http_enabled && self.config.announce_http && self.config.http_token.is_none()
+        {
+            return Err(KoiError::InsecureConfig(
+                "announce_http exposes the embedded HTTP adapter on 0.0.0.0; call \
+                 .http_token(..) to require x-koi-token, or drop announce_http to bind loopback"
+                    .into(),
+            ));
+        }
+
         // Build every domain core + cross-domain bridge + the domain background tasks
         // (orchestrator, certmesh role loops) through the one shared composition root the
         // daemon and the Windows service use, so the three boot paths construct an identical
@@ -476,19 +492,14 @@ impl KoiEmbedded {
                 runtime: runtime.clone(),
                 mdns_snapshot: mdns_bridge.clone(),
             };
+            // Exposure is gated at the top of start(): announce_http without a token
+            // fails closed before we get here, so an exposed bind always carries auth.
             let exposed = self.config.announce_http;
             let bind_ip = if exposed {
                 std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
             } else {
                 std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
             };
-            if exposed && self.config.http_token.is_none() {
-                tracing::warn!(
-                    port = self.config.http_port,
-                    "embedded HTTP is exposed on 0.0.0.0 with NO token — mutations are \
-                     unauthenticated to the whole LAN; call .http_token(..) to require x-koi-token"
-                );
-            }
             let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
             let http_cfg = koi_serve::http::HttpConfig {
                 bind_ip,

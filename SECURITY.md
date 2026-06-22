@@ -42,6 +42,25 @@ Key properties relevant to reports:
 - Certificate-authority private keys are encrypted at rest (envelope encryption); the CA
   key is unlocked with a passphrase or an OS-keychain-sealed credential.
 
+### Deliberately unauthenticated reads
+
+When the HTTP adapter is exposed on a non-loopback bind, a small set of **read-only** GETs
+is intentionally answerable without the token, because members need them to bootstrap and
+they carry no secrets:
+
+- `GET /v1/certmesh/trust-bundle` — the signed, self-verifying mesh-truth bundle (member
+  hostnames, cert fingerprints, expiries, the revocation list, the CA cert). It is treated
+  like a CRL: integrity comes from its signature, not from access control.
+- `GET /v1/certmesh/status`, `GET /v1/certmesh/diagnose`, `GET /v1/dns/list`,
+  `GET /v1/dns/zone` — membership counts, trust-doctor output, and the resolvable name→IP
+  map. This is LAN-topology reconnaissance, not credential material.
+
+Reads that **do** carry secrets or live channels are token-gated even on GET: the CA audit
+log (`/v1/certmesh/log`), the MCP transport (`/v1/mcp`), and the UDP surface
+(`/v1/udp/status`, `/v1/udp/recv/{id}`). If you do not want the topology/roster readable by
+the LAN, keep the default loopback bind. CORS reflection is restricted to exact loopback
+origins, so a browser on another origin cannot read these cross-origin.
+
 Out of scope: physical access to a node, compromise of a machine already inside the trust
 boundary, and the unmanaged-device root-trust problem (installing the mesh root on phones /
 TVs / appliances is unsolved industry-wide; Koi does not claim to solve it).

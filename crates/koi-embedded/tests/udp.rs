@@ -102,6 +102,7 @@ async fn udp_bind_and_status() {
         port: 0,
         addr: "127.0.0.1".to_string(),
         lease_secs: 300,
+        allow_remote: false,
     };
     let info = udp.bind(bind_req).await.expect("bind should succeed");
     assert!(!info.id.is_empty(), "binding ID should be non-empty");
@@ -135,6 +136,7 @@ async fn udp_send_and_recv() {
         port: 0,
         addr: "127.0.0.1".to_string(),
         lease_secs: 300,
+        allow_remote: false,
     };
     let info = udp.bind(bind_req).await.expect("bind");
 
@@ -186,6 +188,7 @@ async fn udp_send_through_binding() {
         port: 0,
         addr: "127.0.0.1".to_string(),
         lease_secs: 300,
+        allow_remote: false,
     };
     let info = udp.bind(bind_req).await.expect("bind");
 
@@ -224,6 +227,7 @@ async fn udp_heartbeat_extends_lease() {
         port: 0,
         addr: "127.0.0.1".to_string(),
         lease_secs: 300,
+        allow_remote: false,
     };
     let info = udp.bind(bind_req).await.expect("bind");
 
@@ -298,6 +302,7 @@ async fn udp_multiple_bindings() {
             port: 0,
             addr: "127.0.0.1".to_string(),
             lease_secs: 300,
+            allow_remote: false,
         };
         let info = udp.bind(bind_req).await.expect("bind");
         ids.push(info.id);
@@ -337,6 +342,7 @@ async fn udp_multi_subscriber_receives_same_datagram() {
         port: 0,
         addr: "127.0.0.1".to_string(),
         lease_secs: 300,
+        allow_remote: false,
     };
     let info = udp.bind(bind_req).await.expect("bind");
 

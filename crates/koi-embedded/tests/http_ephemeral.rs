@@ -82,6 +82,33 @@ async fn two_ephemeral_instances_get_distinct_ports_without_a_guard() {
 }
 
 #[tokio::test]
+async fn announce_http_without_token_fails_closed() {
+    // Secure-by-default: exposing the HTTP adapter on 0.0.0.0 (announce_http) with
+    // no token must error at start() — before any socket is bound — rather than
+    // silently serving unauthenticated mutations to the LAN. (No bind happens, so
+    // this never opens a non-loopback port.)
+    let dir = temp_data_dir("insecure-expose");
+    let result = Builder::new()
+        .data_dir(&dir)
+        .service_mode(ServiceMode::EmbeddedOnly)
+        .mdns(false)
+        .dns_enabled(false)
+        .health(false)
+        .certmesh(false)
+        .proxy(false)
+        .http(true)
+        .announce_http(true)
+        .build()
+        .expect("build")
+        .start()
+        .await;
+    assert!(
+        matches!(result, Err(koi_embedded::KoiError::InsecureConfig(_))),
+        "exposed-without-token must fail closed"
+    );
+}
+
+#[tokio::test]
 async fn http_disabled_reports_no_bound_port() {
     let dir = temp_data_dir("disabled");
     let koi = Builder::new()

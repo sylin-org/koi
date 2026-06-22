@@ -54,16 +54,46 @@ pub struct UdpBindRequest {
     /// Port to bind on the host (0 = OS-assigned).
     #[serde(default)]
     pub port: u16,
-    /// Bind address. Default `0.0.0.0`.
+    /// Bind address. Default `127.0.0.1` (loopback); a non-loopback bind requires
+    /// `allow_remote = true`.
     #[serde(default = "default_bind_addr")]
     pub addr: String,
     /// Lease duration in seconds. Default 300.
     #[serde(default = "default_lease")]
     pub lease_secs: u64,
+    /// Allow binding on / sending to non-loopback addresses. Default `false` keeps
+    /// the binding loopback-only so a daemon-token holder cannot turn it into a
+    /// LAN/internet egress relay (the host's source address would launder the
+    /// traffic — SSRF) or expose an ingest socket to the whole LAN. Opt in only
+    /// for genuine cross-host datagram bridging.
+    #[serde(default)]
+    pub allow_remote: bool,
 }
 
 fn default_bind_addr() -> String {
-    "0.0.0.0".to_string()
+    "127.0.0.1".to_string()
+}
+
+/// Validate a datagram destination before egress. Always rejects the unspecified
+/// address, multicast, and the IPv4 broadcast address; rejects any non-loopback
+/// destination unless the binding opted into `allow_remote`. This stops a token
+/// holder from using a binding as an SSRF/egress relay with the host's identity.
+fn validate_dest(dest: SocketAddr, allow_remote: bool) -> Result<(), UdpError> {
+    let ip = dest.ip();
+    let disallowed = ip.is_unspecified()
+        || ip.is_multicast()
+        || matches!(ip, std::net::IpAddr::V4(v4) if v4.is_broadcast());
+    if disallowed {
+        return Err(UdpError::InvalidAddr(format!(
+            "disallowed UDP destination {dest}"
+        )));
+    }
+    if !allow_remote && !ip.is_loopback() {
+        return Err(UdpError::InvalidAddr(format!(
+            "non-loopback destination {dest} requires allow_remote=true on the binding"
+        )));
+    }
+    Ok(())
 }
 
 fn default_lease() -> u64 {
@@ -81,6 +111,8 @@ pub struct BindingInfo {
     pub created_at: DateTime<Utc>,
     pub last_heartbeat: DateTime<Utc>,
     pub lease_secs: u64,
+    /// Whether this binding may send to / listen on non-loopback addresses.
+    pub allow_remote: bool,
 }
 
 // ── Error type ──────────────────────────────────────────────────────
@@ -131,6 +163,14 @@ impl UdpRuntime {
             .parse()
             .map_err(|e| UdpError::InvalidAddr(format!("{}", e)))?;
 
+        // Secure-by-default: a non-loopback bind exposes an ingest socket to the
+        // whole LAN, so it requires an explicit allow_remote opt-in.
+        if !req.allow_remote && !bind_addr.ip().is_loopback() {
+            return Err(UdpError::InvalidAddr(format!(
+                "non-loopback bind {bind_addr} requires allow_remote=true"
+            )));
+        }
+
         let socket = tokio::net::UdpSocket::bind(bind_addr).await?;
         let local_addr = socket.local_addr()?;
         let id = Uuid::now_v7().to_string();
@@ -144,6 +184,7 @@ impl UdpRuntime {
             local_addr,
             now,
             lease_secs,
+            req.allow_remote,
             self.cancel.clone(),
         );
 
@@ -153,6 +194,7 @@ impl UdpRuntime {
             created_at: now,
             last_heartbeat: now,
             lease_secs,
+            allow_remote: req.allow_remote,
         };
 
         self.bindings.write().await.insert(id, active);
@@ -200,6 +242,8 @@ impl UdpRuntime {
             .get(id)
             .ok_or_else(|| UdpError::NotFound(id.to_string()))?;
 
+        validate_dest(dest, binding.allow_remote())?;
+
         let sent = binding.send_to(&payload, dest).await?;
         Ok(sent)
     }
@@ -225,6 +269,7 @@ impl UdpRuntime {
                 created_at: b.created_at(),
                 last_heartbeat: b.last_heartbeat(),
                 lease_secs: b.lease_secs(),
+                allow_remote: b.allow_remote(),
             })
             .collect()
     }
@@ -300,5 +345,63 @@ impl koi_common::capability::Capability for UdpRuntime {
             summary,
             healthy: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_dest_allows_loopback_by_default() {
+        assert!(validate_dest("127.0.0.1:9999".parse().unwrap(), false).is_ok());
+        assert!(validate_dest("[::1]:9999".parse().unwrap(), false).is_ok());
+    }
+
+    #[test]
+    fn validate_dest_rejects_non_loopback_unless_allow_remote() {
+        assert!(validate_dest("10.0.0.5:9999".parse().unwrap(), false).is_err());
+        assert!(validate_dest("8.8.8.8:53".parse().unwrap(), false).is_err());
+        // ...but permitted once the binding opts in.
+        assert!(validate_dest("10.0.0.5:9999".parse().unwrap(), true).is_ok());
+    }
+
+    #[test]
+    fn validate_dest_always_rejects_unspecified_multicast_broadcast() {
+        // Even with allow_remote, these are never valid unicast destinations.
+        assert!(validate_dest("0.0.0.0:9999".parse().unwrap(), true).is_err());
+        assert!(validate_dest("224.0.0.1:9999".parse().unwrap(), true).is_err());
+        assert!(validate_dest("255.255.255.255:9999".parse().unwrap(), true).is_err());
+    }
+
+    #[tokio::test]
+    async fn bind_rejects_non_loopback_without_allow_remote() {
+        let rt = UdpRuntime::new(CancellationToken::new());
+        let err = rt
+            .bind(UdpBindRequest {
+                port: 0,
+                addr: "0.0.0.0".to_string(),
+                lease_secs: 60,
+                allow_remote: false,
+            })
+            .await;
+        assert!(matches!(err, Err(UdpError::InvalidAddr(_))));
+        rt.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn bind_loopback_is_the_safe_default() {
+        let rt = UdpRuntime::new(CancellationToken::new());
+        let info = rt
+            .bind(UdpBindRequest {
+                port: 0,
+                addr: "127.0.0.1".to_string(),
+                lease_secs: 60,
+                allow_remote: false,
+            })
+            .await
+            .expect("loopback bind should succeed");
+        assert!(!info.allow_remote);
+        rt.shutdown().await;
     }
 }

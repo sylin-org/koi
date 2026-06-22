@@ -424,12 +424,16 @@ pub enum UdpSubcommand {
         /// Port to bind (0 = OS-assigned)
         #[arg(long, default_value = "0")]
         port: u16,
-        /// Bind address
-        #[arg(long, default_value = "0.0.0.0")]
+        /// Bind address (loopback by default; a non-loopback bind needs --allow-remote)
+        #[arg(long, default_value = "127.0.0.1")]
         addr: String,
         /// Lease duration in seconds
         #[arg(long, default_value = "300")]
         lease: u64,
+        /// Allow binding on / sending to non-loopback addresses (LAN ingress/egress).
+        /// Off by default so a binding cannot be used as an SSRF / egress relay.
+        #[arg(long)]
+        allow_remote: bool,
     },
     /// Unbind (close) a UDP binding
     Unbind {

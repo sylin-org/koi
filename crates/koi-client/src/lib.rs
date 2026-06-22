@@ -341,11 +341,18 @@ impl KoiClient {
         self.get_json("/v1/udp/status")
     }
 
-    pub fn udp_bind(&self, port: u16, addr: &str, lease_secs: u64) -> Result<serde_json::Value> {
+    pub fn udp_bind(
+        &self,
+        port: u16,
+        addr: &str,
+        lease_secs: u64,
+        allow_remote: bool,
+    ) -> Result<serde_json::Value> {
         let body = serde_json::json!({
             "port": port,
             "addr": addr,
             "lease_secs": lease_secs,
+            "allow_remote": allow_remote,
         });
         self.post_json("/v1/udp/bind", &body)
     }

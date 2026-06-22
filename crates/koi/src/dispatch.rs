@@ -271,8 +271,14 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         help::print_category_catalog(help::KoiCategory::Udp, None)?;
                         Ok(())
                     }
-                    Some(UdpSubcommand::Bind { port, addr, lease }) => {
-                        commands::udp::bind(*port, addr, *lease, mode, cli.json).await
+                    Some(UdpSubcommand::Bind {
+                        port,
+                        addr,
+                        lease,
+                        allow_remote,
+                    }) => {
+                        commands::udp::bind(*port, addr, *lease, *allow_remote, mode, cli.json)
+                            .await
                     }
                     Some(UdpSubcommand::Unbind { id }) => {
                         commands::udp::unbind(id, mode, cli.json).await

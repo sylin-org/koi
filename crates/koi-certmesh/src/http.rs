@@ -351,6 +351,25 @@ async fn set_hook_handler(
         }
     }
 
+    // Boundary revocation (ADR-017 F9/F14): a revoked member retains a valid leaf
+    // until expiry, so it could still authenticate over mTLS — but it must keep no
+    // roster-mutation capability, not even for its own hostname. Refuse + audit,
+    // mirroring the renew/health handlers (the missing check here was a gap).
+    {
+        let roster = state.roster.lock().await;
+        if roster.is_revoked(&request.hostname) {
+            let _ = crate::audit::append_entry_to(
+                &state.paths.audit_log_path(),
+                "mtls_revoked_rejected",
+                &[("hostname", request.hostname.as_str()), ("op", "set_hook")],
+            );
+            return error_response(
+                StatusCode::FORBIDDEN,
+                &CertmeshError::Revoked(request.hostname.clone()),
+            );
+        }
+    }
+
     // Delegate to the domain facade, which is the single source of truth for
     // hook validation (forbidden metacharacters + absolute-path requirement)
     // and persistence.
@@ -795,6 +814,25 @@ async fn promote_handler(
     }
 
     let roster = state.roster.lock().await;
+
+    // Boundary revocation (ADR-017 F9/F14): a revoked member must NOT be able to
+    // recover the CA private key, even holding a still-valid leaf and the
+    // enrollment secret. The mTLS handshake admits an unexpired revoked leaf (no
+    // CRL at the TLS layer), so enforce revocation here — refuse + audit. This was
+    // the one inter-node mutation missing the check that renew/health already have.
+    if let Some(Extension(ClientCn(ref caller))) = client_cn {
+        if roster.is_revoked(caller) {
+            let _ = crate::audit::append_entry_to(
+                &state.paths.audit_log_path(),
+                "mtls_revoked_rejected",
+                &[("hostname", caller.as_str()), ("op", "promote")],
+            );
+            return error_response(
+                StatusCode::FORBIDDEN,
+                &CertmeshError::Revoked(caller.clone()),
+            );
+        }
+    }
 
     let Some(client_pk) = request.ephemeral_public.as_ref() else {
         return error_response(

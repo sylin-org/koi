@@ -413,21 +413,34 @@ fn build_health_check(instance: &Instance, service_name: &str) -> Option<koi_hea
 
     let check_name = format!("runtime:{}", service_name);
     let host_ip = resolve_host_ip(instance);
-
+    let port = first_tcp_port.host_port;
     let health_path = instance.metadata.health_path.as_deref();
 
-    let (check_kind, target) = if let Some(path) = health_path {
-        // Health path present (explicit or implied) → HTTP check
-        (
-            koi_health::ServiceCheckKind::Http,
-            format!("http://{}:{}{}", host_ip, first_tcp_port.host_port, path),
-        )
-    } else {
-        // No path → TCP probe
-        (
+    // `koi.health.kind` (http|tcp) is an explicit operator override; when absent,
+    // infer from whether a health path was given (path → HTTP probe, else TCP).
+    let kind = instance
+        .metadata
+        .health_kind
+        .as_deref()
+        .map(|k| k.trim().to_ascii_lowercase());
+    let (check_kind, target) = match kind.as_deref() {
+        Some("tcp") => (
             koi_health::ServiceCheckKind::Tcp,
-            format!("{}:{}", host_ip, first_tcp_port.host_port),
-        )
+            format!("{host_ip}:{port}"),
+        ),
+        Some("http") => (
+            koi_health::ServiceCheckKind::Http,
+            format!("http://{host_ip}:{port}{}", health_path.unwrap_or("/")),
+        ),
+        Some(other) => {
+            tracing::warn!(
+                kind = other,
+                service = service_name,
+                "ignoring unknown koi.health.kind (expected http|tcp); inferring from health path"
+            );
+            infer_check_kind(&host_ip, port, health_path)
+        }
+        None => infer_check_kind(&host_ip, port, health_path),
     };
 
     Some(koi_health::HealthCheck {
@@ -437,6 +450,25 @@ fn build_health_check(instance: &Instance, service_name: &str) -> Option<koi_hea
         interval_secs: instance.metadata.health_interval.unwrap_or(30),
         timeout_secs: instance.metadata.health_timeout.unwrap_or(5),
     })
+}
+
+/// Infer a health probe from path-presence: a health path → HTTP GET, else a
+/// bare TCP connect. Used when `koi.health.kind` is unset (or unrecognized).
+fn infer_check_kind(
+    host_ip: &str,
+    port: u16,
+    health_path: Option<&str>,
+) -> (koi_health::ServiceCheckKind, String) {
+    match health_path {
+        Some(path) => (
+            koi_health::ServiceCheckKind::Http,
+            format!("http://{host_ip}:{port}{path}"),
+        ),
+        None => (
+            koi_health::ServiceCheckKind::Tcp,
+            format!("{host_ip}:{port}"),
+        ),
+    }
 }
 
 /// Build a proxy entry if explicitly requested via metadata.
@@ -455,4 +487,70 @@ fn build_proxy_entry(instance: &Instance, service_name: &str) -> Option<koi_prox
         backend: format!("http://{}:{}", host_ip, first_tcp_port.host_port),
         allow_remote: instance.metadata.proxy_remote.unwrap_or(false),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koi_health::ServiceCheckKind;
+    use koi_runtime::instance::{InstanceState, KoiMetadata, PortMapping};
+
+    fn instance_with(health_kind: Option<&str>, health_path: Option<&str>) -> Instance {
+        Instance {
+            id: "c1".into(),
+            name: "svc".into(),
+            ports: vec![PortMapping {
+                host_port: 8080,
+                container_port: 80,
+                protocol: PortProtocol::Tcp,
+                host_ip: "10.0.0.5".into(),
+            }],
+            ips: vec!["10.0.0.5".into()],
+            metadata: KoiMetadata {
+                health_kind: health_kind.map(str::to_string),
+                health_path: health_path.map(str::to_string),
+                ..Default::default()
+            },
+            backend: "docker".into(),
+            state: InstanceState::Running,
+            discovered_at: chrono::Utc::now(),
+            image: None,
+        }
+    }
+
+    #[test]
+    fn health_kind_tcp_overrides_path_heuristic() {
+        // A health path alone would imply HTTP; explicit kind=tcp must win.
+        let check = build_health_check(&instance_with(Some("TCP"), Some("/healthz")), "svc")
+            .expect("check");
+        assert!(matches!(check.kind, ServiceCheckKind::Tcp));
+        assert_eq!(check.target, "10.0.0.5:8080");
+    }
+
+    #[test]
+    fn health_kind_http_without_path_defaults_to_root() {
+        // No path would imply TCP; explicit kind=http must win, defaulting to "/".
+        let check = build_health_check(&instance_with(Some("http"), None), "svc").expect("check");
+        assert!(matches!(check.kind, ServiceCheckKind::Http));
+        assert_eq!(check.target, "http://10.0.0.5:8080/");
+    }
+
+    #[test]
+    fn health_kind_absent_infers_from_path() {
+        let http = build_health_check(&instance_with(None, Some("/up")), "svc").expect("check");
+        assert!(matches!(http.kind, ServiceCheckKind::Http));
+        assert_eq!(http.target, "http://10.0.0.5:8080/up");
+
+        let tcp = build_health_check(&instance_with(None, None), "svc").expect("check");
+        assert!(matches!(tcp.kind, ServiceCheckKind::Tcp));
+        assert_eq!(tcp.target, "10.0.0.5:8080");
+    }
+
+    #[test]
+    fn health_kind_unknown_falls_back_to_path_heuristic() {
+        // An unrecognized kind is ignored (warned) and inference takes over.
+        let check =
+            build_health_check(&instance_with(Some("grpc"), Some("/x")), "svc").expect("check");
+        assert!(matches!(check.kind, ServiceCheckKind::Http));
+    }
 }

@@ -17,6 +17,10 @@ pub struct ActiveBinding {
     local_addr: SocketAddr,
     created_at: DateTime<Utc>,
     lease_secs: u64,
+    /// Whether this binding may send to / be bound on non-loopback addresses.
+    /// Opt-in at bind time; default false keeps a binding loopback-only so a DAT
+    /// holder cannot use it as a LAN/internet egress relay (SSRF).
+    allow_remote: bool,
     last_heartbeat: Arc<RwLock<DateTime<Utc>>>,
     tx: broadcast::Sender<UdpDatagram>,
     /// Shared socket for sends (recv is driven by the relay task).
@@ -27,12 +31,14 @@ pub struct ActiveBinding {
 }
 
 impl ActiveBinding {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         id: String,
         socket: UdpSocket,
         local_addr: SocketAddr,
         created_at: DateTime<Utc>,
         lease_secs: u64,
+        allow_remote: bool,
         parent_cancel: CancellationToken,
     ) -> Self {
         let (tx, _) = broadcast::channel(512);
@@ -86,6 +92,7 @@ impl ActiveBinding {
             local_addr,
             created_at,
             lease_secs,
+            allow_remote,
             last_heartbeat: Arc::new(RwLock::new(created_at)),
             tx,
             socket,
@@ -108,6 +115,11 @@ impl ActiveBinding {
 
     pub fn lease_secs(&self) -> u64 {
         self.lease_secs
+    }
+
+    /// Whether this binding may send to / listen on non-loopback addresses.
+    pub fn allow_remote(&self) -> bool {
+        self.allow_remote
     }
 
     pub fn last_heartbeat(&self) -> DateTime<Utc> {

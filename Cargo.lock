@@ -2070,6 +2070,7 @@ dependencies = [
 name = "koi-compose"
 version = "0.4.2"
 dependencies = [
+ "chrono",
  "hickory-proto",
  "hostname",
  "koi-certmesh",

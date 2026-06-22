@@ -3,6 +3,7 @@ use std::net::IpAddr;
 
 use koi_common::types::ServiceRecord;
 
+use crate::safety::is_private_ip;
 use crate::zone::DnsZone;
 
 /// Alias records and feedback hints derived from mDNS service records.
@@ -56,6 +57,14 @@ pub fn build_aliases(zone: &DnsZone, records: &[ServiceRecord]) -> AliasResult {
                 Some(ip) => ip,
                 None => continue,
             };
+            // Locality guard (mirrors the static + certmesh record sources):
+            // mDNS announcements are unauthenticated LAN input, so refuse to alias
+            // a non-private / non-link-local IP into the authoritative zone —
+            // otherwise any LAN host could point an in-zone name at an external IP.
+            if !is_private_ip(&ip) {
+                tracing::warn!(%ip, name = %record.name, "skipping mDNS alias with non-private IP");
+                continue;
+            }
             if seen_ips.insert(ip) {
                 base_ips.push(ip);
             }
@@ -124,5 +133,36 @@ mod tests {
     fn sanitize_label_basic() {
         assert_eq!(sanitize_label("My Server"), "my-server");
         assert_eq!(sanitize_label("_Grafana_01"), "grafana-01");
+    }
+
+    #[test]
+    fn build_aliases_rejects_non_private_ip() {
+        // mDNS is unauthenticated LAN input: a record advertising a public IP must
+        // never become an authoritative .internal alias (zone-poisoning guard).
+        let zone = DnsZone::new("internal").unwrap();
+        let rec = |name: &str, ip: &str| ServiceRecord {
+            name: name.to_string(),
+            service_type: "_http._tcp".to_string(),
+            host: Some(format!("{name}.local")),
+            ip: Some(ip.to_string()),
+            port: Some(80),
+            txt: HashMap::new(),
+        };
+        let recs = vec![rec("evil", "8.8.8.8"), rec("good", "10.0.0.5")];
+        let result = build_aliases(&zone, &recs);
+        let all_ips: Vec<String> = result
+            .aliases
+            .values()
+            .flatten()
+            .map(|ip| ip.to_string())
+            .collect();
+        assert!(
+            !all_ips.iter().any(|ip| ip == "8.8.8.8"),
+            "a non-private mDNS-advertised IP must never become an alias: {all_ips:?}"
+        );
+        assert!(
+            all_ips.iter().any(|ip| ip == "10.0.0.5"),
+            "a private mDNS IP should still be aliased: {all_ips:?}"
+        );
     }
 }
