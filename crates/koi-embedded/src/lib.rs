@@ -12,9 +12,6 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use koi_client::KoiClient;
-use koi_compose::bridges::{
-    AliasFeedbackBridge, CertmeshBridge, DnsBridge, MdnsBridge, ProxyBridge,
-};
 
 pub use config::{DnsConfigBuilder, KoiConfig, ServiceMode};
 pub use events::KoiEvent;
@@ -70,6 +67,19 @@ pub enum KoiError {
     Client(#[from] koi_client::ClientError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl From<koi_compose::cores::BuildCoresError> for KoiError {
+    fn from(e: koi_compose::cores::BuildCoresError) -> Self {
+        use koi_compose::cores::BuildCoresError as B;
+        match e {
+            B::Mdns(e) => KoiError::Mdns(e),
+            B::Dns(e) => KoiError::Dns(e),
+            B::Proxy(e) => KoiError::Proxy(e),
+            B::Health(e) => KoiError::Health(e),
+            B::CertmeshInit(s) => KoiError::Io(std::io::Error::other(s)),
+        }
+    }
 }
 
 pub struct Builder {
@@ -309,138 +319,53 @@ impl KoiEmbedded {
             }
         }
 
-        let mdns = if self.config.mdns_enabled {
-            Some(Arc::new(koi_mdns::MdnsCore::with_cancel(cancel.clone())?))
-        } else {
-            None
-        };
-
-        let certmesh = if self.config.certmesh_enabled {
-            let data_dir = self.config.data_dir.clone();
-            tokio::task::spawn_blocking(move || {
-                koi_compose::cores::init_certmesh_core(data_dir.as_deref())
-            })
-            .await
-            .map_err(|e| std::io::Error::other(format!("certmesh init: {e}")))?
-        } else {
-            None
-        };
-
-        // Integration bridges for cross-domain communication
-        let mdns_bridge: Option<Arc<dyn koi_common::integration::MdnsSnapshot>> =
-            if let Some(ref core) = mdns {
-                Some(MdnsBridge::spawn(core.clone()).await)
-            } else {
-                None
-            };
-
-        let certmesh_bridge: Option<Arc<dyn koi_common::integration::CertmeshSnapshot>> =
-            certmesh.as_ref().map(|core| {
-                CertmeshBridge::new(core.clone())
-                    as Arc<dyn koi_common::integration::CertmeshSnapshot>
-            });
-
-        let alias_feedback: Option<Arc<dyn koi_common::integration::AliasFeedback>> =
-            certmesh.as_ref().map(|core| {
-                AliasFeedbackBridge::new(core.clone())
-                    as Arc<dyn koi_common::integration::AliasFeedback>
-            });
-
-        let dns = if self.config.dns_enabled {
-            let mut dns_config = self.config.dns_config.clone();
-            // Pin the state path to the data dir captured at construction time
-            // so it is immune to KOI_DATA_DIR env var races in parallel tests.
-            if let Some(dir) = &self.config.data_dir {
-                dns_config.state_path = Some(dir.join("state").join("dns.json"));
-            }
-            let core = koi_dns::DnsCore::new(
-                dns_config,
-                mdns_bridge.clone(),
-                certmesh_bridge.clone(),
-                alias_feedback,
-            )
-            .await?;
-            Some(Arc::new(koi_dns::DnsRuntime::new(core)))
-        } else {
-            None
-        };
-
-        let proxy = if self.config.proxy_enabled {
-            let core = if let Some(dir) = &self.config.data_dir {
-                Arc::new(koi_proxy::ProxyCore::with_data_dir(dir)?)
-            } else {
-                Arc::new(koi_proxy::ProxyCore::new()?)
-            };
-            Some(Arc::new(koi_proxy::ProxyRuntime::new(core)))
-        } else {
-            None
-        };
-
-        let dns_bridge: Option<Arc<dyn koi_common::integration::DnsProbe>> = dns
-            .as_ref()
-            .map(|rt| DnsBridge::new(rt.clone()) as Arc<dyn koi_common::integration::DnsProbe>);
-
-        let proxy_bridge: Option<Arc<dyn koi_common::integration::ProxySnapshot>> =
-            proxy.as_ref().map(|rt| {
-                ProxyBridge::new(rt.core()) as Arc<dyn koi_common::integration::ProxySnapshot>
-            });
-
-        let health = if self.config.health_enabled {
-            let core = koi_health::HealthCore::new(
-                mdns_bridge.clone(),
-                dns_bridge,
-                certmesh_bridge,
-                proxy_bridge,
-            )
-            .await;
-            Some(Arc::new(koi_health::HealthRuntime::new(Arc::new(core))))
-        } else {
-            None
-        };
-
-        if let Some(runtime) = &dns {
-            if self.config.dns_auto_start {
-                let _ = runtime.start().await?;
-            }
-        }
-
-        if let Some(runtime) = &health {
-            if self.config.health_auto_start {
-                let _ = runtime.start().await?;
-            }
-        }
-
-        if let Some(runtime) = &proxy {
-            if self.config.proxy_auto_start {
-                runtime.start_all().await?;
-            }
-        }
-
-        let udp = if self.config.udp_enabled {
-            Some(Arc::new(koi_udp::UdpRuntime::new(cancel.clone())))
-        } else {
-            None
-        };
-
-        let runtime = if self.config.runtime_enabled {
-            let config = koi_runtime::RuntimeConfig {
-                backend_kind: self.config.runtime_backend,
-                socket_path: None,
-            };
-            let core = Arc::new(koi_runtime::RuntimeCore::new(config));
-            match core.start_watching(cancel.clone()).await {
-                Ok(()) => {
-                    tracing::info!("Runtime adapter started");
-                    Some(core)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Runtime backend unavailable — continuing without runtime adapter");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        // Build every domain core + cross-domain bridge + the domain background tasks
+        // (orchestrator, certmesh role loops) through the one shared composition root the
+        // daemon and the Windows service use, so the three boot paths construct an identical
+        // graph. `fail_fast` is the only embedded-specific knob: a library surfaces a failed
+        // capability as an error rather than logging it and dropping the capability.
+        let cores = koi_compose::cores::build_cores(
+            &koi_compose::cores::CoreSpec {
+                no_mdns: !self.config.mdns_enabled,
+                no_certmesh: !self.config.certmesh_enabled,
+                no_dns: !self.config.dns_enabled,
+                no_health: !self.config.health_enabled,
+                no_proxy: !self.config.proxy_enabled,
+                no_udp: !self.config.udp_enabled,
+                no_runtime: !self.config.runtime_enabled,
+                data_dir: self.config.data_dir.clone(),
+                dns_config: self.config.dns_config.clone(),
+                runtime: self.config.runtime_backend.to_string(),
+                http_port: self.config.http_port,
+                // Pin the DNS state path to the data dir captured at construction time so it is
+                // immune to KOI_DATA_DIR env-var races in parallel tests.
+                dns_state_path: self
+                    .config
+                    .data_dir
+                    .as_ref()
+                    .map(|dir| dir.join("state").join("dns.json")),
+                proxy_data_dir: self.config.data_dir.clone(),
+                dns_auto_start: self.config.dns_auto_start,
+                health_auto_start: self.config.health_auto_start,
+                proxy_auto_start: self.config.proxy_auto_start,
+                spawn_orchestrator: self.config.orchestrator_enabled,
+                spawn_certmesh_loops: self.config.certmesh_background_enabled,
+                fail_fast: true,
+            },
+            &cancel,
+            &mut tasks,
+        )
+        .await?;
+        let koi_compose::cores::Cores {
+            mdns,
+            certmesh,
+            dns,
+            health,
+            proxy,
+            udp,
+            runtime,
+            mdns_snapshot: mdns_bridge,
+        } = cores;
 
         // Build dashboard state if enabled
         let dashboard_state = if self.config.dashboard_enabled && self.config.http_enabled {
@@ -640,32 +565,20 @@ impl KoiEmbedded {
             );
         }
 
-        // ── Runtime orchestrator (opt-in) ──
-        // Translate container lifecycle events into mDNS/DNS/health/proxy entries — the
-        // same orchestrator the daemon runs. Off by default; a leaf host only wants events.
-        if self.config.orchestrator_enabled {
-            if let Some(ref runtime_core) = runtime {
-                tasks.push(koi_compose::orchestrator::spawn_orchestrator(
-                    runtime_core,
-                    koi_compose::orchestrator::OrchestrationTargets {
-                        mdns: mdns.clone(),
-                        dns: dns.clone(),
-                        health: health.clone(),
-                        proxy: proxy.clone(),
-                    },
-                    cancel.clone(),
-                ));
-            } else {
-                tracing::warn!(
-                    "orchestrator enabled but the runtime adapter is not — skipping orchestrator"
-                );
-            }
+        // The runtime orchestrator and the certmesh role loops (trust-bundle pull + renewal)
+        // are spawned inside `build_cores` (gated on the spec's `spawn_orchestrator` /
+        // `spawn_certmesh_loops`, set from the builder opt-ins above). Only the opt-in-without-
+        // prerequisite warnings stay here.
+        if self.config.orchestrator_enabled && runtime.is_none() {
+            tracing::warn!(
+                "orchestrator enabled but the runtime adapter is not — skipping orchestrator"
+            );
         }
 
-        // ── Certmesh background tasks (opt-in) ──
-        // Trust-bundle pull (policy refresh + revocation detection) + cert renewal, same as
-        // the daemon. Off by default; a clustered embedded CA host opts in. No console, so
-        // enrollment auto-denies.
+        // ── Certmesh enrollment-approval pump (opt-in) ──
+        // The trust-bundle pull + cert-renewal loops are spawned by `build_cores`; the approval
+        // pump is NOT (its decider is host-specific). Embedded has no console, so it
+        // auto-denies. Off by default; a clustered embedded CA host opts in.
         if self.config.certmesh_background_enabled {
             if let Some(ref certmesh_core) = certmesh {
                 koi_compose::certmesh::spawn_enrollment_approval(
@@ -675,11 +588,6 @@ impl KoiEmbedded {
                     &mut tasks,
                 )
                 .await;
-                koi_compose::certmesh::spawn_certmesh_background_tasks(
-                    certmesh_core,
-                    &cancel,
-                    &mut tasks,
-                );
             } else {
                 tracing::warn!(
                     "certmesh_background enabled but certmesh is not — skipping certmesh loops"

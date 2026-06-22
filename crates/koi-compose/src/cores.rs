@@ -40,6 +40,23 @@ pub struct Cores {
     pub mdns_snapshot: Option<Arc<dyn MdnsSnapshot>>,
 }
 
+/// Error from [`build_cores`] when `fail_fast` is set (koi-embedded's library contract).
+/// With `fail_fast = false` (the daemon/service default) `build_cores` never returns this —
+/// a capability that fails to initialize is logged and dropped and the daemon keeps running.
+#[derive(Debug, thiserror::Error)]
+pub enum BuildCoresError {
+    #[error("mDNS core init failed: {0}")]
+    Mdns(#[from] koi_mdns::MdnsError),
+    #[error("DNS init/start failed: {0}")]
+    Dns(#[from] koi_dns::DnsError),
+    #[error("proxy init/start failed: {0}")]
+    Proxy(#[from] koi_proxy::ProxyError),
+    #[error("health start failed: {0}")]
+    Health(#[from] koi_health::HealthError),
+    #[error("certmesh init task panicked: {0}")]
+    CertmeshInit(String),
+}
+
 /// Capability flags + inputs needed to build the cores. A daemon-`Config` subset, kept here
 /// (rather than depending on the binary's `Config`) so koi-compose stays standalone.
 ///
@@ -83,6 +100,11 @@ pub struct CoreSpec {
     /// Spawn the certmesh role-driven background loop when certmesh is present (daemon:
     /// always; embedded: opt-in via the `certmesh_background` builder flag).
     pub spawn_certmesh_loops: bool,
+    /// Fail-fast contract: when `true` (koi-embedded, a library), the first core that fails to
+    /// initialize or auto-start aborts `build_cores` with [`BuildCoresError`]. When `false`
+    /// (the daemon/service), failures are logged and that capability is dropped so the daemon
+    /// keeps serving its remaining capabilities.
+    pub fail_fast: bool,
 }
 
 impl CoreSpec {
@@ -115,6 +137,7 @@ impl CoreSpec {
             proxy_auto_start: true,
             spawn_orchestrator: true,
             spawn_certmesh_loops: true,
+            fail_fast: false,
         }
     }
 }
@@ -230,12 +253,15 @@ pub async fn build_cores(
     spec: &CoreSpec,
     cancel: &CancellationToken,
     tasks: &mut Vec<JoinHandle<()>>,
-) -> Cores {
+) -> Result<Cores, BuildCoresError> {
     // ── mDNS ──
     let mdns_core = if !spec.no_mdns {
         match koi_mdns::MdnsCore::with_cancel(cancel.clone()) {
             Ok(core) => Some(Arc::new(core)),
             Err(e) => {
+                if spec.fail_fast {
+                    return Err(e.into());
+                }
                 tracing::error!(error = %e, "Failed to initialize mDNS core");
                 None
             }
@@ -246,8 +272,20 @@ pub async fn build_cores(
     };
 
     // ── Certmesh ──
+    // The CA vault auto-unlock runs an Argon2id KDF (seconds on modest hardware), so run it on
+    // a blocking thread rather than stalling the async executor — the daemon gains this too.
     let certmesh_core = if !spec.no_certmesh {
-        init_certmesh_core(spec.data_dir.as_deref())
+        let data_dir = spec.data_dir.clone();
+        match tokio::task::spawn_blocking(move || init_certmesh_core(data_dir.as_deref())).await {
+            Ok(core) => core,
+            Err(e) => {
+                if spec.fail_fast {
+                    return Err(BuildCoresError::CertmeshInit(e.to_string()));
+                }
+                tracing::error!(error = %e, "certmesh init task panicked");
+                None
+            }
+        }
     } else {
         tracing::info!("Certmesh capability: disabled");
         None
@@ -289,12 +327,18 @@ pub async fn build_cores(
                 let runtime = Arc::new(koi_dns::DnsRuntime::new(core));
                 if spec.dns_auto_start {
                     if let Err(e) = runtime.start().await {
+                        if spec.fail_fast {
+                            return Err(e.into());
+                        }
                         tracing::error!(error = %e, "Failed to start DNS server");
                     }
                 }
                 Some(runtime)
             }
             Err(e) => {
+                if spec.fail_fast {
+                    return Err(e.into());
+                }
                 tracing::error!(error = %e, "Failed to initialize DNS core");
                 None
             }
@@ -317,12 +361,18 @@ pub async fn build_cores(
                 let runtime = Arc::new(koi_proxy::ProxyRuntime::new(Arc::new(core)));
                 if spec.proxy_auto_start {
                     if let Err(e) = runtime.start_all().await {
+                        if spec.fail_fast {
+                            return Err(e.into());
+                        }
                         tracing::error!(error = %e, "Failed to start proxy listeners");
                     }
                 }
                 Some(runtime)
             }
             Err(e) => {
+                if spec.fail_fast {
+                    return Err(e.into());
+                }
                 tracing::error!(error = %e, "Failed to initialize proxy core");
                 None
             }
@@ -354,6 +404,9 @@ pub async fn build_cores(
         let runtime = Arc::new(koi_health::HealthRuntime::new(core));
         if spec.health_auto_start {
             if let Err(e) = runtime.start().await {
+                if spec.fail_fast {
+                    return Err(e.into());
+                }
                 tracing::error!(error = %e, "Failed to start health checks");
             }
         }
@@ -444,7 +497,7 @@ pub async fn build_cores(
     }
 
     tracing::debug!("Domain cores built");
-    cores
+    Ok(cores)
 }
 
 /// Ordered teardown: cancel → drain in-flight → join tasks → withdraw the HTTP mDNS

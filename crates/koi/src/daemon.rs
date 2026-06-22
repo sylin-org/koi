@@ -61,7 +61,10 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         &cancel,
         &mut tasks,
     )
-    .await;
+    .await
+    // fail_fast = false (daemon default): build_cores logs+drops a failed capability and
+    // always returns Ok, so this never falls back — Cores::default() is a panic-free guard.
+    .unwrap_or_default();
 
     // ── Dashboard state ──
     let dashboard_state = adapters::dashboard::build_dashboard_state(&cores, started_at, "daemon");

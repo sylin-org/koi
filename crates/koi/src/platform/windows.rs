@@ -447,7 +447,9 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             &cancel,
             &mut tasks,
         )
-        .await;
+        .await
+        // fail_fast = false (daemon default) → always Ok; default is a panic-free guard.
+        .unwrap_or_default();
 
         // Generate a Daemon Access Token (DAT) for authenticating mutation requests
         let dat_token = crate::infra::mint_dat();
