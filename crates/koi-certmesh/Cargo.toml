@@ -41,12 +41,10 @@ rand.workspace = true
 hostname.workspace = true
 # ACME (RFC 8555) JWS verification is ASSEMBLED from primitives — no josekit/jsonwebtoken.
 # `p256` reconstructs the account's ES256 verifying key from the JWK and verifies the raw
-# 64-byte R‖S signature; `base64` decodes the URL_SAFE_NO_PAD JWS members; `hmac`+`subtle`
-# do the const-time EAB MAC check for closed-mode enrollment.
+# 64-byte R‖S signature; `base64` decodes the URL_SAFE_NO_PAD JWS members. (EAB MAC
+# verification is not implemented — closed enrollment fails closed — so no hmac/subtle here.)
 p256.workspace = true
 base64.workspace = true
-hmac.workspace = true
-subtle.workspace = true
 # Parse the ACME finalize CSR to enforce that every requested SAN is an
 # authorized order identifier before the CA signs anything. Also used by the
 # mtls module to read the peer certificate's CN.
