@@ -153,6 +153,34 @@ impl KoiHandle {
         }
     }
 
+    /// Like [`serve`](Self::serve) but returns the bind error instead of swallowing
+    /// it (wishlist 5.1). The caller learns immediately if the listener never came
+    /// up, without polling `bound_http_port()` or waiting for a timeout.
+    ///
+    /// The `Err` is an `io::Error` from `TcpListener::bind`. On success the returned
+    /// `JoinHandle` resolves when the listener exits.
+    pub fn try_serve(
+        &self,
+        router: axum::Router,
+        addr: std::net::SocketAddr,
+        cancel: CancellationToken,
+    ) -> Result<JoinHandle<Result<(), std::io::Error>>, KoiError> {
+        match &self.backend {
+            HandleBackend::Embedded { certmesh, .. } => {
+                let core = certmesh
+                    .as_ref()
+                    .ok_or(KoiError::DisabledCapability("certmesh"))?;
+                let core = Arc::clone(core);
+                Ok(tokio::spawn(async move {
+                    crate::serve::serve_adaptive(core, router, addr, cancel).await
+                }))
+            }
+            HandleBackend::Remote { .. } => {
+                Err(KoiError::DisabledCapability("certmesh (remote mode)"))
+            }
+        }
+    }
+
     /// Become a fully-participating trusted service in one call (ADR-020 §13 — the
     /// "3-line trusted service"):
     ///
@@ -839,6 +867,20 @@ impl CertmeshHandle {
     pub fn posture(&self) -> Result<koi_common::posture::Posture, KoiError> {
         match &self.backend {
             CertmeshBackend::Embedded { core } => Ok(core.posture()),
+            CertmeshBackend::Remote { .. } => Err(KoiError::DisabledCapability("certmesh")),
+        }
+    }
+
+    /// Subscribe to live posture transitions — a `tokio::sync::watch` receiver
+    /// that fires on every Open↔Authenticated flip (ADR-020 §5 / wishlist 5.2).
+    ///
+    /// Ergonomic shorthand for `certmesh()?.core()?.watch_posture()`. Embedded
+    /// only; returns `DisabledCapability` in Remote mode.
+    pub fn on_posture(
+        &self,
+    ) -> Result<tokio::sync::watch::Receiver<koi_common::posture::Posture>, KoiError> {
+        match &self.backend {
+            CertmeshBackend::Embedded { core } => Ok(core.watch_posture()),
             CertmeshBackend::Remote { .. } => Err(KoiError::DisabledCapability("certmesh")),
         }
     }

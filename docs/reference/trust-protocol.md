@@ -81,7 +81,7 @@ A versioned, signed (or freshness-stamped) message. JSON:
 |------------|-------|
 | `v`        | Wire version. **The verifier selects its construction from `v`**, never from `sig.alg` (this closes the JWT `alg:"none"` / algorithm-confusion class). v1 = ES256 over the canonical bytes below. |
 | `payload`  | The message bytes, base64 (standard alphabet, with padding). |
-| `nonce`    | A random per-message nonce, base64 — replay uniqueness. |
+| `nonce`    | A random per-message nonce, base64 — replay uniqueness input to the signing bytes. **Koi keeps no seen-nonce cache** — application-layer replay defence is the consumer's responsibility. |
 | `ts`       | Signer's clock at sign time, **unix seconds** (integer). Drives freshness. |
 | `sig`      | The signature block. **Absent** in Open posture (a freshness-stamped passthrough). |
 | `sig.alg`  | Closed set; currently only `ES256` (ECDSA P-256 + SHA-256). Not negotiated in-band — a new algorithm is a new `v`. |
@@ -127,9 +127,14 @@ insufficient by design).
 **Freshness window:** `|now - ts| <= 300` seconds ⇒ `fresh`, else `stale`. 300 s
 tolerates un-NTP'd LAN clock drift (a tighter window spuriously rejects).
 
-`RejectReason` (`snake_case`): `malformed`, `no_signature`, `unsupported_version`,
-`bad_signature`, `unknown_signer`, `revoked`, `expired`, `clock_skew`,
-`name_mismatch`.
+`RejectReason` (`snake_case`): `malformed`, `unsupported_version`, `bad_signature`,
+`unknown_signer`, `revoked`, `expired`.
+
+Implementation note: an unsigned envelope in an Authenticated context produces
+`anonymous`, **not** `rejected` — the consumer decides whether to require identity
+at the application layer. A timestamp outside the ±300 s window produces
+`authenticated { freshness: stale }`, **not** `rejected`; the CN is still readable,
+the freshness verdict is `stale`. Only hard cryptographic failures produce `rejected`.
 
 Revocation is **best-effort** (eventual-consistent, like the mTLS path): the CA
 chain is the hard gate; a leaf whose SHA-256 fingerprint is in the verifier's known
@@ -239,6 +244,99 @@ limitation and the remedy instead of claiming "installed").
 - Unknown versions are **rejected**, not best-effort-guessed.
 - The domain-separation prefixes (`koi-envelope-v1`, the reserved
   `koi-seal-group-v1`) are frozen once published.
+
+## 7. Event-wire DTO (`GET /v1/events`)
+
+The unified SSE event stream exposed at `GET /v1/events` (DAT-gated; see
+`docs/reference/http-api.md` for auth requirements) emits `KoiEventWire` objects —
+one JSON object per `data:` field. A consumer MUST skip events whose `event_v` it
+does not understand (forward-compatible design).
+
+```json
+{
+  "event_v":    1,
+  "event_type": "certmesh.cert_renewed",
+  "id":         "01j0abc123",
+  "data":       { "expires_at": "2027-06-22T12:00:00Z" }
+}
+```
+
+| Field        | Notes |
+|--------------|-------|
+| `event_v`    | Outer wire version. Currently always `1`. **Skip events with unknown versions.** |
+| `event_type` | Dotted-namespace string (see table below). |
+| `id`         | Monotonically increasing, globally-unique event ID (UUID v7 prefix). |
+| `data`       | Event-type-specific payload. See schemas below. |
+
+### Event types and `data` schemas
+
+**mDNS domain:**
+
+| `event_type`        | `data` fields |
+|---------------------|---------------|
+| `mdns.found`        | `ServiceRecord` (see wire-protocol.md) |
+| `mdns.resolved`     | `ServiceRecord` |
+| `mdns.removed`      | `{ name, service_type }` |
+
+**DNS domain:**
+
+| `event_type`         | `data` fields |
+|----------------------|---------------|
+| `dns.entry_updated`  | `{ name: string, ip: string }` |
+| `dns.entry_removed`  | `{ name: string }` |
+
+**Health domain:**
+
+| `event_type`      | `data` fields |
+|-------------------|---------------|
+| `health.changed`  | `{ name: string, status: "up" | "down" | "unknown" }` |
+
+**Certmesh domain:**
+
+| `event_type`                    | `data` fields |
+|---------------------------------|---------------|
+| `certmesh.joined`               | `{ hostname: string, fingerprint: string }` |
+| `certmesh.revoked`              | `{ hostname: string }` |
+| `certmesh.destroyed`            | `{}` |
+| `certmesh.cert_renewed`         | `{ expires_at: string (RFC 3339) }` |
+| `certmesh.cert_expiring_soon`   | `{ days_left: integer }` |
+| `certmesh.cert_renewal_failed`  | `{ reason: string, consecutive_failures: integer }` |
+| `certmesh.bundle_updated`       | `{ self_revoked: bool }` |
+
+**Proxy domain:**
+
+| `event_type`            | `data` fields |
+|-------------------------|---------------|
+| `proxy.entry_updated`   | `ProxyEntry` — `{ name, listen_port, backend, allow_remote }` |
+| `proxy.entry_removed`   | `{ name: string }` |
+
+**Runtime domain:**
+
+| `event_type`                   | `data` fields |
+|--------------------------------|---------------|
+| `runtime.instance_started`     | `{ name: string, backend: string }` |
+| `runtime.instance_stopped`     | `{ name: string }` |
+
+**Heartbeat:**
+
+| `event_type` | `data` fields |
+|--------------|---------------|
+| `heartbeat`  | `{}` — emitted every 15 s to keep the connection alive |
+
+### Posture endpoint (`GET /v1/certmesh/posture`)
+
+Also DAT-gated. Returns the live posture as JSON:
+
+```json
+{ "signed": true, "encrypted": false, "level": "authenticated" }
+```
+
+A consumer that receives `signed: false` knows the node is Open and will route
+plaintext HTTP; `signed: true` means mTLS is available and `client_for` should be
+used. This is the HTTP path for consumers that cannot embed Koi (Koan, rake,
+browsers).
+
+---
 
 ## References
 

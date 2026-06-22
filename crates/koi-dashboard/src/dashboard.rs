@@ -43,6 +43,38 @@ pub struct DashboardSseEvent {
     pub data: serde_json::Value,
 }
 
+/// Versioned, serializable wire DTO for the `GET /v1/events` SSE stream (1.1).
+///
+/// Consumers (Koan, rake, browsers) read this over HTTP; it must be stable and
+/// self-describing. The `event_v` field names this outer envelope version
+/// (`"event_v"` is chosen over `"v"` to avoid collision with a nested
+/// `Envelope.v` field when event payloads carry an envelope).
+///
+/// A consumer that sees an unknown `event_v` MUST skip the event rather than
+/// error — forward-compatible by design.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct KoiEventWire {
+    /// Outer wire version. Currently always `1`. Consumers skip unknown versions.
+    pub event_v: u8,
+    /// Dotted-namespace event type, e.g. `"certmesh.cert_renewed"`.
+    pub event_type: String,
+    /// Monotonically increasing, globally-unique event ID (UUID v7 prefix).
+    pub id: String,
+    /// Event-type-specific payload. Schema lives in `trust-protocol.md §7`.
+    pub data: serde_json::Value,
+}
+
+impl From<&DashboardSseEvent> for KoiEventWire {
+    fn from(e: &DashboardSseEvent) -> Self {
+        Self {
+            event_v: 1,
+            event_type: e.event_type.clone(),
+            id: e.id.clone(),
+            data: e.data.clone(),
+        }
+    }
+}
+
 /// Type alias for the async snapshot closure.
 ///
 /// The caller provides a closure that queries all domain cores and returns a complete
@@ -154,4 +186,58 @@ pub async fn get_events(
     Extension(state): Extension<DashboardState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     Sse::new(dashboard_event_stream(state)).keep_alive(KeepAlive::default())
+}
+
+/// `GET /v1/events` — DAT-gated wire event stream (wishlist 1.1/1.2).
+///
+/// Each SSE event carries a `KoiEventWire` JSON object in its `data:` field.
+/// Returns 503 when the event forwarder is not running.
+pub async fn get_wire_events(
+    dashboard: Option<Extension<DashboardState>>,
+) -> axum::response::Response {
+    let Some(Extension(state)) = dashboard else {
+        return koi_common::http::error_response(
+            koi_common::error::ErrorCode::CapabilityDisabled,
+            "event stream is not available (dashboard/event-forwarder is disabled)",
+        );
+    };
+
+    Sse::new(wire_event_stream(state))
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+fn wire_event_stream(state: DashboardState) -> impl Stream<Item = Result<Event, Infallible>> {
+    async_stream::stream! {
+        let mut rx = state.event_tx.subscribe();
+        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
+        heartbeat.tick().await;
+        loop {
+            let event = tokio::select! {
+                result = rx.recv() => {
+                    match result {
+                        Ok(ev) => {
+                            let wire = KoiEventWire::from(&ev);
+                            Event::default()
+                                .event(&ev.event_type)
+                                .id(&ev.id)
+                                .json_data(wire)
+                                .ok()
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(dropped = n, "events SSE stream lagged");
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                },
+                _ = heartbeat.tick() => {
+                    Some(Event::default().event("heartbeat").data("{}"))
+                },
+            };
+            if let Some(ev) = event {
+                yield Ok(ev);
+            }
+        }
+    }
 }

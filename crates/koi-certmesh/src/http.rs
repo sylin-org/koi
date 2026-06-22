@@ -49,6 +49,9 @@ pub mod paths {
     /// requires the token from a remote peer (gated alongside `/v1/dns/{list,zone,entries}`)
     /// since the full posture is operational detail a remote peer needn't read.
     pub const DIAGNOSE: &str = "/v1/certmesh/diagnose";
+    /// Current posture of this node (`{ "signed": bool, "encrypted": bool }`).
+    /// DAT-gated (GET carve-out in koi-serve) — requires `x-koi-token`.
+    pub const POSTURE: &str = "/v1/certmesh/posture";
     /// Signed, monotonic trust bundle (ADR-017 P1). A GET, so the DAT middleware
     /// exempts it — it is integrity-protected by its own signature, like a CRL.
     pub const TRUST_BUNDLE: &str = "/v1/certmesh/trust-bundle";
@@ -84,6 +87,7 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::MEMBER_CSR), post(member_csr_handler))
         .route(rel(paths::MEMBER_CERT), post(member_cert_handler))
         .route(rel(paths::STATUS), get(status_handler))
+        .route(rel(paths::POSTURE), get(posture_handler))
         .route(rel(paths::DIAGNOSE), get(diagnose_handler))
         .route(rel(paths::TRUST_BUNDLE), get(trust_bundle_handler))
         .route(rel(paths::SET_HOOK), put(set_hook_handler))
@@ -306,6 +310,23 @@ async fn trust_bundle_handler(
             &CertmeshError::Internal(format!("Serialization error: {e}")),
         ),
     }
+}
+
+/// GET /posture - Current node posture (ADR-020 reactive plane, wishlist 1.2).
+///
+/// Returns the live `signed`/`encrypted` posture flags so remote consumers
+/// (Koan, rake, browsers) can determine Open vs Authenticated before dialling,
+/// without embedding Koi. DAT-gated — requires `x-koi-token`.
+#[utoipa::path(get, path = "/posture", tag = "certmesh",
+    summary = "Current node trust posture",
+    responses((status = 200, description = "{ \"signed\": bool, \"encrypted\": bool }")))]
+async fn posture_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
+    let posture = *state.posture_tx.borrow();
+    axum::Json(serde_json::json!({
+        "signed": posture.signed,
+        "encrypted": posture.encrypted,
+        "level": posture.level().as_wire(),
+    }))
 }
 
 /// GET /status - Certmesh status overview.
@@ -1248,6 +1269,7 @@ mod tests {
             approval_tx: tokio::sync::Mutex::new(None),
             event_tx: tokio::sync::broadcast::channel(16).0,
             posture_tx,
+            renewal_failure_count: std::sync::atomic::AtomicU32::new(0),
         })
     }
 

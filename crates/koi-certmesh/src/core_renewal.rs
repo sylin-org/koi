@@ -24,7 +24,67 @@ impl CertmeshCore {
     /// The CA never generates or receives a member private key — on enroll *or*
     /// renew. If the network call fails (CA down, cert lapsed past mTLS validity)
     /// the local files are left untouched and the loop retries next tick.
+    ///
+    /// Emits `CertRenewed`, `CertRenewalFailed`, and `CertExpiringSoon` lifecycle events.
     pub async fn renew_self_if_due(&self) -> Result<RenewOutcome, CertmeshError> {
+        // Inner function carries all the real work; this outer shell handles event
+        // emission for every failure exit without scattering it across every `?`.
+        let days_left_at_attempt = self.cert_days_left_if_member();
+        let result = self.renew_self_if_due_inner().await;
+        match &result {
+            Err(e) => {
+                let count = self
+                    .state
+                    .renewal_failure_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1;
+                let _ = self.state.event_tx.send(CertmeshEvent::CertRenewalFailed {
+                    reason: e.to_string(),
+                    consecutive_failures: count,
+                });
+                // Only emit CertExpiringSoon when the cert is actually past the renewal
+                // threshold (i.e. we attempted renewal, not just "not due").
+                if let Some(days) = days_left_at_attempt {
+                    let _ = self
+                        .state
+                        .event_tx
+                        .send(CertmeshEvent::CertExpiringSoon { days_left: days });
+                }
+            }
+            Ok(RenewOutcome::Renewed { ref expires, .. }) => {
+                self.state
+                    .renewal_failure_count
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
+                let expires_at = expires
+                    .parse::<chrono::DateTime<chrono::Utc>>()
+                    .unwrap_or_else(|_| chrono::Utc::now() + chrono::Duration::days(90));
+                let _ = self
+                    .state
+                    .event_tx
+                    .send(CertmeshEvent::CertRenewed { expires_at });
+            }
+            _ => {}
+        }
+        result
+    }
+
+    /// How many days until the local member cert expires. Returns `None` when the
+    /// node is not a member or the cert cannot be parsed. Used to populate
+    /// `CertExpiringSoon` without re-reading the cert inside the inner function.
+    fn cert_days_left_if_member(&self) -> Option<i64> {
+        let state = member::load(&self.state.paths.member_state_path())?;
+        let cert_path = self
+            .state
+            .paths
+            .certs_dir()
+            .join(&state.hostname)
+            .join("cert.pem");
+        let pem = std::fs::read_to_string(cert_path).ok()?;
+        let not_after = leaf_not_after_utc(&pem)?;
+        Some((not_after - chrono::Utc::now()).num_days())
+    }
+
+    async fn renew_self_if_due_inner(&self) -> Result<RenewOutcome, CertmeshError> {
         let Some(state) = member::load(&self.state.paths.member_state_path()) else {
             return Ok(RenewOutcome::NotApplicable);
         };
@@ -251,6 +311,10 @@ impl CertmeshCore {
         } else {
             tracing::debug!(seq, "Trust bundle updated");
         }
+        let _ = self
+            .state
+            .event_tx
+            .send(CertmeshEvent::BundleUpdated { self_revoked });
         Ok(BundleOutcome::Updated { seq, self_revoked })
     }
 

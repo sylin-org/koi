@@ -40,6 +40,7 @@ impl CertmeshCore {
                 approval_tx: tokio::sync::Mutex::new(None),
                 event_tx: koi_common::events::event_channel().0,
                 posture_tx,
+                renewal_failure_count: std::sync::atomic::AtomicU32::new(0),
             }),
         }
     }
@@ -59,6 +60,7 @@ impl CertmeshCore {
                 approval_tx: tokio::sync::Mutex::new(None),
                 event_tx: koi_common::events::event_channel().0,
                 posture_tx,
+                renewal_failure_count: std::sync::atomic::AtomicU32::new(0),
             }),
         }
     }
@@ -81,6 +83,7 @@ impl CertmeshCore {
                 approval_tx: tokio::sync::Mutex::new(None),
                 event_tx: koi_common::events::event_channel().0,
                 posture_tx,
+                renewal_failure_count: std::sync::atomic::AtomicU32::new(0),
             }),
         }
     }

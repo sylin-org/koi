@@ -30,6 +30,23 @@ pub enum KoiEvent {
         hostname: String,
     },
     CertmeshDestroyed,
+    /// This node's leaf certificate was renewed successfully.
+    CertRenewed {
+        expires_at: chrono::DateTime<chrono::Utc>,
+    },
+    /// The leaf is past its renewal threshold but renewal is failing.
+    CertExpiringSoon {
+        days_left: i64,
+    },
+    /// A renewal attempt failed.
+    CertRenewalFailed {
+        reason: String,
+        consecutive_failures: u32,
+    },
+    /// The trust bundle was updated (policy refresh or revocation).
+    BundleUpdated {
+        self_revoked: bool,
+    },
     /// This node's trust posture changed (ADR-020 §5/§13). Emitted on every
     /// Open↔Authenticated transition. The **degrade** direction (identity lost →
     /// fell back to Open) is surfaced as loudly as the upgrade — exactly where
@@ -242,6 +259,17 @@ mod tests {
                 hostname: "h".to_string(),
             },
             KoiEvent::CertmeshDestroyed,
+            KoiEvent::CertRenewed {
+                expires_at: chrono::Utc::now(),
+            },
+            KoiEvent::CertExpiringSoon { days_left: 3 },
+            KoiEvent::CertRenewalFailed {
+                reason: "timeout".to_string(),
+                consecutive_failures: 2,
+            },
+            KoiEvent::BundleUpdated {
+                self_revoked: false,
+            },
             KoiEvent::PostureChanged {
                 from: Posture::OPEN,
                 to: Posture::new(true, true),

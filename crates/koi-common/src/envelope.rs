@@ -8,8 +8,11 @@
 //!
 //! These are the **wire types only** (serde-stable, schema'd for the published
 //! contract); the signing/verification *logic* lives in `koi-certmesh` (it needs
-//! the identity key + roster). Two misuse-resistance rules from the prior-art
-//! research (ADR-020 §13) are encoded here:
+//! the identity key + roster). Honesty note on the nonce: it is replay-*uniqueness*
+//! input to the canonical signing bytes (ADR-020 §3); **Koi keeps no seen-nonce
+//! cache** — application-layer replay defence is the consumer's responsibility.
+//! Two misuse-resistance rules from the prior-art research (ADR-020 §13) are
+//! encoded here:
 //!
 //! 1. **One identity door.** [`Assurance::identity`] is the *only* way to read a
 //!    trusted CN, and it returns `Some` exclusively for authenticated-AND-fresh —
@@ -127,28 +130,27 @@ impl Assurance {
 
 /// Why an [`Envelope`] failed verification — distinct, named causes so a consumer
 /// or `diagnose()` can act on the specific failure (ADR-020 §13).
+///
+/// Implementation note: an unsigned envelope in Authenticated context produces
+/// [`Assurance::Anonymous`], not `Rejected`; a timestamp outside the freshness
+/// window produces `Authenticated { freshness: Stale }`, not `Rejected`. Only
+/// hard failures (parse error, bad crypto, unknown or revoked signer) reject.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RejectReason {
     /// The envelope (or its base64 fields) could not be parsed.
     Malformed,
-    /// A signature was required (Authenticated peer expected) but none was present.
-    NoSignature,
     /// The envelope version is not understood by this verifier.
     UnsupportedVersion,
     /// The signature did not verify against the signer's public key.
     BadSignature,
-    /// The signer's CN is not a current member of the roster.
+    /// The signer's CN is not a current member of the roster (leaf fails to chain
+    /// to the verifier's pinned CA).
     UnknownSigner,
     /// The signer's certificate has been revoked.
     Revoked,
     /// The signer's certificate has expired.
     Expired,
-    /// The timestamp is outside the freshness window by more than the allowed
-    /// clock-skew tolerance (distinct from `Stale` — this is a hard reject).
-    ClockSkew,
-    /// The signature's CN does not match the presented certificate.
-    NameMismatch,
 }
 
 #[cfg(test)]
@@ -231,12 +233,33 @@ mod tests {
             r#""stale""#
         );
         assert_eq!(
-            serde_json::to_string(&RejectReason::ClockSkew).unwrap(),
-            r#""clock_skew""#
+            serde_json::to_string(&RejectReason::BadSignature).unwrap(),
+            r#""bad_signature""#
         );
         assert_eq!(
-            serde_json::to_string(&RejectReason::NoSignature).unwrap(),
-            r#""no_signature""#
+            serde_json::to_string(&RejectReason::UnsupportedVersion).unwrap(),
+            r#""unsupported_version""#
         );
+    }
+
+    #[test]
+    fn produced_reject_reasons_are_all_variants() {
+        // Document which RejectReason values the verifier actually produces.
+        // NoSignature, ClockSkew, NameMismatch were removed because the verifier
+        // never emitted them (unsigned→Anonymous, out-of-window→Stale, CN from cert).
+        let reasons = [
+            RejectReason::Malformed,
+            RejectReason::UnsupportedVersion,
+            RejectReason::BadSignature,
+            RejectReason::UnknownSigner,
+            RejectReason::Revoked,
+            RejectReason::Expired,
+        ];
+        for r in &reasons {
+            // Each variant round-trips through serde.
+            let s = serde_json::to_string(r).unwrap();
+            let back: RejectReason = serde_json::from_str(&s).unwrap();
+            assert_eq!(r, &back);
+        }
     }
 }

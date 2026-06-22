@@ -722,6 +722,22 @@ fn map_certmesh_event(event: koi_certmesh::CertmeshEvent) -> KoiEvent {
             KoiEvent::CertmeshMemberRevoked { hostname }
         }
         koi_certmesh::CertmeshEvent::Destroyed => KoiEvent::CertmeshDestroyed,
+        koi_certmesh::CertmeshEvent::CertRenewed { expires_at } => {
+            KoiEvent::CertRenewed { expires_at }
+        }
+        koi_certmesh::CertmeshEvent::CertExpiringSoon { days_left } => {
+            KoiEvent::CertExpiringSoon { days_left }
+        }
+        koi_certmesh::CertmeshEvent::CertRenewalFailed {
+            reason,
+            consecutive_failures,
+        } => KoiEvent::CertRenewalFailed {
+            reason,
+            consecutive_failures,
+        },
+        koi_certmesh::CertmeshEvent::BundleUpdated { self_revoked } => {
+            KoiEvent::BundleUpdated { self_revoked }
+        }
     }
 }
 

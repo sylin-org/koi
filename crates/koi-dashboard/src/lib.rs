@@ -16,6 +16,8 @@ pub mod dashboard;
 pub mod forward;
 pub mod meta_browse;
 
+pub use dashboard::{DashboardSseEvent, KoiEventWire};
+
 /// Content-Security-Policy for the served HTML pages. The pages are single-file with
 /// one inline `<script>` and inline styles, and use `data:` SVG backgrounds. Confining
 /// everything to `'self'` (plus inline script/style and `data:` images) means a future
