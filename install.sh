@@ -169,24 +169,26 @@ main() {
         err "could not write to ${bin_dir} (set KOI_INSTALL_DIR, or re-run with sudo for a system path)"
     fi
 
-    say "installed ${bin_dir}/${BIN_NAME}"
+    printf '\n'
+    say "koi ${version} installed → ${bin_dir}/${BIN_NAME}"
+    printf '\n'
+
+    # Never leave the user at a blank prompt: show it actually runs (fast, local,
+    # always exits 0). Call by full path — the current shell may not have it on PATH yet.
+    "${bin_dir}/${BIN_NAME}" status 2>/dev/null || true
+    printf '\n'
 
     # PATH guidance, unless the dir is already reachable.
     if [ -z "${KOI_NO_MODIFY_PATH:-}" ]; then
         case ":${PATH}:" in
             *":${bin_dir}:"*) ;;
-            *)
-                say ""
-                say "${bin_dir} is not on your PATH. Add it, e.g.:"
-                say "    export PATH=\"${bin_dir}:\$PATH\""
-                ;;
+            *) say "add to PATH:        export PATH=\"${bin_dir}:\$PATH\"" ;;
         esac
     fi
 
-    say ""
-    say "try it:    ${BIN_NAME} mdns discover        # instant, no daemon"
-    say "run it:    ${BIN_NAME} --daemon             # foreground"
-    say "serve it:  sudo ${BIN_NAME} install         # install as a system service"
+    say "see your network:   ${BIN_NAME} mdns discover     # instant, no daemon"
+    say "run as a service:   sudo ${BIN_NAME} install      # then just run: ${BIN_NAME}"
+    say "verify this build:  gh attestation verify ${archive} --repo ${REPO}   (optional)"
 }
 
 main "$@"

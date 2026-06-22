@@ -15,7 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Published container image** — `ghcr.io/sylin-org/koi`, multi-arch
   (linux/amd64 + linux/arm64), assembled on each release from the exact musl
   binaries. `docker run -d ghcr.io/sylin-org/koi:latest` (daemon via default CMD).
+- **Signed build provenance** — every release archive and the container image carry
+  a GitHub Artifact Attestation (Sigstore, keyless). Verify a build was produced by
+  this repo's workflow with one line:
+  `gh attestation verify <file|oci://…> --repo sylin-org/koi`.
 - **`--dns-qps` / `KOI_DNS_QPS`** — configure the DNS query rate limit (default 200).
+
+### Changed
+- **The install scripts finish with a live result, not a blank prompt** — they run
+  `koi status` to confirm the binary works and hand off to `koi mdns discover` /
+  `koi install`, so onboarding lands on something visible.
 
 ### Security
 - **DNS rate limiting is now per source IP** with a whole-resolver backstop, so a

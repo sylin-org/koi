@@ -245,6 +245,15 @@ cd koi
 cargo build --release
 ```
 
+**Verify** — every release binary and the container image carry a signed
+build-provenance attestation. A trust tool should let you verify its own supply
+chain in one line:
+
+```bash
+gh attestation verify koi-v0.4.2-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
+gh attestation verify oci://ghcr.io/sylin-org/koi:0.4.2 --repo sylin-org/koi
+```
+
 ## Project status
 
 Koi is **pre-1.0, feasibility-validated, and consolidating**. The architecture and

@@ -150,7 +150,12 @@ try {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
 
-Say ""
-Say "try it:    $BinName mdns discover        # instant, no daemon"
-Say "run it:    $BinName --daemon             # foreground"
-Say "serve it:  $BinName install              # install as a service (run as Administrator)"
+Write-Host ""
+Say "koi $Version installed -> $InstallDir\$BinName.exe"
+Write-Host ""
+# Never leave the user at a blank prompt: show it actually runs (fast, local).
+try { & (Join-Path $InstallDir "$BinName.exe") status } catch {}
+Write-Host ""
+Say "see your network:   $BinName mdns discover     # instant, no daemon"
+Say "run as a service:   $BinName install           # as Administrator, then just run: $BinName"
+Say "verify this build:  gh attestation verify $archive --repo $Repo   (optional)"

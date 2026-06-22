@@ -42,6 +42,23 @@ koi install        # Windows (Administrator)
 | Windows | x86_64 | `koi-${VERSION}-x86_64-pc-windows-msvc.zip` |
 | Windows | aarch64 | `koi-${VERSION}-aarch64-pc-windows-msvc.zip` |
 
+## Verify
+
+Every archive **and** the container image carry a signed build-provenance
+attestation (GitHub Artifact Attestations / Sigstore). Prove an artifact was built
+by this repo's release workflow — not a mirror or a tampered copy:
+
+```bash
+# a downloaded binary archive
+gh attestation verify koi-${VERSION}-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
+
+# the container image
+gh attestation verify oci://ghcr.io/sylin-org/koi:${VERSION_NO_V} --repo sylin-org/koi
+```
+
+(The install scripts verify the SHA-256 below automatically; the attestation is the
+stronger, signed check.)
+
 ## Checksums (SHA-256)
 
 ```

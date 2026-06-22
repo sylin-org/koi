@@ -166,6 +166,10 @@ jobs:
     # the build matrix as a dry run and stops here.
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release + upload assets
+      id-token: write # keyless (Sigstore) signing for build-provenance attestations
+      attestations: write # write the attestations
     steps:
       - uses: actions/checkout@v4
 
@@ -175,6 +179,15 @@ jobs:
           path: artifacts
           pattern: release-*
           merge-multiple: true
+
+      # Signed build provenance for every published archive: `gh attestation verify
+      # <file> --repo sylin-org/koi` proves it was built by this workflow, not a mirror.
+      - name: Attest binary provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
 
       - name: Generate release notes
         shell: bash
@@ -229,7 +242,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      packages: write # push the image + its attestation to GHCR
+      id-token: write # keyless (Sigstore) signing for the image attestation
+      attestations: write # write the attestation
     steps:
       - uses: actions/checkout@v4
 
@@ -277,6 +292,7 @@ jobs:
             type=raw,value=latest,enable=${{ !contains(needs.prepare.outputs.tag, '-') }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: docker/release
@@ -287,6 +303,15 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           provenance: true
           sbom: true
+
+      # Signed build provenance for the image, pushed to GHCR as a referrer so
+      # `gh attestation verify oci://ghcr.io/sylin-org/koi:<ver> --repo sylin-org/koi` works.
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   # ── Publish to crates.io ──────────────────────────────────────────
   # Runs only after the GitHub Release succeeds (which requires all 6 cross
