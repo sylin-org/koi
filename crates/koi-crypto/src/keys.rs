@@ -186,10 +186,14 @@ pub fn encrypt_key(key: &CaKeyPair, passphrase: &str) -> Result<EncryptedKey, Cr
 
 /// Decrypt a CA keypair from encrypted storage.
 ///
-/// If the ciphertext was sealed in the platform credential store at
-/// encrypt time, we verify that the stored blob matches the on-disk
-/// ciphertext.  A mismatch means the key file was copied from another
-/// machine - we reject it to enforce machine-binding.
+/// If the ciphertext was sealed in the platform credential store at encrypt
+/// time, a mismatch against the on-disk ciphertext (e.g. a key file copied from
+/// another machine) is **logged as a warning, not rejected** — the passphrase +
+/// AES-GCM is the sole gate. The binding here is advisory defense-in-depth; a
+/// hard failure would lock operators out after credential-store resets / OS
+/// reinstalls, and the legitimate promote/restore path decrypts a transferred
+/// blob where a local-store match is correctly not expected. (The enforced
+/// machine-binding gate lives in the auto-unlock boot path, not here.)
 pub fn decrypt_key(encrypted: &EncryptedKey, passphrase: &str) -> Result<CaKeyPair, CryptoError> {
     // Platform credential unseal - verify machine-binding
     if crate::tpm::is_available() {

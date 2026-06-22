@@ -97,16 +97,26 @@ The dominant structural change since 2026-06-11 is the **`koi-serve` extraction*
 
 ## 7. Genuinely still open (prioritized backlog)
 
-1. **D7 — unauthenticated `GET /v1/certmesh/log`.** Security-relevant: the CA audit log is readable without a token because it is GET-exempt in `dat_auth_middleware` (`koi-serve/src/http.rs:605-609`). Decide: carve `/v1/certmesh/log` out of the GET exemption (like `/v1/mcp`), or accept-and-document.
-2. ~~**D3 — docs staleness on auth.**~~ **RESOLVED on re-verify (2026-06-22)** — every live mutation example already carries `x-koi-token`; the only tokenless POSTs left are in `docs/archive/` (historical, covered by S-archive). No action.
-3. **Stage 3 hardening completion.** Finish the security audit pass behind the new test scaffolding (~50-60% done).
-4. **Stage 4 packaging.** Complete distribution/packaging beyond MCP + crates.io publish (installers, release artifacts).
-5. **M2 — certmesh core decomposition. DONE.** The unit-test block moved to `core_tests.rs` and the ~2000-line `impl CertmeshCore` was split into 8 cohesive submodules (`lib.rs` 4043 → 736 across both moves), verified as a pure relocation by an adversarial review + the two-box gate.
-6. **T-health — concurrent checks.** Run health checks concurrently rather than sequentially per loop.
-7. **S-archive.** Move `docs/archive/` out of the repo and fix reference drift.
-8. **S-deadcode.** Remove the remaining 5 `#[allow(dead_code)]` sites or justify each in-line.
-9. **S-pipelinestatus (maintainer decision).** Decide whether to keep or shed the ~150-line `PipelineResponse` status machinery.
-10. **T-runtime label coverage.** Verify/complete stub and certmesh label handling in the runtime adapter.
+The engineering + cleanup + documentation wrap-up closed most of this list. **Done:**
+**D7** (the audit-log GET is token-gated), **T-health** (a tick's checks run
+concurrently), **T-runtime** (`koi.health.kind` honoured), **M2** (certmesh
+decomposed — `lib.rs` 4043 → 736), **S-deadcode** (the `#[allow(dead_code)]` sites
+resolved + 3 unused deps dropped), **S-pipelinestatus** (shed), **D3** (already
+resolved), and a full **Stage-3 security audit** (multi-agent find → adversarial
+verify; every confirmed HIGH/MEDIUM fixed — certmesh revocation gates, DNS alias
+locality guard, UDP SSRF guard, `/v1/udp/*` token-gate, CORS exact-origin, embedded
+fail-closed, vault file perms, data-dir `0700`, ACME closed-mode). A documentation
+pass realigned the product/reference docs to current behaviour + greenfield tone.
+
+**Genuinely remaining:**
+
+1. **Stage 4 — packaging/distribution.** Installers + release artifacts beyond the
+   crates.io publish pipeline.
+2. **S-archive (maintainer decision).** Whether to move `docs/archive/` out of the
+   repo (the last home of historical tokenless examples). Left in place as history.
+3. **Stage 3 — residual.** The audit's low-severity, by-design items are
+   accept-and-documented in `SECURITY.md` (the deliberately-unauthenticated read
+   surface; the DNS global rate bucket) — revisit if the threat model tightens.
 
 ---
 

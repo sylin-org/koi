@@ -40,7 +40,7 @@ Derived **level** (the wire strings used in mDNS TXT and `/v1/status`):
 | true     | true        | `confidential`       |
 
 `encrypted` without `signed` is meaningless and resolves to `open`. "Secure"
-(Koi's historical bit, ADR-016 §2) ≡ `signed == true`.
+≡ `signed == true`.
 
 ### Posture in discovery (mDNS TXT)
 

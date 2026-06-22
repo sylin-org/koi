@@ -162,7 +162,7 @@ If `koi launch` can't open a browser (a headless server, say), just visit
 
 ## 5. One real task: give a machine a name
 
-Time to *use* the toolbox. Typing `myapp.lan` into a browser is a different
+Time to *use* the toolbox. Typing `myapp.internal` into a browser is a different
 experience from remembering `10.0.0.42`. Koi's local DNS resolver makes that
 mapping, and it's already running inside the daemon you started.
 
@@ -174,7 +174,7 @@ koi dns lookup myapp
 koi dns list                    # everything currently resolvable
 ```
 
-`koi dns add myapp 10.0.0.42` makes `myapp.lan` resolve to that address (`.lan` is
+`koi dns add myapp 10.0.0.42` makes `myapp.internal` resolve to that address (`.internal` is
 the default zone). `koi dns lookup myapp` asks Koi's resolver and shows the answer;
 `koi dns list` shows the whole zone — your static entries plus anything Koi learns
 from discovery and certificates.

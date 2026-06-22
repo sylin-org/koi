@@ -16,9 +16,9 @@ containers or other hosts, start the daemon with `--http-bind bridge` / `<ip>` /
 
 **Daemon Access Token (DAT):**
 At startup, the daemon generates a fresh random token and writes it to the breadcrumb file (`koi.endpoint`) with owner-only permissions.
-- **GET / HEAD / OPTIONS** requests are unauthenticated (exempt from token checks) — **except `/v1/mcp`**, which requires the token on *every* method (including its server→client SSE GET); see the MCP note below.
+- **GET / HEAD / OPTIONS** requests are unauthenticated (exempt from token checks) — **except `/v1/mcp`** (live channel), **`/v1/certmesh/log`** (the CA audit trail), and the **`/v1/udp/*`** surface (binding enumeration + datagram streams), which all require the token on *every* method.
 - **All mutations (POST, PUT, DELETE)** require the token to be sent in the `x-koi-token` header (except `/v1/certmesh/join`, which uses standard TOTP credentials during bootstrap).
-- **Server-Sent Events (SSE)** endpoints are `GET`, so they are unauthenticated on the open methods above — except `/v1/mcp`'s server→client SSE stream, which (like the rest of `/v1/mcp`) requires the `x-koi-token` header.
+- **Server-Sent Events (SSE)** endpoints are `GET`, so they are unauthenticated on the open methods above — except `/v1/mcp`'s server→client SSE stream and `/v1/udp/recv/{id}`, which require the `x-koi-token` header.
 
 The header value is the **bare token** — the breadcrumb file stores it with a `dat:` line prefix, but that prefix is **not** part of the header value (clients strip it):
 ```http
@@ -484,20 +484,27 @@ Open a host-side UDP socket. Returns a binding ID used for all subsequent operat
 ```json
 {
   "port": 9999,
-  "addr": "0.0.0.0",
-  "lease_secs": 300
+  "addr": "127.0.0.1",
+  "lease_secs": 300,
+  "allow_remote": false
 }
 ```
+
+`addr` defaults to `127.0.0.1` (loopback). Binding a non-loopback address — and
+sending to non-loopback destinations through the binding — requires
+`"allow_remote": true`; the default keeps a binding loopback-only so a token
+holder cannot use it as an SSRF / egress relay.
 
 Response (`201 Created`):
 
 ```json
 {
   "id": "a1b2c3d4",
-  "local_addr": "0.0.0.0:9999",
+  "local_addr": "127.0.0.1:9999",
   "created_at": "2026-06-13T02:09:30Z",
   "last_heartbeat": "2026-06-13T02:09:30Z",
-  "lease_secs": 300
+  "lease_secs": 300,
+  "allow_remote": false
 }
 ```
 
@@ -537,10 +544,11 @@ List all active bindings with lease information.
   "bindings": [
     {
       "id": "a1b2c3d4",
-      "local_addr": "0.0.0.0:9999",
+      "local_addr": "127.0.0.1:9999",
       "created_at": "2026-06-13T02:09:30Z",
       "last_heartbeat": "2026-06-13T02:09:30Z",
-      "lease_secs": 300
+      "lease_secs": 300,
+      "allow_remote": false
     }
   ]
 }
@@ -548,7 +556,7 @@ List all active bindings with lease information.
 
 ### PUT /v1/udp/heartbeat/{id}
 
-Renew a binding's lease. Bindings expire after 30 seconds without a heartbeat.
+Renew a binding's lease. Bindings expire after `lease_secs` (default 300) without a heartbeat.
 
 Response: `200 OK` with `{"renewed": "a1b2c3d4"}` or `404` if the binding does not exist.
 
@@ -629,23 +637,17 @@ Scope: dns-01 only, EC/ES256 only, in-zone names only. Errors use the ACME probl
 
 ---
 
-## Pipeline properties
+## Response shape
 
-Status, warnings, and errors are operational metadata attached alongside responses. Their absence is the happy path.
-
-| Property  | Values                     | Meaning                          |
-| --------- | -------------------------- | -------------------------------- |
-| `status`  | `"ongoing"` / `"finished"` | Whether more data is expected    |
-| `warning` | Free-form string           | Operation succeeded with caveats |
-
-Clean response (no extra keys):
+`#[serde(flatten)]` emits a response as its body at the top level — there is no
+envelope or wrapper key. The happy path is just the data:
 
 ```json
 { "found": { "name": "Server A", ... } }
 ```
 
-With pipeline metadata:
+An error is a flat body carrying an `error` code and a `message`:
 
 ```json
-{ "found": { "name": "Server B", ... }, "status": "ongoing" }
+{ "error": "not_found", "message": "Registration not found" }
 ```

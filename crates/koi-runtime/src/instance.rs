@@ -116,7 +116,9 @@ pub struct KoiMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_remote: Option<bool>,
 
-    /// Enable certmesh cert injection.
+    /// Whether the container requested a certmesh identity (`koi.certmesh=true`).
+    /// Surfaced in the runtime inventory for external tooling; Koi advertises the
+    /// request but does not auto-inject certificates into the container.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub certmesh: Option<bool>,
 

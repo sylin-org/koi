@@ -92,7 +92,7 @@ koi dns serve
 koi dns add host-b 192.168.1.20      # B's LAN IP
 ```
 
-`koi dns add` takes a **name and an IP** (positional). Now `host-b.lan` resolves to B. (Koi DNS owns the `.lan` zone by default; coexisting with an existing resolver is covered in the [DNS guide](../guides/dns.md) and [DNS coexistence guide](../guides/dns-coexistence.md).)
+`koi dns add` takes a **name and an IP** (positional). Now `host-b.internal` resolves to B. (Koi DNS owns the `.internal` zone by default; coexisting with an existing resolver is covered in the [DNS guide](../guides/dns.md) and [DNS coexistence guide](../guides/dns-coexistence.md).)
 
 Then, on B, bind the proxy:
 
@@ -113,7 +113,7 @@ app   :9443   127.0.0.1:3000   certmesh  running
 
 The `TLS: certmesh` column is the win — the proxy found `certs/host-b/fullchain.pem` and is terminating TLS with the **member certificate**, the one every mesh member already trusts. (How the proxy resolves its cert, and the `self-signed` fallback, are in the [proxy guide](../guides/proxy.md).)
 
-> **The name has to match the cert.** A browser only stays green if the URL's hostname is a **SAN on the served certificate**. The member cert covers `host-b` and `host-b.local`. So in Step 5 the no-warning URL is **`https://host-b.local:9443`** (or `https://host-b:9443`), served by the member cert. If you want a *zone-named* vanity URL like `https://app.lan` with no warning, see [Want `app.lan` instead?](#want-applan-instead) below — that needs a cert that lists `app.lan`, which the member cert does not.
+> **The name has to match the cert.** A browser only stays green if the URL's hostname is a **SAN on the served certificate**. The member cert covers `host-b` and `host-b.local`. So in Step 5 the no-warning URL is **`https://host-b.local:9443`** (or `https://host-b:9443`), served by the member cert. If you want a *zone-named* vanity URL like `https://app.internal` with no warning, see [Want `app.internal` instead?](#want-applan-instead) below — that needs a cert that lists `app.internal`, which the member cert does not.
 
 ---
 
@@ -167,7 +167,7 @@ https://host-b.local:9443
 
 No warning, a real padlock. The chain is: the proxy presented B's member cert → that cert chains to your CA root → C trusts that root (Step 4). End to end, trusted HTTPS between two machines with no public CA and no per-client PEM juggling.
 
-If you instead pointed C at Koi's resolver for the `.lan` zone (see the [DNS coexistence guide](../guides/dns-coexistence.md)), `https://host-b:9443` works the same way — `host-b` is also a SAN on the member cert.
+If you instead pointed C at Koi's resolver for the `.internal` zone (see the [DNS coexistence guide](../guides/dns-coexistence.md)), `https://host-b:9443` works the same way — `host-b` is also a SAN on the member cert.
 
 ---
 
@@ -179,13 +179,13 @@ If you instead pointed C at Koi's resolver for the `.lan` zone (see the [DNS coe
 
 ---
 
-## Want `app.lan` instead?
+## Want `app.internal` instead?
 
-To open a *vanity* zone name like `https://app.lan` (not the host's own name) with no warning, the served cert has to list `app.lan` as a SAN — and `koi certmesh join` does **not** add arbitrary SANs to the member cert. The clean way to get an `app.lan` cert is Koi's **ACME facade**, which issues for any name **inside your DNS zone** (`.lan` by default):
+To open a *vanity* zone name like `https://app.internal` (not the host's own name) with no warning, the served cert has to list `app.internal` as a SAN — and `koi certmesh join` does **not** add arbitrary SANs to the member cert. The clean way to get an `app.internal` cert is Koi's **ACME facade**, which issues for any name **inside your DNS zone** (`.internal` by default):
 
 1. Point a standard ACME client (Caddy, Traefik, `lego`) at Koi's directory: `koi certmesh acme enable` prints the URL and the one-time root-trust recipe.
-2. The client orders `app.lan`, solves the in-process `dns-01` challenge, and gets a leaf that chains to your CA.
-3. Either let that reverse proxy serve `app.lan` directly, or drop the issued `fullchain.pem` + `key.pem` into `certs/app/` and run `koi proxy add app --listen 9443 --backend 127.0.0.1:3000` — the proxy serves the **per-entry** cert (it's checked ahead of the member cert) and `https://app.lan:9443` goes green.
+2. The client orders `app.internal`, solves the in-process `dns-01` challenge, and gets a leaf that chains to your CA.
+3. Either let that reverse proxy serve `app.internal` directly, or drop the issued `fullchain.pem` + `key.pem` into `certs/app/` and run `koi proxy add app --listen 9443 --backend 127.0.0.1:3000` — the proxy serves the **per-entry** cert (it's checked ahead of the member cert) and `https://app.internal:9443` goes green.
 
 The full ACME walk-through — scope, wildcards, and the bootstrap recipe — is in the [ACME guide](../guides/acme.md).
 
@@ -195,7 +195,7 @@ The full ACME walk-through — scope, wildcards, and the bootstrap recipe — is
 
 - [certmesh guide](../guides/certmesh.md) — postures, unlock methods, renewal hooks, revocation, backup/restore.
 - [proxy guide](../guides/proxy.md) — cert resolution order, remote backends, WebSockets/gRPC passthrough.
-- [DNS guide](../guides/dns.md) — the three record sources, the `.lan` zone, port 53.
+- [DNS guide](../guides/dns.md) — the three record sources, the `.internal` zone, port 53.
 - [ACME guide](../guides/acme.md) — get certs for any in-zone name with the tools you already run.
 - [trust guide](../guides/trust.md) — `koi trust` across step-ca / mkcert / Caddy.
 - [security model](../reference/security-model.md) — the daemon access token (`x-koi-token`), bind addresses, what is and isn't protected.

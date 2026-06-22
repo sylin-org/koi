@@ -10,6 +10,11 @@ For full request/response schemas, see `docs/reference/http-api.md`.
 Each domain crate owns its routes; the binary crate mounts them at `/v1/<domain>/`.
 Interactive API docs: `GET /docs` (Scalar UI). OpenAPI spec: `GET /openapi.json`.
 
+The HTTP adapter binds **loopback** (`127.0.0.1`) by default, so only local
+processes reach it. Expose it to the LAN/containers with `--http-bind bridge` /
+`--http-bind 0.0.0.0` / `--http-bind <ip>` (env `KOI_HTTP_BIND`); mutations always
+require the `x-koi-token` header regardless of bind address.
+
 ### System
 
 | Method | Endpoint | Purpose |
@@ -218,14 +223,11 @@ Used over Named Pipe (Windows), Unix Domain Socket, and piped stdin/stdout.
 {"error": "not_found", "message": "Registration not found"}
 ```
 
-### Pipeline Responses (streaming)
-Streaming responses include a `status` field:
-```json
-{"found": {...}, "status": "ongoing"}
-{"found": {...}, "status": "finished"}
-```
-- `status` is absent on non-streaming responses (happy path = no extra fields)
-- `warning` field appears only when relevant
+### Response shape (streaming + non-streaming)
+A response serializes as its body via `#[serde(flatten)]` — no envelope or wrapper
+key. SSE/streaming responses use the same per-event body shape as the one-shot JSON
+responses above. The happy path is just the data; an error is a flat
+`{"error": <code>, "message": <msg>}`.
 
 ---
 

@@ -22,7 +22,9 @@ CA private keys use envelope encryption, inspired by LUKS. A random 256-bit mast
 | `Passphrase` | Argon2id → KEK → AES-256-GCM wrap | Primary unlock (always present) |
 | `AutoUnlock` | Master key in separate local file (marker slot) | Unattended boot for single-user profiles |
 | `Totp` | HKDF(shared_secret) → KEK → AES-256-GCM wrap | TOTP-based unlock (6-digit code) |
-| ~~`Fido2`~~ | — | **REMOVED in 0.4.2** — re-add via the `AuthAdapter` trait (`koi-crypto/src/auth.rs`) |
+
+Additional unlock methods (e.g. FIDO2) can be added through the `AuthAdapter`
+trait (`koi-crypto/src/auth.rs`) without changing the slot format.
 
 ---
 
@@ -64,15 +66,13 @@ CA private keys use envelope encryption, inspired by LUKS. A random 256-bit mast
 | `add_auto_unlock()` / `remove_auto_unlock()` | Toggle unattended boot |
 | `add_totp_slot(master_key, secret)` | Add TOTP unlock slot |
 | `unwrap_with_totp(code)` | Unlock via TOTP code |
-| ~~`add_fido2_slot(...)`~~ | **REMOVED in 0.4.2** — re-add via the `AuthAdapter` trait (`koi-crypto/src/auth.rs`) |
-| ~~`unwrap_with_fido2(credential_id)`~~ | **REMOVED in 0.4.2** — re-add via the `AuthAdapter` trait (`koi-crypto/src/auth.rs`) |
 | `available_methods()` | List active slot types |
 
 ---
 
 ## Migration
 
-Legacy single-passphrase keys (pre-envelope) are auto-migrated on first load via `migrate_to_envelope()`. The function decrypts with the old method, generates a fresh master key, re-encrypts under the master key, and creates a slot table with a passphrase slot.
+A single-passphrase key is transparently upgraded to the envelope format on first load via `migrate_to_envelope()`: it decrypts with the passphrase, generates a fresh master key, re-encrypts under that master key, and writes a slot table with a passphrase slot.
 
 ---
 

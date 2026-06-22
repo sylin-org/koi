@@ -126,6 +126,22 @@ koi proxy list                                    # list entries
 
 ---
 
+## UDP
+
+```
+koi udp bind [--port PORT] [--addr ADDR] [--lease SECS] [--allow-remote]  # bind a host UDP port
+koi udp unbind ID                                 # close a binding
+koi udp send ID --dest HOST:PORT PAYLOAD          # send a datagram (payload base64-encoded)
+koi udp status                                    # list active bindings
+koi udp heartbeat ID                              # renew a binding's lease
+```
+
+`--addr` defaults to `127.0.0.1` (loopback); `--allow-remote` is required to bind a
+non-loopback address or send to a non-loopback destination — off by default so a
+binding cannot be used as an SSRF / egress relay.
+
+---
+
 ## Runtime adapter
 
 The runtime adapter is controlled via daemon flags (no CLI subcommands). Status and instances are available via the HTTP API:

@@ -81,9 +81,8 @@ koi-embedded     → koi-serve, koi-compose, koi-common, koi-client (+ axum, req
 koi-mcp          → koi-common, koi-client, koi-config, rmcp (+ transport-streamable-http-server), thiserror, async-trait, tokio
 ```
 
-Terminal-profile-aware help rendering (the former standalone `command-surface` crate)
-was folded into the binary's `crates/koi/src/help/` module in P09; it is no longer a
-workspace crate.
+Terminal-profile-aware help rendering lives in the binary's `crates/koi/src/help/`
+module, not a separate workspace crate.
 
 `koi-mcp` still depends on **no domain crate** — the in-process Streamable HTTP transport
 serves MCP resources against the live cores via a `CoreSource` bridge that lives in

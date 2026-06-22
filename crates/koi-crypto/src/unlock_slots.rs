@@ -309,12 +309,12 @@ pub fn generate_master_key() -> Zeroizing<[u8; MASTER_KEY_LEN]> {
     key
 }
 
-/// Derive a TOTP slot KEK from the TOTP shared secret using HKDF-like
-/// construction (SHA-256).
+/// Derive a TOTP slot KEK from the TOTP shared secret: `SHA-256(secret || info)`.
 ///
-/// We use a simple HKDF-extract + expand since we don't have hkdf as
-/// a dependency. The shared_secret has enough entropy (256 bits) that
-/// a single SHA-256 pass is sufficient.
+/// This is a hash-based KDF (not HKDF — no extract/expand, no salt), which is
+/// sufficient ONLY because `shared_secret` is a full 256-bit random TOTP secret
+/// and `TOTP_SLOT_HKDF_INFO` provides domain separation. Do not reuse this helper
+/// with a low-entropy input; use `hkdf::Hkdf::<Sha256>` if you need a real KDF.
 fn derive_totp_slot_kek(shared_secret: &[u8]) -> Zeroizing<[u8; 32]> {
     let mut hasher = Sha256::new();
     hasher.update(shared_secret);

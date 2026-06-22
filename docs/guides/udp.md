@@ -33,7 +33,7 @@ UDP bridging is available through the HTTP API when the daemon (or embedded HTTP
 ```bash
 curl -X POST -H "x-koi-token: $TOKEN" http://localhost:5641/v1/udp/bind \
   -H "Content-Type: application/json" \
-  -d '{"port": 7184, "addr": "0.0.0.0", "lease_secs": 300}'
+  -d '{"port": 7184, "addr": "0.0.0.0", "allow_remote": true, "lease_secs": 300}'
 ```
 
 ```json
@@ -42,11 +42,12 @@ curl -X POST -H "x-koi-token: $TOKEN" http://localhost:5641/v1/udp/bind \
   "local_addr": "0.0.0.0:7184",
   "created_at": "2026-02-16T12:00:00Z",
   "last_heartbeat": "2026-02-16T12:00:00Z",
-  "lease_secs": 300
+  "lease_secs": 300,
+  "allow_remote": true
 }
 ```
 
-Use `"port": 0` for an OS-assigned ephemeral port - useful when you just need a socket and don't care which port it lands on.
+Use `"port": 0` for an OS-assigned ephemeral port - useful when you just need a socket and don't care which port it lands on. `addr` defaults to `127.0.0.1` (loopback); binding `0.0.0.0` (or any non-loopback address) and sending to non-loopback destinations require `"allow_remote": true`, which keeps a binding loopback-only by default so it can't be used as an egress relay.
 
 ### Receive datagrams (SSE)
 
@@ -142,16 +143,18 @@ All UDP endpoints live under `/v1/udp/`:
 ```json
 {
   "port": 7184,
-  "addr": "0.0.0.0",
-  "lease_secs": 300
+  "addr": "127.0.0.1",
+  "lease_secs": 300,
+  "allow_remote": false
 }
 ```
 
-| Field        | Type   | Default     | Description                         |
-| ------------ | ------ | ----------- | ----------------------------------- |
-| `port`       | u16    | `0`         | Host port to bind (0 = OS-assigned) |
-| `addr`       | string | `"0.0.0.0"` | Bind address                        |
-| `lease_secs` | u64    | `300`       | Lease duration in seconds           |
+| Field          | Type   | Default       | Description                                                                                              |
+| -------------- | ------ | ------------- | ------------------------------------------------------------------------------------------------------- |
+| `port`         | u16    | `0`           | Host port to bind (0 = OS-assigned)                                                                      |
+| `addr`         | string | `"127.0.0.1"` | Bind address (loopback by default; a non-loopback bind requires `allow_remote`)                          |
+| `lease_secs`   | u64    | `300`         | Lease duration in seconds (max 86400)                                                                    |
+| `allow_remote` | bool   | `false`       | Allow binding on / sending to non-loopback addresses. Default keeps the binding loopback-only (no relay) |
 
 ### Send request body
 

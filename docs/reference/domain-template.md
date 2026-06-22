@@ -119,7 +119,7 @@ return error_response(ErrorCode::NotFound, "record_not_found").into_response();
 `error_response(code, message)` derives the HTTP status from `ErrorCode::http_status()`
 and emits the canonical body `{"error": <code>, "message": <msg>}`. Use
 `error_response_with_status(status, code, msg)` only when you must override the derived
-status. **Never** hand-roll a private `error_response` (koi-dns used to — P10 removed it).
+status. **Never** hand-roll a private `error_response`.
 Reuse `koi_common::error::ErrorCode`; add a variant there (with its `http_status()` arm
 and the exhaustive-mapping test) if you genuinely need a new wire code.
 
