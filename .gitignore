@@ -2,6 +2,9 @@
 /target/
 /dist/
 
+# Binaries staged into the container build context by the release workflow
+/docker/release/koi-*
+
 # Cargo lock is committed for binaries
 # Cargo.lock
 

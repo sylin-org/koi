@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **One-line install scripts** — `install.sh` (Linux/macOS) and `install.ps1`
+  (Windows) detect your OS/arch, download the matching release archive, verify
+  its SHA-256, and install `koi` onto your `PATH`. No root for the default
+  per-user location; `KOI_VERSION` / `KOI_INSTALL_DIR` override the tag and path.
+- **Published container image** — `ghcr.io/sylin-org/koi`, multi-arch
+  (linux/amd64 + linux/arm64), assembled on each release from the exact musl
+  binaries. `docker run -d ghcr.io/sylin-org/koi:latest` (daemon via default CMD).
+
 ## [0.4.2] - 2026-06-21
 
 A large lean-and-reach release: the certificate mesh is roughly halved, the CLI surface

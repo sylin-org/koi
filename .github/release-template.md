@@ -2,24 +2,33 @@ ${DESCRIPTION}
 
 ## Install
 
-**Download a binary** from the table below, extract, and place on your `PATH`.
-
-**Or build from source** (crates.io publishing is currently suspended — see the changelog):
-
-```bash
-git clone https://github.com/sylin-org/koi
-cd koi
-cargo build --release   # binary at target/release/koi
-```
-
-**Or install as a system service** (recommended for always-on discovery):
+**One line** — detects your OS/arch, verifies the checksum, installs onto `PATH`:
 
 ```bash
 # Linux / macOS
-sudo koi install
+curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh
+```
 
-# Windows (Administrator)
-koi install
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
+```
+
+**Container** — multi-arch image on GHCR:
+
+```bash
+docker run --rm ghcr.io/sylin-org/koi:${VERSION_NO_V} version
+```
+
+**Or download a binary** from the table below, extract, and place on your `PATH`.
+**Or via crates.io:** `cargo install koi-net`.
+**Or build from source:** `git clone https://github.com/sylin-org/koi && cd koi && cargo build --release`.
+
+**Then, for always-on discovery, install as a system service:**
+
+```bash
+sudo koi install   # Linux / macOS
+koi install        # Windows (Administrator)
 ```
 
 ## Downloads

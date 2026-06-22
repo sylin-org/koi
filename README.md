@@ -48,8 +48,18 @@ The token lives in a breadcrumb file next to the daemon — see the
 
 ## Quick start
 
-Download a binary from [GitHub Releases](https://github.com/sylin-org/koi/releases),
-put it on your `PATH`, then:
+Install with one line (detects your OS/arch, verifies the checksum, puts `koi`
+on your `PATH`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh   # Linux / macOS
+```
+
+```powershell
+irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex        # Windows
+```
+
+Then:
 
 ```bash
 koi mdns discover        # works instantly, no daemon, no config
@@ -201,9 +211,31 @@ Zero OS dependencies, single static binary, and — unusual for this space —
 
 ## Installation
 
-**Prebuilt binaries** (recommended): download from
+**Install script** (recommended) — picks the right release archive for your
+OS/arch, verifies its SHA-256, and installs onto your `PATH`. No root needed for
+the default per-user location; set `KOI_INSTALL_DIR` or `KOI_VERSION` to override.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh   # Linux / macOS
+```
+
+```powershell
+irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex        # Windows
+```
+
+**Container** — multi-arch (amd64/arm64) image on GHCR:
+
+```bash
+docker run --rm ghcr.io/sylin-org/koi:latest version
+docker run -d --name koi -p 5641:5641 ghcr.io/sylin-org/koi:latest   # daemon
+```
+
+**Prebuilt binaries**: download from
 [GitHub Releases](https://github.com/sylin-org/koi/releases), extract, put `koi`
 (or `koi.exe`) on your `PATH`.
+
+**crates.io**: `cargo install koi-net` (the package is named `koi-net` — see
+[Name](#name) below — and installs a `koi` binary).
 
 **Build from source** — requires [Rust](https://rustup.rs/) 1.92 or later:
 
@@ -212,9 +244,6 @@ git clone https://github.com/sylin-org/koi.git
 cd koi
 cargo build --release
 ```
-
-> Note: the crates.io package is published as `koi-net` (see [Name](#name) below) —
-> install from Releases or source for the prebuilt binary.
 
 ## Project status
 

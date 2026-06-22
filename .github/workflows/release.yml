@@ -189,6 +189,10 @@ jobs:
           # Read the template and substitute
           TEMPLATE=$(cat .github/release-template.md)
           NOTES="${TEMPLATE//\$\{VERSION\}/$VERSION}"
+          # Bare (no leading v) version — matches the docker image tag, which
+          # docker/metadata-action publishes as {{version}} (the v is stripped).
+          VERSION_NO_V="${VERSION#v}"
+          NOTES="${NOTES//\$\{VERSION_NO_V\}/$VERSION_NO_V}"
           NOTES="${NOTES//\$\{DESCRIPTION\}/$DESCRIPTION}"
 
           # Build checksums table
@@ -213,6 +217,76 @@ jobs:
             --title "$TAG" \
             --notes-file release-notes.md \
             artifacts/*
+
+  # ── Container image (GHCR) ─────────────────────────────────────────
+  # Multi-arch image assembled from the exact musl binaries the `build` job
+  # produced — no compile-in-Docker. Gated on `test` so a broken commit never
+  # ships an image, and on a real tag push so the workflow_dispatch dry run does
+  # not publish. Needs only the built-in GITHUB_TOKEN (packages: write).
+  docker:
+    needs: [prepare, test, build]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download linux build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: release-*-unknown-linux-musl
+          merge-multiple: true
+
+      - name: Stage binaries for buildx
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.prepare.outputs.tag }}"
+          # buildx arch (amd64/arm64) ← release triple (x86_64/aarch64-...-musl)
+          for pair in "amd64:x86_64" "arm64:aarch64"; do
+            docker_arch="${pair%%:*}"
+            cpu="${pair##*:}"
+            triple="${cpu}-unknown-linux-musl"
+            tar xzf "artifacts/${BIN_NAME}-${TAG}-${triple}.tar.gz"
+            cp "${BIN_NAME}-${TAG}-${triple}/${BIN_NAME}" "docker/release/koi-${docker_arch}"
+          done
+          chmod +x docker/release/koi-*
+          ls -l docker/release/
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(needs.prepare.outputs.tag, '-') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/release
+          file: docker/release/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
 
   # ── Publish to crates.io ──────────────────────────────────────────
   # Runs only after the GitHub Release succeeds (which requires all 6 cross
