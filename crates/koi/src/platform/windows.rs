@@ -424,6 +424,10 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
     rt.block_on(async {
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut tasks = Vec::new();
+        // Start the uptime clock before build_cores (as daemon_mode does), so `/v1/status`
+        // uptime matches the foreground daemon — build_cores can take seconds (the certmesh
+        // CA Argon2 auto-unlock), which would otherwise be silently undercounted.
+        let started_at = std::time::Instant::now();
 
         // ── Build all domain cores + bridges + domain background tasks ──
         // Shared with daemon_mode via koi-compose, so `koi install` constructs the identical
@@ -473,8 +477,6 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
 
         // Startup diagnostics (logged to file)
         crate::infra::startup_diagnostics(&config, http_bind_ip);
-
-        let started_at = std::time::Instant::now();
 
         // ── Enrollment-approval pump ──
         // The certmesh role loops + orchestrator are spawned by build_cores (shared with
