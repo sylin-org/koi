@@ -54,8 +54,9 @@ jobs:
             koi-client      # Layer 5: CLI client API communication
             koi-mcp         # Layer 5: MCP stdio server (deps: koi-client/koi-config/koi-common)
             koi-compose     # Layer 5: composition layer (deps: all domains + dashboard + client)
-            koi-embedded    # Layer 6: embedded engine facade (deps koi-dashboard, koi-compose)
-            koi-net         # Layer 6: main daemon entrypoint (folder crates/koi)
+            koi-serve       # Layer 6: serving layer — HTTP/IPC/MCP/mTLS/ACME transports + trust plane (deps: koi-compose + dashboard + mcp + all domains)
+            koi-embedded    # Layer 7: embedded engine facade (deps koi-serve, koi-dashboard, koi-compose)
+            koi-net         # Layer 7: main daemon entrypoint (folder crates/koi)
           )
 
           # ── Phase 1: Inventory ─────────────────────────────────
