@@ -59,10 +59,17 @@ mDNS service ops, certmesh CA lifecycle, ACME, UDP bridging, embedded**.
 
 ## Wave plan
 
-- [ ] **Wave 1** — reference truth-pass (the table above).
-- [ ] **Wave 2** — capability cards + `cards/` index + `docs/index.md` wiring.
-- [ ] **Wave 3** — net-new how-tos + systemic docs (overview, ports/firewall, factory-reset
-      safety, mDNS-browsing, container-image, provenance/supply-chain).
+- [x] **Wave 1** — reference truth-pass (the table above). *Committed `f595392`.*
+- [x] **Wave 2** — 11 capability cards + `cards/` index + `docs/index.md` wiring. *Committed `aba0a04`.*
+- [x] **Wave 3** — `docs/overview.md` ("is it for me"), `docs/reference/ports.md` (ports &
+      firewall), the mDNS network-browser section in `guides/mdns.md`, and the factory-reset
+      safety section in `guides/system.md`. *(GHCR-run + supply-chain + provenance were folded
+      into Wave 1's `CONTAINERS.md` / `security-model.md` + Wave 2's `install-and-verify` card,
+      so they are not separate Wave-3 files.)*
+
+**Remaining (lighter, optional):** additional learning-oriented tutorials (AI-agent /
+container / name-your-LAN journeys) — the guides, recipes, and cards now cover these tasks,
+so new tutorials are a nice-to-have, not a gap.
 
 ## Per-capability matrix (the tracker)
 

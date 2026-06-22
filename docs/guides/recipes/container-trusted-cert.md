@@ -13,16 +13,16 @@ it is honest about the one part labels *cannot* do for you.
 
 ## What you'll have at the end
 
-- `app.lan` resolves to the host running the container.
+- `app.internal` resolves to the host running the container.
 - A TLS listener on the host that proxies to the container.
 - A certificate that chains to a CA your network trusts, so clients that trust the root
   don't see an "unknown issuer" warning.
 
 One catch, stated up front because it shapes the whole recipe: the labels get you a
 *trusted chain* and a *DNS name*, but they do **not** mint a certificate whose name is
-`app.lan`. The proxy serves the **host's** certmesh member certificate, whose SANs are the
-host's own name — not `app.lan`. So the genuinely warning-free address is the host's name;
-making `https://app.lan` itself warning-free is the last-mile step at the end. No magic
+`app.internal`. The proxy serves the **host's** certmesh member certificate, whose SANs are the
+host's own name — not `app.internal`. So the genuinely warning-free address is the host's name;
+making `https://app.internal` itself warning-free is the last-mile step at the end. No magic
 per-container cert is injected — see [The honest reality](#the-honest-reality).
 
 ---
@@ -66,7 +66,7 @@ label parser:
 
 | Label | Effect |
 | --- | --- |
-| `koi.announce=app` | Shorthand that sets the service **name**, the **DNS name** (`app`), and `enable=true`. Result: `app._http._tcp` on mDNS (port 80 → HTTP heuristic) and `app.lan` in the local resolver, pointing at the host. |
+| `koi.announce=app` | Shorthand that sets the service **name**, the **DNS name** (`app`), and `enable=true`. Result: `app._http._tcp` on mDNS (port 80 → HTTP heuristic) and `app.internal` in the local resolver, pointing at the host. |
 | `koi.proxy.port=443` | Adds a TLS proxy entry named `app` that **listens on host port 443** and forwards to the container's published port (`8080` here, over plain HTTP on the host loopback). |
 
 The proxy listener binds `0.0.0.0`, so it is reachable from other machines on the LAN
@@ -87,7 +87,7 @@ knowingly). For a custom service type, health path, or TXT records, see the
 
 ```bash
 koi mdns discover _http._tcp      # → app._http._tcp on port 8080
-koi dns lookup app                # → app.lan = <host IP>
+koi dns lookup app                # → app.internal = <host IP>
 koi proxy status                  # → app  :443  127.0.0.1:8080  certmesh  running
 ```
 
@@ -128,8 +128,8 @@ it. Full details and the step-ca/Caddy/mkcert variations are in the
 Now, from the client, the host's name is trusted:
 
 ```bash
-curl https://<host>.lan:443/         # if the host is itself in the zone as <host>.lan,
-                                     # but see the catch below for app.lan specifically
+curl https://<host>.internal:443/         # if the host is itself in the zone as <host>.internal,
+                                     # but see the catch below for app.internal specifically
 ```
 
 ---
@@ -140,29 +140,29 @@ Here is the part the labels can't finish, and why.
 
 The proxy serves the **host's certmesh member certificate**. That certificate's Subject
 Alternative Names are the host's identity — its hostname, `localhost`, `127.0.0.1`, `::1` —
-**not** `app.lan`. (See [certmesh.md → Certificate details](../certmesh.md#certificate-details).)
+**not** `app.internal`. (See [certmesh.md → Certificate details](../certmesh.md#certificate-details).)
 
 So after you trust the root on the client:
 
 - `https://<host-with-a-SAN-match>` → **fully trusted, no warning.** The chain is trusted
   *and* the name matches a SAN.
-- `https://app.lan:443` → trusted chain, but the browser/`curl` still flags a **name
-  mismatch**, because `app.lan` is not in the certificate. The `koi.certmesh` label does
+- `https://app.internal:443` → trusted chain, but the browser/`curl` still flags a **name
+  mismatch**, because `app.internal` is not in the certificate. The `koi.certmesh` label does
   not fix this — there is no per-container cert.
 
-To make `https://app.lan` itself warning-free, you need a certificate whose SAN includes
-`app.lan`. Koi gives you two first-class ways to get one — both produce a cert the same
+To make `https://app.internal` itself warning-free, you need a certificate whose SAN includes
+`app.internal`. Koi gives you two first-class ways to get one — both produce a cert the same
 trusted CA signed:
 
 1. **ACME, in-zone (recommended).** Koi runs an [RFC 8555 ACME server](../acme.md) in front
-   of the CA that issues for any name **inside your Koi DNS zone** (`app.lan` qualifies).
+   of the CA that issues for any name **inside your Koi DNS zone** (`app.internal` qualifies).
    Point Caddy/Traefik/`lego` at Koi's directory, have it trust the root once, and it gets
-   (and auto-renews) a cert for `app.lan`. Front your service with that proxy instead of —
+   (and auto-renews) a cert for `app.internal`. Front your service with that proxy instead of —
    or behind — Koi's passthrough.
 2. **Per-entry cert on disk.** Place a `fullchain.pem` + `key.pem` at
    `<data-dir>/certs/app/` (the proxy entry name). The proxy prefers a per-entry cert over
    the host member cert, so it will serve that one. You issue it however you like, as long
-   as it's signed by the trusted CA and lists `app.lan`. See
+   as it's signed by the trusted CA and lists `app.internal`. See
    [proxy.md → Certificates](../proxy.md#certificates).
 
 This is the substrate doctrine: the labels assemble name + listener + trusted chain
@@ -174,7 +174,7 @@ ACME endpoint to automate it rather than inventing a private mechanism.
 ## Cleanup
 
 Stop the container and every resource it created is removed within seconds — the mDNS
-announcement, the `app.lan` DNS entry, the health check, and the `:443` proxy listener:
+announcement, the `app.internal` DNS entry, the health check, and the `:443` proxy listener:
 
 ```bash
 docker stop <container>
@@ -195,7 +195,7 @@ koi trust remove <name>     # the name from `koi trust list`
 - [runtime.md](../runtime.md) — every label, the start/stop lifecycle, port heuristics.
 - [proxy.md](../proxy.md) — how the proxy resolves its cert and the per-entry override.
 - [certmesh.md](../certmesh.md) — what the member cert covers, unlock, the CA file layout.
-- [acme.md](../acme.md) — getting an in-zone cert (the warning-free `app.lan` path).
+- [acme.md](../acme.md) — getting an in-zone cert (the warning-free `app.internal` path).
 - [trust how-to](../trust.md) — `koi trust` in full.
-- [security model](../reference/security-model.md) — the daemon access token, for any
+- [security model](../../reference/security-model.md) — the daemon access token, for any
   mutating HTTP call you script instead of using the CLI.

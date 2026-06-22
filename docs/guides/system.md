@@ -97,18 +97,52 @@ This design is deliberate. Uninstalling a service shouldn't destroy the state it
 
 ## Factory reset
 
-The `koi factory-reset` command destroys the entire program data folder and recreates it from scratch. It wipes:
+> **DESTRUCTIVE — there is no undo.** `koi factory-reset` deletes the **entire** Koi
+> data directory and recreates it empty. Everything Koi has ever stored is gone:
+
+The `koi factory-reset` command destroys the whole program data folder and recreates it from scratch. It wipes:
 
 - mDNS registrations
-- CA private keys and every certificate ever issued
-- DNS records
+- **CA private keys** and **every certificate ever issued**
+- DNS records and static entries
 - Health-check configurations
 - Proxy routes
-- Audit logs and rosters
+- **The audit log** and rosters
+- Log files and `config.toml`
 
-To prevent accidents, the command prompts for confirmation: you must type `RESET` to proceed. When running non-interactively (e.g. for scripting), use the `--json` flag to skip the confirmation prompt.
+There is no recovery path. After a reset, a **member** node must re-enroll into the mesh, and a **CA root** node must be re-created from scratch (`koi certmesh create`) — every certificate it had issued becomes unverifiable and the whole mesh loses trust in it. `koi factory-reset` requires elevated privileges (Administrator / sudo) because it removes machine-scoped state.
 
-**This is irreversible.** If this node is the certmesh CA root, every certificate it issued becomes unverifiable and the entire mesh will lose trust.
+### Back up first
+
+If the mesh matters, take an encrypted backup of the certmesh state **before** you reset:
+
+```
+koi certmesh backup ./koi-backup.bundle
+```
+
+That bundle (restored later with `koi certmesh restore <path>`) is the only way to bring the CA back. Factory reset itself keeps no copy.
+
+### Confirmation
+
+To prevent accidents, factory reset routes through the same confirmation gate as every destructive Koi command:
+
+- **Interactive terminal:** you must type `RESET` (exactly) to proceed.
+- **Non-interactive (`--json`, piped, or redirected):** the command **refuses** unless you pass the global `--yes` flag — it fails loudly rather than silently wiping data. Scripts that genuinely intend a reset must opt in with `--yes`:
+
+  ```
+  koi factory-reset --yes
+  ```
+
+### factory-reset vs. certmesh destroy
+
+These are different blast radii — reach for the smaller one when you can:
+
+| Command                | Scope                                                                 | Confirm |
+| ---------------------- | -------------------------------------------------------------------- | ------- |
+| `koi certmesh destroy` | **Certmesh only** — CA keys, certificates, enrollments, audit log. Leaves DNS, proxy, health, and the rest of Koi untouched. | type `DESTROY` |
+| `koi factory-reset`    | **Everything** — the entire data directory, including all of the above plus DNS, proxy, health, UDP, logs, and config. | type `RESET` |
+
+If you only need to tear down the certificate mesh, use `koi certmesh destroy`. Reserve `factory-reset` for when you genuinely want a clean machine.
 
 
 ---
@@ -186,4 +220,4 @@ Koi writes a breadcrumb file when the daemon starts, telling the CLI where to co
 
 ### Something is deeply broken
 
-That's what `factory-reset` is for. It's the nuclear option - but sometimes nuclear is what you need.
+That's what `factory-reset` is for. It's the nuclear option, and it is irreversible — read [Factory reset](#factory-reset) first, and back up the mesh with `koi certmesh backup <path>` before you pull the trigger.
