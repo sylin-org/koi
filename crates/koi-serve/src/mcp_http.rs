@@ -5,7 +5,7 @@
 //! client), this source holds the live domain cores directly and calls their
 //! async facades — no HTTP self-call, no `spawn_blocking`. It reproduces the same
 //! JSON shapes the REST endpoints return so tool output is identical across
-//! transports. Cross-domain wiring lives here in the binary, never in koi-mcp
+//! transports. Cross-domain wiring lives here in koi-serve, never in koi-mcp
 //! (which stays free of domain-crate deps).
 
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::DaemonCores;
+use koi_compose::cores::Cores as DaemonCores;
 
 /// Capacity of the resource-change fan-out channel (one sender, many MCP subscribers).
 const CHANGE_CHANNEL_CAPACITY: usize = 256;
@@ -481,7 +481,7 @@ mod tests {
         use rmcp::ServiceExt as _;
 
         let token = "itest-token";
-        // Mount exactly as adapters::http::start does: the rmcp service nested at
+        // Mount exactly as http::start does: the rmcp service nested at
         // /v1/mcp, behind the production dat_auth_middleware. Empty allowed_hosts
         // disables rmcp's Host check (the client sends Host: 127.0.0.1:<port>).
         let service = koi_mcp::streamable_http_service(std::sync::Arc::new(MockSource), Vec::new());
@@ -491,7 +491,7 @@ mod tests {
                 .nest_service("/v1/mcp", service)
                 .layer(axum::middleware::from_fn(move |req, next| {
                     let expected = expected.clone();
-                    crate::adapters::http::dat_auth_middleware(req, next, expected)
+                    crate::http::dat_auth_middleware(req, next, expected)
                 }));
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

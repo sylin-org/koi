@@ -167,7 +167,7 @@ async fn start_listeners(
         let token = token.clone();
         let enr = enrollment.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = crate::adapters::mtls::start(
+            if let Err(e) = crate::mtls::start(
                 port,
                 cm,
                 &enr.cert_pem,
@@ -197,14 +197,8 @@ async fn start_listeners(
             let token = token.clone();
             let enr = enrollment.clone();
             handles.push(tokio::spawn(async move {
-                if let Err(e) = crate::adapters::acme::start(
-                    port,
-                    acme_state,
-                    &enr.cert_pem,
-                    &enr.key_pem,
-                    token,
-                )
-                .await
+                if let Err(e) =
+                    crate::acme::start(port, acme_state, &enr.cert_pem, &enr.key_pem, token).await
                 {
                     tracing::error!(error = %e, "ACME adapter failed");
                 }
@@ -220,9 +214,7 @@ async fn start_listeners(
     // Reactive: published now that the CA exists; withdrawn in `stop_listeners`.
     // No-op when HTTP or mDNS is disabled (no port / no core to register on).
     let announce_id = match (mdns, cfg.announce_http_port) {
-        (Some(mdns), Some(http_port)) => {
-            crate::infra::register_certmesh_record(certmesh, mdns, http_port).await
-        }
+        (Some(mdns), Some(http_port)) => register_certmesh_record(certmesh, mdns, http_port).await,
         _ => None,
     };
 
@@ -242,4 +234,58 @@ fn local_fqdn() -> String {
         .and_then(|os| os.into_string().ok())
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| "localhost".to_string())
+}
+
+/// Advertise the certmesh CA on the LAN with its fingerprint in TXT (ADR-017 F12).
+///
+/// Publishes EXACTLY ONE `_certmesh._tcp` mDNS record (on the HTTP port, where the CA
+/// serves `/status` and `/trust-bundle`) carrying `fp=<ca_fingerprint>` plus the ADR-020
+/// posture stamp. A joiner cross-checks `fp=` against its invite pin — a convenience hint,
+/// never a trust source (the authoritative check is the joiner's pinned-fingerprint
+/// preflight). Returns `None` when no CA is initialized yet. Reactive: published when the
+/// CA appears (here) and withdrawn in [`stop_listeners`]; the mDNS goodbye also withdraws
+/// it on shutdown. (Moved from the binary's `infra` so the trust plane owns it end-to-end.)
+async fn register_certmesh_record(
+    certmesh: &Arc<koi_certmesh::CertmeshCore>,
+    mdns: &Arc<koi_mdns::MdnsCore>,
+    http_port: u16,
+) -> Option<String> {
+    // Only advertise once a CA exists — the fingerprint is the whole point of the record.
+    let fingerprint = certmesh.ca_fingerprint().await?;
+
+    let hostname = hostname::get()
+        .ok()
+        .and_then(|os| os.into_string().ok())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let mut txt = std::collections::HashMap::new();
+    txt.insert("version".to_string(), env!("CARGO_PKG_VERSION").to_string());
+    txt.insert("name".to_string(), format!("Koi CA ({hostname})"));
+    // Stamp the node's trust state (posture/fp/expires) so discoverers read the mesh's
+    // trust map directly (ADR-020 §8). `fp=` stays the joiner's disambiguation hint
+    // (ADR-017 F12); all advisory — the pinned-fingerprint preflight + `verify` remain
+    // the authority (ADR-016 §2 "ask Koi, don't trust the wire").
+    let expires_at = certmesh
+        .local_identity()
+        .await
+        .map(|id| id.renewal.expires_at);
+    koi_common::peer::stamp(&mut txt, certmesh.posture(), Some(&fingerprint), expires_at);
+    let payload = koi_mdns::protocol::RegisterPayload {
+        name: format!("Koi CA ({hostname})"),
+        service_type: koi_certmesh::CERTMESH_SERVICE_TYPE.to_string(),
+        port: http_port,
+        ip: None,
+        lease_secs: None,
+        txt,
+    };
+    match mdns.register(payload) {
+        Ok(result) => {
+            tracing::info!(id = %result.id, port = http_port, fp = %fingerprint, "Certmesh CA announced via mDNS (_certmesh._tcp)");
+            Some(result.id)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to announce certmesh CA via mDNS");
+            None
+        }
+    }
 }

@@ -730,12 +730,12 @@ impl Config {
         let mtls_port = std::env::var("KOI_MTLS_PORT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(crate::adapters::mtls::DEFAULT_MTLS_PORT);
+            .unwrap_or(koi_serve::mtls::DEFAULT_MTLS_PORT);
 
         let acme_port = std::env::var("KOI_ACME_PORT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(crate::adapters::acme::DEFAULT_ACME_PORT);
+            .unwrap_or(koi_serve::acme::DEFAULT_ACME_PORT);
 
         let pipe_path = std::env::var("KOI_PIPE")
             .ok()
@@ -856,8 +856,8 @@ impl Default for Config {
         Self {
             data_dir,
             http_port: DEFAULT_HTTP_PORT,
-            mtls_port: crate::adapters::mtls::DEFAULT_MTLS_PORT,
-            acme_port: crate::adapters::acme::DEFAULT_ACME_PORT,
+            mtls_port: koi_serve::mtls::DEFAULT_MTLS_PORT,
+            acme_port: koi_serve::acme::DEFAULT_ACME_PORT,
             pipe_path: default_pipe_path(),
             http_bind: "loopback".to_string(),
             no_http: false,

@@ -5,6 +5,7 @@ members = [
     "crates/koi-client",
     "crates/koi-dashboard",
     "crates/koi-compose",
+    "crates/koi-serve",
     "crates/koi-embedded",
     "crates/koi-common",
     "crates/koi-mdns",
@@ -39,6 +40,7 @@ koi-client = { path = "crates/koi-client", version = "=0.4.2" }
 # pass-throughs. Crates with no optional features are left at the default.
 koi-dashboard = { path = "crates/koi-dashboard", version = "=0.4.2", default-features = false }
 koi-compose = { path = "crates/koi-compose", version = "=0.4.2" }
+koi-serve = { path = "crates/koi-serve", version = "=0.4.2" }
 koi-embedded = { path = "crates/koi-embedded", version = "=0.4.2" }
 koi-mdns = { path = "crates/koi-mdns", version = "=0.4.2" }
 koi-config = { path = "crates/koi-config", version = "=0.4.2" }

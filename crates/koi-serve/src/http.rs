@@ -20,7 +20,7 @@ use utoipa::OpenApi;
 use utoipa::ToSchema;
 use utoipa_scalar::{Scalar, Servable};
 
-use crate::DaemonCores;
+use koi_compose::cores::Cores as DaemonCores;
 use koi_dashboard::browser::BrowserState;
 use koi_dashboard::dashboard::DashboardState;
 use koi_dashboard::meta_browse::LazyMetaBrowse;
@@ -215,7 +215,7 @@ pub async fn start(
     // A tower Service (rmcp), so use nest_service. Token-authenticated for all
     // methods via the dat_auth_middleware carve-out below. Not in /openapi.json.
     if mcp_http_enabled {
-        let source = Arc::new(crate::adapters::mcp_http::CoreSource::new(
+        let source = Arc::new(crate::mcp_http::CoreSource::new(
             cores.clone(),
             started_at,
             bind_ip.to_string(),
@@ -592,7 +592,7 @@ async fn health() -> &'static str {
 async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<serde_json::Value> {
     // The capability ladder is assembled once in koi-compose, shared with the dashboard and
     // embedded snapshots. `/v1/status` emits just the status (no `enabled` field).
-    let cores = crate::DaemonCores {
+    let cores = DaemonCores {
         mdns: state.mdns.clone(),
         certmesh: state.certmesh.clone(),
         dns: state.dns.clone(),
@@ -714,7 +714,7 @@ async fn prometheus_sd_handler(
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<PrometheusSdParams>,
 ) -> Response {
-    use crate::adapters::prometheus_sd::{build_target_groups, Slice};
+    use crate::prometheus_sd::{build_target_groups, Slice};
 
     let slice = Slice::from_query(params.include.as_deref());
 

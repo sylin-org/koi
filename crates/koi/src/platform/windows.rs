@@ -492,7 +492,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
 
         // Dashboard state
         let dashboard_state =
-            crate::adapters::dashboard::build_dashboard_state(&cores, started_at, "daemon");
+            koi_serve::dashboard::build_dashboard_state(&cores, started_at, "daemon");
         tasks.push(koi_dashboard::forward::spawn_event_forwarder(
             koi_dashboard::forward::ForwarderCores {
                 mdns: cores.mdns.clone(),
@@ -526,7 +526,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
             let mdns_snap = cores.mdns_snapshot.clone();
             let mcp_http = !config.no_mcp_http;
             tasks.push(tokio::spawn(async move {
-                if let Err(e) = crate::adapters::http::start(
+                if let Err(e) = koi_serve::http::start(
                     c,
                     bind_ip,
                     port,
@@ -550,9 +550,9 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         // (ADR-020 P4c / ADR-016 §2). Sharing it fixes prior parity defects: this
         // path used to start mTLS but silently omit ACME, and announced the CA only
         // at boot (startup-gated).
-        crate::adapters::trust_plane::spawn(
+        koi_serve::trust_plane::spawn(
             &cores,
-            crate::adapters::trust_plane::TrustPlaneConfig {
+            koi_serve::trust_plane::TrustPlaneConfig {
                 mtls_port: config.mtls_port,
                 acme_port: config.acme_port,
                 no_acme: config.no_acme,
@@ -570,7 +570,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 let path = config.pipe_path.clone();
                 let token = cancel.clone();
                 tasks.push(tokio::spawn(async move {
-                    if let Err(e) = crate::adapters::pipe::start(c, path, token).await {
+                    if let Err(e) = koi_serve::pipe::start(c, path, token).await {
                         tracing::error!(error = %e, "IPC adapter failed");
                     }
                 }));

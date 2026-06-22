@@ -2306,6 +2306,7 @@ dependencies = [
  "koi-mdns",
  "koi-proxy",
  "koi-runtime",
+ "koi-serve",
  "koi-udp",
  "libc",
  "open",
@@ -2379,6 +2380,46 @@ dependencies = [
  "tokio-util",
  "tracing",
  "utoipa",
+]
+
+[[package]]
+name = "koi-serve"
+version = "0.4.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "hickory-proto",
+ "hostname",
+ "hyper-util",
+ "if-addrs",
+ "koi-certmesh",
+ "koi-common",
+ "koi-compose",
+ "koi-config",
+ "koi-dashboard",
+ "koi-dns",
+ "koi-health",
+ "koi-mcp",
+ "koi-mdns",
+ "koi-proxy",
+ "koi-runtime",
+ "koi-udp",
+ "rcgen 0.13.2",
+ "rmcp",
+ "rustls",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "utoipa",
+ "utoipa-scalar",
 ]
 
 [[package]]

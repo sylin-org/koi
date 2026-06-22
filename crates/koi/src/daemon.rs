@@ -10,7 +10,7 @@ use crate::cli::Config;
 use crate::infra::{
     breadcrumb_endpoint, resolve_http_bind_ip, shutdown_signal, startup_diagnostics,
 };
-use crate::{adapters, platform};
+use crate::platform;
 
 // ── Daemon mode ──────────────────────────────────────────────────────
 
@@ -67,7 +67,7 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     .unwrap_or_default();
 
     // ── Dashboard state ──
-    let dashboard_state = adapters::dashboard::build_dashboard_state(&cores, started_at, "daemon");
+    let dashboard_state = koi_serve::dashboard::build_dashboard_state(&cores, started_at, "daemon");
     tasks.push(koi_dashboard::forward::spawn_event_forwarder(
         koi_dashboard::forward::ForwarderCores {
             mdns: cores.mdns.clone(),
@@ -102,7 +102,7 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
         let mdns_snap = cores.mdns_snapshot.clone();
         let mcp_http = !config.no_mcp_http;
         tasks.push(tokio::spawn(async move {
-            if let Err(e) = adapters::http::start(
+            if let Err(e) = koi_serve::http::start(
                 c,
                 bind_ip,
                 port,
@@ -125,9 +125,9 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     // One posture-reactive supervisor owns all three and brings them up/down as the
     // certmesh CA appears or is destroyed — no restart (ADR-020 P4c / ADR-016 §2).
     // Shared verbatim with the Windows service so the two boot paths cannot drift.
-    adapters::trust_plane::spawn(
+    koi_serve::trust_plane::spawn(
         &cores,
-        adapters::trust_plane::TrustPlaneConfig {
+        koi_serve::trust_plane::TrustPlaneConfig {
             mtls_port: config.mtls_port,
             acme_port: config.acme_port,
             no_acme: config.no_acme,
@@ -145,7 +145,7 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             let path = config.pipe_path.clone();
             let token = cancel.clone();
             tasks.push(tokio::spawn(async move {
-                if let Err(e) = adapters::pipe::start(c, path, token).await {
+                if let Err(e) = koi_serve::pipe::start(c, path, token).await {
                     tracing::error!(error = %e, "IPC adapter failed");
                 }
             }));

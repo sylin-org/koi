@@ -24,8 +24,8 @@ use koi_dashboard::dashboard::{DashboardIdentity, DashboardState};
 // shared `koi_compose::snapshot::build_dashboard_snapshot`.
 
 /// Construct the `DashboardState` for the daemon.
-pub(crate) fn build_dashboard_state(
-    cores: &crate::DaemonCores,
+pub fn build_dashboard_state(
+    cores: &koi_compose::cores::Cores,
     started_at: Instant,
     mode: &'static str,
 ) -> DashboardState {
