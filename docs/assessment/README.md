@@ -7,7 +7,7 @@ durable reference for future planning sessions (human or AI).
 
 - **[realignment-2026-06-22.md](realignment-2026-06-22.md)** — ⭐ **current status** (2026-06-22):
   every defect, lean-plan move, shed item, and stage from the snapshot below, mapped to its
-  present state against `dev` HEAD with commit/file evidence (**10 of 12 verified defects
+  present state against `dev` HEAD with commit/file evidence (**11 of 12 verified defects
   resolved**). Read this for *"what's actually left"*; read the snapshot below for the original
   analysis (preserved unchanged as history).
 - **[2026-06-maturity-assessment.md](2026-06-maturity-assessment.md)** — the synthesis

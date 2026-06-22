@@ -8,10 +8,11 @@
 
 ## 1. Headline
 
-**10 of 12 verified defects are fully resolved.** The two remaining are PARTIAL, and neither is a live code bug:
+**11 of 12 verified defects are fully resolved.** The lone remaining item is PARTIAL and is *not* a live code bug:
 
-- **D3** — auth middleware is correct in code; the gap is *documentation staleness* (examples still show tokenless POSTs).
 - **D7** — dashboard XSS is structurally fixed; one sub-item, the **unauthenticated `GET /v1/certmesh/log` audit endpoint**, is still open by design (GET-exempt).
+
+(D3, originally flagged as docs-staleness, was **re-verified DONE on 2026-06-22**: every live mutation example carries `x-koi-token`; only archived/historical docs still quote the old tokenless examples.)
 
 All five *original* critical defects (D1, D2, D4, D5, D6) are closed. The five structural moves are landed or substantially landed (M2 PARTIAL). The shed list is mostly executed, with two maintainer-decision items still open.
 
@@ -29,7 +30,7 @@ The dominant structural change since 2026-06-11 is the **`koi-serve` extraction*
 |----|----------------|--------|---------------------------|
 | **D1** | koi-proxy panics at listener start (`/*path` under axum 0.8) inside `tokio::spawn`, invisibly; `status()` hardcodes `running:true`; second panic in cert-watch callback | **DONE** | `crates/koi-proxy/src/listener.rs:74-127` — `spawn_listener` returns a `watch::Receiver` reflecting real `ListenerStatus` (Starting/Running/Error/Stopped); bind errors surface as `Error`. No wildcard `/*path` route. `tls.rs:104-154` cert-watch uses `mpsc` `try_send` from the notify thread (no `tokio::spawn` off that thread). `ProxyRuntime::status()` (`lib.rs:246-263`) reads real state from the watch channel. Regression test `data_plane_tests.rs:231-246` `listener_reaches_running_without_panic`. |
 | **D2** | HTTP adapter binds 127.0.0.1 only; no bind flag | **DONE** | `cli.rs` `--http-bind` (env `KOI_HTTP_BIND`, default `loopback`); `infra.rs::resolve_http_bind_ip()` resolves loopback/bridge/explicit; wired in `daemon.rs`, `platform/windows.rs:469`, and `koi-serve/src/serve.rs:96` (`ServeConfig.bind_ip`); `koi-serve/src/http.rs:354` binds `cfg.bind_ip`, not a literal. |
-| **D3** | All non-GET endpoints require `x-koi-token`, but docs show tokenless POSTs / never mention auth | **PARTIAL** | **Code is correct:** `koi-serve/src/http.rs:585-633` `dat_auth_middleware` rejects unauthenticated mutations with 401 (exempting only `POST /v1/certmesh/join` enrollment and OPTIONS preflight). **Remaining gap is docs staleness** — example requests and endpoint descriptions still omit the token. Not a code bug. |
+| **D3** | All non-GET endpoints require `x-koi-token`, but docs show tokenless POSTs / never mention auth | **DONE** | Code: `koi-serve/src/http.rs:585-633` `dat_auth_middleware` rejects unauthenticated mutations with 401 (exempting only `POST /v1/certmesh/join` + OPTIONS). Docs (re-verified 2026-06-22): every **live** mutation example carries `-H "x-koi-token: …"` — `README.md:42`, all CONTAINERS.md examples, `tutorials/getting-started.md:199`, `guides/api-authentication.md`, `reference/security-model.md`, `guides/recipes/container-udp.md`; `http-api.md` has a full *Authentication & Security* section. The only tokenless POSTs left are in `docs/archive/` and the assessment's own findings — historical by design (the archive quotes the pre-fix state; covered by S-archive). |
 | **D4** | Crates.io publish silently broken (no pipefail; crates missing from list) | **DONE** | `.github/workflows/publish.yml:37` `set -euo pipefail`; CRATES array (lines 42-60) now includes `koi-serve` (commit `32f6533`); dynamic crates.io inventory phase + `--verify`. |
 | **D5** | Windows service never spawns the runtime orchestrator / certmesh renewal-roster-failover tasks (drifted wiring) | **DONE** | `platform/windows.rs:436-456` `run_service` calls `koi_compose::cores::build_cores` (same as daemon — spawns all orchestrator/renewal/roster/failover tasks); `485-493` `spawn_enrollment_approval`; `500-522` `koi_serve::serve`. Wiring is now identical to the foreground daemon (refactors `ca9d938`/`3160ec5`/`b22cc90`). |
 | **D6** | mDNS browse facade hands out independent handles but mdns-sd keeps one querier per type (concurrent discovers kill each other; resolve kills subscribers) | **DONE** | `koi-mdns/src/daemon.rs:54-67` `TypeBrowse` refcount + per-type `broadcast::Sender`; `subscribe_type` (288-342) shares one real browse via `Arc<TypeGuard>`; `TypeGuard::drop` (598-634) stops/aborts only on last ref; `resolve()` (349-392) uses a temporary subscription that never kills subscribers; warm-cache replay (324-329) cures cold-resolve. (Cross-checked by the two-box integration suite, 13/0.) |
@@ -97,7 +98,7 @@ The dominant structural change since 2026-06-11 is the **`koi-serve` extraction*
 ## 7. Genuinely still open (prioritized backlog)
 
 1. **D7 — unauthenticated `GET /v1/certmesh/log`.** Security-relevant: the CA audit log is readable without a token because it is GET-exempt in `dat_auth_middleware` (`koi-serve/src/http.rs:605-609`). Decide: carve `/v1/certmesh/log` out of the GET exemption (like `/v1/mcp`), or accept-and-document.
-2. **D3 — docs staleness on auth.** Update HTTP-API docs/examples to show the `x-koi-token` header on all mutations; the code is already correct. Low effort, removes a correctness-vs-docs contradiction.
+2. ~~**D3 — docs staleness on auth.**~~ **RESOLVED on re-verify (2026-06-22)** — every live mutation example already carries `x-koi-token`; the only tokenless POSTs left are in `docs/archive/` (historical, covered by S-archive). No action.
 3. **Stage 3 hardening completion.** Finish the security audit pass behind the new test scaffolding (~50-60% done).
 4. **Stage 4 packaging.** Complete distribution/packaging beyond MCP + crates.io publish (installers, release artifacts).
 5. **M2 — certmesh core decomposition.** Split the remaining ~2400-line `koi-certmesh/src/lib.rs` into the planned smaller modules (CA-creation and init_ceremony already extracted).
