@@ -42,24 +42,34 @@ Key properties relevant to reports:
 - Certificate-authority private keys are encrypted at rest (envelope encryption); the CA
   key is unlocked with a passphrase or an OS-keychain-sealed credential.
 
-### Deliberately unauthenticated reads
+### Read authorization on a non-loopback bind
 
-When the HTTP adapter is exposed on a non-loopback bind, a small set of **read-only** GETs
-is intentionally answerable without the token, because members need them to bootstrap and
-they carry no secrets:
+Reads are token-free over loopback (local tooling — the CLI, the dashboard). When the HTTP
+adapter is exposed on a non-loopback bind, reads fall into three tiers based on the **peer**
+address (a loopback peer stays exempt; a remote peer is gated):
 
-- `GET /v1/certmesh/trust-bundle` — the signed, self-verifying mesh-truth bundle (member
-  hostnames, cert fingerprints, expiries, the revocation list, the CA cert). It is treated
-  like a CRL: integrity comes from its signature, not from access control.
-- `GET /v1/certmesh/status`, `GET /v1/certmesh/diagnose`, `GET /v1/dns/list`,
-  `GET /v1/dns/zone` — membership counts, trust-doctor output, and the resolvable name→IP
-  map. This is LAN-topology reconnaissance, not credential material.
+- **Always open (load-bearing in the unauthenticated protocol):**
+  - `GET /v1/certmesh/trust-bundle` — the signed, self-verifying mesh-truth bundle. Members
+    pull it over plain HTTP; it is treated like a CRL — integrity comes from its ES256
+    signature against the pinned CA fingerprint, not from access control.
+  - `GET /v1/certmesh/status` — a joining node reads `ca_fingerprint` from it to pin the CA
+    *before it holds any credential* (the enrollment preflight). Membership counts only; no
+    secrets.
+- **Loopback-only (token required from a remote peer):**
+  - `GET /v1/certmesh/diagnose` (the full trust-doctor posture), `GET /v1/dns/list`, and
+    `GET /v1/dns/zone` (the resolvable name→IP map). These are operational/topology
+    reconnaissance not needed by remote peers, so a remote caller must present the token.
+- **Always token-gated, even on GET** — reads that carry secrets or live channels: the CA
+  audit log (`/v1/certmesh/log`), the MCP transport (`/v1/mcp`), and the UDP surface
+  (`/v1/udp/status`, `/v1/udp/recv/{id}`).
 
-Reads that **do** carry secrets or live channels are token-gated even on GET: the CA audit
-log (`/v1/certmesh/log`), the MCP transport (`/v1/mcp`), and the UDP surface
-(`/v1/udp/status`, `/v1/udp/recv/{id}`). If you do not want the topology/roster readable by
-the LAN, keep the default loopback bind. CORS reflection is restricted to exact loopback
-origins, so a browser on another origin cannot read these cross-origin.
+If you do not want even the always-open roster/status readable by the LAN, keep the default
+loopback bind. CORS reflection is restricted to exact loopback origins, so a browser on
+another origin cannot read these cross-origin.
+
+DNS query rate limiting is **per source IP** with a whole-resolver backstop, so one noisy
+LAN peer cannot starve resolution for the rest; the per-client budget is `--dns-qps`
+(env `KOI_DNS_QPS`, default 200).
 
 Out of scope: physical access to a node, compromise of a machine already inside the trust
 boundary, and the unmanaged-device root-trust problem (installing the mesh root on phones /

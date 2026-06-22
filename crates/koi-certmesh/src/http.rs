@@ -45,8 +45,9 @@ pub mod paths {
     /// Local: install a CA-signed cert next to the member key.
     pub const MEMBER_CERT: &str = "/v1/certmesh/member-cert";
     pub const STATUS: &str = "/v1/certmesh/status";
-    /// Trust-doctor report (ADR-020 §13). A GET, so the DAT middleware exempts it —
-    /// it carries no secrets (the same posture/renewal state the dashboard shows).
+    /// Trust-doctor report (ADR-020 §13). Loopback-exempt; the DAT middleware
+    /// requires the token from a remote peer (gated alongside `/v1/dns/{list,zone,entries}`)
+    /// since the full posture is operational detail a remote peer needn't read.
     pub const DIAGNOSE: &str = "/v1/certmesh/diagnose";
     /// Signed, monotonic trust bundle (ADR-017 P1). A GET, so the DAT middleware
     /// exempts it — it is integrity-protected by its own signature, like a CRL.

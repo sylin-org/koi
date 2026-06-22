@@ -575,13 +575,15 @@ impl RequestHandler for DnsHandler {
                 .unwrap_or_else(|_| error_response_info(info.metadata, ResponseCode::Refused));
         }
 
-        if !self.core.rate_limiter.allow() {
+        if !self.core.rate_limiter.allow(request.src().ip()) {
+            // REFUSED (not SERVFAIL) when shedding load: SERVFAIL invites immediate
+            // client retries, amplifying a flood; REFUSED signals "won't serve".
             let builder = MessageResponseBuilder::from_message_request(request);
-            let response = builder.error_msg(info.metadata, ResponseCode::ServFail);
+            let response = builder.error_msg(info.metadata, ResponseCode::Refused);
             return response_handle
                 .send_response(response)
                 .await
-                .unwrap_or_else(|_| error_response_info(info.metadata, ResponseCode::ServFail));
+                .unwrap_or_else(|_| error_response_info(info.metadata, ResponseCode::Refused));
         }
 
         let query = info.query;

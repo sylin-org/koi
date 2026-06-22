@@ -212,6 +212,22 @@ LANHZ=$(mssh "curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://$CA_IP:
 echo "    member->CA /healthz = $LANHZ"
 [ "$LANHZ" = 200 ] && ok "unified router reachable over the LAN" || bad "CA HTTP not reachable over LAN ($LANHZ)"
 
+echo "== 18. Stage-3 b1: trust/zone reads gated for a REMOTE peer, open on loopback =="
+# A remote peer (member granite) must NOT read /v1/dns/list without the token, but MUST
+# with it. /v1/certmesh/status stays open even for a remote peer (the join preflight reads
+# ca_fingerprint from it BEFORE holding any credential — gating it would break enrollment).
+# A loopback caller (this CA box) reads /v1/dns/list token-free.
+REMOTE_DNS_NOTOK=$(mssh "curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://$CA_IP:5641/v1/dns/list 2>/dev/null" || echo 000)
+REMOTE_DNS_TOK=$(mssh "curl -s -o /dev/null -w '%{http_code}' --max-time 4 -H 'x-koi-token: $TOKEN' http://$CA_IP:5641/v1/dns/list 2>/dev/null" || echo 000)
+REMOTE_STATUS=$(mssh "curl -s -o /dev/null -w '%{http_code}' --max-time 4 http://$CA_IP:5641/v1/certmesh/status 2>/dev/null" || echo 000)
+LOOPBACK_DNS=$(curl -s -o /dev/null -w '%{http_code}' "$CA/v1/dns/list" 2>/dev/null)
+echo "    remote dns/list no-token=$REMOTE_DNS_NOTOK with-token=$REMOTE_DNS_TOK; remote status=$REMOTE_STATUS; loopback dns/list=$LOOPBACK_DNS"
+if [ "$REMOTE_DNS_NOTOK" = 401 ] && [ "${REMOTE_DNS_TOK:0:1}" = 2 ] && [ "$REMOTE_STATUS" = 200 ] && [ "$LOOPBACK_DNS" = 200 ]; then
+  ok "b1: remote zone-read gated (401→2xx), status stays open, loopback free"
+else
+  bad "b1 gate wrong (remote no-tok=$REMOTE_DNS_NOTOK tok=$REMOTE_DNS_TOK status=$REMOTE_STATUS loop=$LOOPBACK_DNS)"
+fi
+
 echo
 echo "==================== RESULT: $PASS passed, $FAIL failed ===================="
 [ "$FAIL" -eq 0 ]

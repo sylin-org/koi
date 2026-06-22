@@ -15,6 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Published container image** — `ghcr.io/sylin-org/koi`, multi-arch
   (linux/amd64 + linux/arm64), assembled on each release from the exact musl
   binaries. `docker run -d ghcr.io/sylin-org/koi:latest` (daemon via default CMD).
+- **`--dns-qps` / `KOI_DNS_QPS`** — configure the DNS query rate limit (default 200).
+
+### Security
+- **DNS rate limiting is now per source IP** with a whole-resolver backstop, so a
+  single noisy (or hostile) LAN peer can no longer starve resolution for everyone —
+  the previous single global bucket's failure mode. The tracked-client map is bounded
+  (spoofable UDP sources can't grow it without limit).
+- **Trust/zone reads are gated for remote peers on a non-loopback bind.**
+  `GET /v1/certmesh/diagnose`, `/v1/dns/list`, and `/v1/dns/zone` now require the
+  `x-koi-token` from a non-loopback peer (loopback callers — the CLI, the dashboard —
+  stay token-free). `/v1/certmesh/status` and `/v1/certmesh/trust-bundle` stay open by
+  design: they are load-bearing in the unauthenticated cross-host enrollment / trust-sync
+  protocol (and the trust-bundle is ES256-signed and self-verifying).
 
 ## [0.4.2] - 2026-06-21
 

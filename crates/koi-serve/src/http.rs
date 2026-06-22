@@ -3,10 +3,11 @@
 //! Mounts domain routes, health check, unified status, CORS, and OpenAPI docs.
 //! Called by `daemon_mode()` in `main.rs` and `run_service()` in `platform/windows.rs`.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::Extension;
+use axum::extract::{ConnectInfo, Extension};
 use axum::http::{header, HeaderName, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
@@ -364,11 +365,16 @@ pub async fn start(
         let _ = tx.send(local_addr);
     }
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            cancel.cancelled().await;
-        })
-        .await?;
+    // ConnectInfo carries the peer address so the auth middleware can keep the
+    // trust/zone reads token-free for loopback callers but gated for remote peers.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        cancel.cancelled().await;
+    })
+    .await?;
 
     tracing::debug!("HTTP adapter stopped");
     Ok(())
@@ -613,9 +619,12 @@ fn is_loopback_origin(origin: &str) -> bool {
 /// Daemon Access Token (DAT) authentication middleware.
 ///
 /// GET, HEAD, and OPTIONS requests are exempt (read-only, CORS preflight) —
-/// except for `/v1/mcp` and `/v1/certmesh/log`, which require the token even on
-/// GET. All other methods require a valid `x-koi-token` header. Uses
-/// constant-time comparison to prevent timing attacks.
+/// except for `/v1/mcp` and `/v1/certmesh/log` (token required even on GET), the
+/// `/v1/udp/` surface, and the protected zone/posture reads
+/// (`/v1/certmesh/diagnose`, `/v1/dns/{list,zone}`) which stay exempt only for a
+/// loopback peer and require the token from a remote one. All other methods
+/// require a valid `x-koi-token` header. Uses constant-time comparison to
+/// prevent timing attacks.
 pub(crate) async fn dat_auth_middleware(
     req: Request<Body>,
     next: Next,
@@ -632,10 +641,10 @@ pub(crate) async fn dat_auth_middleware(
     // The CA audit log is the one GET that is NOT read-safe to expose: it
     // narrates the full trust history (member joins/revocations, auth rotations,
     // failed unlock attempts, backup/restore). Carve it out of the GET exemption
-    // so reading it requires the daemon token — exactly like /v1/mcp. The sibling
-    // read GETs (status, diagnose, trust-bundle) stay exempt: they carry no
-    // secrets or are integrity-protected. The `koi certmesh log` CLI already
-    // sends the token (require_daemon → auth_get).
+    // so reading it requires the daemon token — exactly like /v1/mcp, on every
+    // peer. status and trust-bundle stay GET-exempt on every peer (load-bearing in
+    // the unauthenticated cross-host protocol); diagnose is loopback-gated below.
+    // The `koi certmesh log` CLI already sends the token (require_daemon → auth_get).
     let is_audit_log = path == koi_certmesh::http::paths::LOG;
     // The UDP surface is carved out of the GET exemption too: `/v1/udp/status`
     // enumerates every binding's id and `/v1/udp/recv/{id}` streams a binding's
@@ -649,13 +658,38 @@ pub(crate) async fn dat_auth_middleware(
     // join handler enforces that auth + the enrollment policy itself, so the DAT
     // middleware must let the request reach it.
     let is_enrollment = path == koi_certmesh::http::paths::JOIN;
+    // These reads expose the DNS zone (every resolvable name) and the full trust
+    // posture (the diagnose / trust-doctor report). Fine on loopback — local
+    // tooling like the CLI and dashboard — but not safe to leave world-readable
+    // to a remote LAN peer when the adapter is bound to a routable address. So
+    // they stay GET-exempt only for a loopback peer; a non-loopback peer must
+    // present the token. When the peer address is unknown we fail closed.
+    //
+    // NOT gated, deliberately: `/v1/certmesh/status` and `/v1/certmesh/trust-bundle`
+    // are load-bearing in the *unauthenticated* cross-host protocol — a joining
+    // node reads `status.ca_fingerprint` to pin the CA before it holds any
+    // credential, and members pull the trust-bundle (an ES256-signed, self-
+    // verifying document) over plain HTTP. Gating either breaks enrollment / sync.
+    let is_protected_read = path == koi_certmesh::http::paths::DIAGNOSE
+        || path == "/v1/dns/list"
+        || path == "/v1/dns/zone"
+        || path == "/v1/dns/entries";
+    let peer_is_loopback = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().is_loopback())
+        .unwrap_or(false);
     let exempt_method = method == axum::http::Method::GET
         || method == axum::http::Method::HEAD
         || method == axum::http::Method::OPTIONS;
-    if is_enrollment
-        || method == axum::http::Method::OPTIONS
-        || (exempt_method && !is_mcp && !is_audit_log && !is_udp)
-    {
+    // A protected read is exempt only from a loopback peer.
+    let protected_ok = peer_is_loopback || !is_protected_read;
+    let read_exempt = exempt_method && !is_mcp && !is_audit_log && !is_udp && protected_ok;
+    // OPTIONS is always let through, even on a gated path: a CORS preflight carries no
+    // credentials by web standard, and a preflight against a GET-only/gated route returns
+    // only CORS headers or 405 — never the resource body — so it cannot leak gated content.
+    // Gating it would instead break legitimate preflights for /v1/mcp and the protected reads.
+    if is_enrollment || method == axum::http::Method::OPTIONS || read_exempt {
         return next.run(req).await;
     }
 
@@ -1145,8 +1179,9 @@ mod tests {
 
     #[tokio::test]
     async fn certmesh_sibling_read_get_stays_exempt() {
-        // The carve-out is surgical: the other certmesh read GETs (status,
-        // diagnose, trust-bundle) carry no secrets and must remain token-free.
+        // The audit-log carve-out is surgical: it gates LOG specifically.
+        // /v1/certmesh/status stays token-free on every peer (it is load-bearing
+        // in the unauthenticated cross-host enrollment preflight).
         let app = audit_log_test_router("secret-token");
         let req = Request::get("/v1/certmesh/status")
             .body(Body::empty())
@@ -1162,7 +1197,7 @@ mod tests {
         Router::new()
             .route("/v1/udp/status", get(|| async { "ok" }))
             .route("/v1/udp/recv/abc", get(|| async { "ok" }))
-            .route("/v1/dns/list", get(|| async { "ok" }))
+            .route("/v1/mdns/discover", get(|| async { "ok" }))
             .layer(middleware::from_fn(move |req, next| {
                 let expected = expected.clone();
                 dat_auth_middleware(req, next, expected)
@@ -1195,12 +1230,97 @@ mod tests {
 
     #[tokio::test]
     async fn non_udp_sibling_get_stays_exempt() {
-        // The carve-out is surgical: a sibling read GET stays token-free.
+        // The carve-out is surgical: an unprotected sibling read GET stays token-free.
         let app = udp_carveout_test_router("secret-token");
-        let req = Request::get("/v1/dns/list").body(Body::empty()).unwrap();
+        let req = Request::get("/v1/mdns/discover")
+            .body(Body::empty())
+            .unwrap();
         assert_eq!(
             app.oneshot(req).await.unwrap().status(),
             axum::http::StatusCode::OK
+        );
+    }
+
+    // ── Protected zone/posture reads: loopback-exempt, remote-gated ──
+    // /v1/certmesh/diagnose and /v1/dns/{list,zone,entries} carry zone + trust-posture
+    // info: token-free for a loopback peer (local tooling), token-required from a
+    // remote peer, and fail-closed when the peer is unknown. (status + trust-bundle
+    // are deliberately NOT here — they are part of the unauthenticated protocol.)
+
+    const PROTECTED_READS: [&str; 4] = [
+        "/v1/dns/list",
+        "/v1/dns/zone",
+        "/v1/dns/entries",
+        koi_certmesh::http::paths::DIAGNOSE,
+    ];
+
+    fn protected_read_test_router(token: &str) -> Router {
+        let expected = Arc::new(token.to_string());
+        let mut router = Router::new();
+        for path in PROTECTED_READS {
+            router = router.route(path, get(|| async { "ok" }));
+        }
+        router.layer(middleware::from_fn(move |req, next| {
+            let expected = expected.clone();
+            dat_auth_middleware(req, next, expected)
+        }))
+    }
+
+    fn get_with_peer(path: &str, peer: SocketAddr) -> Request<Body> {
+        let mut req = Request::get(path).body(Body::empty()).unwrap();
+        req.extensions_mut().insert(ConnectInfo(peer));
+        req
+    }
+
+    #[tokio::test]
+    async fn protected_read_exempt_for_loopback_peer() {
+        for path in PROTECTED_READS {
+            let app = protected_read_test_router("secret-token");
+            let req = get_with_peer(path, "127.0.0.1:54321".parse().unwrap());
+            assert_eq!(
+                app.oneshot(req).await.unwrap().status(),
+                axum::http::StatusCode::OK,
+                "{path} must stay token-free for a loopback peer"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn protected_read_requires_token_for_remote_peer() {
+        for path in PROTECTED_READS {
+            // Remote peer, no token → 401.
+            let app = protected_read_test_router("secret-token");
+            let req = get_with_peer(path, "192.168.1.50:40000".parse().unwrap());
+            assert_eq!(
+                app.oneshot(req).await.unwrap().status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+                "{path} must require the token for a remote peer"
+            );
+            // Remote peer with the token → reaches the handler.
+            let app = protected_read_test_router("secret-token");
+            let mut req = Request::get(path)
+                .header(DAT_HEADER, "secret-token")
+                .body(Body::empty())
+                .unwrap();
+            req.extensions_mut().insert(ConnectInfo(
+                "192.168.1.50:40000".parse::<SocketAddr>().unwrap(),
+            ));
+            assert_eq!(
+                app.oneshot(req).await.unwrap().status(),
+                axum::http::StatusCode::OK,
+                "{path} must accept the token from a remote peer"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn protected_read_fails_closed_without_peer_info() {
+        // No ConnectInfo extension (peer unknown) → require the token.
+        let app = protected_read_test_router("secret-token");
+        let req = Request::get("/v1/dns/list").body(Body::empty()).unwrap();
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            axum::http::StatusCode::UNAUTHORIZED
         );
     }
 

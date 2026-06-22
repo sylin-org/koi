@@ -169,6 +169,10 @@ pub struct Cli {
     #[arg(long, env = "KOI_DNS_PUBLIC", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub dns_public: bool,
 
+    /// Max DNS queries per second, per client IP (mirrors koi_dns DEFAULT_MAX_QPS)
+    #[arg(long, env = "KOI_DNS_QPS", default_value = "200")]
+    pub dns_qps: u32,
+
     /// Announce the HTTP server on the local network via mDNS (_http._tcp)
     #[arg(long, env = "KOI_ANNOUNCE_HTTP", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub announce_http: bool,
@@ -686,6 +690,7 @@ pub struct Config {
     pub dns_port: u16,
     pub dns_zone: String,
     pub dns_public: bool,
+    pub dns_qps: u32,
     /// HTTP bind mode: loopback (default), bridge, <ip>, or 0.0.0.0.
     pub http_bind: String,
     /// Machine-scoped data root, resolved once at the daemon composition root
@@ -723,6 +728,7 @@ impl Config {
             dns_port: cli.dns_port,
             dns_zone: cli.dns_zone.clone(),
             dns_public: cli.dns_public,
+            dns_qps: cli.dns_qps,
         }
     }
 
@@ -755,6 +761,7 @@ impl Config {
             port: self.dns_port,
             zone: self.dns_zone.clone(),
             allow_public_clients: self.dns_public,
+            max_qps: self.dns_qps,
             ..Default::default()
         }
     }
@@ -808,6 +815,11 @@ impl Config {
 
         let dns_public = env_bool("KOI_DNS_PUBLIC");
 
+        let dns_qps = std::env::var("KOI_DNS_QPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(200);
+
         let http_bind = std::env::var("KOI_HTTP_BIND").unwrap_or_else(|_| "loopback".to_string());
 
         // Composition root: resolve the data dir once (honours KOI_DATA_DIR).
@@ -837,6 +849,7 @@ impl Config {
             dns_port,
             dns_zone,
             dns_public,
+            dns_qps,
         }
     }
 }
@@ -868,6 +881,7 @@ impl Default for Config {
             dns_port: 53,
             dns_zone: "internal".to_string(),
             dns_public: false,
+            dns_qps: 200,
         }
     }
 }
@@ -990,6 +1004,16 @@ mod tests {
         assert_eq!(config.dns_port, 53);
         assert_eq!(config.dns_zone, "internal");
         assert!(!config.dns_public);
+        assert_eq!(config.dns_qps, 200);
+    }
+
+    #[test]
+    fn dns_config_propagates_qps() {
+        let config = Config {
+            dns_qps: 42,
+            ..Config::default()
+        };
+        assert_eq!(config.dns_config().max_qps, 42);
     }
 
     #[test]
