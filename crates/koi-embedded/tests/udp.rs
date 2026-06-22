@@ -17,6 +17,35 @@ fn temp_data_dir() -> PathBuf {
     dir
 }
 
+/// Serializes HTTP-port acquisition across the HTTP-binding tests in this binary. Each
+/// such test picks a port by binding `127.0.0.1:0`, reading it, and dropping the listener
+/// before the embedded server binds it — a TOCTOU where two parallel tests could grab the
+/// same just-freed ephemeral port (one server wins the bind, the other's request then hits
+/// the wrong server). Holding this lock across probe → bind → ready makes that window
+/// exclusive; once a server is up it owns the port, so the lock releases and the test
+/// bodies still run concurrently.
+static PORT_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Poll the embedded HTTP server until `/healthz` answers 200 — the real "bound + serving"
+/// signal (replacing a fixed sleep), so the port lock is held exactly until the server
+/// owns the port.
+async fn wait_for_healthz(port: u16) {
+    let client = reqwest::Client::new();
+    for _ in 0..50 {
+        if let Ok(r) = client
+            .get(format!("http://127.0.0.1:{port}/healthz"))
+            .send()
+            .await
+        {
+            if r.status() == 200 {
+                return;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("embedded HTTP server on port {port} did not become ready");
+}
+
 /// Helper: build a minimal embedded instance with only UDP enabled.
 async fn udp_handle() -> (koi_embedded::KoiHandle, PathBuf) {
     let data_dir = temp_data_dir();
@@ -347,6 +376,9 @@ async fn udp_multi_subscriber_receives_same_datagram() {
 async fn udp_with_http_adapter() {
     let data_dir = temp_data_dir();
 
+    // Serialize the probe -> bind window against the other HTTP tests (see PORT_GUARD).
+    let guard = PORT_GUARD.lock().await;
+
     // Find a free port for HTTP
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind tcp");
     let http_port = listener.local_addr().unwrap().port();
@@ -379,6 +411,8 @@ async fn udp_with_http_adapter() {
         .await
         .expect("healthz request");
     assert_eq!(resp.status(), 200);
+    // The server owns the port now — release the lock so other HTTP tests can proceed.
+    drop(guard);
 
     // UDP status (should be empty)
     let resp = client
@@ -542,6 +576,9 @@ fn parse_sse_events(raw: &str) -> Vec<SseEvent> {
 /// Helper: start embedded with HTTP + UDP, return (handle, http_port, data_dir).
 async fn udp_http_handle() -> (koi_embedded::KoiHandle, u16, PathBuf) {
     let data_dir = temp_data_dir();
+    // Hold PORT_GUARD across probe → build → bind → ready so a concurrent test can't reuse
+    // the just-freed ephemeral port before our server claims it (see PORT_GUARD).
+    let guard = PORT_GUARD.lock().await;
     let http_port = {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
@@ -562,8 +599,10 @@ async fn udp_http_handle() -> (koi_embedded::KoiHandle, u16, PathBuf) {
         .build()
         .expect("build");
     let handle = koi.start().await.expect("start");
-    // Give the HTTP server time to start
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait until the server actually owns the port, then release the lock so the other
+    // HTTP tests proceed (their probes can no longer collide with this port).
+    wait_for_healthz(http_port).await;
+    drop(guard);
     (handle, http_port, data_dir)
 }
 
