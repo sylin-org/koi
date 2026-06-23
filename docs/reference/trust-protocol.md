@@ -333,8 +333,8 @@ Also DAT-gated. Returns the live posture as JSON:
 
 A consumer that receives `signed: false` knows the node is Open and will route
 plaintext HTTP; `signed: true` means mTLS is available and `client_for` should be
-used. This is the HTTP path for consumers that cannot embed Koi (Koan, rake,
-browsers).
+used. This is the HTTP path for consumers that cannot embed Koi — a non-Rust
+sibling, a browser dashboard, any HTTP client.
 
 ---
 

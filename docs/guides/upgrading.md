@@ -169,6 +169,40 @@ all of it.
 
 ---
 
+## The 0.5.1 upgrade
+
+**0.5.1 is a binary swap for operators — nothing on disk, on the CLI, or at the network
+edge changes.** Despite the patch version it carries two breaking changes, but both are
+narrow: they affect **embedders** (the `koi-embedded` crate) and **cross-implementation
+readers** of the trust wire contract, not a normal daemon/CLI deployment. If you run Koi
+as a service and drive it from the CLI, upgrade and you're done.
+
+Review these if you **embed Koi** or implement the trust protocol in another language:
+
+- **`CertmeshHandle::posture()` is now `async`.** An embedder calling
+  `handle.certmesh()?.posture()` must add `.await`:
+  ```rust
+  // before: let p = handle.certmesh()?.posture()?;
+  let p = handle.certmesh()?.posture().await?;
+  ```
+  It now also works in **remote (client) mode** — it queries `GET /v1/certmesh/posture`,
+  which is DAT-gated, so a remote handle must carry a token (set `Builder::service_token(..)`,
+  or let it adopt the local breadcrumb token automatically when the endpoint matches).
+- **Three `RejectReason` values are gone:** `no_signature`, `clock_skew`, `name_mismatch`.
+  The verifier never produced them — an unsigned envelope is `anonymous`, an out-of-window
+  timestamp is `authenticated { freshness: "stale" }`. Rust code that `match`ed those
+  variants won't compile (delete the arms); a non-Rust reader of the published
+  `RejectReason` set should drop them from its enum
+  ([trust-protocol.md §2](../reference/trust-protocol.md)).
+
+Everything else in 0.5.1 is additive (the `GET /v1/events` SSE stream, `GET /v1/certmesh/posture`,
+the cert-lifecycle events, `require_auth_with`, `reqwest_client_for`, `try_serve`,
+`on_posture`, `service_token`) — no action needed to keep an existing integration working.
+
+No certmesh re-create, roster migration, or data-directory change is required for 0.5.1.
+
+---
+
 ## The 0.5.0 upgrade
 
 **0.5.0 changes behavior at the network edge — nothing on disk needs migrating.** The
