@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-06-22
+
+The **observable + reactive trust plane**: the ADR-020 trust/identity/posture surface,
+previously embedded-only, becomes a language-neutral over-the-wire contract so any
+consumer — a remote Rust handle, a non-Rust sibling, a browser — can *react to* and
+*interoperate with* a Koi node's trust state without embedding it. Closes a downstream
+consumer's reactive-plane wishlist (Tiers 1–5 except the deliberately-declined cert-dir
+override).
+
+> **Heads-up — this patch carries breaking API/contract changes** (see **Changed** /
+> **Removed**): `CertmeshHandle::posture()` is now `async`, and three never-produced
+> `RejectReason` variants were dropped from the published verdict set. Review the
+> [upgrade guide](docs/guides/upgrading.md) before bumping an embedder or a cross-impl
+> reader.
+
+### Added
+- **`GET /v1/events`** — a DAT-gated unified SSE event stream emitting versioned
+  `KoiEventWire` objects (`{ event_v, event_type, id, data }`). The cross-process /
+  cross-language event contract: one shape instead of N hand-mappings. Documented in
+  [trust-protocol.md §7](docs/reference/trust-protocol.md) with every `event_type` and
+  its payload schema. Consumers MUST skip unknown `event_v` (forward-compatible).
+- **`GET /v1/certmesh/posture`** — a DAT-gated live posture read
+  (`{ signed, encrypted, level }`) so a consumer that cannot embed Koi learns a node's
+  Open-vs-Authenticated state over HTTP before dialing.
+- **Certificate-lifecycle events** — `CertmeshEvent::{CertRenewed, CertExpiringSoon,
+  CertRenewalFailed, BundleUpdated}` (and matching `KoiEvent` variants), emitted from the
+  renewal / trust-bundle loop. Surface renewal health *proactively* instead of polling
+  `diagnose()` on a timer; `CertRenewalFailed` carries a `consecutive_failures` streak.
+- **Posture-keyed transport for full traffic** — `CertmeshCore::tls_client_config_for(peer)`
+  returns the posture-resolved `rustls::ClientConfig` (`None` = Open ⇒ plain HTTP), and the
+  embedded `CertmeshHandle::reqwest_client_for(peer)` wraps it as a ready `reqwest::Client`.
+  Unlike `PeerClient` (GET + JSON-POST only), the consumer drives the full request surface
+  — every verb, custom headers, SSE/streaming, large bodies — while Koi owns the
+  transport *policy* (which leaf, which pin, plain-vs-mTLS by posture).
+- **`CertmeshCore::require_auth_with(router, policy)`** — a CN/role authorization hook
+  (`Fn(&str CN, &Request) -> bool`) layered on `require_auth`. Express "only these
+  CNs/roles may write" without re-implementing the middleware; the zero-config
+  "any mesh member" `require_auth` stays the default. Denials return 403.
+- **`KoiHandle::try_serve()`** — like `serve()` but returns the bind `io::Result` instead
+  of swallowing it, so an embedder learns immediately if its listener never came up.
+- **`CertmeshHandle::on_posture()`** — a first-class `watch::Receiver<Posture>` for live
+  Open↔Authenticated transitions (shorthand for `certmesh().core()?.watch_posture()`).
+- **`IdentityInfo`** — a key-redacting, serializable projection of `Identity`
+  (`hostname`, `ca_fingerprint`, `renewal`) a consumer can re-expose verbatim.
+- **`Builder::service_token()`** (embedded) — a Daemon Access Token for a remote handle;
+  when unset, the local breadcrumb token is adopted automatically if its endpoint matches.
+
+### Changed
+- **`CertmeshHandle::posture()` is now `async`** and works in **remote (client) mode**
+  (it queries `GET /v1/certmesh/posture`). *Breaking for embedders calling it — add
+  `.await`.*
+- **The remote embedded handle now carries a Daemon Access Token** (from
+  `Builder::service_token()` or the matching local breadcrumb), so DAT-gated reads
+  (posture) and mutations work from a remote handle — previously they failed unauthenticated.
+- **Verifier honesty** — the `Envelope` nonce is documented as replay-*uniqueness* input
+  only; Koi keeps no seen-nonce cache (application-layer replay defense is the consumer's).
+
+### Removed
+- **Three `RejectReason` variants the verifier never produced** — `NoSignature`,
+  `ClockSkew`, `NameMismatch`. An unsigned envelope verifies as `Anonymous`, an
+  out-of-window timestamp as `Authenticated { freshness: stale }` — neither is a
+  `Rejected`. *Breaking for Rust code matching those variants and for cross-impl readers
+  of the published `RejectReason` set (trust-protocol.md §2 updated).*
+
+### Deferred
+- **Cert-dir / identity-name override** (wishlist 5.4) — declined. `CN == OS hostname` is
+  a load-bearing machine-binding invariant (clone-refusal, ADR-017 F11); a consumer whose
+  node name diverges runs a separate `data_dir` per identity. Revisiting would need an ADR.
+
 ## [0.5.0] - 2026-06-22
 
 A consolidation-and-hardening release: a unified serving layer, security hardening (with a

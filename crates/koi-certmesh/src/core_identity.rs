@@ -286,12 +286,46 @@ impl CertmeshCore {
     /// 401. Apply once to your *write* routes — no per-handler boilerplate, and the
     /// same consumer code runs green in both postures.
     ///
-    /// (P2 gates on the mTLS client identity; an optional CN/role policy hook and a
-    /// signed-envelope-header path are planned refinements.)
+    /// (P2 gates on the mTLS client identity; a signed-envelope-header path is a
+    /// planned refinement. For per-CN/role authorization, see
+    /// [`require_auth_with`](Self::require_auth_with).)
     pub fn require_auth(&self, router: Router) -> Router {
         router.layer(axum::middleware::from_fn_with_state(
             Arc::clone(&self.state),
             http::require_auth_mw,
         ))
+    }
+
+    /// Gate `router`'s routes by authentication **and** a caller-supplied CN/role
+    /// policy (ADR-020 §6, wishlist 4.1).
+    ///
+    /// Like [`require_auth`](Self::require_auth) — a **no-op in Open posture** — but
+    /// in secure posture, after confirming an authenticated client CN, it calls
+    /// `policy(cn, &request)`: `true` allows the request, `false` rejects it with
+    /// 403. This lets a consumer express "only these CNs/roles may write" (an
+    /// allowlist, a roster-role check, a path-scoped rule) without re-implementing
+    /// the middleware or re-deriving the mTLS identity. Keep [`require_auth`](Self::require_auth)
+    /// for the zero-config "any mesh member" default.
+    ///
+    /// The policy receives the **authoritative** mTLS CN (derived from the client
+    /// certificate, never a claimed field) and the full `axum` request, so it can
+    /// branch on method/path as well as identity.
+    ///
+    /// ```ignore
+    /// // Only `web-01` and `web-02` may reach the write routes.
+    /// let allow = ["web-01", "web-02"];
+    /// let router = core.require_auth_with(router, move |cn, _req| allow.contains(&cn));
+    /// ```
+    pub fn require_auth_with<F>(&self, router: Router, policy: F) -> Router
+    where
+        F: Fn(&str, &axum::extract::Request) -> bool + Send + Sync + 'static,
+    {
+        let state = Arc::clone(&self.state);
+        let policy: http::AuthPolicy = Arc::new(policy);
+        router.layer(axum::middleware::from_fn(move |req, next| {
+            let state = Arc::clone(&state);
+            let policy = Arc::clone(&policy);
+            async move { http::require_auth_with_mw(state, policy, req, next).await }
+        }))
     }
 }

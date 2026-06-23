@@ -134,6 +134,25 @@ fn map_certmesh(event: koi_certmesh::CertmeshEvent) -> DashboardSseEvent {
             serde_json::json!({ "hostname": hostname }),
         ),
         koi_certmesh::CertmeshEvent::Destroyed => ev("certmesh.destroyed", serde_json::json!({})),
+        koi_certmesh::CertmeshEvent::CertRenewed { expires_at } => ev(
+            "certmesh.cert_renewed",
+            serde_json::json!({ "expires_at": expires_at }),
+        ),
+        koi_certmesh::CertmeshEvent::CertExpiringSoon { days_left } => ev(
+            "certmesh.cert_expiring_soon",
+            serde_json::json!({ "days_left": days_left }),
+        ),
+        koi_certmesh::CertmeshEvent::CertRenewalFailed {
+            reason,
+            consecutive_failures,
+        } => ev(
+            "certmesh.cert_renewal_failed",
+            serde_json::json!({ "reason": reason, "consecutive_failures": consecutive_failures }),
+        ),
+        koi_certmesh::CertmeshEvent::BundleUpdated { self_revoked } => ev(
+            "certmesh.bundle_updated",
+            serde_json::json!({ "self_revoked": self_revoked }),
+        ),
     }
 }
 

@@ -57,7 +57,7 @@ use roster::Roster;
 /// Used by the binary crate to announce the CA via koi-mdns.
 pub const CERTMESH_SERVICE_TYPE: &str = "_certmesh._tcp";
 
-/// Events emitted by the certmesh subsystem when roster membership changes.
+/// Events emitted by the certmesh subsystem.
 #[derive(Debug, Clone)]
 pub enum CertmeshEvent {
     /// A new member was enrolled in the mesh.
@@ -69,6 +69,31 @@ pub enum CertmeshEvent {
     MemberRevoked { hostname: String },
     /// All certmesh state was destroyed.
     Destroyed,
+    /// This node's leaf certificate was renewed successfully (ADR-020 reactive plane).
+    CertRenewed {
+        /// When the new leaf expires (RFC 3339).
+        expires_at: chrono::DateTime<chrono::Utc>,
+    },
+    /// The leaf will expire soon; renewal is overdue. Fires each time the renewal
+    /// loop skips (CA unreachable) while the leaf is past its `renew_threshold`.
+    CertExpiringSoon {
+        /// Whole days until expiry (may be 0 or negative if already expired).
+        days_left: i64,
+    },
+    /// A renewal attempt failed. `consecutive_failures` lets a consumer decide
+    /// when to alert vs. absorb a transient CA hiccup.
+    CertRenewalFailed {
+        /// Human-readable reason from the renewal outcome.
+        reason: String,
+        /// How many consecutive failures (including this one).
+        consecutive_failures: u32,
+    },
+    /// A trust-bundle pull updated the roster or policy, or confirmed revocation.
+    BundleUpdated {
+        /// `true` when the bundle explicitly listed this node as revoked — the node
+        /// should stop serving and surface a clear error (ADR-020 §revocation).
+        self_revoked: bool,
+    },
 }
 
 // ── Internal shared state ───────────────────────────────────────────
@@ -89,6 +114,9 @@ pub(crate) struct CertmeshState {
     /// supervisor (ADR-020 §5) can react to Open↔Authenticated transitions without
     /// polling. Seeded from disk at construction; coalesced (no-op when unchanged).
     pub(crate) posture_tx: watch::Sender<Posture>,
+    /// Tracks consecutive renewal failures so `CertRenewalFailed` can report the
+    /// streak to consumers. Reset to zero on each successful renewal.
+    pub(crate) renewal_failure_count: std::sync::atomic::AtomicU32,
 }
 
 /// Enrollment approval request sent to the operator prompt.
@@ -173,7 +201,7 @@ impl std::fmt::Debug for Identity {
 /// silent surprise: when the leaf expires, when renewal is due, and whether it is
 /// overdue or already expired. Attempt-level fields (last attempt, failure streak)
 /// are wired by the renewal loop in a later increment.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct RenewalHealth {
     /// When the current leaf expires.
     pub expires_at: chrono::DateTime<chrono::Utc>,
@@ -202,6 +230,32 @@ impl RenewalHealth {
             renew_overdue: now >= next_renewal_at,
             expired: now >= expires_at,
         })
+    }
+}
+
+/// Serializable, key-redacting projection of [`Identity`] for cross-process and
+/// cross-language consumers (ADR-020 reactive plane / wishlist 5.3).
+///
+/// The private key and all raw PEM material are omitted — only the non-sensitive
+/// scheduling and anchor facts that a consumer needs to surface "who is this node
+/// and when does its identity expire?" without leaking key material.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct IdentityInfo {
+    /// This node's hostname (its certificate CN).
+    pub hostname: String,
+    /// SHA-256 (hex) of the CA cert DER — the mesh anchor the peer pins to.
+    pub ca_fingerprint: String,
+    /// Renewal and expiry schedule.
+    pub renewal: RenewalHealth,
+}
+
+impl From<&Identity> for IdentityInfo {
+    fn from(id: &Identity) -> Self {
+        Self {
+            hostname: id.hostname.clone(),
+            ca_fingerprint: id.ca_fingerprint.clone(),
+            renewal: id.renewal.clone(),
+        }
     }
 }
 

@@ -45,6 +45,9 @@ pub mod paths {
     /// Public MCP discovery descriptor (the "Door"): an unauthenticated GET
     /// describing the MCP endpoint, transport, and auth. No secrets.
     pub const MCP_SERVER_CARD: &str = "/.well-known/mcp/server-card.json";
+    /// Unified event SSE stream (DAT-gated GET; wishlist 1.1/1.2).
+    /// Emits `KoiEventWire` JSON objects one per line / SSE data field.
+    pub const EVENTS: &str = "/v1/events";
 }
 
 // ── App state ───────────────────────────────────────────────────────
@@ -175,6 +178,9 @@ pub async fn start(
                 get(koi_dashboard::dashboard::get_events),
             );
     }
+
+    // ── Unified event stream (wishlist 1.1/1.2 — always mounted, 503 when no dashboard) ──
+    app = app.route(paths::EVENTS, get(events_handler));
 
     // ── mDNS browser (conditional on mDNS being enabled) ──
     if let Some(bs) = browser_state {
@@ -646,6 +652,15 @@ pub(crate) async fn dat_auth_middleware(
     // the unauthenticated cross-host protocol); diagnose is loopback-gated below.
     // The `koi certmesh log` CLI already sends the token (require_daemon → auth_get).
     let is_audit_log = path == koi_certmesh::http::paths::LOG;
+    // `/v1/certmesh/posture` is the live trust-posture endpoint (ADR-020 reactive
+    // plane / wishlist 1.2). Like the audit log it is a GET whose content is not
+    // safe to leave open to an unauthenticated remote peer (it confirms whether a
+    // node is signed/authenticated). Gate it on the daemon token.
+    let is_posture = path == koi_certmesh::http::paths::POSTURE;
+    // `/v1/events` is the unified SSE event stream (wishlist 1.1/1.2). Like
+    // `/v1/mcp` it is a GET that opens a persistent live channel rather than
+    // returning a static document, so it must carry the token on every request.
+    let is_events_stream = path == paths::EVENTS;
     // The UDP surface is carved out of the GET exemption too: `/v1/udp/status`
     // enumerates every binding's id and `/v1/udp/recv/{id}` streams a binding's
     // inbound datagrams — both expose other token-holders' bindings, so reading
@@ -684,7 +699,13 @@ pub(crate) async fn dat_auth_middleware(
         || method == axum::http::Method::OPTIONS;
     // A protected read is exempt only from a loopback peer.
     let protected_ok = peer_is_loopback || !is_protected_read;
-    let read_exempt = exempt_method && !is_mcp && !is_audit_log && !is_udp && protected_ok;
+    let read_exempt = exempt_method
+        && !is_mcp
+        && !is_audit_log
+        && !is_posture
+        && !is_events_stream
+        && !is_udp
+        && protected_ok;
     // OPTIONS is always let through, even on a gated path: a CORS preflight carries no
     // credentials by web standard, and a preflight against a GET-only/gated route returns
     // only CORS headers or 405 — never the resource body — so it cannot leak gated content.
@@ -718,6 +739,16 @@ pub(crate) async fn dat_auth_middleware(
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
+
+/// `GET /v1/events` — DAT-gated unified event SSE stream (wishlist 1.1/1.2).
+///
+/// Delegates to koi-dashboard which owns the event channel and the stream
+/// types (`tokio_stream`, `async_stream`) — koi-serve avoids importing them.
+async fn events_handler(
+    dashboard: Option<Extension<koi_dashboard::dashboard::DashboardState>>,
+) -> axum::response::Response {
+    koi_dashboard::dashboard::get_wire_events(dashboard).await
+}
 
 #[utoipa::path(get, path = "/healthz", tag = "system",
     summary = "Basic liveness probe",

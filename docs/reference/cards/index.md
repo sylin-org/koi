@@ -4,7 +4,7 @@ title: "Capability cards — index"
 audience: [operators, developers, ai-agents]
 status: current
 last_updated: 2026-06-22
-koi_version: v0.5.0
+koi_version: v0.5.1
 ---
 
 # Capability cards

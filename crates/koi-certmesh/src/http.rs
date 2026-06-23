@@ -49,6 +49,9 @@ pub mod paths {
     /// requires the token from a remote peer (gated alongside `/v1/dns/{list,zone,entries}`)
     /// since the full posture is operational detail a remote peer needn't read.
     pub const DIAGNOSE: &str = "/v1/certmesh/diagnose";
+    /// Current posture of this node (`{ "signed": bool, "encrypted": bool }`).
+    /// DAT-gated (GET carve-out in koi-serve) — requires `x-koi-token`.
+    pub const POSTURE: &str = "/v1/certmesh/posture";
     /// Signed, monotonic trust bundle (ADR-017 P1). A GET, so the DAT middleware
     /// exempts it — it is integrity-protected by its own signature, like a CRL.
     pub const TRUST_BUNDLE: &str = "/v1/certmesh/trust-bundle";
@@ -84,6 +87,7 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::MEMBER_CSR), post(member_csr_handler))
         .route(rel(paths::MEMBER_CERT), post(member_cert_handler))
         .route(rel(paths::STATUS), get(status_handler))
+        .route(rel(paths::POSTURE), get(posture_handler))
         .route(rel(paths::DIAGNOSE), get(diagnose_handler))
         .route(rel(paths::TRUST_BUNDLE), get(trust_bundle_handler))
         .route(rel(paths::SET_HOOK), put(set_hook_handler))
@@ -306,6 +310,23 @@ async fn trust_bundle_handler(
             &CertmeshError::Internal(format!("Serialization error: {e}")),
         ),
     }
+}
+
+/// GET /posture - Current node posture (ADR-020 reactive plane, wishlist 1.2).
+///
+/// Returns the live `signed`/`encrypted` posture flags so remote consumers
+/// (Koan, rake, browsers) can determine Open vs Authenticated before dialling,
+/// without embedding Koi. DAT-gated — requires `x-koi-token`.
+#[utoipa::path(get, path = "/posture", tag = "certmesh",
+    summary = "Current node trust posture",
+    responses((status = 200, description = "{ \"signed\": bool, \"encrypted\": bool }")))]
+async fn posture_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
+    let posture = *state.posture_tx.borrow();
+    axum::Json(serde_json::json!({
+        "signed": posture.signed,
+        "encrypted": posture.encrypted,
+        "level": posture.level().as_wire(),
+    }))
 }
 
 /// GET /status - Certmesh status overview.
@@ -1134,6 +1155,52 @@ pub(crate) async fn require_auth_mw(
     }
 }
 
+/// Type of a CN/role authorization policy for
+/// [`require_auth_with`](crate::CertmeshCore::require_auth_with): given the
+/// authenticated client CN and the request, decide whether to allow it.
+pub type AuthPolicy = Arc<dyn Fn(&str, &axum::extract::Request) -> bool + Send + Sync + 'static>;
+
+/// Posture-aware auth gate with a caller-supplied CN/role policy (ADR-020 §6,
+/// wishlist 4.1). Backs [`CertmeshCore::require_auth_with`].
+///
+/// Three outcomes:
+/// - **Open posture** → pass (zero-config homelab-open, same as `require_auth`).
+/// - **Secure, no client CN** → 401 (unauthenticated).
+/// - **Secure, CN present** → run `policy(cn, &req)`; `true` passes, `false` → 403.
+///
+/// The policy sees the authoritative mTLS CN (never a claimed field) and the full
+/// request, so a consumer can express "only these CNs/roles may write" without
+/// re-implementing the middleware. K2-clean: no consumer vocabulary in the API.
+pub(crate) async fn require_auth_with_mw(
+    state: Arc<CertmeshState>,
+    policy: AuthPolicy,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    // Open node → no identity, no expectation of auth → pass.
+    if !crate::node_has_identity(&state.paths) {
+        return next.run(req).await;
+    }
+    // Secure node → require an authenticated CN, then apply the policy. Clone the
+    // CN out so the extensions borrow ends before `policy` takes a fresh `&req`.
+    let cn = req.extensions().get::<ClientCn>().map(|c| c.0.clone());
+    match cn {
+        None => error_response(StatusCode::UNAUTHORIZED, &CertmeshError::InvalidAuth),
+        Some(cn) => {
+            if policy(&cn, &req) {
+                next.run(req).await
+            } else {
+                error_response(
+                    StatusCode::FORBIDDEN,
+                    &CertmeshError::Forbidden(format!(
+                        "CN '{cn}' is not authorized for this route"
+                    )),
+                )
+            }
+        }
+    }
+}
+
 /// OpenAPI documentation for the certmesh domain.
 #[derive(utoipa::OpenApi)]
 #[openapi(
@@ -1248,6 +1315,7 @@ mod tests {
             approval_tx: tokio::sync::Mutex::new(None),
             event_tx: tokio::sync::broadcast::channel(16).0,
             posture_tx,
+            renewal_failure_count: std::sync::atomic::AtomicU32::new(0),
         })
     }
 
@@ -1322,6 +1390,60 @@ mod tests {
         let resp = gated_app(&core).oneshot(req).await.unwrap();
         // Secure + authenticated client CN → passes.
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // ── ADR-020 4.1: require_auth_with CN/role policy hook ───────────
+
+    fn policy_gated_app(core: &CertmeshCore) -> Router {
+        let inner = Router::new().route("/w", post(|| async { StatusCode::OK }));
+        // Allowlist policy: only `web-01` may write.
+        core.require_auth_with(inner, |cn, _req| cn == "web-01")
+    }
+
+    #[tokio::test]
+    async fn require_auth_with_passes_in_open_posture_without_calling_policy() {
+        // Open node → no-op, even though the policy would reject every CN.
+        let core = CertmeshCore::uninitialized_with_paths(ra_paths("rw-open"));
+        let inner = Router::new().route("/w", post(|| async { StatusCode::OK }));
+        let app = core.require_auth_with(inner, |_cn, _req| false);
+        let req = Request::post("/w").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn require_auth_with_rejects_unauthenticated_when_secure() {
+        let paths = ra_paths("rw-secure-no-cn");
+        make_secure(&paths);
+        let core = CertmeshCore::uninitialized_with_paths(paths);
+        let req = Request::post("/w").body(Body::empty()).unwrap();
+        let resp = policy_gated_app(&core).oneshot(req).await.unwrap();
+        // Secure + no client cert → 401 (before the policy is consulted).
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn require_auth_with_allows_cn_that_passes_policy() {
+        let paths = ra_paths("rw-secure-allow");
+        make_secure(&paths);
+        let core = CertmeshCore::uninitialized_with_paths(paths);
+        let mut req = Request::post("/w").body(Body::empty()).unwrap();
+        req.extensions_mut().insert(ClientCn("web-01".to_string()));
+        let resp = policy_gated_app(&core).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn require_auth_with_forbids_cn_that_fails_policy() {
+        let paths = ra_paths("rw-secure-deny");
+        make_secure(&paths);
+        let core = CertmeshCore::uninitialized_with_paths(paths);
+        let mut req = Request::post("/w").body(Body::empty()).unwrap();
+        // Authenticated, but not on the allowlist → 403, not 401.
+        req.extensions_mut()
+            .insert(ClientCn("intruder".to_string()));
+        let resp = policy_gated_app(&core).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

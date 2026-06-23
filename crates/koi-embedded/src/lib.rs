@@ -108,6 +108,17 @@ impl Builder {
         self
     }
 
+    /// Set the Daemon Access Token for a remote (client) handle (wishlist 1.3).
+    ///
+    /// Required to reach DAT-gated reads (e.g. `certmesh().posture()`) and any
+    /// mutation when targeting a daemon whose token is not in the local breadcrumb.
+    /// When unset and the endpoint matches the local daemon, the breadcrumb token
+    /// is adopted automatically.
+    pub fn service_token(mut self, token: impl Into<String>) -> Self {
+        self.config.service_token = Some(token.into());
+        self
+    }
+
     pub fn service_mode(mut self, mode: ServiceMode) -> Self {
         self.config.service_mode = mode;
         self
@@ -313,7 +324,7 @@ impl KoiEmbedded {
         let mut tasks: Vec<JoinHandle<()>> = Vec::new();
 
         if self.config.service_mode != ServiceMode::EmbeddedOnly {
-            let client = Arc::new(KoiClient::new(&self.config.service_endpoint));
+            let client = Arc::new(build_remote_client(&self.config));
             match self.config.service_mode {
                 ServiceMode::ClientOnly => {
                     tokio::task::spawn_blocking({
@@ -684,6 +695,38 @@ impl KoiEmbedded {
     }
 }
 
+/// Build the remote `KoiClient`, attaching a Daemon Access Token so the handle can
+/// reach DAT-gated reads (posture, diagnose) and mutations (wishlist 1.3).
+///
+/// Token precedence: an explicit `service_token` wins; otherwise the local
+/// breadcrumb's token is adopted **only** when its endpoint matches the configured
+/// `service_endpoint` (so the local token is never sent to a foreign daemon);
+/// otherwise no token (unauthenticated, as before).
+fn build_remote_client(config: &KoiConfig) -> KoiClient {
+    if let Some(token) = &config.service_token {
+        return KoiClient::with_token(&config.service_endpoint, token);
+    }
+    if let Some(bc) = koi_config::breadcrumb::read_breadcrumb() {
+        if endpoints_match(&bc.endpoint, &config.service_endpoint) {
+            return KoiClient::with_token(&config.service_endpoint, &bc.token);
+        }
+    }
+    KoiClient::new(&config.service_endpoint)
+}
+
+/// Whether two daemon endpoints refer to the same target, treating `localhost` and
+/// `127.0.0.1` as equivalent and ignoring case / a trailing slash. Deliberately
+/// conservative — it only ever broadens to loopback equivalence, never matches a
+/// different host — so the local breadcrumb token is never leaked to a foreign host.
+fn endpoints_match(a: &str, b: &str) -> bool {
+    fn norm(s: &str) -> String {
+        s.trim_end_matches('/')
+            .to_ascii_lowercase()
+            .replace("localhost", "127.0.0.1")
+    }
+    norm(a) == norm(b)
+}
+
 fn map_mdns_event(event: MdnsEvent) -> Option<KoiEvent> {
     match event {
         MdnsEvent::Found(record) => Some(KoiEvent::MdnsFound(record)),
@@ -722,6 +765,22 @@ fn map_certmesh_event(event: koi_certmesh::CertmeshEvent) -> KoiEvent {
             KoiEvent::CertmeshMemberRevoked { hostname }
         }
         koi_certmesh::CertmeshEvent::Destroyed => KoiEvent::CertmeshDestroyed,
+        koi_certmesh::CertmeshEvent::CertRenewed { expires_at } => {
+            KoiEvent::CertRenewed { expires_at }
+        }
+        koi_certmesh::CertmeshEvent::CertExpiringSoon { days_left } => {
+            KoiEvent::CertExpiringSoon { days_left }
+        }
+        koi_certmesh::CertmeshEvent::CertRenewalFailed {
+            reason,
+            consecutive_failures,
+        } => KoiEvent::CertRenewalFailed {
+            reason,
+            consecutive_failures,
+        },
+        koi_certmesh::CertmeshEvent::BundleUpdated { self_revoked } => {
+            KoiEvent::BundleUpdated { self_revoked }
+        }
     }
 }
 
@@ -1194,6 +1253,47 @@ mod tests {
         let builder = Builder::default();
         let embedded = builder.build().expect("build should succeed");
         assert_eq!(embedded.config.service_endpoint, "http://127.0.0.1:5641");
+    }
+
+    #[test]
+    fn service_token_builder_sets_token() {
+        let embedded = Builder::new()
+            .service_token("secret-token")
+            .build()
+            .expect("build should succeed");
+        assert_eq!(
+            embedded.config.service_token.as_deref(),
+            Some("secret-token")
+        );
+    }
+
+    #[test]
+    fn endpoints_match_treats_localhost_as_loopback() {
+        assert!(endpoints_match(
+            "http://localhost:5641",
+            "http://127.0.0.1:5641"
+        ));
+        assert!(endpoints_match(
+            "http://127.0.0.1:5641/",
+            "http://127.0.0.1:5641"
+        ));
+        assert!(endpoints_match(
+            "HTTP://LOCALHOST:5641",
+            "http://127.0.0.1:5641"
+        ));
+    }
+
+    #[test]
+    fn endpoints_match_rejects_different_hosts() {
+        // The local breadcrumb token must never be sent to a foreign daemon.
+        assert!(!endpoints_match(
+            "http://127.0.0.1:5641",
+            "http://10.0.0.1:5641"
+        ));
+        assert!(!endpoints_match(
+            "http://127.0.0.1:5641",
+            "http://127.0.0.1:9999"
+        ));
     }
 
     #[test]

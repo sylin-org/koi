@@ -13,6 +13,9 @@ pub enum CertmeshError {
     #[error("invalid auth credential")]
     InvalidAuth,
 
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+
     #[error("invalid payload: {0}")]
     InvalidPayload(String),
 
@@ -92,6 +95,7 @@ impl From<&CertmeshError> for ErrorCode {
             CertmeshError::CaNotInitialized => ErrorCode::CaNotInitialized,
             CertmeshError::CaLocked => ErrorCode::CaLocked,
             CertmeshError::InvalidAuth => ErrorCode::InvalidAuth,
+            CertmeshError::Forbidden(_) => ErrorCode::ScopeViolation,
             CertmeshError::InvalidPayload(_) => ErrorCode::InvalidPayload,
             CertmeshError::Conflict(_) => ErrorCode::Conflict,
             CertmeshError::RateLimited { .. } => ErrorCode::RateLimited,
@@ -130,6 +134,11 @@ mod tests {
             ),
             (CertmeshError::CaLocked, ErrorCode::CaLocked, 503),
             (CertmeshError::InvalidAuth, ErrorCode::InvalidAuth, 401),
+            (
+                CertmeshError::Forbidden("cn not allowed".into()),
+                ErrorCode::ScopeViolation,
+                403,
+            ),
             (
                 CertmeshError::InvalidPayload("bad entropy".into()),
                 ErrorCode::InvalidPayload,
