@@ -169,6 +169,28 @@ all of it.
 
 ---
 
+## The 0.8.0 upgrade
+
+**0.8.0 is a drop-in — no breaking changes.** Nothing on disk, on the CLI, at the network
+edge, or in the JSON / Rust API changes incompatibly. Swap the binary and you're done.
+
+The release is cert-lifecycle reliability — trust that maintains itself on a long-lived node:
+
+- A continuously-up CA now renews **its own** leaf on the timer (it used to refresh only at
+  restart), and the inter-node mTLS (5642) + ACME (5643) listeners **hot-reload** the renewed
+  leaf with no restart and no dropped connections.
+- The certmesh background renewal loop runs a pass **immediately at startup**, so a node that
+  boots with an already-overdue leaf refreshes at once instead of serving a stale cert.
+- A malformed `CertPolicy` (`renew_threshold_days >= leaf_lifetime_days`, or a zero
+  lifetime/threshold) is rejected back to the default on load instead of churning re-issues.
+
+No certmesh re-create, roster migration, or data-directory change is required for 0.8.0. If
+you **embed Koi** and run `Builder::certmesh_background(true)`, you now get CA self-renewal
+and listener hot-reload for free — drop any hand-rolled CA-leaf renewal and any startup
+`ensure_identity()` ritual.
+
+---
+
 ## The 0.7.0 upgrade
 
 **0.7.0 is a near-drop-in — one narrow breaking change, only for Rust embedders that

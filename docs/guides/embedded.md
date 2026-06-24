@@ -1,4 +1,4 @@
-﻿# Embedded Integration
+# Embedded Integration
 
 Use `koi-embedded` to run Koi in-process - no daemon, no IPC, no binary dependency. This is the right choice when your Rust application needs mDNS, DNS, health checks, or certmesh as a library rather than an external service.
 
@@ -47,7 +47,7 @@ There are **two independent axes** for trimming Koi, and they do different thing
   closure for a deployment that will never use a given backend.
 
 Three dependencies are gated behind **default-on** features, so a default
-`koi-embedded = "0.7"` is identical to before — you only opt *out*:
+`koi-embedded = "0.8"` is identical to before — you only opt *out*:
 
 | Feature | Default | Compiles in | With it **off** |
 | --- | --- | --- | --- |
@@ -61,17 +61,17 @@ Three dependencies are gated behind **default-on** features, so a default
 
 ```toml
 # Default — every backend (unchanged; the batteries-included path)
-koi-embedded = "0.7"
+koi-embedded = "0.8"
 
 # Lean — drop bollard, the OS-keychain / Secret-Service / D-Bus stack, and the image
 # codec. Ideal for a headless container that only needs discovery / DNS / health.
-koi-embedded = { version = "0.7", default-features = false }
+koi-embedded = { version = "0.8", default-features = false }
 
 # À la carte — start lean and re-arm only what you need
-koi-embedded = { version = "0.7", default-features = false, features = ["docker"] }
+koi-embedded = { version = "0.8", default-features = false, features = ["docker"] }
 
 # Everything, explicitly
-koi-embedded = { version = "0.7", features = ["full"] }
+koi-embedded = { version = "0.8", features = ["full"] }
 ```
 
 A common reason to go lean is the **bollard version lock**: `bollard-stubs` pins with an

@@ -21,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 authors = ["Sylin.org <hello@sylin.org>"]
 edition = "2021"
 rust-version = "1.92"
@@ -31,31 +31,31 @@ homepage = "https://sylin.org/koi"
 
 [workspace.dependencies]
 # Internal crates - version is required for crates.io publish; path is used locally
-koi-common = { path = "crates/koi-common", version = "=0.7.0" }
-koi-client = { path = "crates/koi-client", version = "=0.7.0" }
+koi-common = { path = "crates/koi-common", version = "=0.8.0" }
+koi-client = { path = "crates/koi-client", version = "=0.8.0" }
 # default-features = false at the workspace level so a consumer's member-level
 # `default-features = false` is actually honored (Cargo ignores it otherwise). This is
 # what lets a lean consumer shed the optional heavy backends (bollard / keyring / qr);
 # the binary and intermediate crates re-arm them via explicit features / default-on
 # pass-throughs. Crates with no optional features are left at the default.
-koi-dashboard = { path = "crates/koi-dashboard", version = "=0.7.0", default-features = false }
-koi-compose = { path = "crates/koi-compose", version = "=0.7.0" }
-koi-serve = { path = "crates/koi-serve", version = "=0.7.0" }
-koi-embedded = { path = "crates/koi-embedded", version = "=0.7.0" }
-koi-mdns = { path = "crates/koi-mdns", version = "=0.7.0" }
-koi-config = { path = "crates/koi-config", version = "=0.7.0" }
-koi-certmesh = { path = "crates/koi-certmesh", version = "=0.7.0", default-features = false }
-koi-crypto = { path = "crates/koi-crypto", version = "=0.7.0", default-features = false }
+koi-dashboard = { path = "crates/koi-dashboard", version = "=0.8.0", default-features = false }
+koi-compose = { path = "crates/koi-compose", version = "=0.8.0" }
+koi-serve = { path = "crates/koi-serve", version = "=0.8.0" }
+koi-embedded = { path = "crates/koi-embedded", version = "=0.8.0" }
+koi-mdns = { path = "crates/koi-mdns", version = "=0.8.0" }
+koi-config = { path = "crates/koi-config", version = "=0.8.0" }
+koi-certmesh = { path = "crates/koi-certmesh", version = "=0.8.0", default-features = false }
+koi-crypto = { path = "crates/koi-crypto", version = "=0.8.0", default-features = false }
 # Spun out to the os-tools repo (Operational Symmetry family) and published on crates.io
 # (ADR-019). A plain version dep — not a git/path source — is what `cargo publish` requires
 # to accept koi-certmesh / koi-net; default features (the rustls in-process helper is unused).
 os-truststore = "0.0.2"
-koi-dns = { path = "crates/koi-dns", version = "=0.7.0" }
-koi-health = { path = "crates/koi-health", version = "=0.7.0" }
-koi-proxy = { path = "crates/koi-proxy", version = "=0.7.0" }
-koi-udp = { path = "crates/koi-udp", version = "=0.7.0" }
-koi-runtime = { path = "crates/koi-runtime", version = "=0.7.0", default-features = false }
-koi-mcp = { path = "crates/koi-mcp", version = "=0.7.0" }
+koi-dns = { path = "crates/koi-dns", version = "=0.8.0" }
+koi-health = { path = "crates/koi-health", version = "=0.8.0" }
+koi-proxy = { path = "crates/koi-proxy", version = "=0.8.0" }
+koi-udp = { path = "crates/koi-udp", version = "=0.8.0" }
+koi-runtime = { path = "crates/koi-runtime", version = "=0.8.0", default-features = false }
+koi-mcp = { path = "crates/koi-mcp", version = "=0.8.0" }
 
 # Shared external dependencies - single version pin
 serde = { version = "1", features = ["derive"] }

@@ -5,7 +5,7 @@ title: "Container auto-wire (one label → mDNS+DNS+health+proxy)"
 audience: [operators, developers, ai-agents]
 status: current
 last_updated: 2026-06-22
-koi_version: v0.7.0
+koi_version: v0.8.0
 validation:
   date_last_tested: 2026-06-22
   status: drafted

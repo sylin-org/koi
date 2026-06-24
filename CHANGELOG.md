@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-06-24
 
 **Cert-lifecycle reliability: the cornerstone keeps itself fresh.** A continuously-up CA
 ("cornerstone") used to renew its own leaf only at daemon restart — the periodic loop's
@@ -38,6 +38,14 @@ No breaking changes — every item is additive or an internal fix.
   `build_server_auth_config_with_resolver` — resolver-backed TLS configs whose server leaf
   can be hot-swapped under a live listener (no socket/`ServerConfig` rebuild).
 - **`koi_certmesh::roster::CertPolicy::validate()`** — checks the lifecycle invariants.
+- **A leaf-local `ca.pem` is recognized as an identity anchor** — `node_has_identity`
+  (which backs `posture` + the `require_auth` gate) now treats a CA-signed leaf installed
+  beside its `ca.pem` as a real identity, in addition to the CA-initialized and
+  `member.json` cases. This recognizes an embedded consumer that holds a leaf but
+  deliberately does not arm `member.json` (it drives its own renewal over a non-mTLS
+  plane). `destroy` removes the whole `certs/` tree, so this never resurrects an orphaned
+  leaf as secure, and reading "signed" only makes a node *require* auth and sign with a
+  leaf that must still chain to the real CA.
 
 ## [0.7.0] - 2026-06-24
 
