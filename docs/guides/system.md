@@ -187,8 +187,11 @@ Koi is configured through flags and environment variables. The daemon reads thes
 | `--no-health`    | `KOI_NO_HEALTH`   | `false` | Disable health capability      |
 | `--no-proxy`     | `KOI_NO_PROXY`    | `false` | Disable proxy capability       |
 | `--no-udp`       | `KOI_NO_UDP`      | `false` | Disable UDP capability         |
+| `--no-runtime`   | `KOI_NO_RUNTIME`  | `false` | Disable the container/service runtime adapter |
+| `--no-acme`      | `KOI_NO_ACME`     | `false` | Disable the ACME server / TLS listener (port 5643) |
 | `--no-http`      | `KOI_NO_HTTP`     | `false` | Disable HTTP adapter           |
 | `--no-ipc`       | `KOI_NO_IPC`      | `false` | Disable IPC adapter            |
+| `--no-mcp-http`  | `KOI_NO_MCP_HTTP` | `false` | Disable the in-process MCP HTTP transport (`/v1/mcp`) |
 
 Each module has its own configuration documented in its respective guide. The system-level flags control the daemon itself - where it listens and how it logs. For the full configuration table (all flags, env vars, and defaults), see the [CLI Reference](../reference/cli.md).
 

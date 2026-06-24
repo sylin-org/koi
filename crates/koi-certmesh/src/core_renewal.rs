@@ -68,6 +68,115 @@ impl CertmeshCore {
         result
     }
 
+    /// CA-side counterpart of [`renew_self_if_due`](Self::renew_self_if_due): keep the
+    /// CA's **own** self leaf fresh on the renewal timer.
+    ///
+    /// The member-pull loop is a no-op on the CA ([`renew_self_if_due`] →
+    /// [`RenewOutcome::NotApplicable`]) — a CA cannot pull-renew from itself; its self
+    /// leaf comes from the local [`self_enroll`](Self::self_enroll) path instead.
+    /// Historically that path ran only at daemon start, so a continuously-up CA (a
+    /// "cornerstone") could cross its `renew_threshold_days` and ultimately **expire**
+    /// without a restart (ADR-017/ADR-020). This lets the same periodic loop that
+    /// renews members also refresh the CA self leaf.
+    ///
+    /// Returns:
+    /// - [`RenewOutcome::NotApplicable`] when this node is not a CA (no local CA key).
+    /// - [`RenewOutcome::NotDue`] when the self leaf is outside the renewal threshold
+    ///   (the quiet happy path — no event).
+    /// - [`RenewOutcome::Renewed`] when the leaf was re-issued (emits
+    ///   [`CertmeshEvent::CertRenewed`]).
+    ///
+    /// Best-effort + observable: a CA that cannot re-issue while its leaf is past the
+    /// threshold (most often because it is **locked**) emits
+    /// [`CertmeshEvent::CertRenewalFailed`] + [`CertmeshEvent::CertExpiringSoon`] and
+    /// returns the error, so the loop logs and retries next tick — the same "silence is
+    /// the enemy" contract the member path honors.
+    ///
+    /// Like [`self_enroll`](Self::self_enroll), this refreshes the leaf on disk and the
+    /// envelope/sign plane immediately; the already-bound mTLS/ACME listeners keep the
+    /// prior in-memory cert until they are re-spawned (a posture flip or restart) —
+    /// there is no live listener reload yet.
+    pub async fn renew_ca_self_leaf_if_due(&self) -> Result<RenewOutcome, CertmeshError> {
+        use std::sync::atomic::Ordering;
+
+        // Only the CA renews its own self leaf this way.
+        if !self.state.paths.is_ca_initialized() {
+            return Ok(RenewOutcome::NotApplicable);
+        }
+        let Some(hostname) = Self::local_hostname() else {
+            return Ok(RenewOutcome::NotApplicable);
+        };
+
+        // Decide due-ness from the on-disk self leaf + CA policy, without holding the CA
+        // lock. `self_enroll` re-checks the same inputs authoritatively before it
+        // re-issues, so deciding "due" here guarantees it re-issues there.
+        let cert_path = self
+            .state
+            .paths
+            .certs_dir()
+            .join(&hostname)
+            .join("cert.pem");
+        let not_after = std::fs::read_to_string(&cert_path)
+            .ok()
+            .and_then(|pem| leaf_not_after_utc(&pem));
+        let threshold_days = i64::from(
+            self.state
+                .roster
+                .lock()
+                .await
+                .metadata
+                .policy
+                .renew_threshold_days,
+        );
+
+        // Outside the renewal window → nothing to do (and no event: a renewal that did
+        // not need to happen is not news).
+        if let Some(na) = not_after {
+            if chrono::Utc::now() + chrono::Duration::days(threshold_days) < na {
+                return Ok(RenewOutcome::NotDue { not_after: na });
+            }
+        }
+        // Within threshold (or a missing/unparseable leaf) → (re)issue.
+
+        match self.self_enroll().await {
+            Ok(enrollment) => {
+                let expires_at = leaf_not_after_utc(&enrollment.cert_pem)
+                    .unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::days(90));
+                self.state.renewal_failure_count.store(0, Ordering::Relaxed);
+                let _ = self
+                    .state
+                    .event_tx
+                    .send(CertmeshEvent::CertRenewed { expires_at });
+                Ok(RenewOutcome::Renewed {
+                    expires: expires_at.to_rfc3339(),
+                    hook: None,
+                })
+            }
+            Err(e) => {
+                // The CA is within (or past) its threshold but could not re-issue —
+                // most likely because it is locked. Surface it loudly, like the member
+                // path, then let the loop retry next tick.
+                let count = self
+                    .state
+                    .renewal_failure_count
+                    .fetch_add(1, Ordering::Relaxed)
+                    + 1;
+                let _ = self.state.event_tx.send(CertmeshEvent::CertRenewalFailed {
+                    reason: e.to_string(),
+                    consecutive_failures: count,
+                });
+                if let Some(na) = not_after {
+                    let days_left = (na - chrono::Utc::now()).num_days();
+                    let _ = self
+                        .state
+                        .event_tx
+                        .send(CertmeshEvent::CertExpiringSoon { days_left });
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// The local member certificate's expiry instant (`not_after`), or `None` when
     /// this node is not a member (never joined a mesh) or the leaf cannot be parsed.
     ///

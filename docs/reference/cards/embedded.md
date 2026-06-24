@@ -5,7 +5,7 @@ title: "Embed Koi in a Rust app — capability card"
 audience: [operators, developers, ai-agents]
 status: current
 last_updated: 2026-06-22
-koi_version: v0.7.0
+koi_version: v0.9.0
 validation:
   date_last_tested: 2026-06-22
   status: verified
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Typed per-domain handles — each Result errs if its capability is disabled:
     handle.mdns()?.register(payload)?;
     handle.dns()?.add_entry(entry)?;
-    let posture = handle.certmesh()?.posture()?;
+    let posture = handle.certmesh()?.posture().await?;
 
     // One broadcast stream of everything that happens:
     let mut events = handle.subscribe(); // broadcast::Receiver<KoiEvent>

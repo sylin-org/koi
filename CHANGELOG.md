@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-06-24
+
+**Release tooling.** Cutting a release is now two commands instead of a manual, many-file
+chore. No runtime or library changes — the crates and the binary are functionally identical
+to 0.8.0.
+
+### Added
+- **`scripts/bump-version.ps1`** — bumps the version everywhere in one shot: the Cargo
+  workspace version + every inter-crate pin, Cargo.lock, the CHANGELOG `[Unreleased]` stamp,
+  and the current-version strings across the shipped docs (capability cards, install /
+  `gh attestation` examples, `koi-embedded` dependency recipes, the `koi status` sample, the
+  http-api `version` field, the CLI `KOI_VERSION` example). With no argument it
+  auto-increments the minor (`0.8.0 → 0.9.0`); it then commits all changes and pushes.
+  Historical version references are deliberately left untouched.
+- **`scripts/release.ps1`** — tags the current Cargo version as `v<version>` and pushes it
+  (which fires `release.yml`: build → attest → GitHub Release → GHCR → crates.io), guarding
+  that the CHANGELOG section is stamped, the tag does not already exist, and the tree is clean.
+
+## [0.8.0] - 2026-06-24
+
+**Cert-lifecycle reliability: the cornerstone keeps itself fresh.** A continuously-up CA
+("cornerstone") used to renew its own leaf only at daemon restart — the periodic loop's
+member-pull renewal is a no-op on a CA — so a CA that stayed up past its renewal threshold
+would silently let its leaf cross the line and ultimately expire. These changes make trust
+self-maintaining on a long-lived node, with no new consumer API to call.
+
+No breaking changes — every item is additive or an internal fix.
+
+### Fixed
+- **A continuously-up CA now renews its own leaf on the timer** (`renew_ca_self_leaf_if_due`),
+  not only at restart, so a long-lived cornerstone no longer expires. Its self leaf now also
+  emits `CertRenewed` / `CertExpiringSoon` / `CertRenewalFailed` lifecycle events like a
+  member's does (these were `member.json`-gated, so a CA leaf previously aged silently).
+- **The inter-node mTLS (5642) and ACME (5643) listeners hot-reload the renewed self leaf**
+  with no restart and no dropped connections — one shared, hot-swappable cert resolver backs
+  both, swapped when the leaf changes on disk. Closes the "restart is the reload point"
+  limitation: a timer-renewed CA now presents the fresh cert to new handshakes immediately.
+- **The certmesh background renewal loop runs a pass immediately on startup** (then every
+  interval), instead of waiting a full interval first. A node that boots with an
+  already-overdue leaf — e.g. an embedded consumer that enabled the loop but started via
+  `serve()` rather than `participate()` — refreshes at once rather than serving a stale cert.
+- **An invalid persisted `CertPolicy`** (`renew_threshold_days >= leaf_lifetime_days`, or a
+  zero lifetime/threshold — which would mark every leaf "always due" and churn a re-issue on
+  each tick) is rejected back to the default lifecycle policy on load, loudly (warn), never
+  silently and never failing the load.
+
+### Added
+- **`koi_certmesh::mtls::ReloadableServerCert`** plus `build_server_config_with_resolver` /
+  `build_server_auth_config_with_resolver` — resolver-backed TLS configs whose server leaf
+  can be hot-swapped under a live listener (no socket/`ServerConfig` rebuild).
+- **`koi_certmesh::roster::CertPolicy::validate()`** — checks the lifecycle invariants.
+- **A leaf-local `ca.pem` is recognized as an identity anchor** — `node_has_identity`
+  (which backs `posture` + the `require_auth` gate) now treats a CA-signed leaf installed
+  beside its `ca.pem` as a real identity, in addition to the CA-initialized and
+  `member.json` cases. This recognizes an embedded consumer that holds a leaf but
+  deliberately does not arm `member.json` (it drives its own renewal over a non-mTLS
+  plane). `destroy` removes the whole `certs/` tree, so this never resurrects an orphaned
+  leaf as secure, and reading "signed" only makes a node *require* auth and sign with a
+  leaf that must still chain to the real CA.
+
 ## [0.7.0] - 2026-06-24
 
 **Make the secure path the easy path on the envelope authorization plane.** ADR-022 turns

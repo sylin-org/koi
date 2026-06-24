@@ -94,8 +94,10 @@ async fn dispatch_approval(request: ApprovalRequest, decider: ApprovalDecider) {
 /// Spawns one loop: the **member-pull renewal** check (ADR-017 F6). On a node that
 /// joined a mesh it periodically asks the certmesh core whether the local leaf is
 /// within the CA policy's renewal threshold and, if so, performs a rotate-key pull
-/// renewal over mTLS. It is a no-op on the CA itself and on unconfigured nodes
-/// (the CA renews its own leaf at restart via `self_enroll`).
+/// renewal over mTLS. On the **CA** (cornerstone) the member-pull check is a no-op,
+/// so the loop additionally re-issues the CA's own self leaf when it is within the
+/// renewal threshold (`renew_ca_self_leaf_if_due`) — a long-lived CA no longer needs
+/// a restart to refresh its leaf. The loop is fully a no-op on unconfigured nodes.
 ///
 /// CA failover is **manual** (`koi certmesh promote`): there is no automatic
 /// absence-watch or standby roster sync, so the loop needs neither mDNS nor the
@@ -109,51 +111,77 @@ pub fn spawn_certmesh_background_tasks(
     // A joined member (a) pulls the CA's signed trust bundle to refresh its policy
     // and pick up revocations (anti-rollback), then (b) renews its own cert before
     // expiry by generating a fresh keypair + CSR and pulling a CA signature over
-    // mTLS (the key never leaves the member). Both are no-ops on the CA /
-    // unconfigured nodes.
+    // mTLS (the key never leaves the member). (a)+(b) are no-ops on the CA /
+    // unconfigured nodes; (c) re-issues the CA's own self leaf when due (a no-op
+    // unless this node is the CA).
     let cm = Arc::clone(certmesh);
     let token = cancel.clone();
     tasks.push(tokio::spawn(async move {
         let interval = Duration::from_secs(koi_certmesh::lifecycle::RENEWAL_CHECK_INTERVAL_SECS);
         loop {
+            // Run a pass immediately on startup, then once per `interval`. The startup
+            // pass means a node that boots with an already-overdue leaf — e.g. an
+            // embedded consumer that enabled this loop but started via `serve()` rather
+            // than `participate()` — refreshes at once instead of serving a stale cert
+            // for up to a full interval.
+            run_renewal_pass(&cm).await;
             tokio::select! {
                 _ = token.cancelled() => break,
-                _ = tokio::time::sleep(interval) => {
-                    // (a) Refresh trust (policy + revocations) before renewing.
-                    match cm.pull_trust_bundle().await {
-                        Ok(koi_certmesh::BundleOutcome::Updated { seq, self_revoked }) => {
-                            if self_revoked {
-                                tracing::error!(seq, "Trust bundle marks this node REVOKED");
-                            } else {
-                                tracing::info!(seq, "Trust bundle updated");
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(e) => tracing::debug!(error = %e, "Trust bundle pull skipped"),
-                    }
-
-                    // (b) Renew the local cert if it is within the policy threshold.
-                    match cm.renew_self_if_due().await {
-                        Ok(koi_certmesh::RenewOutcome::Renewed { expires, hook }) => {
-                            let hook_ok = hook.as_ref().map(|h| h.success).unwrap_or(true);
-                            if hook_ok {
-                                tracing::info!(%expires, "Certificate renewed (rotated key)");
-                            } else {
-                                tracing::warn!(%expires, "Certificate renewed but reload hook failed");
-                            }
-                        }
-                        Ok(koi_certmesh::RenewOutcome::NotDue { .. })
-                        | Ok(koi_certmesh::RenewOutcome::NotApplicable) => {}
-                        Err(e) => {
-                            tracing::warn!(error = %e, "Certificate renewal failed; will retry next cycle");
-                        }
-                    }
-                }
+                _ = tokio::time::sleep(interval) => {}
             }
         }
     }));
 
     tracing::debug!("Certmesh background tasks spawned");
+}
+
+/// One renewal pass: refresh trust (policy + revocations), renew the local member leaf
+/// if due, and renew the CA self leaf if due. Each step is a no-op for the roles it
+/// does not apply to, and every failure is best-effort (logged, retried next cycle).
+async fn run_renewal_pass(cm: &CertmeshCore) {
+    // (a) Refresh trust (policy + revocations) before renewing.
+    match cm.pull_trust_bundle().await {
+        Ok(koi_certmesh::BundleOutcome::Updated { seq, self_revoked }) => {
+            if self_revoked {
+                tracing::error!(seq, "Trust bundle marks this node REVOKED");
+            } else {
+                tracing::info!(seq, "Trust bundle updated");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => tracing::debug!(error = %e, "Trust bundle pull skipped"),
+    }
+
+    // (b) Renew the local cert if it is within the policy threshold.
+    match cm.renew_self_if_due().await {
+        Ok(koi_certmesh::RenewOutcome::Renewed { expires, hook }) => {
+            let hook_ok = hook.as_ref().map(|h| h.success).unwrap_or(true);
+            if hook_ok {
+                tracing::info!(%expires, "Certificate renewed (rotated key)");
+            } else {
+                tracing::warn!(%expires, "Certificate renewed but reload hook failed");
+            }
+        }
+        Ok(koi_certmesh::RenewOutcome::NotDue { .. })
+        | Ok(koi_certmesh::RenewOutcome::NotApplicable) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "Certificate renewal failed; will retry next cycle");
+        }
+    }
+
+    // (c) The CA (cornerstone) renews its OWN self leaf if due. The member-pull arm
+    // above is a no-op for it; without this a long-lived CA would depend on a restart
+    // to refresh its leaf.
+    match cm.renew_ca_self_leaf_if_due().await {
+        Ok(koi_certmesh::RenewOutcome::Renewed { expires, .. }) => {
+            tracing::info!(%expires, "CA self-leaf renewed");
+        }
+        Ok(koi_certmesh::RenewOutcome::NotDue { .. })
+        | Ok(koi_certmesh::RenewOutcome::NotApplicable) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "CA self-leaf renewal failed; will retry next cycle");
+        }
+    }
 }
 
 #[cfg(test)]

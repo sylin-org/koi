@@ -229,6 +229,7 @@ let info = udp.bind(koi_udp::UdpBindRequest {
     port: 0,
     addr: "127.0.0.1".to_string(),
     lease_secs: 300,
+    allow_remote: false,
 }).await?;
 
 // Subscribe to incoming datagrams

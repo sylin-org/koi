@@ -5,7 +5,7 @@ title: "TLS proxy — a certmesh endpoint in front of any backend"
 audience: [operators, developers, ai-agents]
 status: current
 last_updated: 2026-06-22
-koi_version: v0.7.0
+koi_version: v0.9.0
 validation:
   date_last_tested: 2026-06-22
   status: verified

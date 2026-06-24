@@ -5,7 +5,7 @@ title: "Certmesh enrollment — capability card"
 audience: [operators, developers, ai-agents]
 status: current
 last_updated: 2026-06-19
-koi_version: v0.7.0
+koi_version: v0.9.0
 validation:
   date_last_tested: 2026-06-19
   status: verified

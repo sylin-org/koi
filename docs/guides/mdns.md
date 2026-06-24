@@ -94,7 +94,7 @@ koi status
 ```
 
 ```
-Koi v0.7.0
+Koi v0.9.0
   ...
   Browse:    idle      # or "active" while the meta-browse is running
 ```

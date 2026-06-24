@@ -140,10 +140,10 @@ POST /v1/health/add
 Content-Type: application/json
 x-koi-token: <daemon access token>
 
-{"name": "api", "http": "https://localhost:3000/health"}
+{"name": "api", "kind": "http", "target": "https://localhost:3000/health"}
 ```
 
-For TCP checks, use `{"name": "db", "tcp": "127.0.0.1:5432"}`.
+The body fields are `name`, `kind` (`"http"` or `"tcp"`), `target` (the URL or `host:port`), plus optional `interval_secs` and `timeout_secs`. For a TCP check, use `{"name": "db", "kind": "tcp", "target": "127.0.0.1:5432"}`.
 
 Mutating endpoints (`POST /v1/health/add`, `DELETE /v1/health/remove/{name}`) require the daemon access token in the `x-koi-token` header — see the [security model](../reference/security-model.md) for how to read it from the breadcrumb. `GET` reads (status, list) are unauthenticated.
 

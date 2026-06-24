@@ -5,7 +5,7 @@ title: "MCP — an AI-agent door into your LAN"
 audience: [operators, developers, ai-agents]
 status: current
 last_updated: 2026-06-22
-koi_version: v0.7.0
+koi_version: v0.9.0
 validation:
   date_last_tested: 2026-06-22
   status: verified
@@ -42,7 +42,7 @@ Then ask the agent to orient: it calls **`lan_inventory`** first (status + healt
 | `GET/POST /v1/mcp` | In-process MCP over Streamable HTTP. **Token on every method** — incl. the server→client SSE **GET** (carved out of the GET exemption). |
 | `--no-mcp-http` (`KOI_NO_MCP_HTTP`) | Disable the HTTP transport. Default **enabled**; disabled → `/v1/mcp` returns `503 capability_disabled`. Reported on `/v1/status` as `mcp_http`. |
 | `koi token show` / `koi token write <path>` | Print the daemon token / write a `0600` file (containers). The token is **never** echoed in MCP output. |
-| `GET /.well-known/mcp/server-card.json` | **Unauthenticated** discovery descriptor (the "Door"): `{name, version, mcp:{enabled, transport:"streamable-http", path:"/v1/mcp", auth:{header}}}`. No secrets. |
+| `GET /.well-known/mcp/server-card.json` | **Unauthenticated** discovery descriptor (the "Door"): `{name, version, mcp:{enabled, transport:"streamable-http", path:"/v1/mcp", auth:{scheme:"bearer", header}}}`. No secrets. |
 
 **Tools (11):** `lan_inventory`, `lan_discover`, `lan_resolve`, `lan_announce`, `lan_unregister`, `mcp_servers_on_lan`, `dns_lookup`, `dns_add`, `dns_remove`, `health_snapshot`, `runtime_instances`. **Resources:** `koi://lan/inventory`, `koi://health`, `koi://dns/zone`, `koi://mdns/services` (read = snapshot on both transports; live `resources/updated` deltas are HTTP-only).
 
