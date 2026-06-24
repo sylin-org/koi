@@ -254,6 +254,81 @@ async fn renew_self_if_due_is_noop_without_member_state() {
     assert!(matches!(outcome, RenewOutcome::NotApplicable));
 }
 
+// ── renew_ca_self_leaf_if_due (CA cornerstone self-renewal) ───────
+
+#[tokio::test]
+async fn renew_ca_self_leaf_if_due_is_noop_without_ca() {
+    // A node with no local CA is not a cornerstone — nothing to self-renew.
+    let paths = isolated_posture_paths("ca-renew-noca");
+    let core = CertmeshCore::uninitialized_with_paths(paths);
+    let outcome = core
+        .renew_ca_self_leaf_if_due()
+        .await
+        .expect("no-op succeeds");
+    assert!(
+        matches!(outcome, RenewOutcome::NotApplicable),
+        "got {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn renew_ca_self_leaf_if_due_not_due_when_fresh() {
+    std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+    let paths = isolated_posture_paths("ca-renew-fresh");
+    let ca = ca::create_ca("test-pass", &[11u8; 32], &paths).unwrap().0;
+    // Default policy: 90-day leaves, renew at 30 days remaining.
+    let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+    let core = CertmeshCore::new_with_paths(ca, roster, None, paths);
+
+    // Issue the initial CA self leaf (~90 days out).
+    core.self_enroll().await.expect("initial self-enroll");
+
+    // A fresh 90-day leaf is well outside the 30-day threshold → not due.
+    let outcome = core.renew_ca_self_leaf_if_due().await.expect("due-check ok");
+    assert!(
+        matches!(outcome, RenewOutcome::NotDue { .. }),
+        "got {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn renew_ca_self_leaf_if_due_renews_when_due() {
+    std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+    let paths = isolated_posture_paths("ca-renew-due");
+    let ca = ca::create_ca("test-pass", &[12u8; 32], &paths).unwrap().0;
+    let mut roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+    // Threshold > lifetime → the self leaf is always within the renewal window.
+    roster.metadata.policy = crate::roster::CertPolicy {
+        leaf_lifetime_days: 90,
+        renew_threshold_days: 365,
+        grace_days: 14,
+    };
+    let core = CertmeshCore::new_with_paths(ca, roster, None, paths);
+
+    let mut events = core.subscribe();
+
+    // Issue the initial self leaf, then drive a due-renewal.
+    core.self_enroll().await.expect("initial self-enroll");
+    let outcome = core.renew_ca_self_leaf_if_due().await.expect("renewal ok");
+    assert!(
+        matches!(outcome, RenewOutcome::Renewed { .. }),
+        "got {outcome:?}"
+    );
+
+    // A CertRenewed event must have been emitted (drain past the self_enroll
+    // MemberJoined events to find it).
+    let mut saw_renewed = false;
+    while let Ok(ev) = events.try_recv() {
+        if matches!(ev, CertmeshEvent::CertRenewed { .. }) {
+            saw_renewed = true;
+        }
+    }
+    assert!(
+        saw_renewed,
+        "expected a CertRenewed event after CA self-renewal"
+    );
+}
+
 /// End-to-end member-pull renewal over a real mTLS connection (ADR-017 F6).
 ///
 /// Proves the whole loop without the test host: a member enrolls (CSR), then
