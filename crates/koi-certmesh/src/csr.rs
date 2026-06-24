@@ -125,6 +125,71 @@ pub fn sign_csr(
     Ok(leaf.pem())
 }
 
+/// Extract the requested SAN DNS names (+ CN) from a CSR PEM, for an
+/// authorization check. Uses x509-parser via the same crate the CSR is signed
+/// with; returns the lowercased names (sorted, deduplicated).
+///
+/// Shared by the ACME finalize path and CA-side member renewal: both must reject
+/// a CSR that asks for a name the caller is not authorized to hold, *before*
+/// signing. [`sign_csr`] already discards CSR SANs and substitutes the
+/// authorized set, but the up-front check makes an expansion attempt fail loudly
+/// rather than silently getting a cert for narrower names. Only DNS names are
+/// returned (IP SANs are structurally pinned by `sign_csr`'s substitution).
+pub(crate) fn requested_sans(csr_pem: &str) -> Result<Vec<String>, CertmeshError> {
+    use x509_parser::prelude::*;
+
+    // Fully-qualify `::pem` — `x509_parser::prelude::*` brings its own `pem`
+    // module into scope and would otherwise shadow the `pem` crate.
+    let parsed_pem =
+        ::pem::parse(csr_pem).map_err(|e| CertmeshError::InvalidPayload(e.to_string()))?;
+    let (_, csr) = X509CertificationRequest::from_der(parsed_pem.contents())
+        .map_err(|e| CertmeshError::InvalidPayload(format!("CSR parse: {e}")))?;
+
+    let mut names = Vec::new();
+
+    // Subject CN.
+    for cn in csr.certification_request_info.subject.iter_common_name() {
+        if let Ok(s) = cn.as_str() {
+            names.push(s.to_lowercase());
+        }
+    }
+
+    // SAN extension from the requested extensions.
+    if let Some(exts) = csr.requested_extensions() {
+        for ext in exts {
+            if let ParsedExtension::SubjectAlternativeName(san) = ext {
+                for gn in &san.general_names {
+                    if let GeneralName::DNSName(dns) = gn {
+                        names.push(dns.to_lowercase());
+                    }
+                }
+            }
+        }
+    }
+
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+/// Whether an authorized name covers a CSR-requested name. A wildcard
+/// authorization `*.zone` covers any single-label subdomain `host.zone`; an
+/// exact authorization matches the same name (case- and trailing-dot-insensitive).
+pub(crate) fn names_match(authorized: &str, requested: &str) -> bool {
+    let authorized = authorized.trim_end_matches('.').to_lowercase();
+    let requested = requested.trim_end_matches('.').to_lowercase();
+    if authorized == requested {
+        return true;
+    }
+    if let Some(base) = authorized.strip_prefix("*.") {
+        // `*.base` matches exactly one extra label in front of `base`.
+        if let Some(prefix) = requested.strip_suffix(&format!(".{base}")) {
+            return !prefix.is_empty() && !prefix.contains('.');
+        }
+    }
+    false
+}
+
 /// Translate authorized name strings into rcgen SAN entries.
 ///
 /// IP-literal strings become `SanType::IpAddress`; everything else becomes a
@@ -310,6 +375,29 @@ mod tests {
             ku.value.digital_signature(),
             "leaf KU must allow digitalSignature"
         );
+    }
+
+    #[test]
+    fn requested_sans_extracts_cn_and_dns_sans() {
+        // A CSR requesting an extra name surfaces both the CN and the SANs.
+        let (csr_pem, _key) = make_csr(&["host-a.lan", "extra.lan"]);
+        let names = requested_sans(&csr_pem).unwrap();
+        assert!(names.contains(&"host-a.lan".to_string()));
+        assert!(names.contains(&"extra.lan".to_string()));
+    }
+
+    #[test]
+    fn names_match_exact() {
+        assert!(names_match("grafana.lan", "grafana.lan"));
+        assert!(names_match("grafana.lan", "Grafana.LAN."));
+        assert!(!names_match("grafana.lan", "evil.lan"));
+    }
+
+    #[test]
+    fn names_match_wildcard() {
+        assert!(names_match("*.lan", "host.lan"));
+        assert!(!names_match("*.lan", "a.b.lan"), "wildcard is single-label");
+        assert!(!names_match("*.lan", "lan"));
     }
 
     #[test]

@@ -138,9 +138,12 @@ impl AcmeState {
         // substitutes the authorized set, but we ALSO reject up-front so a CSR
         // that asks for an unproven name fails loudly rather than silently
         // getting a cert for different names.
-        let csr_sans = csr_requested_sans(&csr_pem)?;
+        let csr_sans = crate::csr::requested_sans(&csr_pem)?;
         for san in &csr_sans {
-            if !authorized_names.iter().any(|n| names_match(n, san)) {
+            if !authorized_names
+                .iter()
+                .any(|n| crate::csr::names_match(n, san))
+            {
                 return Err(CertmeshError::InvalidPayload(format!(
                     "CSR requests unauthorized identifier '{san}' not in the order"
                 )));
@@ -289,81 +292,9 @@ fn der_to_csr_pem(csr_der: &[u8]) -> String {
     pem::encode(&pem::Pem::new("CERTIFICATE REQUEST", csr_der.to_vec()))
 }
 
-/// Extract the requested SAN DNS names (+ CN) from a CSR PEM, for the
-/// authorization check. Uses x509-parser via rcgen's parse (the same crate the
-/// CSR is signed with). Returns the lowercased names.
-fn csr_requested_sans(csr_pem: &str) -> Result<Vec<String>, CertmeshError> {
-    use x509_parser::prelude::*;
-
-    // Fully-qualify `::pem` — `x509_parser::prelude::*` brings its own `pem` module
-    // into scope and would otherwise shadow the `pem` crate.
-    let parsed_pem =
-        ::pem::parse(csr_pem).map_err(|e| CertmeshError::InvalidPayload(e.to_string()))?;
-    let (_, csr) = X509CertificationRequest::from_der(parsed_pem.contents())
-        .map_err(|e| CertmeshError::InvalidPayload(format!("CSR parse: {e}")))?;
-
-    let mut names = Vec::new();
-
-    // Subject CN.
-    for cn in csr.certification_request_info.subject.iter_common_name() {
-        if let Ok(s) = cn.as_str() {
-            names.push(s.to_lowercase());
-        }
-    }
-
-    // SAN extension from the requested extensions.
-    if let Some(exts) = csr.requested_extensions() {
-        for ext in exts {
-            if let ParsedExtension::SubjectAlternativeName(san) = ext {
-                for gn in &san.general_names {
-                    if let GeneralName::DNSName(dns) = gn {
-                        names.push(dns.to_lowercase());
-                    }
-                }
-            }
-        }
-    }
-
-    names.sort();
-    names.dedup();
-    Ok(names)
-}
-
-/// Whether an authorized order name covers a CSR-requested name. A wildcard
-/// authorization `*.zone` covers any single-label subdomain `host.zone`; an
-/// exact authorization matches the same name.
-fn names_match(authorized: &str, requested: &str) -> bool {
-    let authorized = authorized.trim_end_matches('.').to_lowercase();
-    let requested = requested.trim_end_matches('.').to_lowercase();
-    if authorized == requested {
-        return true;
-    }
-    if let Some(base) = authorized.strip_prefix("*.") {
-        // `*.base` matches exactly one extra label in front of `base`.
-        if let Some(prefix) = requested.strip_suffix(&format!(".{base}")) {
-            return !prefix.is_empty() && !prefix.contains('.');
-        }
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn names_match_exact() {
-        assert!(names_match("grafana.lan", "grafana.lan"));
-        assert!(names_match("grafana.lan", "Grafana.LAN."));
-        assert!(!names_match("grafana.lan", "evil.lan"));
-    }
-
-    #[test]
-    fn names_match_wildcard() {
-        assert!(names_match("*.lan", "host.lan"));
-        assert!(!names_match("*.lan", "a.b.lan"), "wildcard is single-label");
-        assert!(!names_match("*.lan", "lan"));
-    }
 
     #[test]
     fn der_to_csr_pem_round_trips() {

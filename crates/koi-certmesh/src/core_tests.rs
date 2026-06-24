@@ -483,6 +483,134 @@ async fn trust_bundle_pull_round_trip() {
     let _ = std::fs::remove_dir_all(base.join("member"));
 }
 
+// ── renew_member (ADR-021, CA-side transport-agnostic renewal) ────
+
+/// A renewal CSR for a member that was never enrolled is refused with NotFound.
+#[tokio::test]
+async fn renew_member_unknown_member_is_not_found() {
+    let ca = make_test_ca();
+    let roster = Roster::new(JUST_ME.0, JUST_ME.1, None); // empty roster
+    let core = make_unlocked_core(ca, roster);
+    let (_k, csr) = csr::generate_keypair_and_csr("ghost", &["ghost".to_string()]).unwrap();
+    let err = core.renew_member("ghost", &csr).await.unwrap_err();
+    assert!(matches!(err, CertmeshError::NotFound(_)), "got {err:?}");
+}
+
+/// A revoked member's renewal is refused with Revoked (and audited at the
+/// CA boundary, ADR-017 F9/F14).
+#[tokio::test]
+async fn renew_member_revoked_is_rejected() {
+    let ca = make_test_ca();
+    let mut roster = make_test_roster_with_member("revoked-host", MemberRole::Primary);
+    roster.members[0].status = MemberStatus::Revoked;
+    let core = make_unlocked_core(ca, roster);
+    let (_k, csr) =
+        csr::generate_keypair_and_csr("revoked-host", &["revoked-host".to_string()]).unwrap();
+    let err = core.renew_member("revoked-host", &csr).await.unwrap_err();
+    assert!(matches!(err, CertmeshError::Revoked(_)), "got {err:?}");
+}
+
+/// THE critical invariant: a renewal CSR can never EXPAND its SAN set. A CSR
+/// requesting a name not recorded at enrollment is rejected with InvalidPayload
+/// — loudly, not silently narrowed.
+#[tokio::test]
+async fn renew_member_san_expansion_is_rejected() {
+    let ca = make_test_ca();
+    // Authorized SANs for "san-host" are ["san-host", "san-host.local"].
+    let roster = make_test_roster_with_member("san-host", MemberRole::Primary);
+    let core = make_unlocked_core(ca, roster);
+    // The CSR sneaks in an extra, unauthorized name.
+    let (_k, csr) = csr::generate_keypair_and_csr(
+        "san-host",
+        &["san-host".to_string(), "evil.lan".to_string()],
+    )
+    .unwrap();
+    let err = core.renew_member("san-host", &csr).await.unwrap_err();
+    assert!(
+        matches!(err, CertmeshError::InvalidPayload(_)),
+        "a SAN-expansion attempt must be rejected with InvalidPayload, got {err:?}"
+    );
+    assert_eq!(koi_common::error::ErrorCode::from(&err).http_status(), 400);
+}
+
+/// An expired member cert is STILL renewable — renewal is the fix for expiry, so
+/// the CA must not gate renewal on the member's current cert validity.
+#[tokio::test]
+async fn renew_member_expired_cert_still_renews() {
+    let ca = make_test_ca();
+    let mut roster = make_test_roster_with_member("stale-host", MemberRole::Primary);
+    roster.members[0].cert_expires = Utc::now() - Duration::days(5); // already expired
+    let core = make_unlocked_core(ca, roster);
+    let (_k, csr) =
+        csr::generate_keypair_and_csr("stale-host", &["stale-host".to_string()]).unwrap();
+    let resp = core
+        .renew_member("stale-host", &csr)
+        .await
+        .expect("an expired cert must still renew");
+    assert!(resp.service_cert.contains("BEGIN CERTIFICATE"));
+}
+
+/// Happy path: a valid rotate-key CSR yields a signed leaf, the roster records
+/// the rotated fingerprint, and a `CertRenewed` event is emitted.
+#[tokio::test]
+async fn renew_member_happy_path_issues_and_records() {
+    let ca = make_test_ca();
+    let roster = make_test_roster_with_member("good-host", MemberRole::Primary);
+    let core = make_unlocked_core(ca, roster);
+    let mut events = core.state.event_tx.subscribe();
+
+    let (_k, csr) = csr::generate_keypair_and_csr(
+        "good-host",
+        &["good-host".to_string(), "good-host.local".to_string()],
+    )
+    .unwrap();
+    let resp = core
+        .renew_member("good-host", &csr)
+        .await
+        .expect("renewal succeeds");
+
+    assert_eq!(resp.hostname, "good-host");
+    assert!(resp.service_cert.contains("BEGIN CERTIFICATE"));
+    assert!(resp.ca_cert.contains("BEGIN CERTIFICATE"));
+    assert_eq!(resp.ca_fingerprint.len(), 64, "sha256 hex");
+
+    // The roster recorded the rotated leaf's fingerprint + last_seen.
+    let issued_fp =
+        koi_crypto::pinning::fingerprint_sha256(pem::parse(&resp.service_cert).unwrap().contents());
+    {
+        let roster = core.state.roster.lock().await;
+        let m = roster.find_member("good-host").expect("member present");
+        assert_eq!(
+            m.cert_fingerprint, issued_fp,
+            "roster must record the rotated fingerprint"
+        );
+        assert!(m.last_seen.is_some());
+    }
+
+    // A CertRenewed event fired (the CA-side emission, ADR-021).
+    let ev = events.try_recv().expect("CertRenewed emitted");
+    assert!(
+        matches!(ev, CertmeshEvent::CertRenewed { .. }),
+        "got {ev:?}"
+    );
+}
+
+/// A locked (or absent) CA cannot sign renewals.
+#[tokio::test]
+async fn renew_member_ca_locked_is_rejected() {
+    let roster = make_test_roster_with_member("node-01", MemberRole::Primary);
+    let core = make_locked_core(roster);
+    let (_k, csr) = csr::generate_keypair_and_csr("node-01", &["node-01".to_string()]).unwrap();
+    let err = core.renew_member("node-01", &csr).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            CertmeshError::CaLocked | CertmeshError::CaNotInitialized
+        ),
+        "got {err:?}"
+    );
+}
+
 // ── F3 install pin enforcement ───────────────────────────────────
 
 /// F3: when a pinned fingerprint is supplied, `install_member_cert` must

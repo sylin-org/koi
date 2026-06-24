@@ -215,6 +215,148 @@ impl CertmeshCore {
         })
     }
 
+    /// CA-side, transport-agnostic member renewal (ADR-021).
+    ///
+    /// Sign a rotate-key renewal for an **already-authenticated** member. The
+    /// caller is responsible for proving `authenticated_cn`:
+    ///   - mTLS path: the TLS `ClientCn` extracted from the connection,
+    ///   - envelope path: `Assurance::identity()` after [`verify`](Self::verify).
+    ///
+    /// `authenticated_cn` is a **trusted input** — this method never
+    /// re-authenticates; it enforces the CA-side business invariants on a
+    /// pre-authenticated identity:
+    ///
+    /// 1. CA initialized + unlocked,
+    /// 2. member enrolled, **active**, and **not revoked** (a revoked member's
+    ///    renewal is refused *and audited* at the CA boundary, ADR-017 F9/F14),
+    /// 3. **SAN pinning** — every name in the CSR must be covered by the SANs
+    ///    recorded at enrollment; a renewal CSR can never expand its SAN set.
+    ///    [`csr::sign_csr`] already substitutes the authorized SANs structurally,
+    ///    but an expansion attempt is rejected up-front (`InvalidPayload`) so it
+    ///    fails loudly rather than silently narrowing,
+    /// 4. sign the CSR with the **authorized** SANs + policy lifetime (no key
+    ///    generation — the CA never sees a member private key),
+    /// 5. record the rotated leaf's fingerprint/expiry in the roster (bumping
+    ///    `seq` — a rotation is a membership change the trust bundle reflects, F8),
+    /// 6. append a `cert_renewed` audit entry and emit [`CertmeshEvent::CertRenewed`].
+    ///
+    /// Returns the wire-shaped [`protocol::RenewResponse`] (leaf + CA cert +
+    /// fingerprint + expiry); the transport adapter only serializes it.
+    pub async fn renew_member(
+        &self,
+        authenticated_cn: &str,
+        csr_pem: &str,
+    ) -> Result<protocol::RenewResponse, CertmeshError> {
+        let ca_guard = self.state.ca.lock().await;
+        let ca = ca_guard.as_ref().ok_or_else(|| {
+            if self.state.paths.is_ca_initialized() {
+                CertmeshError::CaLocked
+            } else {
+                CertmeshError::CaNotInitialized
+            }
+        })?;
+
+        // Authorization FIRST — before the CSR is ever parsed, so an unauthorized
+        // (revoked / unknown) caller is refused without inspecting its CSR. The
+        // member must be enrolled, active, and not revoked; the authorized SANs
+        // are the ones recorded at enrollment.
+        let (authorized_sans, lifetime_days) = {
+            let roster = self.state.roster.lock().await;
+            if roster.is_revoked(authenticated_cn) {
+                drop(roster);
+                let _ = crate::audit::append_entry_to(
+                    &self.state.paths.audit_log_path(),
+                    "mtls_revoked_rejected",
+                    &[("hostname", authenticated_cn), ("op", "renew")],
+                );
+                return Err(CertmeshError::Revoked(authenticated_cn.to_string()));
+            }
+            match roster.find_member(authenticated_cn) {
+                Some(m) if m.status == crate::roster::MemberStatus::Active => (
+                    m.cert_sans.clone(),
+                    roster.metadata.policy.leaf_lifetime_days,
+                ),
+                Some(_) => {
+                    // Non-active (e.g. a status that bypassed is_revoked) → 403,
+                    // not a 500; this is an authorization refusal, not a fault.
+                    return Err(CertmeshError::Forbidden(format!(
+                        "member '{authenticated_cn}' is not active"
+                    )));
+                }
+                None => return Err(CertmeshError::NotFound(authenticated_cn.to_string())),
+            }
+        };
+
+        // SAN pinning (the critical invariant): parse the CSR's requested names
+        // (only now, after authorization) and reject any name not covered by the
+        // enrollment-recorded SANs.
+        let requested = crate::csr::requested_sans(csr_pem)?;
+        for san in &requested {
+            if !authorized_sans
+                .iter()
+                .any(|a| crate::csr::names_match(a, san))
+            {
+                return Err(CertmeshError::InvalidPayload(format!(
+                    "renewal CSR requests unauthorized identifier '{san}' not in the enrollment record"
+                )));
+            }
+        }
+
+        // Sign the member's CSR — no key generation, authorized SANs only. The CA
+        // lock is held through signing (CPU-bound, no I/O) so the key cannot be
+        // torn down between authorization and signing; it is released immediately
+        // after, before the roster commit.
+        let leaf_pem = crate::csr::sign_csr(ca, csr_pem, &authorized_sans, lifetime_days)?;
+        let ca_cert = ca.cert_pem.clone();
+        let ca_fingerprint = crate::ca::ca_fingerprint(ca);
+        drop(ca_guard);
+
+        // Fingerprint + expiry from the issued leaf (same convention as enrollment).
+        let fingerprint = pem::parse(&leaf_pem)
+            .map(|der| koi_crypto::pinning::fingerprint_sha256(der.contents()))
+            .map_err(|e| CertmeshError::Certificate(format!("issued leaf parse: {e}")))?;
+        let expires = chrono::Utc::now() + chrono::Duration::days(i64::from(lifetime_days));
+
+        // Update the roster member's fingerprint/expiry/last_seen and bump `seq`
+        // (a rotation is a membership change the trust bundle must reflect — F8).
+        if let Err(e) = self
+            .state
+            .commit_roster(|roster| {
+                if let Some(member) = roster.find_member_mut(authenticated_cn) {
+                    member.cert_fingerprint = fingerprint.clone();
+                    member.cert_expires = expires;
+                    member.last_seen = Some(chrono::Utc::now());
+                }
+                Ok(())
+            })
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to save roster after renewal");
+        }
+
+        let _ = crate::audit::append_entry_to(
+            &self.state.paths.audit_log_path(),
+            "cert_renewed",
+            &[
+                ("hostname", authenticated_cn),
+                ("fingerprint", &fingerprint),
+                ("expires", &expires.to_rfc3339()),
+            ],
+        );
+
+        let _ = self.state.event_tx.send(CertmeshEvent::CertRenewed {
+            expires_at: expires,
+        });
+
+        Ok(protocol::RenewResponse {
+            hostname: authenticated_cn.to_string(),
+            service_cert: leaf_pem,
+            ca_cert,
+            ca_fingerprint,
+            expires: expires.to_rfc3339(),
+        })
+    }
+
     /// Pull, verify, and apply the CA's signed trust bundle (ADR-017 P1/F4).
     ///
     /// A no-op ([`BundleOutcome::NotApplicable`]) unless this node joined a mesh.
