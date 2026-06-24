@@ -505,17 +505,29 @@ pub enum RenewOutcome {
 ///
 /// Returns `None` on unparseable PEM/DER or an out-of-range timestamp.
 /// Whether a node rooted at `paths` holds a usable local identity: a CA-signed
-/// leaf (`cert.pem`/`key.pem`) for the local hostname on disk, anchored to a mesh
-/// (the CA is initialized here, or a `member.json` records the joined mesh — so an
-/// orphaned leaf left by `destroy` does not read as secure). Backs
-/// [`CertmeshCore::posture`] and the [`CertmeshCore::require_auth`] gate.
+/// leaf (`cert.pem`/`key.pem`) for the local hostname on disk, anchored to a mesh.
+///
+/// "Anchored" is any of:
+/// - the CA is initialized here (this node *is* the CA), or
+/// - a `member.json` records the joined mesh (the mTLS-pull-renewal consumer), or
+/// - the leaf's CA anchor (`ca.pem`) sits alongside it — a leaf installed *with*
+///   the CA it chains to. This recognizes an **embedded consumer that holds a
+///   CA-signed leaf but deliberately does not arm `member.json`** (it drives its
+///   own renewal over a non-mTLS plane, ADR-020/ADR-022): its leaf is a real
+///   identity, not a stray cert. `install_member_cert`/`self_enroll` only write
+///   `ca.pem` beside a deliberately-installed leaf, and `destroy` removes the whole
+///   `certs/` tree, so this does not resurrect an orphaned leaf as secure.
+///
+/// Backs [`CertmeshCore::posture`] and the [`CertmeshCore::require_auth`] gate.
 pub(crate) fn node_has_identity(paths: &CertmeshPaths) -> bool {
     let Some(hostname) = CertmeshCore::local_hostname() else {
         return false;
     };
     let leaf = paths.certs_dir().join(&hostname);
     let leaf_present = leaf.join("cert.pem").exists() && leaf.join("key.pem").exists();
-    let anchored = paths.is_ca_initialized() || paths.member_state_path().exists();
+    let anchored = paths.is_ca_initialized()
+        || paths.member_state_path().exists()
+        || leaf.join("ca.pem").exists();
     leaf_present && anchored
 }
 

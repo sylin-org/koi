@@ -68,10 +68,26 @@ fn posture_is_authenticated_with_member_identity() {
 fn posture_ignores_orphan_leaf_without_anchor() {
     let paths = isolated_posture_paths("orphan");
     let hostname = CertmeshCore::local_hostname().expect("local hostname");
-    // Leaf present but no CA and no member.json — an unanchored orphan.
+    // Leaf present (cert+key only) but no CA, no member.json, and no leaf-local
+    // ca.pem anchor — an unanchored orphan.
     write_posture_leaf(&paths, &hostname);
     let core = CertmeshCore::uninitialized_with_paths(paths);
     assert_eq!(core.posture(), koi_common::posture::Posture::OPEN);
+}
+
+#[test]
+fn posture_authenticated_with_leaf_local_ca_anchor() {
+    // A CA-signed leaf installed WITH its `ca.pem` anchor, but no `member.json`
+    // and not a CA — the embedded consumer that holds a leaf and drives its own
+    // renewal over a non-mTLS plane (ADR-022). The leaf-local ca.pem anchors it as
+    // a real identity, distinguishing it from the orphan above (which lacks ca.pem).
+    let paths = isolated_posture_paths("leaf-ca-anchor");
+    let hostname = CertmeshCore::local_hostname().expect("local hostname");
+    write_posture_leaf(&paths, &hostname);
+    let leaf = paths.certs_dir().join(&hostname);
+    std::fs::write(leaf.join("ca.pem"), b"ca-anchor").unwrap();
+    let core = CertmeshCore::uninitialized_with_paths(paths);
+    assert!(core.posture().signed);
 }
 
 #[tokio::test]
