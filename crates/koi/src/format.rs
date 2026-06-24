@@ -319,6 +319,30 @@ fn proxy_row_line(name: &str, listen: &str, backend: &str, tls: &str, state: &st
     format!("{name:<12} {listen:<7} {backend:<22} {tls:<12} {state}\n")
 }
 
+// ── First-run hint ──────────────────────────────────────────────────
+
+/// Getting-started hint shown when no daemon is reachable (the "cloned the repo
+/// and ran `koi`" first-run path). The three steps are ordered by commitment:
+/// the first works instantly with no setup, the other two bootstrap the toolbox.
+pub fn first_run_hint() -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "No Koi daemon is running yet. Getting started:");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "  koi mdns discover     Browse the network now — no setup required"
+    );
+    let _ = writeln!(
+        out,
+        "  koi --daemon          Start the full toolbox (DNS, certs, health, proxy)"
+    );
+    let _ = writeln!(
+        out,
+        "  koi certmesh create   Mint a private certificate authority for your LAN"
+    );
+    out
+}
+
 // ── Shared helpers ──────────────────────────────────────────────────
 
 /// Format TXT record entries as inline `key=value` pairs.
@@ -335,6 +359,14 @@ fn txt_inline(txt: &HashMap<String, String>) -> String {
 mod tests {
     use super::*;
     use koi_mdns::protocol::{LeaseMode, LeaseState};
+
+    #[test]
+    fn first_run_hint_names_the_three_getting_started_steps() {
+        let hint = first_run_hint();
+        assert!(hint.contains("koi mdns discover"));
+        assert!(hint.contains("koi --daemon"));
+        assert!(hint.contains("koi certmesh create"));
+    }
 
     fn test_record() -> ServiceRecord {
         ServiceRecord {
