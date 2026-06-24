@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Bump the Koi workspace version everywhere, in one shot.
+  Bump the Koi workspace version everywhere, then commit + push, in one shot.
 
 .DESCRIPTION
   The mechanical half of a release version bump:
@@ -12,14 +12,18 @@
       examples, the `koi-embedded = "X.Y"` dependency recipes, the `koi status`
       sample, the http-api `version` field, and the CLI `KOI_VERSION` example.
 
+  It then **commits ALL working-tree changes** as `chore(release): prep <version>`
+  (the commit body is pulled from the CHANGELOG section) and **pushes**.
+
   It deliberately does NOT touch historical version references (past CHANGELOG
   entries, past `upgrading.md` sections, ADRs, `SURFACES.md` shipped-markers,
   docs/assessment, docs/prompts) — only the curated current-version surfaces.
 
-  It does NOT write per-release prose. Author that BEFORE bumping (the CHANGELOG
-  entry goes under `## [Unreleased]`) and AFTER (a `The <version> upgrade` section
-  in docs/guides/upgrading.md + the README "latest release" blurb). The script
-  prints that checklist at the end.
+  Per-release PROSE is yours to write, and because the commit sweeps the whole tree
+  you should write it BEFORE running so it lands in the release commit: the CHANGELOG
+  `[Unreleased]` entry body, a `The <version> upgrade` section in
+  docs/guides/upgrading.md, and the README "latest release" blurb. Use -NoCommit to
+  do the mechanical bump only and review first.
 
 .PARAMETER NewVersion
   The new semver version, e.g. 0.9.0. OPTIONAL — if omitted, the minor version is
@@ -28,17 +32,25 @@
   CHANGELOG release date (default: today, yyyy-MM-dd).
 .PARAMETER SkipLock
   Skip the `cargo update --workspace` Cargo.lock refresh.
+.PARAMETER NoCommit
+  Do the mechanical bump only — do not commit or push.
+.PARAMETER NoPush
+  Commit, but do not push.
 
 .EXAMPLE
-  ./scripts/bump-version.ps1          # auto: bump the minor (e.g. 0.8.0 -> 0.9.0)
+  ./scripts/bump-version.ps1          # auto: bump the minor (e.g. 0.8.0 -> 0.9.0), commit + push
 .EXAMPLE
   ./scripts/bump-version.ps1 1.0.0    # an explicit version (e.g. a major bump)
+.EXAMPLE
+  ./scripts/bump-version.ps1 -NoCommit  # mechanical bump only, review before committing
 #>
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)][string] $NewVersion,
     [string] $Date = (Get-Date -Format 'yyyy-MM-dd'),
-    [switch] $SkipLock
+    [switch] $SkipLock,
+    [switch] $NoCommit,
+    [switch] $NoPush
 )
 
 $ErrorActionPreference = 'Stop'
@@ -126,9 +138,36 @@ if (-not $SkipLock) {
 
 Write-Host ""
 Write-Host ">> mechanical bump done: $($script:total) version string(s) + Cargo + Cargo.lock." -ForegroundColor Green
-Write-Host ">> STILL AUTHOR BY HAND (per-release prose):" -ForegroundColor Yellow
-Write-Host "     1. CHANGELOG [$NewVersion] body  - release summary + Added/Fixed/Changed"
-Write-Host "     2. docs/guides/upgrading.md       - a 'The $NewVersion upgrade' section"
-Write-Host "     3. README 'latest release' blurb  - the v$NewVersion prose paragraph"
-Write-Host ">> THEN VERIFY:  cargo check  +  cargo fmt --all -- --check  +  bash scripts/check-doc-leaks.sh"
-Write-Host ">> THEN TAG:     scripts/release.ps1   (after committing + merging to the release branch)"
+
+if ($NoCommit) {
+    Write-Host ">> -NoCommit: not committing. Author the prose (if you haven't), then commit + push:" -ForegroundColor Yellow
+    Write-Host "     CHANGELOG [$NewVersion] body / docs/guides/upgrading.md 'The $NewVersion upgrade' / README blurb"
+    return
+}
+
+# 7) Commit ALL working-tree changes (the bump + whatever release prose you wrote first)
+#    and push. The commit body is the CHANGELOG section's lead paragraph.
+if (-not (& git status --porcelain)) { Write-Host ">> nothing to commit (tree clean)."; return }
+
+$summary = "See CHANGELOG.md [$NewVersion]."
+$sec = [regex]::Match((Get-Content -Raw 'CHANGELOG.md'),
+    "(?ms)^##\s*\[$([regex]::Escape($NewVersion))\][^\n]*\n+(.+?)(?=\n##\s|\Z)")
+if ($sec.Success) {
+    $lead = (($sec.Groups[1].Value.Trim()) -split '(?:\r?\n){2,}')[0].Trim()
+    if ($lead) { $summary = "$lead`n`nSee CHANGELOG.md [$NewVersion]." }
+}
+
+Write-Host ">> committing all changes  (chore(release): prep $NewVersion)" -ForegroundColor Cyan
+& git add -A
+& git status --short
+& git commit -q -m "chore(release): prep $NewVersion" -m $summary
+if ($LASTEXITCODE -ne 0) { throw "git commit failed ($LASTEXITCODE)" }
+
+if ($NoPush) {
+    Write-Host ">> committed; NOT pushed (-NoPush). Push with: git push" -ForegroundColor Yellow
+    return
+}
+Write-Host ">> pushing..." -ForegroundColor Cyan
+& git push
+if ($LASTEXITCODE -ne 0) { throw "git push failed ($LASTEXITCODE) - resolve and push manually" }
+Write-Host ">> prep $NewVersion committed + pushed.  Cut the release: scripts/release.ps1" -ForegroundColor Green
