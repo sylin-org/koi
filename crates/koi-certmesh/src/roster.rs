@@ -55,6 +55,28 @@ impl Default for CertPolicy {
     }
 }
 
+impl CertPolicy {
+    /// Validate the lifecycle invariants. A policy that violates these makes renewal
+    /// nonsensical — e.g. `renew_threshold_days >= leaf_lifetime_days` marks every leaf
+    /// "always due", so it would be re-issued on every renewal tick. [`load_roster`]
+    /// rejects an invalid persisted policy back to [`Default`] rather than load it.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.leaf_lifetime_days == 0 {
+            return Err("leaf_lifetime_days must be > 0".to_string());
+        }
+        if self.renew_threshold_days == 0 {
+            return Err("renew_threshold_days must be > 0".to_string());
+        }
+        if self.renew_threshold_days >= self.leaf_lifetime_days {
+            return Err(format!(
+                "renew_threshold_days ({}) must be < leaf_lifetime_days ({})",
+                self.renew_threshold_days, self.leaf_lifetime_days
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RosterMetadata {
     pub created_at: DateTime<Utc>,
@@ -365,8 +387,21 @@ pub(crate) async fn persist_roster(
 }
 
 /// Load the roster from disk.
+///
+/// A persisted policy that violates [`CertPolicy::validate`] (e.g. a hand-edited
+/// `roster.json` with `renew_threshold_days >= leaf_lifetime_days`, which would make
+/// every leaf "always due" and churn a re-issue on each renewal tick) is rejected back
+/// to the default lifecycle policy — loudly, never silently.
 pub fn load_roster(path: &Path) -> Result<Roster, std::io::Error> {
-    persist::read_json(path)
+    let mut roster: Roster = persist::read_json(path)?;
+    if let Err(why) = roster.metadata.policy.validate() {
+        tracing::warn!(
+            reason = %why,
+            "roster cert policy is invalid; falling back to the default lifecycle policy"
+        );
+        roster.metadata.policy = CertPolicy::default();
+    }
+    Ok(roster)
 }
 
 #[cfg(test)]
@@ -387,6 +422,34 @@ mod tests {
         assert!(r.metadata.operator.is_none());
         assert!(r.members.is_empty());
         assert!(r.revocation_list.is_empty());
+    }
+
+    #[test]
+    fn cert_policy_validate_accepts_default_rejects_broken() {
+        assert!(CertPolicy::default().validate().is_ok());
+        // threshold >= lifetime → every leaf is "always due" (re-issue churn).
+        assert!(CertPolicy {
+            leaf_lifetime_days: 30,
+            renew_threshold_days: 30,
+            grace_days: 14,
+        }
+        .validate()
+        .is_err());
+        // zero lifetime / zero threshold are nonsensical.
+        assert!(CertPolicy {
+            leaf_lifetime_days: 0,
+            renew_threshold_days: 1,
+            grace_days: 1,
+        }
+        .validate()
+        .is_err());
+        assert!(CertPolicy {
+            leaf_lifetime_days: 90,
+            renew_threshold_days: 0,
+            grace_days: 14,
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]
