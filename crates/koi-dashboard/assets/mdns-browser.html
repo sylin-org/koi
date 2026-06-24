@@ -362,6 +362,9 @@ body::before {
   let filterText = '';
   let activeTypes = new Set(); // empty = show all
   let expandedRows = new Set();
+  // normalized service type -> { label, description } for well-known types
+  // (server-annotated in the snapshot); used to show friendly names + tooltips.
+  let typeMeta = {};
   let pollTimer = null;
   let eventSource = null;
 
@@ -499,6 +502,13 @@ body::before {
     $('hero-count').textContent = s.total_instances;
     $('hero-types').textContent = s.total_types;
 
+    // Refresh the well-known type lookup from the server-annotated summaries so
+    // the histogram, filter tags, and table can show friendly names + tooltips.
+    typeMeta = {};
+    for (const t of s.service_types) {
+      if (t.label) typeMeta[normalizeType(t.service_type)] = { label: t.label, description: t.description || '' };
+    }
+
     renderFilterTags(s.service_types);
     renderHistogram(s.service_types);
     renderServiceTable(s.instances);
@@ -511,7 +521,8 @@ body::before {
       const norm = normalizeType(t.service_type);
       const tag = el('span', {
         class: 'filter-tag' + (activeTypes.has(norm) ? ' active' : ''),
-        text: norm,
+        text: t.label || norm,
+        attrs: t.label ? { title: norm + (t.description ? ' — ' + t.description : '') } : {},
         data: { type: norm },
       });
       tag.addEventListener('click', function() {
@@ -535,7 +546,11 @@ body::before {
       const pct = Math.max(4, (t.count / max) * 100);
       const norm = normalizeType(t.service_type);
       const row = el('div', { class: 'hist-row', data: { type: norm } });
-      row.appendChild(el('span', { class: 'hist-label', text: norm }));
+      row.appendChild(el('span', {
+        class: 'hist-label',
+        text: t.label || norm,
+        attrs: t.label ? { title: norm + (t.description ? ' — ' + t.description : '') } : {},
+      }));
       const wrap = el('span', { class: 'hist-bar-wrap' });
       const bar = el('span', { class: 'hist-bar type-' + (i % 5) });
       bar.style.width = pct + '%'; // numeric — safe
@@ -615,9 +630,12 @@ body::before {
     row.appendChild(nameTd);
 
     const typeTd = el('td');
+    const svcNorm = normalizeType(svc.service_type);
+    const meta = typeMeta[svcNorm];
     typeTd.appendChild(el('span', {
-      text: normalizeType(svc.service_type),
+      text: svcNorm,
       style: 'font-family:var(--mono);font-size:0.72rem',
+      attrs: meta ? { title: meta.label + (meta.description ? ' — ' + meta.description : '') } : {},
     }));
     row.appendChild(typeTd);
 
