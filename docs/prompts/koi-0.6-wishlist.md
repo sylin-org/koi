@@ -1,16 +1,17 @@
 # Koi 0.6 Wishlist — Aggregated & Prioritized
 
-> **Status (2026-06-24): 0.5.2 scope SHIPPED on `dev`** (not yet pushed/tagged).
+> **Status (2026-06-24): cut as 0.6.0 on `dev`** (version-bumped; owner merges dev→main).
 > - Instant batch I1–I5 — `35f4ec3`
 > - T1-A `CertmeshCore::renew_member` (ADR-021) — `cff618a` — **two-box hardware gate PASSED 20/0**
 > - T1-B mDNS browser type annotations — `fa9e0ca`
 > - T1-C first-run getting-started hint — `e0c8d47`
+> - Release prep (version bump + CHANGELOG + upgrading + doc sweep) — `0774d80`
 >
-> All gated (fmt, clippy -D, `test --workspace --locked`, doc-leaks). Remaining
-> for 0.6.0: T2 items (scoped tokens, `koi tls setup`, NRPT, `--cert-lifetime`).
-> Follow-up noted in review: extend `csr::requested_sans` to also surface IP SANs
-> so an unauthorized IP in a renewal CSR fails loudly (today structurally backstopped
-> by `sign_csr`, so safe but silent).
+> All gated (fmt, clippy -D, `test --workspace --locked`, doc-leaks). **0.6.0 ships
+> the instant batch + T1; the T2 items move to the next minor.** Follow-up noted in
+> review: extend `csr::requested_sans` to also surface IP SANs so an unauthorized IP
+> in a renewal CSR fails loudly (today structurally backstopped by `sign_csr`, so safe
+> but silent).
 
 > Synthesized 2026-06-24 from three sources:
 > - **V** — Product wishlist v2 (Gemini strategic analysis, realigned after Tailscale comparison)
@@ -234,11 +235,11 @@ Prometheus SD: already done. Home Assistant webhook: niche, deprioritize.
 
 ## Release Shape Notes
 
-The instant batch (I1–I5) + T1-A + T1-B is a natural **0.5.2** scope: embedded
-ergonomics + docs/community. No breaking changes if `member_cert_expiry()` is purely
-additive.
+**Shipped as 0.6.0** (owner's call, 2026-06-24): the instant batch (I1–I5) + T1-A +
+T1-B + T1-C — embedded API completion (ADR-021) + docs/community legibility. No
+breaking changes (all additive or internal refactor).
 
-T2-A/B/C are the natural **0.6.0** scope: product features that may have breaking
+T2-A/B/C are the natural **next-minor** scope: product features that may have breaking
 changes (`--cert-lifetime` adds a required invariant to renewal; scoped tokens change
 the auth model).
 
