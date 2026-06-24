@@ -46,7 +46,17 @@ fn freshness(ts: i64, now: i64) -> Freshness {
 }
 
 fn reject(reason: RejectReason) -> Assurance {
-    Assurance::Rejected { reason }
+    Assurance::Rejected {
+        reason,
+        signer_cn: None,
+    }
+}
+
+/// Reject, attributing the authoritative signer CN. Only used where the leaf has
+/// already chained to the pinned CA (Expired/Revoked) — so `signer_cn` is a trusted
+/// attribution, never an attacker-controllable claim (ADR-022 §2).
+fn reject_with(reason: RejectReason, signer_cn: Option<String>) -> Assurance {
+    Assurance::Rejected { reason, signer_cn }
 }
 
 /// Build a (possibly signed) envelope over `bytes`.
@@ -133,9 +143,14 @@ pub fn verify_envelope(
     if leaf.verify_signature(Some(ca.public_key())).is_err() {
         return reject(RejectReason::UnknownSigner);
     }
+    // The leaf chained to our pinned CA → its CN is now authoritative. Carry it
+    // through the stale rejections (Expired/Revoked) and the final Authenticated
+    // verdict; a non-chained / bad-signature leaf never reaches here, so an
+    // attacker-supplied CN can never be attributed (ADR-022 §2).
+    let signer_cn = crate::mtls::extract_cn(&leaf_der);
     // The leaf must not be expired.
     if now > leaf.validity().not_after.timestamp() {
-        return reject(RejectReason::Expired);
+        return reject_with(RejectReason::Expired, signer_cn);
     }
     // Revocation — best-effort against the last trust bundle / roster.
     let leaf_fp = koi_crypto::pinning::fingerprint_sha256(&leaf_der);
@@ -143,7 +158,7 @@ pub fn verify_envelope(
         .iter()
         .any(|f| koi_crypto::pinning::fingerprints_match(f, &leaf_fp))
     {
-        return reject(RejectReason::Revoked);
+        return reject_with(RejectReason::Revoked, signer_cn);
     }
     // Verify the envelope signature with the leaf's public key.
     let Some(sig_der) = B64.decode(sig.signature.as_bytes()).ok() else {
@@ -155,10 +170,10 @@ pub fn verify_envelope(
         return reject(RejectReason::BadSignature);
     }
 
-    // Authoritative CN from the certificate (never a claimed field).
-    let cn = crate::mtls::extract_cn(&leaf_der).unwrap_or_default();
+    // Authoritative CN from the certificate (never a claimed field) — reusing the
+    // CN already extracted after the chain check.
     Assurance::Authenticated {
-        cn,
+        cn: signer_cn.unwrap_or_default(),
         freshness: fresh,
     }
 }
@@ -290,7 +305,49 @@ mod tests {
             std::slice::from_ref(&id.fingerprint),
             now(),
         );
-        assert_eq!(a, reject(RejectReason::Revoked));
+        // The leaf chained to our CA before the revocation check, so the verdict
+        // attributes the authoritative CN (ADR-022 §2) for audit / a rejoin prompt.
+        assert_eq!(
+            a,
+            reject_with(RejectReason::Revoked, Some("web-01".to_string()))
+        );
+    }
+
+    #[test]
+    fn expired_leaf_attributes_the_signer_cn() {
+        let id = ca_and_leaf("expired", "web-01");
+        let env = build_envelope(Some((&id.key_pem, &id.cert_pem)), b"x", &[8u8; 16], now());
+        // Verify far enough in the future that the 90-day leaf has expired.
+        let future = now() + 91 * 24 * 3600;
+        let a = verify_envelope(&env, Some(&id.ca_pem), &[], future);
+        assert_eq!(
+            a,
+            reject_with(RejectReason::Expired, Some("web-01".to_string()))
+        );
+    }
+
+    #[test]
+    fn unknown_signer_does_not_attribute_a_cn() {
+        // A leaf that does NOT chain to our pinned CA carries an UNVERIFIED CN —
+        // it must never be attributed (an attacker could put any CN there).
+        let signer = ca_and_leaf("ca-x", "evil-claim");
+        let other = ca_and_leaf("ca-y", "web-02");
+        let env = build_envelope(
+            Some((&signer.key_pem, &signer.cert_pem)),
+            b"x",
+            &[10u8; 16],
+            now(),
+        );
+        let a = verify_envelope(&env, Some(&other.ca_pem), &[], now());
+        assert_eq!(a, reject(RejectReason::UnknownSigner));
+        if let Assurance::Rejected { signer_cn, .. } = a {
+            assert_eq!(
+                signer_cn, None,
+                "an unchained leaf's CN is never attributed"
+            );
+        } else {
+            panic!("expected Rejected");
+        }
     }
 
     #[test]

@@ -309,9 +309,13 @@ fn expected_verdict(
         return reject(koi_common::envelope::RejectReason::UnknownSigner);
     }
 
-    // Expiry: the impl rejects iff `now > not_after`.
+    // Expiry: the impl rejects iff `now > not_after`. The leaf chained (mesh leaf),
+    // so the verdict attributes its authoritative CN (ADR-022 §2).
     if now > leaf.expires {
-        return reject(koi_common::envelope::RejectReason::Expired);
+        return reject_with(
+            koi_common::envelope::RejectReason::Expired,
+            Some(leaf.cn.clone()),
+        );
     }
 
     // Revocation (best-effort, by fingerprint — constant-time match in the impl).
@@ -320,7 +324,10 @@ fn expected_verdict(
         .iter()
         .any(|f| fingerprints_match(f, &leaf.fingerprint))
     {
-        return reject(koi_common::envelope::RejectReason::Revoked);
+        return reject_with(
+            koi_common::envelope::RejectReason::Revoked,
+            Some(leaf.cn.clone()),
+        );
     }
 
     // A well-formed, freshly-minted leaf that chains + is unrevoked + unexpired
@@ -333,7 +340,14 @@ fn expected_verdict(
 }
 
 fn reject(reason: koi_common::envelope::RejectReason) -> Assurance {
-    Assurance::Rejected { reason }
+    Assurance::Rejected {
+        reason,
+        signer_cn: None,
+    }
+}
+
+fn reject_with(reason: koi_common::envelope::RejectReason, signer_cn: Option<String>) -> Assurance {
+    Assurance::Rejected { reason, signer_cn }
 }
 
 // ── Helpers that bridge model ↔ real primitives ────────────────────────────────
@@ -789,11 +803,14 @@ proptest! {
             "Expired arm: the at-edge Authenticated+Fresh verdict opens the identity door"
         );
 
-        // One second past validity → Expired.
+        // One second past validity → Expired, attributing the chained leaf's CN.
         let just_past = verify_envelope(&env, anchor, &[], expires + 1);
         prop_assert_eq!(
             &just_past,
-            &reject(koi_common::envelope::RejectReason::Expired),
+            &reject_with(
+                koi_common::envelope::RejectReason::Expired,
+                Some(leaf.cn.clone())
+            ),
             "Expired arm: now == expires + 1 must be Rejected{{Expired}}"
         );
         prop_assert_eq!(just_past.identity(), None, "Expired arm: Expired closes the door");
@@ -802,7 +819,10 @@ proptest! {
         let far_past = verify_envelope(&env, anchor, &[], expires + big);
         prop_assert_eq!(
             &far_past,
-            &reject(koi_common::envelope::RejectReason::Expired),
+            &reject_with(
+                koi_common::envelope::RejectReason::Expired,
+                Some(leaf.cn.clone())
+            ),
             "Expired arm: now == expires + {} must still be Rejected{{Expired}}", big
         );
 

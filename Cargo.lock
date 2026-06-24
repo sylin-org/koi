@@ -2053,6 +2053,7 @@ version = "0.6.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "chrono",
  "serde",
  "serde_json",

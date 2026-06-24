@@ -23,6 +23,8 @@
 //!    table — closing the JWT `alg:"none"` / algorithm-confusion class. The
 //!    [`SigAlg`] set is closed.
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -102,7 +104,20 @@ pub enum Assurance {
     Authenticated { cn: String, freshness: Freshness },
     /// The envelope was rejected; `reason` is a distinct, named cause (never one
     /// opaque error — the Istio-503 lesson, ADR-020 §13).
-    Rejected { reason: RejectReason },
+    ///
+    /// `signer_cn` is the **authoritative** CN when — and only when — the carried
+    /// leaf chained to the verifier's pinned CA but is stale (`Expired`/`Revoked`).
+    /// It is `None` for every other reason (`Malformed`, `UnsupportedVersion`,
+    /// `BadSignature`, `UnknownSigner`), because there the CN would be an
+    /// attacker-controllable claim (an unchained or bad-signature leaf can carry
+    /// any CN) and must never be attributed (ADR-022 §2). So `signer_cn` is a
+    /// *trusted* attribution or nothing — safe to log, and enough for a warm
+    /// "your identity expired — rejoin" by name.
+    Rejected {
+        reason: RejectReason,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signer_cn: Option<String>,
+    },
 }
 
 impl Assurance {
@@ -120,6 +135,27 @@ impl Assurance {
             } => Some(cn),
             _ => None,
         }
+    }
+
+    /// The **request-bound** identity door (ADR-022 §1): `Some(cn)` iff this
+    /// assurance is a trusted identity ([`identity`](Self::identity) — Authenticated
+    /// *and* Fresh) **and** the envelope's signed payload equals `expected`.
+    ///
+    /// This closes the silent-impersonation footgun in the obvious
+    /// `if a.identity().is_some() { authorize(req) }` — which authorizes a
+    /// *captured* envelope replayed against a *different* request. For request
+    /// authorization, pass the canonical bytes you expected to be signed (typically
+    /// embedding a hash of the request body); authorization succeeds only when the
+    /// signer signed *those* bytes.
+    ///
+    /// `env` must be the same envelope this `Assurance` was produced from. Koi stays
+    /// payload-agnostic — the consumer owns its canonicalization. The comparison is a
+    /// plain equality: the payload was already cryptographically authenticated by
+    /// `verify`, so it is not a secret.
+    pub fn identity_for(&self, env: &Envelope, expected: &[u8]) -> Option<&str> {
+        let cn = self.identity()?;
+        let payload = B64.decode(env.payload.as_bytes()).ok()?;
+        (payload == expected).then_some(cn)
     }
 
     /// Whether the message was rejected outright.
@@ -186,9 +222,51 @@ mod tests {
 
         let rejected = Assurance::Rejected {
             reason: RejectReason::BadSignature,
+            signer_cn: None,
         };
         assert_eq!(rejected.identity(), None);
         assert!(rejected.is_rejected());
+    }
+
+    #[test]
+    fn identity_for_binds_authorization_to_the_signed_payload() {
+        let env = Envelope {
+            v: ENVELOPE_V1,
+            payload: B64.encode(b"the-real-request"),
+            nonce: B64.encode(b"n"),
+            ts: 0,
+            sig: None,
+        };
+        let trusted = Assurance::Authenticated {
+            cn: "web-01".to_string(),
+            freshness: Freshness::Fresh,
+        };
+
+        // Matching expected bytes → the request-bound door opens.
+        assert_eq!(
+            trusted.identity_for(&env, b"the-real-request"),
+            Some("web-01")
+        );
+        // A captured envelope replayed against a DIFFERENT request → closed
+        // (the silent-impersonation footgun, closed).
+        assert_eq!(trusted.identity_for(&env, b"a-different-request"), None);
+
+        // Stale / anonymous / rejected never open, even with a matching payload —
+        // identity_for can never be looser than identity().
+        let stale = Assurance::Authenticated {
+            cn: "web-01".to_string(),
+            freshness: Freshness::Stale,
+        };
+        assert_eq!(stale.identity_for(&env, b"the-real-request"), None);
+        let anon = Assurance::Anonymous {
+            freshness: Freshness::Fresh,
+        };
+        assert_eq!(anon.identity_for(&env, b"the-real-request"), None);
+        let rejected = Assurance::Rejected {
+            reason: RejectReason::BadSignature,
+            signer_cn: None,
+        };
+        assert_eq!(rejected.identity_for(&env, b"the-real-request"), None);
     }
 
     #[test]
