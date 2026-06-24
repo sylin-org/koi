@@ -15,9 +15,11 @@
 //! node whose CA is **locked at boot** recovers via a bounded retry timer
 //! ([`RETRY_INTERVAL`]) once `koi certmesh unlock` makes the CA usable.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use notify::{RecursiveMode, Watcher};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -119,6 +121,10 @@ struct Live {
     cancel: CancellationToken,
     handles: Vec<JoinHandle<()>>,
     announce_id: Option<String>,
+    /// Kept alive for the listeners' lifetime: the fs watcher that hot-reloads the
+    /// shared server-cert resolver when the self leaf is renewed on disk. `None` when
+    /// the watcher could not be set up (hot-reload disabled; the listeners still run).
+    _cert_watcher: Option<notify::RecommendedWatcher>,
 }
 
 /// Withdraw the mDNS announce, cancel the listeners' token and await their tasks
@@ -157,26 +163,35 @@ async fn start_listeners(
         }
     };
 
+    // One hot-swappable resolver backs BOTH listeners — they present the same self
+    // leaf. When that leaf is renewed on disk (CA self-renewal via
+    // `renew_ca_self_leaf_if_due`, or a member pull-renewal) the watcher below swaps it
+    // in, and both listeners present the fresh cert on the next handshake — no restart,
+    // no dropped connections (the bound socket and ServerConfig are never rebuilt).
+    let resolver = match koi_certmesh::mtls::ReloadableServerCert::from_pem(
+        &enrollment.cert_pem,
+        &enrollment.key_pem,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "trust-plane: self leaf unusable for TLS; listeners not started");
+            return None;
+        }
+    };
+
     let token = parent_cancel.child_token();
     let mut handles = Vec::new();
+    let cert_watcher = spawn_cert_reload_watcher(resolver.clone(), token.clone());
 
     // ── mTLS inter-node listener (always, when secure) ──
     {
         let cm = certmesh.clone();
         let port = cfg.mtls_port;
         let token = token.clone();
-        let enr = enrollment.clone();
+        let resolver = resolver.clone();
+        let ca_cert_pem = enrollment.ca_cert_pem.clone();
         handles.push(tokio::spawn(async move {
-            if let Err(e) = crate::mtls::start(
-                port,
-                cm,
-                &enr.cert_pem,
-                &enr.key_pem,
-                &enr.ca_cert_pem,
-                token,
-            )
-            .await
-            {
+            if let Err(e) = crate::mtls::start(port, cm, resolver, &ca_cert_pem, token).await {
                 tracing::error!(error = %e, "mTLS adapter failed");
             }
         }));
@@ -195,11 +210,9 @@ async fn start_listeners(
             });
             let port = cfg.acme_port;
             let token = token.clone();
-            let enr = enrollment.clone();
+            let resolver = resolver.clone();
             handles.push(tokio::spawn(async move {
-                if let Err(e) =
-                    crate::acme::start(port, acme_state, &enr.cert_pem, &enr.key_pem, token).await
-                {
+                if let Err(e) = crate::acme::start(port, acme_state, resolver, token).await {
                     tracing::error!(error = %e, "ACME adapter failed");
                 }
             }));
@@ -222,7 +235,94 @@ async fn start_listeners(
         cancel: token,
         handles,
         announce_id,
+        _cert_watcher: cert_watcher,
     })
+}
+
+/// Spawn the fs watcher that hot-reloads `resolver` when the daemon's self leaf is
+/// rewritten on disk (CA self-renewal or member pull-renewal). Best-effort: any setup
+/// failure disables hot-reload (logged) but never fails the listeners. The returned
+/// [`notify::RecommendedWatcher`] must be kept alive for the listeners' lifetime (it is
+/// held in [`Live`]); the reload task stops when `cancel` fires.
+///
+/// Mirrors koi-proxy's cert watcher: `notify` runs on its own non-tokio thread, so the
+/// callback only `try_send`s into a channel — it never touches the tokio runtime.
+fn spawn_cert_reload_watcher(
+    resolver: Arc<koi_certmesh::mtls::ReloadableServerCert>,
+    cancel: CancellationToken,
+) -> Option<notify::RecommendedWatcher> {
+    let hostname = hostname::get().ok().and_then(|h| h.into_string().ok())?;
+    let leaf_dir = koi_common::paths::koi_certs_dir().join(&hostname);
+    if let Err(e) = std::fs::create_dir_all(&leaf_dir) {
+        tracing::warn!(error = %e, "trust-plane cert watcher: cannot ensure leaf dir; hot-reload disabled");
+        return None;
+    }
+
+    // Bounded channel coalesces fs-event bursts; `try_send` from notify's own thread is
+    // non-blocking and needs no tokio runtime context.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(8);
+    let mut watcher = match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if res.is_ok() {
+            let _ = tx.try_send(());
+        }
+    }) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!(error = %e, "trust-plane cert watcher: init failed; hot-reload disabled");
+            return None;
+        }
+    };
+    if let Err(e) = watcher.watch(&leaf_dir, RecursiveMode::NonRecursive) {
+        tracing::warn!(error = %e, dir = %leaf_dir.display(),
+            "trust-plane cert watcher: watch failed; hot-reload disabled");
+        return None;
+    }
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                msg = rx.recv() => {
+                    if msg.is_none() {
+                        break;
+                    }
+                    // Drain coalesced events, then reload once.
+                    while rx.try_recv().is_ok() {}
+                    reload_listener_cert(&leaf_dir, &resolver).await;
+                }
+            }
+        }
+    });
+
+    Some(watcher)
+}
+
+/// Re-read the on-disk self leaf and swap it into the shared resolver. A missing or
+/// unparseable leaf is a no-op (the previous good cert keeps serving) — a partial write
+/// caught mid-flight never drops the listeners to a broken cert.
+async fn reload_listener_cert(
+    leaf_dir: &Path,
+    resolver: &Arc<koi_certmesh::mtls::ReloadableServerCert>,
+) {
+    let cert_path = leaf_dir.join("cert.pem");
+    let key_path = leaf_dir.join("key.pem");
+    let read = tokio::task::spawn_blocking(move || {
+        let cert = std::fs::read_to_string(&cert_path).ok()?;
+        let key = std::fs::read_to_string(&key_path).ok()?;
+        Some((cert, key))
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some((cert_pem, key_pem)) = read else {
+        return;
+    };
+    match resolver.reload(&cert_pem, &key_pem) {
+        Ok(()) => tracing::info!("trust-plane: listeners reloaded the renewed self leaf"),
+        Err(e) => {
+            tracing::warn!(error = %e, "trust-plane: renewed leaf unusable; keeping the previous cert")
+        }
+    }
 }
 
 /// Best-effort local hostname for the ACME base URL. ACME clients reach the

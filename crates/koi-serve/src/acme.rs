@@ -11,14 +11,11 @@
 //! listener only starts when the certmesh CA is initialized + unlocked AND
 //! `--no-acme` / `KOI_NO_ACME` is not set (gated in `daemon.rs`).
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use axum::Router;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
-use rustls::crypto::CryptoProvider;
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
@@ -31,17 +28,17 @@ pub const DEFAULT_ACME_PORT: u16 = 5643;
 
 /// Start the ACME server-auth TLS listener on the given port.
 ///
-/// `cert_pem`/`key_pem` are the daemon's self-issued leaf (server identity);
-/// `acme_state` carries the CA access, account/order stores, zone, and dns-01
-/// solver. No client certificate is required or verified.
+/// The server leaf is resolved from the shared hot-swappable `resolver` (the daemon's
+/// self-issued leaf, the same one the mTLS listener presents), so a renewed leaf is
+/// picked up without a restart; `acme_state` carries the CA access, account/order
+/// stores, zone, and dns-01 solver. No client certificate is required or verified.
 pub async fn start(
     port: u16,
     acme_state: Arc<AcmeState>,
-    cert_pem: &str,
-    key_pem: &str,
+    resolver: Arc<koi_certmesh::mtls::ReloadableServerCert>,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
-    let tls_config = build_tls_config(cert_pem, key_pem)?;
+    let tls_config = koi_certmesh::mtls::build_server_auth_config_with_resolver(resolver)?;
     let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
     let app = Router::new().nest("/acme", koi_certmesh::acme::routes(acme_state));
@@ -93,64 +90,6 @@ pub async fn start(
     }
 }
 
-/// The rustls crypto provider (aws-lc-rs, the workspace default), built **explicitly**
-/// so this module never depends on a global `install_default` ordering — both
-/// `aws-lc-rs` (via rustls) and `ring` (via koi-crypto) are linked, so a bare
-/// `builder()` would panic at "could not determine the process-level CryptoProvider".
-/// Mirrors [`koi_certmesh::mtls`] and koi-proxy's deliberate choice.
-fn provider() -> Arc<CryptoProvider> {
-    static PROVIDER: OnceLock<Arc<CryptoProvider>> = OnceLock::new();
-    PROVIDER
-        .get_or_init(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
-        .clone()
-}
-
-/// Build a server-auth-only rustls `ServerConfig` (no client cert verification).
-fn build_tls_config(cert_pem: &str, key_pem: &str) -> anyhow::Result<rustls::ServerConfig> {
-    let certs: Vec<CertificateDer<'static>> =
-        CertificateDer::pem_slice_iter(cert_pem.as_bytes()).collect::<Result<Vec<_>, _>>()?;
-    if certs.is_empty() {
-        anyhow::bail!("no certificates found in ACME server cert PEM");
-    }
-    let key: PrivateKeyDer<'static> = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())?;
-
-    let config = rustls::ServerConfig::builder_with_provider(provider())
-        .with_safe_default_protocol_versions()?
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-
-    Ok(config)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rcgen::{CertificateParams, DnType, KeyPair, SanType};
-    use std::net::{IpAddr, Ipv4Addr};
-
-    /// Regression guard: `build_tls_config` must resolve the crypto provider
-    /// explicitly. With both aws-lc-rs (rustls) and ring (koi-crypto) linked, a bare
-    /// `ServerConfig::builder()` panics at "could not determine the process-level
-    /// CryptoProvider" — which would silently kill the ACME listener's spawned task.
-    /// This asserts the server-auth config builds from a self-signed leaf without
-    /// panicking.
-    #[test]
-    fn build_tls_config_resolves_provider() {
-        let mut params = CertificateParams::new(vec!["localhost".to_string()]).unwrap();
-        params
-            .subject_alt_names
-            .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)));
-        params
-            .distinguished_name
-            .push(DnType::CommonName, "test-acme-server");
-        let key = KeyPair::generate().unwrap();
-        let cert = params.self_signed(&key).unwrap();
-
-        let config = build_tls_config(&cert.pem(), &key.serialize_pem());
-        assert!(
-            config.is_ok(),
-            "build_tls_config failed: {:?}",
-            config.err()
-        );
-    }
-}
+// The server-auth TLS config (and its explicit crypto-provider resolution) now lives
+// in `koi_certmesh::mtls::build_server_auth_config_with_resolver`, shared with the
+// mTLS listener so a single leaf-renewal reload refreshes both listeners.

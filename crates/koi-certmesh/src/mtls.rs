@@ -11,7 +11,7 @@
 //! re-implementing the rustls verifier and trust wiring. The API is generic over
 //! the caller's `axum::Router`; it assumes no particular route set.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use axum::extract::Extension;
 use axum::Router;
@@ -23,6 +23,8 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::server::{ClientHello, ResolvesServerCert};
+use rustls::sign::CertifiedKey;
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
@@ -44,19 +46,49 @@ fn provider() -> Arc<CryptoProvider> {
         .clone()
 }
 
+fn cert_err(what: &str, e: String) -> CertmeshError {
+    CertmeshError::Certificate(format!("{what}: {e}"))
+}
+
+/// Build the CA-pinned `WebPkiClientVerifier` shared by every certmesh mTLS server
+/// config (static or [resolver-backed](build_server_config_with_resolver)). A
+/// connection whose client cert does not chain to `ca_cert_pem` is rejected at the
+/// handshake. Factored out so the static and hot-reloadable paths build it identically.
+fn build_client_verifier(
+    ca_cert_pem: &str,
+) -> Result<Arc<dyn rustls::server::danger::ClientCertVerifier>, CertmeshError> {
+    let mut root_store = rustls::RootCertStore::empty();
+    let ca_certs: Vec<CertificateDer<'static>> =
+        CertificateDer::pem_slice_iter(ca_cert_pem.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| cert_err("CA cert PEM", e.to_string()))?;
+    for ca_cert in ca_certs {
+        root_store
+            .add(ca_cert)
+            .map_err(|e| cert_err("add CA to root store", e.to_string()))?;
+    }
+    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::new(root_store),
+        provider(),
+    )
+    .build()
+    .map_err(|e| cert_err("client verifier", e.to_string()))?;
+    Ok(verifier as Arc<dyn rustls::server::danger::ClientCertVerifier>)
+}
+
 /// Build a rustls [`ServerConfig`](rustls::ServerConfig) that **requires** client
 /// certificates signed by `ca_cert_pem` (a `WebPkiClientVerifier` over the CA),
 /// terminating TLS with the server's own `(server_cert_pem, server_key_pem)`.
 ///
 /// Connections that do not present a certificate chaining to the CA are rejected
-/// at the TLS handshake.
+/// at the TLS handshake. The server leaf is fixed for this config's lifetime; for a
+/// listener that must pick up a renewed leaf without a restart, build with
+/// [`build_server_config_with_resolver`] instead.
 pub fn build_server_config(
     server_cert_pem: &str,
     server_key_pem: &str,
     ca_cert_pem: &str,
 ) -> Result<rustls::ServerConfig, CertmeshError> {
-    let cert_err = |what: &str, e: String| CertmeshError::Certificate(format!("{what}: {e}"));
-
     let certs: Vec<CertificateDer<'static>> =
         CertificateDer::pem_slice_iter(server_cert_pem.as_bytes())
             .collect::<Result<Vec<_>, _>>()
@@ -70,23 +102,7 @@ pub fn build_server_config(
     let key: PrivateKeyDer<'static> = PrivateKeyDer::from_pem_slice(server_key_pem.as_bytes())
         .map_err(|e| cert_err("server key PEM", e.to_string()))?;
 
-    let mut root_store = rustls::RootCertStore::empty();
-    let ca_certs: Vec<CertificateDer<'static>> =
-        CertificateDer::pem_slice_iter(ca_cert_pem.as_bytes())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| cert_err("CA cert PEM", e.to_string()))?;
-    for ca_cert in ca_certs {
-        root_store
-            .add(ca_cert)
-            .map_err(|e| cert_err("add CA to root store", e.to_string()))?;
-    }
-
-    let client_verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
-        Arc::new(root_store),
-        provider(),
-    )
-    .build()
-    .map_err(|e| cert_err("client verifier", e.to_string()))?;
+    let client_verifier = build_client_verifier(ca_cert_pem)?;
 
     rustls::ServerConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
@@ -94,6 +110,97 @@ pub fn build_server_config(
         .with_client_cert_verifier(client_verifier)
         .with_single_cert(certs, key)
         .map_err(|e| cert_err("server config", e.to_string()))
+}
+
+/// A [`ResolvesServerCert`] whose server leaf can be **hot-swapped** at runtime.
+///
+/// One resolver backs both the inter-node mTLS listener (5642) and the ACME
+/// server-auth listener (5643) — they present the *same* daemon self leaf. When that
+/// leaf is renewed on disk (CA self-renewal via `renew_ca_self_leaf_if_due`, or a
+/// member pull-renewal), [`reload`](Self::reload) swaps the in-memory
+/// [`CertifiedKey`]; every subsequent TLS handshake on either listener then presents
+/// the fresh cert with **no listener restart and no dropped connections** (the bound
+/// socket and `ServerConfig` are never rebuilt — only the resolved cert changes).
+/// This closes the "restart is the reload point" limitation noted in `self_enroll`.
+#[derive(Debug)]
+pub struct ReloadableServerCert {
+    current: RwLock<Arc<CertifiedKey>>,
+}
+
+impl ReloadableServerCert {
+    /// Build from the initial server leaf PEM (cert chain + private key).
+    pub fn from_pem(cert_pem: &str, key_pem: &str) -> Result<Arc<Self>, CertmeshError> {
+        let certified = build_certified_key(cert_pem, key_pem)?;
+        Ok(Arc::new(Self {
+            current: RwLock::new(certified),
+        }))
+    }
+
+    /// Swap in a freshly-read leaf. On a parse error the previous (good) cert is kept
+    /// and the error is returned for the caller to log — a bad write never drops the
+    /// listener to a broken cert.
+    pub fn reload(&self, cert_pem: &str, key_pem: &str) -> Result<(), CertmeshError> {
+        let certified = build_certified_key(cert_pem, key_pem)?;
+        if let Ok(mut guard) = self.current.write() {
+            *guard = certified;
+        }
+        Ok(())
+    }
+}
+
+impl ResolvesServerCert for ReloadableServerCert {
+    fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        self.current.read().ok().map(|guard| Arc::clone(&guard))
+    }
+}
+
+/// Parse a PEM cert chain + private key into a rustls [`CertifiedKey`].
+fn build_certified_key(cert_pem: &str, key_pem: &str) -> Result<Arc<CertifiedKey>, CertmeshError> {
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| cert_err("server cert PEM", e.to_string()))?;
+    if certs.is_empty() {
+        return Err(CertmeshError::Certificate(
+            "no certificates found in server cert PEM".to_string(),
+        ));
+    }
+    let key: PrivateKeyDer<'static> = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
+        .map_err(|e| cert_err("server key PEM", e.to_string()))?;
+    let signing_key = provider()
+        .key_provider
+        .load_private_key(key)
+        .map_err(|e| cert_err("load private key", e.to_string()))?;
+    Ok(Arc::new(CertifiedKey::new(certs, signing_key)))
+}
+
+/// Like [`build_server_config`] but the server leaf is resolved from a
+/// hot-swappable [`ReloadableServerCert`], so a renewed leaf is picked up on the next
+/// handshake without restarting the listener. The CA client-verifier is fixed (the CA
+/// root does not change on a leaf renewal). Used by the inter-node mTLS listener.
+pub fn build_server_config_with_resolver(
+    resolver: Arc<ReloadableServerCert>,
+    ca_cert_pem: &str,
+) -> Result<rustls::ServerConfig, CertmeshError> {
+    let client_verifier = build_client_verifier(ca_cert_pem)?;
+    Ok(rustls::ServerConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| cert_err("tls versions", e.to_string()))?
+        .with_client_cert_verifier(client_verifier)
+        .with_cert_resolver(resolver as Arc<dyn ResolvesServerCert>))
+}
+
+/// A **server-auth-only** rustls config (no client-cert verification) whose leaf is
+/// resolved from a hot-swappable [`ReloadableServerCert`]. Used by the ACME listener,
+/// whose clients have no certificate yet (they are enrolling to *get* one). Shares the
+/// resolver with the mTLS listener so a single renewal reload refreshes both.
+pub fn build_server_auth_config_with_resolver(
+    resolver: Arc<ReloadableServerCert>,
+) -> Result<rustls::ServerConfig, CertmeshError> {
+    Ok(rustls::ServerConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| cert_err("tls versions", e.to_string()))?
+        .with_no_client_auth()
+        .with_cert_resolver(resolver as Arc<dyn ResolvesServerCert>))
 }
 
 /// Serve `router` over mTLS on an already-bound `listener` until `cancel` fires.
@@ -577,6 +684,103 @@ mod tests {
         let mut buf = Vec::new();
         tls.read_to_end(&mut buf).await.map_err(|e| e.to_string())?;
         Ok(String::from_utf8_lossy(&buf).into_owned())
+    }
+
+    /// Complete an mTLS handshake (presenting `client`) and return the **server's**
+    /// presented leaf CN — used to prove which cert the resolver served.
+    async fn served_server_cn(
+        addr: SocketAddr,
+        ca_pem: &str,
+        client: (&str, &str),
+    ) -> Result<String, String> {
+        let cfg = client_config(ca_pem, Some(client));
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(cfg));
+        let tcp = tokio::net::TcpStream::connect(addr)
+            .await
+            .map_err(|e| e.to_string())?;
+        let domain = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let tls = connector
+            .connect(domain, tcp)
+            .await
+            .map_err(|e| e.to_string())?;
+        let server_cert = tls
+            .get_ref()
+            .1
+            .peer_certificates()
+            .and_then(|c| c.first())
+            .ok_or_else(|| "no server cert".to_string())?;
+        extract_cn(server_cert.as_ref()).ok_or_else(|| "no CN in server cert".to_string())
+    }
+
+    #[tokio::test]
+    async fn reloadable_resolver_hot_swaps_served_leaf() {
+        use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, SanType};
+
+        // A CA, two CA-signed server leaves (CN server-A / server-B), one client leaf.
+        let mut ca_params = CertificateParams::default();
+        ca_params
+            .distinguished_name
+            .push(DnType::CommonName, "Reload CA");
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let ca_key = KeyPair::generate().unwrap();
+        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let ca_pem = ca_cert.pem();
+
+        let server_leaf = |cn: &str| {
+            let mut p = CertificateParams::new(vec!["localhost".to_string()]).unwrap();
+            p.subject_alt_names
+                .push(SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+            p.distinguished_name.push(DnType::CommonName, cn);
+            let k = KeyPair::generate().unwrap();
+            let c = p.signed_by(&k, &ca_cert, &ca_key).unwrap();
+            (c.pem(), k.serialize_pem())
+        };
+        let (cert_a, key_a) = server_leaf("server-A");
+        let (cert_b, key_b) = server_leaf("server-B");
+
+        let mut c_params = CertificateParams::new(vec![]).unwrap();
+        c_params
+            .distinguished_name
+            .push(DnType::CommonName, "test-client");
+        let c_key = KeyPair::generate().unwrap();
+        let c_cert = c_params.signed_by(&c_key, &ca_cert, &ca_key).unwrap();
+        let client = (c_cert.pem(), c_key.serialize_pem());
+
+        // Serve with a resolver-backed config presenting leaf A.
+        let resolver = ReloadableServerCert::from_pem(&cert_a, &key_a).unwrap();
+        let config = build_server_config_with_resolver(resolver.clone(), &ca_pem).unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cancel = CancellationToken::new();
+        let server = tokio::spawn(serve(cn_router(), listener, config, cancel.clone()));
+
+        // The client sees leaf A.
+        let before = served_server_cn(addr, &ca_pem, (&client.0, &client.1))
+            .await
+            .expect("handshake A");
+        assert_eq!(before, "server-A");
+
+        // Hot-swap to leaf B with NO listener restart.
+        resolver.reload(&cert_b, &key_b).expect("reload");
+
+        // The next handshake presents leaf B — same socket, same ServerConfig.
+        let after = served_server_cn(addr, &ca_pem, (&client.0, &client.1))
+            .await
+            .expect("handshake B");
+        assert_eq!(
+            after, "server-B",
+            "hot-reload must swap the served server leaf without a restart"
+        );
+
+        // A bad reload is rejected and the previous good cert is kept.
+        assert!(resolver.reload("not-a-cert", "not-a-key").is_err());
+        let still = served_server_cn(addr, &ca_pem, (&client.0, &client.1))
+            .await
+            .expect("handshake after bad reload");
+        assert_eq!(still, "server-B", "a bad reload must not drop the good cert");
+
+        cancel.cancel();
+        let _ = server.await;
     }
 
     #[tokio::test]

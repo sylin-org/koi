@@ -50,6 +50,9 @@ hostname.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 hyper-util.workspace = true
+# Filesystem watcher for hot-reloading the mTLS/ACME server leaf when it is renewed
+# on disk (same crate koi-proxy uses for its data-plane cert hot-reload).
+notify.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
