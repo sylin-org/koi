@@ -22,18 +22,21 @@
   prints that checklist at the end.
 
 .PARAMETER NewVersion
-  The new semver version, e.g. 0.8.0.
+  The new semver version, e.g. 0.9.0. OPTIONAL — if omitted, the minor version is
+  auto-incremented and the patch reset to 0 (0.8.0 -> 0.9.0 -> 0.10.0).
 .PARAMETER Date
   CHANGELOG release date (default: today, yyyy-MM-dd).
 .PARAMETER SkipLock
   Skip the `cargo update --workspace` Cargo.lock refresh.
 
 .EXAMPLE
-  ./scripts/bump-version.ps1 0.8.0
+  ./scripts/bump-version.ps1          # auto: bump the minor (e.g. 0.8.0 -> 0.9.0)
+.EXAMPLE
+  ./scripts/bump-version.ps1 1.0.0    # an explicit version (e.g. a major bump)
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true, Position = 0)][string] $NewVersion,
+    [Parameter(Position = 0)][string] $NewVersion,
     [string] $Date = (Get-Date -Format 'yyyy-MM-dd'),
     [switch] $SkipLock
 )
@@ -42,13 +45,20 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot   # scripts/ -> repo root
 Set-Location $repo
 
-if ($NewVersion -notmatch '^\d+\.\d+\.\d+$') { throw "version must be X.Y.Z, got '$NewVersion'" }
-
 # Current workspace version (the single source of truth for what we're bumping FROM).
 $cargoText = Get-Content -Raw 'Cargo.toml'
 $m = [regex]::Match($cargoText, '(?m)^\s*version\s*=\s*"(\d+\.\d+\.\d+)"\s*$')
 if (-not $m.Success) { throw 'could not find [workspace.package] version in Cargo.toml' }
 $Old = $m.Groups[1].Value
+
+# No version given -> auto-increment the minor, reset the patch (0.8.0 -> 0.9.0 -> 0.10.0).
+if (-not $NewVersion) {
+    $p = $Old -split '\.'
+    $NewVersion = '{0}.{1}.0' -f $p[0], ([int]$p[1] + 1)
+    Write-Host ">> no version given - auto-incrementing minor" -ForegroundColor Cyan
+}
+
+if ($NewVersion -notmatch '^\d+\.\d+\.\d+$') { throw "version must be X.Y.Z, got '$NewVersion'" }
 if ($Old -eq $NewVersion) { Write-Host "Already at $NewVersion - nothing to do."; exit 0 }
 $NewMinor = ($NewVersion -split '\.')[0, 1] -join '.'
 Write-Host ">> bump $Old -> $NewVersion  (dependency recipes -> $NewMinor)" -ForegroundColor Cyan
@@ -121,3 +131,4 @@ Write-Host "     1. CHANGELOG [$NewVersion] body  - release summary + Added/Fixe
 Write-Host "     2. docs/guides/upgrading.md       - a 'The $NewVersion upgrade' section"
 Write-Host "     3. README 'latest release' blurb  - the v$NewVersion prose paragraph"
 Write-Host ">> THEN VERIFY:  cargo check  +  cargo fmt --all -- --check  +  bash scripts/check-doc-leaks.sh"
+Write-Host ">> THEN TAG:     scripts/release.ps1   (after committing + merging to the release branch)"
