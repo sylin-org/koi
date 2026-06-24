@@ -178,11 +178,11 @@ single line — and re-arm any subset à la carte:
 
 ```toml
 # everything (default) — unchanged
-koi-embedded = "0.8"
+koi-embedded = "0.9"
 # lean: no bollard, no OS-keychain/D-Bus, no image codec
-koi-embedded = { version = "0.8", default-features = false }
+koi-embedded = { version = "0.9", default-features = false }
 # à la carte
-koi-embedded = { version = "0.8", default-features = false, features = ["docker"] }
+koi-embedded = { version = "0.9", default-features = false, features = ["docker"] }
 ```
 
 See [ADR-014](docs/adr/014-optional-backend-features.md). The `koi` binary always ships
@@ -254,8 +254,8 @@ build-provenance attestation. A trust tool should let you verify its own supply
 chain in one line:
 
 ```bash
-gh attestation verify koi-v0.8.0-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
-gh attestation verify oci://ghcr.io/sylin-org/koi:0.8.0 --repo sylin-org/koi
+gh attestation verify koi-v0.9.0-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
+gh attestation verify oci://ghcr.io/sylin-org/koi:0.9.0 --repo sylin-org/koi
 ```
 
 ## Project status
@@ -264,14 +264,14 @@ Koi is **pre-1.0, feasibility-validated, and consolidating**. The architecture a
 the end-to-end pipeline are real; a thorough June 2026 assessment
 ([docs/assessment/](docs/assessment/README.md)) mapped what's solid, what's broken,
 and what's being cut in the name of *less but more meaningful parts*. The latest
-release, **v0.8.0**, makes trust self-maintaining — a continuously-up CA renews its
-own leaf on the timer and hot-reloads its mTLS/ACME listeners, so identity no longer
-silently decays on a long-lived node; v0.7.0 before it made the secure path the easy
-path on the envelope authorization plane (`Assurance::identity_for`, ADR-022), and
-v0.6.0 completed the embedded authorization plane (transport-agnostic
-`CertmeshCore::renew_member`) ([CHANGELOG](CHANGELOG.md)). The work plan is public
-([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until 1.0 (0.8.0 is a
-drop-in — no breaking changes; see the CHANGELOG and the [upgrade guide](docs/guides/upgrading.md));
+release, **v0.9.0**, is a release-tooling cut — a one-command version bump and a
+one-command release tag — with no runtime changes; v0.8.0 before it made trust
+self-maintaining (a continuously-up CA renews its own leaf and hot-reloads its
+mTLS/ACME listeners), and v0.7.0 made the secure path the easy path on the envelope
+authorization plane (`Assurance::identity_for`, ADR-022) ([CHANGELOG](CHANGELOG.md)).
+The work plan is public
+([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until 1.0 (0.9.0 is a
+drop-in — no runtime changes; see the CHANGELOG and the [upgrade guide](docs/guides/upgrading.md));
 don't run it as load-bearing infrastructure yet — do play with it, and file issues when
 reality disagrees with the docs.
 

@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-06-24
+
+**Release tooling.** Cutting a release is now two commands instead of a manual, many-file
+chore. No runtime or library changes — the crates and the binary are functionally identical
+to 0.8.0.
+
+### Added
+- **`scripts/bump-version.ps1`** — bumps the version everywhere in one shot: the Cargo
+  workspace version + every inter-crate pin, Cargo.lock, the CHANGELOG `[Unreleased]` stamp,
+  and the current-version strings across the shipped docs (capability cards, install /
+  `gh attestation` examples, `koi-embedded` dependency recipes, the `koi status` sample, the
+  http-api `version` field, the CLI `KOI_VERSION` example). With no argument it
+  auto-increments the minor (`0.8.0 → 0.9.0`); it then commits all changes and pushes.
+  Historical version references are deliberately left untouched.
+- **`scripts/release.ps1`** — tags the current Cargo version as `v<version>` and pushes it
+  (which fires `release.yml`: build → attest → GitHub Release → GHCR → crates.io), guarding
+  that the CHANGELOG section is stamped, the tag does not already exist, and the tree is clean.
+
 ## [0.8.0] - 2026-06-24
 
 **Cert-lifecycle reliability: the cornerstone keeps itself fresh.** A continuously-up CA

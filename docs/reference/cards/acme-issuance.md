@@ -5,7 +5,7 @@ title: "ACME issuance (RFC 8555) for Caddy / Traefik / lego"
 audience: [operators, developers, ai-agents]
 status: current
 last_updated: 2026-06-22
-koi_version: v0.8.0
+koi_version: v0.9.0
 validation:
   date_last_tested: 2026-06-22
   status: verified

@@ -169,6 +169,15 @@ all of it.
 
 ---
 
+## The 0.9.0 upgrade
+
+**0.9.0 is a no-op upgrade — there are no runtime or library changes.** The crates and the
+binary are functionally identical to 0.8.0; the release carries only repo release tooling
+(`scripts/bump-version.ps1`, `scripts/release.ps1`). Swap the binary, or don't — nothing on
+disk, on the CLI, at the network edge, or in the JSON / Rust API changes.
+
+---
+
 ## The 0.8.0 upgrade
 
 **0.8.0 is a drop-in — no breaking changes.** Nothing on disk, on the CLI, at the network

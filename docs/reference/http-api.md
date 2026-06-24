@@ -112,7 +112,7 @@ is unique to Koi — no other LAN SD source exposes certificate expiry.
 
 ```json
 {
-  "version": "0.8.0",
+  "version": "0.9.0",
   "platform": "windows",
   "uptime_secs": 3600,
   "daemon": true,
