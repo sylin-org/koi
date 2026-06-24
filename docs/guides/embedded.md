@@ -305,8 +305,27 @@ let assurance = handle.verify(&env).await?;        // = handle.certmesh()?.verif
 ```
 
 A member node can read its own leaf's expiry to drive a "renews in N days" display or its
-own renewal timer — `handle.certmesh()?.core()?.member_cert_expiry()` returns the raw
-`Option<DateTime<Utc>>` (`None` when the node never joined a mesh).
+own renewal timer. Prefer `handle.certmesh()?.core()?.local_identity().await` →
+`Identity::renewal` (cert-derived; works whether or not `member.json` is armed). The
+`member_cert_expiry()` convenience returns the raw `Option<DateTime<Utc>>` but is
+`member.json`-gated, so it is `None` for a node that never armed member state.
+
+**Authorizing a request from an envelope** — use the request-bound door, not bare
+`identity()`. `verify()` attests the *signer*, decoupled from the payload, so
+`if a.identity().is_some() { authorize(req) }` would accept a captured envelope replayed
+against a *different* request. `Assurance::identity_for(env, expected)` returns the CN only
+when the signer signed *these* bytes:
+
+```rust
+let assurance = cm.verify(&env).await?;
+let canonical = my_canonical_request_bytes(&req);   // your canonicalization (often a body hash)
+match assurance.identity_for(&env, &canonical) {
+    Some(cn) => authorize(cn, &req),                // signer signed THIS request
+    None => reject(),                               // anonymous, stale, rejected, or wrong payload
+}
+```
+
+This pairs exactly with CA-side renewal: `verify → identity_for(env, csr_bytes) → renew_member(cn, csr)`.
 
 ---
 

@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-06-24
+
+**Make the secure path the easy path on the envelope authorization plane.** ADR-022 turns
+the round-2 findings from building a real authorization plane on the ADR-020 `Envelope`
+primitive into ergonomics + safety: a request-binding identity door that closes a
+silent-impersonation footgun, trusted attribution on rejected verdicts, public leaf
+parsers, and policy propagation on renewal.
+
+> **One narrow breaking change** (see **Changed**): `Assurance::Rejected` gained a
+> `signer_cn` field, so an exhaustive Rust `match` on it needs `, ..`. The JSON wire shape
+> is unchanged (the field is omitted when absent), so non-Rust readers need no change.
+> See the [upgrade guide](docs/guides/upgrading.md).
+
+### Added
+- **`Assurance::identity_for(env, expected) -> Option<&str>`** — the **request-bound**
+  identity door. `Some(cn)` iff the verdict is a trusted identity (Authenticated + Fresh)
+  **and** the envelope's signed payload equals `expected`. `verify()` attests the *signer*,
+  decoupled from the payload, so the obvious `if a.identity().is_some() { authorize(req) }`
+  silently authorizes a *captured* envelope replayed against a *different* request (e.g. a
+  stolen envelope POSTed to `/renew` with the attacker's own CSR → a cert for someone else's
+  identity). `identity_for` binds the identity to the request — Koi stays payload-agnostic,
+  the consumer supplies the bytes it expected signed.
+- **`koi_certmesh::leaf_not_after_utc(pem)` / `leaf_cn(pem)`** — public stateless readers
+  for an *arbitrary* leaf's expiry / CN (a discovered peer's cert, an operator-pasted cert)
+  without a full verify.
+- **`RenewResponse.policy`** — the renew response now carries the CA's `CertPolicy`
+  (symmetric with `JoinResponse.policy`), so a member that does not arm `member.json` can
+  compute an accurate renewal schedule. `#[serde(default)]` for older-CA compatibility.
+
+### Changed
+- **`Assurance::Rejected { reason }` → `Rejected { reason, signer_cn: Option<String> }`.**
+  `signer_cn` carries the **authoritative** CN — but *only* for `Expired`/`Revoked`, where
+  the leaf already chained to the pinned CA, so it is a trusted attribution (for audit and a
+  "your identity expired — rejoin" prompt). It is `None` for `Malformed` /
+  `UnsupportedVersion` / `BadSignature` / `UnknownSigner`, where the CN would be an
+  attacker-controllable claim and must never be attributed. *Breaking for Rust code that
+  exhaustively matches `Rejected { reason }` — add `, ..`.* JSON unchanged (omitted when
+  `None`); trust-protocol.md §2 documents the field and the request-binding door.
+- **`member_cert_expiry()` doc steer** — it is `member.json`-gated (returns `None` for a
+  node that never armed member state); the doc now points consumers at
+  `local_identity().renewal` for own-leaf expiry independent of member state.
+
 ## [0.6.0] - 2026-06-24
 
 **Embedded API completion + community legibility.** ADR-021 closes the last CA-side
