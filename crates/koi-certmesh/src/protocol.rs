@@ -410,6 +410,12 @@ pub struct RenewResponse {
     pub ca_fingerprint: String,
     /// RFC 3339 absolute expiry of the renewed leaf.
     pub expires: String,
+    /// The CA's current certificate-lifecycle policy (ADR-022 N4) — symmetric with
+    /// [`JoinResponse::policy`]. Lets a member that does not arm `member.json`
+    /// compute an accurate renewal schedule (`renew_threshold_days`). `#[serde(default)]`
+    /// so a 0.7.0 member can still parse a response from an older CA that omits it.
+    #[serde(default)]
+    pub policy: CertPolicy,
 }
 
 /// Result of executing a reload hook after cert renewal.
@@ -736,6 +742,7 @@ mod tests {
             ca_cert: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n".to_string(),
             ca_fingerprint: "abc123".to_string(),
             expires: "2026-09-15T00:00:00Z".to_string(),
+            policy: CertPolicy::default(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(

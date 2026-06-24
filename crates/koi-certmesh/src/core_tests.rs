@@ -573,6 +573,9 @@ async fn renew_member_happy_path_issues_and_records() {
     assert!(resp.service_cert.contains("BEGIN CERTIFICATE"));
     assert!(resp.ca_cert.contains("BEGIN CERTIFICATE"));
     assert_eq!(resp.ca_fingerprint.len(), 64, "sha256 hex");
+    // N4: the response carries the CA's lifecycle policy so a member can compute
+    // an accurate renewal schedule without arming member.json.
+    assert_eq!(resp.policy, roster::CertPolicy::default());
 
     // The roster recorded the rotated leaf's fingerprint + last_seen.
     let issued_fp =
