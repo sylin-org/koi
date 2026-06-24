@@ -1,5 +1,17 @@
 # Koi 0.6 Wishlist — Aggregated & Prioritized
 
+> **Status (2026-06-24): 0.5.2 scope SHIPPED on `dev`** (not yet pushed/tagged).
+> - Instant batch I1–I5 — `35f4ec3`
+> - T1-A `CertmeshCore::renew_member` (ADR-021) — `cff618a` — **two-box hardware gate PASSED 20/0**
+> - T1-B mDNS browser type annotations — `fa9e0ca`
+> - T1-C first-run getting-started hint — `e0c8d47`
+>
+> All gated (fmt, clippy -D, `test --workspace --locked`, doc-leaks). Remaining
+> for 0.6.0: T2 items (scoped tokens, `koi tls setup`, NRPT, `--cert-lifetime`).
+> Follow-up noted in review: extend `csr::requested_sans` to also surface IP SANs
+> so an unauthorized IP in a renewal CSR fails loudly (today structurally backstopped
+> by `sign_csr`, so safe but silent).
+
 > Synthesized 2026-06-24 from three sources:
 > - **V** — Product wishlist v2 (Gemini strategic analysis, realigned after Tailscale comparison)
 > - **S** — Surface analysis harvest (Gemini pros/cons/scenarios; net-new opportunities)
