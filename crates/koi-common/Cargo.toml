@@ -32,3 +32,6 @@ chrono.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "macros"] }
 tokio-util.workspace = true
 async-trait.workspace = true
+# The Envelope payload is base64 on the wire; Assurance::identity_for decodes it to
+# compare against the consumer's expected request bytes (ADR-022 M1).
+base64.workspace = true

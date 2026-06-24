@@ -74,6 +74,13 @@ impl CertmeshCore {
     /// Exposes the raw expiry so an embedded consumer can derive its own urgency
     /// (days-left, renewal scheduling) without re-implementing leaf parsing
     /// (wishlist I2 / ADR-021). Reachable via `certmesh().core()?.member_cert_expiry()`.
+    ///
+    /// **This is `member.json`-gated** — it returns `None` for a node that never
+    /// armed member state (e.g. an EmbeddedOnly consumer that deliberately does not
+    /// arm `member.json`, since that implies the mTLS pull-renewal it doesn't serve).
+    /// For this node's own-leaf expiry **independent of member state**, prefer
+    /// [`local_identity`](Self::local_identity) → `Identity::renewal` (cert-derived,
+    /// works without `member.json`, and carries full renewal health — ADR-022 N5).
     pub fn member_cert_expiry(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         let state = member::load(&self.state.paths.member_state_path())?;
         let cert_path = self
@@ -260,7 +267,7 @@ impl CertmeshCore {
         // (revoked / unknown) caller is refused without inspecting its CSR. The
         // member must be enrolled, active, and not revoked; the authorized SANs
         // are the ones recorded at enrollment.
-        let (authorized_sans, lifetime_days) = {
+        let (authorized_sans, policy) = {
             let roster = self.state.roster.lock().await;
             if roster.is_revoked(authenticated_cn) {
                 drop(roster);
@@ -272,10 +279,9 @@ impl CertmeshCore {
                 return Err(CertmeshError::Revoked(authenticated_cn.to_string()));
             }
             match roster.find_member(authenticated_cn) {
-                Some(m) if m.status == crate::roster::MemberStatus::Active => (
-                    m.cert_sans.clone(),
-                    roster.metadata.policy.leaf_lifetime_days,
-                ),
+                Some(m) if m.status == crate::roster::MemberStatus::Active => {
+                    (m.cert_sans.clone(), roster.metadata.policy.clone())
+                }
                 Some(_) => {
                     // Non-active (e.g. a status that bypassed is_revoked) → 403,
                     // not a 500; this is an authorization refusal, not a fault.
@@ -286,6 +292,10 @@ impl CertmeshCore {
                 None => return Err(CertmeshError::NotFound(authenticated_cn.to_string())),
             }
         };
+        // Carry the CA's full policy back to the member (ADR-022 N4) so a member
+        // that does not arm member.json can still compute an accurate renewal
+        // schedule; the leaf lifetime is the policy's.
+        let lifetime_days = policy.leaf_lifetime_days;
 
         // SAN pinning (the critical invariant): parse the CSR's requested names
         // (only now, after authorization) and reject any name not covered by the
@@ -354,6 +364,7 @@ impl CertmeshCore {
             ca_cert,
             ca_fingerprint,
             expires: expires.to_rfc3339(),
+            policy,
         })
     }
 

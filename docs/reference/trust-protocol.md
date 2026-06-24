@@ -109,6 +109,7 @@ externally tagged on the variant key):
 ```json
 { "anonymous":     { "freshness": "fresh" } }
 { "authenticated": { "cn": "web-01", "freshness": "fresh" } }
+{ "rejected":      { "reason": "expired", "signer_cn": "web-01" } }
 { "rejected":      { "reason": "bad_signature" } }
 ```
 
@@ -117,12 +118,28 @@ externally tagged on the variant key):
 - **Authenticated** — signature valid against a leaf that chains to the pinned CA,
   is not expired, and is not revoked. `freshness` is a sub-field, so "authenticated"
   cannot exist without a freshness verdict.
-- **Rejected** — a distinct, named `reason` (never one opaque error).
+- **Rejected** — a distinct, named `reason` (never one opaque error). The optional
+  `signer_cn` names the signer **only** when the carried leaf chained to the pinned
+  CA but is stale (`reason` ∈ `expired` / `revoked`) — a *trusted* attribution for
+  audit and a warm "your identity expired — rejoin" by name. It is **absent** for
+  `malformed` / `unsupported_version` / `bad_signature` / `unknown_signer`, where the
+  CN would be an attacker-controllable claim (any CN can ride a non-chained or
+  bad-signature leaf) and must never be attributed.
 
 `freshness` ∈ `fresh | stale`. **One identity door:** a trusted CN is readable
 *only* when the verdict is `authenticated` AND `freshness == fresh`. A `stale` or
 `anonymous` message is never a trusted identity (this makes `if !rejected { trust }`
 insufficient by design).
+
+**Request binding (authorization).** `verify` attests the *signer*, decoupled from
+the payload — the verifier cannot know a consumer's request canonicalization. So
+reading the CN alone authorizes a *captured* envelope replayed against a *different*
+request. For request authorization, bind the identity to the request: accept the CN
+only when the envelope's signed payload equals the canonical bytes of *this* request
+(typically embedding a hash of the body). The reference implementation exposes this
+as `identity_for(env, expected)` — `Some(cn)` iff the verdict is a trusted identity
+**and** the signed payload equals `expected`. A sibling implementation should provide
+the same request-bound door, not just the signer-only one.
 
 **Freshness window:** `|now - ts| <= 300` seconds ⇒ `fresh`, else `stale`. 300 s
 tolerates un-NTP'd LAN clock drift (a tighter window spuriously rejects).

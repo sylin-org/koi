@@ -254,8 +254,8 @@ build-provenance attestation. A trust tool should let you verify its own supply
 chain in one line:
 
 ```bash
-gh attestation verify koi-v0.6.0-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
-gh attestation verify oci://ghcr.io/sylin-org/koi:0.6.0 --repo sylin-org/koi
+gh attestation verify koi-v0.7.0-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
+gh attestation verify oci://ghcr.io/sylin-org/koi:0.7.0 --repo sylin-org/koi
 ```
 
 ## Project status
@@ -264,15 +264,15 @@ Koi is **pre-1.0, feasibility-validated, and consolidating**. The architecture a
 the end-to-end pipeline are real; a thorough June 2026 assessment
 ([docs/assessment/](docs/assessment/README.md)) mapped what's solid, what's broken,
 and what's being cut in the name of *less but more meaningful parts*. The latest
-release, **v0.6.0**, completes the embedded authorization plane — CA-side member renewal
-is now a transport-agnostic domain method (`CertmeshCore::renew_member`, ADR-021) — and
-adds community-facing polish (well-known mDNS type labels in the network browser, a
-first-run getting-started hint, top-level envelope `sign`/`verify`); v0.5.1 before it made
-the trust/identity/posture plane observable over the wire, and v0.5.0 added one-line
-install, a signed multi-arch container image, and a unified serving layer (`koi-serve`)
+release, **v0.7.0**, makes the secure path the easy path on the envelope
+authorization plane — a request-binding identity door (`Assurance::identity_for`,
+ADR-022) that closes a silent-impersonation footgun, trusted signer attribution on
+rejected verdicts, and public leaf parsers; v0.6.0 before it completed the embedded
+authorization plane (transport-agnostic `CertmeshCore::renew_member`), and v0.5.1 made
+the trust/identity/posture plane observable over the wire
 ([CHANGELOG](CHANGELOG.md)). The work plan is public
-([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until 1.0 (0.6.0 is a
-clean drop-in — see the CHANGELOG and the [upgrade guide](docs/guides/upgrading.md));
+([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until 1.0 (0.7.0 is a
+near-drop-in — one minor `Assurance` matcher change; see the CHANGELOG and the [upgrade guide](docs/guides/upgrading.md));
 don't run it as load-bearing infrastructure yet — do play with it, and file issues when
 reality disagrees with the docs.
 

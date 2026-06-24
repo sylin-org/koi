@@ -5,7 +5,7 @@ title: "Install Koi + verify the build"
 audience: [operators, developers, ai-agents]
 status: current
 last_updated: 2026-06-22
-koi_version: v0.6.0
+koi_version: v0.7.0
 validation:
   date_last_tested: 2026-06-22
   status: drafted
@@ -26,7 +26,7 @@ Install with the one-liner, then (optionally) verify provenance before you trust
 # Linux / macOS:
 curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh
 #   koi: checksum verified
-#   koi: koi v0.6.0 installed -> ~/.local/bin/koi
+#   koi: koi v0.7.0 installed -> ~/.local/bin/koi
 #   <koi status output>
 
 # Windows (PowerShell):
@@ -38,8 +38,8 @@ docker run -d ghcr.io/sylin-org/koi:latest
 
 ```bash
 # Verify the supply chain (optional but recommended — the installer prints this line too):
-gh attestation verify koi-v0.6.0-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
-gh attestation verify oci://ghcr.io/sylin-org/koi:0.6.0          --repo sylin-org/koi
+gh attestation verify koi-v0.7.0-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
+gh attestation verify oci://ghcr.io/sylin-org/koi:0.7.0          --repo sylin-org/koi
 ```
 
 The installer already checks the SHA-256 for integrity; `gh attestation verify` adds **authenticity** — it proves the archive (or image) came out of `release.yml` in `sylin-org/koi`, defeating a swapped binary on a mirror.
@@ -50,7 +50,7 @@ The installer already checks the SHA-256 for integrity; `gh attestation verify` 
 |---|---|
 | `curl -fsSL .../install.sh \| sh` | Linux/macOS install (HTTPS-only; refuses an HTTP downgrade). |
 | `irm .../install.ps1 \| iex` | Windows install (per-user; adds the dir to your user PATH). |
-| `KOI_VERSION` (`-Version`) | Pin a release tag, e.g. `v0.6.0`. **Default: latest release.** |
+| `KOI_VERSION` (`-Version`) | Pin a release tag, e.g. `v0.7.0`. **Default: latest release.** |
 | `KOI_INSTALL_DIR` (`-InstallDir`) | Install location. **Default: `/usr/local/bin` as root, else `~/.local/bin`; Windows `%LOCALAPPDATA%\Programs\koi`.** |
 | `KOI_NO_MODIFY_PATH` (`-NoModifyPath`) | Skip PATH guidance (sh) / don't touch user PATH (Windows). |
 | `gh attestation verify <archive\|oci://…:VER> --repo sylin-org/koi` | Verify keyless build provenance for an archive or the image. |

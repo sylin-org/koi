@@ -48,7 +48,7 @@ pub fn open_sealed(
     match sealed.v {
         SEALED_V0_PASSTHROUGH => {
             let assurance = verify_envelope(&sealed.envelope, ca_cert_pem, revoked, now);
-            if let koi_common::envelope::Assurance::Rejected { reason } = &assurance {
+            if let koi_common::envelope::Assurance::Rejected { reason, .. } = &assurance {
                 // Integrity failed → never hand back the bytes (misuse-resistance).
                 return Err(CertmeshError::InvalidPayload(format!(
                     "sealed envelope rejected: {reason:?}"

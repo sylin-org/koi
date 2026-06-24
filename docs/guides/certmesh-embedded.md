@@ -20,7 +20,7 @@ embedded API, [embedded.md](embedded.md); one-screen map: the
 
 | Surface | In embedded? | How |
 | --- | --- | --- |
-| **The whole `CertmeshCore`** — create, unlock, `mint_invite`, `enroll`, `prepare_member_csr`, `install_member_cert`, `revoke_member`, `renew_self_if_due`, `pull_trust_bundle`, `self_enroll`, open/close-enrollment, `certmesh_status`, audit log, destroy | **Yes — automatic** | `handle.certmesh()?.core()?` → `Arc<CertmeshCore>` |
+| **The whole `CertmeshCore`** — create, unlock, `mint_invite`, `enroll`, `prepare_member_csr`, `install_member_cert`, `revoke_member`, `renew_self_if_due` (member-side), `renew_member` (CA-side, transport-agnostic — ADR-021), `member_cert_expiry`, `pull_trust_bundle`, `self_enroll`, open/close-enrollment, `certmesh_status`, audit log, destroy | **Yes — automatic** | `handle.certmesh()?.core()?` → `Arc<CertmeshCore>` |
 | **Plain-HTTP routes** (`/v1/certmesh/{create,status,join,trust-bundle,revoke,member-csr,member-cert,invite,…}`) | **Yes** when `.http(true)` | Mounted at `/v1/certmesh`. **No DAT token gate** — see [Authentication](#authentication) |
 | **mTLS inter-node listener** (`/renew`, `/promote`, `/health`, `/set-hook` — how a CA serves member renewals) | **You wire it** | `koi_certmesh::mtls::serve(core.inter_node_routes(), …)` |
 | **Lifecycle background loop** (auto-renewal + trust-bundle pull: policy refresh + revocation detection) | **Opt-in** | `.certmesh_background(true)` |
@@ -193,6 +193,28 @@ let invite = core.mint_invite("web-01", 60).await?;   // invite.token = <secret>
 > The mTLS listener must come up *after* the CA exists and is unlocked (so `self_enroll`
 > can produce the server leaf) — that's why the daemon only starts it at boot when a CA is
 > present. In-process, create (or auto-unlock) the CA first, then spawn `serve`.
+
+### Sign renewals over your own transport (no mTLS listener)
+
+If your CA runs **EmbeddedOnly** — no HTTP/mTLS stack at all — you don't have to stand up
+the mTLS listener to renew members. `CertmeshCore::renew_member(authenticated_cn, csr_pem)`
+([ADR-021](../adr/021-embedded-completion.md)) is the same CA-side renewal the `/renew`
+handler runs, exposed as a domain method so any transport reaches it:
+
+```rust
+// `authenticated_cn` is a TRUSTED, pre-authenticated identity — your transport proves it
+// (an mTLS ClientCn, or `Assurance::identity()` after handle.verify(envelope)). The method
+// never re-authenticates; it enforces the CA-side invariants: the member must be active +
+// not revoked, the CSR's SANs cannot expand beyond the enrollment record (a renewal that
+// tries to is rejected `InvalidPayload`), then it signs, updates the roster, audits, and
+// emits CertRenewed.
+let resp = core.renew_member(&authenticated_cn, &csr_pem).await?;
+// resp.service_cert = the renewed leaf; resp.ca_cert / resp.ca_fingerprint for the member's pin.
+```
+
+The member side stays `renew_self_if_due()` (it generates the rotated CSR and presents its
+current identity); `renew_member` is what the *CA* runs to answer it — over mTLS via the
+built-in handler, or over the envelope plane / a custom transport via this call.
 
 Enrollment approval, if `requires_approval: true`: the embedded background loop
 **auto-denies** (there's no interactive console). A CA host that needs operator approval

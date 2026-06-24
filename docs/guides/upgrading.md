@@ -169,6 +169,38 @@ all of it.
 
 ---
 
+## The 0.7.0 upgrade
+
+**0.7.0 is a near-drop-in — one narrow breaking change, only for Rust embedders that
+exhaustively match the `Assurance` verdict.** Nothing on disk, on the CLI, at the network
+edge, or in the JSON wire shapes changes incompatibly. Swap the binary and you're done.
+
+Review this if you **embed Koi** and `match` on `Assurance`:
+
+- **`Assurance::Rejected` gained a field:** `Rejected { reason, signer_cn: Option<String> }`.
+  An exhaustive match on the old shape no longer compiles — add `, ..` (or read the new
+  field):
+  ```rust
+  // before: Assurance::Rejected { reason } => …
+  Assurance::Rejected { reason, .. } => …
+  ```
+  `signer_cn` is the **authoritative** signer CN when the rejected leaf chained to the
+  pinned CA but is stale (`Expired` / `Revoked`) — useful for audit and a "your identity
+  expired — rejoin" prompt — and `None` otherwise. The JSON shape is unchanged for the
+  common case (the field is omitted when absent), so **non-Rust readers need no change**.
+
+Everything else in 0.7.0 is additive:
+
+- **`Assurance::identity_for(env, expected)`** — the request-bound identity door. The safe
+  way to authorize a request from an envelope (closes a silent-impersonation footgun where
+  `identity().is_some()` would accept a captured envelope replayed against a different
+  request). Existing `identity()` callers are unaffected.
+- **`leaf_not_after_utc(pem)` / `leaf_cn(pem)`** — new public stateless leaf readers.
+- **`RenewResponse.policy`** — the renew response now carries the CA's `CertPolicy`
+  (`#[serde(default)]`, so a 0.7.0 member still parses an older CA's response).
+
+No certmesh re-create, roster migration, or data-directory change is required for 0.7.0.
+
 ## The 0.6.0 upgrade
 
 **0.6.0 is a clean drop-in — no breaking changes.** Despite the minor bump, nothing on

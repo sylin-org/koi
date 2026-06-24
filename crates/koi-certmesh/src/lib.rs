@@ -519,11 +519,25 @@ pub(crate) fn node_has_identity(paths: &CertmeshPaths) -> bool {
     leaf_present && anchored
 }
 
-fn leaf_not_after_utc(cert_pem: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+/// The `not_after` (expiry) instant of a leaf certificate PEM, or `None` if it
+/// cannot be parsed. A **stateless** reader for an *arbitrary* leaf (a discovered
+/// peer's cert, an operator-pasted cert) — no trust validation, just the field
+/// (ADR-022 N3). For this node's *own* leaf with full renewal health, prefer
+/// [`CertmeshCore::local_identity`] → `Identity::renewal`.
+pub fn leaf_not_after_utc(cert_pem: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     use x509_parser::prelude::FromDer;
     let der = pem::parse(cert_pem).ok()?;
     let (_, cert) = x509_parser::certificate::X509Certificate::from_der(der.contents()).ok()?;
     chrono::DateTime::from_timestamp(cert.validity().not_after.timestamp(), 0)
+}
+
+/// The Common Name (CN) of a leaf certificate PEM, or `None` if it cannot be
+/// parsed. A **stateless** reader for an *arbitrary* leaf — no trust validation,
+/// just the subject CN (ADR-022 N3). Complements the DER-taking
+/// [`mtls::extract_cn`](crate::mtls::extract_cn) with a PEM entry point.
+pub fn leaf_cn(cert_pem: &str) -> Option<String> {
+    let der = pem::parse(cert_pem).ok()?;
+    crate::mtls::extract_cn(der.contents())
 }
 
 /// Write `bytes` to `path` atomically (temp file → rename), 0600 on Unix when

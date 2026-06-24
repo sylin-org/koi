@@ -573,6 +573,9 @@ async fn renew_member_happy_path_issues_and_records() {
     assert!(resp.service_cert.contains("BEGIN CERTIFICATE"));
     assert!(resp.ca_cert.contains("BEGIN CERTIFICATE"));
     assert_eq!(resp.ca_fingerprint.len(), 64, "sha256 hex");
+    // N4: the response carries the CA's lifecycle policy so a member can compute
+    // an accurate renewal schedule without arming member.json.
+    assert_eq!(resp.policy, roster::CertPolicy::default());
 
     // The roster recorded the rotated leaf's fingerprint + last_seen.
     let issued_fp =
@@ -609,6 +612,26 @@ async fn renew_member_ca_locked_is_rejected() {
         ),
         "got {err:?}"
     );
+}
+
+// ── N3 public leaf parsers (ADR-022) ─────────────────────────────
+
+#[test]
+fn leaf_parsers_read_an_arbitrary_leaf() {
+    let ca = make_test_ca();
+    let issued = ca::issue_certificate(&ca, "leaf-host", &["leaf-host".to_string()], 30).unwrap();
+
+    assert_eq!(
+        crate::leaf_cn(&issued.cert_pem).as_deref(),
+        Some("leaf-host")
+    );
+    let exp = crate::leaf_not_after_utc(&issued.cert_pem).expect("expiry parses");
+    let days = (exp - Utc::now()).num_days();
+    assert!((28..=31).contains(&days), "expected ~30 days, got {days}");
+
+    // Garbage in → None, never a panic.
+    assert!(crate::leaf_cn("not a pem").is_none());
+    assert!(crate::leaf_not_after_utc("not a pem").is_none());
 }
 
 // ── F3 install pin enforcement ───────────────────────────────────
