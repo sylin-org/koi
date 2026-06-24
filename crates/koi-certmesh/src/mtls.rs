@@ -777,7 +777,10 @@ mod tests {
         let still = served_server_cn(addr, &ca_pem, (&client.0, &client.1))
             .await
             .expect("handshake after bad reload");
-        assert_eq!(still, "server-B", "a bad reload must not drop the good cert");
+        assert_eq!(
+            still, "server-B",
+            "a bad reload must not drop the good cert"
+        );
 
         cancel.cancel();
         let _ = server.await;

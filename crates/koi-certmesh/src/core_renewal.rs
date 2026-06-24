@@ -110,7 +110,12 @@ impl CertmeshCore {
         // Decide due-ness from the on-disk self leaf + CA policy, without holding the CA
         // lock. `self_enroll` re-checks the same inputs authoritatively before it
         // re-issues, so deciding "due" here guarantees it re-issues there.
-        let cert_path = self.state.paths.certs_dir().join(&hostname).join("cert.pem");
+        let cert_path = self
+            .state
+            .paths
+            .certs_dir()
+            .join(&hostname)
+            .join("cert.pem");
         let not_after = std::fs::read_to_string(&cert_path)
             .ok()
             .and_then(|pem| leaf_not_after_utc(&pem));

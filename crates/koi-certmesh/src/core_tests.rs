@@ -284,7 +284,10 @@ async fn renew_ca_self_leaf_if_due_not_due_when_fresh() {
     core.self_enroll().await.expect("initial self-enroll");
 
     // A fresh 90-day leaf is well outside the 30-day threshold → not due.
-    let outcome = core.renew_ca_self_leaf_if_due().await.expect("due-check ok");
+    let outcome = core
+        .renew_ca_self_leaf_if_due()
+        .await
+        .expect("due-check ok");
     assert!(
         matches!(outcome, RenewOutcome::NotDue { .. }),
         "got {outcome:?}"

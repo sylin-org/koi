@@ -261,11 +261,13 @@ fn spawn_cert_reload_watcher(
     // Bounded channel coalesces fs-event bursts; `try_send` from notify's own thread is
     // non-blocking and needs no tokio runtime context.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(8);
-    let mut watcher = match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if res.is_ok() {
-            let _ = tx.try_send(());
-        }
-    }) {
+    let mut watcher = match notify::recommended_watcher(
+        move |res: notify::Result<notify::Event>| {
+            if res.is_ok() {
+                let _ = tx.try_send(());
+            }
+        },
+    ) {
         Ok(w) => w,
         Err(e) => {
             tracing::warn!(error = %e, "trust-plane cert watcher: init failed; hot-reload disabled");
