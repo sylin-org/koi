@@ -81,6 +81,8 @@ GET /mdns-browser
 
 A single-page app that renders the whole LAN: each discovered service type, its instances, their addresses, ports, and TXT records, refreshing as the network changes.
 
+Well-known service types are shown with a friendly label rather than the raw DNS-SD string: `_hap._tcp` reads "HomeKit", `_matterc._udp` "Matter (commissioning)", `_esphomelib._tcp` "ESPHome", `_googlecast._tcp` "Google Cast", and so on (the raw type stays available as a tooltip). Unrecognized types render as-is. This makes the browser a cross-platform way to see and debug smart-home / IoT commissioning (HomeKit, Matter, ESPHome, Google Cast) on any OS — including Windows, where Avahi and Bonjour are awkward.
+
 ### Lazy by design
 
 The browser is backed by a **LAN-wide meta-browse** - a query across every service type, which is chatty multicast. The daemon does **not** run it on startup. It starts on the **first** browser request and idles itself out after **~300 seconds** of no requests. So a daemon nobody is watching does no LAN-wide browsing at all; the moment someone opens the page, discovery spins up; once they close it, it winds back down.

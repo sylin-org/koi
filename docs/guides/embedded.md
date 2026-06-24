@@ -296,6 +296,18 @@ let peers = handle.mdns()?.discover("_my-svc._tcp").await?;  // each peer carrie
 let diag = cm.diagnose().await?;                   // trust-doctor TrustDiagnosis
 ```
 
+`sign`/`verify` are also available **directly on the handle** as a symmetric pair, so you
+don't unwrap the certmesh sub-handle for the common envelope round-trip:
+
+```rust
+let env = handle.sign(b"payload").await?;          // = handle.certmesh()?.sign(..)
+let assurance = handle.verify(&env).await?;        // = handle.certmesh()?.verify(..)
+```
+
+A member node can read its own leaf's expiry to drive a "renews in N days" display or its
+own renewal timer — `handle.certmesh()?.core()?.member_cert_expiry()` returns the raw
+`Option<DateTime<Utc>>` (`None` when the node never joined a mesh).
+
 ---
 
 ## Vault
