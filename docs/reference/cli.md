@@ -243,7 +243,7 @@ Not flags — read directly from the environment:
 | Env var              | Default              | Description                                            |
 | -------------------- | -------------------- | ------------------------------------------------------ |
 | `KOI_DATA_DIR`       | platform data dir    | Override the machine-scoped data directory             |
-| `KOI_VERSION`        | latest               | Pin a release tag for the install script (e.g. `v0.5.1`) |
+| `KOI_VERSION`        | latest               | Pin a release tag for the install script (e.g. `v0.6.0`) |
 | `KOI_INSTALL_DIR`    | platform bin dir     | Install location for the install script                |
 | `KOI_NO_MODIFY_PATH` | unset                | Any non-empty value: `install.sh` skips PATH guidance (on `install.ps1` use `-NoModifyPath`) |
 

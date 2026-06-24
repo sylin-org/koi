@@ -198,6 +198,10 @@ token with `koi token write` (mutations still require it). [CONTAINERS.md](CONTA
 has the patterns, the secure exposure recipe, and the label-driven runtime adapter
 (the zero-code path).
 
+OrbStack delivers a similar container-discovery inner loop, but only on macOS and as
+proprietary software; Koi is the open-source, cross-platform answer — the same story
+on Windows, Linux, and macOS.
+
 ## Platform support
 
 | Platform | mDNS engine | Service integration |
@@ -250,8 +254,8 @@ build-provenance attestation. A trust tool should let you verify its own supply
 chain in one line:
 
 ```bash
-gh attestation verify koi-v0.5.1-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
-gh attestation verify oci://ghcr.io/sylin-org/koi:0.5.1 --repo sylin-org/koi
+gh attestation verify koi-v0.6.0-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
+gh attestation verify oci://ghcr.io/sylin-org/koi:0.6.0 --repo sylin-org/koi
 ```
 
 ## Project status
@@ -260,13 +264,15 @@ Koi is **pre-1.0, feasibility-validated, and consolidating**. The architecture a
 the end-to-end pipeline are real; a thorough June 2026 assessment
 ([docs/assessment/](docs/assessment/README.md)) mapped what's solid, what's broken,
 and what's being cut in the name of *less but more meaningful parts*. The latest
-release, **v0.5.1**, makes the trust/identity/posture plane observable over the wire (a
-DAT-gated `/v1/events` SSE stream + `/v1/certmesh/posture`, certificate-lifecycle events,
-a posture-keyed `reqwest` client, and a CN/role authz hook); v0.5.0 before it added
-one-line install, a signed multi-arch container image, a unified serving layer
-(`koi-serve`), and security hardening ([CHANGELOG](CHANGELOG.md)). The work plan is public
-([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until 1.0 (0.5.1
-carries some — see the CHANGELOG and the [upgrade guide](docs/guides/upgrading.md));
+release, **v0.6.0**, completes the embedded authorization plane — CA-side member renewal
+is now a transport-agnostic domain method (`CertmeshCore::renew_member`, ADR-021) — and
+adds community-facing polish (well-known mDNS type labels in the network browser, a
+first-run getting-started hint, top-level envelope `sign`/`verify`); v0.5.1 before it made
+the trust/identity/posture plane observable over the wire, and v0.5.0 added one-line
+install, a signed multi-arch container image, and a unified serving layer (`koi-serve`)
+([CHANGELOG](CHANGELOG.md)). The work plan is public
+([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until 1.0 (0.6.0 is a
+clean drop-in — see the CHANGELOG and the [upgrade guide](docs/guides/upgrading.md));
 don't run it as load-bearing infrastructure yet — do play with it, and file issues when
 reality disagrees with the docs.
 

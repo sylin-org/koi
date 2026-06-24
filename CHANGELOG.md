@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-06-24
+
+**Embedded API completion + community legibility.** ADR-021 closes the last CA-side
+gap in the EmbeddedOnly authorization plane — member renewal is now a transport-agnostic
+domain method, so a consumer with no HTTP/mTLS stack can run the full enroll → renew loop
+over its own transport (the envelope plane, a future QUIC/gRPC, …). Alongside it: the
+network browser learns to name well-known smart-home service types, and a first-run user
+who just ran `koi` gets pointed at the next three steps.
+
+No breaking changes — every item is additive or an internal refactor.
+
+### Added
+- **`CertmeshCore::renew_member(authenticated_cn, csr_pem)`** (ADR-021) — the CA-side
+  renewal invariants (active + non-revoked, SAN pinning to the enrollment record, policy
+  lifetime, sign, roster update, audit, `CertRenewed`) extracted out of the mTLS
+  `/renew` handler into a domain method. `authenticated_cn` is a trusted, pre-authenticated
+  identity (the caller's transport proves it — mTLS `ClientCn` or `Assurance::identity()`);
+  any future transport reaches the full CA renewal loop without duplicating security-critical
+  logic. Authorization is checked **before** the CSR is parsed, and a renewal CSR that tries
+  to **expand its SAN set** is rejected loudly (`InvalidPayload`) on top of the structural
+  substitution `sign_csr` already performs.
+- **`KoiHandle::sign()` / `KoiHandle::verify()`** — top-level envelope sign/verify
+  conveniences (a symmetric pair) so a consumer holding one `KoiHandle` no longer unwraps
+  `certmesh().core()?` on every call.
+- **`CertmeshCore::member_cert_expiry() -> Option<DateTime<Utc>>`** — the local member
+  leaf's raw expiry instant, so an embedded consumer can drive its own renewal timer /
+  "next renewal in N days" without re-parsing the cert file.
+- **Well-known mDNS service-type annotations in the network browser** — `_hap._tcp` shows
+  "HomeKit", `_matterc._udp` "Matter (commissioning)", `_esphomelib._tcp` "ESPHome",
+  `_googlecast._tcp` "Google Cast", and ~25 more. Friendly labels render in the histogram
+  and filter tags (raw type as a tooltip); unknown types fall back to the raw type. The
+  zero-config legibility win for cross-platform smart-home mDNS debugging — including
+  Windows, where Avahi/Bonjour serve poorly.
+- **First-run getting-started hint** — running bare `koi` with no daemon now prints three
+  commitment-ordered next steps (`koi mdns discover` works instantly, `koi --daemon` starts
+  the toolbox, `koi certmesh create` mints a CA) before the command catalog.
+
+### Changed
+- **`/v1/certmesh/renew` now delegates to `renew_member`** — the handler is a thin
+  mTLS-CN-proving wrapper, matching the domain-facade pattern every other handler follows.
+  No wire change. A non-active member's renewal now returns **403** (was a 500 regression).
+- **Shared CSR SAN helpers** (`requested_sans`, `names_match`) consolidated into one
+  `pub(crate)` copy used by both ACME finalize and member renewal (no duplicated
+  security-critical SAN parsing).
+- **Positioning docs** — README gains an OrbStack comparison (open-source cross-platform
+  vs proprietary/macOS-only); the MCP guide opens on local-MCP-discovery (`_mcp._tcp`
+  instead of port-scanning localhost); the certmesh guide gives the explicit CRL/OCSP
+  answer (short leaf lifetime over a distributed revocation list).
+
 ## [0.5.1] - 2026-06-22
 
 The **observable + reactive trust plane**: the ADR-020 trust/identity/posture surface,

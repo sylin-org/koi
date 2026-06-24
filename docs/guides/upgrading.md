@@ -169,6 +169,27 @@ all of it.
 
 ---
 
+## The 0.6.0 upgrade
+
+**0.6.0 is a clean drop-in — no breaking changes.** Despite the minor bump, nothing on
+disk, on the CLI, at the network edge, or in the embedded API changes incompatibly. Swap
+the binary and you're done; no certmesh re-create, roster migration, or data-directory
+change is required.
+
+Everything in 0.6.0 is additive or an internal refactor:
+
+- **`CertmeshCore::renew_member(authenticated_cn, csr_pem)`** (ADR-021) — new CA-side
+  domain method for transport-agnostic member renewal. The `/renew` mTLS endpoint is
+  unchanged on the wire; it now delegates to this method internally.
+- **`KoiHandle::sign()` / `verify()`** and **`CertmeshCore::member_cert_expiry()`** — new
+  additive embedded conveniences. Existing `certmesh().sign()/verify()` calls keep working.
+- **Network-browser type labels** and the **first-run getting-started hint** are
+  presentation-only.
+
+One behavioral fix worth noting: a `/renew` request from a **non-active** member now
+returns **403** instead of a 500 (the request was always refused; only the status code
+was wrong). No client that handled the refusal needs to change.
+
 ## The 0.5.1 upgrade
 
 **0.5.1 is a binary swap for operators — nothing on disk, on the CLI, or at the network

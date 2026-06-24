@@ -69,7 +69,10 @@ pub enum CertmeshEvent {
     MemberRevoked { hostname: String },
     /// All certmesh state was destroyed.
     Destroyed,
-    /// This node's leaf certificate was renewed successfully (ADR-020 reactive plane).
+    /// A leaf certificate was renewed successfully (ADR-020 reactive plane). On a
+    /// member node this is its own leaf (`renew_self_if_due`); on a CA node it also
+    /// fires when the CA signs a member's renewal (`renew_member`, ADR-021), where
+    /// `expires_at` is that member's new leaf expiry.
     CertRenewed {
         /// When the new leaf expires (RFC 3339).
         expires_at: chrono::DateTime<chrono::Utc>,

@@ -202,10 +202,16 @@ impl BrowserCache {
                 .values()
                 .filter(|i| i.removed_at.is_none())
                 .count();
+            let (label, description) = match crate::well_known::annotate(&dtype.service_type) {
+                Some((l, d)) => (Some(l), Some(d)),
+                None => (None, None),
+            };
             type_summaries.push(TypeSummary {
                 service_type: dtype.service_type.clone(),
                 count: live_count,
                 first_seen: dtype.first_seen.clone(),
+                label,
+                description,
             });
             for inst in dtype.instances.values() {
                 all_instances.push(inst.clone());
@@ -291,6 +297,13 @@ struct TypeSummary {
     service_type: String,
     count: usize,
     first_seen: String,
+    /// Friendly label for a well-known type (`_hap._tcp` → "HomeKit"), absent for
+    /// unrecognized types so the UI falls back to the raw type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<&'static str>,
+    /// One-line description of a well-known type, paired with `label`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<&'static str>,
 }
 
 // ── Background worker ───────────────────────────────────────────────

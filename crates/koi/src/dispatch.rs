@@ -350,7 +350,9 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Try to show daemon status if a healthy daemon is reachable; otherwise stay quiet
+    // Show daemon status if a healthy daemon is reachable; otherwise, on the
+    // first-run path (no daemon, interactive), point the user at the three
+    // getting-started steps before the full catalog.
     if let Some(status_json) = try_daemon_status(&cli) {
         if cli.json {
             if let Ok(body) = serde_json::to_string_pretty(&status_json) {
@@ -359,6 +361,8 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
         } else {
             print!("{}", format::unified_status(&status_json));
         }
+    } else if !cli.json {
+        println!("{}", format::first_run_hint());
     }
 
     // Always show available commands/help for discoverability

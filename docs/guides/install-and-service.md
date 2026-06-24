@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh
 irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
 ```
 
-Both installers honor the same knobs as environment variables: `KOI_VERSION` (pin a release tag, e.g. `v0.5.1`), `KOI_INSTALL_DIR` (install location), and `KOI_NO_MODIFY_PATH` (skip the PATH change).
+Both installers honor the same knobs as environment variables: `KOI_VERSION` (pin a release tag, e.g. `v0.6.0`), `KOI_INSTALL_DIR` (install location), and `KOI_NO_MODIFY_PATH` (skip the PATH change).
 
 Prefer a container? The image runs the daemon via its default command — no install needed:
 

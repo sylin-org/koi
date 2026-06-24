@@ -15,6 +15,7 @@ pub mod browser;
 pub mod dashboard;
 pub mod forward;
 pub mod meta_browse;
+mod well_known;
 
 pub use dashboard::{DashboardSseEvent, KoiEventWire};
 

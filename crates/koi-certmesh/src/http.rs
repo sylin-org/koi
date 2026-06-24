@@ -927,122 +927,23 @@ async fn renew_handler(
         );
     }
 
-    let ca_guard = state.ca.lock().await;
-    let ca = match ca_guard.as_ref() {
-        Some(ca) => ca,
-        None => {
-            return if state.paths.is_ca_initialized() {
-                error_response(StatusCode::SERVICE_UNAVAILABLE, &CertmeshError::CaLocked)
-            } else {
-                error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    &CertmeshError::CaNotInitialized,
-                )
-            };
-        }
-    };
-
-    // The member must be enrolled, active, and not revoked. The authorized SANs
-    // are the ones recorded at enrollment — a renewal CSR cannot expand them.
-    let (authorized_sans, lifetime_days) = {
-        let roster = state.roster.lock().await;
-        if roster.is_revoked(&request.hostname) {
-            // Boundary revocation, audited (ADR-017 F9/F14): a revoked member's
-            // renewal is refused at the CA, not merely dropped.
-            let _ = crate::audit::append_entry_to(
-                &state.paths.audit_log_path(),
-                "mtls_revoked_rejected",
-                &[("hostname", request.hostname.as_str()), ("op", "renew")],
-            );
-            return error_response(
-                StatusCode::FORBIDDEN,
-                &CertmeshError::Revoked(request.hostname.clone()),
-            );
-        }
-        match roster.find_member(&request.hostname) {
-            Some(m) if m.status == crate::roster::MemberStatus::Active => (
-                m.cert_sans.clone(),
-                roster.metadata.policy.leaf_lifetime_days,
-            ),
-            Some(_) => {
-                return error_response(
-                    StatusCode::FORBIDDEN,
-                    &CertmeshError::Internal(format!(
-                        "member '{}' is not active",
-                        request.hostname
-                    )),
-                );
-            }
-            None => {
-                return error_response(
-                    StatusCode::NOT_FOUND,
-                    &CertmeshError::NotFound(request.hostname.clone()),
-                );
-            }
-        }
-    };
-
-    // Sign the member's CSR — no key generation, authorized SANs only.
-    let leaf_pem = match crate::csr::sign_csr(ca, &request.csr, &authorized_sans, lifetime_days) {
-        Ok(pem) => pem,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
-    };
-    let ca_cert = ca.cert_pem.clone();
-    let ca_fingerprint = crate::ca::ca_fingerprint(ca);
-    drop(ca_guard);
-
-    // Fingerprint + expiry from the issued leaf (same convention as enrollment).
-    let fingerprint = match pem::parse(&leaf_pem) {
-        Ok(der) => koi_crypto::pinning::fingerprint_sha256(der.contents()),
-        Err(e) => {
-            return error_response(
+    // All CA-side invariants (active, non-revoked, SAN pinning, sign, roster
+    // update, audit, event) live in the domain method — the handler only proves
+    // the identity (mTLS CN) and serializes the result (ADR-021).
+    let core = CertmeshCore::from_state(state);
+    match core.renew_member(&caller, &request.csr).await {
+        Ok(response) => match serde_json::to_value(&response) {
+            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+            Err(e) => error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &CertmeshError::Certificate(format!("issued leaf parse: {e}")),
-            );
+                &CertmeshError::Internal(format!("Serialization error: {e}")),
+            ),
+        },
+        Err(e) => {
+            let status = StatusCode::from_u16(koi_common::error::ErrorCode::from(&e).http_status())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            error_response(status, &e)
         }
-    };
-    let expires = chrono::Utc::now() + chrono::Duration::days(i64::from(lifetime_days));
-
-    // Update the roster member's fingerprint/expiry/last_seen and bump `seq`
-    // (a rotation is a membership change the trust bundle must reflect — F8).
-    if let Err(e) = state
-        .commit_roster(|roster| {
-            if let Some(member) = roster.find_member_mut(&request.hostname) {
-                member.cert_fingerprint = fingerprint.clone();
-                member.cert_expires = expires;
-                member.last_seen = Some(chrono::Utc::now());
-            }
-            Ok(())
-        })
-        .await
-    {
-        tracing::warn!(error = %e, "Failed to save roster after renewal");
-    }
-
-    let _ = crate::audit::append_entry_to(
-        &state.paths.audit_log_path(),
-        "cert_renewed",
-        &[
-            ("hostname", request.hostname.as_str()),
-            ("fingerprint", &fingerprint),
-            ("expires", &expires.to_rfc3339()),
-        ],
-    );
-
-    let response = RenewResponse {
-        hostname: request.hostname.clone(),
-        service_cert: leaf_pem,
-        ca_cert,
-        ca_fingerprint,
-        expires: expires.to_rfc3339(),
-    };
-
-    match serde_json::to_value(&response) {
-        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &CertmeshError::Internal(format!("Serialization error: {e}")),
-        ),
     }
 }
 
