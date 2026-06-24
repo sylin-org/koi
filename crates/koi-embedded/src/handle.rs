@@ -290,6 +290,25 @@ impl KoiHandle {
         }
     }
 
+    /// Sign `bytes` into an [`Envelope`](koi_common::envelope::Envelope) (ADR-020 §3)
+    /// — top-level shorthand for `certmesh()?.sign(bytes)`. Mode-transparent: a
+    /// freshness-stamped passthrough when Open, ES256-signed when Authenticated.
+    /// Embedded only.
+    pub async fn sign(&self, bytes: &[u8]) -> Result<koi_common::envelope::Envelope, KoiError> {
+        self.certmesh()?.sign(bytes).await
+    }
+
+    /// Verify an [`Envelope`](koi_common::envelope::Envelope), returning an
+    /// [`Assurance`](koi_common::envelope::Assurance) (ADR-020 §3) — top-level
+    /// shorthand for `certmesh()?.verify(env)`, symmetric with [`sign`](Self::sign).
+    /// Read a trusted identity only via `Assurance::identity()`. Embedded only.
+    pub async fn verify(
+        &self,
+        env: &koi_common::envelope::Envelope,
+    ) -> Result<koi_common::envelope::Assurance, KoiError> {
+        self.certmesh()?.verify(env).await
+    }
+
     /// Open the encrypted key-value vault for general-purpose secret storage.
     ///
     /// The vault uses platform credential binding (keyring) when available,
@@ -1451,6 +1470,36 @@ mod tests {
         assert_eq!(body, "pong");
 
         cancel.cancel();
+        handle.shutdown().await.expect("shutdown");
+    }
+
+    // ── top-level sign/verify (ADR-020 §3, wishlist I1) ─────────────
+
+    #[tokio::test]
+    async fn handle_sign_verify_round_trip_on_open_node() {
+        // The top-level KoiHandle::sign / ::verify conveniences delegate to the
+        // certmesh handle; an Open node round-trips bytes with an anonymous assurance.
+        let dir = std::env::temp_dir().join(format!("koi-emb-handle-sv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let koi = crate::Builder::new()
+            .data_dir(&dir)
+            .service_mode(crate::ServiceMode::EmbeddedOnly)
+            .mdns(false)
+            .dns_enabled(false)
+            .health(false)
+            .certmesh(true)
+            .proxy(false)
+            .build()
+            .expect("build");
+        let handle = koi.start().await.expect("start");
+
+        let env = handle.sign(b"hello handle").await.expect("sign");
+        let assurance = handle.verify(&env).await.expect("verify");
+        assert!(
+            assurance.identity().is_none(),
+            "an Open node's envelope carries no trusted identity"
+        );
+
         handle.shutdown().await.expect("shutdown");
     }
 

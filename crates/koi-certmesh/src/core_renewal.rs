@@ -68,10 +68,13 @@ impl CertmeshCore {
         result
     }
 
-    /// How many days until the local member cert expires. Returns `None` when the
-    /// node is not a member or the cert cannot be parsed. Used to populate
-    /// `CertExpiringSoon` without re-reading the cert inside the inner function.
-    fn cert_days_left_if_member(&self) -> Option<i64> {
+    /// The local member certificate's expiry instant (`not_after`), or `None` when
+    /// this node is not a member (never joined a mesh) or the leaf cannot be parsed.
+    ///
+    /// Exposes the raw expiry so an embedded consumer can derive its own urgency
+    /// (days-left, renewal scheduling) without re-implementing leaf parsing
+    /// (wishlist I2 / ADR-021). Reachable via `certmesh().core()?.member_cert_expiry()`.
+    pub fn member_cert_expiry(&self) -> Option<chrono::DateTime<chrono::Utc>> {
         let state = member::load(&self.state.paths.member_state_path())?;
         let cert_path = self
             .state
@@ -80,7 +83,14 @@ impl CertmeshCore {
             .join(&state.hostname)
             .join("cert.pem");
         let pem = std::fs::read_to_string(cert_path).ok()?;
-        let not_after = leaf_not_after_utc(&pem)?;
+        leaf_not_after_utc(&pem)
+    }
+
+    /// How many days until the local member cert expires. Returns `None` when the
+    /// node is not a member or the cert cannot be parsed. Used to populate
+    /// `CertExpiringSoon` without re-reading the cert inside the inner function.
+    fn cert_days_left_if_member(&self) -> Option<i64> {
+        let not_after = self.member_cert_expiry()?;
         Some((not_after - chrono::Utc::now()).num_days())
     }
 

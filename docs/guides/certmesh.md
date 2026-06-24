@@ -374,6 +374,8 @@ koi certmesh revoke node-02 --reason "decommissioned"
 
 This marks the member as revoked in the roster and records the event in the audit log. The revoked host's certificate remains on disk and will no longer be renewed - so it stops working once it expires (within the 90-day leaf lifetime). Revocation also takes effect immediately at the CA boundary: a revoked member's `/renew` and `/health` calls over mTLS are rejected with `403`, so it can neither pull a fresh leaf nor report healthy. Revocation is otherwise **roster state**, not a network-wide CRL or OCSP push: there is no revocation list distributed to other members, and an already-issued, still-valid leaf keeps working against third parties until it expires. The leaf lifetime is the bound on that residual access (see "What certmesh deliberately does not do").
 
+Koi deliberately does not implement CRL or OCSP — the distribution infrastructure for network-wide revocation is exactly the operational weight certmesh exists to avoid. For security-sensitive deployments, the answer is a **short leaf lifetime** rather than a revocation list: a member renewing a 24-hour cert is functionally equivalent to instantaneous revocation, because cutting off renewal (revoke in the roster) takes the member offline within a day with no list to push or consult. Short-lived certificates (`--cert-lifetime`, planned for 0.6) lean on the renewal loop you already run instead of adding a second, distributed source of truth.
+
 ---
 
 ## High availability and promotion

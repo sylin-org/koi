@@ -198,6 +198,10 @@ token with `koi token write` (mutations still require it). [CONTAINERS.md](CONTA
 has the patterns, the secure exposure recipe, and the label-driven runtime adapter
 (the zero-code path).
 
+OrbStack delivers a similar container-discovery inner loop, but only on macOS and as
+proprietary software; Koi is the open-source, cross-platform answer — the same story
+on Windows, Linux, and macOS.
+
 ## Platform support
 
 | Platform | mDNS engine | Service integration |
