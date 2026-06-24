@@ -241,7 +241,7 @@ If certmesh is disabled (`--no-certmesh`), the mTLS port is not opened. The ACME
 
 ## HTTP API
 
-All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
+Most certmesh endpoints are mounted at `/v1/certmesh/` on the daemon's HTTP port (5641, loopback by default). The **inter-node** endpoints — `renew` and `promote` — are served **only** over the mTLS listener on port 5642 (they require an authenticated client certificate, so a plain-HTTP call is refused with `403`).
 
 ### Core endpoints
 
@@ -253,8 +253,8 @@ All certmesh endpoints are mounted at `/v1/certmesh/` on the daemon.
 | `GET`  | `/v1/certmesh/status`           | Mesh status, members, CA state        |
 | `POST` | `/v1/certmesh/unlock`           | Decrypt the CA key                    |
 | `PUT`  | `/v1/certmesh/set-hook`         | Configure renewal hook                |
-| `POST` | `/v1/certmesh/promote`          | Promote a member to standby CA        |
-| `POST` | `/v1/certmesh/renew`            | Force certificate renewal             |
+| `POST` | `/v1/certmesh/promote`          | Promote a member to standby CA (**mTLS, port 5642**) |
+| `POST` | `/v1/certmesh/renew`            | Member-initiated certificate renewal (**mTLS, port 5642**) |
 | `POST` | `/v1/certmesh/health`           | Mesh health check                     |
 | `POST` | `/v1/certmesh/rotate-auth`      | Rotate the enrollment auth credential |
 | `GET`  | `/v1/certmesh/log`              | Audit log (requires the daemon token) |
@@ -308,7 +308,7 @@ Understanding what certmesh produces helps when debugging TLS issues:
 - **Algorithm**: ECDSA P-256 (fast, widely supported, small keys)
 - **CA validity**: 10 years
 - **Leaf cert lifetime**: 90 days (auto-renewed at 30 days remaining, 14-day grace - the CA-held `CertPolicy`)
-- **CA self-enrollment SANs**: hostname, localhost, 127.0.0.1, ::1
+- **CA self-enrollment SANs**: hostname, hostname.local, localhost, 127.0.0.1
 - **Member cert SANs**: hostname, hostname.local
 - **Trust store**: CA cert is installed in the system trust store at creation time
 

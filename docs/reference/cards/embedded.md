@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Typed per-domain handles — each Result errs if its capability is disabled:
     handle.mdns()?.register(payload)?;
     handle.dns()?.add_entry(entry)?;
-    let posture = handle.certmesh()?.posture()?;
+    let posture = handle.certmesh()?.posture().await?;
 
     // One broadcast stream of everything that happens:
     let mut events = handle.subscribe(); // broadcast::Receiver<KoiEvent>

@@ -47,7 +47,7 @@ There are **two independent axes** for trimming Koi, and they do different thing
   closure for a deployment that will never use a given backend.
 
 Three dependencies are gated behind **default-on** features, so a default
-`koi-embedded = "0.4"` is identical to before — you only opt *out*:
+`koi-embedded = "0.7"` is identical to before — you only opt *out*:
 
 | Feature | Default | Compiles in | With it **off** |
 | --- | --- | --- | --- |
@@ -61,17 +61,17 @@ Three dependencies are gated behind **default-on** features, so a default
 
 ```toml
 # Default — every backend (unchanged; the batteries-included path)
-koi-embedded = "0.4"
+koi-embedded = "0.7"
 
 # Lean — drop bollard, the OS-keychain / Secret-Service / D-Bus stack, and the image
 # codec. Ideal for a headless container that only needs discovery / DNS / health.
-koi-embedded = { version = "0.4", default-features = false }
+koi-embedded = { version = "0.7", default-features = false }
 
 # À la carte — start lean and re-arm only what you need
-koi-embedded = { version = "0.4", default-features = false, features = ["docker"] }
+koi-embedded = { version = "0.7", default-features = false, features = ["docker"] }
 
 # Everything, explicitly
-koi-embedded = { version = "0.4", features = ["full"] }
+koi-embedded = { version = "0.7", features = ["full"] }
 ```
 
 A common reason to go lean is the **bollard version lock**: `bollard-stubs` pins with an
@@ -289,7 +289,7 @@ sites whether the node is Open or Authenticated:
 
 ```rust
 let cm = handle.certmesh()?;
-let posture = cm.posture()?;                       // the mode oracle
+let posture = cm.posture().await?;                 // the mode oracle (async on the handle)
 let env = cm.sign(b"payload").await?;              // freshness-stamped Open, ES256 secure
 let assurance = cm.verify(&env).await?;            // Assurance::identity() if trusted
 let peers = handle.mdns()?.discover("_my-svc._tcp").await?;  // each peer carries its posture hint
@@ -446,7 +446,7 @@ See also: `crates/koi-embedded/examples/embedded-integration.rs`
 
 ## Unit tests
 
-The crate includes 56 unit tests covering the testable surface that doesn't require a runtime:
+The crate includes a comprehensive unit suite covering the testable surface that doesn't require a runtime:
 
 - **`config.rs`** — `KoiConfig` defaults, `firewall_ports()` deduplication and capability-awareness, `DnsConfigBuilder` fluent API, `ServiceMode` variants
 - **`events.rs`** — all `KoiEvent` variant construction, Clone preservation, Debug formatting

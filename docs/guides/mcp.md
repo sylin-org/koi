@@ -159,7 +159,7 @@ The point of `lan_announce` + `dns_add` together is a **stable, discoverable nam
 
 ## The `_mcp._tcp` convention
 
-`mcp_servers_on_lan` browses the `_mcp._tcp` mDNS service type and returns connectable endpoints, reading TXT keys aligned to the in-flight MCP discovery drafts (`v=mcp1`, `transport=`, `path=`, `name=`).
+`mcp_servers_on_lan` browses the `_mcp._tcp` mDNS service type and returns connectable endpoints, reading the TXT keys Koi advertises for MCP discovery (`transport=`, `path=`, `name=`; the record also carries `version=`).
 
 **This is Koi's convention, not a standard.** There is no DNS-SD standard for MCP today — the two IETF drafts that exist describe *unicast* `_mcp.<domain>` TXT records, not multicast DNS. Koi uses `_mcp._tcp` on the LAN as a pragmatic stand-in until a discovery standard lands; expect this to track whatever the ecosystem settles on.
 
