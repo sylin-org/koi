@@ -279,8 +279,9 @@ let _server = handle.participate(router, addr, "_my-svc._tcp", cancel).await?;
 - Both are **embedded only** — a remote handle has no local identity to serve mTLS with and
   returns `KoiError::DisabledCapability`.
 
-Certificate *renewal* is handled by the certmesh background loops — enable them with
-`Builder::certmesh_background(true)` on a long-running host.
+Certificate *renewal* (and trust-bundle pull / revocation honoring / self-stand-down) is
+handled by Koi's certmesh self-management, which is **on by default** once this node is a
+member (ADR-023); a self-driver disables it with `Builder::certmesh_managed(false)`.
 
 ### Trust primitives
 

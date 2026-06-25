@@ -20,10 +20,10 @@ embedded API, [embedded.md](embedded.md); one-screen map: the
 
 | Surface | In embedded? | How |
 | --- | --- | --- |
-| **The whole `CertmeshCore`** — create, unlock, `mint_invite`, `enroll`, `prepare_member_csr`, `install_member_cert`, `revoke_member`, `renew_self_if_due` (member-side), `renew_member` (CA-side, transport-agnostic — ADR-021), `member_cert_expiry`, `pull_trust_bundle`, `self_enroll`, open/close-enrollment, `certmesh_status`, audit log, destroy | **Yes — automatic** | `handle.certmesh()?.core()?` → `Arc<CertmeshCore>` |
+| **The whole `CertmeshCore`** — create, unlock, `mint_invite`, `enroll`, `prepare_member_csr`, `install_member_cert`, `revoke_member`, `renew_self_if_due` (member-side), `renew_member` (CA-side, transport-agnostic — ADR-021), `member_cert_expiry`, `pull_trust_bundle`, `apply_trust_bundle` (ingest a `SignedBundle` over your own transport — ADR-023), `is_certmesh_member` / `is_self_revoked` (cheap membership / self-revocation predicates), `self_enroll`, open/close-enrollment, `certmesh_status`, audit log, destroy | **Yes — automatic** | `handle.certmesh()?.core()?` → `Arc<CertmeshCore>` |
 | **Plain-HTTP routes** (`/v1/certmesh/{create,status,join,trust-bundle,revoke,member-csr,member-cert,invite,…}`) | **Yes** when `.http(true)` | Mounted at `/v1/certmesh`. **No DAT token gate** — see [Authentication](#authentication) |
 | **mTLS inter-node listener** (`/renew`, `/promote`, `/health`, `/set-hook` — how a CA serves member renewals) | **You wire it** | `koi_certmesh::mtls::serve(core.inter_node_routes(), …)` |
-| **Lifecycle background loop** (auto-renewal + trust-bundle pull: policy refresh + revocation detection) | **Opt-in** | `.certmesh_background(true)` |
+| **Self-management** (trust-bundle pull → policy refresh + cross-member revocation honoring + self-stand-down, plus auto-renewal) | **On by default once a member** (ADR-023); a no-op until then | opt out with `.certmesh_managed(false)` to drive it yourself |
 | **ACME (RFC 8555) facade** | **No** | Binary-only adapter |
 | **mDNS `_certmesh._tcp` `fp=` CA advertise** | **No** (auto) | Register via the mDNS core if you want discovery |
 
@@ -117,19 +117,23 @@ crosses the wire to the CA.
 
 A leaf is short-lived (default 90-day, renew at 30 remaining). Two ways to renew:
 
-**Opt into the background loop** — the same role loops the daemon runs:
+**Self-management (the default)** — once this node is a member, Koi runs the same role loop
+the daemon runs (ADR-023): hourly it pulls the signed trust bundle (policy refresh +
+cross-member revocation honoring), renews the leaf when due over mTLS, and stands the node
+down if it is revoked. No flag to discover; the loop is a no-op until the node joins a mesh:
 
 ```rust
 let koi = Builder::new()
     .data_dir("/var/lib/myapp/koi")
-    .certmesh(true)
-    .certmesh_background(true)   // hourly: pull trust bundle + renew-if-due over mTLS
+    .certmesh(true)              // self-management is ON by default once you are a member
     .build()?;
 ```
 
-**Or drive it yourself** — call `renew_self_if_due()` on your schedule (it reads the
-`member.json` the install wrote, rotates the key, and pulls a fresh leaf from the CA's mTLS
-`/renew`, verifying the pinned fingerprint):
+**Or drive it yourself** — opt out with `.certmesh_managed(false)`, then call
+`renew_self_if_due()` on your schedule (it reads the `member.json` the install wrote, rotates
+the key, and pulls a fresh leaf from the CA's mTLS `/renew`, verifying the pinned
+fingerprint); pull revocations over your own plane with `pull_trust_bundle()` or
+`apply_trust_bundle(&SignedBundle)`:
 
 ```rust
 match core.renew_self_if_due().await? {

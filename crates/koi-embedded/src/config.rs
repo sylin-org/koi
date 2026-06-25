@@ -28,10 +28,15 @@ pub struct KoiConfig {
     /// Translate runtime (container) lifecycle events into mDNS/DNS/health/proxy entries.
     /// Opt-in (default false): a leaf embedded host usually only wants the event stream.
     pub orchestrator_enabled: bool,
-    /// Run the certmesh role-driven background loop (trust-bundle pull — policy refresh +
-    /// revocation detection — plus cert renewal). Opt-in (default false): only a clustered
-    /// embedded CA host needs it.
-    pub certmesh_background_enabled: bool,
+    /// Whether Koi **self-manages** this node's certmesh membership (ADR-023): when the
+    /// node is a member, run the role-driven background loop — trust-bundle pull (policy
+    /// refresh + cross-member revocation honoring) plus cert renewal. **Default on**, and
+    /// a no-op until the node becomes a member (created a CA / joined), so self-management
+    /// is intrinsic to membership rather than a flag to discover. Set false
+    /// (`certmesh_managed(false)`) only to drive the lifecycle yourself over your own plane
+    /// — then call `pull_trust_bundle` / `apply_trust_bundle` / `renew_self_if_due` on your
+    /// own cadence.
+    pub certmesh_managed: bool,
     pub http_port: u16,
     pub dashboard_enabled: bool,
     pub api_docs_enabled: bool,
@@ -105,7 +110,7 @@ impl Default for KoiConfig {
             runtime_enabled: false,
             runtime_backend: RuntimeBackendKind::Auto,
             orchestrator_enabled: false,
-            certmesh_background_enabled: false,
+            certmesh_managed: true,
             http_port: 5641,
             dashboard_enabled: false,
             api_docs_enabled: false,

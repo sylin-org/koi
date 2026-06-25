@@ -108,12 +108,14 @@ pub fn spawn_certmesh_background_tasks(
     tasks: &mut Vec<JoinHandle<()>>,
 ) {
     // ── Member trust-bundle + renewal loop ──────────────────────────
-    // A joined member (a) pulls the CA's signed trust bundle to refresh its policy
-    // and pick up revocations (anti-rollback), then (b) renews its own cert before
-    // expiry by generating a fresh keypair + CSR and pulling a CA signature over
-    // mTLS (the key never leaves the member). (a)+(b) are no-ops on the CA /
-    // unconfigured nodes; (c) re-issues the CA's own self leaf when due (a no-op
-    // unless this node is the CA).
+    // A joined member (a) pulls the CA's signed trust bundle to refresh its policy and
+    // **apply the full cross-member revoked set** (anti-rollback), so its local
+    // `verify`/`open` rejects *other* revoked members and it stands itself down if it is
+    // revoked (ADR-023); then (b) renews its own cert before expiry by generating a fresh
+    // keypair + CSR and pulling a CA signature over mTLS (the key never leaves the member).
+    // (a)+(b) are no-ops on the CA / unconfigured nodes; (c) re-issues the CA's own self
+    // leaf when due (a no-op unless this node is the CA). The whole loop is a no-op until
+    // the node is a member — self-management is intrinsic to membership.
     let cm = Arc::clone(certmesh);
     let token = cancel.clone();
     tasks.push(tokio::spawn(async move {
@@ -135,11 +137,11 @@ pub fn spawn_certmesh_background_tasks(
     tracing::debug!("Certmesh background tasks spawned");
 }
 
-/// One renewal pass: refresh trust (policy + revocations), renew the local member leaf
-/// if due, and renew the CA self leaf if due. Each step is a no-op for the roles it
-/// does not apply to, and every failure is best-effort (logged, retried next cycle).
+/// One renewal pass: refresh trust (policy + cross-member revocations, ADR-023), renew the
+/// local member leaf if due, and renew the CA self leaf if due. Each step is a no-op for the
+/// roles it does not apply to, and every failure is best-effort (logged, retried next cycle).
 async fn run_renewal_pass(cm: &CertmeshCore) {
-    // (a) Refresh trust (policy + revocations) before renewing.
+    // (a) Refresh trust (policy + apply cross-member revocations) before renewing.
     match cm.pull_trust_bundle().await {
         Ok(koi_certmesh::BundleOutcome::Updated { seq, self_revoked }) => {
             if self_revoked {

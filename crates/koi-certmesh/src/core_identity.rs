@@ -66,6 +66,21 @@ impl CertmeshCore {
         node_has_identity(self.paths())
     }
 
+    /// Whether this node is an active member of a certificate mesh — it holds a
+    /// usable CA-anchored identity (it created a CA, or joined one). A **cheap**
+    /// filesystem check (no lock, no network): the same fact as
+    /// [`posture`](Self::posture)`.signed`, named for the membership question
+    /// consumers actually ask (ADR-023 §1).
+    ///
+    /// This is the supported predicate for a "membership = enforcement" consumer:
+    /// gate enforcement on `is_certmesh_member()` — be permissive when `false` (an
+    /// Open node), require authenticated envelopes when `true`. Koi keys its own
+    /// self-management (renewal, revocation honoring, self-stand-down) on the same
+    /// fact, so management is intrinsic to membership rather than a separate switch.
+    pub fn is_certmesh_member(&self) -> bool {
+        self.has_local_identity()
+    }
+
     /// Load this node's live identity from disk, or `None` if it has none.
     ///
     /// Read-only: loads the on-disk leaf (cert/key) for the local hostname plus
@@ -152,10 +167,59 @@ impl CertmeshCore {
         rand::rng().fill_bytes(&mut nonce);
         let ts = chrono::Utc::now().timestamp();
         let identity = self.local_identity().await;
-        let signer = identity
-            .as_ref()
-            .map(|id| (id.key_pem.as_str(), id.cert_pem.as_str()));
+        let signer = self.outbound_signer(&identity).await;
         envelope::build_envelope(signer, bytes, &nonce, ts)
+    }
+
+    /// The signing material for an outbound primitive, applying the ADR-023 §5
+    /// **self-gate**: returns the carried `(key_pem, cert_pem)` only when this node
+    /// holds a usable identity that has **not** been revoked. A self-revoked node
+    /// degrades to the Open/unsigned passthrough (a loud, one-time warning) so it can
+    /// no longer assert an authenticated identity — even to peers that have not yet
+    /// pulled the revocation. Bounded: it stops *claiming* an identity; it does not
+    /// delete the on-disk leaf or exit (the operator owns those).
+    async fn outbound_signer<'a>(
+        &self,
+        identity: &'a Option<Identity>,
+    ) -> Option<(&'a str, &'a str)> {
+        let id = identity.as_ref()?;
+        if self.is_self_revoked().await {
+            static REVOKED_WARNED: std::sync::Once = std::sync::Once::new();
+            REVOKED_WARNED.call_once(|| {
+                tracing::warn!(
+                    "this node is REVOKED in the mesh — signing as an unsigned passthrough; \
+                     it can no longer assert an authenticated identity (re-enroll to recover)"
+                );
+            });
+            return None;
+        }
+        Some((id.key_pem.as_str(), id.cert_pem.as_str()))
+    }
+
+    /// Whether this node's own identity has been revoked mesh-wide — **hostname-keyed**
+    /// and authoritative (independent of leaf-fingerprint tracking across renewals).
+    ///
+    /// A member reads the flag persisted from the last accepted trust bundle
+    /// (`member.json`); a CA node reads its own roster. A self-revoked node stops
+    /// asserting an authenticated identity in [`sign`](Self::sign)/[`seal`](Self::seal)
+    /// (ADR-023 §5) and [`diagnose`](Self::diagnose) flags it RED. Exposed so a consumer
+    /// can surface "you have been removed from the mesh — rejoin" without re-deriving it.
+    pub async fn is_self_revoked(&self) -> bool {
+        // Member node: the bundle-derived flag (hostname-keyed by the CA).
+        if let Some(ms) = member::load(&self.paths().member_state_path()) {
+            if ms.self_revoked {
+                return true;
+            }
+        }
+        // CA node (or a self-enrolled host that keeps a roster): authoritative for its
+        // own hostname.
+        if let Some(hostname) = Self::local_hostname() {
+            let roster = self.state.roster.lock().await;
+            if roster.is_revoked(&hostname) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Verify an [`Envelope`](koi_common::envelope::Envelope) → an
@@ -196,9 +260,7 @@ impl CertmeshCore {
         rand::rng().fill_bytes(&mut nonce);
         let ts = chrono::Utc::now().timestamp();
         let identity = self.local_identity().await;
-        let signer = identity
-            .as_ref()
-            .map(|id| (id.key_pem.as_str(), id.cert_pem.as_str()));
+        let signer = self.outbound_signer(&identity).await;
         sealed::seal_passthrough(signer, bytes, &nonce, ts)
     }
 
@@ -232,19 +294,9 @@ impl CertmeshCore {
         let (integrity_ok, self_revoked) = match &identity {
             Some(id) => {
                 let integrity = diagnosis::leaf_chains_to_ca(&id.cert_pem, &id.ca_cert_pem);
-                // Is this node's own leaf in the (best-effort) revoked set?
-                let self_fp = pem::parse(&id.cert_pem)
-                    .ok()
-                    .map(|p| koi_crypto::pinning::fingerprint_sha256(p.contents()));
-                let revoked = self.revoked_fingerprints().await;
-                let self_revoked = self_fp
-                    .as_ref()
-                    .map(|fp| {
-                        revoked
-                            .iter()
-                            .any(|r| koi_crypto::pinning::fingerprints_match(r, fp))
-                    })
-                    .unwrap_or(false);
+                // Has this node's own identity been revoked mesh-wide? Hostname-keyed,
+                // the same authoritative signal the outbound self-gate uses.
+                let self_revoked = self.is_self_revoked().await;
                 (Some(integrity), self_revoked)
             }
             None => (None, false),
@@ -265,17 +317,35 @@ impl CertmeshCore {
         std::fs::read_to_string(self.paths().ca_cert_path()).ok()
     }
 
-    /// Best-effort revoked-leaf fingerprints from the local roster. A CA node holds
-    /// the full roster; a pure member's roster is empty, so revocation there is
-    /// eventual-consistent — the CA chain remains the hard gate (ADR-020 §3).
-    async fn revoked_fingerprints(&self) -> Vec<String> {
-        let roster = self.state.roster.lock().await;
-        roster
-            .members
-            .iter()
-            .filter(|m| m.status == roster::MemberStatus::Revoked)
-            .map(|m| m.cert_fingerprint.clone())
-            .collect()
+    /// Best-effort revoked-leaf fingerprints honored by `verify`/`open` — the union of
+    /// (a) the local roster's revoked members (a CA node holds the authoritative set)
+    /// and (b) the cross-member set a pure member learned from the last accepted trust
+    /// bundle (ADR-023 §3). The CA chain remains the hard gate; revocation is
+    /// eventual-consistent, bounded by the member's pull cadence.
+    ///
+    /// `pub(crate)` so tests can assert the applied set; not a public API (a consumer
+    /// reads membership via [`is_certmesh_member`](Self::is_certmesh_member) and its
+    /// own revocation via [`is_self_revoked`](Self::is_self_revoked)).
+    pub(crate) async fn revoked_fingerprints(&self) -> Vec<String> {
+        // (a) CA-node path: the roster holds the authoritative revoked members. The
+        // guard drops at the end of this block — never held across the file read below.
+        let mut set: Vec<String> = {
+            let roster = self.state.roster.lock().await;
+            roster
+                .members
+                .iter()
+                .filter(|m| m.status == roster::MemberStatus::Revoked)
+                .map(|m| m.cert_fingerprint.clone())
+                .collect()
+        };
+        // (b) Member-node path: the cross-member revoked set from the last accepted
+        // trust bundle (a pure member keeps no roster). A cheap local file read.
+        if let Some(ms) = member::load(&self.paths().member_state_path()) {
+            set.extend(ms.revoked_fingerprints);
+        }
+        set.sort();
+        set.dedup();
+        set
     }
 
     /// Gate `router`'s routes by authentication (ADR-020 §6 `require_auth`).

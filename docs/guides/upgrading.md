@@ -178,6 +178,33 @@ disk, on the CLI, at the network edge, or in the JSON / Rust API changes.
 
 ---
 
+## The unreleased upgrade (membership-intrinsic trust, ADR-023)
+
+**One breaking change, and it is Rust-embedders-only.** Nothing on disk, on the CLI, at the
+network edge, or in the JSON wire shapes changes incompatibly — `member.json` gains two
+optional fields that default cleanly on old files. The daemon is unchanged. The certmesh CA
+and roster need no migration.
+
+Review this only if you **embed Koi** via `koi-embedded`:
+
+- **`Builder::certmesh_background(true)` (opt-in) → `Builder::certmesh_managed(bool)`
+  (opt-out, default on).** Embedded certmesh is now **self-managed by default** once the node
+  is a member — it pulls the signed trust bundle (policy refresh + cross-member revocation
+  honoring), renews its leaf, and stands itself down if revoked, the same loop the daemon runs.
+  The loop is a no-op until the node joins a mesh.
+  - **If you called `.certmesh_background(true)`:** it no longer exists — delete the call (you
+    already get the loop) or replace it with `.certmesh_managed(true)` (the default).
+  - **If you drive renewal/revocation yourself over your own plane** (and never opened Koi's
+    CA HTTP/mTLS ports to every member): add **`.certmesh_managed(false)`** to keep driving —
+    otherwise Koi's role loop now runs and will try to reach the CA. Then pull trust yourself
+    with `pull_trust_bundle()` or, carrying the bundle over your own transport,
+    `apply_trust_bundle(&SignedBundle)` (Koi still verifies pin + signature + anti-rollback).
+- **Membership now propagates revocation.** If you relied on the old (broken) behavior where a
+  revoked member's envelopes kept verifying on other members, they no longer do — a member
+  honors the CA's full revoked set. This is the fix, not a regression.
+
+---
+
 ## The 0.8.0 upgrade
 
 **0.8.0 is a drop-in — no breaking changes.** Nothing on disk, on the CLI, at the network

@@ -33,6 +33,8 @@ fn posture_member_state(hostname: &str) -> crate::member::MemberState {
         sans: vec![hostname.to_string()],
         policy: crate::roster::CertPolicy::default(),
         last_bundle_seq: 0,
+        revoked_fingerprints: Vec::new(),
+        self_revoked: false,
         reload_hook: None,
     }
 }
@@ -531,6 +533,8 @@ async fn trust_bundle_pull_round_trip() {
             sans: vec!["bundle-host".to_string()],
             policy: crate::roster::CertPolicy::default(),
             last_bundle_seq: 0,
+            revoked_fingerprints: Vec::new(),
+            self_revoked: false,
             reload_hook: None,
         },
     )
@@ -571,6 +575,110 @@ async fn trust_bundle_pull_round_trip() {
         }
         other => panic!("expected Updated(self_revoked), got {other:?}"),
     }
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(base.join("ca"));
+    let _ = std::fs::remove_dir_all(base.join("member"));
+}
+
+/// ADR-023 §3: a member applies the bundle's **cross-member** revoked set, so its local
+/// `verify`/`open` reject *other* revoked members — not just itself. The previous behavior
+/// read the bundle's revoked set only to compute self-revocation and discarded the rest.
+#[tokio::test]
+async fn trust_bundle_applies_cross_member_revocation() {
+    let base = koi_common::test::ensure_data_dir("koi-certmesh-xrevoke").join("xrevoke");
+    let ca_paths = CertmeshPaths::with_data_dir(base.join("ca"));
+    let member_paths = CertmeshPaths::with_data_dir(base.join("member"));
+    let _ = std::fs::remove_dir_all(ca_paths.data_dir());
+    let _ = std::fs::remove_dir_all(member_paths.data_dir());
+
+    // CA with two enrolled hosts: the member M, and a peer P that will be revoked.
+    let (ca_state, _m) = ca::create_ca("xrev", &[6u8; 32], &ca_paths).unwrap();
+    let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+    let auth = koi_crypto::auth::AuthState::Totp(koi_crypto::totp::generate_secret());
+    let ca_core = CertmeshCore::new_with_paths(ca_state, roster, Some(auth), ca_paths.clone());
+    for host in ["m-host", "p-host"] {
+        let (_k, csr) = csr::generate_keypair_and_csr(host, &[host.to_string()]).unwrap();
+        let invite = ca_core.mint_invite(host, 60).await.unwrap().token;
+        ca_core
+            .enroll(&protocol::JoinRequest {
+                hostname: host.to_string(),
+                auth: None,
+                invite_token: Some(invite),
+                csr: Some(csr),
+                sans: vec![host.to_string()],
+            })
+            .await
+            .unwrap();
+    }
+    let pin = ca::ca_fingerprint_from_disk(&ca_paths).unwrap();
+
+    // Revoke the PEER (not the member).
+    ca_core
+        .revoke_member("p-host", Some("op".into()), Some("compromised".into()))
+        .await
+        .unwrap();
+    // The peer's fingerprint as the CA holds it (what the bundle will carry).
+    let p_fp = ca_core
+        .certmesh_status()
+        .await
+        .members
+        .iter()
+        .find(|m| m.hostname == "p-host")
+        .expect("peer in roster")
+        .cert_fingerprint
+        .clone();
+    assert!(!p_fp.is_empty(), "peer has a recorded fingerprint");
+
+    // Serve the certmesh routes (incl. GET /trust-bundle) over plain HTTP.
+    let app = Router::new().nest("/v1/certmesh", crate::http::routes(ca_core.state.clone()));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    // Arm the member with a pin + fresh anti-rollback floor.
+    member::save(
+        &member_paths.member_state_path(),
+        &member::MemberState {
+            hostname: "m-host".to_string(),
+            ca_host: "127.0.0.1".to_string(),
+            ca_mtls_port: 5642,
+            ca_http_port: port,
+            ca_fingerprint: pin.clone(),
+            sans: vec!["m-host".to_string()],
+            policy: crate::roster::CertPolicy::default(),
+            last_bundle_seq: 0,
+            revoked_fingerprints: Vec::new(),
+            self_revoked: false,
+            reload_hook: None,
+        },
+    )
+    .unwrap();
+    let member_core = CertmeshCore::uninitialized_with_paths(member_paths.clone());
+
+    // Pull → M is NOT self-revoked, but it applies the peer's revocation.
+    match member_core.pull_trust_bundle().await.expect("pull ok") {
+        BundleOutcome::Updated { self_revoked, .. } => {
+            assert!(!self_revoked, "the member itself is not revoked")
+        }
+        other => panic!("expected Updated, got {other:?}"),
+    }
+
+    // The cross-member revoked fingerprint is persisted in member.json...
+    let stored = member::load(&member_paths.member_state_path()).unwrap();
+    assert!(
+        stored.revoked_fingerprints.contains(&p_fp),
+        "member persisted the peer's revoked fingerprint"
+    );
+    // ...and surfaces through revoked_fingerprints() — the exact slice verify()/open()
+    // consume — so the member now rejects the peer's envelopes despite keeping no roster.
+    let honored = member_core.revoked_fingerprints().await;
+    assert!(
+        honored.contains(&p_fp),
+        "verify()/open() now honor the peer's revocation on a pure member"
+    );
 
     server.abort();
     let _ = std::fs::remove_dir_all(base.join("ca"));

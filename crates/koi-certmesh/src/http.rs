@@ -1247,6 +1247,8 @@ mod tests {
             sans: vec![],
             policy: crate::roster::CertPolicy::default(),
             last_bundle_seq: 0,
+            revoked_fingerprints: Vec::new(),
+            self_revoked: false,
             reload_hook: None,
         };
         crate::member::save(&paths.member_state_path(), &ms).unwrap();

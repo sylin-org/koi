@@ -98,7 +98,9 @@ pub struct CoreSpec {
     /// embedded: opt-in via the `orchestrator` builder flag).
     pub spawn_orchestrator: bool,
     /// Spawn the certmesh role-driven background loop when certmesh is present (daemon:
-    /// always; embedded: opt-in via the `certmesh_background` builder flag).
+    /// always; embedded: on by default via the `certmesh_managed` builder flag, ADR-023).
+    /// The loop is a no-op until the node is a member, so self-management is intrinsic to
+    /// membership; a self-driving embedded consumer opts out with `certmesh_managed(false)`.
     pub spawn_certmesh_loops: bool,
     /// Fail-fast contract: when `true` (koi-embedded, a library), the first core that fails to
     /// initialize or auto-start aborts `build_cores` with [`BuildCoresError`]. When `false`

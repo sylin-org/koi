@@ -48,6 +48,7 @@ use koi_crypto::totp::RateLimiter;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use zeroize::Zeroizing;
 
+pub use bundle::SignedBundle;
 pub use client::PeerClient;
 pub use csr::sign_csr;
 pub use error::CertmeshError;

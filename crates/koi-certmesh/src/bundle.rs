@@ -153,6 +153,34 @@ impl TrustBundle {
                 .iter()
                 .any(|m| m.hostname == hostname && m.status == "revoked")
     }
+
+    /// Every revoked leaf **fingerprint** carried by this bundle — the union of the
+    /// explicit `revoked` list and any member projected with `status == "revoked"`,
+    /// deduplicated and sorted (deterministic).
+    ///
+    /// Both projections are unioned because `BundleRevoked.cert_fingerprint` is
+    /// `#[serde(default)]` ("if known") and may be empty, while the `members[]`
+    /// projection always carries the fingerprint — so relying on `revoked` alone
+    /// could silently miss a revoked leaf. The result is what a member applies into
+    /// its local revoked set so `verify`/`open` reject *other* revoked members
+    /// (ADR-023 §3), keyed on fingerprint as `verify_envelope` matches.
+    pub fn revoked_fingerprints(&self) -> Vec<String> {
+        let mut set: Vec<String> = self
+            .revoked
+            .iter()
+            .map(|r| r.cert_fingerprint.clone())
+            .chain(
+                self.members
+                    .iter()
+                    .filter(|m| m.status == "revoked")
+                    .map(|m| m.cert_fingerprint.clone()),
+            )
+            .filter(|fp| !fp.is_empty())
+            .collect();
+        set.sort();
+        set.dedup();
+        set
+    }
 }
 
 /// Build and sign a bundle from the roster with the CA key.
@@ -379,5 +407,34 @@ mod tests {
         assert!(signed.bundle.is_revoked("web-01"));
         assert_eq!(signed.bundle.revoked.len(), 1);
         assert_eq!(signed.bundle.revoked[0].cert_fingerprint, "fp-web-01");
+    }
+
+    #[test]
+    fn revoked_fingerprints_unions_both_projections_dedup_sorted() {
+        let ca = test_ca();
+        let mut roster = roster_with_member("web-01", "fp-web-01");
+        roster
+            .members
+            .push(roster_with_member("web-02", "fp-web-02").members.remove(0));
+        roster
+            .revoke_member("web-02", Some("op".into()), Some("x".into()))
+            .unwrap();
+        let signed = sign(&roster, &ca, "t".to_string()).unwrap();
+
+        // Only the revoked member's fingerprint, exactly once, sorted.
+        assert_eq!(
+            signed.bundle.revoked_fingerprints(),
+            vec!["fp-web-02".to_string()]
+        );
+
+        // An empty `BundleRevoked.cert_fingerprint` must not leak an empty string;
+        // the members[] projection remains the reliable source.
+        let mut hollow = signed.bundle.clone();
+        hollow.revoked[0].cert_fingerprint = String::new();
+        assert_eq!(
+            hollow.revoked_fingerprints(),
+            vec!["fp-web-02".to_string()],
+            "members[] projection backstops an empty revoked[].cert_fingerprint"
+        );
     }
 }

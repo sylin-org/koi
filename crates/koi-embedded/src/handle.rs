@@ -192,9 +192,9 @@ impl KoiHandle {
     ///
     /// The consumer never branches on posture and never wires identity, discovery,
     /// and serving separately. Returns the serve supervisor's [`JoinHandle`].
-    /// Certificate *renewal* is handled by the certmesh background loops — enable
-    /// them with `Builder::certmesh_background(true)` on a long-running host.
-    /// Embedded only.
+    /// Certificate *renewal* is handled by Koi's certmesh self-management, which is on
+    /// by default once this node is a member (ADR-023); a self-driver disables it with
+    /// `Builder::certmesh_managed(false)`. Embedded only.
     pub async fn participate(
         &self,
         router: axum::Router,

@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+**Delightful trust: membership-intrinsic self-management (ADR-023).** Untrust is now
+effective fleet-wide as a property of *being a member*, not a flag you discover. Revoking a
+member used to take effect only on the CA — every other member kept trusting the revoked
+node's signed envelopes. Now a member applies the CA-signed trust bundle's **full
+cross-member revoked set**, a revoked node **stands itself down**, and embedded
+self-management is **on by default**. Fire it up, join once, done — the window
+(`trust diagnose` / logs / dashboard) is there if you ever want to look.
+
+### Fixed
+- **A member now honors cross-member revocations.** `pull_trust_bundle` applied the signed
+  bundle's revoked set only to detect *its own* revocation and discarded the rest, so a pure
+  member's `verify`/`open` never rejected *other* revoked members (their leaves still chained
+  to the CA). The bundle's full revoked set (both the `revoked[]` list and any member with
+  `status == "revoked"`) is now applied into a persisted member-side store that `verify`/`open`
+  honor — full-replace (so an un-revocation also clears), guarded by the existing monotonic
+  `seq` anti-rollback floor. The role-loop doc comment that *claimed* this already happened is
+  now true.
+
+### Added
+- **`CertmeshCore::is_certmesh_member()`** — a cheap (no-lock, no-network) public predicate for
+  "is this node an active mesh member?", the supported gate for a *membership = enforcement*
+  consumer and the same fact Koi keys its own self-management on.
+- **`CertmeshCore::is_self_revoked()`** — whether this node's own identity was revoked mesh-wide
+  (hostname-keyed, authoritative), for surfacing "you were removed — rejoin".
+- **`CertmeshCore::apply_trust_bundle(&SignedBundle)`** — verify (pin + ES256 + anti-rollback)
+  and apply a trust bundle obtained over *your own* transport, so a self-driving consumer needs
+  no reachability to the CA's HTTP port and Koi still owns verification. `SignedBundle` is now
+  re-exported from the crate root.
+- **Outbound self-gate:** once a node observes its own revocation, `sign()`/`seal()` stop
+  minting authenticated envelopes (degrade to the Open/unsigned passthrough, loud one-time
+  warning) — so it can no longer assert an authenticated identity even to peers that have not
+  yet pulled the revocation. Bounded: it does not delete the on-disk leaf or exit.
+
+### Changed (breaking — embedded only)
+- **`Builder::certmesh_background(bool)` (opt-in, default off) → `Builder::certmesh_managed(bool)`
+  (opt-out, default on).** An embedded member is self-managed by default (the daemon already
+  was). **If you embed Koi and drive renewal yourself**, add `.certmesh_managed(false)` to keep
+  driving — otherwise Koi's role loop runs (pulling the bundle from, and renewing against, the
+  CA's ports). The loop is a no-op until the node is a member. See
+  [upgrading](docs/guides/upgrading.md).
+
 ## [0.9.0] - 2026-06-24
 
 **Release tooling.** Cutting a release is now two commands instead of a manual, many-file

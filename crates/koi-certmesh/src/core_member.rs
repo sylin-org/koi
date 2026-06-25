@@ -206,6 +206,8 @@ impl CertmeshCore {
                 sans: sans.to_vec(),
                 policy: policy.unwrap_or_default(),
                 last_bundle_seq: 0,
+                revoked_fingerprints: Vec::new(),
+                self_revoked: false,
                 reload_hook: None,
             };
             if let Err(e) = member::save(&self.state.paths.member_state_path(), &state) {
