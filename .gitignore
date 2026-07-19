@@ -6,6 +6,10 @@
 # Binaries staged into the container build context by the release workflow
 /docker/release/koi-*
 
+# Generated from the exact native artifacts immediately before npm pack/publish
+/packages/npm/release-manifest.json
+/packages/npm/*.tgz
+
 # Cargo lock is committed for binaries
 # Cargo.lock
 

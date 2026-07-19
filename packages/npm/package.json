@@ -1,0 +1,40 @@
+{
+  "name": "@sylin/koi",
+  "version": "0.9.0",
+  "description": "Install Koi's native local-connectivity binary: find, trust, and connect",
+  "type": "module",
+  "bin": {
+    "koi": "bin/koi.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md",
+    "release-manifest.json"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "prepack": "node scripts/verify-package.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sylin-org/koi.git",
+    "directory": "packages/npm"
+  },
+  "homepage": "https://sylin.org/koi",
+  "bugs": "https://github.com/sylin-org/koi/issues",
+  "license": "MIT OR Apache-2.0",
+  "keywords": [
+    "koi",
+    "mdns",
+    "local-network",
+    "service-discovery",
+    "certificate"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

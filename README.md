@@ -260,8 +260,16 @@ docker run -d --name koi -p 5641:5641 ghcr.io/sylin-org/koi:latest   # daemon
 [GitHub Releases](https://github.com/sylin-org/koi/releases), extract, put `koi`
 (or `koi.exe`) on your `PATH`.
 
-**crates.io**: `cargo install koi-net` (the package is named `koi-net` — see
-[Name](#name) below — and installs a `koi` binary).
+**crates.io**: `cargo install koi-net` remains the source-build escape hatch (the
+package is named `koi-net` — see [Name](#name) below — and installs a `koi`
+binary). It needs a Rust toolchain; the recommended installer above does not.
+
+Koi's next release also carries an artifact manifest and `cargo-binstall`
+metadata, so Rust users can install the official prebuilt archive without compiling.
+The dependency-free `npx @sylin/koi` bootstrap is implemented and release-tested but
+is not advertised as available until the npm scope and trusted publisher are activated.
+See [ADR-025](docs/adr/025-release-channels-and-bootstrap-contract.md) for the
+artifact-first channel contract and its deliberately honest rollout states.
 
 **Build from source** — requires [Rust](https://rustup.rs/) 1.92 or later:
 
@@ -331,6 +339,7 @@ for the copy-paste client config.
 [Envelope encryption](docs/reference/envelope-encryption.md)
 
 **Decisions & direction:** [Find, Trust, Connect](docs/adr/024-public-identity-find-trust-connect.md) ·
+[Release channels](docs/adr/025-release-channels-and-bootstrap-contract.md) ·
 [All ADRs](docs/adr/) ·
 [Assessment & roadmap](docs/assessment/README.md)
 

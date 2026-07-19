@@ -1,7 +1,7 @@
 # Koi Epic to v1 — canonical continuation ledger
 
-**Status:** active — V1-00 and V1-01 complete; V1-02 in progress; V1-07 public-identity slice complete
-**Last updated:** 2026-07-19 13:03 EDT
+**Status:** active — V1-00 and V1-01 complete; V1-02 in progress; V1-07 identity and publication-foundation slices complete
+**Last updated:** 2026-07-19 13:45 EDT
 **Resume phrase:** `continue the epic to v1`
 
 This is the repository's canonical handoff and progress ledger for the v1 epic. The plan is a
@@ -28,6 +28,10 @@ evidence rather than a one-off demo.
 - The user ratified **"Let everything local find, trust, and talk"** as Koi's banner and
   authorized a full public-documentation realignment around **Find. Trust. Connect.** on
   2026-07-19. ADR-024 is the canonical product-identity decision.
+- The user approved an artifact-first release-channel implementation on 2026-07-19.
+  ADR-025 is the canonical distribution decision. Preparation and tests are authorized;
+  first npm publication, registry/repository creation, package-visibility changes, and
+  external WinGet/Homebrew submissions remain separate external actions.
 - The user explicitly expects the plan to be naive in places and wants it adjusted as evidence
   accumulates. Do not preserve a bad plan for consistency; preserve the decision trail.
 - The privileged lane is approved in principle: it may temporarily modify the Windows
@@ -56,6 +60,17 @@ evidence rather than a one-off demo.
   ADR-016 remains the technical strategy and maturity-ordering source, with its public positioning
   explicitly refined by ADR-024. Historical ADRs, changelog/assessment artifacts, and the
   user-owned `docs/animations/` tree were deliberately preserved.
+- ADR-025 defines one native build and one deterministic release manifest as the publication
+  chokepoint. The release workflow now validates all six archives and checksum sidecars, attests
+  and publishes the manifest, and exercises the dependency-free npm bootstrap during dry runs.
+  `cargo-binstall` metadata consumes only official Koi archives with unofficial-binary and compile
+  fallbacks disabled. `@sylin/koi` is implemented as a version-pinned installer dispatcher, never
+  a cache-hosted runtime; npm publication is inert until trusted publishing and the explicit
+  `NPM_PUBLISH_ENABLED` repository variable are configured. Release prep now stages only known
+  release files, and tagging defaults to the exact remote `main` tip. Validation is green:
+  manifest/bootstrap tests (7/7), zero-dependency npm audit and real-v0.9.0 pack smoke, actual
+  six-archive manifest generation, Cargo package/metadata validation, POSIX and Windows PowerShell
+  parsing, actionlint, formatting, and the complete locked workspace test/doc-test suite.
 - The existing whole-story design, ADR-018 tiers, surface ledger, QA workflow, physical-host
   runbook, deployment script, Linux↔Linux hardware harness, Windows↔Linux-container harness,
   certmesh/trust implementation, and external `os-truststore` behavior were inspected.
@@ -225,7 +240,7 @@ evidence rather than a one-off demo.
 | V1-04 | Real whole-story capability surface | planned | Acts 0–11 pass on hardware: mDNS, DNS, runtime/orchestrator, health, proxy data plane/reload, UDP, ACME, status, dashboard, OpenAPI, Prometheus, MCP, IPC, service lifecycle and reverse cleanup |
 | V1-05 | Resilience, reconnect, fault and soak lanes | planned | Startup reconciliation, Docker event reconnect, daemon/service restart, capability loss/recovery and bounded long-run stability produce repeatable reports without leaked state |
 | V1-06 | Automation, evidence ledger and v1 release gate | planned | Smoke/certmesh/full/soak profiles documented; scheduled hardware execution reliable; three consecutive full green runs; release evidence and `SURFACES.md` updated honestly |
-| V1-07 | Adoption/public-surface polish backed by proved behavior | **in progress — public identity complete 2026-07-19** | ADR-024 canonizes “Let everything local find, trust, and talk” plus Find/Trust/Connect; current public orientation, container story and package copy aligned; evidence-gated compatibility claims, golden demo and publication remain |
+| V1-07 | Adoption/public-surface polish backed by proved behavior | **in progress — identity + publication foundation complete 2026-07-19** | ADR-024 canonizes “Let everything local find, trust, and talk” plus Find/Trust/Connect; ADR-025 establishes one attested artifact contract, no-build cargo-binstall metadata, tested npx bootstrap, gated OIDC publication, and safer release operation; registry activation, native-manager channels, evidence-gated compatibility claims and golden demo remain |
 
 ## Certmesh/native-trust acceptance matrix
 
@@ -288,6 +303,8 @@ releases; soak is scheduled or explicitly invoked.
   existing reusable scenario behavior and assertions.
 - `crates/koi-certmesh/src/core_lifecycle.rs`, `core_member.rs`, `diagnosis.rs`: best-effort trust installation and diagnostic semantics the hardware lane must prove.
 - `crates/koi/src/commands/trust.rs`: explicit root install/list/remove/export; source PEM must survive through removal.
+- `.github/workflows/release.yml`, `scripts/release-manifest.mjs`, `packages/npm/`,
+  `crates/koi/Cargo.toml`: artifact-first publication contract and thin channel consumers.
 - Proposed `tools/koi-lab/` and `tests/lab/`: controller, inventory, node drivers, scenarios, fixtures and reports. Confirm placement during exploration before creating them.
 - Sibling `F:\Files\repo\github\sylin-org\os-tools\crates\os-truststore`: native trust-store implementation and lower-tier tests; do not duplicate it inside Koi.
 
@@ -323,8 +340,9 @@ releases; soak is scheduled or explicitly invoked.
 - **Now:** finish full workspace validation, generalize the proven trust transaction for role
   rotation, and implement the elevation-refusing Windows boundary without mutating its store.
 - **Later in epic:** complete V1-02, then V1-03 through V1-06 in evidence-driven order.
-- **Deferred:** remaining V1-07 evidence-backed adoption/golden-demo work, package/channel work,
-  and any external publication.
+- **Deferred:** remaining V1-07 evidence-backed adoption/golden-demo work; first npm publication
+  and trusted-publisher activation; GHCR public-visibility verification/fix; WinGet/Homebrew
+  channel creation; and any other external publication.
 - **Related readiness debt:** runtime list/watch reliability, off-loopback management transport,
   embedded data-root isolation, partner label semantics, ACME/Prometheus/Tailscale contract proof,
   and claim/documentation drift remain relevant to the v1 full-surface gate.

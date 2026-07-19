@@ -1,26 +1,28 @@
 <#
 .SYNOPSIS
-  Bump the Koi workspace version everywhere, then commit + push, in one shot.
+  Bump the Koi release version everywhere, then commit + push, in one shot.
 
 .DESCRIPTION
   The mechanical half of a release version bump:
     - Cargo: the `[workspace.package] version` and every `=X` inter-crate pin
     - Cargo.lock: refreshed to the new member versions (external deps held)
+    - npm bootstrap: package.json and package-lock.json
     - CHANGELOG: stamps `## [Unreleased]` -> `## [<version>] - <date>`
     - Docs: the current-version strings in the SHIPPED docs only —
       capability-card `koi_version:` frontmatter, the install / `gh attestation`
       examples, the `koi-embedded = "X.Y"` dependency recipes, the `koi status`
       sample, the http-api `version` field, and the CLI `KOI_VERSION` example.
 
-  It then **commits ALL working-tree changes** as `chore(release): prep <version>`
-  (the commit body is pulled from the CHANGELOG section) and **pushes**.
+  It then commits only the release-owned files as `chore(release): prep <version>`
+  (the commit body is pulled from the CHANGELOG section) and pushes. Unrelated
+  working-tree changes remain untouched and unstaged.
 
   It deliberately does NOT touch historical version references (past CHANGELOG
   entries, past `upgrading.md` sections, ADRs, `SURFACES.md` shipped-markers,
   docs/assessment, docs/prompts) — only the curated current-version surfaces.
 
-  Per-release PROSE is yours to write, and because the commit sweeps the whole tree
-  you should write it BEFORE running so it lands in the release commit: the CHANGELOG
+  Per-release PROSE is yours to write. Write it BEFORE running so the curated release
+  files land in the release commit: the CHANGELOG
   `[Unreleased]` entry body, a `The <version> upgrade` section in
   docs/guides/upgrading.md, and the README "latest release" blurb. Use -NoCommit to
   do the mechanical bump only and review first.
@@ -76,12 +78,14 @@ $NewMinor = ($NewVersion -split '\.')[0, 1] -join '.'
 Write-Host ">> bump $Old -> $NewVersion  (dependency recipes -> $NewMinor)" -ForegroundColor Cyan
 
 $script:total = 0
+$script:touched = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 function Swap($path, $from, $to) {
     if (-not (Test-Path $path)) { Write-Warning "missing: $path"; return }
     $c = Get-Content -Raw $path
     if (-not $c.Contains($from)) { return }
     $cnt = ([regex]::Matches($c, [regex]::Escape($from))).Count
     [System.IO.File]::WriteAllText((Convert-Path $path), $c.Replace($from, $to))
+    [void]$script:touched.Add($path)
     Write-Host ("   {0,-42} {1}x  {2} -> {3}" -f $path, $cnt, $from, $to)
     $script:total += $cnt
 }
@@ -91,6 +95,7 @@ function SwapRegex($path, $pattern, $replacement) {
     $cnt = ([regex]::Matches($c, $pattern)).Count
     if ($cnt -eq 0) { return }
     [System.IO.File]::WriteAllText((Convert-Path $path), [regex]::Replace($c, $pattern, $replacement))
+    [void]$script:touched.Add($path)
     Write-Host ("   {0,-42} {1}x  /{2}/ -> {3}" -f $path, $cnt, $pattern, $replacement)
     $script:total += $cnt
 }
@@ -98,6 +103,10 @@ function SwapRegex($path, $pattern, $replacement) {
 # 1) Cargo.toml: workspace version + the inter-crate `=X` pins.
 Swap 'Cargo.toml' "version = `"$Old`"" "version = `"$NewVersion`""
 Swap 'Cargo.toml' "version = `"=$Old`"" "version = `"=$NewVersion`""
+
+# The npm package is a version-locked bootstrap for the same native release.
+Swap 'packages/npm/package.json' "`"version`": `"$Old`"" "`"version`": `"$NewVersion`""
+Swap 'packages/npm/package-lock.json' "`"version`": `"$Old`"" "`"version`": `"$NewVersion`""
 
 # 2) CHANGELOG: stamp the Unreleased section (author the body first).
 if ((Get-Content -Raw 'CHANGELOG.md') -match '(?m)^##\s*\[Unreleased\]') {
@@ -134,6 +143,7 @@ if (-not $SkipLock) {
     Write-Host ">> cargo update --workspace (refresh Cargo.lock)" -ForegroundColor Cyan
     & cargo update --workspace
     if ($LASTEXITCODE -ne 0) { throw "cargo update --workspace failed ($LASTEXITCODE)" }
+    [void]$script:touched.Add('Cargo.lock')
 }
 
 Write-Host ""
@@ -145,9 +155,13 @@ if ($NoCommit) {
     return
 }
 
-# 7) Commit ALL working-tree changes (the bump + whatever release prose you wrote first)
-#    and push. The commit body is the CHANGELOG section's lead paragraph.
-if (-not (& git status --porcelain)) { Write-Host ">> nothing to commit (tree clean)."; return }
+# 7) Commit only release-owned files (the mechanical bump + curated prose) and push.
+#    Never sweep unrelated work into a release with `git add -A`.
+foreach ($releaseProse in @('CHANGELOG.md', 'README.md', 'docs/guides/upgrading.md')) {
+    if (Test-Path $releaseProse) { [void]$script:touched.Add($releaseProse) }
+}
+$releaseFiles = @($script:touched | Sort-Object)
+if ($releaseFiles.Count -eq 0) { Write-Host ">> nothing to commit."; return }
 
 $summary = "See CHANGELOG.md [$NewVersion]."
 $sec = [regex]::Match((Get-Content -Raw 'CHANGELOG.md'),
@@ -157,11 +171,20 @@ if ($sec.Success) {
     if ($lead) { $summary = "$lead`n`nSee CHANGELOG.md [$NewVersion]." }
 }
 
-Write-Host ">> committing all changes  (chore(release): prep $NewVersion)" -ForegroundColor Cyan
-& git add -A
+Write-Host ">> staging release-owned files  (chore(release): prep $NewVersion)" -ForegroundColor Cyan
+& git add -- @releaseFiles
+if ($LASTEXITCODE -ne 0) { throw "git add failed ($LASTEXITCODE)" }
+& git diff --cached --quiet
+if ($LASTEXITCODE -eq 0) { Write-Host ">> nothing to commit."; return }
 & git status --short
 & git commit -q -m "chore(release): prep $NewVersion" -m $summary
 if ($LASTEXITCODE -ne 0) { throw "git commit failed ($LASTEXITCODE)" }
+
+$remaining = @(& git status --porcelain)
+if ($remaining.Count -gt 0) {
+    Write-Host ">> unrelated changes remain untouched:" -ForegroundColor Yellow
+    $remaining | ForEach-Object { Write-Host "   $_" }
+}
 
 if ($NoPush) {
     Write-Host ">> committed; NOT pushed (-NoPush). Push with: git push" -ForegroundColor Yellow

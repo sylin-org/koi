@@ -48,6 +48,21 @@ an OS service. The service case is the common one.
 
 ### If Koi is installed as a service
 
+First refresh the native binary using the same channel that installed it. The direct
+installer is idempotent and accepts `KOI_VERSION` when you need an exact release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
+```
+
+Once their prepared registry channels are publicly activated, `cargo binstall
+koi-net` and `npx @sylin/koi` perform the same stable native-binary refresh. Until
+then, use the direct installer or a verified archive from GitHub Releases.
+
 `koi install` is the upgrade command. Running it again against a newer binary **stops
 the existing service, swaps in the new binary, rewrites the service definition, and
 restarts** — on every platform. You don't have to do the stop/swap/start dance by hand;

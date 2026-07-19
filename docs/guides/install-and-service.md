@@ -22,6 +22,20 @@ irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
 
 Both installers honor the same knobs as environment variables: `KOI_VERSION` (pin a release tag, e.g. `v0.9.0`), `KOI_INSTALL_DIR` (install location), and `KOI_NO_MODIFY_PATH` (skip the PATH change).
 
+These commands download Koi's published native binary; they do not install Rust or
+compile the workspace. The release also supports two thin package-manager paths:
+
+- `cargo binstall koi-net` consumes the same official archive and is available once
+  the first crates.io release carrying Koi's binstall metadata is published. It is
+  configured to fail rather than fall back to an unofficial binary or source build.
+- `npx @sylin/koi` verifies and invokes the matching native installer, then leaves
+  `koi` in the same stable location. Its implementation is release-tested but the
+  command is not public until the npm scope and trusted publisher are activated.
+
+Availability is stated deliberately: do not put either command in automation until
+its registry channel is live. The direct installers and GitHub Release archives above
+are the current no-compilation paths.
+
 Prefer a container? The image runs the daemon via its default command — no install needed:
 
 ```sh

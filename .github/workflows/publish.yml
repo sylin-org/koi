@@ -102,13 +102,6 @@ jobs:
 
           for crate in "${CRATES[@]}"; do
             pkg_name="$crate"
-            # In workspace, koi-net's package folder is crates/koi
-            pkg_flag="-p $crate"
-            if [ "$crate" = "koi-net" ]; then
-              pkg_name="koi-net"
-              pkg_flag="-p koi-net"
-            fi
-
             # Check if this crate is new (not in UPDATE_CRATES)
             IS_UPDATE=false
             for u in "${UPDATE_CRATES[@]}"; do
@@ -132,7 +125,7 @@ jobs:
 
             # Perform the publish
             # Read output, and handle the "already exists" case
-            cargo publish ${pkg_flag} --locked 2>&1 | tee /tmp/publish_output.txt || {
+            cargo publish -p "$crate" --locked 2>&1 | tee /tmp/publish_output.txt || {
               exit_code=${PIPESTATUS[0]}
               if grep -q "already exists" /tmp/publish_output.txt; then
                 echo "⏭️  ${crate}: version already published, skipping verification"

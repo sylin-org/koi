@@ -118,6 +118,8 @@ Information-oriented, dry and exact.
 
 Architecture Decision Records live in [docs/adr/](adr/) — why things are built the way
 they are. Start with [Koi's public identity: Find, Trust, Connect](adr/024-public-identity-find-trust-connect.md);
+then see [artifact-first release channels](adr/025-release-channels-and-bootstrap-contract.md)
+for how one native build reaches installers and package managers;
 the cross-repo [stack canon (STACK-0001)](adr/STACK-0001-sylin-stack-canon.md) defines
 the wider architectural boundary.
 

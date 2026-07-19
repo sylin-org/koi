@@ -12,7 +12,9 @@
     - the CHANGELOG must carry a `## [<version>]` section (i.e. bump-version ran and
       the entry is stamped, not still `[Unreleased]`);
     - the tag must not already exist (locally or on the remote);
-    - the working tree must be clean.
+    - tracked files and the index must be clean (untracked experiments are ignored);
+    - unless explicitly overridden, the tagged commit must be the remote main tip;
+    - the npm bootstrap version and channel tests must agree with the workspace.
 
   Run it on the commit you want released. The repo's flow tags the dev->main MERGE on
   `main` (checkout main and run this, or pass -Ref <merge-sha>); -Ref defaults to HEAD.
@@ -23,6 +25,9 @@
   The remote to push the tag to (default: origin).
 .PARAMETER NoPush
   Create the tag locally but do not push it (no release is triggered).
+.PARAMETER AllowNonMain
+  Permit tagging a commit other than the remote main tip. Intended only for an
+  exceptional recovery release; the normal dev -> main flow must not use it.
 
 .EXAMPLE
   ./scripts/release.ps1            # tag v<version> at HEAD and push (cuts the release)
@@ -35,6 +40,8 @@
 param(
     [string] $Ref = 'HEAD',
     [string] $Remote = 'origin',
+    [string] $Branch = 'main',
+    [switch] $AllowNonMain,
     [switch] $NoPush
 )
 
@@ -59,10 +66,37 @@ if (& git ls-remote --tags $Remote "refs/tags/$tag") {
     throw "tag $tag already exists on $Remote - bump the version first."
 }
 
-# Guard: clean working tree.
-if (& git status --porcelain) { throw 'working tree is dirty - commit or stash before tagging a release.' }
+# Guard: no tracked content can differ from the commit being tagged. Untracked files
+# are absent from a fresh Actions checkout and do not make the release ambiguous.
+& git diff --quiet
+if ($LASTEXITCODE -ne 0) { throw 'tracked working-tree changes exist - commit or stash them before tagging a release.' }
+& git diff --cached --quiet
+if ($LASTEXITCODE -ne 0) { throw 'staged changes exist - commit or unstage them before tagging a release.' }
 
-$sha = (& git rev-parse --short $Ref).Trim()
+# Guard: package metadata and the thin channel code agree before an irreversible tag.
+$npmPackage = Get-Content -Raw 'packages/npm/package.json' | ConvertFrom-Json
+if ($npmPackage.version -ne $version) {
+    throw "packages/npm/package.json is $($npmPackage.version), expected $version - run bump-version.ps1."
+}
+$channelTests = @('scripts/release-manifest.test.mjs') + @(
+    Get-ChildItem 'packages/npm/test' -Filter '*.test.js' | ForEach-Object { $_.FullName }
+)
+& node --test @channelTests
+if ($LASTEXITCODE -ne 0) { throw "release-channel tests failed ($LASTEXITCODE)" }
+& cargo metadata --locked --no-deps --format-version 1 | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "cargo package metadata validation failed ($LASTEXITCODE)" }
+
+$fullSha = (& git rev-parse "$Ref^{commit}").Trim()
+if (-not $AllowNonMain) {
+    $remoteLine = (& git ls-remote --heads $Remote "refs/heads/$Branch")
+    if (-not $remoteLine) { throw "could not resolve $Remote/$Branch" }
+    $remoteSha = (($remoteLine -split '\s+')[0]).Trim()
+    if ($fullSha -ne $remoteSha) {
+        throw "$Ref resolves to $fullSha, not the $Remote/$Branch tip $remoteSha. Merge and pull main first, or use -AllowNonMain for an exceptional recovery release."
+    }
+}
+
+$sha = $fullSha.Substring(0, 7)
 Write-Host ">> tagging $tag at $Ref ($sha)" -ForegroundColor Cyan
 & git tag -a $tag $Ref -m "koi $tag"
 if ($LASTEXITCODE -ne 0) { throw "git tag failed ($LASTEXITCODE)" }
@@ -73,7 +107,7 @@ if ($NoPush) {
     return
 }
 
-Write-Host ">> pushing $tag to $Remote (fires release.yml: build + GitHub Release + GHCR + crates.io)" -ForegroundColor Cyan
+Write-Host ">> pushing $tag to $Remote (fires release.yml: artifacts + GitHub Release + GHCR + crates.io; npm when enabled)" -ForegroundColor Cyan
 & git push $Remote $tag
 if ($LASTEXITCODE -ne 0) { throw "git push of $tag failed ($LASTEXITCODE)" }
 Write-Host ">> $tag pushed. Watch the run: gh run list --workflow release.yml" -ForegroundColor Green
