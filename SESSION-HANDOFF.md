@@ -1,7 +1,7 @@
 # Koi Epic to v1 — canonical continuation ledger
 
 **Status:** active — V1-00 and V1-01 complete; V1-02 in progress; V1-07 identity and publication-foundation slices complete
-**Last updated:** 2026-07-19 13:45 EDT
+**Last updated:** 2026-07-19 14:23 EDT
 **Resume phrase:** `continue the epic to v1`
 
 This is the repository's canonical handoff and progress ledger for the v1 epic. The plan is a
@@ -70,7 +70,11 @@ evidence rather than a one-off demo.
   release files, and tagging defaults to the exact remote `main` tip. Validation is green:
   manifest/bootstrap tests (7/7), zero-dependency npm audit and real-v0.9.0 pack smoke, actual
   six-archive manifest generation, Cargo package/metadata validation, POSIX and Windows PowerShell
-  parsing, actionlint, formatting, and the complete locked workspace test/doc-test suite.
+  parsing, actionlint, formatting, and the complete locked workspace test/doc-test suite. Hosted
+  Release dry run [#43](https://github.com/sylin-org/koi/actions/runs/29698199626) then passed on
+  commit `330cda3`: workspace test, all six native build/package/checksum/upload lanes, canonical
+  manifest validation, npm tests, and npm pack. Tag-only release, GHCR, crates.io, and npm jobs
+  were skipped as designed, so the run published nothing.
 - The existing whole-story design, ADR-018 tiers, surface ledger, QA workflow, physical-host
   runbook, deployment script, Linux↔Linux hardware harness, Windows↔Linux-container harness,
   certmesh/trust implementation, and external `os-truststore` behavior were inspected.
@@ -345,4 +349,7 @@ releases; soak is scheduled or explicitly invoked.
   channel creation; and any other external publication.
 - **Related readiness debt:** runtime list/watch reliability, off-loopback management transport,
   embedded data-root isolation, partner label semantics, ACME/Prometheus/Tailscale contract proof,
-  and claim/documentation drift remain relevant to the v1 full-surface gate.
+  and claim/documentation drift remain relevant to the v1 full-surface gate. The green Release
+  dry run also emitted GitHub's non-blocking Node 20 deprecation annotation for pinned
+  `actions/checkout@v4` / `actions/upload-artifact@v4`; update and revalidate the official action
+  majors in V1-06 before the v1 release gate.
