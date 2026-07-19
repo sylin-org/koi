@@ -143,7 +143,7 @@ let _registration = mdns.register(koi_mdns::protocol::RegisterPayload {
 // DNS
 let dns = handle.dns()?;
 let _ = dns.add_entry(koi_config::state::DnsEntry {
-    name: "my-service.lan".to_string(),
+    name: "my-service.internal".to_string(),
     ip: "127.0.0.1".to_string(),
     ttl: None,
 })?;

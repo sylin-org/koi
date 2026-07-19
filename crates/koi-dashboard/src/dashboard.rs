@@ -241,3 +241,16 @@ fn wire_event_stream(state: DashboardState) -> impl Stream<Item = Result<Event, 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::DASHBOARD_HTML;
+
+    #[test]
+    fn dashboard_uses_current_snapshot_fields() {
+        assert!(DASHBOARD_HTML.contains("c.requires_approval"));
+        assert!(DASHBOARD_HTML.contains("listener.state"));
+        assert!(!DASHBOARD_HTML.contains("c.profile"));
+        assert!(!DASHBOARD_HTML.contains("listener.running"));
+    }
+}

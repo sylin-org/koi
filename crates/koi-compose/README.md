@@ -1,7 +1,8 @@
 # koi-compose
 
-The composition layer for the [Koi](https://github.com/sylin-org/koi) toolkit: the single
-source of truth for constructing domain cores, wiring the cross-domain integration
+The composition layer for the [Koi](https://github.com/sylin-org/koi) local
+connectivity substrate: the single source of truth for constructing domain cores,
+wiring the cross-domain integration
 bridges, running the container-runtime orchestrator, assembling capability status, and
 performing ordered shutdown.
 

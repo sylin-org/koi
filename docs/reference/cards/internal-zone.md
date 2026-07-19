@@ -4,7 +4,7 @@ domain: dns
 title: ".internal zone — capability card"
 audience: [operators, developers, ai-agents]
 status: current
-last_updated: 2026-06-22
+last_updated: 2026-07-19
 koi_version: v0.9.0
 validation:
   date_last_tested: 2026-06-22
@@ -14,9 +14,9 @@ validation:
 
 # .internal zone — capability card
 
-> One-screen map of Koi's default local DNS zone. Names resolve as `<name>.internal`. Full DNS flow: [dns.md](../../guides/dns.md) · living-with-Pi-hole: [dns-coexistence.md](../../guides/dns-coexistence.md) · strategy: [ADR-016](../../adr/016-strategic-realignment.md).
+> One-screen map of Koi's default local DNS zone. Names resolve as `<name>.internal`. Full DNS flow: [dns.md](../../guides/dns.md) · living-with-Pi-hole: [dns-coexistence.md](../../guides/dns-coexistence.md) · product identity: [ADR-024](../../adr/024-public-identity-find-trust-connect.md) · strategy: [ADR-016](../../adr/016-strategic-realignment.md).
 
-**What it does** — Koi's resolver serves a single local zone, and that zone now defaults to **`.internal`** (changed from `.lan`; greenfield, pre-1.0, **no `.lan` compatibility shim**). `.internal` is the **ICANN-reserved private-use TLD** — the one suffix you can safely use on a LAN that will never collide with a real public name. That matters because it's the only private suffix Koi's CA can issue **warning-free TLS** for: certmesh's ACME facade restricts dns-01 issuance to **in-zone names**, so `web.internal` gets a real, browser-trusted cert from the local CA while `web.lan` (or any made-up TLD) cannot. discover → name (`.internal`) → trust (certmesh) → serve is the integrated pipeline ([ADR-016](../../adr/016-strategic-realignment.md)).
+**What it does** — Koi's resolver serves a single local zone, and that zone now defaults to **`.internal`** (changed from `.lan`; greenfield, pre-1.0, **no `.lan` compatibility shim**). `.internal` is the **ICANN-reserved private-use TLD** — the one suffix you can safely use on a LAN that will never collide with a real public name. It gives discovered participants meaningful local names and gives certmesh/ACME one governed namespace in which to establish trust: `web.internal` can receive a certificate from Koi's local CA, resolve locally, and become a connectable HTTPS endpoint. This is one concrete Find → Trust → Connect journey ([ADR-024](../../adr/024-public-identity-find-trust-connect.md)).
 
 ## The one canonical pattern
 

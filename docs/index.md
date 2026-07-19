@@ -1,9 +1,11 @@
 # Koi documentation
 
-Koi is one binary that gives your local network a toolbox it doesn't ship with:
-**discover** services (mDNS), **name** them (local DNS), **trust** them (a private
-certificate authority + OS trust-store install), and **serve** them (a TLS endpoint) —
-all reachable over a CLI, an HTTP API, and as an embeddable Rust library.
+## Let everything local find, trust, and talk.
+
+Koi is an open-source local connectivity substrate that makes containers,
+applications, and devices delightfully discoverable, secure, and interconnected.
+It bridges the boundaries between the LAN, container networks, and applications while
+working with the resolvers, proxies, runtimes, and monitoring tools you already use.
 
 New here? **[What is Koi — and is it for you?](overview.md)** is the short orientation
 (the model, the trust boundary, and when *not* to use it). Then the tutorial, then the
@@ -44,21 +46,23 @@ Learning-oriented, follow top to bottom:
 
 Task-oriented, one goal each.
 
-**Discovery & naming** — [mDNS](guides/mdns.md) · [DNS](guides/dns.md) ·
-[DNS coexistence](guides/dns-coexistence.md)
+**Find** — [mDNS](guides/mdns.md) · [DNS](guides/dns.md) ·
+[DNS coexistence](guides/dns-coexistence.md) · [runtime / containers](guides/runtime.md)
 
-**Trust & serving** — [certmesh (private CA)](guides/certmesh.md) ·
+**Trust** — [certmesh (private CA)](guides/certmesh.md) ·
 [certmesh HA & recovery](guides/certmesh-ha-recovery.md) ·
 [embedding certmesh (Rust library)](guides/certmesh-embedded.md) · [ACME server](guides/acme.md) ·
-[trust (root distribution)](guides/trust.md) · [proxy (TLS endpoint)](guides/proxy.md)
+[trust (root distribution)](guides/trust.md)
 
-**Operate** — [health checks](guides/health.md) · [UDP bridging](guides/udp.md) ·
-[runtime / containers](guides/runtime.md) · [install & service](guides/install-and-service.md) ·
+**Connect** — [proxy (TLS endpoint)](guides/proxy.md) · [UDP bridging](guides/udp.md) ·
+[containers](../CONTAINERS.md) · [integrations](guides/integrations.md)
+
+**Operate** — [health checks](guides/health.md) · [install & service](guides/install-and-service.md) ·
 [system status & config](guides/system.md) · [troubleshooting](guides/troubleshooting.md) ·
 [upgrading](guides/upgrading.md)
 
-**Integrate & extend** — [integrations (Prometheus, Traefik/Caddy labels)](guides/integrations.md) ·
-[API authentication](guides/api-authentication.md) · [MCP (for AI agents)](guides/mcp.md) ·
+**Expose & extend** — [API authentication](guides/api-authentication.md) ·
+[MCP (for AI agents)](guides/mcp.md) ·
 [embedded (Rust library)](guides/embedded.md)
 
 ### Recipes
@@ -76,16 +80,16 @@ One-screen maps of a single capability — the canonical pattern, the flags you'
 the proof it works. Faster than a guide when you already know what you want. Full list:
 [cards index](reference/cards/index.md).
 
-**Discovery & naming** — [mDNS discovery](reference/cards/mdns-discovery.md) ·
+**Find** — [mDNS discovery](reference/cards/mdns-discovery.md) ·
 [.internal zone](reference/cards/internal-zone.md)
 
-**Trust & serving** — [trusted HTTPS](reference/cards/trusted-https.md) ·
+**Trust** — [trusted HTTPS](reference/cards/trusted-https.md) ·
 [certmesh invite](reference/cards/certmesh-invite.md) ·
 [trust doctor & posture](reference/cards/trust-doctor.md) ·
-[ACME issuance](reference/cards/acme-issuance.md) · [TLS proxy](reference/cards/tls-proxy.md)
+[ACME issuance](reference/cards/acme-issuance.md)
 
-**Operate** — [health](reference/cards/machine-health.md) ·
-[UDP bridge](reference/cards/udp-bridge.md) ·
+**Connect & operate** — [TLS proxy](reference/cards/tls-proxy.md) ·
+[UDP bridge](reference/cards/udp-bridge.md) · [health](reference/cards/machine-health.md) ·
 [container auto-wire](reference/cards/container-autowire.md)
 
 **Interfaces & embedding** — [MCP agent door](reference/cards/mcp-agent-door.md) ·
@@ -113,7 +117,9 @@ Information-oriented, dry and exact.
 ## Understand the decisions
 
 Architecture Decision Records live in [docs/adr/](adr/) — why things are built the way
-they are, including the cross-repo [stack canon (STACK-0001)](adr/STACK-0001-sylin-stack-canon.md).
+they are. Start with [Koi's public identity: Find, Trust, Connect](adr/024-public-identity-find-trust-connect.md);
+the cross-repo [stack canon (STACK-0001)](adr/STACK-0001-sylin-stack-canon.md) defines
+the wider architectural boundary.
 
 ## Contributing
 

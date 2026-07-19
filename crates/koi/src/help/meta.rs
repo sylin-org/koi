@@ -343,11 +343,11 @@ pub fn curated_examples(category: KoiCategory) -> &'static [Example] {
         ],
         KoiCategory::Dns => &[
             Example {
-                command: "koi dns add app.lan 10.0.0.5",
+                command: "koi dns add app.internal 10.0.0.5",
                 description: "Create a static record",
             },
             Example {
-                command: "koi dns lookup app.lan",
+                command: "koi dns lookup app.internal",
                 description: "Test name resolution",
             },
             Example {
@@ -1428,11 +1428,11 @@ resolve correctly before pointing production traffic at the resolver.",
         scope: KoiScope::Public,
         examples: &[
             Example {
-                command: "koi dns lookup example.lan",
+                command: "koi dns lookup example.internal",
                 description: "Query default (A) record",
             },
             Example {
-                command: "koi dns lookup example.lan --record-type AAAA",
+                command: "koi dns lookup example.internal --record-type AAAA",
                 description: "Query IPv6",
             },
         ],
@@ -1452,17 +1452,17 @@ to disk and survives daemon restarts.
 
 Arguments: <name> <ip>
 
-The name should be within the configured DNS zone (default: .lan).",
+The name should be within the configured DNS zone (default: .internal).",
         category: KoiCategory::Dns,
         tags: &[KoiTag::Mutating],
         scope: KoiScope::Admin,
         examples: &[
             Example {
-                command: "koi dns add example.lan 10.0.0.10",
+                command: "koi dns add example.internal 10.0.0.10",
                 description: "Add a static record",
             },
             Example {
-                command: "koi dns add db.lan 10.0.0.20",
+                command: "koi dns add db.internal 10.0.0.20",
                 description: "Add another",
             },
         ],
@@ -1483,7 +1483,7 @@ immediately and is persisted to disk.",
         tags: &[KoiTag::Mutating],
         scope: KoiScope::Admin,
         examples: &[Example {
-            command: "koi dns remove example.lan",
+            command: "koi dns remove example.internal",
             description: "Remove a static record",
         }],
         see_also: &["dns add", "dns list"],

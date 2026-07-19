@@ -32,6 +32,9 @@ errors=0
 line_no=$sep_line
 while IFS= read -r line; do
   line_no=$((line_no + 1))
+  # Git Bash reads a CRLF worktree's trailing CR into the row. Normalize the
+  # transport newline before parsing Markdown delimiters.
+  line="${line%$'\r'}"
   case "$line" in
     \|*) ;;
     *) break ;;   # first non-table line ends the ledger

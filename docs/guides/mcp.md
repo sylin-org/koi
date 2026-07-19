@@ -76,7 +76,7 @@ Besides stdio, the daemon serves MCP over **Streamable HTTP** at `/v1/mcp` on it
 
 ```bash
 # on any machine with an MCP-capable client (no Koi install needed):
-claude mcp add --transport http koi https://koi-host.lan/v1/mcp --header "x-koi-token: <token>"
+claude mcp add --transport http koi https://koi-host.internal/v1/mcp --header "x-koi-token: <token>"
 ```
 
 - **Authenticated.** Every request to `/v1/mcp` — including the server→client SSE stream (a GET) — requires the `x-koi-token` header. (`koi token show` prints it; `koi token write <path>` writes a 0600 file for containers.)
@@ -135,7 +135,7 @@ Alongside tools, the server exposes Koi's live state as MCP **resources** — a 
 
 The point of `lan_announce` + `dns_add` together is a **stable, discoverable name** for something the agent stands up. A typical flow:
 
-1. **Orient.** The agent calls `lan_inventory` and sees the daemon is up, two services are healthy, and `app.lan` is not yet a known name.
+1. **Orient.** The agent calls `lan_inventory` and sees the daemon is up, two services are healthy, and `app.internal` is not yet a known name.
 2. **Announce its own endpoint.** The agent is serving an HTTP API on port 8080 and wants peers to find it:
 
    ```
@@ -144,13 +144,13 @@ The point of `lan_announce` + `dns_add` together is a **stable, discoverable nam
    ```
 
    Koi registers the service with a 90-second heartbeat lease and spins up a background heartbeat at ~⅓ of the lease. The agent does nothing further to keep it alive.
-3. **Give it a name.** So peers can reach it as `planner.lan` rather than an IP:
+3. **Give it a name.** So peers can reach it as `planner.internal` rather than an IP:
 
    ```
-   dns_add { "name": "planner.lan" }        # ip omitted → the host's address
+   dns_add { "name": "planner.internal" }   # ip omitted → the host's address
    → { ... }
    ```
-4. **Peers discover it.** Another agent calls `mcp_servers_on_lan` or `lan_discover { "type": "_http._tcp" }` and finds `Planner Agent`; `dns_lookup { "name": "planner.lan" }` resolves the address.
+4. **Peers discover it.** Another agent calls `mcp_servers_on_lan` or `lan_discover { "type": "_http._tcp" }` and finds `Planner Agent`; `dns_lookup { "name": "planner.internal" }` resolves the address.
 5. **Exit is clean.** When the MCP host closes the session (the agent finishes), `koi mcp serve` cancels the heartbeat and unregisters every service it announced. If the agent process simply **crashes**, the heartbeat task dies with it and the daemon drains the registration when the lease expires — leases over liveness guesses, so nothing is left stale.
 
 `lan_unregister { "id": "a1b2c3d4" }` retracts the service immediately if the agent wants to take it down before exit.

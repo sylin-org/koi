@@ -4,6 +4,18 @@
 
 ---
 
+## Active Epic Resume
+
+When the user says **"continue the epic to v1"**, read
+[`SESSION-HANDOFF.md`](../SESSION-HANDOFF.md) before doing new discovery or implementation.
+Treat its epic ledger and **Resume here** marker as the canonical continuation state, verify
+them against Git and the live lab, then continue from the first unfinished item. Before ending
+an epic session, update the ledger with completed evidence, changed assumptions, validation
+still owed, machine state, and one unambiguous next action. The plan is intentionally revisable:
+change it when evidence demands, but record why.
+
+---
+
 ## Before Writing Code
 
 **Check reference docs**: `docs/reference/`
@@ -20,9 +32,9 @@
 **Check design decisions**: `docs/adr/`
 
 - Architecture Decision Records documenting why things are built the way they are
-- **Stack canon (cross-repo)**: [../docs/adr/STACK-0001-sylin-stack-canon.md](../docs/adr/STACK-0001-sylin-stack-canon.md) — Koi is the **base layer** of the Sylin stack (Koi → Zen Garden → Koan). STACK-0001 is canon: Koi may not name, special-case, or document its consumers (the K2 vocabulary leakage), the HKDF domain-separation byte strings are **frozen** at the `koi-*-v1` namespace (K3 — a new algorithm gets a new versioned label, never a rename/reuse), and the contract surface is mdns/dns/certmesh/udp/truststore (the TLS proxy is excluded until tested). Do not contradict it without an upstream architect decision.
+- **Stack canon (cross-repo)**: [../docs/adr/STACK-0001-sylin-stack-canon.md](../docs/adr/STACK-0001-sylin-stack-canon.md) — Koi is the **base layer** of the Sylin stack (Koi → Zen Garden → Koan). STACK-0001 is canon: Koi may not name, special-case, or document its consumers (the K2 vocabulary leakage), and the HKDF domain-separation byte strings are **frozen** at the `koi-*-v1` namespace (K3 — a new algorithm gets a new versioned label, never a rename/reuse). The contract surface is mdns/dns/certmesh/udp/truststore; the proxy now has a real data-plane guard, while its composed certmesh/native-trust path remains pending. Do not contradict the canon without an upstream architect decision.
 
-**Surface ledger (cross-repo)**: [../docs/SURFACES.md](../docs/SURFACES.md) — records which surfaces are exercised by what, when last, and what guard protects them. Its top is the **rotation contract** (binding): before a lane leaves a surface, leave a tripwire and update that surface's row (`Last exercised` → today, `Guard` → the tripwire). The `surfaces` job in `.github/workflows/ci.yml` lints that the ledger parses. Honesty rule: unknown exercise status is written `unknown since <date>`, never a guessed "works" — the proxy row reads guard `none` (truth).
+**Surface ledger (cross-repo)**: [../docs/SURFACES.md](../docs/SURFACES.md) — records which surfaces are exercised by what, when last, and what guard protects them. Its top is the **rotation contract** (binding): before a lane leaves a surface, leave a tripwire and update that surface's row (`Last exercised` → today, `Guard` → the tripwire). The `surfaces` job in `.github/workflows/ci.yml` lints that the ledger parses. Honesty rule: unknown exercise status is written `unknown since <date>`, never a guessed "works". Read the current row rather than copying historical guard status into new work.
 
 ---
 
@@ -105,9 +117,10 @@ reverse). `koi-dashboard` is a **composition/presentation** crate (not a domain)
 depends on the event-bearing domain crates so the single event forwarder + mDNS browse
 adapter exist once. Only the serving/composition layers and the two top-level consumers
 (`koi`, `koi-embedded`) depend on these wiring crates, so the kernel and domain closures
-stay clean. `koi-common` is a **types-only kernel** — it carries no presentation deps
-(`tokio`/`tokio-stream`/`tokio-util`/`async-stream`/`hostname` left with the dashboard in
-P06); the dashboard/browser HTML, SSE, and browse cache live in `koi-dashboard`.
+stay clean. `koi-common` is a **types plus lifecycle/event utilities kernel** — it carries
+no presentation deps (`tokio-stream`/`async-stream`/`hostname` left with the dashboard in
+P06); its small lifecycle/event layer intentionally uses `tokio`/`tokio-util`. The
+dashboard/browser HTML, SSE, and browse cache live in `koi-dashboard`.
 
 ### 4. mdns-sd Isolation (CRITICAL)
 

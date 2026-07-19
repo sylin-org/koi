@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "artifact": {
+    "target": "x86_64-unknown-linux-musl",
+    "package": "koi-net",
+    "relative_path": "target/x86_64-unknown-linux-musl/release/koi"
+  },
+  "nodes": [
+    {
+      "kind": "local_windows",
+      "id": "windows",
+      "hostname": "stone-leaded-sparkle",
+      "address": "192.168.1.138"
+    },
+    {
+      "kind": "putty_linux",
+      "id": "brook",
+      "hostname": "stone-platinum-brook",
+      "address": "192.168.1.44",
+      "user": "stone",
+      "host_key": "SHA256:6IX/nLwK2hc+EfikGoEp/Hr+ROkvucoPDwmEBgQUZAU",
+      "architecture": "x86_64",
+      "remote_root": "/home/stone/koi-test",
+      "http_port": 16541,
+      "mtls_port": 16542,
+      "acme_port": 16543,
+      "proxy_port": 16544
+    },
+    {
+      "kind": "putty_linux",
+      "id": "granite",
+      "hostname": "stone-granite-spring",
+      "address": "192.168.1.55",
+      "user": "stone",
+      "host_key": "SHA256:nXLOx/x74paOdisOxNRKp0lbCOYFsqEQxvauAUDaikk",
+      "architecture": "x86_64",
+      "remote_root": "/home/stone/koi-test",
+      "http_port": 17541,
+      "mtls_port": 17542,
+      "acme_port": 17543,
+      "proxy_port": 17544
+    }
+  ]
+}

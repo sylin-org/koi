@@ -19,54 +19,92 @@ PuTTY `plink`/`pscp` (`plink -batch -ssh -pw stone stone@<ip> "<cmd>"`). The
 | `stone-platinum-brook` | 192.168.1.44 | primary test target (this session's box) | Debian 13 (trixie), kernel 6.12, x86_64, 4 cores, ~49 GB free, Docker 26.1.5. **No native C toolchain** (no gcc/cmake/make) — build in a Rust container or `apt install build-essential cmake pkg-config`. |
 | `stone-granite-spring` | 192.168.1.55 | second box (cross-host peer) | Debian; sudo + docker. Used by the ADR-018 cross-host suite. Apply the same conflict-service teardown before a run. |
 
-## Per-host setup (run before an integration session)
+## Controller and safety model
 
-Both boxes ship with services that conflict with exercising Koi's surfaces;
-disable them so Koi owns its ports and mDNS cleanly:
+The v1 path is the non-published `koi-lab` workspace tool. It is the single evaluation
+point for node identity, SSH host-key pins, clocks, prerequisites, service/port baseline,
+artifact identity, distributed locks, allowed remote roots, and cleanup ownership.
 
-```sh
-# garden-moss = the Zen Garden consumer (embeds koi-embedded; holds port 5641).
-sudo systemctl disable --now garden-moss.service
-# avahi = a competing mDNS responder on 5353 (pollutes Koi's discover).
-sudo systemctl disable --now avahi-daemon.service avahi-daemon.socket
+```powershell
+$env:KOI_LAB_PASSWORD = '<dedicated-lab-password>'
+
+# Read-only: writes a redacted report under .lab-runs/ locally.
+cargo run -p koi-lab --locked -- preflight
+
+# Build only on this Windows workstation through cross + Docker.
+cargo run -p koi-lab --locked -- build
+
+# Lock both nodes and stage one hash-identical binary under runs/<run-id>/.
+cargo run -p koi-lab --locked -- deploy
+
+# Non-privileged first vertical: brook CA → granite member, driven from Windows.
+cargo run -p koi-lab --locked -- certmesh-smoke --run-id <run-id>
+
+# Privileged Linux trust rotation. Refuses without the explicit acknowledgement.
+cargo run -p koi-lab --locked -- certmesh-native-trust --run-id <run-id> `
+  --allow-system-mutation
+
+# Read-only cleanup preview, then owner-checked exact cleanup.
+cargo run -p koi-lab --locked -- plan-cleanup --run-id <run-id>
+cargo run -p koi-lab --locked -- cleanup --run-id <run-id>
 ```
 
-`systemd-resolved` also binds UDP 5353 but with LAN-interface mDNS **off**
-(`resolvectl mdns` → the physical link shows `no`), so it does not respond as a
-competing mDNS stack and `koi-mdns` (mdns-sd) binds 5353 alongside it via socket
-reuse — the standard Debian coexistence. Leave it as-is.
+Deployment does **not** stop a service, overwrite `/home/stone/koi-test/koi`, erase data,
+or use `sudo`. It stages only these run-owned files:
 
-Verify the control ports are free afterward:
-
-```sh
-ss -tulpn | grep -E ':5641|:5642|:5643'   # expect empty (5641 freed by stopping garden-moss)
+```text
+/home/stone/koi-test/runs/<run-id>/owner
+/home/stone/koi-test/runs/<run-id>/artifact.sha256
+/home/stone/koi-test/runs/<run-id>/koi
 ```
 
-Workspace on each box: `/home/stone/koi-test/` (binary + `data/` for `KOI_DATA_DIR`).
+The atomic `.koi-lab-lock` directory refuses a concurrent run. Cleanup checks both the
+lock owner and run-directory owner, removes an exact file allowlist, permits recursive
+deletion only for resolved run-owned data/runtime roots, and verifies the run directory
+and lock are absent afterward.
 
-## Build & deploy
+`certmesh-smoke` uses dedicated high ports from `tools/koi-lab/lab.json`, so it can run
+beside a captured system Koi service. It starts only run-owned PIDs, creates certmesh data
+only below the run directory, drives create→pinned invite→join from Windows, asserts the
+member's trust diagnosis is Healthy, hashes the Linux system trust stores before/after to
+prove the non-privileged slice changed no roots, and records a secret-redacted report.
 
-**Build on the dev machine, never on the boxes.** The dev machine is far more
-powerful and already has the `cross` + Docker toolchain. Build a **static musl**
-binary (the same toolchain the release workflow + `scripts/cross-host-certmesh.sh`
-use) and copy it to the boxes — they then need **no Rust/C toolchain at all** (the
-binary is static, no glibc dependency):
+`certmesh-native-trust` is the one privileged mutation boundary. It refuses without
+`--allow-system-mutation`, rechecks run/lock ownership and passwordless sudo, and uses
+only the run CA PEM and a separate run-owned trust-state root. It configures granite's
+real Koi TLS proxy with the certmesh member leaf, then proves from brook that native
+`curl` fails before installation, native `curl` and OpenSSL succeed after installation
+without a custom CA, and a wrong hostname still fails. It removes the exact tracked
+fingerprint, proves native TLS fails again, and requires the complete trust-store hash
+to match its captured baseline before reporting success.
 
-```sh
-# dev machine, repo root:
-cross build --locked --target x86_64-unknown-linux-musl -p koi-net
-#   → target/x86_64-unknown-linux-musl/debug/koi   (static x86_64 binary; add --release for release)
+Debian testing exposed an `os-truststore 0.0.2` cleanup defect: uninstall removes the
+anchor, but `update-ca-certificates` can leave two dangling symlinks for that anchor.
+The controller's compatibility cleanup checks the missing exact anchor, full symlink
+target, and fingerprint marker before pruning only those links. This is recorded as
+upstream integration debt; a future `os-truststore` release should own the fix, after
+which the guarded compatibility branch becomes a no-op and can be removed.
 
-# copy to both boxes (PuTTY pscp from Windows; or scp elsewhere):
-pscp -pw stone target/x86_64-unknown-linux-musl/debug/koi stone@192.168.1.44:/home/stone/koi-test/koi
-pscp -pw stone target/x86_64-unknown-linux-musl/debug/koi stone@192.168.1.55:/home/stone/koi-test/koi
-plink -batch -ssh -pw stone stone@192.168.1.44 "chmod +x /home/stone/koi-test/koi"
-plink -batch -ssh -pw stone stone@192.168.1.55 "chmod +x /home/stone/koi-test/koi"
+Services that conflict with a scenario are captured as baseline and make
+`scenario_ready=false`; preflight never changes them. A future privileged lane must stop
+only the captured service and restore its exact active/enabled state. `systemd-resolved`
+on UDP 5353/53 is recorded but left alone—the previous hardware runs proved Koi's mDNS
+socket reuse can coexist with it.
+
+## Build and artifact identity
+
+`koi-lab build` always uses the release-musl command below on the workstation. There is
+no remote build fallback:
+
+```text
+cross build --release --locked --target x86_64-unknown-linux-musl -p koi-net
 ```
 
-Box-side test instrumentation (install once): `curl` (HTTP probes — not present by
-default on a minimal Debian), `jq` (parse `koi … --json`), `dnsutils` (`dig`),
-`netcat-openbsd` (`nc`, port checks).
+The controller records the Git commit, byte length, and SHA-256, copies the same file to
+both run directories, and accepts a node only after its native `sha256sum` matches and
+the staged binary reports a version. The nodes need no Rust or C toolchain. Preflight
+checks the existing `curl`, `jq`, `dig`, `nc`, Docker, OpenSSL, `systemctl`, `ss`, and
+`sha256sum` installations without installing packages.
 
 ## Cross-host integration scenario (the gate)
 
@@ -85,8 +123,11 @@ real LAN:
    (cross-host carry-cert).
 6. Tear down (`koi certmesh destroy`, re-enable nothing — the box stays set up).
 
-Automated by `scripts/integration/cross-host-test.sh` (runs on the CA box, drives
-the member via `sshpass`). See also the container-based ADR-018 harness:
+The historical scenario is automated by `scripts/integration/cross-host-test.sh` (runs
+on the CA box and drives the member via `sshpass`). It predates `koi-lab`, resets fixed
+data paths, and disables SSH host-key checking; treat it as legacy evidence, not the v1
+controller. Its assertions will move behind the run-scoped controller before this lane is
+called release-grade. The container-based ADR-018 harness remains
 `scripts/cross-host-certmesh.sh`.
 
 ## Findings (real-hardware runs, 2026-06-20/21)

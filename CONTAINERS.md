@@ -1,5 +1,10 @@
 # Koi Container Guide
 
+Containers live on the local network but rarely participate in it as first-class
+citizens. Koi bridges the container, host, and LAN boundaries so workloads can be
+found, carry meaningful names and trusted identity, and communicate with applications
+and devices without surrendering network isolation.
+
 > **Exposing Koi to containers — read first.** Koi's HTTP API binds to `127.0.0.1`
 > by default. How you reach it depends on your platform (see the
 > [security model](docs/reference/security-model.md)):
@@ -17,9 +22,15 @@
 > - The **runtime adapter** (label-driven, below) runs on the host and needs no
 >   container→Koi connectivity at all — it works regardless of bind mode.
 
-Docker containers can't do mDNS. The bridge network doesn't forward multicast traffic, and every workaround - `--network=host`, macvlan, mDNS reflectors - sacrifices isolation or adds fragility.
+Docker containers cannot naturally participate in mDNS. The bridge network does not forward multicast traffic, and every workaround — `--network=host`, macvlan, mDNS reflectors — sacrifices isolation or adds fragility.
 
-Koi solves this at the infrastructure level. It runs on the host, speaks multicast mDNS on the physical network, and exposes everything through a plain HTTP API. Containers make HTTP calls; Koi translates them into mDNS. No special network modes, no multicast forwarding, no libraries needed inside the container.
+Koi solves this once at the host boundary. It speaks multicast mDNS on the physical
+network and exposes ordinary HTTP and event streams to isolated workloads. Containers
+can announce themselves to the LAN, discover and watch other services, receive stable
+DNS names and trusted certificates, and bridge UDP when an application protocol needs
+it. The host-side runtime adapter can also do the lifecycle wiring from labels without
+changing the image. No special network modes, multicast forwarding, or language-specific
+libraries are required inside the container.
 
 This guide starts with the simplest setup and builds toward production patterns.
 
@@ -245,7 +256,7 @@ docker run -d -p 3000:3000 --label koi.announce=grafana grafana/grafana
 docker run -d -p 3000:3000 -e KOI_MDNS_ANNOUNCE=grafana grafana/grafana
 ```
 
-Either way, Koi auto-discovers the container, announces `grafana._http._tcp` via mDNS (port heuristic: 3000 → HTTP), adds `grafana.lan` to DNS, and registers a health check. When the container stops, everything is cleaned up.
+Either way, Koi auto-discovers the container, announces `grafana._http._tcp` via mDNS (port heuristic: 3000 → HTTP), adds `grafana.internal` to DNS, and registers a health check. When the container stops, everything is cleaned up.
 
 For Docker Compose:
 
@@ -672,7 +683,7 @@ curl -s "http://$KOI_HOST:5641/v1/dns/lookup?name=grafana&type=A"
 ```
 
 ```json
-{ "name": "grafana.lan.", "ips": ["192.168.1.42"], "source": "static" }
+{ "name": "grafana.internal.", "ips": ["192.168.1.42"], "source": "static" }
 ```
 
 ### List known names

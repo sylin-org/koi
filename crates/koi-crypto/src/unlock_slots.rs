@@ -36,10 +36,13 @@ use koi_common::encoding::{hex_decode, hex_encode};
 /// Length of the master key in bytes (256-bit AES key).
 const MASTER_KEY_LEN: usize = 32;
 
+/// Slot-table version that isolates platform credentials per TOTP slot.
+const SLOT_TABLE_VERSION: u32 = 2;
+
 /// HKDF info string for TOTP-based slot key derivation.
 const TOTP_SLOT_HKDF_INFO: &[u8] = b"koi-unlock-slot-totp-v1";
 
-/// Platform credential store label for the sealed TOTP shared secret.
+/// Legacy v1 platform credential store label for the sealed TOTP shared secret.
 const TOTP_CREDENTIAL_LABEL: &str = "koi-certmesh-unlock-totp";
 
 // ── Slot Table ──────────────────────────────────────────────────────
@@ -100,7 +103,7 @@ impl SlotTable {
     ) -> Result<Self, CryptoError> {
         let wrapped = encrypt_bytes(master_key, passphrase)?;
         Ok(Self {
-            version: 1,
+            version: SLOT_TABLE_VERSION,
             slots: vec![UnlockSlot::Passphrase {
                 wrapped_master_key: wrapped,
             }],
@@ -157,11 +160,13 @@ impl SlotTable {
         let slot_kek = derive_totp_slot_kek(shared_secret);
         let slot_kek_hex = Zeroizing::new(hex_encode(&*slot_kek));
         let wrapped = encrypt_bytes(master_key, &slot_kek_hex)?;
+        let secret_label = totp_credential_label(SLOT_TABLE_VERSION, &wrapped);
+        let fallback_label = totp_fallback_key_label(SLOT_TABLE_VERSION, &wrapped);
 
         // Try platform credential store first; fallback uses a random key
         // also sealed in the credential store (never hostname-derived).
         let (sealed, encrypted_secret) =
-            match crate::tpm::seal_key_material(TOTP_CREDENTIAL_LABEL, shared_secret) {
+            match crate::tpm::seal_key_material(&secret_label, shared_secret) {
                 Ok(()) => {
                     tracing::info!("TOTP shared secret sealed in platform credential store");
                     (true, None)
@@ -169,7 +174,7 @@ impl SlotTable {
                 Err(_) => {
                     // Direct seal failed — try the fallback: encrypt with a random key
                     // that is itself sealed in the credential store.
-                    let fallback_key = get_or_create_fallback_key()?;
+                    let fallback_key = get_or_create_fallback_key(&fallback_label)?;
                     let fallback_hex = Zeroizing::new(hex_encode(&*fallback_key));
                     let enc = encrypt_bytes(shared_secret, &fallback_hex)?;
                     tracing::info!("TOTP shared secret encrypted with sealed fallback key");
@@ -183,6 +188,7 @@ impl SlotTable {
             encrypted_secret,
             wrapped_master_key: wrapped,
         });
+        self.version = SLOT_TABLE_VERSION;
 
         Ok(())
     }
@@ -209,13 +215,15 @@ impl SlotTable {
                 // 2. Machine-key encrypted fallback
                 // 3. Legacy plaintext hex (backward compat)
                 let secret_bytes = Zeroizing::new(if *sealed {
-                    crate::tpm::unseal_key_material(TOTP_CREDENTIAL_LABEL).map_err(|e| {
+                    let label = totp_credential_label(self.version, wrapped_master_key);
+                    crate::tpm::unseal_key_material(&label).map_err(|e| {
                         CryptoError::Decryption(format!(
                             "failed to unseal TOTP secret from platform store: {e}"
                         ))
                     })?
                 } else if let Some(enc) = encrypted_secret {
-                    let fallback_key = get_or_create_fallback_key().map_err(|e| {
+                    let label = totp_fallback_key_label(self.version, wrapped_master_key);
+                    let fallback_key = get_or_create_fallback_key(&label).map_err(|e| {
                         CryptoError::Decryption(format!(
                             "failed to retrieve TOTP fallback key: {e}"
                         ))
@@ -325,17 +333,41 @@ fn derive_totp_slot_kek(shared_secret: &[u8]) -> Zeroizing<[u8; 32]> {
     kek
 }
 
-/// Platform credential store label for the TOTP fallback encryption key.
+/// Legacy v1 platform credential store label for the TOTP fallback encryption key.
 const TOTP_FALLBACK_KEY_LABEL: &str = "koi-certmesh-totp-fallback-key";
+
+fn totp_credential_label(version: u32, wrapped_master_key: &EncryptedKey) -> String {
+    versioned_credential_label(version, TOTP_CREDENTIAL_LABEL, wrapped_master_key)
+}
+
+fn totp_fallback_key_label(version: u32, wrapped_master_key: &EncryptedKey) -> String {
+    versioned_credential_label(version, TOTP_FALLBACK_KEY_LABEL, wrapped_master_key)
+}
+
+/// v1 used one machine-global credential label. v2 derives a stable, opaque
+/// label from the slot's random wrapped ciphertext, isolating data roots and
+/// parallel operations without persisting another identifier.
+fn versioned_credential_label(
+    version: u32,
+    legacy_label: &str,
+    wrapped_master_key: &EncryptedKey,
+) -> String {
+    if version < SLOT_TABLE_VERSION {
+        return legacy_label.to_string();
+    }
+
+    let digest = Sha256::digest(&wrapped_master_key.ciphertext);
+    format!("{legacy_label}-{}", hex_encode(&digest[..16]))
+}
 
 /// Retrieve or create a random 32-byte encryption key sealed in the platform
 /// credential store, used as the fallback when direct secret sealing fails.
 ///
 /// Unlike the previous hostname-derived key, this key is truly random and
 /// machine-bound (only the platform store can unseal it).
-fn get_or_create_fallback_key() -> Result<Zeroizing<[u8; 32]>, CryptoError> {
+fn get_or_create_fallback_key(label: &str) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
     // Try to retrieve an existing fallback key
-    if let Ok(bytes) = crate::tpm::unseal_key_material(TOTP_FALLBACK_KEY_LABEL) {
+    if let Ok(bytes) = crate::tpm::unseal_key_material(label) {
         if bytes.len() == 32 {
             let mut key = Zeroizing::new([0u8; 32]);
             key.copy_from_slice(&bytes);
@@ -346,13 +378,13 @@ fn get_or_create_fallback_key() -> Result<Zeroizing<[u8; 32]>, CryptoError> {
     // (handles concurrent initialization where the second writer wins).
     let mut key = Zeroizing::new([0u8; 32]);
     rand::rng().fill_bytes(key.as_mut());
-    crate::tpm::seal_key_material(TOTP_FALLBACK_KEY_LABEL, &*key).map_err(|e| {
+    crate::tpm::seal_key_material(label, &*key).map_err(|e| {
         CryptoError::Encryption(format!(
             "cannot seal TOTP fallback key in platform credential store: {e}"
         ))
     })?;
     // Re-read the authoritative value (another process may have written concurrently)
-    let confirmed = crate::tpm::unseal_key_material(TOTP_FALLBACK_KEY_LABEL)
+    let confirmed = crate::tpm::unseal_key_material(label)
         .map_err(|e| CryptoError::Encryption(format!("cannot confirm TOTP fallback key: {e}")))?;
     if confirmed.len() == 32 {
         let mut k = Zeroizing::new([0u8; 32]);
@@ -462,22 +494,9 @@ mod tests {
         let secret = crate::totp::generate_secret();
         table.add_totp_slot(&master_key, secret.as_bytes()).unwrap();
 
-        // Generate a valid TOTP code and unwrap with it. TOTP codes roll over every 30s,
-        // so a single generate→verify can straddle a step boundary and spuriously fail;
-        // retry a bounded number of times (two consecutive attempts cannot both straddle
-        // a 30s boundary in the milliseconds between them).
-        let mut recovered = None;
-        for _ in 0..3 {
-            let code = crate::totp::current_code(&secret).unwrap();
-            if let Ok(key) = table.unwrap_with_totp(&code) {
-                recovered = Some(key);
-                break;
-            }
-        }
-        assert_eq!(
-            master_key,
-            recovered.expect("TOTP unwrap should succeed within 3 tries")
-        );
+        let code = crate::totp::current_code(&secret).unwrap();
+        let recovered = table.unwrap_with_totp(&code).unwrap();
+        assert_eq!(master_key, recovered);
     }
 
     #[cfg(feature = "keyring")]
@@ -570,9 +589,32 @@ mod tests {
         let json = serde_json::to_string_pretty(&table).unwrap();
         let loaded: SlotTable = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.version, SLOT_TABLE_VERSION);
         assert_eq!(loaded.slots.len(), 3);
         let recovered = loaded.unwrap_with_passphrase("pass").unwrap();
         assert_eq!(master_key, recovered);
+    }
+
+    #[cfg(feature = "keyring")]
+    #[test]
+    fn totp_slots_are_isolated_in_the_platform_store() {
+        let first_key = generate_master_key();
+        let mut first = SlotTable::new_with_passphrase(&first_key, "first").unwrap();
+        let first_secret = crate::totp::generate_secret();
+        first
+            .add_totp_slot(&first_key, first_secret.as_bytes())
+            .unwrap();
+
+        let second_key = generate_master_key();
+        let mut second = SlotTable::new_with_passphrase(&second_key, "second").unwrap();
+        let second_secret = crate::totp::generate_secret();
+        second
+            .add_totp_slot(&second_key, second_secret.as_bytes())
+            .unwrap();
+
+        let first_code = crate::totp::current_code(&first_secret).unwrap();
+        let second_code = crate::totp::current_code(&second_secret).unwrap();
+        assert_eq!(first.unwrap_with_totp(&first_code).unwrap(), first_key);
+        assert_eq!(second.unwrap_with_totp(&second_code).unwrap(), second_key);
     }
 }

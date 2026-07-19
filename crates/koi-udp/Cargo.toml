@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "koi-udp"
 description = "UDP datagram bridging over HTTP/SSE for containerized workloads"
 version.workspace = true

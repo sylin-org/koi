@@ -1,6 +1,6 @@
 [package]
 name = "koi-net"
-description = "Local network toolkit: service discovery, DNS, health monitoring, TLS proxy, and certificate mesh"
+description = "Local connectivity for containers, applications, and devices: find, trust, and connect"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

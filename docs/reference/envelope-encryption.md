@@ -34,7 +34,7 @@ method ships today; FIDO2 unlock is not yet implemented.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "slots": [
     {
       "type": "passphrase",
@@ -75,6 +75,8 @@ method ships today; FIDO2 unlock is not yet implemented.
 ## Migration
 
 A single-passphrase key is transparently upgraded to the envelope format on first load via `migrate_to_envelope()`: it decrypts with the passphrase, generates a fresh master key, re-encrypts under that master key, and writes a slot table with a passphrase slot.
+
+Version 2 derives a stable platform-credential label from each TOTP slot's random wrapped ciphertext. This keeps isolated Koi data roots from overwriting one another's TOTP secret. Version 1 tables remain readable through their legacy machine-global labels and move to version 2 when their TOTP slot is replaced.
 
 ---
 

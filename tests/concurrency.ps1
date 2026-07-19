@@ -9,7 +9,7 @@ Set-StrictMode -Version Latest
 
 $TestPort = 16000 + (Get-Random -Minimum 1 -Maximum 2000)
 $DnsPort = 17000 + (Get-Random -Minimum 1 -Maximum 2000)
-$TestDir = Join-Path $env:TEMP "koi-concurrency-$PID-$(Get-Random)"
+$TestDir = Join-Path ([System.IO.Path]::GetTempPath()) "koi-concurrency-$PID-$(Get-Random)"
 $TestLog = Join-Path $TestDir 'koi-concurrency.log'
 $BreadcrumbDir = Join-Path $TestDir 'breadcrumb'
 $DataDir = Join-Path $TestDir 'data'
@@ -37,7 +37,12 @@ function Cleanup {
     }
 }
 
-trap { Cleanup; break }
+trap {
+    $originalError = $_
+    try { Cleanup } catch { Write-Warning "Cleanup after failure also failed: $($_.Exception.Message)" }
+    Write-Error -ErrorRecord $originalError -ErrorAction Continue
+    exit 1
+}
 
 if (-not $NoBuild) {
     & cargo build --release 2>&1 | Out-Null
