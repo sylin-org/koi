@@ -1,7 +1,7 @@
 # Koi Epic to v1 — canonical continuation ledger
 
 **Status:** active — V1-00 through V1-02 complete; V1-03 in progress; V1-07 identity and publication-foundation slices complete
-**Last updated:** 2026-07-19 23:04 EDT
+**Last updated:** 2026-07-19 23:41 EDT
 **Resume phrase:** `continue the epic to v1`
 
 This is the repository's canonical handoff and progress ledger for the v1 epic. The plan is a
@@ -47,6 +47,12 @@ evidence rather than a one-off demo.
 - External publication remains unauthorized. Do not post, contact communities, open external PRs,
   or publish packages. Commit and push also require a separate user request.
 - Preserve pre-existing user work. `docs/animations/` was already untracked before this epic.
+- On 2026-07-19 the user explicitly authorized the elevated Codex session to continue the V1 epic
+  autonomously while they sleep. It may explore, refactor, implement, build locally, exercise the
+  documented run-scoped Windows/Linux lab lanes, validate, clean up, and update this ledger without
+  waiting for routine confirmations. This does not broaden the mutation boundaries above or grant
+  external publication, commit, or push authority. Stop safely when new authority or an ambiguous
+  destructive/external action would be required.
 
 ## Outcome so far
 
@@ -329,22 +335,58 @@ evidence rather than a one-off demo.
   `928522b3c18fce60a28310e619fbb4ff715d8b0a9f03c059842eaef6629f8d07` (Linux, 41,518,032
   bytes) and `8f0f28131c759ea2d05c3b4644e3d622545487d32f52779cad98327ee2151565` (Windows,
   35,739,136 bytes).
+- The remaining elevated Windows V1-03 member lifecycle passed on 2026-07-20 inside that same
+  tracked trust transaction. The first two exact-cleanup attempts exposed real defects rather than
+  product failures: `v1-20260720T041817Z-3c30c620` found Schannel rejection at the local proxy, and
+  `v1-20260720T042416Z-cf6a51fb` localized it to a freshly issued leaf whose `notBefore` was a few
+  seconds ahead of Windows. Certmesh now backdates CA and leaf validity by its one 300-second clock
+  skew policy without shortening expiry. Member CSR generation also stages `key.pending.pem` and
+  promotes it only after the returned leaf matches the key and pinned CA, so a revoked/failed
+  rejoin cannot replace the active identity. The first failed run retained its redacted smoke
+  report; the diagnostic controller then retained `windows-member-failure.json` for the second.
+  Both were owner-cleaned exactly.
+- Green run `v1-20260720T043212Z-0b37baee` used Brook as CA, Granite as service, and the run-owned
+  Windows member. Key hash `6b2e19a825fc4e92…` rotated to `15cc14f07b399e07…`; cert hash
+  `242296e4a1cb2d2d…` rotated to `f476482bb4f87205…`; CA roster fingerprint
+  `76f4780218d52088ded4847b6f505057ddf5bf5e291350d8f5159477c68569c3` matched. The exact child
+  restarted PID `41980→19832` with byte-identical identity, Healthy diagnosis, and Schannel proxy
+  continuity, then PID `19832→23936` pulled revocation and diagnosed RED/self-revoked. Renewal and
+  fresh-invite rejoin were refused and left both active files byte-identical. Exact LocalMachine
+  root `c4de1f63a0c115ab689bccbaf84505e368e158807b19cb863e54102f6cbf64d0` was removed and the full
+  baseline restored. Artifacts: Linux
+  `8178b6cd00fe9996bc6f2be748593124e6c9f4ba5569bb9042899fcaf20ed011` (41,506,592 bytes), Windows
+  `45036ca7adc119dbda80918a5fb212845db8b41684d048c0a1fae0bde279cc7a` (35,726,336 bytes). Final
+  preflight `preflight-20260720T043333Z.json` and independent fingerprint/hosts/PID/port/path checks
+  found zero residue; Brook remained inactive and Granite's original enabled PID 803 service was
+  unchanged. Windows cold recovery remains unclaimed.
+- Portable Tier-1 aggregation breadth now reuses the existing real-binary two-daemon harness. Both
+  concurrent isolated instances prove `/v1/status`, `/v1/host`, the centralized dashboard ladder,
+  public enabled MCP card, tokenless MCP 401, all 11 authenticated tools, all four resources, and a
+  live resource read. Both tests in `two_daemon_certmesh` pass, including the existing certmesh
+  enrollment/revocation story.
+- Guarded Docker event-stream reconnect is implemented without a host-daemon fault. The backend
+  preserves inventory on disconnect, flips runtime health at the single ingest chokepoint, retries
+  with bounded 250 ms→5 s backoff, pings and relists, emits exact stopped/started/updated deltas
+  through normal lifecycle policy, marks reconnected only after reconciliation, and uses an
+  inclusive Docker event cursor to close the relist→stream race. The orchestrator contains no
+  parallel reconnect engine. `koi-runtime` 47/0, `koi-compose` 14/0, focused Clippy, and diff
+  integrity pass. Physical event-stream fault/reconnect remains unclaimed until an owned recovery
+  mechanism can fault only a run-scoped endpoint without restarting a host Docker daemon.
 
 ## Current repository state
 
 - Workspace: `F:\Files\repo\github\sylin-org\koi`
 - Branch/upstream: `dev` tracking `origin/dev`, ahead 0 / behind 0 at handoff time.
-- HEAD: `2845e487803103e25c8bcccaf988209d0f6d1623`
-  (`docs: record release channel CI evidence`). The current V1-02/V1-03/V1-04 slices are implemented and
-  validated in the working tree but not yet committed.
-- Tracked changes implement V1-00 plus the V1-01 lab controller, safe deployment wrapper, physical
-  host runbook, ignore rule for generated `.lab-runs/` evidence, and workspace/lockfile wiring.
-  `.agentic/CONTEXT.md` and `SESSION-HANDOFF.md` carry continuation state. All remain uncommitted.
-- Other untracked state:
-  - `.oss-adoption/` — generated by this session's approved adoption analysis;
-  - `docs/animations/` — user-owned and pre-existing; do not alter without scope.
-- No commit, push, PR, release, or package publication was made. Run-scoped test deployments were
-  made to both dedicated Linux hosts and were cleaned up exactly; no deployed run remains.
+- HEAD: `1f3b2a3128ec4a19d726b6cf53c34da7693399e8`
+  (`docs: add animation production briefs`). The five commits after the prior handoff are pushed:
+  `4495e4e` trust/ACME hardening, `210b9da` runtime startup reconciliation, `24d128b` V1 lab proof,
+  `0b5d62c` adoption workspace, and `1f3b2a3` animation briefs.
+- The worktree is intentionally dirty with the Windows lifecycle, Tier-1 aggregation, reconnect,
+  evidence-documentation, and this preserved handoff work. Do not overwrite or discard it.
+- No PR, release, package publication, or other external publication was made. All run-scoped test
+  deployments were cleaned exactly. Fresh preflight `preflight-20260720T043333Z.json` at commit
+  `1f3b2a3` confirms Brook inactive, Granite's original enabled Koi 0.7.0 service still PID 803,
+  deploy readiness on all nodes, and no lab run/lock/listener residue.
 
 ## Evidence that changes the plan
 
@@ -420,9 +462,9 @@ evidence rather than a one-off demo.
 | V1-00 | Reconcile the acceptance contract and restore a trustworthy baseline | **complete — 2026-07-19** | Windows QA 128/128 + 2 skips; concurrency 50/50; fmt, all-feature clippy, full locked tests, audit and release build green; local Docker Linux certmesh exchange green; public contract/docs/dashboard aligned |
 | V1-01 | Lab inventory, preflight, locking, artifact identity, deployment and exact cleanup | **complete — 2026-07-19** | All three nodes identified; host keys pinned; prerequisites/time/ports checked; concurrent run refused with owner; identical binaries verified; dry-run and exact cleanup removed only run-owned state; original service/binaries preserved |
 | V1-02 | Certmesh protocol and native trust role rotations | **complete — 2026-07-19** | Forward and reverse Linux rotations plus the elevated Windows-client rotation pass fail-before, exact install, native clients, wrong-host rejection, tracked removal, fail-after, and full-store restoration. Windows additionally proves exact `LocalMachine\Root` SHA-256 identity, Schannel `curl.exe`, `Invoke-WebRequest`, and byte-exact hosts restoration. Configured `.internal` issuance is centralized. |
-| V1-03 | Certificate lifecycle and adversarial trust cases | **in progress — Linux lifecycle + cold recovery complete; Windows ACL custody green** | Both Linux roles prove wrong-pin refusal, mode-0600 custody, key/leaf/chain/SAN integrity, renewal/key rotation, restart, revocation→RED and generic-TLS limits; both also survive encrypted backup, exact data loss, host-bound restore, locked restart and renewed mTLS continuity. Windows now proves wrong-pin refusal before key creation, local enrollment/healthy roster state, and SID-based ACL custody for the data root, key, member state, and DAT breadcrumb. Windows renewal, restart continuity, revocation, and recovery remain. |
-| V1-04 | Real whole-story capability surface | **in progress — full physical Linux story green in both directions** | Acts 0, 3, 4, 5, 6, 7, 8, 10, and 11 plus real ACME dns-01 pass through DNS, multicast, Docker runtime/orchestrator derivation and reversal, self-signed and certmesh-issued proxy TLS, native trust install/remove, hot leaf rotation, health, UDP/SSE, status, dashboard, OpenAPI, Prometheus, MCP, and Unix IPC. Reusable Tier 1 breadth and Windows remain |
-| V1-05 | Resilience, reconnect, fault and soak lanes | **in progress — daemon restart/startup reconciliation green in both Linux directions** | An always-on regression and Brook↔Granite physical rotations prove a running container survives Koi restart and reconstructs runtime inventory, mDNS, DNS, health, and live proxy state before exact reversal/cleanup. Docker event reconnect, broader service lifecycle, capability loss/recovery, fault injection, and bounded soak remain |
+| V1-03 | Certificate lifecycle and adversarial trust cases | **in progress — Linux lifecycle/cold recovery and Windows lifecycle green** | Both Linux roles prove wrong-pin refusal, mode-0600 custody, key/leaf/chain/SAN integrity, renewal/key rotation, restart, revocation→RED and generic-TLS limits; both also survive encrypted backup, exact data loss, host-bound restore, locked restart and renewed mTLS continuity. Elevated Windows now proves SID-based custody, key/cert rotation and correspondence, CA-roster convergence, exact owned-child restart with identity/diagnosis/Schannel proxy continuity, revocation→RED/self-revoked, and mutation-free renewal/rejoin refusal. Windows cold recovery remains unclaimed. |
+| V1-04 | Real whole-story capability surface | **in progress — physical Linux story + portable Tier-1 aggregation green** | Acts 0, 3, 4, 5, 6, 7, 8, 10, and 11 plus real ACME dns-01 pass physically in both Linux directions. Two concurrent real local daemons now additionally prove the centralized HTTP status/host, dashboard, and authenticated MCP aggregation surfaces. Physical Windows whole-story breadth remains. |
+| V1-05 | Resilience, reconnect, fault and soak lanes | **in progress — startup reconciliation physical; event reconnect deterministic** | An always-on regression and Brook↔Granite physical rotations prove a running container survives Koi restart and reconstructs runtime inventory and derived resources. Docker event-stream reconnect now has centralized health, bounded retry, exact inventory deltas, and cursor replay tests; physical stream-fault proof, broader service lifecycle, capability loss/recovery, fault injection, and bounded soak remain. |
 | V1-06 | Automation, evidence ledger and v1 release gate | planned | Smoke/certmesh/full/soak profiles documented; scheduled hardware execution reliable; three consecutive full green runs; release evidence and `SURFACES.md` updated honestly |
 | V1-07 | Adoption/public-surface polish backed by proved behavior | **in progress — identity + publication foundation complete 2026-07-19** | ADR-024 canonizes “Let everything local find, trust, and talk” plus Find/Trust/Connect; ADR-025 establishes one attested artifact contract, no-build cargo-binstall metadata, tested npx bootstrap, gated OIDC publication, and safer release operation; registry activation, native-manager channels, evidence-gated compatibility claims and golden demo remain |
 
@@ -460,19 +502,14 @@ releases; soak is scheduled or explicitly invoked.
 
 ## Resume here
 
-1. Extend the proven run-owned Windows member pattern through the remaining V1-03 lifecycle checks:
-   key-rotating renewal, exact owned-daemon restart with identity/proxy continuity, revocation/RED,
-   and refusal without identity replacement. Keep it inside the tracked Windows trust transaction so
-   enrollment cannot install an untracked root. Do not claim Windows cold recovery until separately
-   implemented and physically executed.
-2. Complete the remaining reusable Tier 1 multi-instance HTTP/dashboard/MCP breadth; synthetic
-   runtime/orchestrator startup reconciliation, derivation, and reversal are already always-on.
-3. Continue V1-05 with a guarded Docker event-stream disconnect/reconnect design. Do not restart a
-   host Docker daemon casually: first preserve lab ownership boundaries and specify recovery of
-   inventory/events without duplicating the runtime/orchestrator policy path.
-4. Add capability loss/recovery, broader daemon/service lifecycle, fault-injection, and bounded
+1. Design the smallest physically safe Docker event-stream fault lane around a run-owned proxy or
+   socket endpoint; do not restart a host Docker daemon. It must prove disconnect health, preserved
+   registrations, exact relist deltas, cursor replay, reconnect health, and owner-checked cleanup.
+2. Add capability loss/recovery, broader daemon/service lifecycle, fault-injection, and bounded
    soak lanes after reconnect semantics are centralized.
-5. Upstream the Debian dangling-symlink fix to `os-truststore` when separate repository/publication
+3. Implement and physically execute Windows cold recovery only if exact encrypted backup/data-loss/
+   restore ownership can stay within the tracked Windows transaction; until then leave it unclaimed.
+4. Upstream the Debian dangling-symlink fix to `os-truststore` when separate repository/publication
    authority exists; then remove Koi lab's guarded compatibility branch.
 
 ## Implementation map
@@ -515,32 +552,34 @@ releases; soak is scheduled or explicitly invoked.
 - Do not claim the epic or a capability complete because a lower tier passes. Record the tier and
   the exact evidence.
 
-## Validation still owed
+## Current validation and evidence still owed
 
 - The current tree passes `cargo fmt --all -- --check`, all-target/all-feature Clippy with
   `-D warnings`, `cargo test --workspace --all-features --locked`, `cargo audit`, the surface-ledger
-  lint, and `git diff --check` on 2026-07-20. Focused startup-slice counts are `koi-compose` 14,
-  `koi-runtime` 43, and `koi-lab` 20 tests passed. Audit exits 0 with the two already dispositioned
+  lint, and `git diff --check` on 2026-07-20 after all work in this handoff. Focused counts are
+  `koi-runtime` 47, `koi-compose` 14, `koi-lab` 20, and the real-binary two-daemon integration 2;
+  all passed. Audit exits 0 with the two already dispositioned
   allowed warnings (`anyhow` RUSTSEC-2026-0190 and yanked transitive `spin 0.9.8`).
 - V1-00 is locally complete. Hosted Linux/macOS scheduled-QA evidence remains unavailable until
   changes are intentionally published to CI; do not conflate the local Linux container certmesh
   gate with the full cross-platform PowerShell QA lane.
 - All three native-trust rotations are physically proven, including exact Windows
   `LocalMachine\Root` install/remove, Schannel and `Invoke-WebRequest`, hosts restoration, and full
-  store-baseline restoration. Windows run-owned member ACL/key custody is also proven. No permanent
-  Windows trust root, Koi service, process, hosts mapping, or run-owned data remains.
-- Windows renewal/restart/revocation/recovery, privileged service lifecycle, reusable Tier 1 breadth, Docker reconnect,
-  remaining fault lanes, soak, scheduled execution, and three-consecutive-green v1 gate are
-  outstanding. Physical Linux Acts 0/3/4/5/6/7/8/10/11 plus ACME and daemon-restart startup
-  reconciliation are complete in both role directions.
+  store-baseline restoration. Windows run-owned ACL/key custody, renewal, exact restart continuity,
+  revocation, and mutation-free refusal are also proven. No permanent Windows trust root, Koi
+  service, process, hosts mapping, or run-owned data remains.
+- Windows cold recovery, privileged service lifecycle, physical Docker event-stream fault/reconnect,
+  remaining fault lanes, soak, scheduled execution, and the three-consecutive-green v1 gate are
+  outstanding. Portable Tier-1 HTTP/dashboard/MCP breadth and deterministic Docker reconnect are
+  green. Physical Linux Acts 0/3/4/5/6/7/8/10/11 plus ACME and daemon-restart startup reconciliation
+  are complete in both role directions.
 ## Open basket
 
-- **Now:** extend the proven Windows run-owned member through renewal, exact daemon restart,
-  revocation/RED, and identity-immutability evidence, with the same tracked trust and cleanup guards.
-- **Next if Windows is blocked:** design and implement guarded Docker event-stream reconnect,
-  then exercise it between Brook and Granite without broad or unowned host mutation. Complete
-  reusable Tier 1 multi-instance aggregation breadth alongside V1-05 where independent.
-- **Later in epic:** complete V1-02, then V1-03 through V1-06 in evidence-driven order.
+- **Now:** design a run-owned Docker API/event proxy fault lane that can interrupt only Koi's
+  connection, never the host daemon, and prove the implemented reconnect/reconciliation contract.
+- **Next:** capability loss/recovery and broader daemon/service lifecycle evidence; implement Windows
+  cold recovery only within an exact tracked backup/data-loss/restore transaction.
+- **Later in epic:** complete V1-03 through V1-06 in evidence-driven order.
 - **Deferred:** remaining V1-07 evidence-backed adoption/golden-demo work; first npm publication
   and trusted-publisher activation; GHCR public-visibility verification/fix; WinGet/Homebrew
   channel creation; and any other external publication.

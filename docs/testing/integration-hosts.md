@@ -157,7 +157,7 @@ because this private CA has no CRL distribution point; `-k`, `--insecure`, and
 restored byte-for-byte. After exact root removal, both native rejection and the complete captured
 store baseline were restored.
 
-That same tracked trust window now includes the smallest Windows V1-03 custody slice. A run-owned
+That same tracked trust window now includes the Windows V1-03 member lifecycle. A run-owned
 Windows daemon uses the local 18541–18555 port range, a run-owned `KOI_DATA_DIR`, and an isolated
 `ProgramData` breadcrumb. It must reject a wrong invite pin before creating a key, join Brook with
 local key custody, diagnose Healthy, and appear Active in Brook's roster. ACL evidence resolves
@@ -165,9 +165,33 @@ identities to SIDs and permits allow ACEs only for SYSTEM (`S-1-5-18`),
 BUILTIN\Administrators (`S-1-5-32-544`), and the current user; the data root and DAT breadcrumb
 must have inheritance disabled. Cleanup kills and waits for the exact spawned child, verifies the
 local owner marker, and deletes only `.lab-runs/<run-id>/windows-member`. Owner-checked remote
-cleanup then removed only that run. Final preflight `preflight-20260720T030419Z.json` found no lab
-listeners or run state and preserved Granite's original enabled Koi 0.7.0 service at PID 803.
-Windows renewal, restart continuity, revocation, and cold recovery are not yet claimed.
+cleanup removes only that run.
+
+Run `v1-20260720T043212Z-0b37baee` physically passed the extended transaction. The member rotated
+private-key hash `6b2e19a825fc4e92…` to `15cc14f07b399e07…` and certificate hash
+`242296e4a1cb2d2d…` to `f476482bb4f87205…`; production diagnosis verified correspondence and the
+CA roster converged to leaf fingerprint
+`76f4780218d52088ded4847b6f505057ddf5bf5e291350d8f5159477c68569c3`. The exact run-owned child
+restarted from PID 41980 to 19832 with identity, Healthy diagnosis, and Schannel proxy continuity,
+then restarted to PID 23936 to pull revocation. Diagnosis became RED with `self_revocation=red`;
+both renewal and fresh-invite rejoin were refused, and neither changed the active key or
+certificate. CA root SHA-256
+`c4de1f63a0c115ab689bccbaf84505e368e158807b19cb863e54102f6cbf64d0` was removed exactly and the
+complete store baseline matched. Locally built artifacts were Linux SHA-256
+`8178b6cd00fe9996bc6f2be748593124e6c9f4ba5569bb9042899fcaf20ed011` (41,506,592 bytes) and Windows
+SHA-256 `45036ca7adc119dbda80918a5fb212845db8b41684d048c0a1fae0bde279cc7a` (35,726,336 bytes).
+Final preflight `preflight-20260720T043333Z.json` plus independent store/hosts/PID/port/path checks
+found no run residue, kept Brook inactive, and preserved Granite's original enabled Koi 0.7.0 PID
+803. Windows cold recovery is still not claimed.
+
+The first two attempts were useful harness/product findings and were cleaned exactly. Run
+`v1-20260720T041817Z-3c30c620` exposed Schannel rejection at the local proxy; run
+`v1-20260720T042416Z-cf6a51fb` localized it to a freshly issued member leaf whose `notBefore` was a
+few seconds ahead of Windows. Certmesh now backdates certificate validity by its centralized
+300-second clock-skew tolerance without shortening expiry. Failed enrollment also stages its CSR
+key and cannot replace an active identity before a matching signed leaf is validated. The first
+failed run retains its redacted smoke report and the second its redacted
+`windows-member-failure.json`; no private key or DAT is retained.
 
 Debian testing exposed an `os-truststore 0.0.2` cleanup defect: uninstall removes the
 anchor, but `update-ca-certificates` can leave two dangling symlinks for that anchor.
