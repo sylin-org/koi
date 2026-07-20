@@ -26,6 +26,7 @@ pub mod health;
 pub mod http;
 pub mod init_ceremony;
 pub mod invite;
+mod issuance_names;
 pub mod lifecycle;
 pub mod member;
 pub mod mtls;
@@ -52,6 +53,7 @@ pub use bundle::SignedBundle;
 pub use client::PeerClient;
 pub use csr::sign_csr;
 pub use error::CertmeshError;
+pub use issuance_names::IssuanceNames;
 use roster::Roster;
 
 /// mDNS service type for CA discovery.
@@ -107,6 +109,8 @@ pub enum CertmeshEvent {
 pub(crate) struct CertmeshState {
     /// Resolved filesystem paths (immutable after construction).
     pub(crate) paths: CertmeshPaths,
+    /// Immutable certificate-name policy, injected once by the composition root.
+    pub(crate) issuance_names: IssuanceNames,
     pub(crate) ca: tokio::sync::Mutex<Option<ca::CaState>>,
     pub(crate) roster: tokio::sync::Mutex<Roster>,
     pub(crate) auth: tokio::sync::Mutex<Option<AuthState>>,

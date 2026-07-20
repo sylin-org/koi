@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use base64::Engine;
 use koi_certmesh::acme::{AcmeState, AcmeStateConfig};
 use koi_certmesh::{ca, roster::Roster, CertmeshCore, CertmeshPaths};
-use koi_common::integration::AcmeDnsSolver;
+use koi_common::integration::AcmeDnsResolver;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
 use serde_json::{json, Value};
@@ -50,7 +50,7 @@ fn normalize(name: &str) -> String {
     name.trim().trim_end_matches('.').to_lowercase()
 }
 
-impl AcmeDnsSolver for MemSolver {
+impl MemSolver {
     fn set_txt(&self, name: &str, value: &str) {
         let mut g = self.txt.lock().unwrap();
         let v = g.entry(normalize(name)).or_default();
@@ -58,9 +58,9 @@ impl AcmeDnsSolver for MemSolver {
             v.push(value.to_string());
         }
     }
-    fn clear_txt(&self, name: &str) {
-        self.txt.lock().unwrap().remove(&normalize(name));
-    }
+}
+
+impl AcmeDnsResolver for MemSolver {
     fn get_txt(&self, name: &str) -> Vec<String> {
         self.txt
             .lock()
@@ -102,7 +102,7 @@ fn acme_state_for(
     zone: &str,
 ) -> (Arc<AcmeState>, Arc<MemSolver>) {
     let solver = Arc::new(MemSolver::default());
-    let dns: Arc<dyn AcmeDnsSolver> = solver.clone();
+    let dns: Arc<dyn AcmeDnsResolver> = solver.clone();
     let state = fixture.core.acme_state(AcmeStateConfig {
         base_url: base_url.to_string(),
         zone: zone.to_string(),

@@ -201,7 +201,7 @@ async fn start_listeners(
     if !cfg.no_acme {
         if let Some(dns) = dns {
             let base_url = format!("https://{}:{}", local_fqdn(), cfg.acme_port);
-            let dns_solver: Arc<dyn koi_common::integration::AcmeDnsSolver> =
+            let dns_solver: Arc<dyn koi_common::integration::AcmeDnsResolver> =
                 koi_compose::bridges::AcmeDnsBridge::new(dns.clone());
             let acme_state = certmesh.acme_state(koi_certmesh::acme::AcmeStateConfig {
                 base_url,

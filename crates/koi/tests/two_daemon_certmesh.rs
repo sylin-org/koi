@@ -387,6 +387,7 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
             cert_pem: join.service_cert.clone(),
             ca_pem: join.ca_cert.clone(),
             ca_endpoint: Some(a_base.clone()),
+            ca_mtls_port: None,
             ca_fingerprint: Some(pinned_fp.clone()),
             sans: sans.clone(),
             policy: Some(join.policy.clone()),

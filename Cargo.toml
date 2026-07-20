@@ -90,7 +90,7 @@ hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["server", "tokio"] }
 http-body-util = "0.1"
 tokio-rustls = "0.26"
-x509-parser = "0.16"
+x509-parser = { version = "0.16", features = ["verify"] }
 notify = "6"
 rustls = "0.23"
 rustls-pemfile = "2"
@@ -120,6 +120,7 @@ time = "0.3"
 proptest = "1"
 crossterm = "0.28"
 indicatif = "0.18"
+instant-acme = { version = "0.8.5", features = ["hyper-rustls", "rcgen"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 hkdf = "0.12"

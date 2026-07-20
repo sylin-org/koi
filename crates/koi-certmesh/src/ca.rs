@@ -270,14 +270,30 @@ fn build_ca_state_from_der(
     ca_key_der: &[u8],
     paths: &crate::CertmeshPaths,
 ) -> Result<CaState, CertmeshError> {
-    let ca_key =
-        keys::ca_keypair_from_der(ca_key_der).map_err(|e| CertmeshError::Crypto(e.to_string()))?;
-
     let cert_path = paths.ca_cert_path();
     let cert_pem = std::fs::read_to_string(&cert_path)?;
 
+    build_ca_state_from_material(ca_key_der, &cert_pem)
+}
+
+/// Validate and reconstruct a CA entirely from in-memory key/certificate material.
+///
+/// Restore and promotion use this before touching persistent state so malformed or
+/// mismatched material cannot leave a half-installed CA behind.
+pub(crate) fn build_ca_state_from_material(
+    ca_key_der: &[u8],
+    cert_pem: &str,
+) -> Result<CaState, CertmeshError> {
+    let ca_key =
+        keys::ca_keypair_from_der(ca_key_der).map_err(|e| CertmeshError::Crypto(e.to_string()))?;
+    if !key_matches_certificate(&ca_key, cert_pem)? {
+        return Err(CertmeshError::Certificate(
+            "CA private key does not match CA certificate".into(),
+        ));
+    }
+
     // Parse the cert PEM to get DER for fingerprinting
-    let parsed = pem::parse(&cert_pem).map_err(|e| CertmeshError::Certificate(e.to_string()))?;
+    let parsed = pem::parse(cert_pem).map_err(|e| CertmeshError::Certificate(e.to_string()))?;
     let cert_der = parsed.contents().to_vec();
 
     // Rebuild rcgen KeyPair for signing operations
@@ -297,9 +313,31 @@ fn build_ca_state_from_der(
         key: ca_key,
         rcgen_key,
         ca_cert,
-        cert_pem,
+        cert_pem: cert_pem.to_owned(),
         cert_der,
     })
+}
+
+/// Whether a P-256 private key and certificate carry the same public key.
+///
+/// This is the single consistency check used by restore, promotion, and local
+/// identity validation. It compares the complete SubjectPublicKeyInfo DER.
+pub(crate) fn key_matches_certificate(
+    key: &CaKeyPair,
+    cert_pem: &str,
+) -> Result<bool, CertmeshError> {
+    use x509_parser::prelude::FromDer;
+
+    let cert_der = pem::parse(cert_pem)
+        .map_err(|e| CertmeshError::Certificate(format!("certificate PEM: {e}")))?;
+    let (_, cert) = x509_parser::certificate::X509Certificate::from_der(cert_der.contents())
+        .map_err(|e| CertmeshError::Certificate(format!("certificate DER: {e}")))?;
+    let key_pub_pem = key
+        .public_key_pem()
+        .map_err(|e| CertmeshError::Crypto(format!("public-key export: {e}")))?;
+    let key_spki = pem::parse(&key_pub_pem)
+        .map_err(|e| CertmeshError::Certificate(format!("public-key PEM: {e}")))?;
+    Ok(cert.public_key().raw == key_spki.contents())
 }
 
 /// Issue a service certificate **for the CA's own identity**, signed by this CA.

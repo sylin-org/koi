@@ -76,7 +76,7 @@ tower = { version = "0.5", features = ["util"] }
 # `builder_with_root` (hyper-rustls) pins the test CA root and speaks HTTPS, so the
 # conformance test also stands up a rustls TLS server with the daemon leaf. `rcgen`
 # lets instant-acme auto-generate the order's key + CSR at finalize.
-instant-acme = { version = "0.8.5", features = ["hyper-rustls", "rcgen"] }
+instant-acme.workspace = true
 # tokio-rustls / rustls / hyper-util / hyper / http-body-util are now normal deps
 # (the mtls server + client primitives); the ACME conformance test reuses them.
 tempfile = "3"

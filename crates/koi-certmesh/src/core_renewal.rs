@@ -27,10 +27,28 @@ impl CertmeshCore {
     ///
     /// Emits `CertRenewed`, `CertRenewalFailed`, and `CertExpiringSoon` lifecycle events.
     pub async fn renew_self_if_due(&self) -> Result<RenewOutcome, CertmeshError> {
+        self.renew_self_with_trigger(false).await
+    }
+
+    /// Operator-triggered rotate-key renewal for this enrolled member.
+    ///
+    /// This uses the exact same CSR-only, mTLS-authorized renewal transaction as
+    /// [`Self::renew_self_if_due`], but deliberately bypasses only the local
+    /// schedule check. CA-side membership, revocation, SAN, and identity policy
+    /// remain authoritative. It is useful when an operator needs to rotate a key
+    /// immediately after suspected exposure or prove reload behavior on demand.
+    pub async fn renew_self(&self) -> Result<RenewOutcome, CertmeshError> {
+        self.renew_self_with_trigger(true).await
+    }
+
+    async fn renew_self_with_trigger(
+        &self,
+        operator_requested: bool,
+    ) -> Result<RenewOutcome, CertmeshError> {
         // Inner function carries all the real work; this outer shell handles event
         // emission for every failure exit without scattering it across every `?`.
         let days_left_at_attempt = self.cert_days_left_if_member();
-        let result = self.renew_self_if_due_inner().await;
+        let result = self.renew_self_inner(operator_requested).await;
         match &result {
             Err(e) => {
                 let count = self
@@ -44,11 +62,13 @@ impl CertmeshCore {
                 });
                 // Only emit CertExpiringSoon when the cert is actually past the renewal
                 // threshold (i.e. we attempted renewal, not just "not due").
-                if let Some(days) = days_left_at_attempt {
-                    let _ = self
-                        .state
-                        .event_tx
-                        .send(CertmeshEvent::CertExpiringSoon { days_left: days });
+                if !operator_requested {
+                    if let Some(days) = days_left_at_attempt {
+                        let _ = self
+                            .state
+                            .event_tx
+                            .send(CertmeshEvent::CertExpiringSoon { days_left: days });
+                    }
                 }
             }
             Ok(RenewOutcome::Renewed { ref expires, .. }) => {
@@ -210,10 +230,17 @@ impl CertmeshCore {
         Some((not_after - chrono::Utc::now()).num_days())
     }
 
-    async fn renew_self_if_due_inner(&self) -> Result<RenewOutcome, CertmeshError> {
-        let Some(state) = member::load(&self.state.paths.member_state_path()) else {
+    async fn renew_self_inner(
+        &self,
+        operator_requested: bool,
+    ) -> Result<RenewOutcome, CertmeshError> {
+        let Some(mut state) = member::load(&self.state.paths.member_state_path()) else {
             return Ok(RenewOutcome::NotApplicable);
         };
+        let renewal_sans = self
+            .state
+            .issuance_names
+            .member_sans(&state.hostname, &state.sans)?;
 
         let cert_dir = self.state.paths.certs_dir().join(&state.hostname);
         // Read the current key + cert + pinned CA off the blocking pool.
@@ -234,14 +261,15 @@ impl CertmeshCore {
             CertmeshError::Internal("cannot parse local leaf expiry for renewal".into())
         })?;
         let threshold = chrono::Duration::days(i64::from(state.policy.renew_threshold_days));
-        if chrono::Utc::now() + threshold < not_after {
+        let names_current = IssuanceNames::certificate_covers(&current_cert, &renewal_sans);
+        if !operator_requested && chrono::Utc::now() + threshold < not_after && names_current {
             return Ok(RenewOutcome::NotDue { not_after });
         }
 
         // Rotate: fresh keypair + CSR. The new key lives only in memory until the
         // CA-signed leaf is in hand, so a failed renewal never discards the
         // working key.
-        let (new_key_pem, csr_pem) = csr::generate_keypair_and_csr(&state.hostname, &state.sans)?;
+        let (new_key_pem, csr_pem) = csr::generate_keypair_and_csr(&state.hostname, &renewal_sans)?;
         let req_body = serde_json::to_string(&protocol::RenewRequest {
             hostname: state.hostname.clone(),
             csr: csr_pem,
@@ -317,6 +345,12 @@ impl CertmeshCore {
         .await
         .map_err(|e| CertmeshError::Internal(format!("write renewed cert task: {e}")))??;
 
+        // Persist the centrally-derived set only after the matching leaf is safely
+        // installed. This migrates pre-zone member state without risking the
+        // working certificate when renewal fails.
+        state.sans = renewal_sans;
+        member::save(&self.state.paths.member_state_path(), &state)?;
+
         tracing::info!(hostname = %state.hostname, expires = %resp.expires, "Member certificate renewed (rotated key)");
 
         // Run the local reload hook, if configured.
@@ -388,9 +422,12 @@ impl CertmeshCore {
                 return Err(CertmeshError::Revoked(authenticated_cn.to_string()));
             }
             match roster.find_member(authenticated_cn) {
-                Some(m) if m.status == crate::roster::MemberStatus::Active => {
-                    (m.cert_sans.clone(), roster.metadata.policy.clone())
-                }
+                Some(m) if m.status == crate::roster::MemberStatus::Active => (
+                    self.state
+                        .issuance_names
+                        .member_sans(authenticated_cn, &m.cert_sans)?,
+                    roster.metadata.policy.clone(),
+                ),
                 Some(_) => {
                     // Non-active (e.g. a status that bypassed is_revoked) → 403,
                     // not a 500; this is an authorization refusal, not a fault.
@@ -444,6 +481,7 @@ impl CertmeshCore {
                 if let Some(member) = roster.find_member_mut(authenticated_cn) {
                     member.cert_fingerprint = fingerprint.clone();
                     member.cert_expires = expires;
+                    member.cert_sans = authorized_sans.clone();
                     member.last_seen = Some(chrono::Utc::now());
                 }
                 Ok(())

@@ -758,6 +758,8 @@ fn map_dns_event(event: koi_dns::DnsEvent) -> KoiEvent {
     match event {
         koi_dns::DnsEvent::EntryUpdated { name, ip } => KoiEvent::DnsEntryUpdated { name, ip },
         koi_dns::DnsEvent::EntryRemoved { name } => KoiEvent::DnsEntryRemoved { name },
+        koi_dns::DnsEvent::TxtUpdated { name } => KoiEvent::DnsTxtUpdated { name },
+        koi_dns::DnsEvent::TxtRemoved { name } => KoiEvent::DnsTxtRemoved { name },
     }
 }
 
@@ -975,8 +977,8 @@ mod tests {
         // Fresh machine: no CA yet. The uninitialized early-return must still
         // carry the injected paths — this is the regression the dropped-paths
         // bug (uninitialized branches dropping `paths`) used to fail.
-        let fresh =
-            koi_compose::cores::init_certmesh_core(Some(&data_dir)).expect("uninitialized core");
+        let fresh = koi_compose::cores::init_certmesh_core(Some(&data_dir), "internal")
+            .expect("uninitialized core");
         assert_eq!(
             fresh.paths().data_dir(),
             data_dir.as_path(),
@@ -993,8 +995,8 @@ mod tests {
 
         // Reopen on the same injected dir: the CA is discovered there and the
         // core unlocks from it — proving the data root is honored end-to-end.
-        let reopened =
-            koi_compose::cores::init_certmesh_core(Some(&data_dir)).expect("locked core");
+        let reopened = koi_compose::cores::init_certmesh_core(Some(&data_dir), "internal")
+            .expect("locked core");
         assert_eq!(reopened.paths().data_dir(), data_dir.as_path());
         reopened
             .unlock("test-pass-strong")
@@ -1112,6 +1114,20 @@ mod tests {
             }
             other => panic!("expected DnsEntryRemoved, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn map_dns_txt_lifecycle_omits_values() {
+        let name = "_acme-challenge.service.internal.";
+        let updated = map_dns_event(koi_dns::DnsEvent::TxtUpdated {
+            name: name.to_string(),
+        });
+        let removed = map_dns_event(koi_dns::DnsEvent::TxtRemoved {
+            name: name.to_string(),
+        });
+
+        assert!(matches!(updated, KoiEvent::DnsTxtUpdated { name: mapped } if mapped == name));
+        assert!(matches!(removed, KoiEvent::DnsTxtRemoved { name: mapped } if mapped == name));
     }
 
     // ── map_certmesh_event ─────────────────────────────────────────

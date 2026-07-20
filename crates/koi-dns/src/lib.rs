@@ -15,6 +15,9 @@ pub use resolver::{DnsConfig, DnsCore, DnsError, DnsEvent, DnsLookupResult};
 pub use runtime::{DnsRuntime, DnsRuntimeStatus};
 pub use zone::DnsZone;
 
+/// Product-wide default for Koi's authoritative local DNS zone.
+pub const DEFAULT_ZONE: &str = "internal";
+
 /// Firewall ports required by the DNS capability.
 pub fn firewall_ports(config: &DnsConfig) -> Vec<FirewallPort> {
     vec![

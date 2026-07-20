@@ -631,7 +631,42 @@ pub fn set_hook(
 
 // ── Join ────────────────────────────────────────────────────────────
 
-pub async fn join(endpoint: Option<&str>, invite: Option<&str>, json: bool) -> anyhow::Result<()> {
+/// Rotate this enrolled member's private key and renew its leaf immediately.
+///
+/// The local daemon generates the replacement key and contacts the CA over the
+/// normal mTLS renewal channel. The private key never leaves this host.
+pub fn renew(json: bool, endpoint: Option<&str>, token: Option<&str>) -> anyhow::Result<()> {
+    let client = require_daemon(endpoint, token)?;
+    let response = client.post_json("/v1/certmesh/renew-self", &serde_json::json!({}))?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        let expires = response
+            .get("expires")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown");
+        println!("Certificate renewed; private key rotated. Expires {expires}.");
+        if let Some(hook) = response.get("hook") {
+            let success = hook
+                .get("success")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            println!(
+                "Reload hook: {}",
+                if success { "succeeded" } else { "failed" }
+            );
+        }
+    }
+    Ok(())
+}
+
+pub async fn join(
+    endpoint: Option<&str>,
+    invite: Option<&str>,
+    ca_mtls_port: Option<u16>,
+    json: bool,
+) -> anyhow::Result<()> {
     // The local daemon owns key custody (ADR-015 F1): it generates the member
     // keypair, persists the private key, and installs the signed cert. The CLI
     // only carries public material (CSR out, cert back).
@@ -698,7 +733,7 @@ pub async fn join(endpoint: Option<&str>, invite: Option<&str>, json: bool) -> a
         "/v1/certmesh/member-csr",
         &serde_json::json!({
             "hostname": local_hostname,
-            "sans": [local_hostname, format!("{local_hostname}.local")],
+            "sans": [],
         }),
     )?;
     let csr = csr_resp
@@ -746,6 +781,9 @@ pub async fn join(endpoint: Option<&str>, invite: Option<&str>, json: bool) -> a
     install_body.insert("cert_pem".into(), serde_json::json!(service_cert));
     install_body.insert("ca_pem".into(), serde_json::json!(ca_cert));
     install_body.insert("ca_endpoint".into(), serde_json::json!(resolved_endpoint));
+    if let Some(port) = ca_mtls_port {
+        install_body.insert("ca_mtls_port".into(), serde_json::json!(port));
+    }
     // Pin the install to the OUT-OF-BAND fingerprint from the invite when we have
     // one (F3) — so the local daemon hard-fails if the CA returned a cert that does
     // not match the pin (a /join MITM that slipped past preflight). Without an
@@ -760,10 +798,7 @@ pub async fn join(endpoint: Option<&str>, invite: Option<&str>, json: bool) -> a
     if let Some(fp) = install_fp {
         install_body.insert("ca_fingerprint".into(), serde_json::json!(fp));
     }
-    install_body.insert(
-        "sans".into(),
-        serde_json::json!([local_hostname, format!("{local_hostname}.local")]),
-    );
+    install_body.insert("sans".into(), serde_json::json!([]));
     if let Some(policy) = resp.get("policy") {
         install_body.insert("policy".into(), policy.clone());
     }

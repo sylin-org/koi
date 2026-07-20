@@ -293,7 +293,11 @@ impl CertmeshCore {
         let now = chrono::Utc::now();
         let (integrity_ok, self_revoked) = match &identity {
             Some(id) => {
-                let integrity = diagnosis::leaf_chains_to_ca(&id.cert_pem, &id.ca_cert_pem);
+                let integrity = diagnosis::identity_material_is_usable(
+                    &id.cert_pem,
+                    &id.key_pem,
+                    &id.ca_cert_pem,
+                );
                 // Has this node's own identity been revoked mesh-wide? Hostname-keyed,
                 // the same authoritative signal the outbound self-gate uses.
                 let self_revoked = self.is_self_revoked().await;

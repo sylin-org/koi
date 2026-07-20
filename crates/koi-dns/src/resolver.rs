@@ -36,13 +36,18 @@ const TCP_RESPONSE_BUFFER: usize = 32;
 /// Alias feedback flush interval.
 const FEEDBACK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Events emitted by the DNS subsystem when static entries change.
+/// Events emitted by the DNS subsystem when managed records change.
 #[derive(Debug, Clone)]
 pub enum DnsEvent {
     /// A static DNS entry was added or updated.
     EntryUpdated { name: String, ip: String },
     /// A static DNS entry was removed.
     EntryRemoved { name: String },
+    /// An ephemeral TXT value was published. The value is intentionally omitted
+    /// because dashboard events are observational and may be unauthenticated.
+    TxtUpdated { name: String },
+    /// An ephemeral TXT value was removed.
+    TxtRemoved { name: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -85,7 +90,7 @@ impl Default for DnsConfig {
         Self {
             bind_addr: IpAddr::from([0, 0, 0, 0]),
             port: 53,
-            zone: "lan".to_string(),
+            zone: crate::DEFAULT_ZONE.to_string(),
             local_ttl: DEFAULT_LOCAL_TTL,
             allow_public_clients: false,
             max_qps: DEFAULT_MAX_QPS,
@@ -238,9 +243,11 @@ impl DnsCore {
     pub fn add_txt(&self, name: &str, value: &str) {
         let key = normalize_txt_name(name);
         let mut guard = self.txt_records.write().unwrap_or_else(|e| e.into_inner());
-        let values = guard.entry(key).or_default();
+        let values = guard.entry(key.clone()).or_default();
         if !values.iter().any(|v| v == value) {
             values.push(value.to_string());
+            drop(guard);
+            self.emit(DnsEvent::TxtUpdated { name: key });
         }
     }
 
@@ -248,7 +255,31 @@ impl DnsCore {
     pub fn remove_txt(&self, name: &str) {
         let key = normalize_txt_name(name);
         let mut guard = self.txt_records.write().unwrap_or_else(|e| e.into_inner());
-        guard.remove(&key);
+        if guard.remove(&key).is_some() {
+            drop(guard);
+            self.emit(DnsEvent::TxtRemoved { name: key });
+        }
+    }
+
+    /// Remove one exact ephemeral TXT value without disturbing concurrent values
+    /// at the same owner name. Returns whether the value was present.
+    pub fn remove_txt_value(&self, name: &str, value: &str) -> bool {
+        let key = normalize_txt_name(name);
+        let mut guard = self.txt_records.write().unwrap_or_else(|e| e.into_inner());
+        let Some(values) = guard.get_mut(&key) else {
+            return false;
+        };
+        let before = values.len();
+        values.retain(|candidate| candidate != value);
+        let removed = values.len() != before;
+        if values.is_empty() {
+            guard.remove(&key);
+        }
+        if removed {
+            drop(guard);
+            self.emit(DnsEvent::TxtRemoved { name: key });
+        }
+        removed
     }
 
     /// Return the currently published TXT values for `name` (empty if none).
@@ -895,6 +926,33 @@ mod tests {
         assert!(!core.get_txt("_acme-challenge.gone.lan").is_empty());
         core.remove_txt("_acme-challenge.gone.lan");
         assert!(core.get_txt("_acme-challenge.gone.lan").is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_txt_value_preserves_concurrent_values_and_emits_names_only() {
+        let core = test_core().await;
+        let mut rx = core.subscribe();
+        core.add_txt("_acme-challenge.shared.lan", "token-1");
+        core.add_txt("_acme-challenge.shared.lan", "token-2");
+        assert!(matches!(
+            rx.try_recv().expect("first publish event"),
+            DnsEvent::TxtUpdated { name } if name == "_acme-challenge.shared.lan."
+        ));
+        assert!(matches!(
+            rx.try_recv().expect("second publish event"),
+            DnsEvent::TxtUpdated { name } if name == "_acme-challenge.shared.lan."
+        ));
+
+        assert!(core.remove_txt_value("_acme-challenge.shared.lan", "token-1"));
+        assert_eq!(
+            core.get_txt("_acme-challenge.shared.lan"),
+            vec!["token-2".to_string()]
+        );
+        assert!(matches!(
+            rx.try_recv().expect("exact removal event"),
+            DnsEvent::TxtRemoved { name } if name == "_acme-challenge.shared.lan."
+        ));
+        assert!(!core.remove_txt_value("_acme-challenge.shared.lan", "missing"));
     }
 
     /// get_txt on an unknown name returns empty.

@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use crate::cli::{
-    CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, HealthSubcommand, McpSubcommand,
-    MdnsSubcommand, ProxySubcommand, TrustSubcommand, UdpSubcommand,
+    CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, DnsTxtSubcommand, HealthSubcommand,
+    McpSubcommand, MdnsSubcommand, ProxySubcommand, TrustSubcommand, UdpSubcommand,
 };
 use crate::commands::status::try_daemon_status;
 use crate::daemon::daemon_mode;
@@ -114,9 +114,11 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     Some(CertmeshSubcommand::SetHook { reload }) => {
                         commands::certmesh::set_hook(reload, cli.json, ep, tok)
                     }
+                    Some(CertmeshSubcommand::Renew) => commands::certmesh::renew(cli.json, ep, tok),
                     Some(CertmeshSubcommand::Join {
                         ca_endpoint,
                         invite,
+                        ca_mtls_port,
                     }) => {
                         // No `ep`/`tok` (global --endpoint/--token): `join` resolves its
                         // LOCAL key-custody daemon from the breadcrumb itself, and the CA
@@ -125,6 +127,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         commands::certmesh::join(
                             ca_endpoint.as_deref(),
                             invite.as_deref(),
+                            *ca_mtls_port,
                             cli.json,
                         )
                         .await
@@ -190,6 +193,14 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     Some(DnsSubcommand::Remove { name }) => {
                         commands::dns::remove(name, mode, cli.json, &config.dns_zone)
                     }
+                    Some(DnsSubcommand::Txt(txt)) => match &txt.command {
+                        DnsTxtSubcommand::Set { name, value } => {
+                            commands::dns::txt_set(name, value, mode, cli.json)
+                        }
+                        DnsTxtSubcommand::Clear { name, value } => {
+                            commands::dns::txt_clear(name, value, mode, cli.json)
+                        }
+                    },
                     Some(DnsSubcommand::List) => commands::dns::list(mode, cli.json, &config).await,
                 }
             }
@@ -308,7 +319,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     }
                     Some(TrustSubcommand::Export { ca }) => commands::trust::export(*ca, cli.json),
                     Some(TrustSubcommand::Diagnose { fix }) => {
-                        commands::trust::diagnose(*fix, cli.json).await
+                        commands::trust::diagnose(*fix, cli.json, &config.dns_zone).await
                     }
                 }
             }

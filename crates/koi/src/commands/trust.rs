@@ -69,11 +69,13 @@ fn install_cert(cert: &os_truststore::Cert, name: &str, source: &str) -> anyhow:
 /// mirroring `export`), runs the single `CertmeshCore::diagnose` logic, prints a
 /// loud report, and **exits non-zero when anything is RED**. `--fix` installs the
 /// mesh CA into the OS trust store (the one auto-fixable remedy).
-pub async fn diagnose(fix: bool, json: bool) -> anyhow::Result<()> {
-    let core = tokio::task::spawn_blocking(|| koi_compose::cores::init_certmesh_core(None))
-        .await
-        .map_err(|e| anyhow::anyhow!("certmesh init task: {e}"))?
-        .ok_or_else(|| anyhow::anyhow!("certmesh is unavailable on this node"))?;
+pub async fn diagnose(fix: bool, json: bool, dns_zone: &str) -> anyhow::Result<()> {
+    let dns_zone = dns_zone.to_string();
+    let core = tokio::task::spawn_blocking(move || {
+        koi_compose::cores::init_certmesh_core(None, &dns_zone)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("certmesh init task: {e}"))??;
 
     // --fix: install the mesh CA so local apps trust mesh certs (the actionable
     // remedy for the ca_trust_install check). Best-effort; reported, never fatal.

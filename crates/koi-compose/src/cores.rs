@@ -146,7 +146,7 @@ impl CoreSpec {
 
 /// Initialize the certmesh core, auto-unlocking from the vault when a key is present.
 ///
-/// Always returns `Some` (so HTTP routes mount even before `koi certmesh create`):
+/// Always returns a core (so HTTP routes mount even before `koi certmesh create`):
 /// - CA not initialized → an uninitialized core (routes reachable for `/create`);
 /// - CA initialized + a vault auto-unlock key present → booted **already unlocked**,
 ///   collapsing the old "create locked → read key → unlock" three-step;
@@ -154,7 +154,10 @@ impl CoreSpec {
 ///
 /// This is the converged single definition shared by the daemon, the Windows service, and
 /// koi-embedded (the daemon path thereby gains the vault auto-unlock embedded already had).
-pub fn init_certmesh_core(data_dir: Option<&Path>) -> Option<Arc<koi_certmesh::CertmeshCore>> {
+pub fn init_certmesh_core(
+    data_dir: Option<&Path>,
+    dns_zone: &str,
+) -> Result<Arc<koi_certmesh::CertmeshCore>, koi_certmesh::CertmeshError> {
     // Composition root: resolve the data dir once (Some -> injected dir, None -> the one
     // default) and thread it into every branch so a custom data_dir is honoured end-to-end,
     // including the early returns.
@@ -163,9 +166,9 @@ pub fn init_certmesh_core(data_dir: Option<&Path>) -> Option<Arc<koi_certmesh::C
     );
     if !paths.is_ca_initialized() {
         tracing::info!("Certmesh: CA not initialized - routes mounted for /create");
-        return Some(Arc::new(
-            koi_certmesh::CertmeshCore::uninitialized_with_paths(paths),
-        ));
+        let core =
+            koi_certmesh::CertmeshCore::uninitialized_with_paths(paths).with_dns_zone(dns_zone)?;
+        return Ok(Arc::new(core));
     }
 
     let roster_path = paths.roster_path();
@@ -173,9 +176,9 @@ pub fn init_certmesh_core(data_dir: Option<&Path>) -> Option<Arc<koi_certmesh::C
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to load certmesh roster - using uninitialized state");
-            return Some(Arc::new(
-                koi_certmesh::CertmeshCore::uninitialized_with_paths(paths),
-            ));
+            let core = koi_certmesh::CertmeshCore::uninitialized_with_paths(paths)
+                .with_dns_zone(dns_zone)?;
+            return Ok(Arc::new(core));
         }
     };
 
@@ -221,12 +224,14 @@ pub fn init_certmesh_core(data_dir: Option<&Path>) -> Option<Arc<koi_certmesh::C
                         };
 
                         tracing::info!("Certmesh CA auto-unlocked at init from vault");
-                        return Some(Arc::new(koi_certmesh::CertmeshCore::new_with_paths(
+                        let core = koi_certmesh::CertmeshCore::new_with_paths(
                             ca_state,
                             fresh_roster,
                             auth,
                             paths,
-                        )));
+                        )
+                        .with_dns_zone(dns_zone)?;
+                        return Ok(Arc::new(core));
                     }
                 }
                 Err(e) => {
@@ -241,8 +246,9 @@ pub fn init_certmesh_core(data_dir: Option<&Path>) -> Option<Arc<koi_certmesh::C
 
     // No auto-unlock key - boot locked
     tracing::info!("Certmesh: CA initialized (locked, use `koi certmesh unlock` to decrypt)");
-    let core = koi_certmesh::CertmeshCore::locked_with_paths(roster, paths);
-    Some(Arc::new(core))
+    let core =
+        koi_certmesh::CertmeshCore::locked_with_paths(roster, paths).with_dns_zone(dns_zone)?;
+    Ok(Arc::new(core))
 }
 
 /// Build all domain cores + cross-domain bridges, then spawn the caller-invariant domain
@@ -278,8 +284,20 @@ pub async fn build_cores(
     // a blocking thread rather than stalling the async executor — the daemon gains this too.
     let certmesh_core = if !spec.no_certmesh {
         let data_dir = spec.data_dir.clone();
-        match tokio::task::spawn_blocking(move || init_certmesh_core(data_dir.as_deref())).await {
-            Ok(core) => core,
+        let dns_zone = spec.dns_config.zone.clone();
+        match tokio::task::spawn_blocking(move || {
+            init_certmesh_core(data_dir.as_deref(), &dns_zone)
+        })
+        .await
+        {
+            Ok(Ok(core)) => Some(core),
+            Ok(Err(e)) => {
+                if spec.fail_fast {
+                    return Err(BuildCoresError::CertmeshInit(e.to_string()));
+                }
+                tracing::error!(error = %e, "certmesh initialization failed");
+                None
+            }
             Err(e) => {
                 if spec.fail_fast {
                     return Err(BuildCoresError::CertmeshInit(e.to_string()));
@@ -573,7 +591,7 @@ mod tests {
         .expect("CA create");
 
         // Same host (machine.bind matches) → the boot path auto-unlocks.
-        let booted = init_certmesh_core(Some(&base)).expect("core");
+        let booted = init_certmesh_core(Some(&base), "internal").expect("core");
         assert!(
             !booted.certmesh_status().await.ca_locked,
             "matching machine binding should auto-unlock at boot"
@@ -582,7 +600,7 @@ mod tests {
         // Simulate a clone/restore: overwrite the recorded fingerprint. The boot
         // path must now refuse auto-unlock and come up LOCKED.
         std::fs::write(paths.machine_bind_path(), b"not-this-host-fingerprint").unwrap();
-        let booted_after = init_certmesh_core(Some(&base)).expect("core");
+        let booted_after = init_certmesh_core(Some(&base), "internal").expect("core");
         assert!(
             booted_after.certmesh_status().await.ca_locked,
             "a changed machine fingerprint must refuse auto-unlock at boot (F11)"

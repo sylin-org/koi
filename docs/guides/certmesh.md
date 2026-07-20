@@ -131,6 +131,13 @@ From a second machine, joining is a single command. The preferred form passes th
 koi certmesh join http://node-01:5641 --invite 9f3a…d7c1.a1b2c3d4…
 ```
 
+If the CA was started with a non-default `--mtls-port`, record that renewal
+endpoint explicitly during enrollment:
+
+```bash
+koi certmesh join http://node-01:16541 --ca-mtls-port 16542 --invite 9f3a…d7c1.a1b2c3d4…
+```
+
 Without an invite, Koi falls back to a TOTP join: with no endpoint it browses the LAN for a `_certmesh._tcp` CA via mDNS (see "Finding the CA"); if it can't find exactly one, it asks you to pass the endpoint directly, then prompts for the mesh TOTP code:
 
 ```
@@ -413,6 +420,11 @@ backup passphrase** (to encrypt the bundle); `restore` prompts for that backup p
 and a new CA passphrase to re-protect the restored key. Keep the backup passphrase with
 the bundle — it is what decrypts it, independent of the CA passphrase. See the
 [HA & recovery runbook](certmesh-ha-recovery.md) for the full backup/restore + standby-promote procedure.
+
+Restore validates the complete bundle, including CA key/certificate correspondence, before
+replacing state. A successful restore re-binds clone protection to the recovery host, creates or
+repairs that host's CA leaf, and brings the trust plane online immediately. Automatic unlock is
+not restored: after the next daemon restart, unlock with the new CA passphrase deliberately.
 
 ---
 

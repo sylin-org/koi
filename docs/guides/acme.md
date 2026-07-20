@@ -7,9 +7,9 @@ a certificate the same way they ask Let's Encrypt — no plugin, no Koi-specific
 no rip-and-replace?
 
 That is exactly what the ACME facade does. Koi runs a small **RFC 8555 server** in front of
-its CA. Point any standard ACME client at Koi's directory URL, have it trust the CA root
-once, and it gets certificates for names inside your Koi DNS zone — automatically renewed,
-with zero Koi knowledge on the client side.
+its CA. Point an ACME client at Koi's directory URL, have it trust the CA root once, and
+connect its dns-01 provider to Koi's two-command TXT interface. It can then obtain and
+renew certificates for names inside your Koi DNS zone.
 
 This is the collaboration doctrine in action: Koi is the substrate under the tools you
 already run. You keep Caddy/Traefik; Koi is just the CA they talk to.
@@ -18,9 +18,9 @@ already run. You keep Caddy/Traefik; Koi is just the CA they talk to.
 
 ## Scope (what this is, and isn't)
 
-- **dns-01 only.** Koi serves the `dns-01` challenge and solves it **in-process** via its
-  own DNS resolver — there is no DNS propagation wait, and **wildcards + offline issuance
-  work**. `http-01` and `tls-alpn-01` are out of scope (a possible follow-up).
+- **dns-01 only.** The client's provider publishes through `koi dns txt set`; Koi validates
+  against its own DNS resolver. There is no public-DNS propagation wait, and **wildcards +
+  offline issuance work**. `http-01` and `tls-alpn-01` are out of scope.
 - **EC / ES256 only (v1).** Account keys must be P-256 ECDSA. `RS256` is rejected with
   `badSignatureAlgorithm`. (Most modern ACME clients default to or support EC keys.)
 - **In-zone names only.** Koi issues **only** for identifiers inside your Koi DNS zone
@@ -41,8 +41,8 @@ already run. You keep Caddy/Traefik; Koi is just the CA they talk to.
    chains to the CA root, a client that trusts the root trusts the listener.
 3. A client registers an account (its EC public key), creates an order for a name in your
    zone, and is handed a `dns-01` challenge.
-4. The client writes the challenge TXT — and because Koi *is* the DNS resolver for the zone,
-   it reads the value straight back in-process and marks the challenge valid. No waiting.
+4. The client's provider calls `koi dns txt set <name> <value>`. Koi serves that ephemeral
+   value over DNS and the ACME validator reads it through the same DNS core.
 5. The client finalizes with a CSR. Koi signs **only** the order's authorized names — any
    extra SAN snuck into the CSR is rejected (`badCSR`). The issued leaf + CA chain is
    returned.
@@ -50,8 +50,8 @@ already run. You keep Caddy/Traefik; Koi is just the CA they talk to.
    `koi certmesh status` and renewal accounting alongside TOTP-enrolled members.
 
 The server starts automatically with the daemon when the CA is **initialized + unlocked**.
-Disable it with `--no-acme` / `KOI_NO_ACME=1`. It needs the DNS capability (the dns-01
-solver writes into the DNS core); with `--no-dns` it is skipped.
+Disable it with `--no-acme` / `KOI_NO_ACME=1`. It needs the DNS capability; with
+`--no-dns` it is skipped.
 
 ---
 
@@ -85,25 +85,29 @@ In every recipe below, replace `<dir>` with your directory URL
 (`https://<daemon-host>:5643/acme/directory`) and `<ca-root>` with the path to the CA root
 PEM (`<data-dir>/certmesh/ca/ca-cert.pem`).
 
-### Caddy
+### Provider hook
 
-Caddy points at a custom ACME CA with `acme_ca`, and trusts its root with `acme_ca_root`:
+Every client needs a dns-01 provider. The provider has exactly two Koi operations:
 
-```caddyfile
-{
-    # Global options
-    acme_ca         <dir>
-    acme_ca_root    <ca-root>
-}
+```bash
+# present
+koi dns txt set _acme-challenge.app.internal "$VALUE"
 
-grafana.internal {
-    reverse_proxy localhost:3000
-}
+# cleanup — removes only this value, preserving concurrent challenges
+koi dns txt clear _acme-challenge.app.internal "$VALUE"
 ```
 
-Caddy will request `grafana.internal` from Koi over ACME, solve the dns-01 challenge, and renew
-automatically. (Caddy's internal issuer also accepts `dir`/`trusted_roots_pem_files` under
-`tls { issuer acme { … } }` for per-site control.)
+Both commands require the daemon access token, just like other DNS mutations. Run the hook
+where `koi` can read the daemon breadcrumb, or pass the normal `--endpoint` and `--token`
+options. Values are memory-only and are not written to Koi's persistent DNS state.
+
+### Caddy
+
+Caddy can point its ACME issuer at `<dir>` and trust `<ca-root>`, but Koi offers dns-01
+only. A stock Caddy build without a DNS provider cannot complete this flow. Use a Caddy
+build/provider module that can invoke the two operations above; then configure the site
+issuer with Koi's directory and root. This limitation is explicit: Koi does not pretend
+that `acme_ca` alone supplies a dns-01 provider.
 
 ### Traefik
 
@@ -119,17 +123,13 @@ certificatesResolvers:
       email: you@example.invalid
       storage: /etc/traefik/acme.json
       dnsChallenge:
-        # Traefik's dns-01 needs a provider to WRITE the TXT record. Use an
-        # `exec`/`httpreq` provider that writes into Koi's DNS, or run the client
-        # on the Koi host so the TXT lands in the same resolver. (Koi reads the
-        # TXT back in-process to validate.)
+        # Use an exec/HTTP provider that maps present and cleanup to
+        # `koi dns txt set` and `koi dns txt clear`.
         provider: exec
 ```
 
-> Note: Traefik (like lego) needs a dns-01 provider to publish the TXT record. Koi solves
-> the challenge in-process, but the *client* still has to put the value somewhere Koi's
-> resolver can see it — point the provider at Koi's DNS (`koi dns add` / the DNS API) or run
-> the client where it can write into the same zone.
+`koi dns add` creates address records and is deliberately not used for ACME challenges.
+Provider hooks must use `koi dns txt set/clear` or `PUT/DELETE /v1/dns/txt`.
 
 ### lego
 
@@ -148,8 +148,8 @@ lego \
   run
 ```
 
-The `koi-dns-hook.sh` script `lego` calls (with `present`/`cleanup` + the FQDN + value)
-writes the TXT into Koi's resolver, e.g. via the DNS API. Koi then reads it back in-process.
+The `koi-dns-hook.sh` script maps `present` to `koi dns txt set` and `cleanup` to
+`koi dns txt clear`, passing the challenge FQDN and exact value supplied by the provider.
 
 ---
 
@@ -190,6 +190,11 @@ issues a real certificate end-to-end via dns-01.
 |---|---|
 | `koi certmesh acme enable` | Print the directory URL + the client bootstrap recipe |
 | `koi certmesh acme status` | Show whether the ACME server is serving + the directory URL |
+| `koi dns txt set <name> <value>` | Publish one ephemeral dns-01 value |
+| `koi dns txt clear <name> <value>` | Remove that exact value |
+
+The corresponding authenticated DNS API uses `PUT /v1/dns/txt` and
+`DELETE /v1/dns/txt`, both with `{"name":"…","value":"…"}`.
 
 The ACME protocol endpoints live under `/acme/` on the **dedicated TLS port (5643)**, *not*
 the main HTTP adapter:

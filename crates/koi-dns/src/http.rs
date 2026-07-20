@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Json};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::Router;
 use hickory_proto::rr::RecordType;
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,18 @@ struct EntryRequest {
     name: String,
     ip: String,
     ttl: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, ToSchema)]
+struct TxtRequest {
+    name: String,
+    value: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct TxtResponse {
+    name: String,
+    values: Vec<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -82,6 +94,7 @@ pub mod paths {
     pub const ZONE: &str = "/v1/dns/zone";
     pub const ADD: &str = "/v1/dns/add";
     pub const REMOVE: &str = "/v1/dns/remove/{name}";
+    pub const TXT: &str = "/v1/dns/txt";
     pub const SERVE: &str = "/v1/dns/serve";
     pub const STOP: &str = "/v1/dns/stop";
 
@@ -102,6 +115,10 @@ pub fn routes(runtime: Arc<DnsRuntime>) -> Router {
         .route(rel(paths::ZONE), get(zone_handler))
         .route(rel(paths::ADD), post(add_entry_handler))
         .route(rel(paths::REMOVE), delete(remove_entry_handler))
+        .route(
+            rel(paths::TXT),
+            put(set_txt_handler).delete(remove_txt_handler),
+        )
         .route(rel(paths::SERVE), post(start_handler))
         .route(rel(paths::STOP), post(stop_handler))
         .layer(Extension(runtime))
@@ -338,6 +355,64 @@ async fn remove_entry_handler(
     }
 }
 
+fn validate_txt_request(
+    runtime: &DnsRuntime,
+    payload: &TxtRequest,
+) -> Result<String, (ErrorCode, String)> {
+    let zone = DnsZone::new(&runtime.core().config().zone)
+        .map_err(|error| (ErrorCode::InvalidName, error.to_string()))?;
+    let name = zone
+        .normalize_name(&payload.name)
+        .ok_or_else(|| (ErrorCode::InvalidName, "name_outside_zone".to_string()))?;
+    if payload.value.is_empty() || payload.value.len() > 255 {
+        return Err((
+            ErrorCode::InvalidPayload,
+            "TXT value must contain 1 to 255 bytes".to_string(),
+        ));
+    }
+    Ok(name)
+}
+
+#[utoipa::path(put, path = "/txt", tag = "dns",
+    summary = "Publish an ephemeral DNS TXT value",
+    request_body = TxtRequest,
+    responses((status = 200, body = TxtResponse)))]
+async fn set_txt_handler(
+    Extension(runtime): Extension<Arc<DnsRuntime>>,
+    Json(payload): Json<TxtRequest>,
+) -> impl IntoResponse {
+    let name = match validate_txt_request(&runtime, &payload) {
+        Ok(name) => name,
+        Err((code, message)) => return error_response(code, message).into_response(),
+    };
+    runtime.core().add_txt(&name, &payload.value);
+    Json(TxtResponse {
+        values: runtime.core().get_txt(&name),
+        name,
+    })
+    .into_response()
+}
+
+#[utoipa::path(delete, path = "/txt", tag = "dns",
+    summary = "Remove one exact ephemeral DNS TXT value",
+    request_body = TxtRequest,
+    responses((status = 200, body = TxtResponse)))]
+async fn remove_txt_handler(
+    Extension(runtime): Extension<Arc<DnsRuntime>>,
+    Json(payload): Json<TxtRequest>,
+) -> impl IntoResponse {
+    let name = match validate_txt_request(&runtime, &payload) {
+        Ok(name) => name,
+        Err((code, message)) => return error_response(code, message).into_response(),
+    };
+    runtime.core().remove_txt_value(&name, &payload.value);
+    Json(TxtResponse {
+        values: runtime.core().get_txt(&name),
+        name,
+    })
+    .into_response()
+}
+
 #[utoipa::path(post, path = "/serve", tag = "dns",
     summary = "Start the DNS resolver",
     responses((status = 200, body = StartedResponse)))]
@@ -379,6 +454,8 @@ fn parse_record_type(input: Option<&str>) -> Result<RecordType, ErrorCode> {
         zone_handler,
         add_entry_handler,
         remove_entry_handler,
+        set_txt_handler,
+        remove_txt_handler,
         start_handler,
         stop_handler,
     ),
@@ -389,6 +466,8 @@ fn parse_record_type(input: Option<&str>) -> Result<RecordType, ErrorCode> {
         EntriesResponse,
         ZoneJson,
         EntryRequest,
+        TxtRequest,
+        TxtResponse,
         RecordSummary,
         StartedResponse,
         StoppedResponse,
@@ -403,6 +482,17 @@ mod tests {
     use crate::records::RecordsSnapshot;
     use std::collections::HashMap;
     use std::net::IpAddr;
+
+    #[test]
+    fn txt_request_json_round_trip_preserves_exact_value() {
+        let request = TxtRequest {
+            name: "_acme-challenge.app.internal".to_owned(),
+            value: "proof-value".to_owned(),
+        };
+        let encoded = serde_json::to_string(&request).unwrap();
+        let decoded: TxtRequest = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, request);
+    }
 
     /// Build a snapshot with sample records. Names are stored as FQDN with a
     /// trailing dot (as the resolver normalizes them).

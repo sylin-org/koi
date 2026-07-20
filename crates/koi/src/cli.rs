@@ -356,6 +356,12 @@ pub struct DnsCommand {
 }
 
 #[derive(Args, Debug)]
+pub struct DnsTxtCommand {
+    #[command(subcommand)]
+    pub command: DnsTxtSubcommand,
+}
+
+#[derive(Args, Debug)]
 pub struct HealthCommand {
     #[command(subcommand)]
     pub command: Option<HealthSubcommand>,
@@ -494,8 +500,28 @@ pub enum DnsSubcommand {
         /// Name to remove
         name: String,
     },
+    /// Manage ephemeral TXT values for integrations such as ACME dns-01
+    Txt(DnsTxtCommand),
     /// List all resolvable names
     List,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DnsTxtSubcommand {
+    /// Publish one ephemeral TXT value
+    Set {
+        /// In-zone TXT owner name
+        name: String,
+        /// Exact TXT value to publish
+        value: String,
+    },
+    /// Remove one exact ephemeral TXT value
+    Clear {
+        /// In-zone TXT owner name
+        name: String,
+        /// Exact TXT value to remove
+        value: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -594,6 +620,9 @@ pub enum CertmeshSubcommand {
         /// Single-use invite token (from `certmesh invite`). Skips the TOTP prompt.
         #[arg(long)]
         invite: Option<String>,
+        /// CA inter-node mTLS port when it is not the default 5642
+        #[arg(long)]
+        ca_mtls_port: Option<u16>,
     },
     /// Mint a single-use invite token authorizing one host to join
     Invite {
@@ -615,6 +644,8 @@ pub enum CertmeshSubcommand {
         #[arg(long)]
         reload: String,
     },
+    /// Rotate this member's key and renew its certificate now
+    Renew,
     /// Promote a member to standby CA (transfers encrypted CA key)
     Promote {
         /// CA endpoint (e.g. "http://ca-host:5641"). Omit to discover via mDNS.
@@ -811,7 +842,8 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(53);
 
-        let dns_zone = std::env::var("KOI_DNS_ZONE").unwrap_or_else(|_| "internal".to_string());
+        let dns_zone =
+            std::env::var("KOI_DNS_ZONE").unwrap_or_else(|_| koi_dns::DEFAULT_ZONE.to_string());
 
         let dns_public = env_bool("KOI_DNS_PUBLIC");
 
@@ -1081,10 +1113,12 @@ mod tests {
                     Some(CertmeshSubcommand::Join {
                         ca_endpoint,
                         invite,
+                        ca_mtls_port,
                     }),
             })) => {
                 assert_eq!(ca_endpoint.as_deref(), Some("http://ca-host:5641"));
                 assert_eq!(invite.as_deref(), Some("secret.fp"));
+                assert!(ca_mtls_port.is_none());
             }
             other => panic!("Expected Certmesh Join, got: {other:?}"),
         }
@@ -1136,10 +1170,41 @@ mod tests {
                     Some(CertmeshSubcommand::Join {
                         ca_endpoint,
                         invite,
+                        ca_mtls_port,
                     }),
             })) => {
                 assert_eq!(ca_endpoint.as_deref(), Some("http://ca:5641"));
                 assert_eq!(invite.as_deref(), Some("deadbeef"));
+                assert!(ca_mtls_port.is_none());
+            }
+            other => panic!("Expected Certmesh Join, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_join_with_custom_ca_mtls_port() {
+        let cli = Cli::try_parse_from([
+            "koi",
+            "certmesh",
+            "join",
+            "http://ca:16541",
+            "--invite",
+            "secret.fp",
+            "--ca-mtls-port",
+            "16542",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command:
+                    Some(CertmeshSubcommand::Join {
+                        ca_endpoint,
+                        ca_mtls_port,
+                        ..
+                    }),
+            })) => {
+                assert_eq!(ca_endpoint.as_deref(), Some("http://ca:16541"));
+                assert_eq!(ca_mtls_port, Some(16542));
             }
             other => panic!("Expected Certmesh Join, got: {other:?}"),
         }

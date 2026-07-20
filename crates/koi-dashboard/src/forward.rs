@@ -117,6 +117,12 @@ fn map_dns(event: koi_dns::DnsEvent) -> DashboardSseEvent {
         koi_dns::DnsEvent::EntryRemoved { name } => {
             ev("dns.removed", serde_json::json!({ "name": name }))
         }
+        koi_dns::DnsEvent::TxtUpdated { name } => {
+            ev("dns.txt_updated", serde_json::json!({ "name": name }))
+        }
+        koi_dns::DnsEvent::TxtRemoved { name } => {
+            ev("dns.txt_removed", serde_json::json!({ "name": name }))
+        }
     }
 }
 

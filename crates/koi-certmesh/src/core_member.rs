@@ -103,7 +103,8 @@ impl CertmeshCore {
         sans: &[String],
     ) -> Result<String, CertmeshError> {
         validate_hostname(hostname)?;
-        let (key_pem, csr_pem) = csr::generate_keypair_and_csr(hostname, sans)?;
+        let authorized_sans = self.state.issuance_names.member_sans(hostname, sans)?;
+        let (key_pem, csr_pem) = csr::generate_keypair_and_csr(hostname, &authorized_sans)?;
 
         let cert_dir = self.state.paths.certs_dir().join(hostname);
         let key_path = cert_dir.join("key.pem");
@@ -145,11 +146,18 @@ impl CertmeshCore {
         cert_pem: &str,
         ca_pem: &str,
         ca_endpoint: Option<&str>,
+        ca_mtls_port: Option<u16>,
         ca_fingerprint: Option<&str>,
         sans: &[String],
         policy: Option<roster::CertPolicy>,
     ) -> Result<String, CertmeshError> {
         validate_hostname(hostname)?;
+        let authorized_sans = self.state.issuance_names.member_sans(hostname, sans)?;
+        if ca_mtls_port == Some(0) {
+            return Err(CertmeshError::InvalidPayload(
+                "CA mTLS port must be greater than zero".into(),
+            ));
+        }
 
         // Enforce the pin BEFORE writing anything (ADR-017 F3). When the caller
         // supplied a pinned fingerprint (the out-of-band-trusted one from the
@@ -197,13 +205,14 @@ impl CertmeshCore {
         // MemberState records a fingerprint we have confirmed matches the installed
         // CA root.
         if let (Some(endpoint), Some(fingerprint)) = (ca_endpoint, ca_fingerprint) {
+            let ca_mtls_port = ca_mtls_port.unwrap_or(member::DEFAULT_CA_MTLS_PORT);
             let state = member::MemberState {
                 hostname: hostname.to_string(),
                 ca_host: member::host_from_endpoint(endpoint),
-                ca_mtls_port: member::DEFAULT_CA_MTLS_PORT,
+                ca_mtls_port,
                 ca_http_port: member::port_from_endpoint(endpoint),
                 ca_fingerprint: fingerprint.to_string(),
-                sans: sans.to_vec(),
+                sans: authorized_sans,
                 policy: policy.unwrap_or_default(),
                 last_bundle_seq: 0,
                 revoked_fingerprints: Vec::new(),

@@ -953,7 +953,9 @@ and receives a signed certificate. The node then participates in the
 mesh's automatic renewal cycle.
 
 Pass --invite <token> (minted with 'certmesh invite' on the CA) to enroll
-non-interactively; otherwise you are prompted for the mesh TOTP code.",
+non-interactively; otherwise you are prompted for the mesh TOTP code. If
+the CA uses a non-default inter-node port, pass --ca-mtls-port <port> so
+the member persists the correct renewal endpoint.",
         category: KoiCategory::Trust,
         tags: &[KoiTag::Mutating],
         scope: KoiScope::Admin,
@@ -965,6 +967,10 @@ non-interactively; otherwise you are prompted for the mesh TOTP code.",
             Example {
                 command: "koi certmesh join",
                 description: "Discover a CA on the LAN via mDNS",
+            },
+            Example {
+                command: "koi certmesh join http://ca-host:16541 --ca-mtls-port 16542 --invite TOKEN",
+                description: "Join a CA using custom management and mTLS ports",
             },
         ],
         see_also: &["certmesh create", "certmesh invite", "certmesh status"],
@@ -1096,6 +1102,37 @@ command.",
         api: &[ApiEndpoint {
             method: "PUT",
             path: koi_certmesh::http::paths::SET_HOOK,
+        }],
+        confirmation: None,
+    },
+    CommandMeta {
+        name: "certmesh renew",
+        summary: "Rotate this member's key and renew its certificate now",
+        long_description: "\
+Requests an immediate certificate renewal for this enrolled member. The
+local daemon generates a fresh private key and CSR, then uses the member's
+current certificate to authenticate the request to the CA over mTLS.
+
+The CA still enforces active membership, revocation, and the SAN set recorded
+at enrollment. No private key crosses the network. Use this after suspected
+key exposure or to apply a renewal before the automatic schedule is due.",
+        category: KoiCategory::Trust,
+        tags: &[KoiTag::Mutating],
+        scope: KoiScope::Admin,
+        examples: &[
+            Example {
+                command: "koi certmesh renew",
+                description: "Rotate the local member key now",
+            },
+            Example {
+                command: "koi certmesh renew --json",
+                description: "Renew and print the structured result",
+            },
+        ],
+        see_also: &["certmesh status", "certmesh set-hook", "trust diagnose"],
+        api: &[ApiEndpoint {
+            method: "POST",
+            path: koi_certmesh::http::paths::RENEW_SELF,
         }],
         confirmation: None,
     },
@@ -1490,6 +1527,51 @@ immediately and is persisted to disk.",
         api: &[ApiEndpoint {
             method: "DELETE",
             path: koi_dns::http::paths::REMOVE,
+        }],
+        confirmation: None,
+    },
+    CommandMeta {
+        name: "dns txt set",
+        summary: "Publish an ephemeral DNS TXT value",
+        long_description: "\
+Publishes one in-memory TXT value in Koi's configured DNS zone. The value is
+not persisted and disappears when the daemon stops. ACME dns-01 providers use
+this command to publish their challenge proof.
+
+Arguments: <name> <value>",
+        category: KoiCategory::Dns,
+        tags: &[KoiTag::Mutating],
+        scope: KoiScope::Admin,
+        examples: &[Example {
+            command: "koi dns txt set _acme-challenge.app.internal <value>",
+            description: "Publish an ACME challenge",
+        }],
+        see_also: &["dns txt clear", "certmesh acme enable"],
+        api: &[ApiEndpoint {
+            method: "PUT",
+            path: koi_dns::http::paths::TXT,
+        }],
+        confirmation: None,
+    },
+    CommandMeta {
+        name: "dns txt clear",
+        summary: "Remove an exact ephemeral DNS TXT value",
+        long_description: "\
+Removes one exact in-memory TXT value without disturbing other values at the
+same owner name. ACME providers should call this after validation completes.
+
+Arguments: <name> <value>",
+        category: KoiCategory::Dns,
+        tags: &[KoiTag::Mutating],
+        scope: KoiScope::Admin,
+        examples: &[Example {
+            command: "koi dns txt clear _acme-challenge.app.internal <value>",
+            description: "Remove an ACME challenge",
+        }],
+        see_also: &["dns txt set"],
+        api: &[ApiEndpoint {
+            method: "DELETE",
+            path: koi_dns::http::paths::TXT,
         }],
         confirmation: None,
     },
