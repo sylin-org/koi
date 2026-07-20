@@ -88,11 +88,15 @@ pub(crate) fn wait_for_derived_service_absence(
     wait_for_http_absence(&format!(
         "{primary_url}/v1/dns/lookup?name={dns_name}&type=A"
     ))?;
-    let mdns_status = curl_status(
-        "GET",
-        &format!("{observer_url}/v1/mdns/resolve?name={full_service_name}"),
-        None,
-    )?;
+    let mdns_url = format!("{observer_url}/v1/mdns/resolve?name={full_service_name}");
+    let mut mdns_status = 0;
+    for _ in 0..20 {
+        mdns_status = curl_status("GET", &mdns_url, None)?;
+        if matches!(mdns_status, 404 | 504) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
     if !matches!(mdns_status, 404 | 504) {
         bail!("mDNS service {full_service_name} remained visible with HTTP {mdns_status}");
     }
