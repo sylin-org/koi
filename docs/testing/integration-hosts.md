@@ -64,6 +64,13 @@ cargo run -p koi-lab --locked -- service-lifecycle --run-id <run-id> `
 # Bounded churn/reconstruction soak. Defaults: 20 iterations, 15 minutes, restart every 5.
 cargo run -p koi-lab --locked -- bounded-soak --run-id <run-id>
 
+# Unattended policies own fresh deployment + scenario + exact cleanup per case.
+cargo run -p koi-lab --locked -- run-profile smoke
+cargo run -p koi-lab --locked -- run-profile certmesh --allow-system-mutation
+cargo run -p koi-lab --locked -- run-profile full --allow-system-mutation
+cargo run -p koi-lab --locked -- run-profile soak `
+  --iterations 20 --max-minutes 15 --restart-every 5
+
 # Privileged trust rotation. Use a fresh deploy/run ID for each rotation.
 cargo run -p koi-lab --locked -- certmesh-native-trust --run-id <run-id> `
   --allow-system-mutation --rotation linux-forward
@@ -120,6 +127,25 @@ The locally built Linux musl artifact was 41,511,128 bytes with SHA-256
 Linux host. Exact cleanup removed both run roots and locks. Final preflight
 `preflight-20260720T202852Z.json` left Brook inactive and preserved Granite's original active,
 enabled Koi 0.7.0 service at PID 803.
+
+`run-profile` is the V1-06 unattended policy boundary. It never reimplements a scenario verdict:
+smoke owns the two Linux certmesh-smoke rotations; certmesh owns the existing lifecycle, recovery,
+and all three native-trust rotations; full extends that same certmesh list with both reconnect and
+capability-story rotations plus Brook's service-lifecycle transaction; soak delegates to the
+existing bounded-soak evaluator. Every case gets a fresh deployment and always attempts exact
+cleanup before the policy continues or fails fast. One execution-scoped directory retains the
+before/after preflights and aggregate redacted JSON/JUnit/text verdict. Stable baseline comparison
+includes host identity, fixed Koi service state/executable, fixed artifact identity, and listening
+sockets while intentionally excluding clocks.
+
+Physical smoke execution `v1-20260720T205716Z-41637b4e` at clean commit `c37fdb6` passed 8/8 in
+63 seconds. Child runs `v1-20260720T205733Z-2a4cc973` and
+`v1-20260720T205756Z-939cba58` independently passed forward/reverse deployment, existing scenario,
+and exact cleanup. Parsed `profile-smoke.junit.xml` reported 8 tests / 0 failures and matched the
+readable summary. The locally built Linux musl artifact was 41,510,952 bytes with SHA-256
+`020f9e86694a272e5c066b9d359fa6578e1b4ee0fef3682e629327e0d602497f`. Final recorded preflight
+left Brook inactive and Granite's original active/enabled Koi 0.7.0 service at PID 803 with the
+same executable and start time.
 
 `certmesh-lifecycle` extends that protocol vertical without mutating native trust stores. It
 rejects a wrong invite fingerprint before local key creation; checks mode-`0600` key/state custody,
