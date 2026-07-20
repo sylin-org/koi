@@ -1,7 +1,7 @@
 # Koi Epic to v1 — canonical continuation ledger
 
 **Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; V1-07 identity and publication-foundation slices complete
-**Last updated:** 2026-07-20 17:33 EDT
+**Last updated:** 2026-07-20 17:55 EDT
 **Resume phrase:** `continue the epic to v1`
 
 This is the repository's canonical handoff and progress ledger for the v1 epic. The plan is a
@@ -441,13 +441,28 @@ evidence rather than a one-off demo.
   Brook systemd supervision (`92889→93222`, one restart). Final preflight left Brook inactive,
   preserved Granite's active/enabled PID 803 with the same executable/start time, and matched the
   stable listener/artifact/service baseline. This is consecutive full green **1 of 3**.
+- The thin Windows scheduling adapter is implemented in
+  `scripts/lab/scheduled-profile.ps1`. It only builds locally and calls the centralized
+  `run-profile full`; it owns no scenario membership, assertions, deploy, cleanup, baseline, or
+  evidence policy. `-Install` securely prompts once, stores only a CurrentUser-DPAPI ciphertext
+  outside the repository, and registers one highest-privilege interactive-token task for Monday
+  03:00 local time by default. `-Run` refuses a dirty worktree before build, secret decryption, or
+  lab mutation; `-Remove` unregisters the exact task and credential while retaining logs/evidence.
+  Windows CI now calls only `-Plan`, tripwiring the adapter without credentials, elevation, host
+  mutation, or physical-lab access. Parser, plan/default override, secret-literal scan, diff
+  hygiene, formatting, and all 37 focused `koi-lab` tests are green. The first elevated
+  registration attempt did not satisfy the exact post-registration contract and exercised clean
+  task/credential rollback; SID/path normalization was then corrected. A corrected elevated
+  terminal is awaiting its UAC/secure-password interaction, so no installed task or scheduled
+  execution is claimed yet.
 
 ## Current repository state
 
 - Workspace: `F:\Files\repo\github\sylin-org\koi`
 - Branch/upstream: `dev` tracking `origin/dev`, ahead 0 / behind 0 at handoff time.
-- Latest controller/evidence head: `3cfb205d8e802901c0e2f3153394d3affaf0c315`
-  (`docs: record physical profile orchestration`); the current slice only records its results.
+- Latest committed head: `26fd8be` (`docs: record first complete full profile`). The scheduler
+  adapter, Windows CI plan tripwire, runbook, and this ledger update are uncommitted current-slice
+  work.
 - Product artifact and evidence publisher exercised through clean lab/controller commit
   `f4353821290d732580c9a317d36d315db9be7d60`; product binary content remains the truthful-startup
   build from `27b268d` (`fix(runtime): make capability startup truthful`). The Docker relay/evidence
@@ -552,7 +567,7 @@ evidence rather than a one-off demo.
 | V1-03 | Certificate lifecycle and adversarial trust cases | **in progress — Linux lifecycle/cold recovery and Windows lifecycle green** | Both Linux roles prove wrong-pin refusal, mode-0600 custody, key/leaf/chain/SAN integrity, renewal/key rotation, restart, revocation→RED and generic-TLS limits; both also survive encrypted backup, exact data loss, host-bound restore, locked restart and renewed mTLS continuity. Elevated Windows now proves SID-based custody, key/cert rotation and correspondence, CA-roster convergence, exact owned-child restart with identity/diagnosis/Schannel proxy continuity, revocation→RED/self-revoked, and mutation-free renewal/rejoin refusal. Windows cold recovery remains unclaimed. |
 | V1-04 | Real whole-story capability surface | **in progress — physical Linux story + portable Tier-1 aggregation green** | Acts 0, 3, 4, 5, 6, 7, 8, 10, and 11 plus real ACME dns-01 pass physically in both Linux directions. Two concurrent real local daemons now additionally prove the centralized HTTP status/host, dashboard, and authenticated MCP aggregation surfaces. Physical Windows whole-story breadth remains. |
 | V1-05 | Resilience, reconnect, fault and soak lanes | **in progress — startup, event reconnect, DNS recovery, Linux systemd supervision, and bounded soak physical** | Always-on regressions and Brook↔Granite rotations prove startup reconstruction, an isolated Docker event-stream fault, and DNS stop/bind-failure/retry in both directions. Brook's transient-systemd lane proves READY/restart-on-failure, while the bounded soak repeatedly proves complete container derivation/reversal and periodic restart reconstruction. Public install/uninstall, other safe faults, and a scheduled 6–24 hour release soak remain. |
-| V1-06 | Automation, evidence ledger and v1 release gate | **in progress — first complete full green 2026-07-20** | Every completed check-bearing scenario emits redaction-gated JSON, JUnit, and readable summaries from one publisher. Smoke (8/8), elevated certmesh (23/23), and elevated full (38/38) physically pass fresh deploy→existing evaluator→exact cleanup cases with final baseline restoration. Full green count is 1/3; a thin scheduler, two more consecutive full greens, long soak, and final release evidence remain. |
+| V1-06 | Automation, evidence ledger and v1 release gate | **in progress — scheduler adapter + first complete full green 2026-07-20** | Every completed check-bearing scenario emits redaction-gated JSON, JUnit, and readable summaries from one publisher. Smoke (8/8), elevated certmesh (23/23), and elevated full (38/38) physically pass fresh deploy→existing evaluator→exact cleanup cases with final baseline restoration. The thin Task Scheduler adapter is implemented and locally validated; elevated registration/execution remains. Full green count is 1/3; two more consecutive full greens, long soak, and final release evidence remain. |
 | V1-07 | Adoption/public-surface polish backed by proved behavior | **in progress — identity + publication foundation complete 2026-07-19** | ADR-024 canonizes “Let everything local find, trust, and talk” plus Find/Trust/Connect; ADR-025 establishes one attested artifact contract, no-build cargo-binstall metadata, tested npx bootstrap, gated OIDC publication, and safer release operation; registry activation, native-manager channels, evidence-gated compatibility claims and golden demo remain |
 
 ## Certmesh/native-trust acceptance matrix
@@ -589,10 +604,11 @@ releases; soak is scheduled or explicitly invoked.
 
 ## Resume here
 
-1. Add the thinnest reliable scheduled caller for the now-proved `run-profile full`, with credentials
-   supplied out of band and aggregate JUnit/text/JSON retained. It must not duplicate profile
-   membership, assertions, deployment, cleanup, or baseline policy.
-2. Accumulate full greens 2/3 and 3/3, then schedule a longer bounded soak. Keep every fault
+1. Complete the visible elevated `scheduled-profile.ps1 -Install` prompt, then inspect the exact
+   task definition. Commit the current scheduler/runbook/ledger slice only with explicit authority;
+   the scheduled runner deliberately refuses to execute from this dirty tree.
+2. Start the installed task once from a clean commit to prove the scheduling/elevation/DPAPI path
+   and accumulate full green 2/3. Accumulate green 3/3, then schedule a longer bounded soak. Keep every fault
    run-owned and require exact recovery plus cleanup.
 3. Design the public Linux install/uninstall contract only if fixed unit/binary/data paths and the
    default DNS-port conflict can be made byte-exact reversible. The safer systemd supervision proof
@@ -659,8 +675,8 @@ releases; soak is scheduled or explicitly invoked.
   store-baseline restoration. Windows run-owned ACL/key custody, renewal, exact restart continuity,
   revocation, and mutation-free refusal are also proven. No permanent Windows trust root, Koi
   service, process, hosts mapping, or run-owned data remains.
-- Windows cold recovery, public install/uninstall, remaining safe fault lanes, long soak, scheduled
-  invocation, and the three-consecutive-full-green v1 gate are outstanding. Unattended profile
+- Windows cold recovery, public install/uninstall, remaining safe fault lanes, long soak, installed
+  scheduled invocation, and the three-consecutive-full-green v1 gate are outstanding. Unattended profile
   orchestration is physically green for both Linux smoke directions. Linux systemd supervision and
   the bounded short soak are physically green. Portable Tier-1 HTTP/dashboard/MCP breadth and
   deterministic Docker reconnect are green, including the physical stream fault and DNS
@@ -669,7 +685,8 @@ releases; soak is scheduled or explicitly invoked.
   both directions.
 ## Open basket
 
-- **Now:** a thin scheduled caller around the physically proved full profile.
+- **Now:** complete the already-implemented scheduler's elevated registration, commit the clean
+  slice with explicit authority, and trigger its first proof.
 - **Next:** full greens 2/3 and 3/3, then a scheduled 6–24 hour bounded soak.
 - **Later in epic:** Windows cold recovery, safe remaining faults, and the reversible public Linux
   install/uninstall contract where their exact mutation boundaries can be proved.

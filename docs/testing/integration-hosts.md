@@ -164,6 +164,40 @@ Brook inactive/not-found, preserved Granite's original active/enabled PID 803 se
 executable and start time, and matched the pre-run stable service/artifact/listener baseline. This
 is v1 full green 1 of 3.
 
+### Scheduled full profile
+
+Windows Task Scheduler is only the clock and elevation adapter. The scheduled command builds the
+Windows and Linux artifacts on this workstation, then calls the same `run-profile full` policy
+used manually. It contains no profile membership, scenario assertions, deployment, cleanup,
+baseline, or evidence logic.
+
+```powershell
+# Safe inspection; changes nothing.
+pwsh scripts/lab/scheduled-profile.ps1 -Plan
+
+# One-time setup from an elevated PowerShell process. The prompt is secure.
+pwsh scripts/lab/scheduled-profile.ps1 -Install
+
+# Optional immediate proof after installation (also run elevated).
+Start-ScheduledTask -TaskName 'Koi v1 full profile'
+
+# Exact removal from an elevated PowerShell process; retains scheduler transcripts
+# and .lab-runs evidence.
+pwsh scripts/lab/scheduled-profile.ps1 -Remove
+```
+
+The default trigger is Monday at 03:00 local time; `-DayOfWeek` and `-At` can override it during
+installation. The dedicated lab password is stored outside the repository as a Windows
+CurrentUser-DPAPI ciphertext and exists as plaintext only in the scheduled process environment
+while the physical profile runs. It is absent from the task action, scheduler arguments,
+transcript, and evidence; the existing PuTTY transport receives the throwaway credential through
+its established `KOI_LAB_PASSWORD` boundary. The task runs at highest privilege as the installing
+interactive user, so that same user must be logged on when the trigger fires. `StartWhenAvailable`
+catches a missed trigger after logon. A dirty Git worktree is refused before any build, credential
+decryption, or lab mutation. Scheduler transcripts live below
+`%LOCALAPPDATA%\Koi\lab-scheduler\logs`; canonical redacted JSON/JUnit/text verdicts remain under
+`.lab-runs/`.
+
 `certmesh-lifecycle` extends that protocol vertical without mutating native trust stores. It
 rejects a wrong invite fingerprint before local key creation; checks mode-`0600` key/state custody,
 key/leaf correspondence, the full chain, and hostname plus configured-zone SANs; then triggers the
