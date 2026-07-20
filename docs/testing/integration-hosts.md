@@ -198,6 +198,24 @@ decryption, or lab mutation. Scheduler transcripts live below
 `%LOCALAPPDATA%\Koi\lab-scheduler\logs`; canonical redacted JSON/JUnit/text verdicts remain under
 `.lab-runs/`.
 
+The installed task passed its first complete proof at clean commit `7536417`. Parent execution
+`v1-20260720T221929Z-238c05e1` completed all 12 fresh deploy/scenario/cleanup transactions and
+published aggregate JSON/JUnit/text; parsed JUnit reported 38 tests / 0 failures. Independent
+inspection found zero copies of the Windows rotation's run CA in `LocalMachine\Root`; final
+preflight left Brook inactive and preserved Granite's original active/enabled PID 803 service.
+Task Scheduler recorded result `0`, action start/completion events, a correctly refused overlapping
+`StartWhenAvailable` attempt, and the next Monday 03:00 trigger. The profile took 842 seconds (887
+seconds including its local build); Brook systemd supervision restarted `117035→117373` with
+`NRestarts=1`. This is complete v1 full green 2 of 3.
+
+An earlier trigger, parent `v1-20260720T220251Z-48863adc`, was interrupted with `CTRL+C` during its
+eighth case and is not counted as a green. Exact inspection of interrupted child
+`v1-20260720T221040Z-2f50a1df` found matching owners on both Linux nodes. Explicit owner-checked
+`plan-cleanup` and `cleanup` then removed only that child's run roots and locks; a fresh preflight
+confirmed the stable service/listener/artifact baseline. Forced process termination cannot run the
+controller's in-process final cleanup, so centralized interrupted-profile journaling/recovery is a
+remaining V1-06 hardening item; the PowerShell scheduler must not infer remote ownership.
+
 `certmesh-lifecycle` extends that protocol vertical without mutating native trust stores. It
 rejects a wrong invite fingerprint before local key creation; checks mode-`0600` key/state custody,
 key/leaf correspondence, the full chain, and hostname plus configured-zone SANs; then triggers the
