@@ -61,6 +61,9 @@ cargo run -p koi-lab --locked -- runtime-reconnect --run-id <run-id> `
 cargo run -p koi-lab --locked -- service-lifecycle --run-id <run-id> `
   --allow-system-mutation
 
+# Bounded churn/reconstruction soak. Defaults: 20 iterations, 15 minutes, restart every 5.
+cargo run -p koi-lab --locked -- bounded-soak --run-id <run-id>
+
 # Privileged trust rotation. Use a fresh deploy/run ID for each rotation.
 cargo run -p koi-lab --locked -- certmesh-native-trust --run-id <run-id> `
   --allow-system-mutation --rotation linux-forward
@@ -193,6 +196,23 @@ full cleanup removed both run roots and locks. Final preflight `preflight-202607
 preserved Granite's original active/enabled PID 803 service. Public Linux install/uninstall remains
 a separate unclaimed contract because its fixed paths and default port 53 require a byte-exact
 reversibility design.
+
+`bounded-soak` amplifies the already-proved orchestration lifecycle without introducing another
+domain path. One run-owned image is reused while each iteration starts a uniquely named container,
+requires the shared derived-service evaluator to converge runtime inventory, DNS, cross-host mDNS,
+health, TLS proxy state, and live proxy traffic, then removes the container and requires every one
+of those projections to disappear. Every Nth iteration restarts the primary Koi daemon while the
+container remains live and requires a new PID, new DAT, and full reconstruction. `--iterations`
+(1–100,000) and `--max-minutes` (1–1,440) are independent finite bounds; the duration boundary is
+checked before admitting another iteration, while each admitted operation retains its own timeout.
+
+Short physical proof `v1-20260720T195910Z-a235c0c4` completed 3/3 iterations in 29,614 ms using
+clean commit `8907a15` and musl SHA-256
+`199a4b46faa3ef5777b949ffd46684f468e279324f4f98c9e9f1369a856f3287`. Iteration 2 restarted
+Brook `66702→67236`; its DAT rotated and all derived surfaces reconstructed. Each iteration fully
+reversed, exact scenario/full cleanup succeeded, and final preflight
+`preflight-20260720T200046Z.json` preserved Granite PID 803 with no run roots or locks. This proves
+the profile and short churn lane; a scheduled 6–24 hour run remains release evidence work.
 
 `certmesh-native-trust` is the one privileged mutation boundary. It refuses without
 `--allow-system-mutation`. Linux clients additionally require passwordless sudo; the
