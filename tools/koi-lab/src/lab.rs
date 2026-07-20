@@ -11,6 +11,7 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::model::{
     output_path, ArtifactIdentity, BuildReport, CertmeshLifecycleReport, CertmeshRecoveryReport,
@@ -484,7 +485,7 @@ impl Lab {
                 bail!("Koi trust state did not track the installed fingerprint");
             }
 
-            let windows_custody = if matches!(client, NodeSpec::LocalWindows { .. }) {
+            let windows_lifecycle = if matches!(client, NodeSpec::LocalWindows { .. }) {
                 Some(self.exercise_windows_member_custody(ca, run_id)?)
             } else {
                 None
@@ -530,7 +531,7 @@ impl Lab {
                     detail: format!("Koi tracked sha256 {}", installed.fingerprint),
                 },
             ];
-            if let Some(custody) = windows_custody {
+            if let Some(lifecycle) = windows_lifecycle {
                 checks.extend([
                     CheckResult {
                         name: "local_machine_root_exact_fingerprint".into(),
@@ -550,12 +551,8 @@ impl Lab {
                         passed: true,
                         detail: "Invoke-WebRequest verified the proxy and its temporary mapping restored the exact original hosts-file bytes".into(),
                     },
-                    CheckResult {
-                        name: "windows_member_acl_custody".into(),
-                        passed: true,
-                        detail: custody,
-                    },
                 ]);
+                checks.extend(lifecycle);
             }
             Ok(checks)
         })();
@@ -1970,7 +1967,11 @@ impl Lab {
             .join("windows-member")
     }
 
-    fn exercise_windows_member_custody(&self, ca: &NodeSpec, run_id: &RunId) -> Result<String> {
+    fn exercise_windows_member_custody(
+        &self,
+        ca: &NodeSpec,
+        run_id: &RunId,
+    ) -> Result<Vec<CheckResult>> {
         let windows = self.config.local()?;
         let ports = windows.lab_ports()?;
         let root = self.prepare_windows_member_dir(run_id)?;
@@ -1983,10 +1984,11 @@ impl Lab {
             }
         };
 
-        let exercise = (|| -> Result<String> {
+        let exercise = (|| -> Result<Vec<CheckResult>> {
             let member_url = format!("http://127.0.0.1:{}", ports.http);
             wait_for_http(&format!("{member_url}/healthz"))?;
-            self.require_windows_breadcrumb(&root, &member_url)?;
+            let member_token = self.require_windows_breadcrumb(&root, &member_url)?;
+            let initial_pid = child.id();
 
             let ca_url = self.node_url(ca)?;
             let ca_token = self.daemon_token(ca, run_id)?;
@@ -2073,16 +2075,233 @@ impl Lab {
                 bail!("CA roster did not contain the active Windows member");
             }
 
+            let before = windows_member_identity_evidence(&root, windows.hostname())?;
+            curl_json(
+                "POST",
+                &format!("{member_url}/v1/proxy/add"),
+                Some(&member_token),
+                Some(&json!({
+                    "name": windows.hostname(),
+                    "listen_port": ports.proxy,
+                    "backend": format!("127.0.0.1:{}", ports.http),
+                    "allow_remote": false
+                })),
+            )?;
+            wait_for_proxy(
+                &format!("{member_url}/v1/proxy/status"),
+                windows.hostname(),
+                ports.proxy,
+            )?;
+            require_windows_proxy_tls(windows.hostname(), ports.proxy)?;
+
+            let renewal = self.run_windows_member_koi(
+                &root,
+                &["certmesh".into(), "renew".into(), "--json".into()],
+            )?;
+            if !renewal.status.success() {
+                bail!(
+                    "Windows member renewal failed: {}",
+                    String::from_utf8_lossy(&renewal.stderr).trim()
+                );
+            }
+            let renewal_json: Value = serde_json::from_slice(&renewal.stdout)
+                .context("Windows member renewal returned invalid JSON")?;
+            if renewal_json.get("renewed").and_then(Value::as_bool) != Some(true) {
+                bail!("Windows member renewal did not report a completed rotation");
+            }
+            let rotated = windows_member_identity_evidence(&root, windows.hostname())?;
+            if rotated.key_sha256 == before.key_sha256 {
+                bail!("Windows renewal did not rotate the member private key");
+            }
+            if rotated.cert_sha256 == before.cert_sha256 {
+                bail!("Windows renewal did not replace the member certificate");
+            }
+            let status = curl_json("GET", &format!("{ca_url}/v1/certmesh/status"), None, None)?;
+            let roster_fingerprint = status
+                .get("members")
+                .and_then(Value::as_array)
+                .and_then(|members| {
+                    members.iter().find(|entry| {
+                        entry.get("hostname").and_then(Value::as_str) == Some(windows.hostname())
+                    })
+                })
+                .and_then(|entry| entry.get("cert_fingerprint"))
+                .and_then(Value::as_str)
+                .context("CA roster omitted the renewed Windows fingerprint")?;
+            if !roster_fingerprint.eq_ignore_ascii_case(&rotated.cert_fingerprint) {
+                bail!("CA roster fingerprint does not match the rotated Windows leaf");
+            }
+
+            let restarted_pid = self.restart_windows_member_daemon(&root, &ports, &mut child)?;
+            if restarted_pid == initial_pid {
+                bail!("run-owned Windows daemon restart reused the original PID");
+            }
+            wait_for_http(&format!("{member_url}/healthz"))?;
+            self.require_windows_breadcrumb(&root, &member_url)?;
+            wait_for_proxy(
+                &format!("{member_url}/v1/proxy/status"),
+                windows.hostname(),
+                ports.proxy,
+            )?;
+            require_windows_proxy_tls(windows.hostname(), ports.proxy)?;
+            let after_restart = windows_member_identity_evidence(&root, windows.hostname())?;
+            if after_restart.key_sha256 != rotated.key_sha256
+                || after_restart.cert_sha256 != rotated.cert_sha256
+            {
+                bail!("Windows member identity changed across daemon restart");
+            }
+            let diagnosis = self.windows_member_diagnosis(&root)?;
+            if diagnosis.get("overall").and_then(Value::as_str) != Some("healthy") {
+                bail!("Windows member diagnosis was not healthy after restart");
+            }
+
+            let revoked = curl_json(
+                "POST",
+                &format!("{ca_url}/v1/certmesh/revoke"),
+                Some(&ca_token),
+                Some(&json!({
+                    "hostname": windows.hostname(),
+                    "reason": "koi-lab-v1-windows-lifecycle",
+                    "operator": "koi-lab"
+                })),
+            )?;
+            if revoked.get("revoked").and_then(Value::as_bool) != Some(true) {
+                bail!("CA did not report the Windows member as revoked");
+            }
+
+            let revocation_pid = self.restart_windows_member_daemon(&root, &ports, &mut child)?;
+            if revocation_pid == restarted_pid {
+                bail!("Windows revocation restart reused the previous PID");
+            }
+            wait_for_http(&format!("{member_url}/healthz"))?;
+            self.require_windows_breadcrumb(&root, &member_url)?;
+            let red = self.wait_for_red_windows_member_diagnosis(&root)?;
+            let self_revocation_red =
+                red.get("checks")
+                    .and_then(Value::as_array)
+                    .is_some_and(|checks| {
+                        checks.iter().any(|check| {
+                            check.get("name").and_then(Value::as_str) == Some("self_revocation")
+                                && check.get("status").and_then(Value::as_str) == Some("red")
+                        })
+                    });
+            if !self_revocation_red {
+                bail!("Windows RED diagnosis did not identify self revocation");
+            }
+
+            let denied_renewal = self.run_windows_member_koi(
+                &root,
+                &["certmesh".into(), "renew".into(), "--json".into()],
+            )?;
+            if denied_renewal.status.success() || !output_contains(&denied_renewal, "revoked") {
+                bail!("revoked Windows member renewal was not refused at the CA boundary");
+            }
+            let after_renewal_denial = windows_member_identity_evidence(&root, windows.hostname())?;
+            if after_renewal_denial.key_sha256 != rotated.key_sha256
+                || after_renewal_denial.cert_sha256 != rotated.cert_sha256
+            {
+                bail!("failed Windows renewal changed the active local identity");
+            }
+
+            let rejoin_invite = curl_json(
+                "POST",
+                &format!("{ca_url}/v1/certmesh/invite"),
+                Some(&ca_token),
+                Some(&json!({
+                    "hostname": windows.hostname(),
+                    "ttl_mins": 30
+                })),
+            )?;
+            let rejoin_token = required_json_string(&rejoin_invite, "token")?;
+            let denied_rejoin = self.run_windows_member_koi(
+                &root,
+                &[
+                    "certmesh".into(),
+                    "join".into(),
+                    ca_url,
+                    "--invite".into(),
+                    rejoin_token,
+                    "--ca-mtls-port".into(),
+                    ca.lab_ports()?.mtls.to_string(),
+                    "--json".into(),
+                ],
+            )?;
+            if denied_rejoin.status.success() || !output_contains(&denied_rejoin, "revoked") {
+                bail!("revoked Windows member rejoin was not refused at the CA boundary");
+            }
+            let after_rejoin_denial = windows_member_identity_evidence(&root, windows.hostname())?;
+            if after_rejoin_denial.key_sha256 != rotated.key_sha256
+                || after_rejoin_denial.cert_sha256 != rotated.cert_sha256
+            {
+                bail!("failed Windows rejoin changed the active local identity");
+            }
+
             windows_member_acl_evidence(&root, windows.hostname())?;
-            Ok(format!(
-                "{} rejected a wrong pin before key creation, joined Brook with local key custody, diagnosed healthy, and restricted the data root, member key, member state, and breadcrumb to SYSTEM, Administrators, and the current user",
-                windows.hostname()
-            ))
+            Ok(vec![
+                CheckResult {
+                    name: "windows_member_acl_custody".into(),
+                    passed: true,
+                    detail: format!(
+                        "{} rejected a wrong pin before key creation and restricts the data root, active member key, member state, and breadcrumb to SYSTEM, Administrators, and the current user",
+                        windows.hostname()
+                    ),
+                },
+                CheckResult {
+                    name: "windows_member_renewal_rotates_identity".into(),
+                    passed: true,
+                    detail: format!(
+                        "private key {}… → {}…; certificate {}… → {}…; production diagnosis verified correspondence and the CA roster converged to {}",
+                        &before.key_sha256[..16],
+                        &rotated.key_sha256[..16],
+                        &before.cert_sha256[..16],
+                        &rotated.cert_sha256[..16],
+                        rotated.cert_fingerprint
+                    ),
+                },
+                CheckResult {
+                    name: "windows_member_restart_continuity".into(),
+                    passed: true,
+                    detail: format!(
+                        "exact run-owned daemon PID {initial_pid} restarted as {restarted_pid}; identity, healthy diagnosis, and Schannel proxy continuity survived"
+                    ),
+                },
+                CheckResult {
+                    name: "windows_member_revocation_boundary".into(),
+                    passed: true,
+                    detail: format!(
+                        "exact restart to PID {revocation_pid} pulled revocation; diagnosis became RED/self_revoked and renewal was refused"
+                    ),
+                },
+                CheckResult {
+                    name: "windows_member_rejoin_refused_without_identity_mutation".into(),
+                    passed: true,
+                    detail: "the CA refused a fresh-invite rejoin for the revoked hostname and the active private key and certificate remained byte-identical".into(),
+                },
+            ])
         })();
+
+        if let Err(error) = &exercise {
+            let path = output_path(run_id.as_str()).join("windows-member-failure.json");
+            if let Err(write_error) = self.write_json(
+                &path,
+                &json!({
+                    "schema": 1,
+                    "run_id": run_id.as_str(),
+                    "created_at": Utc::now(),
+                    "stage": "windows_member_lifecycle",
+                    "error": format!("{error:#}"),
+                    "secrets_redacted": true
+                }),
+            ) {
+                eprintln!(
+                    "could not preserve redacted Windows member failure evidence: {write_error:#}"
+                );
+            }
+        }
 
         let cleanup = self.cleanup_windows_member_dir(run_id, &root, &mut child);
         match (exercise, cleanup) {
-            (Ok(detail), Ok(())) => Ok(detail),
+            (Ok(checks), Ok(())) => Ok(checks),
             (Err(error), Ok(())) => Err(error),
             (Ok(_), Err(cleanup_error)) => Err(cleanup_error),
             (Err(error), Err(cleanup_error)) => {
@@ -2143,7 +2362,6 @@ impl Lab {
                 "--no-mdns",
                 "--no-dns",
                 "--no-health",
-                "--no-proxy",
                 "--no-udp",
                 "--no-runtime",
                 "--no-acme",
@@ -2156,6 +2374,24 @@ impl Lab {
             .context("failed to start the run-owned Windows member daemon")
     }
 
+    fn restart_windows_member_daemon(
+        &self,
+        root: &Path,
+        ports: &crate::model::LabPorts,
+        child: &mut std::process::Child,
+    ) -> Result<u32> {
+        let old_pid = child.id();
+        if child.try_wait()?.is_some() {
+            bail!("run-owned Windows daemon PID {old_pid} exited before its exact restart");
+        }
+        child.kill()?;
+        child.wait()?;
+        let replacement = self.start_windows_member_daemon(root, ports)?;
+        let new_pid = replacement.id();
+        *child = replacement;
+        Ok(new_pid)
+    }
+
     fn run_windows_member_koi(&self, root: &Path, args: &[String]) -> Result<std::process::Output> {
         self.windows_member_command(root)?
             .args(args)
@@ -2163,7 +2399,7 @@ impl Lab {
             .context("failed to start the Windows member CLI")
     }
 
-    fn require_windows_breadcrumb(&self, root: &Path, expected_endpoint: &str) -> Result<()> {
+    fn require_windows_breadcrumb(&self, root: &Path, expected_endpoint: &str) -> Result<String> {
         let breadcrumb = root.join("program-data").join("koi").join("koi.endpoint");
         for _ in 0..50 {
             if let Ok(contents) = fs::read_to_string(&breadcrumb) {
@@ -2175,12 +2411,32 @@ impl Lab {
                     .strip_prefix("dat:")
                     .unwrap_or_default();
                 if endpoint == expected_endpoint && !token.is_empty() {
-                    return Ok(());
+                    return Ok(token.to_owned());
                 }
             }
             thread::sleep(Duration::from_millis(100));
         }
         bail!("run-owned Windows daemon did not write the expected breadcrumb")
+    }
+
+    fn windows_member_diagnosis(&self, root: &Path) -> Result<Value> {
+        let output = self
+            .run_windows_member_koi(root, &["trust".into(), "diagnose".into(), "--json".into()])?;
+        serde_json::from_slice(&output.stdout)
+            .context("Windows member trust diagnosis returned invalid JSON")
+    }
+
+    fn wait_for_red_windows_member_diagnosis(&self, root: &Path) -> Result<Value> {
+        let mut last = Value::Null;
+        for _ in 0..30 {
+            let diagnosis = self.windows_member_diagnosis(root)?;
+            if diagnosis.get("overall").and_then(Value::as_str) == Some("red") {
+                return Ok(diagnosis);
+            }
+            last = diagnosis;
+            thread::sleep(Duration::from_millis(250));
+        }
+        bail!("Windows member diagnosis did not become RED after revocation: {last}")
     }
 
     fn cleanup_windows_member_dir(
@@ -2673,6 +2929,71 @@ fn windows_member_acl_evidence(root: &Path, hostname: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn windows_member_identity_evidence(root: &Path, hostname: &str) -> Result<MemberIdentityEvidence> {
+    let cert_dir = root.join("data").join("certs").join(hostname);
+    let key = fs::read(cert_dir.join("key.pem"))
+        .context("could not read the run-owned Windows member key")?;
+    let cert = fs::read(cert_dir.join("cert.pem"))
+        .context("could not read the run-owned Windows member certificate")?;
+    let parsed = pem::parse(&cert).context("Windows member certificate was not valid PEM")?;
+    let (_, leaf) = X509Certificate::from_der(parsed.contents())
+        .map_err(|error| anyhow::anyhow!("Windows member leaf was not valid X.509: {error}"))?;
+    if !leaf.validity().is_valid() {
+        bail!(
+            "run-owned Windows member leaf is outside its validity window (not before {}, not after {})",
+            leaf.validity().not_before,
+            leaf.validity().not_after
+        );
+    }
+    let ca = fs::read(cert_dir.join("ca.pem"))
+        .context("could not read the run-owned Windows member CA certificate")?;
+    let parsed_ca = pem::parse(&ca).context("Windows member CA certificate was not valid PEM")?;
+    let (_, ca_cert) = X509Certificate::from_der(parsed_ca.contents())
+        .map_err(|error| anyhow::anyhow!("Windows member CA was not valid X.509: {error}"))?;
+    if !ca_cert.validity().is_valid() {
+        bail!(
+            "run-owned Windows member CA is outside its validity window (not before {}, not after {})",
+            ca_cert.validity().not_before,
+            ca_cert.validity().not_after
+        );
+    }
+    let key_sha256 = format!("{:x}", Sha256::digest(&key));
+    let cert_sha256 = format!("{:x}", Sha256::digest(&cert));
+    let cert_fingerprint = format!("{:x}", Sha256::digest(parsed.contents()));
+    if !is_sha256(&key_sha256) || !is_sha256(&cert_sha256) || !is_sha256(&cert_fingerprint) {
+        bail!("Windows member identity evidence returned malformed fingerprints");
+    }
+    Ok(MemberIdentityEvidence {
+        key_sha256,
+        cert_sha256,
+        cert_fingerprint,
+    })
+}
+
+fn require_windows_proxy_tls(hostname: &str, port: u16) -> Result<()> {
+    let output = Command::new("curl.exe")
+        .args(windows_curl_args("127.0.0.1", hostname, port))
+        .output()
+        .context("failed to start Schannel curl.exe for the Windows member proxy")?;
+    if !output.status.success() || String::from_utf8_lossy(&output.stdout).trim() != "OK" {
+        bail!(
+            "Schannel curl.exe did not verify the Windows member proxy: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn output_contains(output: &std::process::Output, needle: &str) -> bool {
+    let needle = needle.to_ascii_lowercase();
+    String::from_utf8_lossy(&output.stdout)
+        .to_ascii_lowercase()
+        .contains(&needle)
+        || String::from_utf8_lossy(&output.stderr)
+            .to_ascii_lowercase()
+            .contains(&needle)
 }
 
 fn windows_member_acl_script(root: &Path, hostname: &str) -> String {
