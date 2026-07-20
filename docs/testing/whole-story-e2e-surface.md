@@ -5,10 +5,14 @@
 (two embedded daemons exchange the certmesh lifecycle in one `cargo test`); the
 real-binary two-daemon companion is
 [crates/koi/tests/two_daemon_certmesh.rs](../../crates/koi/tests/two_daemon_certmesh.rs)
-(ADR-018 Tier 2). These cover Acts 0–2 and the certmesh portion of Act 9. The broader
-cross-capability scenario and a reusable three-machine driver are still targets of the
-v1 test-harness epic. The design content below is the target contract, not a claim that
-every Act already has one composed test.
+(ADR-018 Tier 2). These cover Acts 0–2 and the certmesh portion of Act 9. The physical
+`koi-lab capability-story` driver now covers Acts 0, 3, 4, 5, 6, 7, 8, 10, and 11 in both
+Linux role directions using real Docker events, derived DNS/mDNS/health/proxy state, exact
+container teardown, health fixtures, UDP/SSE, MCP, IPC, native trust installation/removal,
+certmesh-issued proxy certificate rotation, and ACME dns-01 through Koi's real DNS bridge.
+The reusable Tier-1 breadth driver and the elevated Windows participant remain targets.
+The design content below is the target contract, not a claim that every Act already has
+one composed test.
 **Date:** 2026-06-18
 **Relates to:** ADR-015 (Certmesh Enrollment Hardening — its features are validated by this surface), ADR-018 (the integration-test-suite tiers that realize this), [docs/SURFACES.md](../SURFACES.md) (the surface ledger this feeds), ADR-008 (Embedded Facade — the harness substrate)
 
@@ -46,7 +50,7 @@ Ordered **Acts**; each lists *drive → assert (+ events)*. Acts 1–2 and 9 als
 | **1. CA genesis** | A `POST /v1/certmesh/create` (fixed entropy → reproducible CA), unlock, `GET /v1/certmesh/status`. | `ca_initialized`; issued CA cert profile correct (basicConstraints `pathlen:0`, KeyUsage) — **ADR-015 F10**. | — |
 | **2. Enrollment** | A mints an invite for B (**ADR-015 F2**); B generates keypair+CSR locally and joins (**F1**); verify fingerprint from invite (**F3**). | Chain verifies to CA; **mechanically assert no `PRIVATE KEY` bytes in any response** (F1); roster has B; `member_joined` audited; idempotent retry returns same cert (**F8**); bad hostnames rejected (**F15**). `CertmeshMemberJoined`. | enrollment custody |
 | **3. DNS** | A `POST /v1/dns/add` in-zone names; `GET /v1/dns/lookup`; start resolver on `15353`; query it. | entries resolve via stub and real resolver; member names in zone. `DnsEntryUpdated`. | dns ↔ certmesh (in-zone) |
-| **4. mDNS** | A announce service; B discover (SSE) + resolve; heartbeat; unregister. | Found/Resolved/Removed; lease renews. `MdnsFound/Resolved/Removed`. | discovery |
+| **4. mDNS** | A announce service; B discover (SSE) + resolve; heartbeat; unregister. | Resolved/Removed; lease renews. Non-meta `ServiceFound` is intentionally coalesced into the richer resolved record. `MdnsResolved/Removed`. | discovery |
 | **5. Runtime + orchestrator (keystone)** | Start a labeled container (`koi.enable=true`, `koi.dns.name`, `koi.health.path`, `koi.proxy.port`) **or** inject a synthetic `RuntimeEvent::Started` (CI without Docker). | Appears in `/v1/runtime/instances` with `KoiMetadata`; orchestrator auto-creates an mDNS reg + DNS name + health check + proxy entry ([orchestrator.rs](../../crates/koi-compose/src/orchestrator.rs)). `RuntimeInstanceStarted` → derived `DnsEntryUpdated`/`ProxyEntryUpdated`/etc. | **the full auto-wiring story** |
 | **6. Health** | Health check targets a real fixture listener (`127.0.0.1:0`); stop/start it. | status Up→Down→Up; `HealthChanged` on each transition. | health ← mdns/dns targets |
 | **7. Proxy data plane** | A `POST /v1/proxy/add` sourcing cert from certmesh; connect a native TLS client through the listener to a real fixture backend. | entry reports honest `state`/`error` + `cert_source`; trusted TLS and body/full-duplex bytes round-trip; an untrusted client is rejected; a rotated cert is served without restarting the listener. `ProxyEntryUpdated`. | proxy ← certmesh cert + truststore |
@@ -55,7 +59,7 @@ Ordered **Acts**; each lists *drive → assert (+ events)*. Acts 1–2 and 9 als
 | **10. Aggregation** | `GET /v1/status`; subscribe `/v1/dashboard/events`; read MCP resources at `/v1/mcp` (`koi://lan/inventory`, `koi://health`, `koi://dns/zone`, `koi://mdns/services`); `GET /.well-known/mcp/server-card.json`; `GET /v1/host`. | status lists every enabled cap with `running` truth; the dashboard feed shows the cross-domain events emitted by Acts 2–9 (forwarder maps all 6 domain types — [forward.rs](../../crates/koi-dashboard/src/forward.rs)); MCP inventory reflects live runtime/health/dns/mdns; server-card unauthenticated, `/v1/mcp` token-gated. | **unified observability** |
 | **11. Teardown & reverse cleanup** | Stop the container (or inject `RuntimeEvent::Stopped`); destroy the certmesh (`POST /v1/certmesh/destroy`). | orchestrator reverses every registration (mDNS unregister, DNS remove, health remove, proxy remove); `koi.enable=false` containers are skipped; B unaffected by A's destroy (isolation). | reverse auto-wiring |
 
-A dedicated **ACME dns-01** mini-act (optional, when DNS + certmesh are both up): trigger an in-zone cert order, observe the `_acme-challenge.<name>` TXT published via DNS, assert issuance — exercising the real `AcmeDnsBridge → DnsCore` path the `acme.rs` suite only mocks.
+A dedicated **ACME dns-01** mini-act (when DNS + certmesh are both up): place an in-zone order with a real `instant-acme` client, publish the proof through Koi's authenticated ephemeral-TXT API, observe it from the other host with `dig`, assert issuance through the real `AcmeDnsBridge → DnsCore` path, exact-clear only that proof, and verify the resulting chain and SAN.
 
 ---
 
@@ -97,12 +101,12 @@ Runs in the existing `test` job on ubuntu/windows/macos ([ci.yml](../../.github/
 | health | **Full** | fixture listeners on `127.0.0.1:0` |
 | udp | **Full** | `port:0` auto-assign; low lease for expiry tests |
 | mdns | **Functional**, best-effort cross-instance | in-process `MdnsCore` asserts always; real multicast short-timeout + skip-with-log if unavailable |
-| runtime + orchestrator | **Bridge logic via synthetic events** | real containers behind `docker` feature + `docker_available()` |
-| proxy | **Unit data plane complete; composed Act pending** | `koi-proxy` guards TLS round-trip, full duplex, bind error, and certificate hot reload; this scenario still owes certmesh-issued/native-trust composition |
+| runtime + orchestrator | **Synthetic lifecycle + startup reconciliation implemented** | always-on `koi-compose` story starts the orchestrator after a normalized instance already exists, then proves inventory plus mDNS/DNS/health/live-proxy reconstruction and stop reversal through the same start/stop chokepoints; real containers stay Tier 2 |
+| proxy | **Unit data plane complete; Tier-1 trust composition pending** | `koi-proxy` guards TLS round-trip, full duplex, bind error, and certificate hot reload; physical Act 7 is green, while portable native-trust composition is platform-limited |
 | status / host / dashboard / MCP | **Full** | MCP `/v1/mcp` token-gated; server-card unauth |
 | ACME dns-01 | **Optional** real bridge act | when DNS + certmesh up |
 
-CI wiring: keep it as an `#[ignore]` integration test invoked explicitly (so the default `test` job stays fast), plus a small always-on subset (Acts 0–2) as a regression tripwire. Document both commands in the test module header (mirroring `acme.rs`).
+CI wiring: the certmesh spine and synthetic runtime/orchestrator lifecycle are always-on regression tripwires. Keep any future long-running multi-instance breadth profile explicit, and document its command in the test module header (mirroring `acme.rs`).
 
 ---
 
@@ -129,14 +133,14 @@ three-node, all-capability scenario:
 
 ## SURFACES.md ledger integration
 
-On each green run, update only the rows that run actually exercised, per the **rotation contract** (binding, top of [SURFACES.md](../SURFACES.md)). The current certmesh spine can advance certmesh evidence; it cannot advance mdns, dns, health, udp, truststore, or the broad whole-story claim. The proxy row retains its existing `koi-proxy` data-plane guard until the composed Act 7 is green, at which point the whole-story run may augment—rather than replace—that evidence. Note Tier 1 versus Tier 2 in the row.
+On each green run, update only the rows that run actually exercised, per the **rotation contract** (binding, top of [SURFACES.md](../SURFACES.md)). The certmesh-only spine can advance certmesh evidence; it cannot advance mdns, dns, health, udp, truststore, or the broad whole-story claim. The physical `capability-story` may augment—rather than replace—the focused domain guards for every surface it actually composes. Note Tier 1 versus Tier 2 in the row.
 
 ---
 
 ## Constraints (the honest gaps)
 
-- **Composed proxy trust path** — the proxy implementation and its data plane are fixed and guarded. The remaining gap is composing a certmesh-issued certificate, native trust installation, DNS name, and a real client handshake in one scenario.
-- **Runtime without Docker** — synthetic `RuntimeEvent` injection tests the orchestrator wiring in CI; real containers only Tier 2 / Docker-available CI (`required-features=["docker"]`, like `docker_integration.rs`).
+- **Reusable composed proxy trust path** — physical Linux Act 7 is green in both role directions, including native trust, hostname verification, hot certificate rotation without daemon restart, exact trust removal, and fail-after-removal. The remaining gap is a reusable Tier-1 composition where the platform permits it.
+- **Runtime without Docker** — implemented through `RuntimeCore::ingest_event`, the same inventory-and-fan-out chokepoint real backends use. The always-on `koi-compose` story proves startup reconciliation, derived mDNS/DNS/health/live-proxy state, and exact reversal. Physical Linux runs prove the same reconstruction after restarting Koi while a real container remains running. Real containers remain Tier 2 / Docker-available CI; Docker event-stream disconnect/reconnect is still V1-05 work.
 - **mDNS in CI** — multicast works on GH runners but can fail in isolated networks; Tier 1 always asserts via in-process `MdnsCore` and treats cross-instance multicast as best-effort.
 - **DNS port 53** — elevation required; Tier 1 uses `15353`. Tier 2 uses 53 (elevated) to validate the system resolver path.
 - **Enrollment approval** — default decider denies; needs the test affordance above.
@@ -147,10 +151,10 @@ On each green run, update only the rows that run actually exercised, per the **r
 
 ## Phasing
 
-1. **Spine — complete for certmesh:** Acts 0–2 and the certmesh trust/revocation portion of Act 9 are guarded by the embedded and real-binary suites. A reusable broad `Story` driver is still pending.
-2. **CI-able breadth:** Acts 3, 4, 6, 8, 10 (dns/mdns/health/udp/aggregation).
-3. **Orchestrator:** Act 5 via synthetic events (CI) and real Docker (Tier 2); Act 11 reverse cleanup.
-4. **Proxy composition:** retain the existing `koi-proxy` data-plane guards; add the certmesh-issued/native-trust/DNS end-to-end Act 7.
-5. **Tier 2 runbook** + scheduling + SURFACES ledger wiring + the ACME dns-01 mini-act.
+1. **Spine — complete for certmesh:** Acts 0–2 and the certmesh trust/revocation portion of Act 9 are guarded by the embedded and real-binary suites.
+2. **Breadth — physical Linux complete; reusable Tier 1 pending:** `koi-lab capability-story` drives Acts 0, 3, 4, 5, 6, 7, 8, 10, and 11 plus the ACME dns-01 mini-act in both Linux directions. The same breadth still needs a CI-able in-process driver.
+3. **Orchestrator — physical and synthetic complete:** a locally assembled run image drives real Docker start/stop, while the always-on Tier-1 test feeds normalized lifecycle events through the same runtime chokepoint. Both create and reverse mDNS, DNS, health, and a live self-signed TLS proxy.
+4. **Proxy composition — physical complete:** retain the existing `koi-proxy` data-plane guards and augment them with the certmesh-issued/native-trust/DNS end-to-end Act 7, green in both Linux role directions.
+5. **Remaining:** reusable Tier 1 breadth, scheduled hardware execution, and elevated Windows participation.
 
 Each phase ships its tests green under `cargo test && cargo clippy -- -D warnings && cargo fmt --check`, runs on the 3-OS matrix, and updates the ledger.

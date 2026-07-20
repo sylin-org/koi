@@ -2238,9 +2238,13 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "instant-acme",
+ "pem",
  "serde",
  "serde_json",
  "sha2",
+ "tokio",
+ "x509-parser 0.16.0",
 ]
 
 [[package]]

@@ -84,6 +84,46 @@ impl PuttyTransport {
         Ok(())
     }
 
+    pub fn copy_from(&self, node: &NodeSpec, remote_path: &str, local: &Path) -> Result<()> {
+        if remote_path
+            .chars()
+            .any(|c| matches!(c, '\r' | '\n' | '\0' | ' ' | '\'' | '"'))
+        {
+            bail!("unsafe remote copy path {remote_path:?}");
+        }
+        if local.exists() {
+            bail!("local copy destination already exists: {}", local.display());
+        }
+        let parent = local
+            .parent()
+            .context("local copy destination has no parent")?;
+        if !parent.is_dir() {
+            bail!(
+                "local copy destination parent does not exist: {}",
+                parent.display()
+            );
+        }
+        let password = self.password()?;
+        let (address, user, host_key) = remote_details(node)?;
+        let source = format!("{user}@{address}:{remote_path}");
+        let output = Command::new("pscp")
+            .args(["-batch", "-q", "-hostkey", host_key, "-pw", password])
+            .arg(source)
+            .arg(local)
+            .output()
+            .with_context(|| format!("failed to start pscp for node {}", node.id()))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            bail!(
+                "artifact download failed for {} (exit {}): {}",
+                node.id(),
+                output.status.code().unwrap_or(-1),
+                stderr
+            );
+        }
+        Ok(())
+    }
+
     fn password(&self) -> Result<&str> {
         let password = self
             .password
@@ -118,6 +158,13 @@ mod tests {
             id: "windows".into(),
             hostname: "stone-leaded-sparkle".into(),
             address: "192.168.1.138".into(),
+            http_port: 18541,
+            mtls_port: 18542,
+            acme_port: 18543,
+            proxy_port: 18544,
+            dns_port: 18553,
+            fixture_port: 18554,
+            container_port: 18555,
         };
         assert!(remote_details(&node).is_err());
     }

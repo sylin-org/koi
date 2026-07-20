@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -34,6 +35,13 @@ pub enum NodeSpec {
         id: String,
         hostname: String,
         address: String,
+        http_port: u16,
+        mtls_port: u16,
+        acme_port: u16,
+        proxy_port: u16,
+        dns_port: u16,
+        fixture_port: u16,
+        container_port: u16,
     },
     PuttyLinux {
         id: String,
@@ -47,7 +55,58 @@ pub enum NodeSpec {
         mtls_port: u16,
         acme_port: u16,
         proxy_port: u16,
+        dns_port: u16,
+        fixture_port: u16,
+        container_port: u16,
     },
+}
+
+/// Named V1-02 role rotations. Node assignment lives here so scenario code
+/// consumes roles rather than scattering fixed host IDs through each check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[value(rename_all = "kebab-case")]
+pub enum TrustRotation {
+    LinuxForward,
+    LinuxReverse,
+    WindowsClient,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CertmeshRoles {
+    pub ca: &'static str,
+    pub service: &'static str,
+    pub client: &'static str,
+}
+
+impl TrustRotation {
+    pub fn roles(self) -> CertmeshRoles {
+        match self {
+            Self::LinuxForward => CertmeshRoles {
+                ca: "brook",
+                service: "granite",
+                client: "brook",
+            },
+            Self::LinuxReverse => CertmeshRoles {
+                ca: "granite",
+                service: "brook",
+                client: "granite",
+            },
+            Self::WindowsClient => CertmeshRoles {
+                ca: "brook",
+                service: "granite",
+                client: "windows",
+            },
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LinuxForward => "linux-forward",
+            Self::LinuxReverse => "linux-reverse",
+            Self::WindowsClient => "windows-client",
+        }
+    }
 }
 
 impl LabConfig {
@@ -94,9 +153,32 @@ impl LabConfig {
             }
 
             match node {
-                NodeSpec::LocalWindows { hostname, .. } => {
+                NodeSpec::LocalWindows {
+                    hostname,
+                    http_port,
+                    mtls_port,
+                    acme_port,
+                    proxy_port,
+                    dns_port,
+                    fixture_port,
+                    container_port,
+                    ..
+                } => {
                     local_count += 1;
                     validate_hostname(hostname)?;
+                    for port in [
+                        http_port,
+                        mtls_port,
+                        acme_port,
+                        proxy_port,
+                        dns_port,
+                        fixture_port,
+                        container_port,
+                    ] {
+                        if *port < 1024 || !ports.insert(*port) {
+                            bail!("node {id} has an unsafe or duplicate lab port {port}");
+                        }
+                    }
                 }
                 NodeSpec::PuttyLinux {
                     hostname,
@@ -108,6 +190,9 @@ impl LabConfig {
                     mtls_port,
                     acme_port,
                     proxy_port,
+                    dns_port,
+                    fixture_port,
+                    container_port,
                     ..
                 } => {
                     remote_count += 1;
@@ -120,7 +205,15 @@ impl LabConfig {
                         bail!("node {id} must be x86_64, got {architecture}");
                     }
                     validate_remote_root(remote_root)?;
-                    for port in [http_port, mtls_port, acme_port, proxy_port] {
+                    for port in [
+                        http_port,
+                        mtls_port,
+                        acme_port,
+                        proxy_port,
+                        dns_port,
+                        fixture_port,
+                        container_port,
+                    ] {
                         if *port < 1024 || !ports.insert(*port) {
                             bail!("node {id} has an unsafe or duplicate lab port {port}");
                         }
@@ -139,6 +232,13 @@ impl LabConfig {
             .iter()
             .find(|node| matches!(node, NodeSpec::LocalWindows { .. }))
             .context("validated lab config has no local Windows node")
+    }
+
+    pub fn node(&self, id: &str) -> Result<&NodeSpec> {
+        self.nodes
+            .iter()
+            .find(|node| node.id() == id)
+            .with_context(|| format!("validated lab config has no node {id}"))
     }
 
     pub fn remotes(&self) -> impl Iterator<Item = &NodeSpec> {
@@ -184,19 +284,34 @@ impl NodeSpec {
 
     pub fn lab_ports(&self) -> Result<LabPorts> {
         match self {
-            Self::PuttyLinux {
+            Self::LocalWindows {
                 http_port,
                 mtls_port,
                 acme_port,
                 proxy_port,
+                dns_port,
+                fixture_port,
+                container_port,
+                ..
+            }
+            | Self::PuttyLinux {
+                http_port,
+                mtls_port,
+                acme_port,
+                proxy_port,
+                dns_port,
+                fixture_port,
+                container_port,
                 ..
             } => Ok(LabPorts {
                 http: *http_port,
                 mtls: *mtls_port,
                 acme: *acme_port,
                 proxy: *proxy_port,
+                dns: *dns_port,
+                fixture: *fixture_port,
+                container: *container_port,
             }),
-            Self::LocalWindows { .. } => bail!("{} is not a remote node", self.id()),
         }
     }
 }
@@ -207,6 +322,23 @@ pub struct LabPorts {
     pub mtls: u16,
     pub acme: u16,
     pub proxy: u16,
+    pub dns: u16,
+    pub fixture: u16,
+    pub container: u16,
+}
+
+impl LabPorts {
+    pub fn all(self) -> [u16; 7] {
+        [
+            self.http,
+            self.mtls,
+            self.acme,
+            self.proxy,
+            self.dns,
+            self.fixture,
+            self.container,
+        ]
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -251,6 +383,12 @@ pub struct ArtifactIdentity {
     pub path: PathBuf,
     pub size_bytes: u64,
     pub sha256: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BuildReport {
+    pub linux: ArtifactIdentity,
+    pub windows: ArtifactIdentity,
 }
 
 impl ArtifactIdentity {
@@ -365,6 +503,7 @@ pub struct CertmeshSmokeReport {
     pub schema: u32,
     pub run_id: RunId,
     pub created_at: DateTime<Utc>,
+    pub rotation: TrustRotation,
     pub ca_node: String,
     pub member_node: String,
     pub checks: Vec<CheckResult>,
@@ -376,12 +515,51 @@ pub struct NativeTrustReport {
     pub schema: u32,
     pub run_id: RunId,
     pub created_at: DateTime<Utc>,
+    pub rotation: TrustRotation,
     pub ca_node: String,
     pub service_node: String,
     pub client_node: String,
     pub ca_fingerprint: String,
     pub checks: Vec<CheckResult>,
     pub system_trust_restored: bool,
+    pub secrets_redacted: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CertmeshLifecycleReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub rotation: TrustRotation,
+    pub ca_node: String,
+    pub member_node: String,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CertmeshRecoveryReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub rotation: TrustRotation,
+    pub ca_node: String,
+    pub member_node: String,
+    pub ca_fingerprint: String,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CapabilityStoryReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub rotation: TrustRotation,
+    pub primary_node: String,
+    pub observer_node: String,
+    pub covered_acts: Vec<u8>,
+    pub checks: Vec<CheckResult>,
     pub secrets_redacted: bool,
 }
 
@@ -453,6 +631,34 @@ mod tests {
     }
 
     #[test]
+    fn trust_rotations_centralize_the_three_role_assignments() {
+        assert_eq!(
+            TrustRotation::LinuxForward.roles(),
+            CertmeshRoles {
+                ca: "brook",
+                service: "granite",
+                client: "brook"
+            }
+        );
+        assert_eq!(
+            TrustRotation::LinuxReverse.roles(),
+            CertmeshRoles {
+                ca: "granite",
+                service: "brook",
+                client: "granite"
+            }
+        );
+        assert_eq!(
+            TrustRotation::WindowsClient.roles(),
+            CertmeshRoles {
+                ca: "brook",
+                service: "granite",
+                client: "windows"
+            }
+        );
+    }
+
+    #[test]
     fn remote_roots_are_narrow() {
         assert!(validate_remote_root("/home/stone/koi-test").is_ok());
         assert!(validate_remote_root("/").is_err());
@@ -474,6 +680,9 @@ mod tests {
             mtls_port: 16542,
             acme_port: 16543,
             proxy_port: 16544,
+            dns_port: 16553,
+            fixture_port: 16554,
+            container_port: 16555,
         };
         let run_id = RunId::parse("v1-20260719T000000Z-deadbeef").unwrap();
         assert_eq!(
@@ -484,5 +693,8 @@ mod tests {
             node.lock_dir().unwrap(),
             "/home/stone/koi-test/.koi-lab-lock"
         );
+        assert_eq!(node.lab_ports().unwrap().dns, 16553);
+        assert_eq!(node.lab_ports().unwrap().fixture, 16554);
+        assert_eq!(node.lab_ports().unwrap().container, 16555);
     }
 }

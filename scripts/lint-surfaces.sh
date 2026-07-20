@@ -17,11 +17,14 @@ MIN_ROWS=10
 
 [ -f "$FILE" ] || { echo "::error::$FILE is missing"; exit 1; }
 
-hdr_line="$(grep -nxF "$HEADER" "$FILE" | head -n1 | cut -d: -f1 || true)"
+# Normalize only the transport newline while locating the header. A Windows
+# worktree may be CRLF even though the repository pins shell scripts to LF.
+hdr_line="$(awk -v header="$HEADER" '{ sub(/\r$/, ""); if ($0 == header) { print NR; exit } }' "$FILE")"
 [ -n "$hdr_line" ] || { echo "::error::ledger header row not found verbatim in $FILE"; exit 1; }
 
 sep_line=$((hdr_line + 1))
 sep="$(sed -n "${sep_line}p" "$FILE")"
+sep="${sep%$'\r'}"
 case "$sep" in
   \|*-*\|) : ;;
   *) echo "::error::missing table separator row after header (line $sep_line)"; exit 1 ;;

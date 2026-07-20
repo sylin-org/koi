@@ -31,18 +31,35 @@ $env:KOI_LAB_PASSWORD = '<dedicated-lab-password>'
 # Read-only: writes a redacted report under .lab-runs/ locally.
 cargo run -p koi-lab --locked -- preflight
 
-# Build only on this Windows workstation through cross + Docker.
+# Build Windows natively and Linux through cross + Docker on this workstation.
 cargo run -p koi-lab --locked -- build
 
 # Lock both nodes and stage one hash-identical binary under runs/<run-id>/.
 cargo run -p koi-lab --locked -- deploy
 
-# Non-privileged first vertical: brook CA → granite member, driven from Windows.
-cargo run -p koi-lab --locked -- certmesh-smoke --run-id <run-id>
+# Non-privileged role vertical, driven from Windows.
+cargo run -p koi-lab --locked -- certmesh-smoke --run-id <run-id> `
+  --rotation linux-forward
 
-# Privileged Linux trust rotation. Refuses without the explicit acknowledgement.
+# Non-privileged lifecycle/adversarial transaction. Use a fresh run ID.
+cargo run -p koi-lab --locked -- certmesh-lifecycle --run-id <run-id> `
+  --rotation linux-forward
+
+# Encrypted disaster recovery. This erases only the run-owned CA data/runtime roots.
+cargo run -p koi-lab --locked -- certmesh-recovery --run-id <run-id> `
+  --rotation linux-forward
+
+# Physical whole story including native-trusted Act 7. Use a fresh deploy/run ID.
+cargo run -p koi-lab --locked -- capability-story --run-id <run-id> `
+  --allow-system-mutation --rotation linux-forward
+
+# Privileged trust rotation. Use a fresh deploy/run ID for each rotation.
 cargo run -p koi-lab --locked -- certmesh-native-trust --run-id <run-id> `
-  --allow-system-mutation
+  --allow-system-mutation --rotation linux-forward
+
+# Other assignments use the same scenario engine:
+#   linux-reverse: granite CA → brook service → granite native client
+#   windows-client: brook CA → granite service → Windows Schannel client
 
 # Read-only cleanup preview, then owner-checked exact cleanup.
 cargo run -p koi-lab --locked -- plan-cleanup --run-id <run-id>
@@ -61,22 +78,96 @@ or use `sudo`. It stages only these run-owned files:
 The atomic `.koi-lab-lock` directory refuses a concurrent run. Cleanup checks both the
 lock owner and run-directory owner, removes an exact file allowlist, permits recursive
 deletion only for resolved run-owned data/runtime roots, and verifies the run directory
-and lock are absent afterward.
+and lock are absent afterward. Story cleanup additionally verifies the exact run label,
+container ID, container name, image ID, and image tag before removing Docker objects.
 
-`certmesh-smoke` uses dedicated high ports from `tools/koi-lab/lab.json`, so it can run
+`certmesh-smoke` consumes declarative CA/service/client roles and uses dedicated high
+ports from `tools/koi-lab/lab.json`, so it can run
 beside a captured system Koi service. It starts only run-owned PIDs, creates certmesh data
-only below the run directory, drives create→pinned invite→join from Windows, asserts the
+only below the run directory, explicitly injects the `.internal` issuance zone, drives
+create→pinned invite→join from Windows, asserts the
 member's trust diagnosis is Healthy, hashes the Linux system trust stores before/after to
 prove the non-privileged slice changed no roots, and records a secret-redacted report.
 
+`certmesh-lifecycle` extends that protocol vertical without mutating native trust stores. It
+rejects a wrong invite fingerprint before local key creation; checks mode-`0600` key/state custody,
+key/leaf correspondence, the full chain, and hostname plus configured-zone SANs; then triggers the
+same CSR-only mTLS renewal path used by scheduled renewal and requires a new local key plus matching
+CA-roster state. It restarts only the run-owned daemon and requires identity and proxy continuity.
+Finally it pulls revocation, requires RED diagnosis and CA renewal refusal without replacing the
+local identity, and records that generic TLS still accepts the unexpired leaf in the absence of
+CRL/OCSP. `linux-forward` and `linux-reverse` both passed on 2026-07-19.
+
+`certmesh-recovery` is the run-scoped destructive recovery gate. It creates a v2 encrypted
+backup, rejects a wrong backup passphrase without changing live state, stops only the owned CA
+daemon, verifies the exact resolved `data` and `runtime` roots, erases those two roots, and proves
+the replacement daemon is uninitialized. Restore must recover the same CA fingerprint and active
+roster, bind the CA to the recovery machine with mode `0600`, publish secure posture, and accept a
+key-rotating member renewal over restored mTLS. A restart must lock the recovered key; the old CA
+passphrase must fail, the new restore passphrase must unlock it, and another renewal must succeed.
+Both Linux role directions passed on 2026-07-19. Backup bundles and passphrases are streamed to
+`curl` over stdin and never written to evidence or placed in process arguments.
+
+`capability-story` is the V1-04 physical whole-story transaction. It starts isolated
+full-surface daemons on the two Linux nodes with explicit high DNS and fixture ports, then proves
+Acts 0, 3, 4, 5, 6, 7, 8, 10, and 11. The transaction covers mode-`0600` breadcrumbs and Unix IPC,
+HTTP plus real cross-host `dig`, multicast resolve/heartbeat/goodbye removal, a run-owned TCP
+fixture driving health Up→Down→Up, protected UDP SSE round-trip/heartbeat/unbind, and the shared
+status/dashboard ladder plus host metadata, OpenAPI, Prometheus discovery, authenticated MCP
+resource list/read, and the public MCP server card. For Acts 5/11 it copies the exact deployed musl
+binary back to the controller, assembles a `FROM scratch` image locally, loads it under a run-only
+tag, and starts a labeled container without compiling or building on either Linux host. One Docker
+event must derive runtime inventory, mDNS, `.internal` DNS, health, and a live self-signed TLS proxy.
+The story then leaves that container running, restarts only the run-owned Koi daemon, requires a
+new daemon PID, and proves runtime inventory plus every derived service is reconstructed before
+container stop reverses them and the owned container and image are removed.
+Act 7 composes pinned certmesh enrollment, `.internal` DNS, a certmesh-sourced proxy, native trust,
+hostname verification, member key/certificate rotation, and hot leaf reload without a daemon restart.
+Its ACME mini-act uses a real `instant-acme` client, publishes and exact-clears dns-01 proof through
+Koi's authenticated TXT API, observes it from the other host with `dig`, and verifies the issued
+chain and SAN. Exact root removal must restore the full native-store baseline and make native TLS
+fail again. All manual and Docker-derived state is compensated before evidence is written. Both
+Linux role directions passed with startup reconciliation on 2026-07-20: forward run
+`v1-20260720T014815Z-96794673` restarted Brook (`38290` → `38620`) and reverse run
+`v1-20260720T015153Z-558233f4` restarted Granite (`67926` → `68309`), both using locally built musl
+SHA-256 `928522b3c18fce60a28310e619fbb4ff715d8b0a9f03c059842eaef6629f8d07`.
+Reusable Tier 1 breadth and Windows execution remain unclaimed.
+
 `certmesh-native-trust` is the one privileged mutation boundary. It refuses without
-`--allow-system-mutation`, rechecks run/lock ownership and passwordless sudo, and uses
-only the run CA PEM and a separate run-owned trust-state root. It configures granite's
-real Koi TLS proxy with the certmesh member leaf, then proves from brook that native
-`curl` fails before installation, native `curl` and OpenSSL succeed after installation
-without a custom CA, and a wrong hostname still fails. It removes the exact tracked
-fingerprint, proves native TLS fails again, and requires the complete trust-store hash
-to match its captured baseline before reporting success.
+`--allow-system-mutation`. Linux clients additionally require passwordless sudo; the
+Windows-client rotation proves elevation **before** checking the run or contacting either
+Linux node. The shared transaction uses only the run CA PEM and a separate run-owned
+trust-state root, configures the role-selected service's real Koi TLS proxy, and proves
+native TLS fails before installation, succeeds afterward without a custom CA, and rejects
+a wrong hostname. Linux uses `curl` plus OpenSSL. Windows uses Schannel through `curl.exe`
+plus `Invoke-WebRequest`; the latter gets an explicit temporary hosts mapping whose exact
+original bytes are restored in a `finally` block. Windows installation is verified by the
+certificate's SHA-256 identity in `LocalMachine\Root`. The transaction removes only the
+tracked fingerprint, proves TLS fails again, and requires the complete native trust-store
+snapshot to match its captured baseline before reporting success.
+
+The elevated Windows-client transaction passed on 2026-07-20 as run
+`v1-20260720T030254Z-bb6572bc`. Store capture and membership checks use the
+provider-independent read-only `.NET X509Store` API rather than assuming the PowerShell `Cert:`
+provider exists. Its exact CA SHA-256 was
+`5cb069719615e570e7590cfd30a8fe4ad5ec55559d77c7aac24928d1abb3fb86`. Schannel
+`curl.exe` keeps CA and hostname verification enabled and uses `--ssl-revoke-best-effort` only
+because this private CA has no CRL distribution point; `-k`, `--insecure`, and
+`--ssl-no-revoke` are forbidden. `Invoke-WebRequest` succeeded and the temporary hosts mapping was
+restored byte-for-byte. After exact root removal, both native rejection and the complete captured
+store baseline were restored.
+
+That same tracked trust window now includes the smallest Windows V1-03 custody slice. A run-owned
+Windows daemon uses the local 18541–18555 port range, a run-owned `KOI_DATA_DIR`, and an isolated
+`ProgramData` breadcrumb. It must reject a wrong invite pin before creating a key, join Brook with
+local key custody, diagnose Healthy, and appear Active in Brook's roster. ACL evidence resolves
+identities to SIDs and permits allow ACEs only for SYSTEM (`S-1-5-18`),
+BUILTIN\Administrators (`S-1-5-32-544`), and the current user; the data root and DAT breadcrumb
+must have inheritance disabled. Cleanup kills and waits for the exact spawned child, verifies the
+local owner marker, and deletes only `.lab-runs/<run-id>/windows-member`. Owner-checked remote
+cleanup then removed only that run. Final preflight `preflight-20260720T030419Z.json` found no lab
+listeners or run state and preserved Granite's original enabled Koi 0.7.0 service at PID 803.
+Windows renewal, restart continuity, revocation, and cold recovery are not yet claimed.
 
 Debian testing exposed an `os-truststore 0.0.2` cleanup defect: uninstall removes the
 anchor, but `update-ca-certificates` can leave two dangling symlinks for that anchor.
@@ -93,16 +184,18 @@ socket reuse can coexist with it.
 
 ## Build and artifact identity
 
-`koi-lab build` always uses the release-musl command below on the workstation. There is
-no remote build fallback:
+`koi-lab build` always builds both required binaries on the workstation. There is no
+remote build fallback:
 
 ```text
+cargo build --release --locked -p koi-net
 cross build --release --locked --target x86_64-unknown-linux-musl -p koi-net
 ```
 
-The controller records the Git commit, byte length, and SHA-256, copies the same file to
-both run directories, and accepts a node only after its native `sha256sum` matches and
-the staged binary reports a version. The nodes need no Rust or C toolchain. Preflight
+The build report records byte length and SHA-256 for both artifacts. Deployment records
+the Git commit and Linux artifact identity, copies that same Linux file to both remote run
+directories, and accepts a node only after its native `sha256sum` matches and the staged
+binary reports a version. The nodes need no Rust or C toolchain. Preflight
 checks the existing `curl`, `jq`, `dig`, `nc`, Docker, OpenSSL, `systemctl`, `ss`, and
 `sha256sum` installations without installing packages.
 
