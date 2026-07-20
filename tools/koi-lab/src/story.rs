@@ -252,7 +252,14 @@ impl Lab {
                 dns_name
             ),
         )?;
-        if unavailable.status.success() || !unavailable.stdout.is_empty() {
+        // `dig` may exit zero and print timeout diagnostics to stdout on Debian. Reject an
+        // actual A-record answer; the exact run-owned process is independently verified as
+        // the port owner, which supplies the causal fault boundary.
+        let unavailable_output = String::from_utf8_lossy(&unavailable.stdout);
+        if unavailable_output
+            .lines()
+            .any(|line| line.trim() == primary.address())
+        {
             bail!("DNS data plane answered while the run-owned blocker held its port");
         }
 

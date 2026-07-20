@@ -9,7 +9,8 @@ real-binary two-daemon companion is
 `koi-lab capability-story` driver now covers Acts 0, 3, 4, 5, 6, 7, 8, 10, and 11 in both
 Linux role directions using real Docker events, derived DNS/mDNS/health/proxy state, exact
 container teardown, health fixtures, UDP/SSE, MCP, IPC, native trust installation/removal,
-certmesh-issued proxy certificate rotation, and ACME dns-01 through Koi's real DNS bridge.
+certmesh-issued proxy certificate rotation, ACME dns-01 through Koi's real DNS bridge, and an
+owned DNS stop/bind-failure/retry transaction with preserved records and unified status truth.
 The reusable Tier-1 breadth driver and the elevated Windows participant remain targets.
 The design content below is the target contract, not a claim that every Act already has
 one composed test.
@@ -49,7 +50,7 @@ Ordered **Acts**; each lists *drive → assert (+ events)*. Acts 1–2 and 9 als
 | **0. Genesis & isolation** | Bring up A and B with distinct `KOI_DATA_DIR` + ports (`1564x` / `1664x`); `GET /healthz`; read breadcrumb. | 200 OK; breadcrumb carries endpoint + DAT; A and B cannot see each other's state. | per-daemon isolation |
 | **1. CA genesis** | A `POST /v1/certmesh/create` (fixed entropy → reproducible CA), unlock, `GET /v1/certmesh/status`. | `ca_initialized`; issued CA cert profile correct (basicConstraints `pathlen:0`, KeyUsage) — **ADR-015 F10**. | — |
 | **2. Enrollment** | A mints an invite for B (**ADR-015 F2**); B generates keypair+CSR locally and joins (**F1**); verify fingerprint from invite (**F3**). | Chain verifies to CA; **mechanically assert no `PRIVATE KEY` bytes in any response** (F1); roster has B; `member_joined` audited; idempotent retry returns same cert (**F8**); bad hostnames rejected (**F15**). `CertmeshMemberJoined`. | enrollment custody |
-| **3. DNS** | A `POST /v1/dns/add` in-zone names; `GET /v1/dns/lookup`; start resolver on `15353`; query it. | entries resolve via stub and real resolver; member names in zone. `DnsEntryUpdated`. | dns ↔ certmesh (in-zone) |
+| **3. DNS** | A `POST /v1/dns/add` in-zone names and queries them; stop the resolver, occupy its port with an owned process, attempt restart, release the port, and retry. | State remains queryable while stopped; unified status reports `stopped`; the conflicted start fails explicitly; retry restores a real cross-host DNS answer with the same record. `DnsEntryUpdated`. | dns ↔ certmesh (in-zone) |
 | **4. mDNS** | A announce service; B discover (SSE) + resolve; heartbeat; unregister. | Resolved/Removed; lease renews. Non-meta `ServiceFound` is intentionally coalesced into the richer resolved record. `MdnsResolved/Removed`. | discovery |
 | **5. Runtime + orchestrator (keystone)** | Start a labeled container (`koi.enable=true`, `koi.dns.name`, `koi.health.path`, `koi.proxy.port`) **or** inject a synthetic `RuntimeEvent::Started` (CI without Docker). | Appears in `/v1/runtime/instances` with `KoiMetadata`; orchestrator auto-creates an mDNS reg + DNS name + health check + proxy entry ([orchestrator.rs](../../crates/koi-compose/src/orchestrator.rs)). `RuntimeInstanceStarted` → derived `DnsEntryUpdated`/`ProxyEntryUpdated`/etc. | **the full auto-wiring story** |
 | **6. Health** | Health check targets a real fixture listener (`127.0.0.1:0`); stop/start it. | status Up→Down→Up; `HealthChanged` on each transition. | health ← mdns/dns targets |
@@ -97,7 +98,7 @@ Runs in the existing `test` job on ubuntu/windows/macos ([ci.yml](../../.github/
 | Capability | Tier 1 coverage | Gating / note |
 |---|---|---|
 | certmesh | **Full** lifecycle + enrollment + trust bundle + revoke + renew/grace | fixed entropy; test decider |
-| dns | **Full** | resolver on `15353` (port 53 needs elevation) |
+| dns | **Full** | resolver on `15353` (port 53 needs elevation); domain tests prove bind failure is stopped/retryable and generation-safe lifecycle state is shared with health |
 | health | **Full** | fixture listeners on `127.0.0.1:0` |
 | udp | **Full** | `port:0` auto-assign; low lease for expiry tests |
 | mdns | **Functional**, best-effort cross-instance | in-process `MdnsCore` asserts always; real multicast short-timeout + skip-with-log if unavailable |
@@ -140,7 +141,7 @@ On each green run, update only the rows that run actually exercised, per the **r
 ## Constraints (the honest gaps)
 
 - **Reusable composed proxy trust path** — physical Linux Act 7 is green in both role directions, including native trust, hostname verification, hot certificate rotation without daemon restart, exact trust removal, and fail-after-removal. The remaining gap is a reusable Tier-1 composition where the platform permits it.
-- **Runtime without Docker** — implemented through `RuntimeCore::ingest_event`, the same inventory-and-fan-out chokepoint real backends use. The always-on `koi-compose` story proves startup reconciliation, derived mDNS/DNS/health/live-proxy state, and exact reversal. Physical Linux runs prove the same reconstruction after restarting Koi while a real container remains running. Real containers remain Tier 2 / Docker-available CI; Docker event-stream disconnect/reconnect is still V1-05 work.
+- **Runtime without Docker** — implemented through `RuntimeCore::ingest_event`, the same inventory-and-fan-out chokepoint real backends use. The always-on `koi-compose` story proves startup reconciliation, derived mDNS/DNS/health/live-proxy state, and exact reversal. Physical Linux runs prove the same reconstruction after restarting Koi while a real container remains running. Real containers remain Tier 2 / Docker-available CI; a separate run-owned Unix-relay lane now proves Docker event-stream disconnect/reconnect in both physical role directions.
 - **mDNS in CI** — multicast works on GH runners but can fail in isolated networks; Tier 1 always asserts via in-process `MdnsCore` and treats cross-instance multicast as best-effort.
 - **DNS port 53** — elevation required; Tier 1 uses `15353`. Tier 2 uses 53 (elevated) to validate the system resolver path.
 - **Enrollment approval** — default decider denies; needs the test affordance above.

@@ -1,7 +1,7 @@
 # Koi Epic to v1 — canonical continuation ledger
 
 **Status:** active — V1-00 through V1-02 complete; V1-03 in progress; V1-07 identity and publication-foundation slices complete
-**Last updated:** 2026-07-20 14:31 EDT
+**Last updated:** 2026-07-20 15:16 EDT
 **Resume phrase:** `continue the epic to v1`
 
 This is the repository's canonical handoff and progress ledger for the v1 epic. The plan is a
@@ -380,25 +380,34 @@ evidence rather than a one-off demo.
   or cursor-replay lifecycle event, and exact relay/container/image/network cleanup. Both used the
   clean locally built musl artifact
   `0d5d47d850d52c601a70941b525a80a1dabac0dd861e95dfbca6ee9c2c42f4f7` (41,566,120 bytes).
+- DNS capability loss/recovery is now truthful at the shared lifecycle chokepoint. `DomainRuntime`
+  awaits a fallible asynchronous launcher before marking a loop running and generation-checks
+  completion, so a failed bind stays stopped/retryable and an older loop cannot mark its replacement
+  stopped. `DnsRuntime` binds both sockets before `/v1/dns/serve` reports success. The existing
+  physical Act 3 now preserves a record across stop, observes centralized `stopped` status, installs
+  an exact run-owned UDP conflict, requires HTTP 500 on restart, removes the conflict, retries, and
+  proves the same answer with cross-host `dig`. Forward `v1-20260720T190754Z-fdc848da` (Brook PID
+  `57914` → `58297`) and reverse `v1-20260720T191154Z-adb441bc` (Granite PID `111400` → `111831`)
+  passed the complete story with clean commit `27b268d` and musl SHA-256
+  `199a4b46faa3ef5777b949ffd46684f468e279324f4f98c9e9f1369a856f3287` (41,511,128 bytes).
 
 ## Current repository state
 
 - Workspace: `F:\Files\repo\github\sylin-org\koi`
 - Branch/upstream: `dev` tracking `origin/dev`, ahead 0 / behind 0 at handoff time.
-- Product artifact exercised: `2e40840f50bdefcdb7625580a81942f78fbe0c4f`
-  (`fix(runtime): preserve unchanged services across reconnect`). Seven v1 commits precede this slice:
-  `e651fc8` bounded issuance skew, `892733b` staged member keys, `4b9c184` Windows lifecycle,
-  `2bd25bb` aggregation breadth, `180f042` runtime reconnect, `df11f78` evidence documentation,
-  and `2e40840` unchanged-service preservation.
-- The run-owned Docker relay, physical reconnect scenario, shared SSE capture extraction, and
-  evidence documentation are committed together on `dev`; the worktree is clean at handoff.
+- Product artifact exercised: `27b268dd29229b2d9f9312947e95c8b97c9b9deb`
+  (`fix(runtime): make capability startup truthful`). The Docker relay/evidence commit `40ada4c`
+  and unchanged-service correction `2e40840` precede it on `dev`.
+- The two-line `dig` portability correction learned from physical execution and the resulting
+  evidence documentation are committed and pushed on `dev`; the worktree is clean at handoff.
 - No PR, release, or package publication was made. All run-scoped test deployments were cleaned
-  exactly. Fresh preflight `preflight-20260720T182050Z.json` at artifact commit `2e40840` confirms Brook
+  exactly. Fresh preflight `preflight-20260720T191606Z.json` at artifact commit `27b268d` confirms Brook
   inactive, Granite's original enabled Koi 0.7.0 service still PID 803, deploy readiness on all
   nodes, and no lab run/lock/listener residue.
-- Clean release artifacts were built locally from `2e40840`: Linux musl SHA-256
-  `0d5d47d850d52c601a70941b525a80a1dabac0dd861e95dfbca6ee9c2c42f4f7` (41,566,120 bytes) and
-  Windows SHA-256 `905972f38eae73925022cb70e63e276c482c60d2be2494c00ee70bca3b177831`.
+- Clean release artifacts were built locally from `27b268d`: Linux musl SHA-256
+  `199a4b46faa3ef5777b949ffd46684f468e279324f4f98c9e9f1369a856f3287` (41,511,128 bytes) and
+  Windows SHA-256 `29de2d484f2be187138d2b8b9aa29c687dcf1c357288a04410aca7f6479b3f30`
+  (35,896,320 bytes).
 - The green Windows lifecycle run remains valid behavioral evidence, but its artifact manifest names
   commit `1f3b2a3` because that artifact was built from the then-dirty tree. A clean-commit-bound
   artifact and physical rerun are still required for release provenance; do not rewrite that history
@@ -480,7 +489,7 @@ evidence rather than a one-off demo.
 | V1-02 | Certmesh protocol and native trust role rotations | **complete — 2026-07-19** | Forward and reverse Linux rotations plus the elevated Windows-client rotation pass fail-before, exact install, native clients, wrong-host rejection, tracked removal, fail-after, and full-store restoration. Windows additionally proves exact `LocalMachine\Root` SHA-256 identity, Schannel `curl.exe`, `Invoke-WebRequest`, and byte-exact hosts restoration. Configured `.internal` issuance is centralized. |
 | V1-03 | Certificate lifecycle and adversarial trust cases | **in progress — Linux lifecycle/cold recovery and Windows lifecycle green** | Both Linux roles prove wrong-pin refusal, mode-0600 custody, key/leaf/chain/SAN integrity, renewal/key rotation, restart, revocation→RED and generic-TLS limits; both also survive encrypted backup, exact data loss, host-bound restore, locked restart and renewed mTLS continuity. Elevated Windows now proves SID-based custody, key/cert rotation and correspondence, CA-roster convergence, exact owned-child restart with identity/diagnosis/Schannel proxy continuity, revocation→RED/self-revoked, and mutation-free renewal/rejoin refusal. Windows cold recovery remains unclaimed. |
 | V1-04 | Real whole-story capability surface | **in progress — physical Linux story + portable Tier-1 aggregation green** | Acts 0, 3, 4, 5, 6, 7, 8, 10, and 11 plus real ACME dns-01 pass physically in both Linux directions. Two concurrent real local daemons now additionally prove the centralized HTTP status/host, dashboard, and authenticated MCP aggregation surfaces. Physical Windows whole-story breadth remains. |
-| V1-05 | Resilience, reconnect, fault and soak lanes | **in progress — startup and event reconnect physical** | Always-on regressions and Brook↔Granite physical rotations prove startup reconstruction and a run-owned Docker event-stream fault in both directions. The relay lane proves centralized health, bounded retry, preserved inventory and registrations, exact material deltas, replay suppression, live derived services, and owner-checked cleanup without restarting Docker. Broader service lifecycle, capability loss/recovery, other fault injection, and bounded soak remain. |
+| V1-05 | Resilience, reconnect, fault and soak lanes | **in progress — startup, event reconnect, and DNS recovery physical** | Always-on regressions and Brook↔Granite rotations prove startup reconstruction, an isolated Docker event-stream fault, and DNS stop/bind-failure/retry in both directions. Shared lifecycle state reports failed startup honestly, preserves DNS records, rejects stale loop completion, and recovers through the public endpoint. Broader service lifecycle, other fault injection, and bounded soak remain. |
 | V1-06 | Automation, evidence ledger and v1 release gate | planned | Smoke/certmesh/full/soak profiles documented; scheduled hardware execution reliable; three consecutive full green runs; release evidence and `SURFACES.md` updated honestly |
 | V1-07 | Adoption/public-surface polish backed by proved behavior | **in progress — identity + publication foundation complete 2026-07-19** | ADR-024 canonizes “Let everything local find, trust, and talk” plus Find/Trust/Connect; ADR-025 establishes one attested artifact contract, no-build cargo-binstall metadata, tested npx bootstrap, gated OIDC publication, and safer release operation; registry activation, native-manager channels, evidence-gated compatibility claims and golden demo remain |
 
@@ -518,9 +527,10 @@ releases; soak is scheduled or explicitly invoked.
 
 ## Resume here
 
-1. Add capability loss/recovery and broader daemon/service lifecycle lanes, reusing the existing
-   lifecycle and cleanup chokepoints rather than adding parallel policy engines.
-2. Add the next safe fault-injection cases and a bounded soak profile; keep each fault run-owned and
+1. Add broader daemon/system-service lifecycle evidence. Brook has no installed Koi unit or service
+   artifacts; Granite's original enabled PID 803 service must remain untouched. Prefer a run-owned
+   transient systemd unit unless the public install/uninstall path can be made byte-exact reversible.
+2. Add the next safe capability/fault cases and a bounded soak profile; keep each fault run-owned and
    require exact recovery plus cleanup evidence.
 3. Implement and physically execute Windows cold recovery only if exact encrypted backup/data-loss/
    restore ownership can stay within the tracked Windows transaction; until then leave it unclaimed.
@@ -586,13 +596,13 @@ releases; soak is scheduled or explicitly invoked.
 - Windows cold recovery, privileged service lifecycle, remaining fault lanes, soak, scheduled
   execution, and the three-consecutive-green v1 gate are
   outstanding. Portable Tier-1 HTTP/dashboard/MCP breadth and deterministic Docker reconnect are
-  green, including the physical stream fault in both Linux role directions. Physical Linux Acts
-  0/3/4/5/6/7/8/10/11 plus ACME and daemon-restart startup reconciliation are also complete in both
-  directions.
+  green, including the physical stream fault and DNS stop/bind-failure/retry in both Linux role
+  directions. Physical Linux Acts 0/3/4/5/6/7/8/10/11 plus ACME and daemon-restart startup
+  reconciliation are also complete in both directions.
 ## Open basket
 
-- **Now:** capability loss/recovery and broader daemon/service lifecycle evidence, followed by the
-  smallest safe additional fault and bounded-soak lanes.
+- **Now:** broader daemon/system-service lifecycle evidence, followed by the smallest safe
+  additional fault and bounded-soak lanes.
 - **Next:** implement Windows
   cold recovery only within an exact tracked backup/data-loss/restore transaction.
 - **Later in epic:** complete V1-03 through V1-06 in evidence-driven order.

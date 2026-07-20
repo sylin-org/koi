@@ -125,6 +125,12 @@ event must derive runtime inventory, mDNS, `.internal` DNS, health, and a live s
 The story then leaves that container running, restarts only the run-owned Koi daemon, requires a
 new daemon PID, and proves runtime inventory plus every derived service is reconstructed before
 container stop reverses them and the owned container and image are removed.
+Act 3 also stops the live DNS resolver while retaining its record, verifies the centralized status
+ladder reports `stopped`, gives the resolver port to an exact run-owned UDP process, requires
+`POST /v1/dns/serve` to fail rather than claim success, removes only that blocker, retries, and
+requires the same record to resolve again from the other host. The shared domain lifecycle
+chokepoint accepts fallible asynchronous startup and generation-checks loop completion, so a stale
+loop cannot mark its replacement stopped.
 Act 7 composes pinned certmesh enrollment, `.internal` DNS, a certmesh-sourced proxy, native trust,
 hostname verification, member key/certificate rotation, and hot leaf reload without a daemon restart.
 Its ACME mini-act uses a real `instant-acme` client, publishes and exact-clears dns-01 proof through
@@ -136,6 +142,13 @@ Linux role directions passed with startup reconciliation on 2026-07-20: forward 
 `v1-20260720T015153Z-558233f4` restarted Granite (`67926` → `68309`), both using locally built musl
 SHA-256 `928522b3c18fce60a28310e619fbb4ff715d8b0a9f03c059842eaef6629f8d07`.
 Reusable Tier 1 breadth and Windows execution remain unclaimed.
+The enhanced Act 3 and complete story passed again in both directions on 2026-07-20: forward run
+`v1-20260720T190754Z-fdc848da` used Brook (`57914` → `58297`) and reverse run
+`v1-20260720T191154Z-adb441bc` used Granite (`111400` → `111831`). Both used clean commit
+`27b268d` and locally built musl SHA-256
+`199a4b46faa3ef5777b949ffd46684f468e279324f4f98c9e9f1369a856f3287` (41,511,128 bytes).
+Final preflight `preflight-20260720T191606Z.json` found no run roots or locks, left Brook without an
+installed service, and preserved Granite's original enabled Koi at PID 803.
 
 `runtime-reconnect` is the V1-05 physical Docker recovery transaction. The controller stages a
 small Python standard-library Unix-stream relay inside the run root and starts the run-owned Koi
