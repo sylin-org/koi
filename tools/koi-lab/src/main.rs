@@ -4,6 +4,7 @@ mod evidence;
 mod lab;
 mod model;
 mod probe;
+mod profile;
 mod putty;
 mod runtime_reconnect;
 mod service_lifecycle;
@@ -12,11 +13,12 @@ mod story;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
 use crate::lab::Lab;
-use crate::model::{RunId, TrustRotation};
+use crate::model::{LabProfile, RunId, TrustRotation};
+use crate::profile::ProfileOptions;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -114,6 +116,26 @@ enum LabCommand {
         #[arg(long, default_value_t = 5)]
         restart_every: u32,
     },
+    /// Run an unattended deploy/scenario/cleanup policy with aggregate evidence.
+    RunProfile {
+        #[arg(value_enum)]
+        profile: LabProfile,
+        /// Reuse this local artifact for every fresh deployment in the profile.
+        #[arg(long)]
+        artifact: Option<PathBuf>,
+        /// Acknowledge native trust and transient service mutations in the full profile.
+        #[arg(long)]
+        allow_system_mutation: bool,
+        /// Override the soak profile's iteration count.
+        #[arg(long)]
+        iterations: Option<u32>,
+        /// Override the soak profile's time bound.
+        #[arg(long)]
+        max_minutes: Option<u32>,
+        /// Override the soak profile's live-container restart cadence; zero disables it.
+        #[arg(long)]
+        restart_every: Option<u32>,
+    },
     /// Show exactly what cleanup would remove; never changes state.
     PlanCleanup {
         #[arg(long)]
@@ -199,6 +221,33 @@ fn main() -> Result<()> {
                 max_minutes,
                 restart_every,
             )?)?;
+        }
+        LabCommand::RunProfile {
+            profile,
+            artifact,
+            allow_system_mutation,
+            iterations,
+            max_minutes,
+            restart_every,
+        } => {
+            let execution = lab.run_profile(
+                profile,
+                ProfileOptions {
+                    artifact,
+                    allow_system_mutation,
+                    soak_iterations: iterations,
+                    soak_max_minutes: max_minutes,
+                    soak_restart_every: restart_every,
+                },
+            )?;
+            print_json(&execution.report)?;
+            eprintln!("profile evidence: {}", execution.evidence_path.display());
+            if !execution.succeeded {
+                bail!(
+                    "{} profile failed; exact evidence was preserved",
+                    profile.as_str()
+                );
+            }
         }
         LabCommand::PlanCleanup { run_id } => {
             print_json(&lab.cleanup_plan(&RunId::parse(&run_id)?)?)?;

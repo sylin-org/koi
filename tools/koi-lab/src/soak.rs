@@ -30,7 +30,7 @@ impl Lab {
         max_minutes: u32,
         restart_every: u32,
     ) -> Result<BoundedSoakReport> {
-        validate_bounds(iterations, max_minutes, restart_every)?;
+        validate_soak_bounds(iterations, max_minutes, restart_every)?;
         let plan = self.cleanup_plan(run_id)?;
         if plan
             .nodes
@@ -271,7 +271,11 @@ impl Lab {
     }
 }
 
-fn validate_bounds(iterations: u32, max_minutes: u32, restart_every: u32) -> Result<()> {
+pub(crate) fn validate_soak_bounds(
+    iterations: u32,
+    max_minutes: u32,
+    restart_every: u32,
+) -> Result<()> {
     if !(1..=MAX_ITERATIONS).contains(&iterations) {
         bail!("iterations must be between 1 and {MAX_ITERATIONS}");
     }
@@ -306,11 +310,11 @@ mod tests {
 
     #[test]
     fn soak_bounds_are_finite_and_restart_zero_is_allowed() {
-        assert!(validate_bounds(20, 15, 5).is_ok());
-        assert!(validate_bounds(20, 15, 0).is_ok());
-        assert!(validate_bounds(0, 15, 0).is_err());
-        assert!(validate_bounds(1, 0, 0).is_err());
-        assert!(validate_bounds(2, 1, 3).is_err());
+        assert!(validate_soak_bounds(20, 15, 5).is_ok());
+        assert!(validate_soak_bounds(20, 15, 0).is_ok());
+        assert!(validate_soak_bounds(0, 15, 0).is_err());
+        assert!(validate_soak_bounds(1, 0, 0).is_err());
+        assert!(validate_soak_bounds(2, 1, 3).is_err());
     }
 
     #[test]

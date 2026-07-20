@@ -72,6 +72,29 @@ pub enum TrustRotation {
     WindowsClient,
 }
 
+/// Operator-facing hardware execution policies. Scenario membership is owned
+/// by the profile orchestrator; this enum is only the stable CLI/report name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[value(rename_all = "kebab-case")]
+pub enum LabProfile {
+    Smoke,
+    Certmesh,
+    Full,
+    Soak,
+}
+
+impl LabProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Smoke => "smoke",
+            Self::Certmesh => "certmesh",
+            Self::Full => "full",
+            Self::Soak => "soak",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CertmeshRoles {
     pub ca: &'static str,
@@ -452,7 +475,7 @@ pub struct NodeSnapshot {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct ServiceSnapshot {
     pub active: String,
     pub enabled: String,
@@ -627,6 +650,28 @@ pub struct BoundedSoakReport {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct ProfileCaseReport {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<RunId>,
+    pub deployment_passed: bool,
+    pub scenario_passed: bool,
+    pub cleanup_passed: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ProfileReport {
+    pub schema: u32,
+    pub execution_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub git_commit: String,
+    pub profile: LabProfile,
+    pub cases: Vec<ProfileCaseReport>,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct CheckResult {
     pub name: String,
     pub passed: bool,
@@ -663,6 +708,7 @@ impl_evidence_report!(
     RuntimeReconnectReport,
     ServiceLifecycleReport,
     BoundedSoakReport,
+    ProfileReport,
 );
 
 pub fn output_path(name: &str) -> PathBuf {
