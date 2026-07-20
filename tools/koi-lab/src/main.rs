@@ -6,6 +6,7 @@ mod probe;
 mod putty;
 mod runtime_reconnect;
 mod service_lifecycle;
+mod soak;
 mod story;
 
 use std::path::PathBuf;
@@ -100,6 +101,18 @@ enum LabCommand {
         #[arg(long)]
         allow_system_mutation: bool,
     },
+    /// Repeat container derivation/reversal with periodic daemon restarts under hard bounds.
+    BoundedSoak {
+        #[arg(long)]
+        run_id: String,
+        #[arg(long, default_value_t = 20)]
+        iterations: u32,
+        #[arg(long, default_value_t = 15)]
+        max_minutes: u32,
+        /// Restart Koi with a live container every N iterations; zero disables restarts.
+        #[arg(long, default_value_t = 5)]
+        restart_every: u32,
+    },
     /// Show exactly what cleanup would remove; never changes state.
     PlanCleanup {
         #[arg(long)]
@@ -172,6 +185,19 @@ fn main() -> Result<()> {
             allow_system_mutation,
         } => {
             print_json(&lab.service_lifecycle(&RunId::parse(&run_id)?, allow_system_mutation)?)?;
+        }
+        LabCommand::BoundedSoak {
+            run_id,
+            iterations,
+            max_minutes,
+            restart_every,
+        } => {
+            print_json(&lab.bounded_soak(
+                &RunId::parse(&run_id)?,
+                iterations,
+                max_minutes,
+                restart_every,
+            )?)?;
         }
         LabCommand::PlanCleanup { run_id } => {
             print_json(&lab.cleanup_plan(&RunId::parse(&run_id)?)?)?;

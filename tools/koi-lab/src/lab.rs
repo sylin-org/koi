@@ -3632,6 +3632,31 @@ pub(crate) fn curl_text(
     curl_output(method, url, output)
 }
 
+pub(crate) fn curl_status(method: &str, url: &str, token: Option<&str>) -> Result<u16> {
+    let mut command = Command::new("curl.exe");
+    command.args([
+        "--silent",
+        "--output",
+        "NUL",
+        "--write-out",
+        "%{http_code}",
+        "--request",
+        method,
+        url,
+    ]);
+    if let Some(token) = token {
+        command.args(["--header", &format!("x-koi-token: {token}")]);
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("failed to query {url}"))?;
+    let status = String::from_utf8(output.stdout).context("curl status was not UTF-8")?;
+    status
+        .trim()
+        .parse::<u16>()
+        .with_context(|| format!("curl returned invalid HTTP status {status:?}"))
+}
+
 fn curl_output(method: &str, url: &str, output: std::process::Output) -> Result<String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();

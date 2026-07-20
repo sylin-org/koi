@@ -600,6 +600,33 @@ pub struct ServiceLifecycleReport {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct SoakIterationReport {
+    pub iteration: u32,
+    pub duration_ms: u64,
+    pub restarted_from_pid: Option<u32>,
+    pub restarted_to_pid: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct BoundedSoakReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub primary_node: String,
+    pub observer_node: String,
+    pub artifact_sha256: String,
+    pub target_iterations: u32,
+    pub completed_iterations: u32,
+    pub max_minutes: u32,
+    pub restart_every: u32,
+    pub termination: String,
+    pub elapsed_ms: u64,
+    pub iterations: Vec<SoakIterationReport>,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct CheckResult {
     pub name: String,
     pub passed: bool,

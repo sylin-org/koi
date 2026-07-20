@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use serde_json::Value;
 
-use crate::lab::{curl_json, Lab};
+use crate::lab::{curl_json, curl_status, Lab};
 use crate::model::NodeSpec;
 
 /// Wait for one runtime-derived container service to converge through every
@@ -45,6 +45,100 @@ pub(crate) fn wait_for_derived_service(
         bail!("derived proxy returned {body:?}, expected OK");
     }
     Ok(())
+}
+
+pub(crate) fn wait_for_derived_service_absence(
+    primary_url: &str,
+    observer_url: &str,
+    service_name: &str,
+    dns_name: &str,
+    full_service_name: &str,
+    health_name: &str,
+) -> Result<()> {
+    for _ in 0..80 {
+        let instances = curl_json(
+            "GET",
+            &format!("{primary_url}/v1/runtime/instances"),
+            None,
+            None,
+        )?;
+        if !instances.as_array().is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| derived_service_name(item) == Some(service_name))
+        }) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    let instances = curl_json(
+        "GET",
+        &format!("{primary_url}/v1/runtime/instances"),
+        None,
+        None,
+    )?;
+    if instances.as_array().is_some_and(|items| {
+        items
+            .iter()
+            .any(|item| derived_service_name(item) == Some(service_name))
+    }) {
+        bail!("runtime retained stopped service {service_name}");
+    }
+
+    wait_for_http_absence(&format!(
+        "{primary_url}/v1/dns/lookup?name={dns_name}&type=A"
+    ))?;
+    let mdns_status = curl_status(
+        "GET",
+        &format!("{observer_url}/v1/mdns/resolve?name={full_service_name}"),
+        None,
+    )?;
+    if !matches!(mdns_status, 404 | 504) {
+        bail!("mDNS service {full_service_name} remained visible with HTTP {mdns_status}");
+    }
+
+    for _ in 0..80 {
+        let health = curl_json(
+            "GET",
+            &format!("{primary_url}/v1/health/status"),
+            None,
+            None,
+        )?;
+        let health_present = health
+            .get("services")
+            .and_then(Value::as_array)
+            .is_some_and(|services| {
+                services
+                    .iter()
+                    .any(|service| service.get("name").and_then(Value::as_str) == Some(health_name))
+            });
+        let proxy = curl_json("GET", &format!("{primary_url}/v1/proxy/status"), None, None)?;
+        let proxy_present = proxy
+            .get("proxies")
+            .and_then(Value::as_array)
+            .is_some_and(|proxies| {
+                proxies
+                    .iter()
+                    .any(|proxy| proxy.get("name").and_then(Value::as_str) == Some(service_name))
+            });
+        if !health_present && !proxy_present {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    bail!("derived health or proxy state remained for {service_name}")
+}
+
+fn wait_for_http_absence(url: &str) -> Result<()> {
+    let mut last = 0;
+    for _ in 0..80 {
+        last = curl_status("GET", url, None)?;
+        if last == 404 {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    bail!("resource {url} remained visible with HTTP {last}")
 }
 
 fn wait_for_runtime_instance(base: &str, service_name: &str) -> Result<()> {

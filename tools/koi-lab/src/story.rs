@@ -7,7 +7,9 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
 
-use crate::lab::{curl_json, require_system_mutation, wait_for_http, InstalledTrust, Lab};
+use crate::lab::{
+    curl_json, curl_status, require_system_mutation, wait_for_http, InstalledTrust, Lab,
+};
 use crate::model::{
     output_path, CapabilityStoryReport, CheckResult, NodeSpec, RunId, TrustRotation,
 };
@@ -233,7 +235,7 @@ impl Lab {
 
         self.start_story_dns_blocker(primary, run_id)?;
         resources.dns_blocker_active = true;
-        let blocked_start = http_status(
+        let blocked_start = curl_status(
             "POST",
             &format!("{primary_url}/v1/dns/serve"),
             Some(&primary_token),
@@ -1296,7 +1298,7 @@ fn wait_for_runtime_absence(base: &str, container_id: &str) -> Result<()> {
 fn wait_for_http_absence(url: &str) -> Result<()> {
     let mut last = 0;
     for _ in 0..80 {
-        last = http_status("GET", url, None)?;
+        last = curl_status("GET", url, None)?;
         if last == 404 {
             return Ok(());
         }
@@ -1308,7 +1310,7 @@ fn wait_for_http_absence(url: &str) -> Result<()> {
 fn wait_for_mdns_absence(url: &str) -> Result<()> {
     // The resolve endpoint performs bounded active discovery. A missing service
     // is therefore represented as either not-found or discovery timeout.
-    let status = http_status("GET", url, None)?;
+    let status = curl_status("GET", url, None)?;
     if matches!(status, 404 | 504) {
         return Ok(());
     }
@@ -1443,7 +1445,7 @@ fn require_ipc_resolution(
 
 fn require_mcp_resources(base: &str, token: &str) -> Result<()> {
     let url = format!("{base}/v1/mcp");
-    let unauthorized = http_status("POST", &url, None)?;
+    let unauthorized = curl_status("POST", &url, None)?;
     if unauthorized != 401 {
         bail!("MCP request without DAT returned HTTP {unauthorized}, expected 401");
     }
@@ -1487,31 +1489,6 @@ fn require_mcp_resources(base: &str, token: &str) -> Result<()> {
         bail!("MCP resources/read returned no contents: {resource}");
     }
     Ok(())
-}
-
-fn http_status(method: &str, url: &str, token: Option<&str>) -> Result<u16> {
-    let mut command = Command::new("curl.exe");
-    command.args([
-        "--silent",
-        "--output",
-        "NUL",
-        "--write-out",
-        "%{http_code}",
-        "--request",
-        method,
-        url,
-    ]);
-    if let Some(token) = token {
-        command.args(["--header", &format!("x-koi-token: {token}")]);
-    }
-    let output = command
-        .output()
-        .with_context(|| format!("failed to query {url}"))?;
-    let status = String::from_utf8(output.stdout).context("curl status was not UTF-8")?;
-    status
-        .trim()
-        .parse::<u16>()
-        .with_context(|| format!("curl returned invalid HTTP status {status:?}"))
 }
 
 fn mcp_post(
