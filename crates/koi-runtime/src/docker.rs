@@ -29,7 +29,7 @@ pub struct DockerBackend {
     /// Last point-in-time inventory, seeded by RuntimeCore's startup listing.
     /// The watch loop owns a clone and uses it to emit exact stop/start/update
     /// deltas after an event-stream reconnect.
-    known_instances: Mutex<HashMap<String, String>>,
+    known_instances: Mutex<HashMap<String, Instance>>,
 }
 
 impl Default for DockerBackend {
@@ -227,7 +227,7 @@ impl RuntimeBackend for DockerBackend {
         }
 
         if let Ok(mut known) = self.known_instances.lock() {
-            *known = instance_names(&instances);
+            *known = instances_by_id(&instances);
         }
         Ok(instances)
     }
@@ -269,9 +269,10 @@ impl RuntimeBackend for DockerBackend {
                             }
                             match self.normalize_docker_event(client, &event).await {
                                 Ok(Some(event)) => {
-                                    track_event(&mut known, &event);
-                                    if tx.send(event).await.is_err() {
-                                        return Ok(());
+                                    if let Some(event) = apply_event_to_snapshot(&mut known, event) {
+                                        if tx.send(event).await.is_err() {
+                                            return Ok(());
+                                        }
                                     }
                                 }
                                 Ok(None) => {}
@@ -433,22 +434,39 @@ fn replay_cursor(last_event_time: i64) -> String {
     last_event_time.saturating_sub(1).to_string()
 }
 
-fn instance_names(instances: &[Instance]) -> HashMap<String, String> {
+fn instances_by_id(instances: &[Instance]) -> HashMap<String, Instance> {
     instances
         .iter()
-        .map(|instance| (instance.id.clone(), instance.name.clone()))
+        .map(|instance| (instance.id.clone(), instance.clone()))
         .collect()
 }
 
-fn track_event(known: &mut HashMap<String, String>, event: &RuntimeEvent) {
+/// Apply one observed lifecycle fact to the backend snapshot and return only
+/// the material normalized delta. This suppresses duplicate Docker events and
+/// inclusive cursor replay without spreading idempotency policy downstream.
+fn apply_event_to_snapshot(
+    known: &mut HashMap<String, Instance>,
+    event: RuntimeEvent,
+) -> Option<RuntimeEvent> {
     match event {
         RuntimeEvent::Started(instance) | RuntimeEvent::Updated(instance) => {
-            known.insert(instance.id.clone(), instance.name.clone());
+            let normalized = match known.get(&instance.id) {
+                Some(prior) if prior.has_same_operational_facts(&instance) => None,
+                Some(_) => Some(RuntimeEvent::Updated(instance.clone())),
+                None => Some(RuntimeEvent::Started(instance.clone())),
+            };
+            known.insert(instance.id.clone(), instance);
+            normalized
         }
-        RuntimeEvent::Stopped { id, .. } => {
-            known.remove(id);
+        RuntimeEvent::Stopped { id, name } => known
+            .remove(&id)
+            .map(|_| RuntimeEvent::Stopped { id, name }),
+        RuntimeEvent::BackendDisconnected { backend, reason } => {
+            Some(RuntimeEvent::BackendDisconnected { backend, reason })
         }
-        RuntimeEvent::BackendDisconnected { .. } | RuntimeEvent::BackendReconnected { .. } => {}
+        RuntimeEvent::BackendReconnected { backend } => {
+            Some(RuntimeEvent::BackendReconnected { backend })
+        }
     }
 }
 
@@ -456,17 +474,17 @@ fn track_event(known: &mut HashMap<String, String>, event: &RuntimeEvent) {
 /// still flows through RuntimeState::ingest; this helper only translates the
 /// backend's point-in-time truth into normalized lifecycle facts.
 fn reconciliation_events(
-    previous: &HashMap<String, String>,
+    previous: &HashMap<String, Instance>,
     mut current: Vec<Instance>,
-) -> (HashMap<String, String>, Vec<RuntimeEvent>) {
+) -> (HashMap<String, Instance>, Vec<RuntimeEvent>) {
     current.sort_by(|left, right| left.id.cmp(&right.id));
-    let next = instance_names(&current);
+    let next = instances_by_id(&current);
     let mut stopped: Vec<_> = previous
         .iter()
         .filter(|(id, _)| !next.contains_key(*id))
-        .map(|(id, name)| RuntimeEvent::Stopped {
+        .map(|(id, instance)| RuntimeEvent::Stopped {
             id: id.clone(),
-            name: name.clone(),
+            name: instance.name.clone(),
         })
         .collect();
     stopped.sort_by(|left, right| match (left, right) {
@@ -477,13 +495,15 @@ fn reconciliation_events(
     });
 
     let mut events = stopped;
-    events.extend(current.into_iter().map(|instance| {
-        if previous.contains_key(&instance.id) {
-            RuntimeEvent::Updated(instance)
-        } else {
-            RuntimeEvent::Started(instance)
-        }
-    }));
+    events.extend(
+        current
+            .into_iter()
+            .filter_map(|instance| match previous.get(&instance.id) {
+                Some(prior) if prior.has_same_operational_facts(&instance) => None,
+                Some(_) => Some(RuntimeEvent::Updated(instance)),
+                None => Some(RuntimeEvent::Started(instance)),
+            }),
+    );
     (next, events)
 }
 
@@ -526,6 +546,7 @@ fn extract_port_mappings(info: &bollard::models::ContainerInspectResponse) -> Ve
         }
     }
 
+    mappings.sort();
     mappings
 }
 
@@ -565,6 +586,7 @@ fn extract_ips(info: &bollard::models::ContainerInspectResponse) -> Vec<String> 
         }
     }
 
+    ips.sort();
     ips
 }
 
@@ -654,16 +676,28 @@ mod tests {
     #[test]
     fn reconnect_reconciliation_emits_exact_stops_updates_and_starts() {
         let previous = HashMap::from([
-            ("gone".to_string(), "old-service".to_string()),
-            ("same".to_string(), "existing-service".to_string()),
+            ("gone".to_string(), instance("gone", "old-service")),
+            ("same".to_string(), instance("same", "existing-service")),
+            (
+                "unchanged".to_string(),
+                instance("unchanged", "stable-service"),
+            ),
         ]);
         let (next, events) = reconciliation_events(
             &previous,
-            vec![instance("new", "new-service"), instance("same", "renamed")],
+            vec![
+                instance("unchanged", "stable-service"),
+                instance("new", "new-service"),
+                instance("same", "renamed"),
+            ],
         );
 
-        assert_eq!(next.len(), 2);
-        assert_eq!(next.get("same").map(String::as_str), Some("renamed"));
+        assert_eq!(next.len(), 3);
+        assert_eq!(
+            next.get("same").map(|item| item.name.as_str()),
+            Some("renamed")
+        );
+        assert_eq!(events.len(), 3);
         assert!(matches!(
             &events[0],
             RuntimeEvent::Stopped { id, name }
@@ -678,6 +712,53 @@ mod tests {
             RuntimeEvent::Updated(instance)
                 if instance.id == "same" && instance.name == "renamed"
         ));
+    }
+
+    #[test]
+    fn reconnect_reconciliation_ignores_observation_time_for_unchanged_instances() {
+        let prior = instance("same", "stable-service");
+        let mut relisted = prior.clone();
+        relisted.discovered_at = prior.discovered_at + chrono::Duration::seconds(30);
+
+        let (next, events) =
+            reconciliation_events(&HashMap::from([(prior.id.clone(), prior)]), vec![relisted]);
+
+        assert_eq!(next.len(), 1);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn snapshot_ingest_suppresses_replay_and_emits_only_material_deltas() {
+        let prior = instance("same", "stable-service");
+        let mut known = HashMap::from([(prior.id.clone(), prior.clone())]);
+        let mut replayed = prior;
+        replayed.discovered_at += chrono::Duration::seconds(30);
+
+        assert!(apply_event_to_snapshot(&mut known, RuntimeEvent::Started(replayed)).is_none());
+
+        let renamed = instance("same", "renamed-service");
+        assert!(matches!(
+            apply_event_to_snapshot(&mut known, RuntimeEvent::Started(renamed)),
+            Some(RuntimeEvent::Updated(instance)) if instance.name == "renamed-service"
+        ));
+        assert!(matches!(
+            apply_event_to_snapshot(
+                &mut known,
+                RuntimeEvent::Stopped {
+                    id: "same".into(),
+                    name: "renamed-service".into(),
+                },
+            ),
+            Some(RuntimeEvent::Stopped { .. })
+        ));
+        assert!(apply_event_to_snapshot(
+            &mut known,
+            RuntimeEvent::Stopped {
+                id: "same".into(),
+                name: "renamed-service".into(),
+            },
+        )
+        .is_none());
     }
 
     #[test]

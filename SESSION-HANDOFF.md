@@ -1,7 +1,7 @@
 # Koi Epic to v1 — canonical continuation ledger
 
 **Status:** active — V1-00 through V1-02 complete; V1-03 in progress; V1-07 identity and publication-foundation slices complete
-**Last updated:** 2026-07-19 23:41 EDT
+**Last updated:** 2026-07-20 13:15 EDT
 **Resume phrase:** `continue the epic to v1`
 
 This is the repository's canonical handoff and progress ledger for the v1 epic. The plan is a
@@ -366,27 +366,34 @@ evidence rather than a one-off demo.
   enrollment/revocation story.
 - Guarded Docker event-stream reconnect is implemented without a host-daemon fault. The backend
   preserves inventory on disconnect, flips runtime health at the single ingest chokepoint, retries
-  with bounded 250 ms→5 s backoff, pings and relists, emits exact stopped/started/updated deltas
-  through normal lifecycle policy, marks reconnected only after reconciliation, and uses an
-  inclusive Docker event cursor to close the relist→stream race. The orchestrator contains no
-  parallel reconnect engine. `koi-runtime` 47/0, `koi-compose` 14/0, focused Clippy, and diff
-  integrity pass. Physical event-stream fault/reconnect remains unclaimed until an owned recovery
-  mechanism can fault only a run-scoped endpoint without restarting a host Docker daemon.
+  with bounded 250 ms→5 s backoff, pings and relists, and emits only material stopped/started/updated
+  deltas through normal lifecycle policy. Full normalized snapshots and deterministic port/IP
+  ordering make the relist comparison exact; `discovered_at` changes, duplicate engine events, and
+  inclusive cursor replay produce no lifecycle event for an unchanged instance. Reconnected is
+  marked only after reconciliation. The orchestrator contains no parallel reconnect engine.
+  `koi-runtime` 49/0, `koi-compose` 14/0, focused Clippy, and diff integrity pass. Physical
+  event-stream fault/reconnect remains unclaimed until an owned recovery mechanism can fault only a
+  run-scoped endpoint without restarting a host Docker daemon.
 
 ## Current repository state
 
 - Workspace: `F:\Files\repo\github\sylin-org\koi`
 - Branch/upstream: `dev` tracking `origin/dev`, ahead 0 / behind 0 at handoff time.
-- HEAD: `1f3b2a3128ec4a19d726b6cf53c34da7693399e8`
-  (`docs: add animation production briefs`). The five commits after the prior handoff are pushed:
-  `4495e4e` trust/ACME hardening, `210b9da` runtime startup reconciliation, `24d128b` V1 lab proof,
-  `0b5d62c` adoption workspace, and `1f3b2a3` animation briefs.
-- The worktree is intentionally dirty with the Windows lifecycle, Tier-1 aggregation, reconnect,
-  evidence-documentation, and this preserved handoff work. Do not overwrite or discard it.
-- No PR, release, package publication, or other external publication was made. All run-scoped test
-  deployments were cleaned exactly. Fresh preflight `preflight-20260720T043333Z.json` at commit
-  `1f3b2a3` confirms Brook inactive, Granite's original enabled Koi 0.7.0 service still PID 803,
-  deploy readiness on all nodes, and no lab run/lock/listener residue.
+- HEAD: `df11f78dde4151911378d71bf7389c1d7aec46dd`
+  (`docs: record Windows lifecycle and reconnect evidence`). Six later commits are already pushed:
+  `e651fc8` bounded issuance skew, `892733b` staged member keys, `4b9c184` Windows lifecycle,
+  `2bd25bb` aggregation breadth, `180f042` runtime reconnect, and `df11f78` evidence documentation.
+- The worktree is intentionally dirty only with the exact reconnect-delta correction, its tests,
+  and the accompanying surface/handoff updates. Do not overwrite or discard it. No commit or push
+  was made for this correction.
+- No PR, release, or package publication was made. All run-scoped test deployments were cleaned
+  exactly. Fresh preflight `preflight-20260720T143523Z.json` at commit `df11f78` confirms Brook
+  inactive, Granite's original enabled Koi 0.7.0 service still PID 803, deploy readiness on all
+  nodes, and no lab run/lock/listener residue.
+- The green Windows lifecycle run remains valid behavioral evidence, but its artifact manifest names
+  commit `1f3b2a3` because that artifact was built from the then-dirty tree. A clean-commit-bound
+  artifact and physical rerun are still required for release provenance; do not rewrite that history
+  or imply the old artifact was built from `df11f78`.
 
 ## Evidence that changes the plan
 
@@ -464,7 +471,7 @@ evidence rather than a one-off demo.
 | V1-02 | Certmesh protocol and native trust role rotations | **complete — 2026-07-19** | Forward and reverse Linux rotations plus the elevated Windows-client rotation pass fail-before, exact install, native clients, wrong-host rejection, tracked removal, fail-after, and full-store restoration. Windows additionally proves exact `LocalMachine\Root` SHA-256 identity, Schannel `curl.exe`, `Invoke-WebRequest`, and byte-exact hosts restoration. Configured `.internal` issuance is centralized. |
 | V1-03 | Certificate lifecycle and adversarial trust cases | **in progress — Linux lifecycle/cold recovery and Windows lifecycle green** | Both Linux roles prove wrong-pin refusal, mode-0600 custody, key/leaf/chain/SAN integrity, renewal/key rotation, restart, revocation→RED and generic-TLS limits; both also survive encrypted backup, exact data loss, host-bound restore, locked restart and renewed mTLS continuity. Elevated Windows now proves SID-based custody, key/cert rotation and correspondence, CA-roster convergence, exact owned-child restart with identity/diagnosis/Schannel proxy continuity, revocation→RED/self-revoked, and mutation-free renewal/rejoin refusal. Windows cold recovery remains unclaimed. |
 | V1-04 | Real whole-story capability surface | **in progress — physical Linux story + portable Tier-1 aggregation green** | Acts 0, 3, 4, 5, 6, 7, 8, 10, and 11 plus real ACME dns-01 pass physically in both Linux directions. Two concurrent real local daemons now additionally prove the centralized HTTP status/host, dashboard, and authenticated MCP aggregation surfaces. Physical Windows whole-story breadth remains. |
-| V1-05 | Resilience, reconnect, fault and soak lanes | **in progress — startup reconciliation physical; event reconnect deterministic** | An always-on regression and Brook↔Granite physical rotations prove a running container survives Koi restart and reconstructs runtime inventory and derived resources. Docker event-stream reconnect now has centralized health, bounded retry, exact inventory deltas, and cursor replay tests; physical stream-fault proof, broader service lifecycle, capability loss/recovery, fault injection, and bounded soak remain. |
+| V1-05 | Resilience, reconnect, fault and soak lanes | **in progress — startup reconciliation physical; event reconnect deterministic** | An always-on regression and Brook↔Granite physical rotations prove a running container survives Koi restart and reconstructs runtime inventory and derived resources. Docker event-stream reconnect now has centralized health, bounded retry, material inventory deltas, and inclusive-replay suppression; unchanged survivors retain their derived services. Physical stream-fault proof, broader service lifecycle, capability loss/recovery, fault injection, and bounded soak remain. |
 | V1-06 | Automation, evidence ledger and v1 release gate | planned | Smoke/certmesh/full/soak profiles documented; scheduled hardware execution reliable; three consecutive full green runs; release evidence and `SURFACES.md` updated honestly |
 | V1-07 | Adoption/public-surface polish backed by proved behavior | **in progress — identity + publication foundation complete 2026-07-19** | ADR-024 canonizes “Let everything local find, trust, and talk” plus Find/Trust/Connect; ADR-025 establishes one attested artifact contract, no-build cargo-binstall metadata, tested npx bootstrap, gated OIDC publication, and safer release operation; registry activation, native-manager channels, evidence-gated compatibility claims and golden demo remain |
 
@@ -557,7 +564,7 @@ releases; soak is scheduled or explicitly invoked.
 - The current tree passes `cargo fmt --all -- --check`, all-target/all-feature Clippy with
   `-D warnings`, `cargo test --workspace --all-features --locked`, `cargo audit`, the surface-ledger
   lint, and `git diff --check` on 2026-07-20 after all work in this handoff. Focused counts are
-  `koi-runtime` 47, `koi-compose` 14, `koi-lab` 20, and the real-binary two-daemon integration 2;
+  `koi-runtime` 49, `koi-compose` 14, `koi-lab` 20, and the real-binary two-daemon integration 2;
   all passed. Audit exits 0 with the two already dispositioned
   allowed warnings (`anyhow` RUSTSEC-2026-0190 and yanked transitive `spin 0.9.8`).
 - V1-00 is locally complete. Hosted Linux/macOS scheduled-QA evidence remains unavailable until

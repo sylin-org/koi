@@ -33,8 +33,25 @@ pub struct Instance {
     pub image: Option<String>,
 }
 
+impl Instance {
+    /// Whether two observations describe the same runtime facts.
+    ///
+    /// `discovered_at` records when Koi observed the instance, so relisting an
+    /// unchanged runtime object must not turn that timestamp into an update.
+    pub(crate) fn has_same_operational_facts(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.name == other.name
+            && self.ports == other.ports
+            && self.ips == other.ips
+            && self.metadata == other.metadata
+            && self.backend == other.backend
+            && self.state == other.state
+            && self.image == other.image
+    }
+}
+
 /// A host-side port mapping.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ToSchema)]
 pub struct PortMapping {
     /// Host port (the one reachable from the network).
     pub host_port: u16,
@@ -47,7 +64,7 @@ pub struct PortMapping {
 }
 
 /// Port protocol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PortProtocol {
     Tcp,
@@ -69,7 +86,7 @@ pub enum InstanceState {
 ///
 /// All fields are optional — when absent, the adapter uses heuristics
 /// or skips the corresponding Koi capability.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct KoiMetadata {
     /// Opt-in flag. When `Some(false)`, the instance is ignored.
     /// When `None`, the adapter uses its default policy (opt-in or opt-out).
