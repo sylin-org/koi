@@ -1132,8 +1132,104 @@ async fn install_member_cert_rejects_pin_mismatch() {
         .await
         .unwrap();
     assert!(std::path::Path::new(&dir).join("cert.pem").exists());
+    assert!(
+        !std::path::Path::new(&dir).join("key.pending.pem").exists(),
+        "successful install consumes the pending key"
+    );
     let armed = member::load(&member_paths.member_state_path()).expect("correct pin arms renewal");
     assert_eq!(armed.ca_mtls_port, 16542);
+
+    let _ = std::fs::remove_dir_all(base.join("ca"));
+    let _ = std::fs::remove_dir_all(base.join("member"));
+}
+
+/// Preparing a replacement CSR is side-effect free with respect to the active
+/// identity. A CA refusal happens between `prepare_member_csr` and
+/// `install_member_cert`, so abandoning that CSR must leave both active files
+/// byte-for-byte unchanged. A mismatched signed response is likewise rejected
+/// before promotion.
+#[tokio::test]
+async fn refused_rejoin_cannot_replace_active_member_identity() {
+    let base =
+        koi_common::test::ensure_data_dir("koi-certmesh-rejoin-custody").join("rejoin-custody");
+    let ca_paths = CertmeshPaths::with_data_dir(base.join("ca"));
+    let member_paths = CertmeshPaths::with_data_dir(base.join("member"));
+    let _ = std::fs::remove_dir_all(ca_paths.data_dir());
+    let _ = std::fs::remove_dir_all(member_paths.data_dir());
+
+    let (ca_state, _m) = ca::create_ca("custody", &[13u8; 32], &ca_paths).unwrap();
+    let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+    let auth = koi_crypto::auth::AuthState::Totp(koi_crypto::totp::generate_secret());
+    let ca_core = CertmeshCore::new_with_paths(ca_state, roster, Some(auth), ca_paths.clone());
+    let member_core = CertmeshCore::uninitialized_with_paths(member_paths.clone());
+
+    let sans = ["custody-host".to_string()];
+    let csr = member_core
+        .prepare_member_csr("custody-host", &sans)
+        .await
+        .unwrap();
+    let invite = ca_core.mint_invite("custody-host", 60).await.unwrap();
+    let join = ca_core
+        .enroll(&protocol::JoinRequest {
+            hostname: "custody-host".to_string(),
+            auth: None,
+            invite_token: Some(invite::decode_code(&invite.token).0.to_string()),
+            csr: Some(csr),
+            sans: sans.to_vec(),
+        })
+        .await
+        .unwrap();
+    member_core
+        .install_member_cert(
+            "custody-host",
+            &join.service_cert,
+            &join.ca_cert,
+            Some("http://127.0.0.1:5641"),
+            None,
+            Some(&join.ca_fingerprint),
+            &sans,
+            Some(join.policy.clone()),
+        )
+        .await
+        .unwrap();
+
+    let cert_dir = member_paths.certs_dir().join("custody-host");
+    let active_key = std::fs::read(cert_dir.join("key.pem")).unwrap();
+    let active_cert = std::fs::read(cert_dir.join("cert.pem")).unwrap();
+
+    // This is exactly the local portion completed before a remote CA can refuse
+    // a rejoin: only a new pending key is created.
+    member_core
+        .prepare_member_csr("custody-host", &sans)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(cert_dir.join("key.pem")).unwrap(), active_key);
+    assert_eq!(
+        std::fs::read(cert_dir.join("cert.pem")).unwrap(),
+        active_cert
+    );
+
+    // Even if a caller attempts to install the old leaf with the new pending
+    // key, correspondence validation refuses it without touching the identity.
+    let error = member_core
+        .install_member_cert(
+            "custody-host",
+            &join.service_cert,
+            &join.ca_cert,
+            Some("http://127.0.0.1:5641"),
+            None,
+            Some(&join.ca_fingerprint),
+            &sans,
+            Some(join.policy),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CertmeshError::InvalidPayload(_)));
+    assert_eq!(std::fs::read(cert_dir.join("key.pem")).unwrap(), active_key);
+    assert_eq!(
+        std::fs::read(cert_dir.join("cert.pem")).unwrap(),
+        active_cert
+    );
 
     let _ = std::fs::remove_dir_all(base.join("ca"));
     let _ = std::fs::remove_dir_all(base.join("member"));
