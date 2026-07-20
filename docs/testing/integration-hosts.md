@@ -53,6 +53,10 @@ cargo run -p koi-lab --locked -- certmesh-recovery --run-id <run-id> `
 cargo run -p koi-lab --locked -- capability-story --run-id <run-id> `
   --allow-system-mutation --rotation linux-forward
 
+# Docker event-stream fault/reconciliation. This faults only Koi's run-owned relay.
+cargo run -p koi-lab --locked -- runtime-reconnect --run-id <run-id> `
+  --rotation linux-forward
+
 # Privileged trust rotation. Use a fresh deploy/run ID for each rotation.
 cargo run -p koi-lab --locked -- certmesh-native-trust --run-id <run-id> `
   --allow-system-mutation --rotation linux-forward
@@ -132,6 +136,26 @@ Linux role directions passed with startup reconciliation on 2026-07-20: forward 
 `v1-20260720T015153Z-558233f4` restarted Granite (`67926` → `68309`), both using locally built musl
 SHA-256 `928522b3c18fce60a28310e619fbb4ff715d8b0a9f03c059842eaef6629f8d07`.
 Reusable Tier 1 breadth and Windows execution remain unclaimed.
+
+`runtime-reconnect` is the V1-05 physical Docker recovery transaction. The controller stages a
+small Python standard-library Unix-stream relay inside the run root and starts the run-owned Koi
+daemon with a process-scoped `DOCKER_HOST` pointing at that mode-`0600` socket. Stopping the relay
+therefore interrupts only Koi's Docker connection; neither host Docker daemon is restarted. While
+disconnected, the transaction leaves one container unchanged, stops one, starts one, and attaches
+a run-owned network to one for a material IP update. The authenticated `/v1/events` stream must
+then contain exactly one disconnect, stop, start, update, and reconnect fact, with no lifecycle
+event for the unchanged container and no duplicate from the inclusive Docker cursor replay.
+Runtime health must become inactive and recover, the last good inventory must remain readable,
+and the unchanged container must retain the same mDNS registration plus working DNS, health,
+proxy configuration, cross-host mDNS, and live proxy traffic throughout. Cleanup checks the exact
+relay PID/executable/arguments, socket, container/image/network labels and IDs, and run ownership.
+Both directions passed on 2026-07-20: forward run `v1-20260720T181705Z-f96627ae` kept mDNS
+registration `07e03545`; reverse run `v1-20260720T181902Z-165ff7be` kept `269ddfcf`. Both used the
+clean locally built musl artifact SHA-256
+`0d5d47d850d52c601a70941b525a80a1dabac0dd861e95dfbca6ee9c2c42f4f7` (41,566,120 bytes).
+Final preflight `preflight-20260720T182050Z.json` found no run roots, locks, listeners, containers,
+images, networks, or relays; Brook remained inactive and Granite's original enabled Koi remained
+PID 803.
 
 `certmesh-native-trust` is the one privileged mutation boundary. It refuses without
 `--allow-system-mutation`. Linux clients additionally require passwordless sudo; the

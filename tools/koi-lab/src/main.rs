@@ -1,7 +1,9 @@
 mod acme;
 mod lab;
 mod model;
+mod probe;
 mod putty;
+mod runtime_reconnect;
 mod story;
 
 use std::path::PathBuf;
@@ -81,6 +83,13 @@ enum LabCommand {
         #[arg(long, value_enum, default_value = "linux-forward")]
         rotation: TrustRotation,
     },
+    /// Interrupt only Koi's run-owned Docker API relay and prove exact reconnect deltas.
+    RuntimeReconnect {
+        #[arg(long)]
+        run_id: String,
+        #[arg(long, value_enum, default_value = "linux-forward")]
+        rotation: TrustRotation,
+    },
     /// Show exactly what cleanup would remove; never changes state.
     PlanCleanup {
         #[arg(long)]
@@ -144,6 +153,9 @@ fn main() -> Result<()> {
                 allow_system_mutation,
                 rotation,
             )?)?;
+        }
+        LabCommand::RuntimeReconnect { run_id, rotation } => {
+            print_json(&lab.runtime_reconnect(&RunId::parse(&run_id)?, rotation)?)?;
         }
         LabCommand::PlanCleanup { run_id } => {
             print_json(&lab.cleanup_plan(&RunId::parse(&run_id)?)?)?;

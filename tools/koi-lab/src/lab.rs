@@ -23,7 +23,9 @@ use crate::putty::PuttyTransport;
 
 const REQUIRED_LOCAL_TOOLS: &[&str] = &["cross", "docker", "git", "plink", "pscp"];
 const REQUIRED_REMOTE_TOOLS: &[&str] = &["sha256sum", "systemctl", "ss", "realpath", "readlink"];
-const SCENARIO_REMOTE_TOOLS: &[&str] = &["curl", "jq", "dig", "nc", "docker", "openssl", "setsid"];
+const SCENARIO_REMOTE_TOOLS: &[&str] = &[
+    "curl", "jq", "dig", "nc", "docker", "openssl", "python3", "setsid",
+];
 const TEST_PORTS: &[u16] = &[5641, 5642, 5643];
 const MAX_CLOCK_SKEW_SECONDS: i64 = 5;
 
@@ -52,9 +54,32 @@ pub(crate) struct CertmeshProvisioning {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RuntimeFaultRole {
+    Unchanged,
+    Stopped,
+    Updated,
+    Started,
+}
+
+impl RuntimeFaultRole {
+    pub(crate) const ALL: [Self; 4] =
+        [Self::Unchanged, Self::Stopped, Self::Updated, Self::Started];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Unchanged => "unchanged",
+            Self::Stopped => "stopped",
+            Self::Updated => "updated",
+            Self::Started => "started",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DaemonProfile {
     Certmesh,
     CapabilityStory,
+    RuntimeReconnect,
 }
 
 impl Lab {
@@ -1140,9 +1165,21 @@ impl Lab {
         self.launch_run_daemon(node, run_id, false, DaemonProfile::CapabilityStory)
     }
 
+    pub(crate) fn start_runtime_reconnect_daemon(
+        &self,
+        node: &NodeSpec,
+        run_id: &RunId,
+    ) -> Result<()> {
+        self.launch_run_daemon(node, run_id, false, DaemonProfile::RuntimeReconnect)
+    }
+
     pub(crate) fn restart_story_daemon(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
         self.stop_run_daemon(node, run_id)?;
         self.launch_run_daemon(node, run_id, true, DaemonProfile::CapabilityStory)
+    }
+
+    pub(crate) fn stop_story_daemon(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+        self.stop_run_daemon(node, run_id)
     }
 
     fn restart_run_daemon(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
@@ -1180,7 +1217,7 @@ impl Lab {
                 "--no-ipc --no-mdns --no-dns --no-health --no-udp --no-runtime --no-acme --no-mcp-http"
                     .to_owned()
             }
-            DaemonProfile::CapabilityStory => format!(
+            DaemonProfile::CapabilityStory | DaemonProfile::RuntimeReconnect => format!(
                 "--dns-port {dns_port} --dns-public --announce-http --runtime docker"
             ),
         };
@@ -1188,13 +1225,19 @@ impl Lab {
             DaemonProfile::Certmesh => {
                 format!("{http_port}|{mtls_port}|{acme_port}|{proxy_port}")
             }
-            DaemonProfile::CapabilityStory => format!(
+            DaemonProfile::CapabilityStory | DaemonProfile::RuntimeReconnect => format!(
                 "{http_port}|{mtls_port}|{acme_port}|{proxy_port}|{dns_port}|{fixture_port}|{}",
                 ports.container
             ),
         };
+        let runtime_env = match profile {
+            DaemonProfile::RuntimeReconnect => {
+                format!(" DOCKER_HOST=unix://{run_dir}/docker-proxy.sock")
+            }
+            DaemonProfile::Certmesh | DaemonProfile::CapabilityStory => String::new(),
+        };
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/daemon.pid; ! ss -H -lntup | grep -Eq ':({guarded_ports}) '; {prepare}; setsid -f sh -c 'echo $$ > {run_dir}/daemon.pid; exec env KOI_DATA_DIR={run_dir}/data KOI_DNS_ZONE=internal XDG_RUNTIME_DIR={run_dir}/runtime KOI_NO_CREDENTIAL_STORE=1 {run_dir}/koi --daemon --port {http_port} --http-bind 0.0.0.0 --mtls-port {mtls_port} --acme-port {acme_port} {profile_args} >>{run_dir}/daemon.log 2>&1'",
+            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/daemon.pid; ! ss -H -lntup | grep -Eq ':({guarded_ports}) '; {prepare}; setsid -f sh -c 'echo $$ > {run_dir}/daemon.pid; exec env KOI_DATA_DIR={run_dir}/data KOI_DNS_ZONE=internal XDG_RUNTIME_DIR={run_dir}/runtime KOI_NO_CREDENTIAL_STORE=1{runtime_env} {run_dir}/koi --daemon --port {http_port} --http-bind 0.0.0.0 --mtls-port {mtls_port} --acme-port {acme_port} {profile_args} >>{run_dir}/daemon.log 2>&1'",
             run_id.as_str(),
             run_id.as_str()
         );
@@ -1236,6 +1279,166 @@ impl Lab {
             run_id.as_str()
         );
         self.transport.run_checked(node, &command)?;
+        Ok(())
+    }
+
+    pub(crate) fn stage_runtime_proxy(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        let remote_script = format!("{run_dir}/docker_socket_proxy.py");
+        let local_script = self
+            .repo_root
+            .join("tools/koi-lab/fixtures/docker_socket_proxy.py");
+        self.transport.run_checked(
+            node,
+            &format!(
+                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {remote_script}; test ! -e {run_dir}/docker-proxy.exe",
+                run_id.as_str(),
+                run_id.as_str()
+            ),
+        )?;
+        self.transport
+            .copy_to(node, &local_script, &remote_script)?;
+        self.transport.run_checked(
+            node,
+            &format!(
+                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; chmod 700 {remote_script}; python=$(realpath \"$(command -v python3)\"); test -x \"$python\"; printf '%s' \"$python\" > {run_dir}/docker-proxy.exe",
+                run_id.as_str(),
+                run_id.as_str()
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn start_runtime_proxy(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        let command = format!(
+            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test -x {run_dir}/docker_socket_proxy.py; test -f {run_dir}/docker-proxy.exe; test ! -e {run_dir}/docker-proxy.pid; test ! -e {run_dir}/docker-proxy.sock; setsid -f sh -c 'echo $$ > {run_dir}/docker-proxy.pid; exec \"$(cat {run_dir}/docker-proxy.exe)\" {run_dir}/docker_socket_proxy.py --listen {run_dir}/docker-proxy.sock --upstream /var/run/docker.sock >>{run_dir}/docker-proxy.log 2>&1'; i=0; while ! test -S {run_dir}/docker-proxy.sock && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; test -S {run_dir}/docker-proxy.sock; test \"$(stat -c %a {run_dir}/docker-proxy.sock)\" = 600; pid=$(cat {run_dir}/docker-proxy.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$(cat {run_dir}/docker-proxy.exe)\"; tr '\\000' ' ' </proc/\"$pid\"/cmdline | grep -F -- '{run_dir}/docker_socket_proxy.py --listen {run_dir}/docker-proxy.sock --upstream /var/run/docker.sock' >/dev/null",
+            run_id.as_str(),
+            run_id.as_str()
+        );
+        self.transport.run_checked(node, &command)?;
+        Ok(())
+    }
+
+    pub(crate) fn stop_runtime_proxy(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+        self.transport
+            .run_checked(node, &runtime_proxy_stop_script(node, run_id, true)?)?;
+        Ok(())
+    }
+
+    pub(crate) fn remove_runtime_proxy_files(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        self.transport.run_checked(
+            node,
+            &format!(
+                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/docker-proxy.pid; test ! -e {run_dir}/docker-proxy.sock; rm -f {run_dir}/docker-proxy.log {run_dir}/docker-proxy.exe {run_dir}/docker_socket_proxy.py",
+                run_id.as_str(),
+                run_id.as_str()
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn start_runtime_fault_container(
+        &self,
+        node: &NodeSpec,
+        run_id: &RunId,
+        role: RuntimeFaultRole,
+    ) -> Result<String> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        let image_ref = story_image_ref(run_id);
+        let container_name = runtime_fault_container_name(run_id, role);
+        let marker = runtime_fault_container_marker(&run_dir, role);
+        let common_labels = format!(
+            "--label org.sylin.koi.lab.owner=koi-lab --label org.sylin.koi.lab.run={} --label org.sylin.koi.lab.role={}",
+            run_id.as_str(),
+            role.as_str()
+        );
+        let ports = node.lab_ports()?;
+        let managed = if role == RuntimeFaultRole::Unchanged {
+            format!(
+                "--label koi.enable=true --label koi.name=koi-reconnect-{} --label koi.type=_http._tcp --label koi.dns.name=reconnect-{} --label koi.health.path=/healthz --label koi.health.kind=http --label koi.health.interval=1 --label koi.health.timeout=1 --label koi.proxy.port={} --label koi.proxy.remote=true --label koi.txt.run={} --publish {}:{}:5641",
+                runtime_fault_suffix(run_id),
+                runtime_fault_suffix(run_id),
+                ports.proxy,
+                run_id.as_str(),
+                node.address(),
+                ports.container
+            )
+        } else {
+            "--label koi.enable=false".to_owned()
+        };
+        let readiness = if role == RuntimeFaultRole::Unchanged {
+            format!(
+                "i=0; while ! curl --silent --fail --max-time 1 http://{}:{}/healthz >/dev/null && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; curl --silent --fail --max-time 2 http://{}:{}/healthz >/dev/null;",
+                node.address(),
+                ports.container,
+                node.address(),
+                ports.container
+            )
+        } else {
+            "test \"$(docker container inspect \"$cid\" | jq -r '.[0].State.Running')\" = true;"
+                .to_owned()
+        };
+        let command = format!(
+            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test \"$(cat {run_dir}/image.ref)\" = {image_ref}; test ! -e {marker}; ! docker container inspect {container_name} >/dev/null 2>&1; cid=$(docker create --name {container_name} {common_labels} {managed} {image_ref} --daemon --port 5641 --http-bind 0.0.0.0 --no-ipc --no-mdns --no-dns --no-health --no-proxy --no-udp --no-runtime --no-acme --no-mcp-http); case \"$cid\" in ''|*[!0-9a-f]*) exit 76;; esac; printf '%s' \"$cid\" > {marker}; docker start \"$cid\" >/dev/null; {readiness} printf '%s' \"$cid\"",
+            run_id.as_str(),
+            run_id.as_str()
+        );
+        Ok(self
+            .transport
+            .run_checked(node, &command)?
+            .trim()
+            .to_owned())
+    }
+
+    pub(crate) fn stop_runtime_fault_container(
+        &self,
+        node: &NodeSpec,
+        run_id: &RunId,
+        role: RuntimeFaultRole,
+    ) -> Result<()> {
+        self.transport.run_checked(
+            node,
+            &runtime_fault_container_remove_script(node, run_id, role, true)?,
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn connect_runtime_fault_network(
+        &self,
+        node: &NodeSpec,
+        run_id: &RunId,
+        role: RuntimeFaultRole,
+    ) -> Result<String> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        let marker = runtime_fault_container_marker(&run_dir, role);
+        let network_name = runtime_fault_network_name(run_id);
+        let command = format!(
+            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test -f {marker}; test ! -e {run_dir}/runtime-fault-network.id; ! docker network inspect {network_name} >/dev/null 2>&1; nid=$(docker network create --label org.sylin.koi.lab.owner=koi-lab --label org.sylin.koi.lab.run={} {network_name}); case \"$nid\" in ''|*[!0-9a-f]*) exit 76;; esac; printf '%s' \"$nid\" > {run_dir}/runtime-fault-network.id; docker network connect {network_name} \"$(cat {marker})\"; printf '%s' \"$nid\"",
+            run_id.as_str(),
+            run_id.as_str(),
+            run_id.as_str()
+        );
+        Ok(self
+            .transport
+            .run_checked(node, &command)?
+            .trim()
+            .to_owned())
+    }
+
+    pub(crate) fn remove_runtime_fault_network(
+        &self,
+        node: &NodeSpec,
+        run_id: &RunId,
+    ) -> Result<()> {
+        self.transport
+            .run_checked(node, &runtime_fault_network_remove_script(node, run_id)?)?;
         Ok(())
     }
 
@@ -3160,6 +3363,81 @@ fn story_container_name(run_id: &RunId) -> String {
     format!("koi-lab-story-{}", run_id.as_str().to_ascii_lowercase())
 }
 
+fn runtime_fault_suffix(run_id: &RunId) -> String {
+    run_id
+        .as_str()
+        .rsplit('-')
+        .next()
+        .unwrap_or("fault")
+        .to_ascii_lowercase()
+}
+
+fn runtime_fault_container_name(run_id: &RunId, role: RuntimeFaultRole) -> String {
+    format!(
+        "koi-lab-runtime-{}-{}",
+        role.as_str(),
+        run_id.as_str().to_ascii_lowercase()
+    )
+}
+
+fn runtime_fault_container_marker(run_dir: &str, role: RuntimeFaultRole) -> String {
+    format!("{run_dir}/runtime-fault-{}.id", role.as_str())
+}
+
+fn runtime_fault_network_name(run_id: &RunId) -> String {
+    format!(
+        "koi-lab-runtime-net-{}",
+        run_id.as_str().to_ascii_lowercase()
+    )
+}
+
+fn runtime_fault_container_remove_script(
+    node: &NodeSpec,
+    run_id: &RunId,
+    role: RuntimeFaultRole,
+    require_present: bool,
+) -> Result<String> {
+    let lock_dir = node.lock_dir()?;
+    let run_dir = node.run_dir(run_id)?;
+    let marker = runtime_fault_container_marker(&run_dir, role);
+    let container_name = runtime_fault_container_name(run_id, role);
+    let required = if require_present { "true" } else { "false" };
+    Ok(format!(
+        "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; required={required}; if test -f {marker}; then cid=$(cat {marker}); case \"$cid\" in ''|*[!0-9a-f]*) exit 76;; esac; if docker container inspect \"$cid\" >/dev/null 2>&1; then actual=$(docker container inspect \"$cid\" | jq -r '.[0].Name + \"|\" + .[0].Config.Labels[\"org.sylin.koi.lab.owner\"] + \"|\" + .[0].Config.Labels[\"org.sylin.koi.lab.run\"] + \"|\" + .[0].Config.Labels[\"org.sylin.koi.lab.role\"]'); test \"$actual\" = \"/{container_name}|koi-lab|{}|{}\"; docker container rm --force \"$cid\" >/dev/null; elif test \"$required\" = true; then exit 76; fi; rm -f {marker}; elif test \"$required\" = true; then exit 76; fi",
+        run_id.as_str(),
+        run_id.as_str(),
+        run_id.as_str(),
+        role.as_str()
+    ))
+}
+
+fn runtime_fault_network_remove_script(node: &NodeSpec, run_id: &RunId) -> Result<String> {
+    let lock_dir = node.lock_dir()?;
+    let run_dir = node.run_dir(run_id)?;
+    let network_name = runtime_fault_network_name(run_id);
+    Ok(format!(
+        "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; if test -f {run_dir}/runtime-fault-network.id; then expected=$(cat {run_dir}/runtime-fault-network.id); case \"$expected\" in ''|*[!0-9a-f]*) exit 76;; esac; if docker network inspect {network_name} >/dev/null 2>&1; then actual=$(docker network inspect {network_name} | jq -r '.[0].Id + \"|\" + .[0].Labels[\"org.sylin.koi.lab.owner\"] + \"|\" + .[0].Labels[\"org.sylin.koi.lab.run\"]'); test \"$actual\" = \"$expected|koi-lab|{}\"; docker network rm {network_name} >/dev/null; fi; rm -f {run_dir}/runtime-fault-network.id; fi",
+        run_id.as_str(),
+        run_id.as_str(),
+        run_id.as_str()
+    ))
+}
+
+fn runtime_proxy_stop_script(
+    node: &NodeSpec,
+    run_id: &RunId,
+    require_present: bool,
+) -> Result<String> {
+    let lock_dir = node.lock_dir()?;
+    let run_dir = node.run_dir(run_id)?;
+    let required = if require_present { "true" } else { "false" };
+    Ok(format!(
+        "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; required={required}; if test -f {run_dir}/docker-proxy.pid; then test -f {run_dir}/docker-proxy.exe; pid=$(cat {run_dir}/docker-proxy.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; if kill -0 \"$pid\" 2>/dev/null; then test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$(cat {run_dir}/docker-proxy.exe)\"; tr '\\000' ' ' </proc/\"$pid\"/cmdline | grep -F -- '{run_dir}/docker_socket_proxy.py --listen {run_dir}/docker-proxy.sock --upstream /var/run/docker.sock' >/dev/null; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ! kill -0 \"$pid\" 2>/dev/null; elif test \"$required\" = true; then exit 76; fi; rm -f {run_dir}/docker-proxy.pid; elif test \"$required\" = true; then exit 76; fi; i=0; while test -e {run_dir}/docker-proxy.sock && test \"$i\" -lt 20; do sleep .1; i=$((i+1)); done; if test -e {run_dir}/docker-proxy.sock; then test -S {run_dir}/docker-proxy.sock; rm -f {run_dir}/docker-proxy.sock; fi",
+        run_id.as_str(),
+        run_id.as_str()
+    ))
+}
+
 fn story_container_remove_script(
     node: &NodeSpec,
     run_id: &RunId,
@@ -3199,9 +3477,16 @@ fn cleanup_script(node: &NodeSpec, run_id: &RunId) -> Result<String> {
     let lock = node.lock_dir()?;
     let run_dir = node.run_dir(run_id)?;
     let container_cleanup = story_container_remove_script(node, run_id, false)?;
+    let runtime_container_cleanup = RuntimeFaultRole::ALL
+        .into_iter()
+        .map(|role| runtime_fault_container_remove_script(node, run_id, role, false))
+        .collect::<Result<Vec<_>>>()?
+        .join("; ");
+    let runtime_network_cleanup = runtime_fault_network_remove_script(node, run_id)?;
     let image_cleanup = story_image_remove_script(node, run_id, false)?;
+    let runtime_proxy_cleanup = runtime_proxy_stop_script(node, run_id, false)?;
     Ok(format!(
-        "set -eu; test -f {lock}/owner; test \"$(cat {lock}/owner)\" = {}; if test -d {run_dir}; then test -f {run_dir}/owner; test \"$(cat {run_dir}/owner)\" = {}; {container_cleanup}; {image_cleanup}; if test -f {run_dir}/fixture.pid; then pid=$(cat {run_dir}/fixture.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test -f {run_dir}/fixture.exe; if kill -0 \"$pid\" 2>/dev/null; then expected=$(cat {run_dir}/fixture.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/fixture.pid; fi; if test -f {run_dir}/daemon.pid; then pid=$(cat {run_dir}/daemon.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; if kill -0 \"$pid\" 2>/dev/null; then exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = {run_dir}/koi; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/daemon.pid; fi; rm -f {run_dir}/daemon.log {run_dir}/fixture.log {run_dir}/fixture.exe {run_dir}/koi.partial; for owned in {run_dir}/data {run_dir}/runtime; do if test -d \"$owned\"; then resolved=$(realpath \"$owned\"); test \"$resolved\" = \"$owned\"; rm -rf -- \"$resolved\"; fi; done; rm -f {run_dir}/koi {run_dir}/artifact.sha256 {run_dir}/owner; rmdir {run_dir}; fi; rmdir {root}/runs 2>/dev/null || true; rm -f {lock}/owner; rmdir {lock}",
+        "set -eu; test -f {lock}/owner; test \"$(cat {lock}/owner)\" = {}; if test -d {run_dir}; then test -f {run_dir}/owner; test \"$(cat {run_dir}/owner)\" = {}; {container_cleanup}; {runtime_container_cleanup}; {runtime_network_cleanup}; {image_cleanup}; if test -f {run_dir}/fixture.pid; then pid=$(cat {run_dir}/fixture.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test -f {run_dir}/fixture.exe; if kill -0 \"$pid\" 2>/dev/null; then expected=$(cat {run_dir}/fixture.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/fixture.pid; fi; if test -f {run_dir}/daemon.pid; then pid=$(cat {run_dir}/daemon.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; if kill -0 \"$pid\" 2>/dev/null; then exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = {run_dir}/koi; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/daemon.pid; fi; {runtime_proxy_cleanup}; rm -f {run_dir}/daemon.log {run_dir}/fixture.log {run_dir}/fixture.exe {run_dir}/docker-proxy.log {run_dir}/docker-proxy.exe {run_dir}/docker_socket_proxy.py {run_dir}/koi.partial; for owned in {run_dir}/data {run_dir}/runtime; do if test -d \"$owned\"; then resolved=$(realpath \"$owned\"); test \"$resolved\" = \"$owned\"; rm -rf -- \"$resolved\"; fi; done; rm -f {run_dir}/koi {run_dir}/artifact.sha256 {run_dir}/owner; rmdir {run_dir}; fi; rmdir {root}/runs 2>/dev/null || true; rm -f {lock}/owner; rmdir {lock}",
         run_id.as_str(),
         run_id.as_str()
     ))
@@ -3436,6 +3721,39 @@ mod tests {
         assert!(image.contains("required=true"));
         assert!(image.contains("test \"$actual\" = \"$expected\""));
         assert!(image.contains("org.sylin.koi.lab.run"));
+    }
+
+    #[test]
+    fn runtime_fault_cleanup_requires_role_run_and_engine_identity() {
+        let run_id = RunId::parse("v1-20260719T000000Z-deadbeef").unwrap();
+        for role in RuntimeFaultRole::ALL {
+            let script =
+                runtime_fault_container_remove_script(&node(), &run_id, role, true).unwrap();
+            assert!(script.contains("required=true"));
+            assert!(script.contains("org.sylin.koi.lab.owner"));
+            assert!(script.contains("org.sylin.koi.lab.run"));
+            assert!(script.contains("org.sylin.koi.lab.role"));
+            assert!(script.contains(&format!("|{}\"", role.as_str())));
+        }
+
+        let network = runtime_fault_network_remove_script(&node(), &run_id).unwrap();
+        assert!(network.contains("runtime-fault-network.id"));
+        assert!(network.contains("test \"$actual\" = \"$expected|koi-lab|v1-"));
+        assert!(network.contains("docker network rm koi-lab-runtime-net-"));
+    }
+
+    #[test]
+    fn runtime_proxy_cleanup_is_pid_executable_and_command_line_scoped() {
+        let run_id = RunId::parse("v1-20260719T000000Z-deadbeef").unwrap();
+        let script = runtime_proxy_stop_script(&node(), &run_id, true).unwrap();
+        assert!(script.contains("required=true"));
+        assert!(script.contains("docker-proxy.pid"));
+        assert!(script.contains("docker-proxy.exe"));
+        assert!(script.contains("readlink -f /proc/\"$pid\"/exe"));
+        assert!(script.contains("/proc/\"$pid\"/cmdline"));
+        assert!(script.contains("--upstream /var/run/docker.sock"));
+        assert!(!script.contains("pkill"));
+        assert!(!script.contains("sudo"));
     }
 
     #[test]

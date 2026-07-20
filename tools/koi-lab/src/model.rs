@@ -564,6 +564,19 @@ pub struct CapabilityStoryReport {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct RuntimeReconnectReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub rotation: TrustRotation,
+    pub primary_node: String,
+    pub observer_node: String,
+    pub artifact_sha256: String,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct CheckResult {
     pub name: String,
     pub passed: bool,
