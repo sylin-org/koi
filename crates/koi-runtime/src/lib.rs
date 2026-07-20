@@ -66,6 +66,37 @@ struct RuntimeState {
     event_tx: broadcast::Sender<RuntimeEvent>,
 }
 
+impl RuntimeState {
+    /// Apply one normalized backend event to inventory, then publish the same
+    /// event to every downstream consumer. Keeping both effects here prevents
+    /// real backends and embedded/custom producers from drifting.
+    async fn ingest(&self, event: RuntimeEvent) {
+        match &event {
+            RuntimeEvent::Started(instance) | RuntimeEvent::Updated(instance) => {
+                let mut instances = self.instances.lock().await;
+                instances.insert(instance.id.clone(), instance.clone());
+                tracing::debug!(
+                    name = %instance.name,
+                    id = %instance.id,
+                    "Instance tracked"
+                );
+            }
+            RuntimeEvent::Stopped { id, name } => {
+                let mut instances = self.instances.lock().await;
+                instances.remove(id.as_str());
+                tracing::debug!(name, id, "Instance untracked");
+            }
+            RuntimeEvent::BackendDisconnected { backend, reason } => {
+                tracing::warn!(backend, reason, "Backend disconnected");
+            }
+            RuntimeEvent::BackendReconnected { backend } => {
+                tracing::info!(backend, "Backend reconnected");
+            }
+        }
+        let _ = self.event_tx.send(event);
+    }
+}
+
 // ── RuntimeCore facade ──────────────────────────────────────────────
 
 /// Runtime adapter domain facade.
@@ -102,6 +133,15 @@ impl RuntimeCore {
     /// Subscribe to runtime events.
     pub fn subscribe(&self) -> broadcast::Receiver<RuntimeEvent> {
         self.state.event_tx.subscribe()
+    }
+
+    /// Ingest one normalized lifecycle event.
+    ///
+    /// Runtime backends use this same state-and-fan-out chokepoint internally.
+    /// Embedded hosts and tests may use it to connect a custom runtime source
+    /// without pretending to be Docker or duplicating Koi's inventory rules.
+    pub async fn ingest_event(&self, event: RuntimeEvent) {
+        self.state.ingest(event).await;
     }
 
     /// Get current status.
@@ -178,34 +218,7 @@ impl RuntimeCore {
         let state = Arc::clone(&self.state);
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
-                match &event {
-                    RuntimeEvent::Started(instance) => {
-                        let mut instances = state.instances.lock().await;
-                        instances.insert(instance.id.clone(), instance.clone());
-                        tracing::debug!(
-                            name = %instance.name,
-                            id = %instance.id,
-                            "Instance tracked"
-                        );
-                    }
-                    RuntimeEvent::Stopped { id, name } => {
-                        let mut instances = state.instances.lock().await;
-                        instances.remove(id.as_str());
-                        tracing::debug!(name, id, "Instance untracked");
-                    }
-                    RuntimeEvent::Updated(instance) => {
-                        let mut instances = state.instances.lock().await;
-                        instances.insert(instance.id.clone(), instance.clone());
-                    }
-                    RuntimeEvent::BackendDisconnected { backend, reason } => {
-                        tracing::warn!(backend, reason, "Backend disconnected");
-                    }
-                    RuntimeEvent::BackendReconnected { backend } => {
-                        tracing::info!(backend, "Backend reconnected");
-                    }
-                }
-                // Broadcast to subscribers
-                let _ = state.event_tx.send(event);
+                state.ingest(event).await;
             }
         });
 
@@ -338,6 +351,45 @@ mod tests {
         let core = RuntimeCore::new(RuntimeConfig::default());
         let instances = core.list_instances().await.unwrap();
         assert!(instances.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ingest_event_is_the_single_inventory_and_fanout_path() {
+        let core = RuntimeCore::new(RuntimeConfig::default());
+        let mut events = core.subscribe();
+        let mut instance = Instance {
+            id: "synthetic-1".into(),
+            name: "before".into(),
+            ports: vec![],
+            ips: vec![],
+            metadata: KoiMetadata::default(),
+            backend: "custom".into(),
+            state: InstanceState::Running,
+            discovered_at: chrono::Utc::now(),
+            image: None,
+        };
+
+        core.ingest_event(RuntimeEvent::Started(instance.clone()))
+            .await;
+        assert!(matches!(events.recv().await, Ok(RuntimeEvent::Started(_))));
+        assert_eq!(core.list_instances().await.unwrap()[0].name, "before");
+
+        instance.name = "after".into();
+        core.ingest_event(RuntimeEvent::Updated(instance.clone()))
+            .await;
+        assert!(matches!(events.recv().await, Ok(RuntimeEvent::Updated(_))));
+        assert_eq!(core.list_instances().await.unwrap()[0].name, "after");
+
+        core.ingest_event(RuntimeEvent::Stopped {
+            id: instance.id,
+            name: instance.name,
+        })
+        .await;
+        assert!(matches!(
+            events.recv().await,
+            Ok(RuntimeEvent::Stopped { .. })
+        ));
+        assert!(core.list_instances().await.unwrap().is_empty());
     }
 
     #[test]

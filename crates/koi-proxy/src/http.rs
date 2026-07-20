@@ -100,13 +100,8 @@ async fn add_entry_handler(
         tracing::warn!(backend = %entry.backend, "Proxy backend traffic is unencrypted");
     }
 
-    match runtime.core().upsert(entry).await {
-        Ok(_) => {
-            if let Err(e) = runtime.reload().await {
-                tracing::warn!(error = %e, "Failed to reload proxy runtime after add");
-            }
-            Json(serde_json::json!({ "status": "ok" })).into_response()
-        }
+    match runtime.upsert(entry).await {
+        Ok(()) => Json(serde_json::json!({ "status": "ok" })).into_response(),
         Err(e) => map_error(e).into_response(),
     }
 }
@@ -119,13 +114,8 @@ async fn remove_entry_handler(
     Extension(runtime): Extension<Arc<ProxyRuntime>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    match runtime.core().remove(&name).await {
-        Ok(_) => {
-            if let Err(e) = runtime.reload().await {
-                tracing::warn!(error = %e, "Failed to reload proxy runtime after remove");
-            }
-            Json(serde_json::json!({ "status": "ok" })).into_response()
-        }
+    match runtime.remove(&name).await {
+        Ok(()) => Json(serde_json::json!({ "status": "ok" })).into_response(),
         Err(e) => map_error(e).into_response(),
     }
 }
