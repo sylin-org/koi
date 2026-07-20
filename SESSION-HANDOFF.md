@@ -1,7 +1,7 @@
 # Koi Epic to v1 — canonical continuation ledger
 
-**Status:** active — V1-00 through V1-02 complete; V1-03 in progress; V1-07 identity and publication-foundation slices complete
-**Last updated:** 2026-07-20 16:01 EDT
+**Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; V1-07 identity and publication-foundation slices complete
+**Last updated:** 2026-07-20 16:37 EDT
 **Resume phrase:** `continue the epic to v1`
 
 This is the repository's canonical handoff and progress ledger for the v1 epic. The plan is a
@@ -412,22 +412,32 @@ evidence rather than a one-off demo.
   musl SHA-256 `199a4b46faa3ef5777b949ffd46684f468e279324f4f98c9e9f1369a856f3287`.
   Exact cleanup and final preflight `preflight-20260720T200046Z.json` left no run roots/locks and
   preserved Granite PID 803. A scheduled 6–24 hour release soak remains unclaimed.
+- V1-06 now has one evidence-publication chokepoint. Every completed check-bearing `koi-lab`
+  scenario report declares its checks and redaction verdict once, then renders all formats before
+  writing canonical JSON, JUnit XML, and a readable text summary. Publication refuses a report
+  that has not explicitly attested secret redaction. Physical run
+  `v1-20260720T202701Z-5db023d1` at clean commit `f435382` produced all three certmesh-smoke
+  companions and parsed as 6 tests / 0 failures. Exact cleanup and final preflight
+  `preflight-20260720T202852Z.json` preserved Granite PID 803 and left Brook inactive. The final
+  workspace gate also exposed and fixed a Windows-only DNS test assumption: TCP now chooses the
+  collision port, which proves partial UDP-bind cleanup and avoids UDP/TCP excluded-range drift.
 
 ## Current repository state
 
 - Workspace: `F:\Files\repo\github\sylin-org\koi`
 - Branch/upstream: `dev` tracking `origin/dev`, ahead 0 / behind 0 at handoff time.
-- Product artifact exercised through clean lab/controller commit
-  `8907a15b54e316da2926c1557168e3d1d93cd0f4`; product binary content remains the truthful-startup
+- Current pushed head: `85c776e040ba3b7dd645d9c63fc80c0bfc6505f2` (`test(dns): make bind recovery portable`).
+- Product artifact and evidence publisher exercised through clean lab/controller commit
+  `f4353821290d732580c9a317d36d315db9be7d60`; product binary content remains the truthful-startup
   build from `27b268d` (`fix(runtime): make capability startup truthful`). The Docker relay/evidence
   commit `40ada4c` and unchanged-service correction `2e40840` precede it on `dev`.
-- The bounded-soak controller and physically learned mDNS convergence correction plus resulting
-  evidence documentation are committed and pushed on `dev`; the worktree is clean at handoff.
+- The bounded-soak controller, centralized multi-format evidence publisher, and portable DNS
+  recovery test correction are committed and pushed on `dev`; documentation is the current slice.
 - No PR, release, or package publication was made. All run-scoped test deployments were cleaned
-  exactly. Fresh preflight `preflight-20260720T200046Z.json` at controller commit `8907a15` confirms Brook
+  exactly. Fresh preflight `preflight-20260720T202852Z.json` at controller commit `f435382` confirms Brook
   inactive, Granite's original enabled Koi 0.7.0 service still PID 803, deploy readiness on all
   nodes, and no lab run/lock/listener residue.
-- Clean release artifacts were built locally at `8907a15`: Linux musl SHA-256
+- Clean release artifacts were built locally at `f435382`: Linux musl SHA-256
   `199a4b46faa3ef5777b949ffd46684f468e279324f4f98c9e9f1369a856f3287` (41,511,128 bytes) and
   Windows SHA-256 `29de2d484f2be187138d2b8b9aa29c687dcf1c357288a04410aca7f6479b3f30`
   (35,896,320 bytes).
@@ -498,8 +508,9 @@ evidence rather than a one-off demo.
 - Separate non-privileged protocol tests from privileged native service/trust/resolver tests.
 - Build once per run, record commit and SHA-256 hashes, and deploy the same musl artifact to both
   Linux nodes.
-- Produce JSON + JUnit + readable summaries. Redact DATs, invites, private keys, and sensitive
-  environment data. Preserve diagnostic artifacts on failure without retaining secrets.
+- Completed check-bearing scenarios publish JSON + JUnit + readable summaries through one
+  redaction-enforcing chokepoint. Preserve diagnostic artifacts on failure without retaining
+  DATs, invites, private keys, or sensitive environment data.
 - Never change host clocks for expiry tests. Cover deterministic time boundaries below the
   hardware tier; use hardware for real transport, native stores, lifecycle, and integration.
 
@@ -513,7 +524,7 @@ evidence rather than a one-off demo.
 | V1-03 | Certificate lifecycle and adversarial trust cases | **in progress — Linux lifecycle/cold recovery and Windows lifecycle green** | Both Linux roles prove wrong-pin refusal, mode-0600 custody, key/leaf/chain/SAN integrity, renewal/key rotation, restart, revocation→RED and generic-TLS limits; both also survive encrypted backup, exact data loss, host-bound restore, locked restart and renewed mTLS continuity. Elevated Windows now proves SID-based custody, key/cert rotation and correspondence, CA-roster convergence, exact owned-child restart with identity/diagnosis/Schannel proxy continuity, revocation→RED/self-revoked, and mutation-free renewal/rejoin refusal. Windows cold recovery remains unclaimed. |
 | V1-04 | Real whole-story capability surface | **in progress — physical Linux story + portable Tier-1 aggregation green** | Acts 0, 3, 4, 5, 6, 7, 8, 10, and 11 plus real ACME dns-01 pass physically in both Linux directions. Two concurrent real local daemons now additionally prove the centralized HTTP status/host, dashboard, and authenticated MCP aggregation surfaces. Physical Windows whole-story breadth remains. |
 | V1-05 | Resilience, reconnect, fault and soak lanes | **in progress — startup, event reconnect, DNS recovery, Linux systemd supervision, and bounded soak physical** | Always-on regressions and Brook↔Granite rotations prove startup reconstruction, an isolated Docker event-stream fault, and DNS stop/bind-failure/retry in both directions. Brook's transient-systemd lane proves READY/restart-on-failure, while the bounded soak repeatedly proves complete container derivation/reversal and periodic restart reconstruction. Public install/uninstall, other safe faults, and a scheduled 6–24 hour release soak remain. |
-| V1-06 | Automation, evidence ledger and v1 release gate | planned | Smoke/certmesh/full/soak profiles documented; scheduled hardware execution reliable; three consecutive full green runs; release evidence and `SURFACES.md` updated honestly |
+| V1-06 | Automation, evidence ledger and v1 release gate | **in progress — centralized evidence publication complete 2026-07-20** | Every completed check-bearing scenario now emits redaction-gated JSON, JUnit, and readable summaries from one publisher; physical certmesh smoke parsed 6/6. Scheduled profile orchestration, reliable unattended hardware execution, three consecutive full green runs, and final release evidence remain. |
 | V1-07 | Adoption/public-surface polish backed by proved behavior | **in progress — identity + publication foundation complete 2026-07-19** | ADR-024 canonizes “Let everything local find, trust, and talk” plus Find/Trust/Connect; ADR-025 establishes one attested artifact contract, no-build cargo-binstall metadata, tested npx bootstrap, gated OIDC publication, and safer release operation; registry activation, native-manager channels, evidence-gated compatibility claims and golden demo remain |
 
 ## Certmesh/native-trust acceptance matrix
@@ -550,14 +561,17 @@ releases; soak is scheduled or explicitly invoked.
 
 ## Resume here
 
-1. Design the public Linux install/uninstall contract only if fixed unit/binary/data paths and the
+1. Implement one unattended profile orchestrator for smoke/full/soak policy. It must reuse existing
+   scenario commands and the centralized evidence publisher, own deploy/cleanup/preflight exactly,
+   and make scheduling a thin caller rather than another evaluator.
+2. Prove the orchestrator on Brook/Granite, then accumulate three consecutive full green runs and
+   schedule a longer bounded soak. Keep every fault run-owned and require exact recovery plus cleanup.
+3. Design the public Linux install/uninstall contract only if fixed unit/binary/data paths and the
    default DNS-port conflict can be made byte-exact reversible. The safer systemd supervision proof
    is complete; do not broaden it into an install claim.
-2. Schedule a longer bounded soak and add the next safe capability/fault cases; keep each fault
-   run-owned and require exact recovery plus cleanup evidence.
-3. Implement and physically execute Windows cold recovery only if exact encrypted backup/data-loss/
+4. Implement and physically execute Windows cold recovery only if exact encrypted backup/data-loss/
    restore ownership can stay within the tracked Windows transaction; until then leave it unclaimed.
-4. Upstream the Debian dangling-symlink fix to `os-truststore` when separate repository/publication
+5. Upstream the Debian dangling-symlink fix to `os-truststore` when separate repository/publication
    authority exists; then remove Koi lab's guarded compatibility branch.
 
 ## Implementation map
@@ -605,8 +619,9 @@ releases; soak is scheduled or explicitly invoked.
 - The current tree passes `cargo fmt --all -- --check`, all-target/all-feature Clippy with
   `-D warnings`, `cargo test --workspace --all-features --locked`, `cargo audit`, the surface-ledger
   lint, and `git diff --check` on 2026-07-20 after all work in this handoff. Focused counts are
-  `koi-runtime` 49, `koi-compose` 14, `koi-lab` 24, and the real-binary two-daemon integration 2;
-  all passed. Audit exits 0 with the two already dispositioned
+  `koi-runtime` 49, `koi-compose` 14, `koi-lab` 34, and the real-binary two-daemon integration 2;
+  all passed. The gate caught and corrected a Windows test-only UDP/TCP ephemeral-port assumption;
+  the focused retry and complete workspace rerun are green. Audit exits 0 with the two dispositioned
   allowed warnings (`anyhow` RUSTSEC-2026-0190 and yanked transitive `spin 0.9.8`).
 - V1-00 is locally complete. Hosted Linux/macOS scheduled-QA evidence remains unavailable until
   changes are intentionally published to CI; do not conflate the local Linux container certmesh
@@ -616,19 +631,20 @@ releases; soak is scheduled or explicitly invoked.
   store-baseline restoration. Windows run-owned ACL/key custody, renewal, exact restart continuity,
   revocation, and mutation-free refusal are also proven. No permanent Windows trust root, Koi
   service, process, hosts mapping, or run-owned data remains.
-- Windows cold recovery, privileged service lifecycle, remaining fault lanes, soak, scheduled
-  execution, and the three-consecutive-green v1 gate are
-  outstanding. Portable Tier-1 HTTP/dashboard/MCP breadth and deterministic Docker reconnect are
-  green, including the physical stream fault and DNS stop/bind-failure/retry in both Linux role
-  directions. Physical Linux Acts 0/3/4/5/6/7/8/10/11 plus ACME and daemon-restart startup
-  reconciliation are also complete in both directions.
+- Windows cold recovery, public install/uninstall, remaining safe fault lanes, long soak, scheduled
+  execution, and the three-consecutive-green v1 gate are outstanding. Linux systemd supervision and
+  the bounded short soak are physically green. Portable Tier-1 HTTP/dashboard/MCP breadth and
+  deterministic Docker reconnect are green, including the physical stream fault and DNS
+  stop/bind-failure/retry in both Linux role directions. Physical Linux Acts
+  0/3/4/5/6/7/8/10/11 plus ACME and daemon-restart startup reconciliation are also complete in
+  both directions.
 ## Open basket
 
-- **Now:** broader daemon/system-service lifecycle evidence, followed by the smallest safe
-  additional fault and bounded-soak lanes.
-- **Next:** implement Windows
-  cold recovery only within an exact tracked backup/data-loss/restore transaction.
-- **Later in epic:** complete V1-03 through V1-06 in evidence-driven order.
+- **Now:** scheduled profile orchestration and reliable unattended Brook/Granite execution, reusing
+  the existing scenario and evidence chokepoints.
+- **Next:** three consecutive full green hardware runs and a scheduled 6–24 hour bounded soak.
+- **Later in epic:** Windows cold recovery, safe remaining faults, and the reversible public Linux
+  install/uninstall contract where their exact mutation boundaries can be proved.
 - **Deferred:** remaining V1-07 evidence-backed adoption/golden-demo work; first npm publication
   and trusted-publisher activation; GHCR public-visibility verification/fix; WinGet/Homebrew
   channel creation; and any other external publication.

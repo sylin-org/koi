@@ -100,6 +100,27 @@ create→pinned invite→join from Windows, asserts the
 member's trust diagnosis is Healthy, hashes the Linux system trust stores before/after to
 prove the non-privileged slice changed no roots, and records a secret-redacted report.
 
+Completed check-bearing scenarios publish evidence through one controller chokepoint. Each report
+exposes its checks plus an explicit secret-redaction verdict; the publisher renders every format
+before writing any file and refuses reports that have not attested redaction. The canonical `.json`
+path is accompanied by a CI-readable `.junit.xml` and an operator-readable `.txt` summary with the
+same filename stem. Preflight, deployment manifests, and diagnostic snapshots remain JSON-only
+because they are not scenario verdicts. Physical certmesh-smoke run
+`v1-20260720T202701Z-5db023d1` at clean commit `f435382` emitted:
+
+```text
+certmesh-smoke-linux-forward.json
+certmesh-smoke-linux-forward.junit.xml
+certmesh-smoke-linux-forward.txt
+```
+
+The parsed JUnit suite reported 6 tests and 0 failures, matching the text summary's 6/6 verdict.
+The locally built Linux musl artifact was 41,511,128 bytes with SHA-256
+`199a4b46faa3ef5777b949ffd46684f468e279324f4f98c9e9f1369a856f3287`; nothing was built on either
+Linux host. Exact cleanup removed both run roots and locks. Final preflight
+`preflight-20260720T202852Z.json` left Brook inactive and preserved Granite's original active,
+enabled Koi 0.7.0 service at PID 803.
+
 `certmesh-lifecycle` extends that protocol vertical without mutating native trust stores. It
 rejects a wrong invite fingerprint before local key creation; checks mode-`0600` key/state custody,
 key/leaf correspondence, the full chain, and hostname plus configured-zone SANs; then triggers the
