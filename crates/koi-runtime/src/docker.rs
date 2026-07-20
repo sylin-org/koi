@@ -5,6 +5,8 @@
 //! Podman exposes a Docker-compatible API on a different socket path.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use bollard::query_parameters::{EventsOptions, InspectContainerOptions, ListContainersOptions};
 use bollard::Docker;
@@ -24,6 +26,10 @@ pub struct DockerBackend {
     client: Option<Docker>,
     socket_path: Option<String>,
     is_podman: bool,
+    /// Last point-in-time inventory, seeded by RuntimeCore's startup listing.
+    /// The watch loop owns a clone and uses it to emit exact stop/start/update
+    /// deltas after an event-stream reconnect.
+    known_instances: Mutex<HashMap<String, String>>,
 }
 
 impl Default for DockerBackend {
@@ -39,6 +45,7 @@ impl DockerBackend {
             client: None,
             socket_path: None,
             is_podman: false,
+            known_instances: Mutex::new(HashMap::new()),
         }
     }
 
@@ -48,6 +55,7 @@ impl DockerBackend {
             client: None,
             socket_path: Some(path),
             is_podman: false,
+            known_instances: Mutex::new(HashMap::new()),
         }
     }
 
@@ -57,6 +65,7 @@ impl DockerBackend {
             client: None,
             socket_path: None,
             is_podman: true,
+            known_instances: Mutex::new(HashMap::new()),
         }
     }
 
@@ -217,6 +226,9 @@ impl RuntimeBackend for DockerBackend {
             }
         }
 
+        if let Ok(mut known) = self.known_instances.lock() {
+            *known = instance_names(&instances);
+        }
         Ok(instances)
     }
 
@@ -226,62 +238,145 @@ impl RuntimeBackend for DockerBackend {
         cancel: CancellationToken,
     ) -> Result<(), RuntimeError> {
         let client = self.client()?;
-
-        let event_filters = HashMap::from([("type".to_string(), vec!["container".to_string()])]);
-        let opts = EventsOptions {
-            filters: Some(event_filters),
-            ..Default::default()
-        };
-
-        let mut stream = client.events(Some(opts));
-
+        let mut known = self
+            .known_instances
+            .lock()
+            .map(|known| known.clone())
+            .unwrap_or_default();
+        let mut reconnect_attempt = 0_u32;
+        let mut last_event_time = Utc::now().timestamp();
+        let mut resume_since = None;
         loop {
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    tracing::info!(backend = self.name(), "Watch cancelled");
-                    break;
-                }
-                event = stream.next() => {
-                    match event {
-                        Some(Ok(ev)) => {
-                            if let Err(e) = self.handle_docker_event(client, &tx, &ev).await {
-                                tracing::warn!(error = %e, "Error handling Docker event");
+            let event_filters =
+                HashMap::from([("type".to_string(), vec!["container".to_string()])]);
+            let opts = EventsOptions {
+                since: resume_since.take(),
+                filters: Some(event_filters),
+                ..Default::default()
+            };
+            let mut stream = client.events(Some(opts));
+            let disconnect_reason = loop {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        tracing::info!(backend = self.name(), "Watch cancelled");
+                        return Ok(());
+                    }
+                    event = stream.next() => match event {
+                        Some(Ok(event)) => {
+                            if let Some(observed) = event.time {
+                                last_event_time = last_event_time.max(observed);
+                            }
+                            match self.normalize_docker_event(client, &event).await {
+                                Ok(Some(event)) => {
+                                    track_event(&mut known, &event);
+                                    if tx.send(event).await.is_err() {
+                                        return Ok(());
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    tracing::warn!(%error, "Error handling Docker event");
+                                }
                             }
                         }
-                        Some(Err(e)) => {
-                            let _ = tx.send(RuntimeEvent::BackendDisconnected {
-                                backend: self.name().to_string(),
-                                reason: e.to_string(),
-                            }).await;
-                            tracing::error!(error = %e, "Docker event stream error");
-                            break;
-                        }
-                        None => {
-                            tracing::info!("Docker event stream ended");
-                            break;
-                        }
+                        Some(Err(error)) => break error.to_string(),
+                        None => break "Docker event stream ended".to_string(),
                     }
                 }
+            };
+
+            if tx
+                .send(RuntimeEvent::BackendDisconnected {
+                    backend: self.name().to_string(),
+                    reason: disconnect_reason.clone(),
+                })
+                .await
+                .is_err()
+            {
+                return Ok(());
+            }
+            tracing::warn!(
+                backend = self.name(),
+                reason = %disconnect_reason,
+                "Runtime event stream disconnected; preserving inventory while reconnecting"
+            );
+
+            loop {
+                let delay = reconnect_delay(reconnect_attempt);
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Ok(()),
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
+
+                if let Err(error) = client.ping().await {
+                    tracing::debug!(
+                        backend = self.name(),
+                        attempt = reconnect_attempt,
+                        %error,
+                        "Runtime API is still unavailable"
+                    );
+                    continue;
+                }
+                let current = match self.list_instances().await {
+                    Ok(instances) => instances,
+                    Err(error) => {
+                        tracing::debug!(
+                            backend = self.name(),
+                            attempt = reconnect_attempt,
+                            %error,
+                            "Runtime inventory reconciliation is not ready"
+                        );
+                        continue;
+                    }
+                };
+
+                let (next_known, events) = reconciliation_events(&known, current);
+                for event in events {
+                    if tx.send(event).await.is_err() {
+                        return Ok(());
+                    }
+                }
+                if tx
+                    .send(RuntimeEvent::BackendReconnected {
+                        backend: self.name().to_string(),
+                    })
+                    .await
+                    .is_err()
+                {
+                    return Ok(());
+                }
+                known = next_known;
+                reconnect_attempt = 0;
+                // Ask Docker to replay from the last event observed before the
+                // disconnect. Reconciliation establishes current truth; replay
+                // closes the list→new-stream race and normal ingest is idempotent.
+                resume_since = Some(replay_cursor(last_event_time));
+                tracing::info!(
+                    backend = self.name(),
+                    instances = known.len(),
+                    "Runtime event stream reconnected after exact inventory reconciliation"
+                );
+                break;
             }
         }
-
-        Ok(())
     }
 }
 
 impl DockerBackend {
-    async fn handle_docker_event(
+    async fn normalize_docker_event(
         &self,
         client: &Docker,
-        tx: &mpsc::Sender<RuntimeEvent>,
         event: &bollard::models::EventMessage,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<Option<RuntimeEvent>, RuntimeError> {
         let action = event.action.as_deref().unwrap_or("");
         let actor = event.actor.as_ref();
         let id = actor.and_then(|a| a.id.as_deref()).unwrap_or("");
 
         if id.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
 
         match action {
@@ -293,10 +388,11 @@ impl DockerBackend {
                         backend = self.name(),
                         "Instance started"
                     );
-                    let _ = tx.send(RuntimeEvent::Started(instance)).await;
+                    Ok(Some(RuntimeEvent::Started(instance)))
                 }
                 Err(e) => {
                     tracing::warn!(id, error = %e, "Failed to inspect started container");
+                    Ok(None)
                 }
             },
             "die" | "stop" | "kill" | "destroy" => {
@@ -312,19 +408,83 @@ impl DockerBackend {
                     backend = self.name(),
                     "Instance stopped"
                 );
-                let _ = tx
-                    .send(RuntimeEvent::Stopped {
-                        id: id.to_string(),
-                        name,
-                    })
-                    .await;
+                Ok(Some(RuntimeEvent::Stopped {
+                    id: id.to_string(),
+                    name,
+                }))
             }
             // Ignore other events (create, pause, unpause, etc.)
-            _ => {}
+            _ => Ok(None),
         }
-
-        Ok(())
     }
+}
+
+const RECONNECT_MIN_DELAY: Duration = Duration::from_millis(250);
+const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(5);
+
+fn reconnect_delay(attempt: u32) -> Duration {
+    let multiplier = 1_u32.checked_shl(attempt.min(8)).unwrap_or(u32::MAX);
+    RECONNECT_MIN_DELAY
+        .saturating_mul(multiplier)
+        .min(RECONNECT_MAX_DELAY)
+}
+
+fn replay_cursor(last_event_time: i64) -> String {
+    last_event_time.saturating_sub(1).to_string()
+}
+
+fn instance_names(instances: &[Instance]) -> HashMap<String, String> {
+    instances
+        .iter()
+        .map(|instance| (instance.id.clone(), instance.name.clone()))
+        .collect()
+}
+
+fn track_event(known: &mut HashMap<String, String>, event: &RuntimeEvent) {
+    match event {
+        RuntimeEvent::Started(instance) | RuntimeEvent::Updated(instance) => {
+            known.insert(instance.id.clone(), instance.name.clone());
+        }
+        RuntimeEvent::Stopped { id, .. } => {
+            known.remove(id);
+        }
+        RuntimeEvent::BackendDisconnected { .. } | RuntimeEvent::BackendReconnected { .. } => {}
+    }
+}
+
+/// Diff the last observed inventory against a reconnect snapshot. Every event
+/// still flows through RuntimeState::ingest; this helper only translates the
+/// backend's point-in-time truth into normalized lifecycle facts.
+fn reconciliation_events(
+    previous: &HashMap<String, String>,
+    mut current: Vec<Instance>,
+) -> (HashMap<String, String>, Vec<RuntimeEvent>) {
+    current.sort_by(|left, right| left.id.cmp(&right.id));
+    let next = instance_names(&current);
+    let mut stopped: Vec<_> = previous
+        .iter()
+        .filter(|(id, _)| !next.contains_key(*id))
+        .map(|(id, name)| RuntimeEvent::Stopped {
+            id: id.clone(),
+            name: name.clone(),
+        })
+        .collect();
+    stopped.sort_by(|left, right| match (left, right) {
+        (RuntimeEvent::Stopped { id: left, .. }, RuntimeEvent::Stopped { id: right, .. }) => {
+            left.cmp(right)
+        }
+        _ => std::cmp::Ordering::Equal,
+    });
+
+    let mut events = stopped;
+    events.extend(current.into_iter().map(|instance| {
+        if previous.contains_key(&instance.id) {
+            RuntimeEvent::Updated(instance)
+        } else {
+            RuntimeEvent::Started(instance)
+        }
+    }));
+    (next, events)
 }
 
 /// Extract host-side port mappings from a container inspect result.
@@ -447,6 +607,20 @@ pub fn is_podman_available() -> bool {
 mod tests {
     use super::*;
 
+    fn instance(id: &str, name: &str) -> Instance {
+        Instance {
+            id: id.into(),
+            name: name.into(),
+            ports: Vec::new(),
+            ips: Vec::new(),
+            metadata: KoiMetadata::default(),
+            backend: "docker".into(),
+            state: InstanceState::Running,
+            discovered_at: Utc::now(),
+            image: None,
+        }
+    }
+
     #[test]
     fn parse_tcp_port_spec() {
         let (port, proto) = parse_port_spec("80/tcp");
@@ -475,5 +649,48 @@ mod tests {
 
         let podman = DockerBackend::podman();
         assert_eq!(podman.name(), "podman");
+    }
+
+    #[test]
+    fn reconnect_reconciliation_emits_exact_stops_updates_and_starts() {
+        let previous = HashMap::from([
+            ("gone".to_string(), "old-service".to_string()),
+            ("same".to_string(), "existing-service".to_string()),
+        ]);
+        let (next, events) = reconciliation_events(
+            &previous,
+            vec![instance("new", "new-service"), instance("same", "renamed")],
+        );
+
+        assert_eq!(next.len(), 2);
+        assert_eq!(next.get("same").map(String::as_str), Some("renamed"));
+        assert!(matches!(
+            &events[0],
+            RuntimeEvent::Stopped { id, name }
+                if id == "gone" && name == "old-service"
+        ));
+        assert!(matches!(
+            &events[1],
+            RuntimeEvent::Started(instance) if instance.id == "new"
+        ));
+        assert!(matches!(
+            &events[2],
+            RuntimeEvent::Updated(instance)
+                if instance.id == "same" && instance.name == "renamed"
+        ));
+    }
+
+    #[test]
+    fn reconnect_backoff_is_bounded() {
+        assert_eq!(reconnect_delay(0), Duration::from_millis(250));
+        assert_eq!(reconnect_delay(1), Duration::from_millis(500));
+        assert_eq!(reconnect_delay(5), RECONNECT_MAX_DELAY);
+        assert_eq!(reconnect_delay(u32::MAX), RECONNECT_MAX_DELAY);
+    }
+
+    #[test]
+    fn reconnect_replay_cursor_is_inclusive_without_underflow() {
+        assert_eq!(replay_cursor(1_784_522_000), "1784521999");
+        assert_eq!(replay_cursor(i64::MIN), i64::MIN.to_string());
     }
 }

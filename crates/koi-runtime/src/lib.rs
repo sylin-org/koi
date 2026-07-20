@@ -87,9 +87,11 @@ impl RuntimeState {
                 tracing::debug!(name, id, "Instance untracked");
             }
             RuntimeEvent::BackendDisconnected { backend, reason } => {
+                *self.active.lock().await = false;
                 tracing::warn!(backend, reason, "Backend disconnected");
             }
             RuntimeEvent::BackendReconnected { backend } => {
+                *self.active.lock().await = true;
                 tracing::info!(backend, "Backend reconnected");
             }
         }
@@ -390,6 +392,25 @@ mod tests {
             Ok(RuntimeEvent::Stopped { .. })
         ));
         assert!(core.list_instances().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn backend_connectivity_events_drive_health_at_the_ingest_chokepoint() {
+        let core = RuntimeCore::new(RuntimeConfig::default());
+        *core.state.active.lock().await = true;
+
+        core.ingest_event(RuntimeEvent::BackendDisconnected {
+            backend: "docker".into(),
+            reason: "event stream ended".into(),
+        })
+        .await;
+        assert!(!core.status().await.active);
+
+        core.ingest_event(RuntimeEvent::BackendReconnected {
+            backend: "docker".into(),
+        })
+        .await;
+        assert!(core.status().await.active);
     }
 
     #[test]

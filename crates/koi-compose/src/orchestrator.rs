@@ -112,8 +112,9 @@ pub fn spawn_orchestrator(
                         }
                         Ok(RuntimeEvent::BackendReconnected { backend }) => {
                             tracing::info!(backend, "Runtime backend reconnected");
-                            // Reconciliation: new Started events will arrive from the backend.
-                            // Duplicate registrations are handled idempotently in handle_start.
+                            // The backend emits exact Stopped/Started/Updated reconciliation
+                            // events before this marker. They traverse the normal handlers above;
+                            // no parallel reconnect policy is needed here.
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!(missed = n, "Orchestrator lagged behind runtime events");
