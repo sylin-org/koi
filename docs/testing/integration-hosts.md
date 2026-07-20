@@ -147,6 +147,23 @@ readable summary. The locally built Linux musl artifact was 41,510,952 bytes wit
 left Brook inactive and Granite's original active/enabled Koi 0.7.0 service at PID 803 with the
 same executable and start time.
 
+The elevated certmesh policy then passed execution `v1-20260720T211240Z-df893184` at controller
+commit `3cfb205`. All seven child transactions passed deploy/scenario/cleanup and parsed aggregate
+JUnit reported 23 tests / 0 failures. It covered lifecycle and recovery in both Linux directions,
+native trust in both Linux directions, and the elevated Windows-client trust/lifecycle rotation.
+Independent post-run inspection found zero copies of the Windows run CA's SHA-256 fingerprint in
+`LocalMachine\Root`; final preflight restored the complete stable baseline.
+
+Full execution `v1-20260720T211813Z-47d0f395` passed in 12m57s using the same locally rebuilt musl
+artifact SHA-256 `020f9e86694a272e5c066b9d359fa6578e1b4ee0fef3682e629327e0d602497f`.
+Every one of its 12 fresh child transactions passed deployment, the existing scenario evaluator,
+and exact cleanup; parsed `profile-full.junit.xml` reported 38 tests / 0 failures. Beyond the seven
+certmesh cases, it proved Docker reconnect in both directions, capability story plus ACME in both
+directions, and Brook systemd supervision (`92889→93222`, `NRestarts=1`). Final preflight left
+Brook inactive/not-found, preserved Granite's original active/enabled PID 803 service with the same
+executable and start time, and matched the pre-run stable service/artifact/listener baseline. This
+is v1 full green 1 of 3.
+
 `certmesh-lifecycle` extends that protocol vertical without mutating native trust stores. It
 rejects a wrong invite fingerprint before local key creation; checks mode-`0600` key/state custody,
 key/leaf correspondence, the full chain, and hostname plus configured-zone SANs; then triggers the
