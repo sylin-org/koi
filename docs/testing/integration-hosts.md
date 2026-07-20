@@ -57,6 +57,10 @@ cargo run -p koi-lab --locked -- capability-story --run-id <run-id> `
 cargo run -p koi-lab --locked -- runtime-reconnect --run-id <run-id> `
   --rotation linux-forward
 
+# Brook-only transient systemd readiness/restart/reconstruction transaction.
+cargo run -p koi-lab --locked -- service-lifecycle --run-id <run-id> `
+  --allow-system-mutation
+
 # Privileged trust rotation. Use a fresh deploy/run ID for each rotation.
 cargo run -p koi-lab --locked -- certmesh-native-trust --run-id <run-id> `
   --allow-system-mutation --rotation linux-forward
@@ -169,6 +173,26 @@ clean locally built musl artifact SHA-256
 Final preflight `preflight-20260720T182050Z.json` found no run roots, locks, listeners, containers,
 images, networks, or relays; Brook remained inactive and Granite's original enabled Koi remained
 PID 803.
+
+`service-lifecycle` is the V1-05 Linux supervision transaction. It is deliberately narrower than
+public `koi install`: Brook must have no permanent Koi unit, binary, or data root, and the controller
+creates only a run-named transient systemd unit backed by the staged artifact and high test ports.
+The unit runs as the configured lab user with `Type=notify`, `Restart=on-failure`, and exact
+run-owned data/runtime roots. The controller verifies the unit's transient fragment, user, MainPID
+executable, and READY-derived active state; starts a labeled container; then SIGKILLs only MainPID.
+The replacement process must have a new PID and DAT, increment `NRestarts`, and reconstruct runtime
+inventory, DNS, cross-host mDNS, health, TLS proxy state, and live proxy traffic. Cleanup will stop
+only a unit whose name, transient fragment, user, and live executable match the run marker.
+
+Run `v1-20260720T194505Z-4b9b9788` passed on 2026-07-20 using clean controller/artifact commit
+`cc3685d` and locally built musl SHA-256
+`199a4b46faa3ef5777b949ffd46684f468e279324f4f98c9e9f1369a856f3287` (41,511,128 bytes).
+Systemd replaced Brook PID `64274` with `64608` (`NRestarts=1`), the DAT rotated, and all derived
+surfaces reconverged. Exact service cleanup restored Brook's absent permanent-service baseline;
+full cleanup removed both run roots and locks. Final preflight `preflight-20260720T194652Z.json`
+preserved Granite's original active/enabled PID 803 service. Public Linux install/uninstall remains
+a separate unclaimed contract because its fixed paths and default port 53 require a byte-exact
+reversibility design.
 
 `certmesh-native-trust` is the one privileged mutation boundary. It refuses without
 `--allow-system-mutation`. Linux clients additionally require passwordless sudo; the

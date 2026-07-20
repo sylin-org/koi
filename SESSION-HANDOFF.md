@@ -1,7 +1,7 @@
 # Koi Epic to v1 — canonical continuation ledger
 
 **Status:** active — V1-00 through V1-02 complete; V1-03 in progress; V1-07 identity and publication-foundation slices complete
-**Last updated:** 2026-07-20 15:16 EDT
+**Last updated:** 2026-07-20 15:47 EDT
 **Resume phrase:** `continue the epic to v1`
 
 This is the repository's canonical handoff and progress ledger for the v1 epic. The plan is a
@@ -390,21 +390,34 @@ evidence rather than a one-off demo.
   `57914` → `58297`) and reverse `v1-20260720T191154Z-adb441bc` (Granite PID `111400` → `111831`)
   passed the complete story with clean commit `27b268d` and musl SHA-256
   `199a4b46faa3ef5777b949ffd46684f468e279324f4f98c9e9f1369a856f3287` (41,511,128 bytes).
+- Linux systemd supervision is now a reversible physical V1-05 lane. `koi-lab service-lifecycle`
+  creates only a run-named transient unit on Brook, verifies `Type=notify`, transient fragment/user/
+  executable identity, and SIGKILLs only its exact MainPID. Green run
+  `v1-20260720T194505Z-4b9b9788` replaced PID `64274` with `64608` (`NRestarts=1`), rotated the DAT,
+  and reconstructed runtime inventory, DNS, cross-host mDNS, health, TLS proxy state, and live proxy
+  traffic. Shared `derived.rs` is now the single complete-derived-service evaluator used by both
+  runtime reconnect and service restart scenarios. The run used clean controller/artifact commit
+  `cc3685d` and the same locally built musl SHA-256
+  `199a4b46faa3ef5777b949ffd46684f468e279324f4f98c9e9f1369a856f3287`. Exact service cleanup left
+  Brook without a permanent Koi unit/binary/data root; full cleanup removed both run roots/locks;
+  final preflight `preflight-20260720T194652Z.json` preserved Granite's active/enabled PID 803.
+  Public fixed-path Linux install/uninstall remains unclaimed.
 
 ## Current repository state
 
 - Workspace: `F:\Files\repo\github\sylin-org\koi`
 - Branch/upstream: `dev` tracking `origin/dev`, ahead 0 / behind 0 at handoff time.
-- Product artifact exercised: `27b268dd29229b2d9f9312947e95c8b97c9b9deb`
-  (`fix(runtime): make capability startup truthful`). The Docker relay/evidence commit `40ada4c`
-  and unchanged-service correction `2e40840` precede it on `dev`.
-- The two-line `dig` portability correction learned from physical execution and the resulting
-  evidence documentation are committed and pushed on `dev`; the worktree is clean at handoff.
+- Product artifact exercised through clean lab/controller commit
+  `cc3685d7d2b6fc35378c8a42e18a8968703c4650`; product binary content remains the truthful-startup
+  build from `27b268d` (`fix(runtime): make capability startup truthful`). The Docker relay/evidence
+  commit `40ada4c` and unchanged-service correction `2e40840` precede it on `dev`.
+- The service evaluator corrections and resulting evidence documentation are committed and pushed
+  on `dev`; the worktree is clean at handoff.
 - No PR, release, or package publication was made. All run-scoped test deployments were cleaned
-  exactly. Fresh preflight `preflight-20260720T191606Z.json` at artifact commit `27b268d` confirms Brook
+  exactly. Fresh preflight `preflight-20260720T194652Z.json` at controller commit `cc3685d` confirms Brook
   inactive, Granite's original enabled Koi 0.7.0 service still PID 803, deploy readiness on all
   nodes, and no lab run/lock/listener residue.
-- Clean release artifacts were built locally from `27b268d`: Linux musl SHA-256
+- Clean release artifacts were built locally at `cc3685d`: Linux musl SHA-256
   `199a4b46faa3ef5777b949ffd46684f468e279324f4f98c9e9f1369a856f3287` (41,511,128 bytes) and
   Windows SHA-256 `29de2d484f2be187138d2b8b9aa29c687dcf1c357288a04410aca7f6479b3f30`
   (35,896,320 bytes).
@@ -489,7 +502,7 @@ evidence rather than a one-off demo.
 | V1-02 | Certmesh protocol and native trust role rotations | **complete — 2026-07-19** | Forward and reverse Linux rotations plus the elevated Windows-client rotation pass fail-before, exact install, native clients, wrong-host rejection, tracked removal, fail-after, and full-store restoration. Windows additionally proves exact `LocalMachine\Root` SHA-256 identity, Schannel `curl.exe`, `Invoke-WebRequest`, and byte-exact hosts restoration. Configured `.internal` issuance is centralized. |
 | V1-03 | Certificate lifecycle and adversarial trust cases | **in progress — Linux lifecycle/cold recovery and Windows lifecycle green** | Both Linux roles prove wrong-pin refusal, mode-0600 custody, key/leaf/chain/SAN integrity, renewal/key rotation, restart, revocation→RED and generic-TLS limits; both also survive encrypted backup, exact data loss, host-bound restore, locked restart and renewed mTLS continuity. Elevated Windows now proves SID-based custody, key/cert rotation and correspondence, CA-roster convergence, exact owned-child restart with identity/diagnosis/Schannel proxy continuity, revocation→RED/self-revoked, and mutation-free renewal/rejoin refusal. Windows cold recovery remains unclaimed. |
 | V1-04 | Real whole-story capability surface | **in progress — physical Linux story + portable Tier-1 aggregation green** | Acts 0, 3, 4, 5, 6, 7, 8, 10, and 11 plus real ACME dns-01 pass physically in both Linux directions. Two concurrent real local daemons now additionally prove the centralized HTTP status/host, dashboard, and authenticated MCP aggregation surfaces. Physical Windows whole-story breadth remains. |
-| V1-05 | Resilience, reconnect, fault and soak lanes | **in progress — startup, event reconnect, and DNS recovery physical** | Always-on regressions and Brook↔Granite rotations prove startup reconstruction, an isolated Docker event-stream fault, and DNS stop/bind-failure/retry in both directions. Shared lifecycle state reports failed startup honestly, preserves DNS records, rejects stale loop completion, and recovers through the public endpoint. Broader service lifecycle, other fault injection, and bounded soak remain. |
+| V1-05 | Resilience, reconnect, fault and soak lanes | **in progress — startup, event reconnect, DNS recovery, and Linux systemd supervision physical** | Always-on regressions and Brook↔Granite rotations prove startup reconstruction, an isolated Docker event-stream fault, and DNS stop/bind-failure/retry in both directions. Brook's transient-systemd lane additionally proves READY, exact identity, restart-on-failure, DAT rotation, full derived reconstruction, and exact cleanup while Granite PID 803 remains untouched. Public install/uninstall, other fault injection, and bounded soak remain. |
 | V1-06 | Automation, evidence ledger and v1 release gate | planned | Smoke/certmesh/full/soak profiles documented; scheduled hardware execution reliable; three consecutive full green runs; release evidence and `SURFACES.md` updated honestly |
 | V1-07 | Adoption/public-surface polish backed by proved behavior | **in progress — identity + publication foundation complete 2026-07-19** | ADR-024 canonizes “Let everything local find, trust, and talk” plus Find/Trust/Connect; ADR-025 establishes one attested artifact contract, no-build cargo-binstall metadata, tested npx bootstrap, gated OIDC publication, and safer release operation; registry activation, native-manager channels, evidence-gated compatibility claims and golden demo remain |
 
@@ -527,9 +540,9 @@ releases; soak is scheduled or explicitly invoked.
 
 ## Resume here
 
-1. Add broader daemon/system-service lifecycle evidence. Brook has no installed Koi unit or service
-   artifacts; Granite's original enabled PID 803 service must remain untouched. Prefer a run-owned
-   transient systemd unit unless the public install/uninstall path can be made byte-exact reversible.
+1. Design the public Linux install/uninstall contract only if fixed unit/binary/data paths and the
+   default DNS-port conflict can be made byte-exact reversible. The safer systemd supervision proof
+   is complete; do not broaden it into an install claim.
 2. Add the next safe capability/fault cases and a bounded soak profile; keep each fault run-owned and
    require exact recovery plus cleanup evidence.
 3. Implement and physically execute Windows cold recovery only if exact encrypted backup/data-loss/

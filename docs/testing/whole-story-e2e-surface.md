@@ -117,7 +117,7 @@ The target distributed superset runs across **W** (a Windows host), **L1**, **L2
 existing two-box certmesh scripts prove a valuable subset but are not yet this full
 three-node, all-capability scenario:
 
-- `koi install` on each (SCM / systemd); real ports 5641/5642/5643, DNS on 53 (elevated), real Docker on a Linux host for Act 5.
+- Native service supervision on each platform; real ports 5641/5642/5643, DNS on 53 (elevated), real Docker on a Linux host for Act 5. Linux systemd readiness, restart-on-failure, and full derived-surface reconstruction are now proved with a reversible run-owned transient unit. Public `koi install`/`uninstall` and the Windows SCM equivalent remain separate platform contracts.
 - A driver runbook (PowerShell + bash, or a `koi`-driven script using `koi-client --endpoint/--token`) executes the **same Acts** against real endpoints, collecting pass/fail. Reuses and extends the ADR-015 deployment runbook to all capabilities.
 - Proves what Tier 1 structurally cannot: real multicast discovery across hosts, cross-host mTLS handshake, **revocation-propagation latency** (revoke on L1 → measure when W/L2 reject), real container → auto-wire → resolve/health/proxy, and the proxy **data plane** TLS round-trip with a certmesh-issued cert through native trust.
 - Scheduling: manual, or a `schedule`d cloud/cron routine; never a PR gate. Results feed the SURFACES ledger.
@@ -142,6 +142,7 @@ On each green run, update only the rows that run actually exercised, per the **r
 
 - **Reusable composed proxy trust path** — physical Linux Act 7 is green in both role directions, including native trust, hostname verification, hot certificate rotation without daemon restart, exact trust removal, and fail-after-removal. The remaining gap is a reusable Tier-1 composition where the platform permits it.
 - **Runtime without Docker** — implemented through `RuntimeCore::ingest_event`, the same inventory-and-fan-out chokepoint real backends use. The always-on `koi-compose` story proves startup reconciliation, derived mDNS/DNS/health/live-proxy state, and exact reversal. Physical Linux runs prove the same reconstruction after restarting Koi while a real container remains running. Real containers remain Tier 2 / Docker-available CI; a separate run-owned Unix-relay lane now proves Docker event-stream disconnect/reconnect in both physical role directions.
+- **Native service lifecycle** — Brook's reversible transient-systemd lane proves `Type=notify`, exact MainPID identity, `Restart=on-failure`, DAT rotation, and complete derived-surface reconstruction after SIGKILL. It does not claim the fixed-path public install/uninstall contract; Granite's pre-existing installed service is observed and preserved, never repurposed as run state.
 - **mDNS in CI** — multicast works on GH runners but can fail in isolated networks; Tier 1 always asserts via in-process `MdnsCore` and treats cross-instance multicast as best-effort.
 - **DNS port 53** — elevation required; Tier 1 uses `15353`. Tier 2 uses 53 (elevated) to validate the system resolver path.
 - **Enrollment approval** — default decider denies; needs the test affordance above.

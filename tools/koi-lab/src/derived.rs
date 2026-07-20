@@ -54,7 +54,7 @@ fn wait_for_runtime_instance(base: &str, service_name: &str) -> Result<()> {
         if instances.as_array().is_some_and(|items| {
             items
                 .iter()
-                .any(|item| item.get("name").and_then(Value::as_str) == Some(service_name))
+                .any(|item| derived_service_name(item) == Some(service_name))
         }) {
             return Ok(());
         }
@@ -62,6 +62,10 @@ fn wait_for_runtime_instance(base: &str, service_name: &str) -> Result<()> {
         thread::sleep(Duration::from_millis(250));
     }
     bail!("runtime did not observe service {service_name}: {last}")
+}
+
+fn derived_service_name(instance: &Value) -> Option<&str> {
+    instance.get("metadata")?.get("name")?.as_str()
 }
 
 fn wait_for_dns(base: &str, name: &str, expected: &str) -> Result<()> {
@@ -151,4 +155,23 @@ fn wait_for_proxy(base: &str, name: &str, port: u16, expected_backend: &str) -> 
         thread::sleep(Duration::from_millis(250));
     }
     bail!("proxy {name}:{port} did not become live: {last}")
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::derived_service_name;
+
+    #[test]
+    fn runtime_derived_name_is_read_from_metadata() {
+        let instance = json!({
+            "name": "engine-container-name",
+            "metadata": { "name": "koi-service-deadbeef" }
+        });
+        assert_eq!(
+            derived_service_name(&instance),
+            Some("koi-service-deadbeef")
+        );
+    }
 }

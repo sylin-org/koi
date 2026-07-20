@@ -333,7 +333,7 @@ fn require_brook_baseline(lab: &Lab, node: &NodeSpec, run_id: &RunId) -> Result<
 fn original_service_identity(lab: &Lab, node: &NodeSpec) -> Result<String> {
     lab.remote_line(
         node,
-        "set -eu; test \"$(systemctl show --value -p ActiveState koi.service)\" = active; test \"$(systemctl is-enabled koi.service)\" = enabled; pid=$(systemctl show --value -p MainPID koi.service); case \"$pid\" in ''|0|*[!0-9]*) exit 76;; esac; exe=$(readlink -f /proc/\"$pid\"/exe); printf '%s|%s' \"$pid\" \"$exe\"",
+        "set -eu; test \"$(systemctl show --value -p ActiveState koi.service)\" = active; test \"$(systemctl is-enabled koi.service)\" = enabled; pid=$(systemctl show --value -p MainPID koi.service); case \"$pid\" in ''|0|*[!0-9]*) exit 76;; esac; systemctl show koi.service -p MainPID -p FragmentPath -p ExecStart -p ActiveState -p UnitFileState",
     )
 }
 
