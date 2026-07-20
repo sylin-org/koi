@@ -103,10 +103,10 @@ Runs in the existing `test` job on ubuntu/windows/macos ([ci.yml](../../.github/
 | mdns | **Functional**, best-effort cross-instance | in-process `MdnsCore` asserts always; real multicast short-timeout + skip-with-log if unavailable |
 | runtime + orchestrator | **Synthetic lifecycle + startup reconciliation implemented** | always-on `koi-compose` story starts the orchestrator after a normalized instance already exists, then proves inventory plus mDNS/DNS/health/live-proxy reconstruction and stop reversal through the same start/stop chokepoints; real containers stay Tier 2 |
 | proxy | **Unit data plane complete; Tier-1 trust composition pending** | `koi-proxy` guards TLS round-trip, full duplex, bind error, and certificate hot reload; physical Act 7 is green, while portable native-trust composition is platform-limited |
-| status / host / dashboard / MCP | **Full** | MCP `/v1/mcp` token-gated; server-card unauth |
+| status / host / dashboard / MCP | **Full** | Two concurrent real daemons each prove the centralized seven-rung status/dashboard projection, host JSON, public server card, DAT refusal, all 11 MCP tools, all four resources, and a live read |
 | ACME dns-01 | **Optional** real bridge act | when DNS + certmesh up |
 
-CI wiring: the certmesh spine and synthetic runtime/orchestrator lifecycle are always-on regression tripwires. Keep any future long-running multi-instance breadth profile explicit, and document its command in the test module header (mirroring `acme.rs`).
+CI wiring: the certmesh spine, synthetic runtime/orchestrator lifecycle, and two-real-daemon HTTP/dashboard/MCP breadth are always-on regression tripwires. The portable aggregation test is `cargo test -p koi-net --test two_daemon_certmesh --locked`; keep any future long-running multi-instance breadth profile explicit and document its command in the test module header (mirroring `acme.rs`).
 
 ---
 

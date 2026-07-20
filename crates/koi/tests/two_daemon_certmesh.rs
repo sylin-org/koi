@@ -30,7 +30,10 @@
 //! created post-boot via HTTP `/create`, the listener comes up with **no restart**. (Before
 //! that fix the listener stayed down until a restart, which is why this suite originally
 //! could not exercise the post-boot mTLS path.) Runs per-PR on the 3-OS matrix via
-//! `cargo test --locked` (this is the koi-net crate's first integration test).
+//! `cargo test --locked`. A second test reuses this isolated two-daemon harness for
+//! the portable whole-story Tier-1 aggregation breadth: status/host HTTP, dashboard
+//! snapshot, public MCP discovery, DAT refusal, and an authenticated MCP resource
+//! session on both concurrently running instances.
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -114,16 +117,17 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// Spawn a lean certmesh+HTTP-only `koi` daemon with an isolated data dir + breadcrumb.
-fn spawn_daemon() -> Daemon {
+/// Spawn a lean certmesh+HTTP daemon with an isolated data dir + breadcrumb.
+fn spawn_daemon(mcp_http: bool) -> Daemon {
     let data_dir = temp_data_dir();
     let http_port = free_port();
     let mtls_port = free_port();
-    let child = Command::new(env!("CARGO_BIN_EXE_koi"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_koi"));
+    command
         .arg("--daemon")
         .args(["--port", &http_port.to_string()])
         .args(["--mtls-port", &mtls_port.to_string()])
-        // certmesh + http only — everything else off (avoids privileged/multicast ports).
+        // Everything requiring privileged, multicast, or host-runtime access is off.
         .args([
             "--no-mdns",
             "--no-dns",
@@ -132,7 +136,6 @@ fn spawn_daemon() -> Daemon {
             "--no-udp",
             "--no-runtime",
             "--no-acme",
-            "--no-mcp-http",
             "--no-ipc",
         ])
         .env("KOI_DATA_DIR", &data_dir)
@@ -144,9 +147,11 @@ fn spawn_daemon() -> Daemon {
         .env("KOI_LOG", "warn")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn koi daemon");
+        .stderr(Stdio::null());
+    if !mcp_http {
+        command.arg("--no-mcp-http");
+    }
+    let child = command.spawn().expect("spawn koi daemon");
     Daemon {
         child,
         data_dir,
@@ -192,8 +197,8 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
     let sans = vec![MEMBER.to_string()];
     let client = reqwest::Client::new();
 
-    let a = spawn_daemon();
-    let b = spawn_daemon();
+    let a = spawn_daemon(false);
+    let b = spawn_daemon(false);
     let a_base = a.base();
     let b_base = b.base();
     wait_ready(&client, &a_base).await;
@@ -478,6 +483,166 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
     );
 
     // Daemons are killed + their data dirs removed when `a`/`b` drop here.
+    drop(b);
+    drop(a);
+}
+
+async fn assert_aggregation_surface(http: &reqwest::Client, daemon: &Daemon) {
+    use axum::http::{HeaderName, HeaderValue};
+    use rmcp::transport::streamable_http_client::{
+        StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
+    };
+    use rmcp::ServiceExt as _;
+    use std::collections::HashMap;
+
+    let base = daemon.base();
+    let status: serde_json::Value = http
+        .get(format!("{base}/v1/status"))
+        .send()
+        .await
+        .expect("GET status")
+        .error_for_status()
+        .expect("status response")
+        .json()
+        .await
+        .expect("status json");
+    assert_eq!(status.get("daemon").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(status.get("mcp_http").and_then(|v| v.as_bool()), Some(true));
+    let status_names: Vec<&str> = status["capabilities"]
+        .as_array()
+        .expect("status capability ladder")
+        .iter()
+        .filter_map(|capability| capability.get("name").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(
+        status_names.len(),
+        7,
+        "the complete capability ladder is visible"
+    );
+
+    let host = http
+        .get(format!("{base}/v1/host"))
+        .send()
+        .await
+        .expect("GET host")
+        .error_for_status()
+        .expect("host response");
+    assert!(host
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("application/json")));
+
+    let dashboard: serde_json::Value = http
+        .get(format!("{base}/v1/dashboard/snapshot"))
+        .send()
+        .await
+        .expect("GET dashboard snapshot")
+        .error_for_status()
+        .expect("dashboard response")
+        .json()
+        .await
+        .expect("dashboard json");
+    let dashboard_names: Vec<&str> = dashboard["capabilities"]
+        .as_array()
+        .expect("dashboard capability ladder")
+        .iter()
+        .filter_map(|capability| capability.get("name").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(
+        dashboard_names, status_names,
+        "status and dashboard must project the same centralized ladder"
+    );
+
+    let card: serde_json::Value = http
+        .get(format!("{base}/.well-known/mcp/server-card.json"))
+        .send()
+        .await
+        .expect("GET MCP card")
+        .error_for_status()
+        .expect("MCP card response")
+        .json()
+        .await
+        .expect("MCP card json");
+    assert_eq!(card["mcp"]["enabled"].as_bool(), Some(true));
+    assert_eq!(card["mcp"]["path"].as_str(), Some("/v1/mcp"));
+
+    let unauthenticated = http
+        .post(format!("{base}/v1/mcp"))
+        .header("accept", "application/json, text/event-stream")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "tier1", "version": "0.0.0" }
+            }
+        }))
+        .send()
+        .await
+        .expect("tokenless MCP initialize");
+    assert_eq!(
+        unauthenticated.status().as_u16(),
+        401,
+        "MCP must be DAT-gated on every instance"
+    );
+
+    let mut headers = HashMap::new();
+    headers.insert(
+        HeaderName::from_static("x-koi-token"),
+        HeaderValue::from_str(&daemon.token()).expect("DAT header"),
+    );
+    let config = StreamableHttpClientTransportConfig::with_uri(format!("{base}/v1/mcp"))
+        .custom_headers(headers);
+    let transport = StreamableHttpClientTransport::from_config(config);
+    let mcp = ().serve(transport).await.expect("authenticated MCP session");
+    let tools = mcp.list_tools(None).await.expect("MCP list tools");
+    assert_eq!(tools.tools.len(), 11, "the complete v1 tool set is visible");
+    let resources = mcp.list_resources(None).await.expect("MCP list resources");
+    for expected in [
+        "koi://lan/inventory",
+        "koi://health",
+        "koi://dns/zone",
+        "koi://mdns/services",
+    ] {
+        assert!(
+            resources
+                .resources
+                .iter()
+                .any(|resource| resource.uri == expected),
+            "MCP resource list omitted {expected}"
+        );
+    }
+    let mdns = mcp
+        .read_resource(rmcp::model::ReadResourceRequestParams::new(
+            "koi://mdns/services",
+        ))
+        .await
+        .expect("read live mDNS resource");
+    assert!(
+        !mdns.contents.is_empty(),
+        "MCP resource read returned no content"
+    );
+    let _ = mcp.cancel().await;
+}
+
+/// Portable whole-story Tier 1: two independent production daemons run concurrently
+/// on one host and expose the same centralized aggregation contract over real TCP.
+#[tokio::test]
+async fn two_daemon_http_dashboard_and_mcp_surfaces_are_isolated_and_complete() {
+    let http = reqwest::Client::new();
+    let a = spawn_daemon(true);
+    let b = spawn_daemon(true);
+    assert_ne!(a.http_port, b.http_port);
+    assert_ne!(a.data_dir, b.data_dir);
+    wait_ready(&http, &a.base()).await;
+    wait_ready(&http, &b.base()).await;
+
+    assert_aggregation_surface(&http, &a).await;
+    assert_aggregation_surface(&http, &b).await;
+
     drop(b);
     drop(a);
 }
