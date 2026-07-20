@@ -24,6 +24,23 @@ pub const DEFAULT_LEAF_LIFETIME_DAYS: u32 = 90;
 /// CA certificate validity period.
 const CA_VALIDITY_YEARS: i64 = 10;
 
+/// Build a certificate validity window at the single certmesh clock-skew
+/// chokepoint. Expiry remains measured from issuance time; only `not_before` is
+/// backdated so a slower peer can use a freshly issued certificate immediately.
+pub(crate) fn certificate_validity_window(days: i64) -> (DateTime<Utc>, DateTime<Utc>) {
+    certificate_validity_window_at(Utc::now(), days)
+}
+
+fn certificate_validity_window_at(
+    issued_at: DateTime<Utc>,
+    days: i64,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    (
+        issued_at - Duration::seconds(crate::CLOCK_SKEW_TOLERANCE_SECS),
+        issued_at + Duration::days(days),
+    )
+}
+
 /// Holds the decrypted CA state in memory.
 pub struct CaState {
     /// The CA's cryptographic key pair (koi-crypto type, zeroized on drop).
@@ -102,8 +119,7 @@ fn build_ca_params() -> Result<CertificateParams, CertmeshError> {
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
 
-    let not_before = Utc::now();
-    let not_after = not_before + Duration::days(CA_VALIDITY_YEARS * 365);
+    let (not_before, not_after) = certificate_validity_window(CA_VALIDITY_YEARS * 365);
     ca_params.not_before = time::OffsetDateTime::from_unix_timestamp(not_before.timestamp())
         .unwrap_or(time::OffsetDateTime::now_utc());
     ca_params.not_after = time::OffsetDateTime::from_unix_timestamp(not_after.timestamp())
@@ -389,8 +405,7 @@ pub fn issue_certificate(
     } else {
         validity_days
     };
-    let not_before = Utc::now();
-    let not_after = not_before + Duration::days(i64::from(days));
+    let (not_before, not_after) = certificate_validity_window(i64::from(days));
     cert_params.not_before = time::OffsetDateTime::from_unix_timestamp(not_before.timestamp())
         .unwrap_or(time::OffsetDateTime::now_utc());
     cert_params.not_after = time::OffsetDateTime::from_unix_timestamp(not_after.timestamp())
@@ -438,6 +453,7 @@ pub fn ca_fingerprint_from_disk(paths: &crate::CertmeshPaths) -> Result<String, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     fn test_entropy() -> Vec<u8> {
         let _ = koi_common::test::ensure_data_dir("koi-certmesh-ca-tests");
@@ -458,6 +474,21 @@ mod tests {
         let fp2 = pinning::fingerprint_sha256(cert_der);
         assert_eq!(fp1, fp2);
         assert_eq!(fp1.len(), 64); // SHA-256 = 32 bytes = 64 hex chars
+    }
+
+    #[test]
+    fn certificate_window_backdates_only_not_before_by_the_shared_skew_policy() {
+        let issued_at = Utc.with_ymd_and_hms(2026, 7, 20, 4, 25, 5).unwrap();
+        let (not_before, not_after) = certificate_validity_window_at(issued_at, 90);
+        assert_eq!(
+            not_before,
+            issued_at - Duration::seconds(crate::CLOCK_SKEW_TOLERANCE_SECS)
+        );
+        assert_eq!(not_after, issued_at + Duration::days(90));
+        assert_eq!(
+            crate::envelope::FRESHNESS_WINDOW_SECS,
+            crate::CLOCK_SKEW_TOLERANCE_SECS
+        );
     }
 
     #[test]

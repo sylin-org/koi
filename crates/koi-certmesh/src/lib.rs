@@ -60,6 +60,14 @@ use roster::Roster;
 /// Used by the binary crate to announce the CA via koi-mdns.
 pub const CERTMESH_SERVICE_TYPE: &str = "_certmesh._tcp";
 
+/// Maximum clock skew tolerated by certmesh security timestamps.
+///
+/// Certificate validity is backdated by this amount and signed-envelope
+/// freshness accepts the same ±window. One policy constant keeps a LAN member
+/// with a slightly slower clock from rejecting a freshly issued identity while
+/// preserving the existing bounded replay tolerance.
+pub const CLOCK_SKEW_TOLERANCE_SECS: i64 = 300;
+
 /// Events emitted by the certmesh subsystem.
 #[derive(Debug, Clone)]
 pub enum CertmeshEvent {

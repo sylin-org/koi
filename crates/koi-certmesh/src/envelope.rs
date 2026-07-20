@@ -28,7 +28,7 @@ const ENVELOPE_DOMAIN_V1: &str = "koi-envelope-v1";
 /// Freshness/replay window: a timestamp within ±this many seconds of now is
 /// `Fresh`. 300s tolerates the un-NTP'd LAN clock drift typical of Koi's
 /// deployment surface, where a tighter window spuriously rejects (ADR-020 §13).
-pub const FRESHNESS_WINDOW_SECS: i64 = 300;
+pub const FRESHNESS_WINDOW_SECS: i64 = crate::CLOCK_SKEW_TOLERANCE_SECS;
 
 /// The exact bytes an Envelope's signature covers (v1). Deterministic and
 /// trivially reproducible in another language (the cross-sibling wire contract).
