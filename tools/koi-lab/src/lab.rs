@@ -312,7 +312,7 @@ impl Lab {
         };
         let path =
             output_path(run_id.as_str()).join(format!("certmesh-smoke-{}.json", rotation.as_str()));
-        self.write_json(&path, &report)?;
+        self.write_evidence(&path, &report)?;
         Ok(report)
     }
 
@@ -647,7 +647,7 @@ impl Lab {
         };
         let path =
             output_path(run_id.as_str()).join(format!("native-trust-{}.json", rotation.as_str()));
-        self.write_json(&path, &report)?;
+        self.write_evidence(&path, &report)?;
         Ok(report)
     }
 
@@ -848,7 +848,7 @@ impl Lab {
         };
         let path = output_path(run_id.as_str())
             .join(format!("certmesh-lifecycle-{}.json", rotation.as_str()));
-        self.write_json(&path, &report)?;
+        self.write_evidence(&path, &report)?;
         Ok(report)
     }
 
@@ -1041,7 +1041,7 @@ impl Lab {
         };
         let path = output_path(run_id.as_str())
             .join(format!("certmesh-recovery-{}.json", rotation.as_str()));
-        self.write_json(&path, &report)?;
+        self.write_evidence(&path, &report)?;
         Ok(report)
     }
 
@@ -3025,6 +3025,14 @@ impl Lab {
         fs::write(&path, bytes)
             .with_context(|| format!("could not write report {}", path.display()))?;
         Ok(path)
+    }
+
+    pub(crate) fn write_evidence<T: crate::model::EvidenceReport>(
+        &self,
+        relative_json_path: &Path,
+        report: &T,
+    ) -> Result<PathBuf> {
+        crate::evidence::write_bundle(&self.repo_root, relative_json_path, report)
     }
 }
 

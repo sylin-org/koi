@@ -66,7 +66,7 @@ impl Lab {
             (Ok(report), Ok(())) => {
                 let path = output_path(run_id.as_str())
                     .join(format!("capability-story-{}.json", rotation.as_str()));
-                self.write_json(&path, &report)?;
+                self.write_evidence(&path, &report)?;
                 Ok(report)
             }
             (Err(error), Ok(())) => Err(error),

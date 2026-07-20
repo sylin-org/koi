@@ -60,7 +60,7 @@ impl Lab {
                     "container, image, daemons, sockets, and process markers were removed by exact run identity",
                 ));
                 let path = output_path(run_id.as_str()).join("bounded-soak-linux.json");
-                self.write_json(&path, &report)?;
+                self.write_evidence(&path, &report)?;
                 Ok(report)
             }
             (Err(error), Ok(())) => Err(error),

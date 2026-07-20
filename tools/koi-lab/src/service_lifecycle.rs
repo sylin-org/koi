@@ -63,7 +63,7 @@ impl Lab {
                     format!("Granite's installed service identity remained {observer_after}"),
                 ));
                 let path = output_path(run_id.as_str()).join("service-lifecycle-linux.json");
-                self.write_json(&path, &report)?;
+                self.write_evidence(&path, &report)?;
                 Ok(report)
             }
             (Err(error), Ok(())) => Err(error),

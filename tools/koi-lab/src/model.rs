@@ -633,6 +633,38 @@ pub struct CheckResult {
     pub detail: String,
 }
 
+pub trait EvidenceReport: Serialize {
+    fn checks(&self) -> &[CheckResult];
+    fn secrets_redacted(&self) -> bool;
+}
+
+macro_rules! impl_evidence_report {
+    ($($report:ty),+ $(,)?) => {
+        $(
+            impl EvidenceReport for $report {
+                fn checks(&self) -> &[CheckResult] {
+                    &self.checks
+                }
+
+                fn secrets_redacted(&self) -> bool {
+                    self.secrets_redacted
+                }
+            }
+        )+
+    };
+}
+
+impl_evidence_report!(
+    CertmeshSmokeReport,
+    NativeTrustReport,
+    CertmeshLifecycleReport,
+    CertmeshRecoveryReport,
+    CapabilityStoryReport,
+    RuntimeReconnectReport,
+    ServiceLifecycleReport,
+    BoundedSoakReport,
+);
+
 pub fn output_path(name: &str) -> PathBuf {
     Path::new(RUN_OUTPUT_DIR).join(name)
 }
