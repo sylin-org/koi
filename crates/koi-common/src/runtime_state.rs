@@ -11,10 +11,11 @@
 //!
 //! ## `running` flag semantics (matches the hand-written DNS/health machines exactly)
 //!
-//! - [`start`](DomainRuntime::start) sets `running = true` *synchronously* (before returning)
-//!   and stores the cancel token.
+//! - [`start`](DomainRuntime::start) awaits the domain's fallible launcher, then sets
+//!   `running = true` and stores the cancel token only after startup succeeds.
 //! - When the spawned loop finishes on its own, a watcher flips `running = false` and clears
-//!   the token — identical to the old machines, which appended that cleanup after the loop.
+//!   the token. A generation guard prevents an older loop's completion from clobbering a
+//!   replacement started after stop/restart.
 //! - [`stop`](DomainRuntime::stop) cancels the token and sets `running = false` immediately
 //!   (it does not wait for the loop to wind down), again matching the old behaviour.
 
@@ -23,22 +24,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-
-/// Returned by [`DomainRuntime::start`] when the loop is already running.
-///
-/// `start` returns `Ok(false)` for the already-running case rather than this error, so the
-/// type exists mainly to give callers a typed, infallible-to-construct marker; the generic
-/// `start` never actually yields it today but keeps the door open for fallible launchers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AlreadyRunning;
-
-impl std::fmt::Display for AlreadyRunning {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("runtime is already running")
-    }
-}
-
-impl std::error::Error for AlreadyRunning {}
 
 /// Snapshot of a [`DomainRuntime`]'s state.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
@@ -49,6 +34,7 @@ pub struct RuntimeStatus {
 struct State {
     running: bool,
     cancel: Option<CancellationToken>,
+    generation: u64,
 }
 
 /// A start/stop controller around a shared core `C`.
@@ -77,6 +63,7 @@ impl<C> DomainRuntime<C> {
             state: Arc::new(Mutex::new(State {
                 running: false,
                 cancel: None,
+                generation: 0,
             })),
         }
     }
@@ -88,13 +75,15 @@ impl<C> DomainRuntime<C> {
 
     /// Start the background loop.
     ///
-    /// `mk` is called with a fresh [`CancellationToken`] and must spawn the domain loop,
-    /// returning its [`JoinHandle`]. On success the controller marks itself running and
-    /// stores the token; a watcher task flips `running` back to `false` when the loop's
-    /// handle completes. Returns `Ok(false)` (a no-op) if already running.
-    pub async fn start<F>(&self, mk: F) -> Result<bool, AlreadyRunning>
+    /// `mk` is called with a fresh [`CancellationToken`] and must prepare and spawn the
+    /// domain loop. The launcher is asynchronous so a domain can acquire resources (for
+    /// example, bind sockets) before reporting success. A launcher error leaves the runtime
+    /// stopped and retryable. On success a watcher flips `running` back to `false` when the
+    /// loop finishes. Returns `Ok(false)` (a no-op) if already running.
+    pub async fn start<F, Fut, E>(&self, mk: F) -> Result<bool, E>
     where
-        F: FnOnce(CancellationToken) -> JoinHandle<()>,
+        F: FnOnce(CancellationToken) -> Fut,
+        Fut: std::future::Future<Output = Result<JoinHandle<()>, E>>,
     {
         let mut state = self.state.lock().await;
         if state.running {
@@ -102,7 +91,9 @@ impl<C> DomainRuntime<C> {
         }
 
         let token = CancellationToken::new();
-        let handle = mk(token.clone());
+        let handle = mk(token.clone()).await?;
+        state.generation = state.generation.wrapping_add(1);
+        let generation = state.generation;
         state.cancel = Some(token);
         state.running = true;
         drop(state);
@@ -113,8 +104,10 @@ impl<C> DomainRuntime<C> {
         tokio::spawn(async move {
             let _ = handle.await;
             let mut guard = state.lock().await;
-            guard.running = false;
-            guard.cancel = None;
+            if guard.generation == generation {
+                guard.running = false;
+                guard.cancel = None;
+            }
         });
 
         Ok(true)
@@ -147,13 +140,14 @@ impl<C> DomainRuntime<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::oneshot;
 
     struct Core;
 
-    fn never_ending(token: CancellationToken) -> JoinHandle<()> {
-        tokio::spawn(async move {
+    async fn never_ending(token: CancellationToken) -> Result<JoinHandle<()>, &'static str> {
+        Ok(tokio::spawn(async move {
             token.cancelled().await;
-        })
+        }))
     }
 
     #[tokio::test]
@@ -189,7 +183,9 @@ mod tests {
     async fn watcher_flips_running_when_loop_finishes() {
         let rt = DomainRuntime::new(Arc::new(Core));
         // A loop that returns immediately; the watcher should flip running=false.
-        rt.start(|_token| tokio::spawn(async {})).await.unwrap();
+        rt.start(|_token| async { Ok::<_, &'static str>(tokio::spawn(async {})) })
+            .await
+            .unwrap();
         // Give the watcher a chance to observe completion.
         for _ in 0..50 {
             if !rt.status().await.running {
@@ -200,8 +196,36 @@ mod tests {
         assert!(!rt.status().await.running);
     }
 
-    #[test]
-    fn already_running_display() {
-        assert_eq!(AlreadyRunning.to_string(), "runtime is already running");
+    #[tokio::test]
+    async fn failed_launcher_leaves_runtime_stopped_and_retryable() {
+        let rt = DomainRuntime::new(Arc::new(Core));
+        let failed = rt
+            .start(|_token| async { Err::<JoinHandle<()>, _>("bind failed") })
+            .await;
+        assert_eq!(failed, Err("bind failed"));
+        assert!(!rt.status().await.running);
+        assert!(rt.start(never_ending).await.unwrap());
+        assert!(rt.status().await.running);
+    }
+
+    #[tokio::test]
+    async fn stale_loop_completion_cannot_stop_its_replacement() {
+        let rt = DomainRuntime::new(Arc::new(Core));
+        let (release_tx, release_rx) = oneshot::channel();
+        rt.start(|token| async move {
+            Ok::<_, &'static str>(tokio::spawn(async move {
+                token.cancelled().await;
+                let _ = release_rx.await;
+            }))
+        })
+        .await
+        .unwrap();
+        assert!(rt.stop().await);
+        assert!(rt.start(never_ending).await.unwrap());
+        release_tx.send(()).unwrap();
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        assert!(rt.status().await.running);
     }
 }

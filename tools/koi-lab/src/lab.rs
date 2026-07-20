@@ -1282,6 +1282,32 @@ impl Lab {
         Ok(())
     }
 
+    pub(crate) fn start_story_dns_blocker(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        let port = node.lab_ports()?.dns;
+        let command = format!(
+            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/dns-blocker.pid; i=0; while ss -H -lnu | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ! ss -H -lnu | grep -Eq ':{port} '; nc_exe=$(realpath \"$(command -v nc)\"); printf '%s' \"$nc_exe\" > {run_dir}/dns-blocker.exe; setsid -f sh -c 'echo $$ > {run_dir}/dns-blocker.pid; exec nc -u -lk 0.0.0.0 {port} >>{run_dir}/dns-blocker.log 2>&1'; i=0; while ! ss -H -lnu | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ss -H -lnu | grep -Eq ':{port} '",
+            run_id.as_str(),
+            run_id.as_str()
+        );
+        self.transport.run_checked(node, &command)?;
+        Ok(())
+    }
+
+    pub(crate) fn stop_story_dns_blocker(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        let port = node.lab_ports()?.dns;
+        let command = format!(
+            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test -f {run_dir}/dns-blocker.pid; test -f {run_dir}/dns-blocker.exe; pid=$(cat {run_dir}/dns-blocker.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; expected=$(cat {run_dir}/dns-blocker.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ! kill -0 \"$pid\" 2>/dev/null; i=0; while ss -H -lnu | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ! ss -H -lnu | grep -Eq ':{port} '; rm -f {run_dir}/dns-blocker.pid",
+            run_id.as_str(),
+            run_id.as_str()
+        );
+        self.transport.run_checked(node, &command)?;
+        Ok(())
+    }
+
     pub(crate) fn stage_runtime_proxy(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
         let run_dir = node.run_dir(run_id)?;
         let lock_dir = node.lock_dir()?;
@@ -3486,7 +3512,7 @@ fn cleanup_script(node: &NodeSpec, run_id: &RunId) -> Result<String> {
     let image_cleanup = story_image_remove_script(node, run_id, false)?;
     let runtime_proxy_cleanup = runtime_proxy_stop_script(node, run_id, false)?;
     Ok(format!(
-        "set -eu; test -f {lock}/owner; test \"$(cat {lock}/owner)\" = {}; if test -d {run_dir}; then test -f {run_dir}/owner; test \"$(cat {run_dir}/owner)\" = {}; {container_cleanup}; {runtime_container_cleanup}; {runtime_network_cleanup}; {image_cleanup}; if test -f {run_dir}/fixture.pid; then pid=$(cat {run_dir}/fixture.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test -f {run_dir}/fixture.exe; if kill -0 \"$pid\" 2>/dev/null; then expected=$(cat {run_dir}/fixture.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/fixture.pid; fi; if test -f {run_dir}/daemon.pid; then pid=$(cat {run_dir}/daemon.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; if kill -0 \"$pid\" 2>/dev/null; then exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = {run_dir}/koi; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/daemon.pid; fi; {runtime_proxy_cleanup}; rm -f {run_dir}/daemon.log {run_dir}/fixture.log {run_dir}/fixture.exe {run_dir}/docker-proxy.log {run_dir}/docker-proxy.exe {run_dir}/docker_socket_proxy.py {run_dir}/koi.partial; for owned in {run_dir}/data {run_dir}/runtime; do if test -d \"$owned\"; then resolved=$(realpath \"$owned\"); test \"$resolved\" = \"$owned\"; rm -rf -- \"$resolved\"; fi; done; rm -f {run_dir}/koi {run_dir}/artifact.sha256 {run_dir}/owner; rmdir {run_dir}; fi; rmdir {root}/runs 2>/dev/null || true; rm -f {lock}/owner; rmdir {lock}",
+        "set -eu; test -f {lock}/owner; test \"$(cat {lock}/owner)\" = {}; if test -d {run_dir}; then test -f {run_dir}/owner; test \"$(cat {run_dir}/owner)\" = {}; {container_cleanup}; {runtime_container_cleanup}; {runtime_network_cleanup}; {image_cleanup}; if test -f {run_dir}/fixture.pid; then pid=$(cat {run_dir}/fixture.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test -f {run_dir}/fixture.exe; if kill -0 \"$pid\" 2>/dev/null; then expected=$(cat {run_dir}/fixture.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/fixture.pid; fi; if test -f {run_dir}/dns-blocker.pid; then pid=$(cat {run_dir}/dns-blocker.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test -f {run_dir}/dns-blocker.exe; if kill -0 \"$pid\" 2>/dev/null; then expected=$(cat {run_dir}/dns-blocker.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/dns-blocker.pid; fi; if test -f {run_dir}/daemon.pid; then pid=$(cat {run_dir}/daemon.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; if kill -0 \"$pid\" 2>/dev/null; then exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = {run_dir}/koi; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/daemon.pid; fi; {runtime_proxy_cleanup}; rm -f {run_dir}/daemon.log {run_dir}/fixture.log {run_dir}/fixture.exe {run_dir}/dns-blocker.log {run_dir}/dns-blocker.exe {run_dir}/docker-proxy.log {run_dir}/docker-proxy.exe {run_dir}/docker_socket_proxy.py {run_dir}/koi.partial; for owned in {run_dir}/data {run_dir}/runtime; do if test -d \"$owned\"; then resolved=$(realpath \"$owned\"); test \"$resolved\" = \"$owned\"; rm -rf -- \"$resolved\"; fi; done; rm -f {run_dir}/koi {run_dir}/artifact.sha256 {run_dir}/owner; rmdir {run_dir}; fi; rmdir {root}/runs 2>/dev/null || true; rm -f {lock}/owner; rmdir {lock}",
         run_id.as_str(),
         run_id.as_str()
     ))
@@ -3700,6 +3726,7 @@ mod tests {
         assert!(script.contains("readlink -f /proc/\"$pid\"/exe"));
         assert!(script.contains("test \"$exe\" = /home/stone/koi-test/runs/"));
         assert!(script.contains("fixture.exe"));
+        assert!(script.contains("dns-blocker.exe"));
         assert!(script.contains("test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\""));
         assert!(script.contains("org.sylin.koi.lab.owner"));
         assert!(script.contains("org.sylin.koi.lab.run"));

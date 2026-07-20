@@ -413,14 +413,11 @@ impl HealthRuntime {
 
     pub async fn start(&self) -> Result<bool, HealthError> {
         let core = self.inner.core();
-        // DomainRuntime::start signals already-running via Ok(false) and never yields
-        // AlreadyRunning for this launcher; the Result<_, HealthError> shape is preserved.
-        let started = self
-            .inner
-            .start(move |token| tokio::spawn(run_checks_loop(core, token)))
+        self.inner
+            .start(move |token| async move {
+                Ok::<_, HealthError>(tokio::spawn(run_checks_loop(core, token)))
+            })
             .await
-            .unwrap_or(false);
-        Ok(started)
     }
 
     pub async fn stop(&self) -> bool {

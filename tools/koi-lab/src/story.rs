@@ -26,6 +26,7 @@ struct StoryResources {
     proxy_name: Option<String>,
     installed_trust: Option<InstalledTrust>,
     fixture_active: bool,
+    dns_blocker_active: bool,
     container_owned: bool,
     image_owned: bool,
 }
@@ -201,11 +202,92 @@ impl Lab {
         if observer_status != "404" {
             bail!("observer state-isolation lookup returned HTTP {observer_status}, expected 404");
         }
+
+        // V1-05 capability loss/recovery: stop the real resolver while retaining its
+        // control-plane state, prove a run-owned bind conflict is reported synchronously,
+        // then release the conflict and recover through the same public start endpoint.
+        let stopped = curl_json(
+            "POST",
+            &format!("{primary_url}/v1/dns/stop"),
+            Some(&primary_token),
+            None,
+        )?;
+        if stopped.get("stopped").and_then(Value::as_bool) != Some(true) {
+            bail!("DNS stop did not report a running resolver was stopped");
+        }
+        wait_for_dns_running(&primary_url, false)?;
+        wait_for_capability_state(&primary_url, "dns", false, "stopped")?;
+        let retained = curl_json(
+            "GET",
+            &format!("{primary_url}/v1/dns/lookup?name={dns_name}&type=A"),
+            None,
+            None,
+        )?;
+        if !retained
+            .get("ips")
+            .and_then(Value::as_array)
+            .is_some_and(|ips| ips.iter().any(|ip| ip.as_str() == Some(primary.address())))
+        {
+            bail!("DNS control-plane state changed while the resolver was stopped");
+        }
+
+        self.start_story_dns_blocker(primary, run_id)?;
+        resources.dns_blocker_active = true;
+        let blocked_start = http_status(
+            "POST",
+            &format!("{primary_url}/v1/dns/serve"),
+            Some(&primary_token),
+        )?;
+        if blocked_start != 500 {
+            bail!("DNS start under an owned UDP bind conflict returned HTTP {blocked_start}, expected 500");
+        }
+        wait_for_dns_running(&primary_url, false)?;
+        wait_for_capability_state(&primary_url, "dns", false, "stopped")?;
+        let unavailable = self.run_remote(
+            observer,
+            &format!(
+                "dig @{} -p {} {} A +short +time=1 +tries=1",
+                primary.address(),
+                primary.lab_ports()?.dns,
+                dns_name
+            ),
+        )?;
+        if unavailable.status.success() || !unavailable.stdout.is_empty() {
+            bail!("DNS data plane answered while the run-owned blocker held its port");
+        }
+
+        self.stop_story_dns_blocker(primary, run_id)?;
+        resources.dns_blocker_active = false;
+        let restarted = curl_json(
+            "POST",
+            &format!("{primary_url}/v1/dns/serve"),
+            Some(&primary_token),
+            None,
+        )?;
+        if restarted.get("started").and_then(Value::as_bool) != Some(true) {
+            bail!("DNS retry did not report a successful start after releasing the conflict");
+        }
+        wait_for_dns_running(&primary_url, true)?;
+        wait_for_capability_state(&primary_url, "dns", true, "")?;
+        let recovered = self.remote_line(
+            observer,
+            &format!(
+                "dig @{} -p {} {} A +short | sed -n '1p'",
+                primary.address(),
+                primary.lab_ports()?.dns,
+                dns_name
+            ),
+        )?;
+        if recovered != primary.address() {
+            bail!(
+                "recovered DNS query returned {recovered:?}, expected {}",
+                primary.address()
+            );
+        }
         checks.push(passed(
             "act_3_dns",
             format!(
-                "{dns_name} resolved to {} through HTTP and dig on port {}; observer state remained isolated",
-                primary.address(),
+                "{dns_name} survived resolver stop, an explicit owned bind failure, and retry; HTTP plus cross-host dig recovered on port {} and observer state remained isolated",
                 primary.lab_ports()?.dns
             ),
         ));
@@ -920,6 +1002,13 @@ impl Lab {
                 }
             }
         }
+        if resources.dns_blocker_active {
+            if let Err(error) = self.stop_story_dns_blocker(primary, run_id) {
+                failures.push(format!("DNS blocker: {error:#}"));
+            } else {
+                resources.dns_blocker_active = false;
+            }
+        }
         if let (Some(name), Some(observer_token)) =
             (resources.proxy_name.take(), observer_token.as_deref())
         {
@@ -1271,6 +1360,47 @@ fn require_healthy_capability(status: &Value, name: &str) -> Result<()> {
         bail!("unified status did not report enabled capability {name} healthy");
     }
     Ok(())
+}
+
+fn wait_for_dns_running(base: &str, expected: bool) -> Result<()> {
+    let mut last = Value::Null;
+    for _ in 0..80 {
+        last = curl_json("GET", &format!("{base}/v1/dns/status"), None, None)?;
+        if last.get("running").and_then(Value::as_bool) == Some(expected) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    bail!("DNS running state did not become {expected}: {last}")
+}
+
+fn wait_for_capability_state(
+    base: &str,
+    name: &str,
+    healthy: bool,
+    expected_summary: &str,
+) -> Result<()> {
+    let mut last = Value::Null;
+    for _ in 0..80 {
+        last = curl_json("GET", &format!("{base}/v1/status"), None, None)?;
+        let matched = last
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .is_some_and(|capabilities| {
+                capabilities.iter().any(|capability| {
+                    capability.get("name").and_then(Value::as_str) == Some(name)
+                        && capability.get("healthy").and_then(Value::as_bool) == Some(healthy)
+                        && (expected_summary.is_empty()
+                            || capability.get("summary").and_then(Value::as_str)
+                                == Some(expected_summary))
+                })
+            });
+        if matched {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    bail!("capability {name} did not become healthy={healthy} summary={expected_summary:?}: {last}")
 }
 
 fn require_ipc_resolution(

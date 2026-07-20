@@ -126,6 +126,14 @@ pub struct DnsCore {
     txt_records: Arc<RwLock<HashMap<String, Vec<String>>>>,
 }
 
+/// A DNS server whose UDP and TCP sockets are already bound.
+///
+/// Kept inside the DNS domain so [`crate::DnsRuntime`] can make binding part of the
+/// synchronous start contract without leaking Hickory implementation details.
+pub(crate) struct BoundDnsServer {
+    server: Server<DnsHandler>,
+}
+
 /// Normalize a name for the ephemeral TXT store and for matching incoming TXT
 /// queries: lowercase, trim whitespace, ensure exactly one trailing dot. This
 /// mirrors how hickory presents query names (`Name::to_string()` is lowercase,
@@ -413,7 +421,7 @@ impl DnsCore {
         })
     }
 
-    pub async fn serve(&self, cancel: CancellationToken) -> Result<(), DnsError> {
+    pub(crate) async fn bind_server(&self) -> Result<BoundDnsServer, DnsError> {
         let addr = SocketAddr::new(self.config.bind_addr, self.config.port);
         let udp = UdpSocket::bind(addr)
             .await
@@ -427,8 +435,30 @@ impl DnsCore {
         server.register_socket(udp);
         server.register_listener(tcp, TCP_TIMEOUT, TCP_RESPONSE_BUFFER);
 
-        let server_token = server.shutdown_token().clone();
-        let mut server_task = tokio::spawn(async move { server.block_until_done().await });
+        Ok(BoundDnsServer { server })
+    }
+
+    pub async fn serve(&self, cancel: CancellationToken) -> Result<(), DnsError> {
+        self.bind_server().await?.serve(cancel).await
+    }
+
+    fn maybe_send_feedback(&self, feedback: &[AliasFeedback]) {
+        let Some(tx) = &self.alias_tx else {
+            return;
+        };
+        for item in feedback {
+            let _ = tx.try_send(AliasFeedback {
+                hostname: item.hostname.clone(),
+                alias: item.alias.trim_end_matches('.').to_string(),
+            });
+        }
+    }
+}
+
+impl BoundDnsServer {
+    pub(crate) async fn serve(mut self, cancel: CancellationToken) -> Result<(), DnsError> {
+        let server_token = self.server.shutdown_token().clone();
+        let mut server_task = tokio::spawn(async move { self.server.block_until_done().await });
 
         tokio::select! {
             _ = cancel.cancelled() => {
@@ -441,18 +471,6 @@ impl DnsCore {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(DnsError::Upstream(e.to_string())),
             Err(e) => Err(DnsError::Upstream(e.to_string())),
-        }
-    }
-
-    fn maybe_send_feedback(&self, feedback: &[AliasFeedback]) {
-        let Some(tx) = &self.alias_tx else {
-            return;
-        };
-        for item in feedback {
-            let _ = tx.try_send(AliasFeedback {
-                hostname: item.hostname.clone(),
-                alias: item.alias.trim_end_matches('.').to_string(),
-            });
         }
     }
 }
