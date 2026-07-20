@@ -64,7 +64,10 @@ mod tests {
 
     #[tokio::test]
     async fn bind_failure_is_reported_stopped_and_can_be_retried() {
-        let blocker = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        // Let TCP choose the port: Windows can allocate a UDP ephemeral port that
+        // falls inside a TCP-excluded range. Blocking the server's second bind also
+        // proves that its successful UDP bind is released after the TCP failure.
+        let blocker = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let port = blocker.local_addr().unwrap().port();
         let core = DnsCore::new(
             crate::DnsConfig {
