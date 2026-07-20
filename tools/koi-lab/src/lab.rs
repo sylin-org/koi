@@ -24,7 +24,15 @@ use crate::putty::PuttyTransport;
 const REQUIRED_LOCAL_TOOLS: &[&str] = &["cross", "docker", "git", "plink", "pscp"];
 const REQUIRED_REMOTE_TOOLS: &[&str] = &["sha256sum", "systemctl", "ss", "realpath", "readlink"];
 const SCENARIO_REMOTE_TOOLS: &[&str] = &[
-    "curl", "jq", "dig", "nc", "docker", "openssl", "python3", "setsid",
+    "curl",
+    "jq",
+    "dig",
+    "nc",
+    "docker",
+    "openssl",
+    "python3",
+    "setsid",
+    "systemd-run",
 ];
 const TEST_PORTS: &[u16] = &[5641, 5642, 5643];
 const MAX_CLOCK_SKEW_SECONDS: i64 = 5;
@@ -3511,8 +3519,10 @@ fn cleanup_script(node: &NodeSpec, run_id: &RunId) -> Result<String> {
     let runtime_network_cleanup = runtime_fault_network_remove_script(node, run_id)?;
     let image_cleanup = story_image_remove_script(node, run_id, false)?;
     let runtime_proxy_cleanup = runtime_proxy_stop_script(node, run_id, false)?;
+    let systemd_cleanup =
+        crate::service_lifecycle::transient_service_cleanup_script(node, run_id, false)?;
     Ok(format!(
-        "set -eu; test -f {lock}/owner; test \"$(cat {lock}/owner)\" = {}; if test -d {run_dir}; then test -f {run_dir}/owner; test \"$(cat {run_dir}/owner)\" = {}; {container_cleanup}; {runtime_container_cleanup}; {runtime_network_cleanup}; {image_cleanup}; if test -f {run_dir}/fixture.pid; then pid=$(cat {run_dir}/fixture.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test -f {run_dir}/fixture.exe; if kill -0 \"$pid\" 2>/dev/null; then expected=$(cat {run_dir}/fixture.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/fixture.pid; fi; if test -f {run_dir}/dns-blocker.pid; then pid=$(cat {run_dir}/dns-blocker.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test -f {run_dir}/dns-blocker.exe; if kill -0 \"$pid\" 2>/dev/null; then expected=$(cat {run_dir}/dns-blocker.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/dns-blocker.pid; fi; if test -f {run_dir}/daemon.pid; then pid=$(cat {run_dir}/daemon.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; if kill -0 \"$pid\" 2>/dev/null; then exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = {run_dir}/koi; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/daemon.pid; fi; {runtime_proxy_cleanup}; rm -f {run_dir}/daemon.log {run_dir}/fixture.log {run_dir}/fixture.exe {run_dir}/dns-blocker.log {run_dir}/dns-blocker.exe {run_dir}/docker-proxy.log {run_dir}/docker-proxy.exe {run_dir}/docker_socket_proxy.py {run_dir}/koi.partial; for owned in {run_dir}/data {run_dir}/runtime; do if test -d \"$owned\"; then resolved=$(realpath \"$owned\"); test \"$resolved\" = \"$owned\"; rm -rf -- \"$resolved\"; fi; done; rm -f {run_dir}/koi {run_dir}/artifact.sha256 {run_dir}/owner; rmdir {run_dir}; fi; rmdir {root}/runs 2>/dev/null || true; rm -f {lock}/owner; rmdir {lock}",
+        "set -eu; test -f {lock}/owner; test \"$(cat {lock}/owner)\" = {}; if test -d {run_dir}; then test -f {run_dir}/owner; test \"$(cat {run_dir}/owner)\" = {}; {systemd_cleanup}; {container_cleanup}; {runtime_container_cleanup}; {runtime_network_cleanup}; {image_cleanup}; if test -f {run_dir}/fixture.pid; then pid=$(cat {run_dir}/fixture.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test -f {run_dir}/fixture.exe; if kill -0 \"$pid\" 2>/dev/null; then expected=$(cat {run_dir}/fixture.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/fixture.pid; fi; if test -f {run_dir}/dns-blocker.pid; then pid=$(cat {run_dir}/dns-blocker.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test -f {run_dir}/dns-blocker.exe; if kill -0 \"$pid\" 2>/dev/null; then expected=$(cat {run_dir}/dns-blocker.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/dns-blocker.pid; fi; if test -f {run_dir}/daemon.pid; then pid=$(cat {run_dir}/daemon.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; if kill -0 \"$pid\" 2>/dev/null; then exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = {run_dir}/koi; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if kill -0 \"$pid\" 2>/dev/null; then kill -KILL \"$pid\"; fi; fi; rm -f {run_dir}/daemon.pid; fi; {runtime_proxy_cleanup}; rm -f {run_dir}/daemon.log {run_dir}/fixture.log {run_dir}/fixture.exe {run_dir}/dns-blocker.log {run_dir}/dns-blocker.exe {run_dir}/docker-proxy.log {run_dir}/docker-proxy.exe {run_dir}/docker_socket_proxy.py {run_dir}/koi.partial; for owned in {run_dir}/data {run_dir}/runtime; do if test -d \"$owned\"; then resolved=$(realpath \"$owned\"); test \"$resolved\" = \"$owned\"; rm -rf -- \"$resolved\"; fi; done; rm -f {run_dir}/koi {run_dir}/artifact.sha256 {run_dir}/owner; rmdir {run_dir}; fi; rmdir {root}/runs 2>/dev/null || true; rm -f {lock}/owner; rmdir {lock}",
         run_id.as_str(),
         run_id.as_str()
     ))
@@ -3722,7 +3732,9 @@ mod tests {
         assert!(script.contains("test \"$resolved\" = \"$owned\""));
         assert!(script.contains("rm -rf -- \"$resolved\""));
         assert!(!script.contains("pkill"));
-        assert!(!script.contains("sudo"));
+        assert!(script.contains("systemd-unit"));
+        assert!(script.contains("sudo -n systemctl stop koi-lab-v1-"));
+        assert!(!script.contains("systemctl stop koi.service"));
         assert!(script.contains("readlink -f /proc/\"$pid\"/exe"));
         assert!(script.contains("test \"$exe\" = /home/stone/koi-test/runs/"));
         assert!(script.contains("fixture.exe"));

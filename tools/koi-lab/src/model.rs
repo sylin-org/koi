@@ -274,6 +274,13 @@ impl NodeSpec {
         }
     }
 
+    pub fn remote_user(&self) -> Result<&str> {
+        match self {
+            Self::PuttyLinux { user, .. } => Ok(user),
+            Self::LocalWindows { .. } => bail!("{} is not a remote node", self.id()),
+        }
+    }
+
     pub fn lock_dir(&self) -> Result<String> {
         Ok(format!("{}/.koi-lab-lock", self.remote_root()?))
     }
@@ -572,6 +579,22 @@ pub struct RuntimeReconnectReport {
     pub primary_node: String,
     pub observer_node: String,
     pub artifact_sha256: String,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ServiceLifecycleReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub service_node: String,
+    pub observer_node: String,
+    pub unit_name: String,
+    pub artifact_sha256: String,
+    pub initial_pid: u32,
+    pub restarted_pid: u32,
+    pub restart_count: u64,
     pub checks: Vec<CheckResult>,
     pub secrets_redacted: bool,
 }

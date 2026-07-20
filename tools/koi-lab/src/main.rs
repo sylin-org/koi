@@ -1,9 +1,11 @@
 mod acme;
+mod derived;
 mod lab;
 mod model;
 mod probe;
 mod putty;
 mod runtime_reconnect;
+mod service_lifecycle;
 mod story;
 
 use std::path::PathBuf;
@@ -90,6 +92,14 @@ enum LabCommand {
         #[arg(long, value_enum, default_value = "linux-forward")]
         rotation: TrustRotation,
     },
+    /// Prove run-owned systemd readiness, supervision, reconstruction, and removal on Brook.
+    ServiceLifecycle {
+        #[arg(long)]
+        run_id: String,
+        /// Acknowledge the temporary run-owned transient systemd unit.
+        #[arg(long)]
+        allow_system_mutation: bool,
+    },
     /// Show exactly what cleanup would remove; never changes state.
     PlanCleanup {
         #[arg(long)]
@@ -156,6 +166,12 @@ fn main() -> Result<()> {
         }
         LabCommand::RuntimeReconnect { run_id, rotation } => {
             print_json(&lab.runtime_reconnect(&RunId::parse(&run_id)?, rotation)?)?;
+        }
+        LabCommand::ServiceLifecycle {
+            run_id,
+            allow_system_mutation,
+        } => {
+            print_json(&lab.service_lifecycle(&RunId::parse(&run_id)?, allow_system_mutation)?)?;
         }
         LabCommand::PlanCleanup { run_id } => {
             print_json(&lab.cleanup_plan(&RunId::parse(&run_id)?)?)?;
