@@ -63,7 +63,7 @@ The installer already checks the SHA-256 for integrity; `gh attestation verify` 
 | GitHub Release archive | **available** | Manual placement of the same official prebuilt archive. |
 | GHCR image | **available** | Exact Linux release binaries, assembled without recompiling. Prereleases use the exact tag. |
 | `cargo binstall koi-net --version 1.0.0-rc.1` | **available** | Official release archive only; unofficial and compile fallbacks disabled. |
-| `npx @sylin/koi@1.0.0-rc.1` | **available** | Verifies and dispatches the native installer; never runs the service from npm's cache. |
+| `npx @sylin-org/koi@1.0.0-rc.1` | **available** | Verifies and dispatches the native installer; never runs the service from npm's cache. |
 | `cargo install koi-net` | **available escape hatch** | Builds from source locally. |
 
 Prerelease commands are intentionally versioned and do not advance stable defaults. See

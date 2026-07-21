@@ -55,7 +55,7 @@ The supported channel model is:
 |---|---|---|
 | Direct shell/PowerShell | Detect, verify, extract, and place the native binary | GitHub Release |
 | `cargo binstall koi-net` | Select the official target archive and extract `koi` | GitHub Release |
-| `npx @sylin/koi` | Verify and invoke the matching versioned direct installer | GitHub Release |
+| `npx @sylin-org/koi` | Verify and invoke the matching versioned direct installer | GitHub Release |
 | GHCR | Package the exact Linux release binaries as a container | Build artifacts |
 | crates.io | Publish Rust libraries and the source-install escape hatch | Tagged source |
 | Future WinGet/Homebrew | Translate the manifest into native package metadata | GitHub Release |
@@ -79,13 +79,14 @@ When explicitly executed, it:
    and
 6. forwards any remaining arguments to that stable native binary.
 
-Thus `npx @sylin/koi -- mdns discover` may provide a one-command trial, but the result
+Thus `npx @sylin-org/koi -- mdns discover` may provide a one-command trial, but the result
 is an ordinary native Koi installation. A service is never registered from an npm
 cache path. Subsequent commands are simply `koi ...`.
 
-The preferred package name is `@sylin/koi`. `koi` is occupied by an unrelated npm
-package. The scoped package remains an activation-time choice until ownership is
-confirmed; changing it does not alter the bootstrap contract.
+The package name is `@sylin-org/koi`, matching the canonical GitHub organization and
+repository recorded in the release manifest. `koi` is occupied by an unrelated npm
+package. The package verifier derives this scoped identity from the manifest so registry
+naming cannot drift from the repository while the bootstrap contract remains unchanged.
 
 ### 4. External publication is deliberately gated
 

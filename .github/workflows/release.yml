@@ -402,7 +402,7 @@ jobs:
     secrets: inherit
 
   # npm is a bootstrap channel for the native binary, not a second Koi runtime.
-  # Publication stays inert until the @sylin/koi package has been created once,
+  # Publication stays inert until the @sylin-org/koi package has been created once,
   # its trusted publisher points at release.yml, and NPM_PUBLISH_ENABLED=true.
   publish-npm:
     needs: [prepare, release]

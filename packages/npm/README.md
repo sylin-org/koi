@@ -3,8 +3,8 @@
 Let everything local find, trust, and talk.
 
 ```console
-npx @sylin/koi@1.0.0-rc.1
-npx @sylin/koi@next -- mdns discover
+npx @sylin-org/koi@1.0.0-rc.1
+npx @sylin-org/koi@next -- mdns discover
 ```
 
 This package is a small, dependency-free bootstrapper for Koi's native binary. It

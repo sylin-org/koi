@@ -15,6 +15,14 @@ try {
 if (manifest.version !== pkg.version || manifest.tag !== `v${pkg.version}`) {
   throw new Error(`package ${pkg.version} does not match release manifest ${manifest.version ?? "unknown"}`);
 }
+const repositoryMatch = /^https:\/\/github\.com\/([^/]+)\/([^/]+)$/.exec(manifest.repository ?? "");
+if (!repositoryMatch) {
+  throw new Error("release manifest has no canonical GitHub repository identity");
+}
+const expectedPackageName = `@${repositoryMatch[1]}/${repositoryMatch[2]}`;
+if (pkg.name !== expectedPackageName) {
+  throw new Error(`package name ${pkg.name} does not match release repository ${expectedPackageName}`);
+}
 const expectedTargets = [
   "aarch64-apple-darwin",
   "aarch64-pc-windows-msvc",

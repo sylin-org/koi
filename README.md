@@ -267,7 +267,7 @@ binary). It needs a Rust toolchain; the recommended installer above does not.
 The v1 release-candidate line carries an artifact manifest and `cargo-binstall`
 metadata, so Rust users can install the official prebuilt archive without compiling.
 Prereleases are deliberately explicit: use `cargo binstall koi-net --version 1.0.0-rc.1`
-or `npx @sylin/koi@1.0.0-rc.1`. Stable unqualified commands remain on the latest stable
+or `npx @sylin-org/koi@1.0.0-rc.1`. Stable unqualified commands remain on the latest stable
 release until Koi 1.0.0 ships.
 See [ADR-025](docs/adr/025-release-channels-and-bootstrap-contract.md) for the
 artifact-first channel contract and its deliberately honest rollout states.

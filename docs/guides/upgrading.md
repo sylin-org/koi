@@ -61,7 +61,7 @@ irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
 ```
 
 For the release candidate, use an explicit version: `cargo binstall koi-net --version
-1.0.0-rc.1` or `npx @sylin/koi@1.0.0-rc.1`. Unqualified installs intentionally remain
+1.0.0-rc.1` or `npx @sylin-org/koi@1.0.0-rc.1`. Unqualified installs intentionally remain
 on the latest stable release until Koi 1.0.0 ships.
 
 `koi install` is the upgrade command. Running it again against a newer binary **stops

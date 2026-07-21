@@ -28,7 +28,7 @@ explicitly-versioned package-manager paths:
 
 - `cargo binstall koi-net --version 1.0.0-rc.1` consumes the same official archive. It
   is configured to fail rather than fall back to an unofficial binary or source build.
-- `npx @sylin/koi@1.0.0-rc.1` verifies and invokes the matching native installer, then
+- `npx @sylin-org/koi@1.0.0-rc.1` verifies and invokes the matching native installer, then
   leaves `koi` in the same stable location.
 
 Use an exact version (or npm's `@next` tag) throughout the RC period. Unqualified package

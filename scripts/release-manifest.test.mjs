@@ -34,6 +34,7 @@ test("builds a deterministic, complete release contract", async (t) => {
 
   assert.equal(manifest.version, "1.2.3");
   assert.equal(manifest.tag, "v1.2.3");
+  assert.equal(manifest.repository, "https://github.com/sylin-org/koi");
   assert.deepEqual(Object.keys(manifest.artifacts), RELEASE_TARGETS);
   assert.match(manifest.installers.posix.url, /\/v1\.2\.3\/install\.sh$/);
   assert.equal(manifest.artifacts["x86_64-pc-windows-msvc"].archive.endsWith(".zip"), true);
