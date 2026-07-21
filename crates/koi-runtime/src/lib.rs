@@ -25,6 +25,7 @@ pub mod instance;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use koi_common::capability::{Capability, CapabilityStatus};
@@ -34,6 +35,12 @@ use tokio_util::sync::CancellationToken;
 pub use backend::{RuntimeBackend, RuntimeBackendKind, RuntimeEvent};
 pub use error::RuntimeError;
 pub use instance::{Instance, InstanceState, KoiMetadata, PortMapping};
+
+/// Runtime discovery is optional and must never hold every serving surface
+/// hostage. Local Engine API operations should complete quickly; these bounds
+/// turn a stale socket or hung desktop runtime into an unavailable capability.
+const RUNTIME_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const RUNTIME_RECONCILE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Configuration for the runtime adapter.
 #[derive(Debug, Clone)]
@@ -51,6 +58,36 @@ impl Default for RuntimeConfig {
             socket_path: None,
         }
     }
+}
+
+async fn connect_backend(
+    backend: &mut dyn RuntimeBackend,
+    timeout: Duration,
+) -> Result<(), RuntimeError> {
+    let name = backend.name();
+    tokio::time::timeout(timeout, backend.connect())
+        .await
+        .map_err(|_| {
+            RuntimeError::Connection(format!(
+                "{name} connection timed out after {}s",
+                timeout.as_secs()
+            ))
+        })?
+}
+
+async fn list_backend_instances(
+    backend: &dyn RuntimeBackend,
+    timeout: Duration,
+) -> Result<Vec<Instance>, RuntimeError> {
+    let name = backend.name();
+    tokio::time::timeout(timeout, backend.list_instances())
+        .await
+        .map_err(|_| {
+            RuntimeError::Connection(format!(
+                "{name} initial reconciliation timed out after {}s",
+                timeout.as_secs()
+            ))
+        })?
 }
 
 // ── Internal state ──────────────────────────────────────────────────
@@ -177,14 +214,14 @@ impl RuntimeCore {
     pub async fn start_watching(&self, cancel: CancellationToken) -> Result<(), RuntimeError> {
         let mut backend = self.create_backend()?;
 
-        backend.connect().await?;
+        connect_backend(backend.as_mut(), RUNTIME_CONNECT_TIMEOUT).await?;
 
         // Store backend name
         *self.state.backend_name.lock().await = Some(backend.name().to_string());
         *self.state.active.lock().await = true;
 
         // Initial reconciliation: list all running instances
-        let existing = backend.list_instances().await?;
+        let existing = list_backend_instances(backend.as_ref(), RUNTIME_RECONCILE_TIMEOUT).await?;
         {
             let mut instances = self.state.instances.lock().await;
             for instance in &existing {
@@ -264,7 +301,16 @@ impl RuntimeCore {
 
     /// Auto-detect the best available backend.
     fn auto_detect_backend(&self) -> Result<Box<dyn RuntimeBackend>, RuntimeError> {
-        #[cfg(feature = "docker")]
+        #[cfg(all(feature = "docker", windows))]
+        {
+            // Windows named pipes have no reliable non-blocking stat operation.
+            // Probe the Engine API directly under `RUNTIME_CONNECT_TIMEOUT` rather
+            // than spawning an unbounded `docker info` child process.
+            tracing::debug!("Probing Docker runtime through the local named pipe");
+            Ok(Box::new(docker::DockerBackend::new()))
+        }
+
+        #[cfg(all(feature = "docker", unix))]
         {
             if docker::is_docker_available() {
                 tracing::info!("Auto-detected Docker runtime");
@@ -275,17 +321,25 @@ impl RuntimeCore {
                 tracing::info!("Auto-detected Podman runtime");
                 return Ok(Box::new(docker::DockerBackend::podman()));
             }
+
+            Err(RuntimeError::BackendUnavailable(
+                "no supported runtime detected (checked: Docker, Podman)".into(),
+            ))
         }
 
-        Err(RuntimeError::BackendUnavailable(
-            // Message names the missing feature when no backend was compiled in.
-            if cfg!(feature = "docker") {
-                "no supported runtime detected (checked: Docker, Podman)"
-            } else {
-                "no runtime backend compiled in (build without the `docker` feature)"
-            }
-            .into(),
-        ))
+        #[cfg(not(feature = "docker"))]
+        {
+            Err(RuntimeError::BackendUnavailable(
+                "no runtime backend compiled in (build without the `docker` feature)".into(),
+            ))
+        }
+
+        #[cfg(all(feature = "docker", not(any(unix, windows))))]
+        {
+            Err(RuntimeError::BackendUnavailable(
+                "no supported runtime detected on this platform".into(),
+            ))
+        }
     }
 }
 
@@ -321,6 +375,63 @@ impl Capability for RuntimeCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Copy)]
+    enum HangAt {
+        Connect,
+        List,
+    }
+
+    struct HangingBackend(HangAt);
+
+    #[async_trait::async_trait]
+    impl RuntimeBackend for HangingBackend {
+        fn name(&self) -> &'static str {
+            "hanging-test"
+        }
+
+        async fn connect(&mut self) -> Result<(), RuntimeError> {
+            match self.0 {
+                HangAt::Connect => std::future::pending().await,
+                HangAt::List => Ok(()),
+            }
+        }
+
+        async fn list_instances(&self) -> Result<Vec<Instance>, RuntimeError> {
+            match self.0 {
+                HangAt::Connect => Ok(Vec::new()),
+                HangAt::List => std::future::pending().await,
+            }
+        }
+
+        async fn watch(
+            &self,
+            _tx: mpsc::Sender<RuntimeEvent>,
+            _cancel: CancellationToken,
+        ) -> Result<(), RuntimeError> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn backend_connection_is_bounded_at_the_runtime_boundary() {
+        let mut backend = HangingBackend(HangAt::Connect);
+        let error = connect_backend(&mut backend, Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::Connection(_)));
+        assert!(error.to_string().contains("connection timed out"));
+    }
+
+    #[tokio::test]
+    async fn initial_reconciliation_is_bounded_at_the_runtime_boundary() {
+        let backend = HangingBackend(HangAt::List);
+        let error = list_backend_instances(&backend, Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::Connection(_)));
+        assert!(error.to_string().contains("reconciliation timed out"));
+    }
 
     #[tokio::test]
     async fn runtime_core_default_status_is_inactive() {

@@ -29,6 +29,12 @@ pub(crate) const RECEIVE_STALL_SECS: u64 = 90;
 /// receiver reads. The per-type records cache makes any overflow non-fatal.
 const TYPE_BROADCAST_CAPACITY: usize = 512;
 
+/// Backoff for restarting a raw browse that the platform mDNS engine stops while
+/// Koi still has subscribers. The shared pump is the single recovery point, so
+/// HTTP/SSE and every other consumer observe the same resilient subscription.
+const BROWSE_RETRY_INITIAL: Duration = Duration::from_millis(100);
+const BROWSE_RETRY_MAX: Duration = Duration::from_secs(5);
+
 // ── Worker operations ─────────────────────────────────────────────
 
 /// Operations dispatched to the dedicated mDNS worker thread.
@@ -470,17 +476,15 @@ impl MdnsDaemon {
         let _ = self.event_tx.send(event);
     }
 
-    /// Remove a type entry iff it still belongs to `gen`. Called when a pump
-    /// exits unexpectedly (browse failed to start, or an external SearchStopped)
-    /// so subscribers see `Closed` and a later subscribe re-browses, instead of
-    /// a zombie Live entry with a dead pump.
-    fn teardown_if_gen(&self, key: &str, gen: u64) {
-        let mut types = self.types.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = types.get(key) {
-            if entry.gen == gen {
-                types.remove(key);
-            }
-        }
+    /// Whether a pump generation still owns a live shared browse. The last
+    /// subscriber removes the entry and aborts its pump, so recovery loops never
+    /// outlive the demand that created them.
+    fn browse_generation_is_live(&self, key: &str, gen: u64) -> bool {
+        self.types
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .is_some_and(|entry| entry.gen == gen && entry.refcount > 0)
     }
 
     /// Shut down gracefully: abort all pumps, then stop the mdns-sd daemon.
@@ -652,27 +656,59 @@ fn spawn_type_pump(
     // The pump emits via `daemon.pump_emit`, which fans out through the hub
     // entry's sender (and the core-wide channel) and updates the records cache.
     tokio::spawn(async move {
-        let receiver = match daemon.browse_raw(&key).await {
-            Ok(receiver) => receiver,
-            Err(e) => {
-                tracing::warn!(key = %key, error = %e, "Failed to start mDNS browse for type");
-                daemon.teardown_if_gen(&key, gen);
+        let mut retry_delay = BROWSE_RETRY_INITIAL;
+
+        loop {
+            let receiver = match daemon.browse_raw(&key).await {
+                Ok(receiver) => receiver,
+                Err(e) => {
+                    if !daemon.browse_generation_is_live(&key, gen) {
+                        return;
+                    }
+                    tracing::warn!(
+                        key = %key,
+                        error = %e,
+                        retry_ms = retry_delay.as_millis(),
+                        "Failed to start mDNS browse; retrying while subscribers remain"
+                    );
+                    tokio::time::sleep(retry_delay).await;
+                    retry_delay = next_browse_retry(retry_delay);
+                    continue;
+                }
+            };
+
+            // A platform backend may close its receiver or emit SearchStopped even
+            // though Koi still has consumers (observed on constrained macOS hosts).
+            // Keep the shared channel alive and re-establish the raw browse here;
+            // the last subscriber still aborts this task and issues stop_browse.
+            while let Ok(mdns_event) = receiver.recv_async().await {
+                match translate(mdns_event, is_meta) {
+                    PumpAction::Emit(event) => {
+                        daemon.pump_emit(&key, gen, event);
+                        retry_delay = BROWSE_RETRY_INITIAL;
+                    }
+                    PumpAction::Skip => continue,
+                    PumpAction::Stop => break,
+                }
+            }
+
+            if !daemon.browse_generation_is_live(&key, gen) {
                 return;
             }
-        };
 
-        // Loop ends when the flume sender is dropped (daemon shutting down) or
-        // the browse is stopped (SearchStopped → PumpAction::Stop).
-        while let Ok(mdns_event) = receiver.recv_async().await {
-            match translate(mdns_event, is_meta) {
-                PumpAction::Emit(event) => daemon.pump_emit(&key, gen, event),
-                PumpAction::Skip => continue,
-                PumpAction::Stop => break,
-            }
+            tracing::warn!(
+                key = %key,
+                retry_ms = retry_delay.as_millis(),
+                "mDNS browse stopped while subscribers remain; restarting"
+            );
+            tokio::time::sleep(retry_delay).await;
+            retry_delay = next_browse_retry(retry_delay);
         }
-
-        daemon.teardown_if_gen(&key, gen);
     })
+}
+
+fn next_browse_retry(current: Duration) -> Duration {
+    current.saturating_mul(2).min(BROWSE_RETRY_MAX)
 }
 
 /// Translate a raw mdns-sd event into a pump action. The boundary parse of
@@ -1271,6 +1307,16 @@ mod tests {
 
         let (_, normal) = canonical_key("_http._tcp").unwrap();
         assert!(!normal);
+    }
+
+    #[test]
+    fn browse_retry_backoff_is_bounded() {
+        let mut delay = BROWSE_RETRY_INITIAL;
+        for _ in 0..16 {
+            delay = next_browse_retry(delay);
+        }
+        assert_eq!(delay, BROWSE_RETRY_MAX);
+        assert_eq!(next_browse_retry(delay), BROWSE_RETRY_MAX);
     }
 
     // ── Boundary rule enforcement ─────────────────────────────────

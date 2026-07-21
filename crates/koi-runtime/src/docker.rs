@@ -590,7 +590,10 @@ fn extract_ips(info: &bollard::models::ContainerInspectResponse) -> Vec<String> 
     ips
 }
 
-/// Check if a Docker-compatible socket is available.
+/// Check whether the default Docker endpoint is available for probing.
+///
+/// On Windows, constructing the named-pipe client is deliberately non-blocking;
+/// the async `RuntimeCore` connection boundary performs the bounded Engine ping.
 pub fn is_docker_available() -> bool {
     #[cfg(unix)]
     {
@@ -598,15 +601,7 @@ pub fn is_docker_available() -> bool {
     }
     #[cfg(windows)]
     {
-        // Check for Docker Desktop named pipe
-        // We can't stat named pipes on Windows, so try to connect
-        std::process::Command::new("docker")
-            .arg("info")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        Docker::connect_with_local_defaults().is_ok()
     }
 }
 
