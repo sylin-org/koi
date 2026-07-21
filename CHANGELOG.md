@@ -5,15 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0-rc.1] - 2026-07-20
 
-**Delightful trust: membership-intrinsic self-management (ADR-023).** Untrust is now
-effective fleet-wide as a property of *being a member*, not a flag you discover. Revoking a
-member used to take effect only on the CA — every other member kept trusting the revoked
-node's signed envelopes. Now a member applies the CA-signed trust bundle's **full
-cross-member revoked set**, a revoked node **stands itself down**, and embedded
-self-management is **on by default**. Fire it up, join once, done — the window
-(`trust diagnose` / logs / dashboard) is there if you ever want to look.
+**The v1 release candidate: let everything local find, trust, and talk.** Koi's container,
+application, and device surfaces now converge behind one public promise: make local things
+delightfully discoverable, secure, and interconnected. This release turns that promise into
+a releasable system with artifact-first installation, membership-intrinsic trust, truthful
+runtime recovery, and repeatable physical Windows/Linux validation.
+
+The `1.0.0-rc.1` contract is intended to become `1.0.0`; the release-candidate period is for
+finding remaining defects in real networks, not for adding another capability layer.
 
 ### Fixed
 - **A member now honors cross-member revocations.** `pull_trust_bundle` applied the signed
@@ -24,8 +25,23 @@ self-management is **on by default**. Fire it up, join once, done — the window
   honor — full-replace (so an un-revocation also clears), guarded by the existing monotonic
   `seq` anti-rollback floor. The role-loop doc comment that *claimed* this already happened is
   now true.
+- **Runtime state now converges after interruption.** Docker event streams reconnect with
+  bounded backoff, a reconnect reconciles the complete observed service set, and daemon
+  restart restores label-derived services instead of waiting for the next container event.
+- **Capability startup is truthful.** A failed required listener or adapter can no longer be
+  reported as healthy merely because its task was spawned; startup either proves readiness
+  or returns the actionable failure.
+- **Certificate issuance fails safely.** Member private keys remain staged until enrollment
+  succeeds, bounded clock skew no longer rejects otherwise-valid new leaves, and ACME DNS
+  names are normalized through the same authority that owns Koi's `.internal` identity.
+- **Recovery is portable.** Windows script paths, local IPC cleanup, DNS bind recovery, and
+  mDNS retry behavior now survive the platform-specific failure modes exercised by the v1 lab.
 
 ### Added
+- **A repeatable v1 validation lab.** One local build drives disposable artifacts across the
+  Windows host and two physical Linux machines, covering discovery, DNS, proxying, certmesh
+  enrollment/revocation/renewal, service lifecycle, reconnect, recovery, and bounded soak.
+  Evidence is published in one machine-readable and one human-readable run record.
 - **Prerelease-safe publication.** One release-version evaluator now owns SemVer validation,
   tag identity, and stable/prerelease channel policy. `1.0.0-rc.1` can flow through the existing
   build-once pipeline as a GitHub prerelease, exact GHCR tag, crates.io prerelease, and npm `next`

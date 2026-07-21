@@ -5,11 +5,11 @@ title: "Install Koi + verify the build"
 audience: [operators, developers, ai-agents]
 status: current
 last_updated: 2026-07-19
-koi_version: v0.9.0
+koi_version: v1.0.0-rc.1
 validation:
   date_last_tested: 2026-06-22
   status: drafted
-  scope: "installer code reviewed; release-manifest generation exercised against all live v0.9.0 archives and sidecars; npm bootstrap tests and pack smoke green; direct installer and attestation execution still require an independently live-tested release run"
+  scope: "installer code reviewed; release-manifest generation exercised against all live v1.0.0-rc.1 archives and sidecars; npm bootstrap tests and pack smoke green; direct installer and attestation execution still require an independently live-tested release run"
 ---
 
 # Install Koi + verify the build
@@ -26,7 +26,7 @@ Install with the one-liner, then (optionally) verify provenance before you trust
 # Linux / macOS:
 curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh
 #   koi: checksum verified
-#   koi: koi v0.9.0 installed -> ~/.local/bin/koi
+#   koi: koi v1.0.0-rc.1 installed -> ~/.local/bin/koi
 #   <koi status output>
 
 # Windows (PowerShell):
@@ -38,8 +38,8 @@ docker run -d ghcr.io/sylin-org/koi:latest
 
 ```bash
 # Verify the supply chain (optional but recommended — the installer prints this line too):
-gh attestation verify koi-v0.9.0-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
-gh attestation verify oci://ghcr.io/sylin-org/koi:0.9.0          --repo sylin-org/koi
+gh attestation verify koi-v1.0.0-rc.1-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
+gh attestation verify oci://ghcr.io/sylin-org/koi:1.0.0-rc.1          --repo sylin-org/koi
 ```
 
 The installer already checks the SHA-256 for integrity; `gh attestation verify` adds **authenticity** — it proves the archive (or image) came out of `release.yml` in `sylin-org/koi`, defeating a swapped binary on a mirror.
@@ -50,7 +50,7 @@ The installer already checks the SHA-256 for integrity; `gh attestation verify` 
 |---|---|
 | `curl -fsSL .../install.sh \| sh` | Linux/macOS install (HTTPS-only; refuses an HTTP downgrade). |
 | `irm .../install.ps1 \| iex` | Windows install (per-user; adds the dir to your user PATH). |
-| `KOI_VERSION` (`-Version`) | Pin a release tag, e.g. `v0.9.0`. **Default: latest release.** |
+| `KOI_VERSION` (`-Version`) | Pin a release tag, e.g. `v1.0.0-rc.1`. **Default: latest release.** |
 | `KOI_INSTALL_DIR` (`-InstallDir`) | Install location. **Default: `/usr/local/bin` as root, else `~/.local/bin`; Windows `%LOCALAPPDATA%\Programs\koi`.** |
 | `KOI_NO_MODIFY_PATH` (`-NoModifyPath`) | Skip PATH guidance (sh) / don't touch user PATH (Windows). |
 | `gh attestation verify <archive\|oci://…:VER> --repo sylin-org/koi` | Verify keyless build provenance for an archive or the image. |
@@ -61,14 +61,14 @@ The installer already checks the SHA-256 for integrity; `gh attestation verify` 
 |---|---|---|
 | `install.sh` / `install.ps1` | **available** | Official prebuilt archive; never compiles. |
 | GitHub Release archive | **available** | Manual placement of the same official prebuilt archive. |
-| GHCR image | **published; public pull verification pending** | Exact Linux release binaries, assembled without recompiling. |
-| `cargo binstall koi-net` | **prepared; activates with the next metadata-bearing crates.io release** | Official release archive only; unofficial and compile fallbacks disabled. |
-| `npx @sylin/koi` | **prepared; npm activation pending** | Verifies and dispatches the native installer; never runs the service from npm's cache. |
+| GHCR image | **available** | Exact Linux release binaries, assembled without recompiling. Prereleases use the exact tag. |
+| `cargo binstall koi-net --version 1.0.0-rc.1` | **available** | Official release archive only; unofficial and compile fallbacks disabled. |
+| `npx @sylin/koi@1.0.0-rc.1` | **available** | Verifies and dispatches the native installer; never runs the service from npm's cache. |
 | `cargo install koi-net` | **available escape hatch** | Builds from source locally. |
 
-Prepared commands are intentionally not presented as current quick-start paths. See
-[ADR-025](../../adr/025-release-channels-and-bootstrap-contract.md) for the common
-artifact contract and activation gates.
+Prerelease commands are intentionally versioned and do not advance stable defaults. See
+[ADR-025](../../adr/025-release-channels-and-bootstrap-contract.md) for the common artifact
+contract and activation gates.
 
 ## The escape hatch
 
@@ -76,4 +76,5 @@ No prebuilt binary for your platform (only Linux + macOS + Windows on x86_64/aar
 
 ## The proof it works
 
-Code-reviewed, not independently live-tested. `install.sh` validates the tag, picks the OS/arch target (`detect_target`), downloads archive + `.sha256`, compares `sha256_of` vs the expected hash (`checksum verified` / hard-fail on mismatch), extracts, installs via temp-then-rename, and runs `koi status`. `install.ps1` mirrors this on Windows (arch via the WoW64/registry native-arch hint, `Get-FileHash` compare, user-PATH update). `.github/workflows/release.yml` produces the per-target archives + `.sha256` on every `v*` tag, builds and independently validates the six-target release manifest, tests and packs the npm bootstrap, signs each archive and the manifest with `actions/attest-build-provenance@v2`, and pushes the multi-arch image with `provenance: true` + `sbom: true`. Attestation and publication run **only on a real tag push**; `workflow_dispatch` builds and exercises the complete packaging contract but publishes nothing. npm publication has an additional explicit repository-variable and trusted-publisher gate.
+CI and the physical Windows/Linux lab exercise the installer and archive contract before a
+release. `install.sh` validates the tag, picks the OS/arch target (`detect_target`), downloads archive + `.sha256`, compares `sha256_of` vs the expected hash (`checksum verified` / hard-fail on mismatch), extracts, installs via temp-then-rename, and runs `koi status`. `install.ps1` mirrors this on Windows (arch via the WoW64/registry native-arch hint, `Get-FileHash` compare, user-PATH update). `.github/workflows/release.yml` produces the per-target archives + `.sha256` on every `v*` tag, builds and independently validates the six-target release manifest, tests and packs the npm bootstrap, signs each archive and the manifest with `actions/attest-build-provenance@v2`, and pushes the multi-arch image with `provenance: true` + `sbom: true`. Attestation and publication run **only on a real tag push**; `workflow_dispatch` builds and exercises the complete packaging contract but publishes nothing. npm publication has an additional explicit repository-variable and trusted-publisher gate.

@@ -200,11 +200,11 @@ single line — and re-arm any subset à la carte:
 
 ```toml
 # everything (default) — unchanged
-koi-embedded = "0.9"
+koi-embedded = "1.0.0-rc.1"
 # lean: no bollard, no OS-keychain/D-Bus, no image codec
-koi-embedded = { version = "0.9", default-features = false }
+koi-embedded = { version = "1.0.0-rc.1", default-features = false }
 # à la carte
-koi-embedded = { version = "0.9", default-features = false, features = ["docker"] }
+koi-embedded = { version = "1.0.0-rc.1", default-features = false, features = ["docker"] }
 ```
 
 See [ADR-014](docs/adr/014-optional-backend-features.md). The `koi` binary always ships
@@ -264,10 +264,11 @@ docker run -d --name koi -p 5641:5641 ghcr.io/sylin-org/koi:latest   # daemon
 package is named `koi-net` — see [Name](#name) below — and installs a `koi`
 binary). It needs a Rust toolchain; the recommended installer above does not.
 
-Koi's next release also carries an artifact manifest and `cargo-binstall`
+The v1 release-candidate line carries an artifact manifest and `cargo-binstall`
 metadata, so Rust users can install the official prebuilt archive without compiling.
-The dependency-free `npx @sylin/koi` bootstrap is implemented and release-tested but
-is not advertised as available until the npm scope and trusted publisher are activated.
+Prereleases are deliberately explicit: use `cargo binstall koi-net --version 1.0.0-rc.1`
+or `npx @sylin/koi@1.0.0-rc.1`. Stable unqualified commands remain on the latest stable
+release until Koi 1.0.0 ships.
 See [ADR-025](docs/adr/025-release-channels-and-bootstrap-contract.md) for the
 artifact-first channel contract and its deliberately honest rollout states.
 
@@ -284,26 +285,22 @@ build-provenance attestation. A trust tool should let you verify its own supply
 chain in one line:
 
 ```bash
-gh attestation verify koi-v0.9.0-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
-gh attestation verify oci://ghcr.io/sylin-org/koi:0.9.0 --repo sylin-org/koi
+gh attestation verify koi-v1.0.0-rc.1-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
+gh attestation verify oci://ghcr.io/sylin-org/koi:1.0.0-rc.1 --repo sylin-org/koi
 ```
 
 ## Project status
 
-Koi is **pre-1.0, feasibility-validated, and consolidating**. The architecture and
-the end-to-end pipeline are real; a thorough June 2026 assessment
-([docs/assessment/](docs/assessment/README.md)) mapped what's solid, what's broken,
-and what's being cut in the name of *less but more meaningful parts*. The latest
-release, **v0.9.0**, is a release-tooling cut — a one-command version bump and a
-one-command release tag — with no runtime changes; v0.8.0 before it made trust
-self-maintaining (a continuously-up CA renews its own leaf and hot-reloads its
-mTLS/ACME listeners), and v0.7.0 made the secure path the easy path on the envelope
-authorization plane (`Assurance::identity_for`, ADR-022) ([CHANGELOG](CHANGELOG.md)).
-The work plan is public
-([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until 1.0 (0.9.0 is a
-drop-in — no runtime changes; see the CHANGELOG and the [upgrade guide](docs/guides/upgrading.md));
-don't run it as load-bearing infrastructure yet — do play with it, and file issues when
-reality disagrees with the docs.
+Koi is at **v1.0.0-rc.1: feature-complete for the v1 contract and ready for real-network
+evaluation**. The release candidate brings the Find / Trust / Connect promise, artifact-first
+distribution, self-managing certmesh trust, truthful runtime recovery, and repeatable physical
+Windows/Linux validation into one candidate ([CHANGELOG](CHANGELOG.md)).
+
+An RC is not the stable declaration: pin `1.0.0-rc.1`, read the
+[upgrade guide](docs/guides/upgrading.md), and report anything that disagrees with the docs.
+The remaining road to 1.0 is defect discovery and contract hardening—not another expansion of
+scope. The assessment and validation record remain public under
+[docs/assessment/](docs/assessment/README.md) and [docs/prompts/](docs/prompts/README.md).
 
 ## Documentation
 

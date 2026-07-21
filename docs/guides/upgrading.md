@@ -2,8 +2,9 @@
 
 You want to move a running Koi to a newer build without losing your certificate mesh,
 DNS records, or proxy config — and without getting surprised by a breaking change. Koi
-is **pre-1.0** (the workspace is `0.x`), so "newer build" is not automatically "drop-in
-safe": breaking changes can ship in *any* release until 1.0, including patch releases.
+is on the **1.0 release-candidate line**, so "newer build" is not automatically "drop-in
+safe": a prerelease is where the intended v1 contract meets real networks before the stable
+declaration.
 This guide is the safe upgrade procedure and what to check before you run it.
 
 The short version: **read the [CHANGELOG](../../CHANGELOG.md) first, back up if anything
@@ -11,11 +12,11 @@ looks risky, then upgrade.** The rest of this page is the detail.
 
 ---
 
-## The pre-1.0 reality (read this before every upgrade)
+## The release-candidate reality (read this before every upgrade)
 
-While Koi is `0.x`, SemVer permits breaking changes at any version bump — and Koi uses
-that latitude. A bump from `0.4.1` to `0.4.2` looks like a patch, but it can carry
-breaking changes to on-disk state, the wire protocol, or the CLI surface.
+Koi's `1.0.0-rc.x` builds state the contract intended for 1.0, but remain prereleases.
+An RC update can still correct a contract that proves unsafe or misleading in real use;
+that correction will be called out explicitly in the changelog.
 
 So the rule is simple and it has no exceptions:
 
@@ -59,9 +60,9 @@ curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh
 irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
 ```
 
-Once their prepared registry channels are publicly activated, `cargo binstall
-koi-net` and `npx @sylin/koi` perform the same stable native-binary refresh. Until
-then, use the direct installer or a verified archive from GitHub Releases.
+For the release candidate, use an explicit version: `cargo binstall koi-net --version
+1.0.0-rc.1` or `npx @sylin/koi@1.0.0-rc.1`. Unqualified installs intentionally remain
+on the latest stable release until Koi 1.0.0 ships.
 
 `koi install` is the upgrade command. Running it again against a newer binary **stops
 the existing service, swaps in the new binary, rewrites the service definition, and
@@ -193,7 +194,7 @@ disk, on the CLI, at the network edge, or in the JSON / Rust API changes.
 
 ---
 
-## The unreleased upgrade (membership-intrinsic trust, ADR-023)
+## The 1.0.0-rc.1 upgrade (membership-intrinsic trust, ADR-023)
 
 **One breaking change, and it is Rust-embedders-only.** Nothing on disk, on the CLI, at the
 network edge, or in the JSON wire shapes changes incompatibly — `member.json` gains two

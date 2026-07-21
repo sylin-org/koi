@@ -1,6 +1,6 @@
 {
   "name": "@sylin/koi",
-  "version": "0.9.0",
+  "version": "1.0.0-rc.1",
   "description": "Install Koi's native local-connectivity binary: find, trust, and connect",
   "type": "module",
   "bin": {
