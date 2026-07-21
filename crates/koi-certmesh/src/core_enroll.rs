@@ -16,20 +16,12 @@ impl CertmeshCore {
     ) -> Result<protocol::JoinResponse, CertmeshError> {
         let hostname = &request.hostname;
         validate_hostname(hostname)?;
-        // Default SANs: hostname + hostname.local, plus any extras the joiner sent.
-        // Every extra SAN is validated (F15): IP literals pass through; everything
-        // else must be a valid RFC 1123 hostname — so a joiner can't slip a wildcard
-        // or junk DNS name into its cert. Capped to bound the SAN list.
-        const MAX_EXTRA_SANS: usize = 16;
-        let mut sans = vec![hostname.clone(), format!("{hostname}.local")];
-        for extra in request.sans.iter().take(MAX_EXTRA_SANS) {
-            if extra.parse::<std::net::IpAddr>().is_err() {
-                validate_hostname(extra)?;
-            }
-            if !sans.contains(extra) {
-                sans.push(extra.clone());
-            }
-        }
+        // One domain policy owns the base names, configured-zone FQDN, validation,
+        // deduplication, and cap. The request contains genuine extras only.
+        let sans = self
+            .state
+            .issuance_names
+            .member_sans(hostname, &request.sans)?;
 
         let ca_guard = self.state.ca.lock().await;
         let ca = ca_guard.as_ref().ok_or_else(|| {
@@ -125,12 +117,7 @@ impl CertmeshCore {
         // Validate hostname before using as certificate SAN (RFC 1123, F15).
         validate_hostname(&hostname)?;
 
-        let sans = vec![
-            hostname.clone(),
-            format!("{hostname}.local"),
-            "localhost".to_string(),
-            "127.0.0.1".to_string(),
-        ];
+        let sans = self.state.issuance_names.self_sans(&hostname, &[])?;
 
         // Read the CA-held policy (self-leaf lifetime + restart-renewal threshold).
         let policy = {
@@ -155,16 +142,19 @@ impl CertmeshCore {
                             >= na
                     })
                     .unwrap_or(true); // unparseable → re-issue to be safe
-                if !due {
-                    let ca_guard = self.state.ca.lock().await;
-                    let ca = ca_guard.as_ref().ok_or_else(|| {
-                        if self.state.paths.is_ca_initialized() {
-                            CertmeshError::CaLocked
-                        } else {
-                            CertmeshError::CaNotInitialized
-                        }
-                    })?;
-                    let ca_cert_pem = ca.cert_pem.clone();
+                let names_current = IssuanceNames::certificate_covers(&cert_pem, &sans);
+                let ca_guard = self.state.ca.lock().await;
+                let ca = ca_guard.as_ref().ok_or_else(|| {
+                    if self.state.paths.is_ca_initialized() {
+                        CertmeshError::CaLocked
+                    } else {
+                        CertmeshError::CaNotInitialized
+                    }
+                })?;
+                let ca_cert_pem = ca.cert_pem.clone();
+                let material_usable =
+                    diagnosis::identity_material_is_usable(&cert_pem, &key_pem, &ca_cert_pem);
+                if !due && names_current && material_usable {
                     drop(ca_guard);
                     tracing::debug!(hostname = %hostname, "already self-enrolled, reusing existing cert");
                     return Ok(SelfEnrollment {
@@ -173,7 +163,13 @@ impl CertmeshCore {
                         ca_cert_pem,
                     });
                 }
-                tracing::info!(hostname = %hostname, "CA self-cert within renewal threshold; re-issuing");
+                tracing::info!(
+                    hostname = %hostname,
+                    due,
+                    names_current,
+                    material_usable,
+                    "CA self-cert requires re-issuance"
+                );
             }
         }
 

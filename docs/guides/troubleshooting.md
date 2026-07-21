@@ -89,7 +89,7 @@ koi --dns-port 15353 --daemon
 Then point your test query at that port directly:
 
 ```sh
-dig @127.0.0.1 -p 15353 grafana.lan
+dig @127.0.0.1 -p 15353 grafana.internal
 ```
 
 For production, run Koi as the installed service (`koi install`) so it has the privilege

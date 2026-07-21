@@ -36,13 +36,18 @@ const TCP_RESPONSE_BUFFER: usize = 32;
 /// Alias feedback flush interval.
 const FEEDBACK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Events emitted by the DNS subsystem when static entries change.
+/// Events emitted by the DNS subsystem when managed records change.
 #[derive(Debug, Clone)]
 pub enum DnsEvent {
     /// A static DNS entry was added or updated.
     EntryUpdated { name: String, ip: String },
     /// A static DNS entry was removed.
     EntryRemoved { name: String },
+    /// An ephemeral TXT value was published. The value is intentionally omitted
+    /// because dashboard events are observational and may be unauthenticated.
+    TxtUpdated { name: String },
+    /// An ephemeral TXT value was removed.
+    TxtRemoved { name: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -85,7 +90,7 @@ impl Default for DnsConfig {
         Self {
             bind_addr: IpAddr::from([0, 0, 0, 0]),
             port: 53,
-            zone: "lan".to_string(),
+            zone: crate::DEFAULT_ZONE.to_string(),
             local_ttl: DEFAULT_LOCAL_TTL,
             allow_public_clients: false,
             max_qps: DEFAULT_MAX_QPS,
@@ -119,6 +124,14 @@ pub struct DnsCore {
     /// FQDN (lowercase, trailing dot). Deliberately in-memory only — challenge
     /// tokens are short-lived and must NOT be persisted.
     txt_records: Arc<RwLock<HashMap<String, Vec<String>>>>,
+}
+
+/// A DNS server whose UDP and TCP sockets are already bound.
+///
+/// Kept inside the DNS domain so [`crate::DnsRuntime`] can make binding part of the
+/// synchronous start contract without leaking Hickory implementation details.
+pub(crate) struct BoundDnsServer {
+    server: Server<DnsHandler>,
 }
 
 /// Normalize a name for the ephemeral TXT store and for matching incoming TXT
@@ -238,9 +251,11 @@ impl DnsCore {
     pub fn add_txt(&self, name: &str, value: &str) {
         let key = normalize_txt_name(name);
         let mut guard = self.txt_records.write().unwrap_or_else(|e| e.into_inner());
-        let values = guard.entry(key).or_default();
+        let values = guard.entry(key.clone()).or_default();
         if !values.iter().any(|v| v == value) {
             values.push(value.to_string());
+            drop(guard);
+            self.emit(DnsEvent::TxtUpdated { name: key });
         }
     }
 
@@ -248,7 +263,31 @@ impl DnsCore {
     pub fn remove_txt(&self, name: &str) {
         let key = normalize_txt_name(name);
         let mut guard = self.txt_records.write().unwrap_or_else(|e| e.into_inner());
-        guard.remove(&key);
+        if guard.remove(&key).is_some() {
+            drop(guard);
+            self.emit(DnsEvent::TxtRemoved { name: key });
+        }
+    }
+
+    /// Remove one exact ephemeral TXT value without disturbing concurrent values
+    /// at the same owner name. Returns whether the value was present.
+    pub fn remove_txt_value(&self, name: &str, value: &str) -> bool {
+        let key = normalize_txt_name(name);
+        let mut guard = self.txt_records.write().unwrap_or_else(|e| e.into_inner());
+        let Some(values) = guard.get_mut(&key) else {
+            return false;
+        };
+        let before = values.len();
+        values.retain(|candidate| candidate != value);
+        let removed = values.len() != before;
+        if values.is_empty() {
+            guard.remove(&key);
+        }
+        if removed {
+            drop(guard);
+            self.emit(DnsEvent::TxtRemoved { name: key });
+        }
+        removed
     }
 
     /// Return the currently published TXT values for `name` (empty if none).
@@ -382,7 +421,7 @@ impl DnsCore {
         })
     }
 
-    pub async fn serve(&self, cancel: CancellationToken) -> Result<(), DnsError> {
+    pub(crate) async fn bind_server(&self) -> Result<BoundDnsServer, DnsError> {
         let addr = SocketAddr::new(self.config.bind_addr, self.config.port);
         let udp = UdpSocket::bind(addr)
             .await
@@ -396,8 +435,30 @@ impl DnsCore {
         server.register_socket(udp);
         server.register_listener(tcp, TCP_TIMEOUT, TCP_RESPONSE_BUFFER);
 
-        let server_token = server.shutdown_token().clone();
-        let mut server_task = tokio::spawn(async move { server.block_until_done().await });
+        Ok(BoundDnsServer { server })
+    }
+
+    pub async fn serve(&self, cancel: CancellationToken) -> Result<(), DnsError> {
+        self.bind_server().await?.serve(cancel).await
+    }
+
+    fn maybe_send_feedback(&self, feedback: &[AliasFeedback]) {
+        let Some(tx) = &self.alias_tx else {
+            return;
+        };
+        for item in feedback {
+            let _ = tx.try_send(AliasFeedback {
+                hostname: item.hostname.clone(),
+                alias: item.alias.trim_end_matches('.').to_string(),
+            });
+        }
+    }
+}
+
+impl BoundDnsServer {
+    pub(crate) async fn serve(mut self, cancel: CancellationToken) -> Result<(), DnsError> {
+        let server_token = self.server.shutdown_token().clone();
+        let mut server_task = tokio::spawn(async move { self.server.block_until_done().await });
 
         tokio::select! {
             _ = cancel.cancelled() => {
@@ -410,18 +471,6 @@ impl DnsCore {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(DnsError::Upstream(e.to_string())),
             Err(e) => Err(DnsError::Upstream(e.to_string())),
-        }
-    }
-
-    fn maybe_send_feedback(&self, feedback: &[AliasFeedback]) {
-        let Some(tx) = &self.alias_tx else {
-            return;
-        };
-        for item in feedback {
-            let _ = tx.try_send(AliasFeedback {
-                hostname: item.hostname.clone(),
-                alias: item.alias.trim_end_matches('.').to_string(),
-            });
         }
     }
 }
@@ -895,6 +944,33 @@ mod tests {
         assert!(!core.get_txt("_acme-challenge.gone.lan").is_empty());
         core.remove_txt("_acme-challenge.gone.lan");
         assert!(core.get_txt("_acme-challenge.gone.lan").is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_txt_value_preserves_concurrent_values_and_emits_names_only() {
+        let core = test_core().await;
+        let mut rx = core.subscribe();
+        core.add_txt("_acme-challenge.shared.lan", "token-1");
+        core.add_txt("_acme-challenge.shared.lan", "token-2");
+        assert!(matches!(
+            rx.try_recv().expect("first publish event"),
+            DnsEvent::TxtUpdated { name } if name == "_acme-challenge.shared.lan."
+        ));
+        assert!(matches!(
+            rx.try_recv().expect("second publish event"),
+            DnsEvent::TxtUpdated { name } if name == "_acme-challenge.shared.lan."
+        ));
+
+        assert!(core.remove_txt_value("_acme-challenge.shared.lan", "token-1"));
+        assert_eq!(
+            core.get_txt("_acme-challenge.shared.lan"),
+            vec!["token-2".to_string()]
+        );
+        assert!(matches!(
+            rx.try_recv().expect("exact removal event"),
+            DnsEvent::TxtRemoved { name } if name == "_acme-challenge.shared.lan."
+        ));
+        assert!(!core.remove_txt_value("_acme-challenge.shared.lan", "missing"));
     }
 
     /// get_txt on an unknown name returns empty.

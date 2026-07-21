@@ -3,14 +3,14 @@
 //!
 //! `AcmeState` is constructed in the composition layer (the binary) from a
 //! `CertmeshCore`'s shared state, the Koi DNS zone, and the
-//! [`AcmeDnsSolver`](koi_common::integration::AcmeDnsSolver) bridge. It is then
+//! [`AcmeDnsResolver`](koi_common::integration::AcmeDnsResolver) bridge. It is then
 //! handed to [`crate::acme::routes`] and mounted under `/acme` on the dedicated
 //! server-auth TLS listener.
 
 use std::sync::Arc;
 
 use chrono::Utc;
-use koi_common::integration::AcmeDnsSolver;
+use koi_common::integration::AcmeDnsResolver;
 
 use crate::acme::account::AccountStore;
 use crate::acme::challenge;
@@ -33,7 +33,7 @@ pub struct AcmeStateConfig {
     /// The Koi DNS zone (e.g. `lan`). The CA issues ONLY for in-zone names.
     pub zone: String,
     /// The in-process dns-01 solver (writes/reads `_acme-challenge.*` TXT).
-    pub dns: Arc<dyn AcmeDnsSolver>,
+    pub dns: Arc<dyn AcmeDnsResolver>,
 }
 
 /// The ACME server's shared state.
@@ -45,7 +45,7 @@ pub struct AcmeState {
     /// The issuance zone.
     zone: String,
     /// dns-01 solver bridge.
-    dns: Arc<dyn AcmeDnsSolver>,
+    dns: Arc<dyn AcmeDnsResolver>,
     /// Persisted account registry.
     accounts: AccountStore,
     /// In-memory replay-nonce store.
@@ -91,7 +91,7 @@ impl AcmeState {
         &self.orders
     }
 
-    pub fn dns(&self) -> &Arc<dyn AcmeDnsSolver> {
+    pub fn dns(&self) -> &Arc<dyn AcmeDnsResolver> {
         &self.dns
     }
 

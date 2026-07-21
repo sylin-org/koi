@@ -127,43 +127,75 @@ impl CertmeshCore {
         backup_passphrase: &str,
         new_passphrase: &str,
     ) -> Result<(), CertmeshError> {
+        // Decode and validate the complete recovery set before the first write.
+        // A wrong passphrase, malformed roster/auth record, or mismatched CA
+        // key/certificate must leave the currently running mesh untouched.
         let payload = backup::decode_backup(backup_bytes, backup_passphrase)?;
 
         let ca_key = koi_crypto::keys::ca_keypair_from_pem(&payload.ca_key_pem)?;
         let ca_key_der = koi_crypto::keys::ca_keypair_to_der(&ca_key)?;
+        let ca_state = ca::build_ca_state_from_material(&ca_key_der, &payload.ca_cert_pem)?;
         let (encrypted_key, slot_table, _master_key) =
             koi_crypto::unlock_slots::envelope_encrypt_new(&ca_key_der, new_passphrase)?;
-        std::fs::create_dir_all(self.state.paths.ca_dir())?;
-        koi_crypto::keys::save_encrypted_key(&self.state.paths.ca_key_path(), &encrypted_key)?;
-        slot_table.save(&self.state.paths.slot_table_path())?;
-        std::fs::write(self.state.paths.ca_cert_path(), &payload.ca_cert_pem)?;
 
         let auth_state = AuthState::from_backup(&payload.auth_method, payload.auth_data)
             .map_err(|e| CertmeshError::Internal(format!("auth restore failed: {e}")))?;
-
-        // Persist restored auth credential
         let AuthState::Totp(secret) = &auth_state;
         let stored = koi_crypto::auth::store_totp(secret, new_passphrase)?;
         let auth_json = serde_json::to_string_pretty(&stored)
             .map_err(|e| CertmeshError::Internal(format!("auth serialize: {e}")))?;
-        std::fs::write(self.state.paths.auth_path(), auth_json)?;
-
-        if let Some(parent) = self.state.paths.roster_path().parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(self.state.paths.roster_path(), &payload.roster_json)?;
-        if let Some(parent) = self.state.paths.audit_log_path().parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(self.state.paths.audit_log_path(), &payload.audit_log)?;
-
         let restored_roster: Roster = serde_json::from_str(&payload.roster_json)
             .map_err(|e| CertmeshError::Internal(format!("roster deserialization failed: {e}")))?;
 
-        let ca_state = ca::load_ca(new_passphrase, &self.state.paths)?;
+        std::fs::create_dir_all(self.state.paths.ca_dir())?;
+        std::fs::create_dir_all(self.state.paths.certmesh_dir())?;
+        std::fs::create_dir_all(self.state.paths.log_dir())?;
+        koi_crypto::keys::save_encrypted_key(&self.state.paths.ca_key_path(), &encrypted_key)?;
+        slot_table.save(&self.state.paths.slot_table_path())?;
+        write_file_atomic(
+            &self.state.paths.ca_cert_path(),
+            payload.ca_cert_pem.as_bytes(),
+            false,
+        )?;
+        write_file_atomic(&self.state.paths.auth_path(), auth_json.as_bytes(), true)?;
+        write_file_atomic(
+            &self.state.paths.roster_path(),
+            payload.roster_json.as_bytes(),
+            true,
+        )?;
+        write_file_atomic(
+            &self.state.paths.audit_log_path(),
+            payload.audit_log.as_bytes(),
+            true,
+        )?;
+
+        // A restored host is the CA, never still a member of the mesh it used to
+        // join. Outstanding invites and throttle/account state are not carried by
+        // the backup and must not leak in from the replaced installation.
+        remove_if_present(&self.state.paths.member_state_path())?;
+        remove_if_present(&self.state.paths.invites_path())?;
+        remove_if_present(&self.state.paths.rate_limiter_path())?;
+        remove_dir_if_present(&self.state.paths.acme_dir())?;
+
+        // Restore is the legitimate migration path: bind the recovered CA to the
+        // machine performing the ceremony instead of retaining a copied/stale
+        // binding. If this platform cannot derive an identity, remove any old bind
+        // rather than asserting protection that is not actually active.
+        if let Some(fingerprint) = koi_crypto::vault::machine_fingerprint() {
+            write_machine_binding(&self.state.paths.machine_bind_path(), &fingerprint)?;
+        } else {
+            remove_if_present(&self.state.paths.machine_bind_path())?;
+        }
+
         *self.state.ca.lock().await = Some(ca_state);
         *self.state.auth.lock().await = Some(auth_state);
         *self.state.roster.lock().await = restored_roster;
+        *self.state.rate_limiter.lock().await = RateLimiter::new();
+
+        // A successful restore promises an online CA, not merely key files. Issue
+        // or validate the recovery host's local identity now; self_enroll publishes
+        // the Open→Authenticated posture change that starts mTLS/ACME listeners.
+        self.self_enroll().await?;
 
         let _ = audit::append_entry_to(&self.state.paths.audit_log_path(), "backup_restored", &[]);
         Ok(())
@@ -200,5 +232,21 @@ impl CertmeshCore {
             ],
         );
         Ok(())
+    }
+}
+
+fn remove_if_present(path: &std::path::Path) -> Result<(), CertmeshError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(CertmeshError::Io(error)),
+    }
+}
+
+fn remove_dir_if_present(path: &std::path::Path) -> Result<(), CertmeshError> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(CertmeshError::Io(error)),
     }
 }

@@ -52,6 +52,22 @@ pub struct MemberState {
     /// a pulled bundle with a strictly lower `seq` is rejected.
     #[serde(default)]
     pub last_bundle_seq: u64,
+    /// Cross-member revoked leaf fingerprints learned from the last accepted trust
+    /// bundle — the **full authoritative set** (full-replace each accepted bundle, so
+    /// an un-revoked entry also clears). Unioned into
+    /// [`revoked_fingerprints`](crate::CertmeshCore) so a pure member's `verify`/`open`
+    /// rejects *other* revoked members, not only itself (ADR-023 §3). Persisted here
+    /// alongside `last_bundle_seq` so the monotonic floor can never advance without the
+    /// data. Empty until the first bundle carrying revocations is applied.
+    #[serde(default)]
+    pub revoked_fingerprints: Vec<String>,
+    /// Whether **this** node's own hostname was listed revoked in the last accepted
+    /// trust bundle (hostname-keyed, authoritative — independent of leaf fingerprint
+    /// tracking across renewals). Drives the ADR-023 §5 outbound self-gate and
+    /// [`is_self_revoked`](crate::CertmeshCore::is_self_revoked); full-replace each
+    /// accepted bundle, so an un-revocation also clears it.
+    #[serde(default)]
+    pub self_revoked: bool,
     /// Optional local reload hook to run after a successful renewal install.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reload_hook: Option<String>,
@@ -165,6 +181,8 @@ mod tests {
             sans: vec!["web-01".to_string(), "web-01.local".to_string()],
             policy: CertPolicy::default(),
             last_bundle_seq: 0,
+            revoked_fingerprints: Vec::new(),
+            self_revoked: false,
             reload_hook: None,
         }
     }

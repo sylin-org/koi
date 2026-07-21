@@ -184,7 +184,7 @@ If you instead pointed C at Koi's resolver for the `.internal` zone (see the [DN
 To open a *vanity* zone name like `https://app.internal` (not the host's own name) with no warning, the served cert has to list `app.internal` as a SAN — and `koi certmesh join` does **not** add arbitrary SANs to the member cert. The clean way to get an `app.internal` cert is Koi's **ACME facade**, which issues for any name **inside your DNS zone** (`.internal` by default):
 
 1. Point a standard ACME client (Caddy, Traefik, `lego`) at Koi's directory: `koi certmesh acme enable` prints the URL and the one-time root-trust recipe.
-2. The client orders `app.internal`, solves the in-process `dns-01` challenge, and gets a leaf that chains to your CA.
+2. Its dns-01 provider publishes and removes the proof through `koi dns txt set/clear`; Koi validates it through the same local DNS core and returns a leaf that chains to your CA.
 3. Either let that reverse proxy serve `app.internal` directly, or drop the issued `fullchain.pem` + `key.pem` into `certs/app/` and run `koi proxy add app --listen 9443 --backend 127.0.0.1:3000` — the proxy serves the **per-entry** cert (it's checked ahead of the member cert) and `https://app.internal:9443` goes green.
 
 The full ACME walk-through — scope, wildcards, and the bootstrap recipe — is in the [ACME guide](../guides/acme.md).

@@ -1,7 +1,7 @@
 # koi-dashboard
 
-Presentation layer for the [Koi](https://github.com/sylin-org/koi) local-network
-toolkit. Hosts the two single-file, zero-build HTML surfaces and their backing
+Presentation layer for the [Koi](https://github.com/sylin-org/koi) local connectivity
+substrate. Hosts the two single-file, zero-build HTML surfaces and their backing
 endpoints:
 
 - **Dashboard** (`GET /`, `/v1/dashboard/snapshot`, `/v1/dashboard/events`) — system

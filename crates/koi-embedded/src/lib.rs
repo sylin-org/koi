@@ -208,12 +208,20 @@ impl Builder {
         self
     }
 
-    /// Run the certmesh role-driven background loop (trust-bundle pull — policy refresh +
-    /// revocation detection — plus cert renewal) — the same loop the daemon runs. Opt-in;
-    /// requires certmesh (`certmesh`) to be enabled. A clustered embedded CA host wants
-    /// this; a leaf does not. Enrollment approval auto-denies (no interactive console).
-    pub fn certmesh_background(mut self, enabled: bool) -> Self {
-        self.config.certmesh_background_enabled = enabled;
+    /// Whether Koi **self-manages** certmesh membership (ADR-023) — the same loop the
+    /// daemon runs. **Default on** (requires `certmesh` enabled to have any effect): when
+    /// this node is a member it pulls the signed trust bundle (policy refresh +
+    /// cross-member revocation honoring), renews its leaf before expiry, and stands itself
+    /// down if revoked — and is a no-op until the node becomes a member, so it
+    /// self-activates on join with no operator re-engagement. Enrollment approval
+    /// auto-denies (no interactive console).
+    ///
+    /// Set `false` only if you drive the lifecycle yourself over your own plane (no
+    /// dependency on the CA's HTTP/mTLS ports): then call `pull_trust_bundle` /
+    /// `apply_trust_bundle(&SignedBundle)` / `renew_self_if_due` on your own cadence.
+    /// Replaces the former opt-in `certmesh_background` (BREAKING: inverted default).
+    pub fn certmesh_managed(mut self, enabled: bool) -> Self {
+        self.config.certmesh_managed = enabled;
         self
     }
 
@@ -393,7 +401,7 @@ impl KoiEmbedded {
                 health_auto_start: self.config.health_auto_start,
                 proxy_auto_start: self.config.proxy_auto_start,
                 spawn_orchestrator: self.config.orchestrator_enabled,
-                spawn_certmesh_loops: self.config.certmesh_background_enabled,
+                spawn_certmesh_loops: self.config.certmesh_managed,
                 fail_fast: true,
             },
             &cancel,
@@ -658,11 +666,11 @@ impl KoiEmbedded {
             );
         }
 
-        // ── Certmesh enrollment-approval pump (opt-in) ──
+        // ── Certmesh enrollment-approval pump (self-managed) ──
         // The trust-bundle pull + cert-renewal loops are spawned by `build_cores`; the approval
         // pump is NOT (its decider is host-specific). Embedded has no console, so it
-        // auto-denies. Off by default; a clustered embedded CA host opts in.
-        if self.config.certmesh_background_enabled {
+        // auto-denies. On by default with self-management (ADR-023); a self-driver opts out.
+        if self.config.certmesh_managed {
             if let Some(ref certmesh_core) = certmesh {
                 koi_compose::certmesh::spawn_enrollment_approval(
                     certmesh_core,
@@ -672,8 +680,9 @@ impl KoiEmbedded {
                 )
                 .await;
             } else {
-                tracing::warn!(
-                    "certmesh_background enabled but certmesh is not — skipping certmesh loops"
+                // certmesh_managed defaults on; only a no-op when certmesh itself is off.
+                tracing::debug!(
+                    "certmesh_managed is on but certmesh is not enabled — no certmesh loops to spawn"
                 );
             }
         }
@@ -749,6 +758,8 @@ fn map_dns_event(event: koi_dns::DnsEvent) -> KoiEvent {
     match event {
         koi_dns::DnsEvent::EntryUpdated { name, ip } => KoiEvent::DnsEntryUpdated { name, ip },
         koi_dns::DnsEvent::EntryRemoved { name } => KoiEvent::DnsEntryRemoved { name },
+        koi_dns::DnsEvent::TxtUpdated { name } => KoiEvent::DnsTxtUpdated { name },
+        koi_dns::DnsEvent::TxtRemoved { name } => KoiEvent::DnsTxtRemoved { name },
     }
 }
 
@@ -966,8 +977,8 @@ mod tests {
         // Fresh machine: no CA yet. The uninitialized early-return must still
         // carry the injected paths — this is the regression the dropped-paths
         // bug (uninitialized branches dropping `paths`) used to fail.
-        let fresh =
-            koi_compose::cores::init_certmesh_core(Some(&data_dir)).expect("uninitialized core");
+        let fresh = koi_compose::cores::init_certmesh_core(Some(&data_dir), "internal")
+            .expect("uninitialized core");
         assert_eq!(
             fresh.paths().data_dir(),
             data_dir.as_path(),
@@ -984,8 +995,8 @@ mod tests {
 
         // Reopen on the same injected dir: the CA is discovered there and the
         // core unlocks from it — proving the data root is honored end-to-end.
-        let reopened =
-            koi_compose::cores::init_certmesh_core(Some(&data_dir)).expect("locked core");
+        let reopened = koi_compose::cores::init_certmesh_core(Some(&data_dir), "internal")
+            .expect("locked core");
         assert_eq!(reopened.paths().data_dir(), data_dir.as_path());
         reopened
             .unlock("test-pass-strong")
@@ -1103,6 +1114,20 @@ mod tests {
             }
             other => panic!("expected DnsEntryRemoved, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn map_dns_txt_lifecycle_omits_values() {
+        let name = "_acme-challenge.service.internal.";
+        let updated = map_dns_event(koi_dns::DnsEvent::TxtUpdated {
+            name: name.to_string(),
+        });
+        let removed = map_dns_event(koi_dns::DnsEvent::TxtRemoved {
+            name: name.to_string(),
+        });
+
+        assert!(matches!(updated, KoiEvent::DnsTxtUpdated { name: mapped } if mapped == name));
+        assert!(matches!(removed, KoiEvent::DnsTxtRemoved { name: mapped } if mapped == name));
     }
 
     // ── map_certmesh_event ─────────────────────────────────────────
@@ -1344,22 +1369,27 @@ mod tests {
     }
 
     #[test]
-    fn orchestrator_and_certmesh_background_are_opt_in() {
-        // Default: both off (a leaf embedded host only wants the event stream).
+    fn orchestrator_opt_in_certmesh_self_management_opt_out() {
+        // orchestrator is opt-in (default off); certmesh self-management is opt-OUT
+        // (default on, ADR-023) — a member is managed without discovering a flag.
         let default_cfg = Builder::new().build().expect("build should succeed");
         assert!(!default_cfg.config.orchestrator_enabled);
-        assert!(!default_cfg.config.certmesh_background_enabled);
+        assert!(
+            default_cfg.config.certmesh_managed,
+            "certmesh self-management is on by default"
+        );
 
-        // Opt-in: both on when requested.
+        // Orchestrator on when requested; certmesh self-management off when a self-driver
+        // opts out (it will drive pull/renew over its own plane).
         let opted = Builder::new()
             .runtime_auto()
             .orchestrator(true)
             .certmesh(true)
-            .certmesh_background(true)
+            .certmesh_managed(false)
             .build()
             .expect("build should succeed");
         assert!(opted.config.orchestrator_enabled);
-        assert!(opted.config.certmesh_background_enabled);
+        assert!(!opted.config.certmesh_managed);
     }
 
     #[test]

@@ -59,6 +59,7 @@ pub fn spawn_orchestrator(
     cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     let mut rx = runtime.subscribe();
+    let runtime = Arc::clone(runtime);
     let resources: Arc<Mutex<HashMap<String, OrchestratedResources>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
@@ -66,6 +67,22 @@ pub fn spawn_orchestrator(
     let targets = Arc::new(targets);
 
     tokio::spawn(async move {
+        // The runtime connects and inventories existing instances before the
+        // composition root starts this subscriber. Reconcile that snapshot here
+        // so a Koi restart reconstructs every derived resource for containers
+        // that never stopped. Subscribing before the snapshot closes the race:
+        // concurrent events queue and are handled idempotently below.
+        match runtime.list_instances().await {
+            Ok(instances) => {
+                for instance in instances {
+                    handle_start(&instance, &resources_clone, &targets).await;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "Orchestrator could not reconcile runtime inventory");
+            }
+        }
+
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => {
@@ -95,8 +112,9 @@ pub fn spawn_orchestrator(
                         }
                         Ok(RuntimeEvent::BackendReconnected { backend }) => {
                             tracing::info!(backend, "Runtime backend reconnected");
-                            // Reconciliation: new Started events will arrive from the backend.
-                            // Duplicate registrations are handled idempotently in handle_start.
+                            // The backend emits exact Stopped/Started/Updated reconciliation
+                            // events before this marker. They traverse the normal handlers above;
+                            // no parallel reconnect policy is needed here.
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!(missed = n, "Orchestrator lagged behind runtime events");
@@ -235,8 +253,8 @@ async fn handle_start(
     if let Some(ref proxy) = targets.proxy {
         if let Some(entry) = build_proxy_entry(instance, &service_name) {
             let proxy_name = entry.name.clone();
-            match proxy.core().upsert(entry).await {
-                Ok(_) => {
+            match proxy.upsert(entry).await {
+                Ok(()) => {
                     tracing::info!(name = %proxy_name, "Orchestrator: proxy entry added");
                     res.proxy_name = Some(proxy_name);
                 }
@@ -299,7 +317,7 @@ async fn handle_stop(
     // ── Proxy remove ────────────────────────────────────────────
     if let Some(ref proxy) = targets.proxy {
         if let Some(ref proxy_name) = res.proxy_name {
-            if let Err(e) = proxy.core().remove(proxy_name).await {
+            if let Err(e) = proxy.remove(proxy_name).await {
                 tracing::warn!(name = proxy_name, error = %e, "Orchestrator: proxy remove failed");
             } else {
                 tracing::info!(name = proxy_name, "Orchestrator: proxy entry removed");
@@ -335,7 +353,7 @@ async fn cleanup_all(
         }
         if let Some(ref proxy) = targets.proxy {
             if let Some(ref proxy_name) = res.proxy_name {
-                let _ = proxy.core().remove(proxy_name).await;
+                let _ = proxy.remove(proxy_name).await;
             }
         }
     }
@@ -494,6 +512,7 @@ mod tests {
     use super::*;
     use koi_health::ServiceCheckKind;
     use koi_runtime::instance::{InstanceState, KoiMetadata, PortMapping};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn instance_with(health_kind: Option<&str>, health_path: Option<&str>) -> Instance {
         Instance {
@@ -552,5 +571,200 @@ mod tests {
         let check =
             build_health_check(&instance_with(Some("grpc"), Some("/x")), "svc").expect("check");
         assert!(matches!(check.kind, ServiceCheckKind::Http));
+    }
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("reserve ephemeral port")
+            .local_addr()
+            .expect("ephemeral address")
+            .port()
+    }
+
+    #[tokio::test]
+    async fn preexisting_runtime_instance_is_reconciled_and_reversed() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let service_name = format!("tier1-{}-{nonce}", std::process::id());
+        let instance_id = format!("synthetic-{nonce}");
+        let health_name = format!("runtime:{service_name}");
+        let root = koi_common::test::ensure_data_dir("koi-compose-tests")
+            .join("runtime-story")
+            .join(&instance_id);
+        std::fs::create_dir_all(&root).expect("create isolated story root");
+
+        let cancel = CancellationToken::new();
+        let runtime = Arc::new(RuntimeCore::new(koi_runtime::RuntimeConfig::default()));
+        let mdns = Arc::new(koi_mdns::MdnsCore::with_cancel(cancel.clone()).expect("mDNS core"));
+        let dns = Arc::new(koi_dns::DnsRuntime::new(
+            koi_dns::DnsCore::new(
+                koi_dns::DnsConfig {
+                    port: 0,
+                    state_path: Some(root.join("dns.json")),
+                    ..Default::default()
+                },
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("DNS core"),
+        ));
+        let health = Arc::new(koi_health::HealthRuntime::new(Arc::new(
+            koi_health::HealthCore::new(None, None, None, None).await,
+        )));
+        let proxy = Arc::new(koi_proxy::ProxyRuntime::new(Arc::new(
+            koi_proxy::ProxyCore::with_data_dir(&root).expect("proxy core"),
+        )));
+
+        let proxy_port = free_port();
+        let backend_port = free_port();
+        let instance = Instance {
+            id: instance_id.clone(),
+            name: service_name.clone(),
+            ports: vec![PortMapping {
+                host_port: backend_port,
+                container_port: 8080,
+                protocol: PortProtocol::Tcp,
+                host_ip: "127.0.0.1".into(),
+            }],
+            ips: vec!["127.0.0.1".into()],
+            metadata: KoiMetadata {
+                enable: Some(true),
+                service_type: Some("_http._tcp".into()),
+                name: Some(service_name.clone()),
+                dns_name: Some(service_name.clone()),
+                health_kind: Some("tcp".into()),
+                health_interval: Some(1),
+                health_timeout: Some(1),
+                proxy_port: Some(proxy_port),
+                proxy_remote: Some(false),
+                ..Default::default()
+            },
+            backend: "synthetic".into(),
+            state: InstanceState::Running,
+            discovered_at: chrono::Utc::now(),
+            image: Some("test-only/no-container".into()),
+        };
+
+        runtime
+            .ingest_event(RuntimeEvent::Started(instance.clone()))
+            .await;
+
+        // Deliberately start the orchestrator after inventory is populated. This
+        // is the daemon-restart ordering: the backend lists running containers
+        // before the composition root can subscribe to live events.
+        let orchestrator = spawn_orchestrator(
+            &runtime,
+            OrchestrationTargets {
+                mdns: Some(Arc::clone(&mdns)),
+                dns: Some(Arc::clone(&dns)),
+                health: Some(Arc::clone(&health)),
+                proxy: Some(Arc::clone(&proxy)),
+            },
+            cancel.clone(),
+        );
+
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let inventory = runtime.list_instances().await.expect("runtime inventory");
+                let mdns_present = mdns
+                    .admin_registrations()
+                    .iter()
+                    .any(|(_, registration)| registration.name == service_name);
+                let dns_present = dns
+                    .core()
+                    .list_entries()
+                    .iter()
+                    .any(|entry| entry.name == service_name);
+                let health_present = health
+                    .core()
+                    .list_checks()
+                    .await
+                    .iter()
+                    .any(|check| check.name == health_name);
+                let proxy_present = proxy
+                    .status()
+                    .await
+                    .iter()
+                    .any(|entry| entry.name == service_name && entry.state == "running");
+                if inventory.iter().any(|entry| entry.id == instance_id)
+                    && mdns_present
+                    && dns_present
+                    && health_present
+                    && proxy_present
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("synthetic start must derive inventory, mDNS, DNS, health, and proxy state");
+
+        let proxy_status = proxy
+            .status()
+            .await
+            .into_iter()
+            .find(|entry| entry.name == service_name)
+            .expect("derived proxy status");
+        assert_eq!(proxy_status.cert_source, "self-signed");
+        assert!(proxy_status.error.is_none());
+        assert_eq!(
+            proxy_status.backend,
+            format!("http://127.0.0.1:{backend_port}")
+        );
+
+        runtime
+            .ingest_event(RuntimeEvent::Stopped {
+                id: instance.id,
+                name: instance.name,
+            })
+            .await;
+
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let inventory_empty = runtime
+                    .list_instances()
+                    .await
+                    .expect("runtime inventory")
+                    .iter()
+                    .all(|entry| entry.id != instance_id);
+                let mdns_absent = mdns
+                    .admin_registrations()
+                    .iter()
+                    .all(|(_, registration)| registration.name != service_name);
+                let dns_absent = dns
+                    .core()
+                    .list_entries()
+                    .iter()
+                    .all(|entry| entry.name != service_name);
+                let health_absent = health
+                    .core()
+                    .list_checks()
+                    .await
+                    .iter()
+                    .all(|check| check.name != health_name);
+                let proxy_absent = proxy
+                    .status()
+                    .await
+                    .iter()
+                    .all(|entry| entry.name != service_name);
+                if inventory_empty && mdns_absent && dns_absent && health_absent && proxy_absent {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("synthetic stop must reverse inventory, mDNS, DNS, health, and proxy state");
+
+        cancel.cancel();
+        orchestrator.await.expect("orchestrator shutdown");
+        proxy.stop_all().await;
+        mdns.shutdown().await.expect("mDNS shutdown");
+        std::fs::remove_dir_all(&root).expect("remove isolated story root");
     }
 }

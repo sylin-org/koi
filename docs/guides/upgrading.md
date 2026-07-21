@@ -2,8 +2,9 @@
 
 You want to move a running Koi to a newer build without losing your certificate mesh,
 DNS records, or proxy config — and without getting surprised by a breaking change. Koi
-is **pre-1.0** (the workspace is `0.x`), so "newer build" is not automatically "drop-in
-safe": breaking changes can ship in *any* release until 1.0, including patch releases.
+is on the **1.0 release-candidate line**, so "newer build" is not automatically "drop-in
+safe": a prerelease is where the intended v1 contract meets real networks before the stable
+declaration.
 This guide is the safe upgrade procedure and what to check before you run it.
 
 The short version: **read the [CHANGELOG](../../CHANGELOG.md) first, back up if anything
@@ -11,11 +12,11 @@ looks risky, then upgrade.** The rest of this page is the detail.
 
 ---
 
-## The pre-1.0 reality (read this before every upgrade)
+## The release-candidate reality (read this before every upgrade)
 
-While Koi is `0.x`, SemVer permits breaking changes at any version bump — and Koi uses
-that latitude. A bump from `0.4.1` to `0.4.2` looks like a patch, but it can carry
-breaking changes to on-disk state, the wire protocol, or the CLI surface.
+Koi's `1.0.0-rc.x` builds state the contract intended for 1.0, but remain prereleases.
+An RC update can still correct a contract that proves unsafe or misleading in real use;
+that correction will be called out explicitly in the changelog.
 
 So the rule is simple and it has no exceptions:
 
@@ -47,6 +48,21 @@ There are two shapes of install: a binary you run by hand, and the daemon instal
 an OS service. The service case is the common one.
 
 ### If Koi is installed as a service
+
+First refresh the native binary using the same channel that installed it. The direct
+installer is idempotent and accepts `KOI_VERSION` when you need an exact release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sylin-org/koi/main/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/sylin-org/koi/main/install.ps1 | iex
+```
+
+For the release candidate, use an explicit version: `cargo binstall koi-net --version
+1.0.0-rc.1` or `npx @sylin/koi@1.0.0-rc.1`. Unqualified installs intentionally remain
+on the latest stable release until Koi 1.0.0 ships.
 
 `koi install` is the upgrade command. Running it again against a newer binary **stops
 the existing service, swaps in the new binary, rewrites the service definition, and
@@ -175,6 +191,33 @@ all of it.
 binary are functionally identical to 0.8.0; the release carries only repo release tooling
 (`scripts/bump-version.ps1`, `scripts/release.ps1`). Swap the binary, or don't — nothing on
 disk, on the CLI, at the network edge, or in the JSON / Rust API changes.
+
+---
+
+## The 1.0.0-rc.1 upgrade (membership-intrinsic trust, ADR-023)
+
+**One breaking change, and it is Rust-embedders-only.** Nothing on disk, on the CLI, at the
+network edge, or in the JSON wire shapes changes incompatibly — `member.json` gains two
+optional fields that default cleanly on old files. The daemon is unchanged. The certmesh CA
+and roster need no migration.
+
+Review this only if you **embed Koi** via `koi-embedded`:
+
+- **`Builder::certmesh_background(true)` (opt-in) → `Builder::certmesh_managed(bool)`
+  (opt-out, default on).** Embedded certmesh is now **self-managed by default** once the node
+  is a member — it pulls the signed trust bundle (policy refresh + cross-member revocation
+  honoring), renews its leaf, and stands itself down if revoked, the same loop the daemon runs.
+  The loop is a no-op until the node joins a mesh.
+  - **If you called `.certmesh_background(true)`:** it no longer exists — delete the call (you
+    already get the loop) or replace it with `.certmesh_managed(true)` (the default).
+  - **If you drive renewal/revocation yourself over your own plane** (and never opened Koi's
+    CA HTTP/mTLS ports to every member): add **`.certmesh_managed(false)`** to keep driving —
+    otherwise Koi's role loop now runs and will try to reach the CA. Then pull trust yourself
+    with `pull_trust_bundle()` or, carrying the bundle over your own transport,
+    `apply_trust_bundle(&SignedBundle)` (Koi still verifies pin + signature + anti-rollback).
+- **Membership now propagates revocation.** If you relied on the old (broken) behavior where a
+  revoked member's envelopes kept verifying on other members, they no longer do — a member
+  honors the CA's full revoked set. This is the fix, not a regression.
 
 ---
 

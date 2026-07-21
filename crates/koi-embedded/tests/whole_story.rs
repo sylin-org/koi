@@ -232,8 +232,8 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
         "preflight: advertised CA fingerprint must match the pinned invite fingerprint"
     );
 
-    // B generates its own keypair+CSR (the private key is written 0600 locally and never
-    // leaves B).
+    // B generates its own keypair+CSR. The private key is staged 0600 locally and never
+    // leaves B; it must not become the active key until the signed leaf is validated.
     let csr = b_core
         .prepare_member_csr(host, &sans)
         .await
@@ -242,12 +242,20 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(cert_dir.join("key.pem"))
+        let mode = std::fs::metadata(cert_dir.join("key.pending.pem"))
             .unwrap()
             .permissions()
             .mode();
-        assert_eq!(mode & 0o777, 0o600, "member private key must be 0600");
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "pending member private key must be 0600"
+        );
     }
+    assert!(
+        !cert_dir.join("key.pem").exists(),
+        "pre-validation CSR preparation must not create an active member key"
+    );
 
     // POST /join over real HTTP (embedded mounts the certmesh routes with no token).
     let join_resp = client
@@ -290,6 +298,7 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
             &join.service_cert,
             &join.ca_cert,
             Some(a_base.as_str()),
+            None,
             Some(pinned_fp.as_str()),
             &sans,
             Some(join.policy.clone()),
@@ -442,6 +451,20 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
         other => panic!("expected Updated(self_revoked), got {other:?}"),
     }
 
+    // ADR-023 §5 — outbound self-gate: now that B knows it is revoked it stops asserting an
+    // authenticated identity. `is_self_revoked()` reports it, and `sign()` degrades to an
+    // unsigned passthrough — so even a peer that has not yet pulled the revocation sees B as
+    // Anonymous rather than a trusted member.
+    assert!(
+        b_core.is_self_revoked().await,
+        "B observes its own revocation"
+    );
+    let gated = b_core.sign(b"control-plane mutation").await;
+    assert!(
+        gated.sig.is_none(),
+        "a revoked node must not mint authenticated envelopes (outbound self-gate)"
+    );
+
     // ── teardown ──
     cancel.cancel();
     let _ = tokio::time::timeout(Duration::from_secs(5), mtls_server).await;
@@ -524,6 +547,7 @@ async fn wrong_fingerprint_invite_aborts_at_preflight() {
             &join.service_cert,
             &join.ca_cert,
             Some(a_base.as_str()),
+            None,
             Some(&forged_fp),
             &sans,
             Some(join.policy.clone()),
@@ -540,6 +564,7 @@ async fn wrong_fingerprint_invite_aborts_at_preflight() {
             &join.service_cert,
             &join.ca_cert,
             Some(a_base.as_str()),
+            None,
             Some(&real_fp),
             &sans,
             Some(join.policy),

@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "artifact": {
+    "target": "x86_64-unknown-linux-musl",
+    "package": "koi-net",
+    "relative_path": "target/x86_64-unknown-linux-musl/release/koi"
+  },
+  "nodes": [
+    {
+      "kind": "local_windows",
+      "id": "windows",
+      "hostname": "stone-leaded-sparkle",
+      "address": "192.168.1.138",
+      "http_port": 18541,
+      "mtls_port": 18542,
+      "acme_port": 18543,
+      "proxy_port": 18544,
+      "dns_port": 18553,
+      "fixture_port": 18554,
+      "container_port": 18555
+    },
+    {
+      "kind": "putty_linux",
+      "id": "brook",
+      "hostname": "stone-platinum-brook",
+      "address": "192.168.1.44",
+      "user": "stone",
+      "host_key": "SHA256:6IX/nLwK2hc+EfikGoEp/Hr+ROkvucoPDwmEBgQUZAU",
+      "architecture": "x86_64",
+      "remote_root": "/home/stone/koi-test",
+      "http_port": 16541,
+      "mtls_port": 16542,
+      "acme_port": 16543,
+      "proxy_port": 16544,
+      "dns_port": 16553,
+      "fixture_port": 16554,
+      "container_port": 16555
+    },
+    {
+      "kind": "putty_linux",
+      "id": "granite",
+      "hostname": "stone-granite-spring",
+      "address": "192.168.1.55",
+      "user": "stone",
+      "host_key": "SHA256:nXLOx/x74paOdisOxNRKp0lbCOYFsqEQxvauAUDaikk",
+      "architecture": "x86_64",
+      "remote_root": "/home/stone/koi-test",
+      "http_port": 17541,
+      "mtls_port": 17542,
+      "acme_port": 17543,
+      "proxy_port": 17544,
+      "dns_port": 17553,
+      "fixture_port": 17554,
+      "container_port": 17555
+    }
+  ]
+}

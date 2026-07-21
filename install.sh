@@ -13,6 +13,7 @@
 #   KOI_INSTALL_DIR    install location                 (default: /usr/local/bin
 #                                                         as root, else ~/.local/bin)
 #   KOI_NO_MODIFY_PATH any non-empty value: don't print PATH guidance
+#   KOI_EXPECTED_SHA256 trusted expected archive digest (bootstrap/internal use)
 #
 # Example, pinning a version to a custom dir:
 #   curl -fsSL .../install.sh | KOI_INSTALL_DIR=$HOME/bin KOI_VERSION=v0.5.0 sh
@@ -146,11 +147,19 @@ main() {
     say "downloading ${archive}"
     download "${tmp}/${archive}" "${base_url}/${archive}" \
         || err "download failed — does ${version} have a ${target} build? (https://github.com/${REPO}/releases)"
-    download "${tmp}/${archive}.sha256" "${base_url}/${archive}.sha256" \
-        || err "could not download the checksum for ${archive}"
-
-    # tr -d '\r' tolerates a checksum file served with CRLF endings.
-    expected="$(cut -d' ' -f1 < "${tmp}/${archive}.sha256" | tr -d '\r')"
+    if [ -n "${KOI_EXPECTED_SHA256:-}" ]; then
+        expected="$(printf '%s' "$KOI_EXPECTED_SHA256" | tr 'A-F' 'a-f')"
+        case "$expected" in
+            *[!a-f0-9]*) err "KOI_EXPECTED_SHA256 must be exactly 64 hexadecimal characters" ;;
+        esac
+        [ "${#expected}" -eq 64 ] \
+            || err "KOI_EXPECTED_SHA256 must be exactly 64 hexadecimal characters"
+    else
+        download "${tmp}/${archive}.sha256" "${base_url}/${archive}.sha256" \
+            || err "could not download the checksum for ${archive}"
+        # tr -d '\r' tolerates a checksum file served with CRLF endings.
+        expected="$(cut -d' ' -f1 < "${tmp}/${archive}.sha256" | tr -d '\r' | tr 'A-F' 'a-f')"
+    fi
     actual="$(sha256_of "${tmp}/${archive}")"
     [ -n "$expected" ] || err "checksum file was empty"
     if [ "$expected" != "$actual" ]; then

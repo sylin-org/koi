@@ -263,6 +263,20 @@ impl KoiClient {
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
+    pub fn dns_txt_set(&self, name: &str, value: &str) -> Result<serde_json::Value> {
+        self.put_json(
+            "/v1/dns/txt",
+            &serde_json::json!({ "name": name, "value": value }),
+        )
+    }
+
+    pub fn dns_txt_clear(&self, name: &str, value: &str) -> Result<serde_json::Value> {
+        self.delete_json(
+            "/v1/dns/txt",
+            &serde_json::json!({ "name": name, "value": value }),
+        )
+    }
+
     pub fn dns_start(&self) -> Result<serde_json::Value> {
         self.post_json("/v1/dns/serve", &serde_json::json!({}))
     }
@@ -404,6 +418,17 @@ impl KoiClient {
         let url = format!("{}{path}", self.endpoint);
         let resp = self
             .auth_put(&url)
+            .send_json(body.clone())
+            .map_err(map_error)?;
+        resp.into_json()
+            .map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    /// DELETE JSON at an arbitrary path and return the response as a JSON value.
+    pub fn delete_json(&self, path: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}{path}", self.endpoint);
+        let resp = self
+            .auth_delete(&url)
             .send_json(body.clone())
             .map_err(map_error)?;
         resp.into_json()

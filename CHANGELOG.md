@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.1] - 2026-07-20
+
+**The v1 release candidate: let everything local find, trust, and talk.** Koi's container,
+application, and device surfaces now converge behind one public promise: make local things
+delightfully discoverable, secure, and interconnected. This release turns that promise into
+a releasable system with artifact-first installation, membership-intrinsic trust, truthful
+runtime recovery, and repeatable physical Windows/Linux validation.
+
+The `1.0.0-rc.1` contract is intended to become `1.0.0`; the release-candidate period is for
+finding remaining defects in real networks, not for adding another capability layer.
+
+### Fixed
+- **A member now honors cross-member revocations.** `pull_trust_bundle` applied the signed
+  bundle's revoked set only to detect *its own* revocation and discarded the rest, so a pure
+  member's `verify`/`open` never rejected *other* revoked members (their leaves still chained
+  to the CA). The bundle's full revoked set (both the `revoked[]` list and any member with
+  `status == "revoked"`) is now applied into a persisted member-side store that `verify`/`open`
+  honor — full-replace (so an un-revocation also clears), guarded by the existing monotonic
+  `seq` anti-rollback floor. The role-loop doc comment that *claimed* this already happened is
+  now true.
+- **Runtime state now converges after interruption.** Docker event streams reconnect with
+  bounded backoff, a reconnect reconciles the complete observed service set, and daemon
+  restart restores label-derived services instead of waiting for the next container event.
+- **Capability startup is truthful.** A failed required listener or adapter can no longer be
+  reported as healthy merely because its task was spawned; startup either proves readiness
+  or returns the actionable failure.
+- **Certificate issuance fails safely.** Member private keys remain staged until enrollment
+  succeeds, bounded clock skew no longer rejects otherwise-valid new leaves, and ACME DNS
+  names are normalized through the same authority that owns Koi's `.internal` identity.
+- **Recovery is portable.** Windows script paths, local IPC cleanup, DNS bind recovery, and
+  mDNS retry behavior now survive the platform-specific failure modes exercised by the v1 lab.
+
+### Added
+- **A repeatable v1 validation lab.** One local build drives disposable artifacts across the
+  Windows host and two physical Linux machines, covering discovery, DNS, proxying, certmesh
+  enrollment/revocation/renewal, service lifecycle, reconnect, recovery, and bounded soak.
+  Evidence is published in one machine-readable and one human-readable run record.
+- **Prerelease-safe publication.** One release-version evaluator now owns SemVer validation,
+  tag identity, and stable/prerelease channel policy. `1.0.0-rc.1` can flow through the existing
+  build-once pipeline as a GitHub prerelease, exact GHCR tag, crates.io prerelease, and npm `next`
+  package without advancing any stable `latest` pointer. Tag/workspace mismatches fail before a
+  release, and crates.io propagation verifies the exact requested version.
+- **`CertmeshCore::is_certmesh_member()`** — a cheap (no-lock, no-network) public predicate for
+  "is this node an active mesh member?", the supported gate for a *membership = enforcement*
+  consumer and the same fact Koi keys its own self-management on.
+- **`CertmeshCore::is_self_revoked()`** — whether this node's own identity was revoked mesh-wide
+  (hostname-keyed, authoritative), for surfacing "you were removed — rejoin".
+- **`CertmeshCore::apply_trust_bundle(&SignedBundle)`** — verify (pin + ES256 + anti-rollback)
+  and apply a trust bundle obtained over *your own* transport, so a self-driving consumer needs
+  no reachability to the CA's HTTP port and Koi still owns verification. `SignedBundle` is now
+  re-exported from the crate root.
+- **Outbound self-gate:** once a node observes its own revocation, `sign()`/`seal()` stop
+  minting authenticated envelopes (degrade to the Open/unsigned passthrough, loud one-time
+  warning) — so it can no longer assert an authenticated identity even to peers that have not
+  yet pulled the revocation. Bounded: it does not delete the on-disk leaf or exit.
+
+### Changed (breaking — embedded only)
+- **`Builder::certmesh_background(bool)` (opt-in, default off) → `Builder::certmesh_managed(bool)`
+  (opt-out, default on).** An embedded member is self-managed by default (the daemon already
+  was). **If you embed Koi and drive renewal yourself**, add `.certmesh_managed(false)` to keep
+  driving — otherwise Koi's role loop runs (pulling the bundle from, and renewing against, the
+  CA's ports). The loop is a no-op until the node is a member. See
+  [upgrading](docs/guides/upgrading.md).
+
 ## [0.9.0] - 2026-06-24
 
 **Release tooling.** Cutting a release is now two commands instead of a manual, many-file

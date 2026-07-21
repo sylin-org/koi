@@ -1,23 +1,33 @@
 # Koi User Guide
 
-Koi gives your local network the pipeline it never gets out of the box —
-**discover → name → trust → serve** — from one binary. This guide takes you from
-first command to daily usage; each capability then has its own deep-dive.
+**Let everything local find, trust, and talk.** Koi bridges containers,
+applications, and devices so they can discover, trust, and communicate with one
+another across a private network. This guide takes you from the first command to
+daily usage; each implementation capability then has its own deep-dive.
 
-**Core pillars:**
+**Find:**
 
 - **[mDNS — Service Discovery](docs/guides/mdns.md)** — find, advertise, and monitor services, with a real lease lifecycle
 - **[DNS — Local Resolver](docs/guides/dns.md)** — friendly names from three sources: static entries, discovery, certificates
-- **[Certmesh — Certificate Mesh](docs/guides/certmesh.md)** — private CA, guided enrollment, OS trust-store installation
 - **[Runtime — Container Lifecycle](docs/guides/runtime.md)** — label a container; Koi announces, names, and watches it
 
-**Supporting cast:**
+**Trust:**
+
+- **[Certmesh — Certificate Mesh](docs/guides/certmesh.md)** — private CA, guided enrollment, renewal, and membership
+- **[Trust — OS Integration](docs/guides/trust.md)** — install, inspect, export, and diagnose the local trust root
+- **[ACME — Standard Certificate Issuance](docs/guides/acme.md)** — let existing proxies obtain and renew in-zone certificates
+
+**Connect:**
 
 - **[Proxy — TLS Endpoint](docs/guides/proxy.md)** — zero-config TLS termination for certmesh certificates
-- **[Health — Endpoint Monitoring](docs/guides/health.md)** — HTTP and TCP checks feeding status and the dashboard
 - **[UDP — Datagram Bridging](docs/guides/udp.md)** — host UDP sockets for bridge-networked containers
-- **[System — Daemon Lifecycle](docs/guides/system.md)** — install, manage, uninstall
+- **[Containers — Network Participation](CONTAINERS.md)** — let isolated workloads announce, discover, and communicate
 - **[Embedded — Rust In-Process](docs/guides/embedded.md)** — use Koi as a library
+
+**Operate and observe:**
+
+- **[Health — Endpoint Monitoring](docs/guides/health.md)** — HTTP and TCP checks feeding status and the dashboard
+- **[System — Daemon Lifecycle](docs/guides/system.md)** — install, manage, uninstall
 
 References: [CLI](docs/reference/cli.md) ·
 [HTTP API](docs/reference/http-api.md) ·
@@ -76,8 +86,8 @@ diagnostics.
 
 ## The daemon
 
-One-off commands work standalone, but the toolbox — DNS serving, certificates,
-the dashboard, container integration — lives in the daemon:
+One-off commands work standalone, but composed services — DNS, certificates,
+the dashboard, and container integration — live in the daemon:
 
 ```
 koi --daemon             # foreground (Ctrl+C to stop)
@@ -177,20 +187,20 @@ echo '{"browse":"_http._tcp"}' | koi
 
 ## Local DNS in five minutes
 
-Koi's resolver serves one local zone (default: `.lan`) populated from three
+Koi's resolver serves one local zone (default: `.internal`) populated from three
 sources — static entries you add, certmesh certificate names, and mDNS-derived
 aliases — and forwards everything else upstream.
 
 ```
 koi dns serve                      # start the resolver (or run inside the daemon)
-koi dns add grafana 10.0.0.42      # static entry → grafana.lan
+koi dns add grafana 10.0.0.42      # static entry → grafana.internal
 koi dns lookup grafana             # resolve through Koi
 koi dns list                       # everything currently resolvable
 ```
 
 **Keeping your existing DNS:** you don't have to point machines at Koi. Delegate
 just the Koi zone from the resolver you already run — Pi-hole, AdGuard Home, and
-dnsmasq all support per-domain conditional forwarding (e.g. forward `*.lan` to
+dnsmasq all support per-domain conditional forwarding (e.g. forward `*.internal` to
 Koi's port). Same pattern works for a Tailscale split-DNS rule, which lets remote
 tailnet devices resolve your LAN names. See the [DNS guide](docs/guides/dns.md).
 

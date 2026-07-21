@@ -33,6 +33,8 @@ fn posture_member_state(hostname: &str) -> crate::member::MemberState {
         sans: vec![hostname.to_string()],
         policy: crate::roster::CertPolicy::default(),
         last_bundle_seq: 0,
+        revoked_fingerprints: Vec::new(),
+        self_revoked: false,
         reload_hook: None,
     }
 }
@@ -225,6 +227,184 @@ fn make_locked_core(roster: Roster) -> CertmeshCore {
     CertmeshCore::locked_with_paths(roster, test_paths())
 }
 
+async fn backup_fixture(tag: &str) -> (CertmeshCore, CertmeshPaths, String) {
+    std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+    let paths = isolated_posture_paths(tag);
+    let ca_passphrase = format!("{tag}-ca-passphrase");
+    let ca = ca::create_ca(&ca_passphrase, &[31u8; 32], &paths)
+        .expect("fixture CA")
+        .0;
+    let secret = koi_crypto::totp::generate_secret();
+    let stored = koi_crypto::auth::store_totp(&secret, &ca_passphrase).expect("store auth");
+    std::fs::write(
+        paths.auth_path(),
+        serde_json::to_vec_pretty(&stored).expect("serialize auth"),
+    )
+    .expect("write auth");
+    let roster = make_test_roster_with_member("surviving-member", MemberRole::Member);
+    crate::roster::persist_roster(&roster, &paths.roster_path())
+        .await
+        .expect("persist roster");
+    crate::audit::append_entry_to(&paths.audit_log_path(), "fixture_created", &[])
+        .expect("write audit");
+    let core = CertmeshCore::new_with_paths(
+        ca,
+        roster,
+        Some(koi_crypto::auth::AuthState::Totp(secret)),
+        paths.clone(),
+    );
+    (core, paths, ca_passphrase)
+}
+
+#[tokio::test]
+async fn restore_prevalidates_mismatched_ca_before_writing() {
+    let (source, _source_paths, ca_passphrase) = backup_fixture("restore-mismatch-source").await;
+    let backup_passphrase = "restore-mismatch-backup";
+    let bundle = source
+        .backup(&ca_passphrase, backup_passphrase)
+        .await
+        .expect("create backup");
+    let mut payload = crate::backup::decode_backup(&bundle, backup_passphrase).unwrap();
+    let foreign_paths = isolated_posture_paths("restore-mismatch-foreign");
+    let foreign = ca::create_ca("foreign-passphrase", &[32u8; 32], &foreign_paths)
+        .unwrap()
+        .0;
+    payload.ca_cert_pem = foreign.cert_pem;
+    let inconsistent = crate::backup::encode_backup(&payload, backup_passphrase).unwrap();
+
+    let target_paths = isolated_posture_paths("restore-mismatch-target");
+    let target = CertmeshCore::uninitialized_with_paths(target_paths.clone());
+    let error = target
+        .restore(&inconsistent, backup_passphrase, "new-passphrase")
+        .await
+        .expect_err("mismatched CA material must be rejected");
+
+    assert!(error.to_string().contains("does not match"));
+    assert!(
+        !target_paths.is_ca_initialized(),
+        "validation failure must happen before the first target write"
+    );
+    assert_eq!(target.posture(), koi_common::posture::Posture::OPEN);
+}
+
+#[tokio::test]
+async fn restore_rebinds_activates_and_clears_member_only_state() {
+    let (source, _source_paths, ca_passphrase) = backup_fixture("restore-clean-source").await;
+    let source_fingerprint = source.ca_fingerprint().await.unwrap();
+    let backup_passphrase = "restore-clean-backup";
+    let bundle = source
+        .backup(&ca_passphrase, backup_passphrase)
+        .await
+        .expect("create backup");
+
+    let target_paths = isolated_posture_paths("restore-clean-target");
+    crate::member::save(
+        &target_paths.member_state_path(),
+        &posture_member_state("former-member"),
+    )
+    .unwrap();
+    std::fs::write(target_paths.invites_path(), b"stale invites").unwrap();
+    std::fs::create_dir_all(target_paths.ca_dir()).unwrap();
+    std::fs::write(target_paths.rate_limiter_path(), b"stale throttle").unwrap();
+    std::fs::create_dir_all(target_paths.acme_dir()).unwrap();
+    std::fs::write(target_paths.acme_accounts_path(), b"stale accounts").unwrap();
+    let target = CertmeshCore::uninitialized_with_paths(target_paths.clone());
+    let mut posture = target.watch_posture();
+    assert!(!posture.borrow_and_update().signed);
+
+    target
+        .restore(&bundle, backup_passphrase, "restored-passphrase")
+        .await
+        .expect("restore succeeds");
+
+    assert!(
+        posture.has_changed().unwrap(),
+        "restore must publish posture"
+    );
+    assert!(posture.borrow_and_update().signed);
+    assert_eq!(target.ca_fingerprint().await.unwrap(), source_fingerprint);
+    let identity = target
+        .local_identity()
+        .await
+        .expect("restored self identity");
+    assert!(crate::diagnosis::identity_material_is_usable(
+        &identity.cert_pem,
+        &identity.key_pem,
+        &identity.ca_cert_pem
+    ));
+    assert!(target
+        .certmesh_status()
+        .await
+        .members
+        .iter()
+        .any(|member| member.hostname == "surviving-member"));
+    assert!(!target_paths.member_state_path().exists());
+    assert!(!target_paths.invites_path().exists());
+    assert!(!target_paths.rate_limiter_path().exists());
+    assert!(!target_paths.acme_dir().exists());
+    assert!(ca::load_ca("restored-passphrase", &target_paths).is_ok());
+    assert!(ca::load_ca(&ca_passphrase, &target_paths).is_err());
+    assert!(machine_binding_ok(&target_paths));
+    if koi_crypto::vault::machine_fingerprint().is_some() {
+        assert!(target_paths.machine_bind_path().exists());
+    }
+    let audit = crate::audit::read_log_from(&target_paths.audit_log_path()).unwrap();
+    assert!(audit.contains("fixture_created"));
+    assert!(audit.contains("backup_restored"));
+}
+
+#[tokio::test]
+async fn self_enroll_replaces_fresh_leaf_from_a_different_ca() {
+    std::env::set_var("KOI_NO_CREDENTIAL_STORE", "1");
+    let paths = isolated_posture_paths("self-enroll-stale-ca");
+    let current = ca::create_ca("current-pass", &[41u8; 32], &paths)
+        .unwrap()
+        .0;
+    let foreign_paths = isolated_posture_paths("self-enroll-stale-ca-foreign");
+    let foreign = ca::create_ca("foreign-pass", &[42u8; 32], &foreign_paths)
+        .unwrap()
+        .0;
+    let hostname = CertmeshCore::local_hostname().unwrap();
+    let sans = vec![hostname.clone(), format!("{hostname}.internal")];
+    let stale = ca::issue_certificate(&foreign, &hostname, &sans, 90).unwrap();
+    crate::certfiles::write_cert_files_to(&paths.certs_dir().join(&hostname), &stale).unwrap();
+    let stale_pem = stale.cert_pem;
+    let core = CertmeshCore::new_with_paths(
+        current,
+        Roster::new(JUST_ME.0, JUST_ME.1, None),
+        None,
+        paths,
+    );
+
+    let repaired = core.self_enroll().await.expect("self-enroll repairs leaf");
+
+    assert_ne!(repaired.cert_pem, stale_pem);
+    assert!(crate::diagnosis::identity_material_is_usable(
+        &repaired.cert_pem,
+        &repaired.key_pem,
+        &repaired.ca_cert_pem
+    ));
+}
+
+#[tokio::test]
+async fn member_csr_uses_the_core_configured_zone() {
+    let paths = CertmeshPaths::with_data_dir(
+        koi_common::test::ensure_data_dir("koi-certmesh-zone-tests").join("member-csr"),
+    );
+    let core = CertmeshCore::uninitialized_with_paths(paths)
+        .with_dns_zone("Lab.Internal.")
+        .unwrap();
+    let csr = core
+        .prepare_member_csr("Node-A", &[])
+        .await
+        .expect("member CSR");
+    let names = csr::requested_sans(&csr).unwrap();
+    assert!(names.contains(&"node-a".to_string()));
+    assert!(names.contains(&"node-a.lab.internal".to_string()));
+    assert!(!names.contains(&"node-a.local".to_string()));
+    assert_eq!(core.dns_zone(), "lab.internal");
+}
+
 // ── auto-unlock vault round-trip ─────────────────────────────────
 #[test]
 fn auto_unlock_key_round_trips_through_vault() {
@@ -356,8 +536,6 @@ async fn renew_ca_self_leaf_if_due_renews_when_due() {
 /// fingerprint. The key-custody invariant holds across renewal.
 #[tokio::test]
 async fn member_pull_renewal_round_trip() {
-    use crate::roster::CertPolicy;
-
     // `ensure_data_dir` returns a process-wide shared base (OnceLock, prefix is
     // only honored on the first call), so carve a test-unique subdir — otherwise
     // this test's `remove_dir_all` races other e2e tests sharing `base/ca`.
@@ -402,6 +580,7 @@ async fn member_pull_renewal_round_trip() {
             &join.service_cert,
             &join.ca_cert,
             Some("http://127.0.0.1:5641"),
+            None,
             Some(&join.ca_fingerprint),
             &["renew-host".to_string()],
             Some(join.policy.clone()),
@@ -426,23 +605,26 @@ async fn member_pull_renewal_round_trip() {
     let app = Router::new().nest("/v1/certmesh", ca_core.inter_node_routes());
     let server = tokio::spawn(mtls::serve(app, listener, config, cancel.clone()));
 
-    // Point the armed member state at the ephemeral test port and force "due".
+    // Point the armed member state at the ephemeral test port.
     let mut st = member::load(&member_paths.member_state_path()).expect("renewal armed");
     assert_eq!(st.ca_host, "127.0.0.1");
     st.ca_mtls_port = port;
-    st.policy = CertPolicy {
-        leaf_lifetime_days: 90,
-        renew_threshold_days: 365, // > leaf lifetime → always due
-        grace_days: 14,
-    };
     member::save(&member_paths.member_state_path(), &st).unwrap();
 
     let cert_dir = member_paths.certs_dir().join("renew-host");
     let old_key = std::fs::read_to_string(cert_dir.join("key.pem")).unwrap();
     let old_cert = std::fs::read_to_string(cert_dir.join("cert.pem")).unwrap();
 
-    // ── Member pulls the renewal over mTLS ──
-    let outcome = member_core.renew_self_if_due().await.expect("renewal ok");
+    // A fresh leaf is not scheduled for renewal, but the operator can request an
+    // immediate rotation through the same CSR-only mTLS transaction.
+    let scheduled = member_core
+        .renew_self_if_due()
+        .await
+        .expect("scheduled check ok");
+    assert!(matches!(scheduled, RenewOutcome::NotDue { .. }));
+
+    // ── Member pulls the operator-requested renewal over mTLS ──
+    let outcome = member_core.renew_self().await.expect("renewal ok");
     assert!(
         matches!(outcome, RenewOutcome::Renewed { .. }),
         "expected Renewed, got {outcome:?}"
@@ -531,6 +713,8 @@ async fn trust_bundle_pull_round_trip() {
             sans: vec!["bundle-host".to_string()],
             policy: crate::roster::CertPolicy::default(),
             last_bundle_seq: 0,
+            revoked_fingerprints: Vec::new(),
+            self_revoked: false,
             reload_hook: None,
         },
     )
@@ -571,6 +755,110 @@ async fn trust_bundle_pull_round_trip() {
         }
         other => panic!("expected Updated(self_revoked), got {other:?}"),
     }
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(base.join("ca"));
+    let _ = std::fs::remove_dir_all(base.join("member"));
+}
+
+/// ADR-023 §3: a member applies the bundle's **cross-member** revoked set, so its local
+/// `verify`/`open` reject *other* revoked members — not just itself. The previous behavior
+/// read the bundle's revoked set only to compute self-revocation and discarded the rest.
+#[tokio::test]
+async fn trust_bundle_applies_cross_member_revocation() {
+    let base = koi_common::test::ensure_data_dir("koi-certmesh-xrevoke").join("xrevoke");
+    let ca_paths = CertmeshPaths::with_data_dir(base.join("ca"));
+    let member_paths = CertmeshPaths::with_data_dir(base.join("member"));
+    let _ = std::fs::remove_dir_all(ca_paths.data_dir());
+    let _ = std::fs::remove_dir_all(member_paths.data_dir());
+
+    // CA with two enrolled hosts: the member M, and a peer P that will be revoked.
+    let (ca_state, _m) = ca::create_ca("xrev", &[6u8; 32], &ca_paths).unwrap();
+    let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+    let auth = koi_crypto::auth::AuthState::Totp(koi_crypto::totp::generate_secret());
+    let ca_core = CertmeshCore::new_with_paths(ca_state, roster, Some(auth), ca_paths.clone());
+    for host in ["m-host", "p-host"] {
+        let (_k, csr) = csr::generate_keypair_and_csr(host, &[host.to_string()]).unwrap();
+        let invite = ca_core.mint_invite(host, 60).await.unwrap().token;
+        ca_core
+            .enroll(&protocol::JoinRequest {
+                hostname: host.to_string(),
+                auth: None,
+                invite_token: Some(invite),
+                csr: Some(csr),
+                sans: vec![host.to_string()],
+            })
+            .await
+            .unwrap();
+    }
+    let pin = ca::ca_fingerprint_from_disk(&ca_paths).unwrap();
+
+    // Revoke the PEER (not the member).
+    ca_core
+        .revoke_member("p-host", Some("op".into()), Some("compromised".into()))
+        .await
+        .unwrap();
+    // The peer's fingerprint as the CA holds it (what the bundle will carry).
+    let p_fp = ca_core
+        .certmesh_status()
+        .await
+        .members
+        .iter()
+        .find(|m| m.hostname == "p-host")
+        .expect("peer in roster")
+        .cert_fingerprint
+        .clone();
+    assert!(!p_fp.is_empty(), "peer has a recorded fingerprint");
+
+    // Serve the certmesh routes (incl. GET /trust-bundle) over plain HTTP.
+    let app = Router::new().nest("/v1/certmesh", crate::http::routes(ca_core.state.clone()));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    // Arm the member with a pin + fresh anti-rollback floor.
+    member::save(
+        &member_paths.member_state_path(),
+        &member::MemberState {
+            hostname: "m-host".to_string(),
+            ca_host: "127.0.0.1".to_string(),
+            ca_mtls_port: 5642,
+            ca_http_port: port,
+            ca_fingerprint: pin.clone(),
+            sans: vec!["m-host".to_string()],
+            policy: crate::roster::CertPolicy::default(),
+            last_bundle_seq: 0,
+            revoked_fingerprints: Vec::new(),
+            self_revoked: false,
+            reload_hook: None,
+        },
+    )
+    .unwrap();
+    let member_core = CertmeshCore::uninitialized_with_paths(member_paths.clone());
+
+    // Pull → M is NOT self-revoked, but it applies the peer's revocation.
+    match member_core.pull_trust_bundle().await.expect("pull ok") {
+        BundleOutcome::Updated { self_revoked, .. } => {
+            assert!(!self_revoked, "the member itself is not revoked")
+        }
+        other => panic!("expected Updated, got {other:?}"),
+    }
+
+    // The cross-member revoked fingerprint is persisted in member.json...
+    let stored = member::load(&member_paths.member_state_path()).unwrap();
+    assert!(
+        stored.revoked_fingerprints.contains(&p_fp),
+        "member persisted the peer's revoked fingerprint"
+    );
+    // ...and surfaces through revoked_fingerprints() — the exact slice verify()/open()
+    // consume — so the member now rejects the peer's envelopes despite keeping no roster.
+    let honored = member_core.revoked_fingerprints().await;
+    assert!(
+        honored.contains(&p_fp),
+        "verify()/open() now honor the peer's revocation on a pure member"
+    );
 
     server.abort();
     let _ = std::fs::remove_dir_all(base.join("ca"));
@@ -625,6 +913,35 @@ async fn renew_member_san_expansion_is_rejected() {
         "a SAN-expansion attempt must be rejected with InvalidPayload, got {err:?}"
     );
     assert_eq!(koi_common::error::ErrorCode::from(&err).http_status(), 400);
+}
+
+/// A pre-zone roster remains renewable after an upgrade: the central policy
+/// adds the configured FQDN to both CSR authorization and the committed roster
+/// while retaining historical legitimate names.
+#[tokio::test]
+async fn renewal_migrates_legacy_names_to_the_configured_zone() {
+    let ca = make_test_ca();
+    let roster = make_test_roster_with_member("legacy-host", MemberRole::Primary);
+    let core = make_unlocked_core(ca, roster)
+        .with_dns_zone("lab.internal")
+        .unwrap();
+    let requested = [
+        "legacy-host".to_string(),
+        "legacy-host.lab.internal".to_string(),
+        "legacy-host.local".to_string(),
+    ];
+    let (_key, csr) = csr::generate_keypair_and_csr("legacy-host", &requested).unwrap();
+
+    core.renew_member("legacy-host", &csr)
+        .await
+        .expect("legacy member renews with configured-zone name");
+
+    let roster = core.state.roster.lock().await;
+    let member = roster.find_member("legacy-host").unwrap();
+    assert!(member
+        .cert_sans
+        .contains(&"legacy-host.lab.internal".into()));
+    assert!(member.cert_sans.contains(&"legacy-host.local".into()));
 }
 
 /// An expired member cert is STILL renewable — renewal is the fix for expiry, so
@@ -779,6 +1096,7 @@ async fn install_member_cert_rejects_pin_mismatch() {
             &join.service_cert,
             &join.ca_cert,
             Some("http://127.0.0.1:5641"),
+            None,
             Some(&wrong_fp),
             &["pin-host".to_string()],
             Some(join.policy.clone()),
@@ -806,6 +1124,7 @@ async fn install_member_cert_rejects_pin_mismatch() {
             &join.service_cert,
             &join.ca_cert,
             Some("http://127.0.0.1:5641"),
+            Some(16542),
             Some(&real_fp),
             &["pin-host".to_string()],
             Some(join.policy.clone()),
@@ -814,8 +1133,102 @@ async fn install_member_cert_rejects_pin_mismatch() {
         .unwrap();
     assert!(std::path::Path::new(&dir).join("cert.pem").exists());
     assert!(
-        member::load(&member_paths.member_state_path()).is_some(),
-        "correct pin arms renewal"
+        !std::path::Path::new(&dir).join("key.pending.pem").exists(),
+        "successful install consumes the pending key"
+    );
+    let armed = member::load(&member_paths.member_state_path()).expect("correct pin arms renewal");
+    assert_eq!(armed.ca_mtls_port, 16542);
+
+    let _ = std::fs::remove_dir_all(base.join("ca"));
+    let _ = std::fs::remove_dir_all(base.join("member"));
+}
+
+/// Preparing a replacement CSR is side-effect free with respect to the active
+/// identity. A CA refusal happens between `prepare_member_csr` and
+/// `install_member_cert`, so abandoning that CSR must leave both active files
+/// byte-for-byte unchanged. A mismatched signed response is likewise rejected
+/// before promotion.
+#[tokio::test]
+async fn refused_rejoin_cannot_replace_active_member_identity() {
+    let base =
+        koi_common::test::ensure_data_dir("koi-certmesh-rejoin-custody").join("rejoin-custody");
+    let ca_paths = CertmeshPaths::with_data_dir(base.join("ca"));
+    let member_paths = CertmeshPaths::with_data_dir(base.join("member"));
+    let _ = std::fs::remove_dir_all(ca_paths.data_dir());
+    let _ = std::fs::remove_dir_all(member_paths.data_dir());
+
+    let (ca_state, _m) = ca::create_ca("custody", &[13u8; 32], &ca_paths).unwrap();
+    let roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+    let auth = koi_crypto::auth::AuthState::Totp(koi_crypto::totp::generate_secret());
+    let ca_core = CertmeshCore::new_with_paths(ca_state, roster, Some(auth), ca_paths.clone());
+    let member_core = CertmeshCore::uninitialized_with_paths(member_paths.clone());
+
+    let sans = ["custody-host".to_string()];
+    let csr = member_core
+        .prepare_member_csr("custody-host", &sans)
+        .await
+        .unwrap();
+    let invite = ca_core.mint_invite("custody-host", 60).await.unwrap();
+    let join = ca_core
+        .enroll(&protocol::JoinRequest {
+            hostname: "custody-host".to_string(),
+            auth: None,
+            invite_token: Some(invite::decode_code(&invite.token).0.to_string()),
+            csr: Some(csr),
+            sans: sans.to_vec(),
+        })
+        .await
+        .unwrap();
+    member_core
+        .install_member_cert(
+            "custody-host",
+            &join.service_cert,
+            &join.ca_cert,
+            Some("http://127.0.0.1:5641"),
+            None,
+            Some(&join.ca_fingerprint),
+            &sans,
+            Some(join.policy.clone()),
+        )
+        .await
+        .unwrap();
+
+    let cert_dir = member_paths.certs_dir().join("custody-host");
+    let active_key = std::fs::read(cert_dir.join("key.pem")).unwrap();
+    let active_cert = std::fs::read(cert_dir.join("cert.pem")).unwrap();
+
+    // This is exactly the local portion completed before a remote CA can refuse
+    // a rejoin: only a new pending key is created.
+    member_core
+        .prepare_member_csr("custody-host", &sans)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(cert_dir.join("key.pem")).unwrap(), active_key);
+    assert_eq!(
+        std::fs::read(cert_dir.join("cert.pem")).unwrap(),
+        active_cert
+    );
+
+    // Even if a caller attempts to install the old leaf with the new pending
+    // key, correspondence validation refuses it without touching the identity.
+    let error = member_core
+        .install_member_cert(
+            "custody-host",
+            &join.service_cert,
+            &join.ca_cert,
+            Some("http://127.0.0.1:5641"),
+            None,
+            Some(&join.ca_fingerprint),
+            &sans,
+            Some(join.policy),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CertmeshError::InvalidPayload(_)));
+    assert_eq!(std::fs::read(cert_dir.join("key.pem")).unwrap(), active_key);
+    assert_eq!(
+        std::fs::read(cert_dir.join("cert.pem")).unwrap(),
+        active_cert
     );
 
     let _ = std::fs::remove_dir_all(base.join("ca"));
@@ -863,6 +1276,7 @@ async fn pull_trust_bundle_self_heals_ca_anchor() {
             &join.service_cert,
             &join.ca_cert,
             Some("http://127.0.0.1:5641"),
+            None,
             Some(&pin),
             &["heal-host".to_string()],
             Some(join.policy.clone()),

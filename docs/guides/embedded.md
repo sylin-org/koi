@@ -47,7 +47,7 @@ There are **two independent axes** for trimming Koi, and they do different thing
   closure for a deployment that will never use a given backend.
 
 Three dependencies are gated behind **default-on** features, so a default
-`koi-embedded = "0.9"` is identical to before — you only opt *out*:
+`koi-embedded = "1.0.0-rc.1"` is identical to before — you only opt *out*:
 
 | Feature | Default | Compiles in | With it **off** |
 | --- | --- | --- | --- |
@@ -61,17 +61,17 @@ Three dependencies are gated behind **default-on** features, so a default
 
 ```toml
 # Default — every backend (unchanged; the batteries-included path)
-koi-embedded = "0.9"
+koi-embedded = "1.0.0-rc.1"
 
 # Lean — drop bollard, the OS-keychain / Secret-Service / D-Bus stack, and the image
 # codec. Ideal for a headless container that only needs discovery / DNS / health.
-koi-embedded = { version = "0.9", default-features = false }
+koi-embedded = { version = "1.0.0-rc.1", default-features = false }
 
 # À la carte — start lean and re-arm only what you need
-koi-embedded = { version = "0.9", default-features = false, features = ["docker"] }
+koi-embedded = { version = "1.0.0-rc.1", default-features = false, features = ["docker"] }
 
 # Everything, explicitly
-koi-embedded = { version = "0.9", features = ["full"] }
+koi-embedded = { version = "1.0.0-rc.1", features = ["full"] }
 ```
 
 A common reason to go lean is the **bollard version lock**: `bollard-stubs` pins with an
@@ -143,7 +143,7 @@ let _registration = mdns.register(koi_mdns::protocol::RegisterPayload {
 // DNS
 let dns = handle.dns()?;
 let _ = dns.add_entry(koi_config::state::DnsEntry {
-    name: "my-service.lan".to_string(),
+    name: "my-service.internal".to_string(),
     ip: "127.0.0.1".to_string(),
     ttl: None,
 })?;
@@ -279,8 +279,9 @@ let _server = handle.participate(router, addr, "_my-svc._tcp", cancel).await?;
 - Both are **embedded only** — a remote handle has no local identity to serve mTLS with and
   returns `KoiError::DisabledCapability`.
 
-Certificate *renewal* is handled by the certmesh background loops — enable them with
-`Builder::certmesh_background(true)` on a long-running host.
+Certificate *renewal* (and trust-bundle pull / revocation honoring / self-stand-down) is
+handled by Koi's certmesh self-management, which is **on by default** once this node is a
+member (ADR-023); a self-driver disables it with `Builder::certmesh_managed(false)`.
 
 ### Trust primitives
 

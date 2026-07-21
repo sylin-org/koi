@@ -564,9 +564,9 @@ async fn challenge(
     let expected_txt = ch::dns_txt_value(&key_auth);
     let dns_name = ch::challenge_dns_name(&authz.identifier);
 
-    // Self-serve: write → read-back → compare → clear. (The client writes the
-    // same value via its own provider in the real world; here the client and the
-    // server share the SAME DnsCore, so writing it here mirrors that.)
+    // The ACME client owns TXT publication through its DNS provider. The server
+    // performs one read-only validation at this boundary; it must not clear a
+    // value that may be shared by concurrent orders or still needed by the client.
     let published = state.dns().get_txt(&dns_name);
     let valid = published.iter().any(|v| v == &expected_txt);
 
@@ -575,9 +575,6 @@ async fn challenge(
     } else {
         state.orders().mark_challenge_invalid(&authz.id);
     }
-    // Clear the challenge record either way — it served its purpose.
-    state.dns().clear_txt(&dns_name);
-
     // Return the (now-updated) challenge object.
     let updated = state
         .orders()

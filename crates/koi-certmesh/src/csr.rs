@@ -7,7 +7,6 @@
 //! the security enforcement point: an ACME client could otherwise embed extra,
 //! unproven names in its CSR and have them signed.
 
-use chrono::{Duration, Utc};
 use rcgen::{CertificateParams, CertificateSigningRequestParams, DnType, KeyPair, SanType};
 
 use crate::ca::CaState;
@@ -108,8 +107,7 @@ pub fn sign_csr(
     } else {
         validity_days
     };
-    let not_before = Utc::now();
-    let not_after = not_before + Duration::days(i64::from(days));
+    let (not_before, not_after) = crate::ca::certificate_validity_window(i64::from(days));
     csr_params.params.not_before =
         time::OffsetDateTime::from_unix_timestamp(not_before.timestamp())
             .unwrap_or(time::OffsetDateTime::now_utc());

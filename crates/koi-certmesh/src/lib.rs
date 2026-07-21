@@ -26,6 +26,7 @@ pub mod health;
 pub mod http;
 pub mod init_ceremony;
 pub mod invite;
+mod issuance_names;
 pub mod lifecycle;
 pub mod member;
 pub mod mtls;
@@ -48,14 +49,24 @@ use koi_crypto::totp::RateLimiter;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use zeroize::Zeroizing;
 
+pub use bundle::SignedBundle;
 pub use client::PeerClient;
 pub use csr::sign_csr;
 pub use error::CertmeshError;
+pub use issuance_names::IssuanceNames;
 use roster::Roster;
 
 /// mDNS service type for CA discovery.
 /// Used by the binary crate to announce the CA via koi-mdns.
 pub const CERTMESH_SERVICE_TYPE: &str = "_certmesh._tcp";
+
+/// Maximum clock skew tolerated by certmesh security timestamps.
+///
+/// Certificate validity is backdated by this amount and signed-envelope
+/// freshness accepts the same ±window. One policy constant keeps a LAN member
+/// with a slightly slower clock from rejecting a freshly issued identity while
+/// preserving the existing bounded replay tolerance.
+pub const CLOCK_SKEW_TOLERANCE_SECS: i64 = 300;
 
 /// Events emitted by the certmesh subsystem.
 #[derive(Debug, Clone)]
@@ -106,6 +117,8 @@ pub enum CertmeshEvent {
 pub(crate) struct CertmeshState {
     /// Resolved filesystem paths (immutable after construction).
     pub(crate) paths: CertmeshPaths,
+    /// Immutable certificate-name policy, injected once by the composition root.
+    pub(crate) issuance_names: IssuanceNames,
     pub(crate) ca: tokio::sync::Mutex<Option<ca::CaState>>,
     pub(crate) roster: tokio::sync::Mutex<Roster>,
     pub(crate) auth: tokio::sync::Mutex<Option<AuthState>>,

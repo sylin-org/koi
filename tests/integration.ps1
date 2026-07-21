@@ -42,12 +42,12 @@ Add-Type -AssemblyName System.Net.Http
 
 $TestPort = 15641
 $TestDnsPort = 15353
-$TestPipe = '\\.\pipe\koi-test'
-$TestPipeName = 'koi-test'
-$TestDir = Join-Path $env:TEMP "koi-test-$(Get-Random)"
+$TestDnsZone = 'internal'
+$TestDir = Join-Path ([System.IO.Path]::GetTempPath()) "koi-test-$(Get-Random)"
 $TestLog = Join-Path $TestDir 'koi-test.log'
 $BreadcrumbDir = Join-Path $TestDir 'breadcrumb'
 $IsWin = ($IsWindows -eq $true) -or ($env:OS -eq 'Windows_NT')
+$TestPipe = if ($IsWin) { '\\.\pipe\koi-test' } else { Join-Path $TestDir 'koi.sock' }
 $KoiBinName = if ($IsWin) { 'koi.exe' } else { 'koi' }
 $KoiBin = Join-Path $PSScriptRoot "..\target\release\$KoiBinName"
 $breadcrumbFile = if ($IsWin) {
@@ -59,8 +59,9 @@ $breadcrumbFile = if ($IsWin) {
 # (axum binds 0.0.0.0 = IPv4 only).
 $Endpoint = "http://127.0.0.1:$TestPort"
 
-# Timeout for daemon health poll (seconds)
-$HealthTimeout = 15
+# Timeout for daemon health poll (seconds). Healthy starts return immediately;
+# this margin absorbs hosted-runner scheduling without hiding an actual hang.
+$HealthTimeout = 30
 # Timeout for individual test operations (seconds)
 $OpTimeout = 10
 
@@ -106,7 +107,12 @@ function Cleanup {
     }
 }
 
-trap { Cleanup; break }
+trap {
+    $originalError = $_
+    try { Cleanup } catch { Write-Warning "Cleanup after failure also failed: $($_.Exception.Message)" }
+    Write-Error -ErrorRecord $originalError -ErrorAction Continue
+    exit 1
+}
 
 # -- Build --------------------------------------------------------------------
 
@@ -157,6 +163,7 @@ function Invoke-Koi {
         $psi.EnvironmentVariables['ProgramData'] = $BreadcrumbDir
         $psi.EnvironmentVariables['XDG_RUNTIME_DIR'] = $BreadcrumbDir
         $psi.EnvironmentVariables['KOI_DATA_DIR'] = (Join-Path $TestDir 'data')
+        $psi.EnvironmentVariables['KOI_DNS_ZONE'] = $TestDnsZone
     }
 
     $proc = [System.Diagnostics.Process]::Start($psi)
@@ -269,17 +276,55 @@ function Invoke-HttpExpectError {
     }
 }
 
-function Invoke-Pipe {
+function Open-IpcStream {
     param(
-        [string]$PipeName,
+        [string]$Endpoint,
+        [int]$TimeoutMs = 5000
+    )
+
+    if ($IsWin) {
+        $pipePrefix = '\\.\pipe\'
+        if (-not $Endpoint.StartsWith($pipePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Invalid Windows named-pipe endpoint: $Endpoint"
+        }
+
+        $pipeName = $Endpoint.Substring($pipePrefix.Length)
+        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipeName, [System.IO.Pipes.PipeDirection]::InOut)
+        try {
+            $pipe.Connect($TimeoutMs)
+            return $pipe
+        }
+        catch {
+            $pipe.Dispose()
+            throw
+        }
+    }
+
+    $socket = [System.Net.Sockets.Socket]::new(
+        [System.Net.Sockets.AddressFamily]::Unix,
+        [System.Net.Sockets.SocketType]::Stream,
+        [System.Net.Sockets.ProtocolType]::Unspecified
+    )
+    try {
+        $socket.Connect([System.Net.Sockets.UnixDomainSocketEndPoint]::new($Endpoint))
+        return [System.Net.Sockets.NetworkStream]::new($socket, $true)
+    }
+    catch {
+        $socket.Dispose()
+        throw
+    }
+}
+
+function Invoke-Ipc {
+    param(
+        [string]$Endpoint,
         [string[]]$Messages,
         [int]$TimeoutMs = 5000,
         [int]$ExpectedLines = 1
     )
 
-    $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut)
+    $pipe = Open-IpcStream -Endpoint $Endpoint -TimeoutMs $TimeoutMs
     try {
-        $pipe.Connect($TimeoutMs)
         $writer = New-Object System.IO.StreamWriter($pipe)
         $writer.AutoFlush = $true
         $reader = New-Object System.IO.StreamReader($pipe)
@@ -601,11 +646,14 @@ if ($Service) {
             try {
                 $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/status"
                 $json = $resp.Content | ConvertFrom-Json
-                if ($json.ca_initialized -eq $true -and $json.profile) {
-                    Pass "certmesh status (profile=$($json.profile), members=$($json.member_count))"
+                if ($json.ca_initialized -eq $true -and
+                    $null -ne $json.enrollment_open -and
+                    $null -ne $json.requires_approval -and
+                    $json.member_count -ge 1) {
+                    Pass "certmesh status (enrollment=$($json.enrollment_state), members=$($json.member_count))"
                 }
                 else {
-                    Fail 'certmesh status (post-create)' "ca_initialized=$($json.ca_initialized) profile=$($json.profile)"
+                    Fail 'certmesh status (post-create)' "ca_initialized=$($json.ca_initialized) enrollment=$($json.enrollment_state) members=$($json.member_count)"
                 }
             }
             catch {
@@ -677,23 +725,7 @@ if ($Service) {
                 Fail 'close enrollment' $_.Exception.Message
             }
 
-            # S.12 - Set policy
-            try {
-                $policyBody = '{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}'
-                $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/certmesh/set-policy" -Body $policyBody
-                $json = $resp.Content | ConvertFrom-Json
-                if ($json.allowed_domain -eq 'lab.local') {
-                    Pass 'set policy (domain=lab.local)'
-                }
-                else {
-                    Fail 'set policy' "domain=$($json.allowed_domain)"
-                }
-            }
-            catch {
-                Fail 'set policy' $_.Exception.Message
-            }
-
-            # S.13 - Rotate TOTP (only if we created the CA - passphrase must match)
+            # S.12 - Rotate TOTP (only if we created the CA - passphrase must match)
             if ($weCreatedCa) {
                 try {
                     $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/rotate-auth" -Body '{"passphrase":"test-koi-service"}'
@@ -728,21 +760,7 @@ if ($Service) {
                 }
             }
 
-            # S.N2 - Set policy with invalid CIDR returns 400
-            try {
-                $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/certmesh/set-policy" -Body '{"allowed_subnet":"not-a-cidr"}'
-                if ($errResp.StatusCode -eq 400) {
-                    Pass 'set policy with invalid CIDR returns 400'
-                }
-                else {
-                    Fail 'set policy with invalid CIDR' "Expected 400, got $($errResp.StatusCode)"
-                }
-            }
-            catch {
-                Fail 'set policy with invalid CIDR' $_.Exception.Message
-            }
-
-            # S.N3 - Create with invalid entropy returns 400
+            # S.N2 - Create with invalid entropy returns 400
             try {
                 $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/create" -Body '{"passphrase":"test","entropy_hex":"zzzz","profile":"just_me"}'
                 if ($errResp.StatusCode -eq 400) {
@@ -756,7 +774,7 @@ if ($Service) {
                 Fail 'create with invalid entropy' $_.Exception.Message
             }
 
-            # S.N4 - Create with short entropy returns 400
+            # S.N3 - Create with short entropy returns 400
             try {
                 $errResp = Invoke-HttpExpectError -Method POST -Uri "$Endpoint/v1/certmesh/create" -Body '{"passphrase":"test","entropy_hex":"00112233","profile":"just_me"}'
                 if ($errResp.StatusCode -eq 400) {
@@ -770,7 +788,7 @@ if ($Service) {
                 Fail 'create with short entropy' $_.Exception.Message
             }
 
-            # S.N5 - Set hook for unknown member returns 404
+            # S.N4 - Set hook for unknown member returns 404
             try {
                 $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/certmesh/set-hook" -Body '{"hostname":"nonexistent-host","reload":"echo hi"}'
                 if ($errResp.StatusCode -eq 404) {
@@ -787,15 +805,6 @@ if ($Service) {
             # -- Certmesh cleanup (destroy test CA via service endpoint) ----------------
 
             if ($weCreatedCa) {
-                # Clear policy before destroy
-                try {
-                    $null = Invoke-Http -Method PUT -Uri "$Endpoint/v1/certmesh/set-policy" -Body '{}'
-                    Pass 'clear policy before destroy'
-                }
-                catch {
-                    Fail 'clear policy before destroy' $_.Exception.Message
-                }
-
                 Log 'Destroying test CA via POST /v1/certmesh/destroy...'
                 try {
                     $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/destroy"
@@ -925,7 +934,7 @@ if (-not $Service) {
         $r = Invoke-Koi -KoiArgs 'mdns', 'discover', 'http', '--timeout', '2', '--json', '--standalone'
         # Output may be empty (no services found in 2s) - that's fine.
         # If there IS output, each non-empty line must be valid JSON.
-        $lines = $r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' }
+        $lines = @($r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' })
         $valid = $true
         $badLine = ''
         foreach ($line in $lines) {
@@ -962,7 +971,7 @@ if (-not $Service) {
         $r = Invoke-Koi -KoiArgs '--standalone' -Stdin '{"browse":"_http._tcp"}' -TimeoutSec 5 -AllowFailure
         # Process was killed after timeout - that's expected for piped browse.
         # Validate that any output produced is valid JSON.
-        $lines = $r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' }
+        $lines = @($r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' })
         $valid = $true
         foreach ($line in $lines) {
             try { $null = $line | ConvertFrom-Json } catch { $valid = $false; break }
@@ -1116,12 +1125,14 @@ if (-not $Service) {
         $name = 'koi-test'
         $ip = '10.0.0.55'
         $r = Invoke-Koi -KoiArgs '--standalone', 'dns', 'add', $name, $ip
-        $r = Invoke-Koi -KoiArgs '--standalone', 'dns', 'list'
-        if ($r.Stdout -match 'koi-test\.lan\.') {
+        $r = Invoke-Koi -KoiArgs '--standalone', '--json', 'dns', 'list'
+        $json = $r.Stdout | ConvertFrom-Json
+        $names = @($json.names)
+        if ($names -contains "$name.$TestDnsZone.") {
             Pass 'koi dns list shows added entry'
         }
         else {
-            Fail 'koi dns list shows added entry' "Output: $($r.Stdout.Trim())"
+            Fail 'koi dns list shows added entry' "names=$($names -join ',')"
         }
 
         $r = Invoke-Koi -KoiArgs '--standalone', 'dns', 'lookup', $name
@@ -1271,7 +1282,7 @@ if (-not $Service) {
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $KoiBin
-    $psi.Arguments = "--daemon --port $TestPort --pipe $TestPipe --dns-port $TestDnsPort --log-file `"$TestLog`" -v"
+    $psi.Arguments = "--daemon --port $TestPort --pipe `"$TestPipe`" --dns-port $TestDnsPort --log-file `"$TestLog`" -v"
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
@@ -1281,6 +1292,7 @@ if (-not $Service) {
     $psi.EnvironmentVariables['XDG_RUNTIME_DIR'] = $BreadcrumbDir
     # Data dir override for certmesh/paths isolation
     $psi.EnvironmentVariables['KOI_DATA_DIR'] = (Join-Path $TestDir 'data')
+    $psi.EnvironmentVariables['KOI_DNS_ZONE'] = $TestDnsZone
 
     $script:daemonProc = [System.Diagnostics.Process]::Start($psi)
     # Start async reads immediately to drain stdout/stderr pipes.
@@ -1431,7 +1443,7 @@ if (-not $Service) {
     try {
         $resp = Invoke-Http -Uri "$Endpoint/v1/dns/status"
         $json = $resp.Content | ConvertFrom-Json
-        if ($json.port -eq $TestDnsPort -and $json.zone) {
+        if ($json.port -eq $TestDnsPort -and $json.zone -eq $TestDnsZone) {
             Pass "dns status endpoint (zone=$($json.zone), port=$($json.port))"
         }
         else {
@@ -1460,7 +1472,7 @@ if (-not $Service) {
         $resp = Invoke-Http -Uri "$Endpoint/v1/dns/list"
         $listJson = $resp.Content | ConvertFrom-Json
         $names = @($listJson.names)
-        if ($names -contains "$dnsName.lan.") {
+        if ($names -contains "$dnsName.$TestDnsZone.") {
             Pass 'dns list includes added entry'
         }
         else {
@@ -1716,11 +1728,14 @@ if (-not $Service) {
     try {
         $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/status"
         $json = $resp.Content | ConvertFrom-Json
-        if ($json.ca_initialized -eq $true -and $json.profile) {
-            Pass "certmesh status (after create) via HTTP (profile=$($json.profile), members=$($json.member_count))"
+        if ($json.ca_initialized -eq $true -and
+            $null -ne $json.enrollment_open -and
+            $null -ne $json.requires_approval -and
+            $json.member_count -ge 1) {
+            Pass "certmesh status (after create) via HTTP (enrollment=$($json.enrollment_state), members=$($json.member_count))"
         }
         else {
-            Fail 'certmesh status (after create)' "ca_initialized=$($json.ca_initialized) profile=$($json.profile)"
+            Fail 'certmesh status (after create)' "ca_initialized=$($json.ca_initialized) enrollment=$($json.enrollment_state) members=$($json.member_count)"
         }
     }
     catch {
@@ -1820,7 +1835,7 @@ if (-not $Service) {
 
     # 2.C10 - Certmesh log via CLI client mode
     try {
-        $r = Invoke-Koi -KoiArgs 'certmesh', 'log', '--endpoint', $Endpoint
+        $r = Invoke-Koi -KoiArgs 'certmesh', 'log', '--endpoint', $Endpoint, '--token', $script:daemonToken
         Pass 'certmesh log via CLI (client mode)'
     }
     catch {
@@ -1844,22 +1859,7 @@ if (-not $Service) {
         Fail 'open enrollment' $_.Exception.Message
     }
 
-    # 2.P2 - Open enrollment with deadline
-    try {
-        $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/open-enrollment" -Body '{"deadline":"2030-12-31T23:59:59Z"}'
-        $json = $resp.Content | ConvertFrom-Json
-        if ($json.deadline) {
-            Pass "open enrollment with deadline ($($json.deadline))"
-        }
-        else {
-            Fail 'open enrollment with deadline' 'No deadline in response'
-        }
-    }
-    catch {
-        Fail 'open enrollment with deadline' $_.Exception.Message
-    }
-
-    # 2.P3 - Close enrollment
+    # 2.P2 - Close enrollment
     try {
         $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/close-enrollment"
         $json = $resp.Content | ConvertFrom-Json
@@ -1874,37 +1874,7 @@ if (-not $Service) {
         Fail 'close enrollment' $_.Exception.Message
     }
 
-    # 2.P4 - Set policy (domain + subnet)
-    try {
-        $policyBody = '{"allowed_domain":"lab.local","allowed_subnet":"192.168.1.0/24"}'
-        $resp = Invoke-Http -Method PUT -Uri "$Endpoint/v1/certmesh/set-policy" -Body $policyBody
-        $json = $resp.Content | ConvertFrom-Json
-        if ($json.allowed_domain -eq 'lab.local' -and $json.allowed_subnet -eq '192.168.1.0/24') {
-            Pass 'set policy (domain=lab.local, subnet=192.168.1.0/24)'
-        }
-        else {
-            Fail 'set policy' "domain=$($json.allowed_domain) subnet=$($json.allowed_subnet)"
-        }
-    }
-    catch {
-        Fail 'set policy' $_.Exception.Message
-    }
-
-    # 2.P5 - Set policy - invalid CIDR rejected (400)
-    try {
-        $errResp = Invoke-HttpExpectError -Method PUT -Uri "$Endpoint/v1/certmesh/set-policy" -Body '{"allowed_subnet":"not-a-cidr"}'
-        if ($errResp.StatusCode -eq 400) {
-            Pass 'set policy (invalid CIDR) returns 400'
-        }
-        else {
-            Fail 'set policy (invalid CIDR)' "Expected 400, got $($errResp.StatusCode)"
-        }
-    }
-    catch {
-        Fail 'set policy (invalid CIDR)' $_.Exception.Message
-    }
-
-    # 2.P6 - Rotate TOTP
+    # 2.P3 - Rotate TOTP
     try {
         $resp = Invoke-Http -Method POST -Uri "$Endpoint/v1/certmesh/rotate-auth" -Body '{"passphrase":"test-koi-integration"}'
         $json = $resp.Content | ConvertFrom-Json
@@ -1977,20 +1947,20 @@ if (-not $Service) {
 
     # -- Certmesh additional endpoint coverage ------------------------------------
 
-    # 2.CM1 - Certmesh roster (GET) - returns member list
+    # 2.CM1 - Signed trust bundle returns the current member projection
     try {
-        $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/roster"
+        $resp = Invoke-Http -Uri "$Endpoint/v1/certmesh/trust-bundle"
         $json = $resp.Content | ConvertFrom-Json
-        $roster = $json.roster_json | ConvertFrom-Json
-        if ($null -ne $roster.members) {
-            Pass "certmesh roster returns members (count=$(@($roster.members).Count))"
+        $members = @($json.bundle.members)
+        if ($json.signature -and $members.Count -ge 1) {
+            Pass "certmesh trust bundle returns signed members (count=$($members.Count))"
         }
         else {
-            Fail 'certmesh roster' 'Missing members field'
+            Fail 'certmesh trust bundle' 'Missing signature or member projection'
         }
     }
     catch {
-        Fail 'certmesh roster' $_.Exception.Message
+        Fail 'certmesh trust bundle' $_.Exception.Message
     }
 
     # 2.CM3 - Certmesh health (POST) - returns health check
@@ -2466,7 +2436,7 @@ if (-not $Service) {
     # Accept exit code 0 (clean timeout) or -1 (killed after TimeoutSec).
     try {
         $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'discover', 'http', '--timeout', '3' -TimeoutSec 15 -AllowFailure
-        $lines = $r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' }
+        $lines = @($r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' })
         $valid = $true
         foreach ($line in $lines) {
             try { $null = $line | ConvertFrom-Json } catch { $valid = $false; break }
@@ -2488,7 +2458,7 @@ if (-not $Service) {
     # Accept exit code 0 (clean timeout) or -1 (killed after TimeoutSec).
     try {
         $r = Invoke-Koi -KoiArgs '--endpoint', $Endpoint, '--json', 'mdns', 'subscribe', '_http._tcp', '--timeout', '3' -TimeoutSec 10 -AllowFailure
-        $lines = $r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' }
+        $lines = @($r.Stdout -split "`n" | Where-Object { $_.Trim() -ne '' })
         $valid = $true
         foreach ($line in $lines) {
             try { $null = $line | ConvertFrom-Json } catch { $valid = $false; break }
@@ -2816,11 +2786,11 @@ if (-not $Service) {
         Skip 'ambiguous admin prefix' 'Need at least 2 registered services'
     }
 
-    # -- Named Pipe tests ---------------------------------------------------------
+    # -- Local IPC tests (Named Pipe on Windows, Unix socket elsewhere) -----------
 
-    # 2.35 - Named Pipe: register + unregister
+    # 2.35 - IPC: register + unregister
     try {
-        $results = Invoke-Pipe -PipeName $TestPipeName -Messages @(
+        $results = Invoke-Ipc -Endpoint $TestPipe -Messages @(
             '{"register":{"name":"PipeTest","type":"_http._tcp","port":19996}}'
         ) -ExpectedLines 1
 
@@ -2829,96 +2799,101 @@ if (-not $Service) {
             $pipeRegId = $regResult.registered.id
 
             # Now unregister via a second pipe connection
-            $results2 = Invoke-Pipe -PipeName $TestPipeName -Messages @(
+            $results2 = Invoke-Ipc -Endpoint $TestPipe -Messages @(
                 "{`"unregister`":`"$pipeRegId`"}"
             ) -ExpectedLines 1
 
             if ($results2[0].unregistered -eq $pipeRegId) {
-                Pass 'Named Pipe: register + unregister'
+                Pass 'IPC: register + unregister'
             }
             else {
-                Fail 'Named Pipe: register + unregister' "Unregister response: $($results2[0] | ConvertTo-Json -Compress)"
+                Fail 'IPC: register + unregister' "Unregister response: $($results2[0] | ConvertTo-Json -Compress)"
             }
         }
         else {
-            Fail 'Named Pipe: register + unregister' "Register response: $($regResult | ConvertTo-Json -Compress)"
+            Fail 'IPC: register + unregister' "Register response: $($regResult | ConvertTo-Json -Compress)"
         }
     }
     catch {
-        Fail 'Named Pipe: register + unregister' $_.Exception.Message
+        Fail 'IPC: register + unregister' $_.Exception.Message
     }
 
-    # 2.36 - Named Pipe: resolve
+    # 2.36 - IPC: resolve
     try {
-        $results = Invoke-Pipe -PipeName $TestPipeName -Messages @(
+        $results = Invoke-Ipc -Endpoint $TestPipe -Messages @(
             '{"resolve":"DaemonTest._http._tcp.local."}'
         ) -ExpectedLines 1 -TimeoutMs 10000
 
         $resolveResult = $results[0]
-        if ($resolveResult.resolved -and $resolveResult.resolved.name -match 'DaemonTest') {
-            Pass 'Named Pipe: resolve'
+        $resolvedProperty = $resolveResult.PSObject.Properties['resolved']
+        $errorProperty = $resolveResult.PSObject.Properties['error']
+        if ($resolvedProperty -and $resolvedProperty.Value -and
+            $resolvedProperty.Value.name -match 'DaemonTest') {
+            Pass 'IPC: resolve'
         }
-        elseif ($resolveResult.error -eq 'resolve_timeout') {
-            Pass 'Named Pipe: resolve (timeout - mDNS self-resolve not supported on this host)'
+        elseif ($errorProperty -and $errorProperty.Value) {
+            # Self-resolution is host/mDNS-stack dependent. Any structured
+            # protocol error proves the IPC request made a complete round trip.
+            Pass "IPC: resolve (returned $($errorProperty.Value))"
         }
         else {
-            Fail 'Named Pipe: resolve' "Unexpected response: $($resolveResult | ConvertTo-Json -Compress)"
+            Fail 'IPC: resolve' "Unexpected response: $($resolveResult | ConvertTo-Json -Compress)"
         }
     }
     catch {
-        Fail 'Named Pipe: resolve' $_.Exception.Message
+        Fail 'IPC: resolve' $_.Exception.Message
     }
 
-    # 2.37 - Named Pipe: heartbeat
+    # 2.37 - IPC: heartbeat
     try {
-        # Register via pipe first (session-mode), get the ID, then heartbeat
-        $results = Invoke-Pipe -PipeName $TestPipeName -Messages @(
+        # Register via IPC first (session-mode), get the ID, then heartbeat
+        $results = Invoke-Ipc -Endpoint $TestPipe -Messages @(
             '{"register":{"name":"PipeHB","type":"_http._tcp","port":19993}}'
         ) -ExpectedLines 1
 
         $pipeHbId = $results[0].registered.id
         if ($pipeHbId) {
             # Heartbeat on a second connection
-            $hbResults = Invoke-Pipe -PipeName $TestPipeName -Messages @(
+            $hbResults = Invoke-Ipc -Endpoint $TestPipe -Messages @(
                 "{`"heartbeat`":`"$pipeHbId`"}"
             ) -ExpectedLines 1
 
             # Session-mode registrations return lease_secs=0 (session policy, not heartbeat policy)
             if ($hbResults[0].renewed -and $hbResults[0].renewed.id -eq $pipeHbId) {
-                Pass "Named Pipe: heartbeat (lease: $($hbResults[0].renewed.lease_secs)s)"
+                Pass "IPC: heartbeat (lease: $($hbResults[0].renewed.lease_secs)s)"
             }
             else {
-                Fail 'Named Pipe: heartbeat' "Unexpected response: $($hbResults[0] | ConvertTo-Json -Compress)"
+                Fail 'IPC: heartbeat' "Unexpected response: $($hbResults[0] | ConvertTo-Json -Compress)"
             }
 
             # Clean up
-            $null = Invoke-Pipe -PipeName $TestPipeName -Messages @(
+            $null = Invoke-Ipc -Endpoint $TestPipe -Messages @(
                 "{`"unregister`":`"$pipeHbId`"}"
             ) -ExpectedLines 1
         }
         else {
-            Fail 'Named Pipe: heartbeat' 'Could not register service for heartbeat test'
+            Fail 'IPC: heartbeat' 'Could not register service for heartbeat test'
         }
     }
     catch {
-        Fail 'Named Pipe: heartbeat' $_.Exception.Message
+        Fail 'IPC: heartbeat' $_.Exception.Message
     }
 
-    # 2.38 - Named Pipe: malformed JSON returns parse_error
+    # 2.38 - IPC: malformed JSON returns parse_error
     try {
-        $results = Invoke-Pipe -PipeName $TestPipeName -Messages @(
+        $results = Invoke-Ipc -Endpoint $TestPipe -Messages @(
             '{broken json'
         ) -ExpectedLines 1
 
         if ($results[0].error -eq 'parse_error') {
-            Pass 'Named Pipe: malformed JSON returns parse_error'
+            Pass 'IPC: malformed JSON returns parse_error'
         }
         else {
-            Fail 'Named Pipe: malformed JSON returns parse_error' "Unexpected response: $($results[0] | ConvertTo-Json -Compress)"
+            Fail 'IPC: malformed JSON returns parse_error' "Unexpected response: $($results[0] | ConvertTo-Json -Compress)"
         }
     }
     catch {
-        Fail 'Named Pipe: malformed JSON returns parse_error' $_.Exception.Message
+        Fail 'IPC: malformed JSON returns parse_error' $_.Exception.Message
     }
 
     # -- Heartbeat lifecycle: register → expire → removal ----------------------------
@@ -3074,11 +3049,10 @@ if (-not $Service) {
         Fail 'concurrent registration burst' $_.Exception.Message
     }
 
-    # S2 - Session draining via pipe disconnect
+    # S2 - Session draining via IPC disconnect
     try {
-        # Register via pipe (session-mode, not permanent - pipe adapter uses 30s grace)
-        $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $TestPipeName, [System.IO.Pipes.PipeDirection]::InOut)
-        $pipe.Connect(5000)
+        # Register via IPC (session-mode, not permanent - IPC adapter uses 30s grace)
+        $pipe = Open-IpcStream -Endpoint $TestPipe -TimeoutMs 5000
         $writer = New-Object System.IO.StreamWriter($pipe)
         $writer.AutoFlush = $true
         $reader = New-Object System.IO.StreamReader($pipe)
@@ -3103,10 +3077,10 @@ if (-not $Service) {
             $inspResp = Invoke-Http -Uri "$Endpoint/v1/mdns/admin/inspect/$sessionDrainId"
             $insp = $inspResp.Content | ConvertFrom-Json
             if ($insp.state -eq 'draining') {
-                Pass 'pipe disconnect triggers session draining'
+                Pass 'IPC disconnect triggers session draining'
             }
             else {
-                Fail 'pipe disconnect triggers session draining' "Expected draining, got: $($insp.state)"
+                Fail 'IPC disconnect triggers session draining' "Expected draining, got: $($insp.state)"
             }
 
             # Clean up via admin force-unregister
@@ -3114,11 +3088,11 @@ if (-not $Service) {
         }
         else {
             $pipe.Dispose()
-            Fail 'pipe disconnect triggers session draining' 'Could not register service'
+            Fail 'IPC disconnect triggers session draining' 'Could not register service'
         }
     }
     catch {
-        Fail 'pipe disconnect triggers session draining' $_.Exception.Message
+        Fail 'IPC disconnect triggers session draining' $_.Exception.Message
     }
 
     # -- Unregister remaining services and clean up --------------------------------
@@ -3230,8 +3204,10 @@ if (-not $Service) {
         $psi2.CreateNoWindow = $true
         # Isolate breadcrumb + data dir from real system (both use ProgramData)
         $psi2.EnvironmentVariables['ProgramData'] = $BreadcrumbDir
+        $psi2.EnvironmentVariables['XDG_RUNTIME_DIR'] = $BreadcrumbDir
         # Data dir override for certmesh/paths isolation
         $psi2.EnvironmentVariables['KOI_DATA_DIR'] = (Join-Path $TestDir 'data')
+        $psi2.EnvironmentVariables['KOI_DNS_ZONE'] = $TestDnsZone
 
         $proc2 = [System.Diagnostics.Process]::Start($psi2)
         $null = $proc2.StandardOutput.ReadToEndAsync()

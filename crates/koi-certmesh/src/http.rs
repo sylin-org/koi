@@ -20,9 +20,9 @@ use crate::protocol::{
     CreateCaResponse, DestroyResponse, EnrollmentSummary, HealthRequest, HealthResponse,
     InstallCertRequest, InstallCertResponse, InviteRequest, InviteResponse, JoinRequest,
     JoinResponse, MemberCsrRequest, MemberCsrResponse, PromoteRequest, PromoteResponse,
-    RenewRequest, RenewResponse, RestoreRequest, RestoreResponse, RevokeRequest, RevokeResponse,
-    RotateAuthRequest, RotateAuthResponse, SetHookRequest, SetHookResponse, UnlockRequest,
-    UnlockResponse,
+    RenewRequest, RenewResponse, RenewSelfResponse, RestoreRequest, RestoreResponse, RevokeRequest,
+    RevokeResponse, RotateAuthRequest, RotateAuthResponse, SetHookRequest, SetHookResponse,
+    UnlockRequest, UnlockResponse,
 };
 
 /// Authenticated client certificate CN, injected by the mTLS adapter as an axum Extension.
@@ -58,6 +58,8 @@ pub mod paths {
     pub const SET_HOOK: &str = "/v1/certmesh/set-hook";
     pub const PROMOTE: &str = "/v1/certmesh/promote";
     pub const RENEW: &str = "/v1/certmesh/renew";
+    /// DAT-gated local management request to rotate this member's key now.
+    pub const RENEW_SELF: &str = "/v1/certmesh/renew-self";
     pub const HEALTH: &str = "/v1/certmesh/health";
     pub const CREATE: &str = "/v1/certmesh/create";
     pub const UNLOCK: &str = "/v1/certmesh/unlock";
@@ -91,6 +93,7 @@ pub(crate) fn routes(state: Arc<CertmeshState>) -> Router {
         .route(rel(paths::DIAGNOSE), get(diagnose_handler))
         .route(rel(paths::TRUST_BUNDLE), get(trust_bundle_handler))
         .route(rel(paths::SET_HOOK), put(set_hook_handler))
+        .route(rel(paths::RENEW_SELF), post(renew_self_handler))
         // NOTE: /renew is intentionally NOT on the plain-HTTP router. Renewal is
         // member-initiated over mTLS only (ADR-017 F6) — it lives on
         // `inter_node_routes` where the caller's identity comes from its client
@@ -240,6 +243,7 @@ async fn member_cert_handler(
             &request.cert_pem,
             &request.ca_pem,
             request.ca_endpoint.as_deref(),
+            request.ca_mtls_port,
             request.ca_fingerprint.as_deref(),
             &request.sans,
             request.policy.clone(),
@@ -947,6 +951,45 @@ async fn renew_handler(
     }
 }
 
+/// POST /renew-self - operator-triggered local rotate-key renewal.
+///
+/// The management plane's DAT gate authenticates the operator. The domain then
+/// performs the normal CSR-only renewal over mTLS, so the CA still evaluates
+/// member identity, revocation, and authorized SANs at its single boundary.
+#[utoipa::path(post, path = "/renew-self", tag = "certmesh",
+    summary = "Rotate this member's key and renew its certificate now",
+    responses((status = 200, body = RenewSelfResponse)))]
+async fn renew_self_handler(Extension(state): Extension<Arc<CertmeshState>>) -> impl IntoResponse {
+    let core = CertmeshCore::from_state(state);
+    match core.renew_self().await {
+        Ok(crate::RenewOutcome::Renewed { expires, hook }) => (
+            StatusCode::OK,
+            Json(RenewSelfResponse {
+                renewed: true,
+                expires,
+                hook,
+            }),
+        )
+            .into_response(),
+        Ok(crate::RenewOutcome::NotApplicable) => error_response(
+            StatusCode::BAD_REQUEST,
+            &CertmeshError::InvalidPayload("this node is not an enrolled mesh member".into()),
+        ),
+        Ok(crate::RenewOutcome::NotDue { .. }) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &CertmeshError::Internal(
+                "operator renewal unexpectedly applied the schedule gate".into(),
+            ),
+        ),
+        Err(error) => {
+            let status =
+                StatusCode::from_u16(koi_common::error::ErrorCode::from(&error).http_status())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            error_response(status, &error)
+        }
+    }
+}
+
 /// POST /health - Member heartbeat with pinned CA fingerprint validation.
 #[utoipa::path(post, path = "/health", tag = "certmesh",
     summary = "Member health heartbeat",
@@ -1115,6 +1158,7 @@ pub(crate) async fn require_auth_with_mw(
         set_hook_handler,
         promote_handler,
         renew_handler,
+        renew_self_handler,
         health_handler,
         create_handler,
         unlock_handler,
@@ -1164,6 +1208,7 @@ pub(crate) async fn require_auth_with_mw(
         crate::protocol::PromoteResponse,
         crate::protocol::RenewRequest,
         crate::protocol::RenewResponse,
+        crate::protocol::RenewSelfResponse,
         crate::protocol::HookResult,
         crate::protocol::HealthRequest,
         crate::protocol::HealthResponse,
@@ -1197,6 +1242,7 @@ mod tests {
         let posture_tx = crate::initial_posture_tx(&paths);
         Arc::new(CertmeshState {
             paths,
+            issuance_names: crate::IssuanceNames::default(),
             ca: tokio::sync::Mutex::new(None),
             roster: tokio::sync::Mutex::new(Roster {
                 metadata: RosterMetadata {
@@ -1247,6 +1293,8 @@ mod tests {
             sans: vec![],
             policy: crate::roster::CertPolicy::default(),
             last_bundle_seq: 0,
+            revoked_fingerprints: Vec::new(),
+            self_revoked: false,
             reload_hook: None,
         };
         crate::member::save(&paths.member_state_path(), &ms).unwrap();

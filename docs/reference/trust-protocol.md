@@ -157,6 +157,15 @@ Revocation is **best-effort** (eventual-consistent, like the mTLS path): the CA
 chain is the hard gate; a leaf whose SHA-256 fingerprint is in the verifier's known
 revoked set is `revoked`.
 
+A member sources its known revoked set from the signed **trust bundle**: it replaces the
+set with the bundle's full revoked projection — the union of the `revoked[]` list and any
+member with `status == "revoked"`, keyed by fingerprint — on every verified pull
+(full-replace, so an un-revocation also clears), gated by the bundle's monotonic `seq`
+anti-rollback floor. A non-Rust sibling implements the same: apply the whole projection,
+not only your own entry. A node that finds **its own** identity revoked stands itself down —
+it stops signing authenticated envelopes, so its outbound messages verify as `anonymous`
+(ADR-023).
+
 ---
 
 ## 3. Sealed (confidentiality envelope)

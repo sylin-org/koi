@@ -1,6 +1,6 @@
 [package]
 name = "koi-net"
-description = "Local network toolkit: service discovery, DNS, health monitoring, TLS proxy, and certificate mesh"
+description = "Local connectivity for containers, applications, and devices: find, trust, and connect"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -11,6 +11,18 @@ homepage.workspace = true
 readme = "README.md"
 keywords = ["networking", "mdns", "dns", "tls-proxy", "service-discovery"]
 categories = ["command-line-utilities", "network-programming"]
+
+# cargo-binstall consumes the same official archives as install.sh/install.ps1.
+# Never fall back to a third-party quick-install binary or a local source build:
+# this channel is explicitly for Koi's CI-built, attested release artifact.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/koi-v{ version }-{ target }{ archive-suffix }"
+bin-dir = "koi-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+disabled-strategies = ["quick-install", "compile"]
+
+[package.metadata.binstall.overrides.'cfg(target_os = "windows")']
+pkg-fmt = "zip"
 
 [[bin]]
 name = "koi"

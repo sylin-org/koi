@@ -41,6 +41,21 @@ pub fn leaf_chains_to_ca(cert_pem: &str, ca_cert_pem: &str) -> bool {
     leaf.verify_signature(Some(ca.public_key())).is_ok()
 }
 
+/// Whether a local leaf is a coherent, usable identity for this CA.
+///
+/// A certificate that merely has the right names and expiry is insufficient: it
+/// must chain to the active CA and its public key must match the local private key.
+/// Self-enrollment and trust diagnosis share this one evaluation point.
+pub fn identity_material_is_usable(cert_pem: &str, key_pem: &str, ca_cert_pem: &str) -> bool {
+    if !leaf_chains_to_ca(cert_pem, ca_cert_pem) {
+        return false;
+    }
+    let Ok(key) = koi_crypto::keys::ca_keypair_from_pem(key_pem) else {
+        return false;
+    };
+    crate::ca::key_matches_certificate(&key, cert_pem).unwrap_or(false)
+}
+
 /// Assemble the trust diagnosis (pure). `integrity_ok` is `None` on an Open node
 /// (no identity) and `Some(chain-validates)` when secure; `self_revoked` is whether
 /// this node's own leaf is in the revoked set; `now` drives the clock line.

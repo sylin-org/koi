@@ -4,15 +4,15 @@
 [![Docs.rs](https://docs.rs/koi-net/badge.svg)](https://docs.rs/koi-net)
 [![License](https://img.shields.io/crates/l/koi-net.svg)](https://github.com/sylin-org/koi#license)
 
-Local network toolkit: service discovery, DNS, health monitoring, TLS proxy, and certificate mesh.
+Let everything local find, trust, and talk.
 
 ## Overview
 
-`koi-net` is the CLI binary for the Koi local network toolkit. It provides a
-single daemon that combines mDNS/DNS-SD service discovery, a local DNS resolver,
-HTTP/TCP health monitoring, a TLS-terminating reverse proxy, UDP datagram
-bridging, and a zero-config private CA — all controllable via CLI commands or a
-built-in HTTP API with an embedded dashboard.
+`koi-net` is the CLI binary for Koi, an open-source local connectivity substrate.
+It makes containers, applications, and devices discoverable, secure, and
+interconnected by composing mDNS/DNS-SD, local DNS, container lifecycle, health,
+TLS and UDP bridging, and a private CA behind one daemon. The same capabilities
+are available through CLI commands, an HTTP API, and an embedded dashboard.
 
 ## Install
 
@@ -49,5 +49,5 @@ See the main repository for architecture details and the full crate inventory.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT License](LICENSE-MIT) at your option.
+Licensed under either of [Apache License, Version 2.0](../../LICENSE-APACHE) or
+[MIT License](../../LICENSE-MIT) at your option.

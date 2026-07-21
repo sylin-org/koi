@@ -1,13 +1,13 @@
 //! dns-01 challenge computation, validation, and zone enforcement (RFC 8555 §8.4).
 //!
-//! The dns-01 flow Koi serves is **self-served in-process** — there is no real
-//! DNS propagation wait. The server:
+//! The dns-01 flow stays inside Koi's authoritative local zone, so there is no
+//! public-DNS propagation wait. The flow is:
 //! 1. computes the expected TXT value for the challenge,
-//! 2. writes it to `_acme-challenge.<name>` via the [`AcmeDnsSolver`] bridge,
-//! 3. immediately reads it back through the same bridge and compares,
-//! 4. clears the TXT record.
+//! 2. the ACME client's provider publishes it through Koi's DNS capability,
+//! 3. the server reads it through the composition bridge and compares it,
+//! 4. the client removes its exact value after validation.
 //!
-//! Because steps 2–4 hit the same in-process DNS core, validation is instant and
+//! Because steps 2–4 hit the same local DNS core, validation is immediate and
 //! deterministic — exactly the "offline issuance, no propagation wait" property
 //! the design promises.
 

@@ -12,9 +12,11 @@
 >   (`scripts/cross-host-certmesh.sh`, two containers). That coverage is **not** in the
 >   scheduled `qa.yml` cron — it gates every PR. See ADR-018.
 >
-> The service-lifecycle, persistence, concurrency, and platform-unit sections below
-> are still accurate (they run from the `.ps1` scripts / Rust unit tests). Verify the
-> exact script names against the repo before relying on a path.
+> The persistence, concurrency, and platform-unit sections remain planning input. The
+> service section is historical: `tests/integration.ps1 -Tier3` is Windows SCM-specific,
+> not a cross-platform Linux/macOS runner. Linux systemd supervision is now physically
+> covered by `koi-lab service-lifecycle` with a reversible transient unit; public
+> `koi install`/`uninstall` is still unclaimed and must not be inferred from that proof.
 
 Date: 2026-02-12
 Owner: QA
@@ -52,7 +54,10 @@ Scope: Follow-ups 1-4 (service lifecycle automation, persistence corruption, con
 - **Pass**: service starts, health endpoint OK, service stops, uninstall succeeds.
 
 ### Linux (systemd)
-- **Script**: `tests/integration.ps1 -Tier3` under `pwsh` (the `.sh` variant was deleted; CHANGELOG 0.3.0)
+- **Current physical guard**: `koi-lab service-lifecycle --allow-system-mutation` proves systemd
+  readiness, restart-on-failure, reconstruction, and exact transient-unit cleanup on Brook.
+- **Planned public-install guard**: a dedicated Linux runner for the steps below; it is not
+  implemented by `tests/integration.ps1 -Tier3`.
 - **Steps**:
   1) `sudo koi install`
   2) `systemctl is-active koi`

@@ -18,6 +18,15 @@ pub enum KoiEvent {
     DnsEntryRemoved {
         name: String,
     },
+    /// An ephemeral DNS TXT value changed. Values are intentionally omitted so
+    /// dns-01 proofs never enter the public event stream.
+    DnsTxtUpdated {
+        name: String,
+    },
+    /// An ephemeral DNS TXT value was removed. Values are intentionally omitted.
+    DnsTxtRemoved {
+        name: String,
+    },
     HealthChanged {
         name: String,
         status: HealthStatus,
@@ -124,6 +133,22 @@ mod tests {
             name: "grafana".to_string(),
         };
         assert!(matches!(event, KoiEvent::DnsEntryRemoved { ref name } if name == "grafana"));
+    }
+
+    #[test]
+    fn dns_txt_variants_omit_values() {
+        let updated = KoiEvent::DnsTxtUpdated {
+            name: "_acme-challenge.grafana.internal.".to_string(),
+        };
+        let removed = KoiEvent::DnsTxtRemoved {
+            name: "_acme-challenge.grafana.internal.".to_string(),
+        };
+        assert!(
+            matches!(updated, KoiEvent::DnsTxtUpdated { ref name } if name.starts_with("_acme-challenge"))
+        );
+        assert!(
+            matches!(removed, KoiEvent::DnsTxtRemoved { ref name } if name.starts_with("_acme-challenge"))
+        );
     }
 
     #[test]
@@ -246,6 +271,12 @@ mod tests {
             },
             KoiEvent::DnsEntryRemoved {
                 name: "a".to_string(),
+            },
+            KoiEvent::DnsTxtUpdated {
+                name: "_acme-challenge.a.internal.".to_string(),
+            },
+            KoiEvent::DnsTxtRemoved {
+                name: "_acme-challenge.a.internal.".to_string(),
             },
             KoiEvent::HealthChanged {
                 name: "svc".to_string(),

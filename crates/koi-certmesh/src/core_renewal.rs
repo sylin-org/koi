@@ -27,10 +27,28 @@ impl CertmeshCore {
     ///
     /// Emits `CertRenewed`, `CertRenewalFailed`, and `CertExpiringSoon` lifecycle events.
     pub async fn renew_self_if_due(&self) -> Result<RenewOutcome, CertmeshError> {
+        self.renew_self_with_trigger(false).await
+    }
+
+    /// Operator-triggered rotate-key renewal for this enrolled member.
+    ///
+    /// This uses the exact same CSR-only, mTLS-authorized renewal transaction as
+    /// [`Self::renew_self_if_due`], but deliberately bypasses only the local
+    /// schedule check. CA-side membership, revocation, SAN, and identity policy
+    /// remain authoritative. It is useful when an operator needs to rotate a key
+    /// immediately after suspected exposure or prove reload behavior on demand.
+    pub async fn renew_self(&self) -> Result<RenewOutcome, CertmeshError> {
+        self.renew_self_with_trigger(true).await
+    }
+
+    async fn renew_self_with_trigger(
+        &self,
+        operator_requested: bool,
+    ) -> Result<RenewOutcome, CertmeshError> {
         // Inner function carries all the real work; this outer shell handles event
         // emission for every failure exit without scattering it across every `?`.
         let days_left_at_attempt = self.cert_days_left_if_member();
-        let result = self.renew_self_if_due_inner().await;
+        let result = self.renew_self_inner(operator_requested).await;
         match &result {
             Err(e) => {
                 let count = self
@@ -44,11 +62,13 @@ impl CertmeshCore {
                 });
                 // Only emit CertExpiringSoon when the cert is actually past the renewal
                 // threshold (i.e. we attempted renewal, not just "not due").
-                if let Some(days) = days_left_at_attempt {
-                    let _ = self
-                        .state
-                        .event_tx
-                        .send(CertmeshEvent::CertExpiringSoon { days_left: days });
+                if !operator_requested {
+                    if let Some(days) = days_left_at_attempt {
+                        let _ = self
+                            .state
+                            .event_tx
+                            .send(CertmeshEvent::CertExpiringSoon { days_left: days });
+                    }
                 }
             }
             Ok(RenewOutcome::Renewed { ref expires, .. }) => {
@@ -210,10 +230,17 @@ impl CertmeshCore {
         Some((not_after - chrono::Utc::now()).num_days())
     }
 
-    async fn renew_self_if_due_inner(&self) -> Result<RenewOutcome, CertmeshError> {
-        let Some(state) = member::load(&self.state.paths.member_state_path()) else {
+    async fn renew_self_inner(
+        &self,
+        operator_requested: bool,
+    ) -> Result<RenewOutcome, CertmeshError> {
+        let Some(mut state) = member::load(&self.state.paths.member_state_path()) else {
             return Ok(RenewOutcome::NotApplicable);
         };
+        let renewal_sans = self
+            .state
+            .issuance_names
+            .member_sans(&state.hostname, &state.sans)?;
 
         let cert_dir = self.state.paths.certs_dir().join(&state.hostname);
         // Read the current key + cert + pinned CA off the blocking pool.
@@ -234,14 +261,15 @@ impl CertmeshCore {
             CertmeshError::Internal("cannot parse local leaf expiry for renewal".into())
         })?;
         let threshold = chrono::Duration::days(i64::from(state.policy.renew_threshold_days));
-        if chrono::Utc::now() + threshold < not_after {
+        let names_current = IssuanceNames::certificate_covers(&current_cert, &renewal_sans);
+        if !operator_requested && chrono::Utc::now() + threshold < not_after && names_current {
             return Ok(RenewOutcome::NotDue { not_after });
         }
 
         // Rotate: fresh keypair + CSR. The new key lives only in memory until the
         // CA-signed leaf is in hand, so a failed renewal never discards the
         // working key.
-        let (new_key_pem, csr_pem) = csr::generate_keypair_and_csr(&state.hostname, &state.sans)?;
+        let (new_key_pem, csr_pem) = csr::generate_keypair_and_csr(&state.hostname, &renewal_sans)?;
         let req_body = serde_json::to_string(&protocol::RenewRequest {
             hostname: state.hostname.clone(),
             csr: csr_pem,
@@ -317,6 +345,12 @@ impl CertmeshCore {
         .await
         .map_err(|e| CertmeshError::Internal(format!("write renewed cert task: {e}")))??;
 
+        // Persist the centrally-derived set only after the matching leaf is safely
+        // installed. This migrates pre-zone member state without risking the
+        // working certificate when renewal fails.
+        state.sans = renewal_sans;
+        member::save(&self.state.paths.member_state_path(), &state)?;
+
         tracing::info!(hostname = %state.hostname, expires = %resp.expires, "Member certificate renewed (rotated key)");
 
         // Run the local reload hook, if configured.
@@ -388,9 +422,12 @@ impl CertmeshCore {
                 return Err(CertmeshError::Revoked(authenticated_cn.to_string()));
             }
             match roster.find_member(authenticated_cn) {
-                Some(m) if m.status == crate::roster::MemberStatus::Active => {
-                    (m.cert_sans.clone(), roster.metadata.policy.clone())
-                }
+                Some(m) if m.status == crate::roster::MemberStatus::Active => (
+                    self.state
+                        .issuance_names
+                        .member_sans(authenticated_cn, &m.cert_sans)?,
+                    roster.metadata.policy.clone(),
+                ),
                 Some(_) => {
                     // Non-active (e.g. a status that bypassed is_revoked) → 403,
                     // not a 500; this is an authorization refusal, not a fault.
@@ -444,6 +481,7 @@ impl CertmeshCore {
                 if let Some(member) = roster.find_member_mut(authenticated_cn) {
                     member.cert_fingerprint = fingerprint.clone();
                     member.cert_expires = expires;
+                    member.cert_sans = authorized_sans.clone();
                     member.last_seen = Some(chrono::Utc::now());
                 }
                 Ok(())
@@ -480,14 +518,13 @@ impl CertmeshCore {
     /// Pull, verify, and apply the CA's signed trust bundle (ADR-017 P1/F4).
     ///
     /// A no-op ([`BundleOutcome::NotApplicable`]) unless this node joined a mesh.
-    /// Fetches the self-verifying bundle over plain HTTP, verifies the ES256
-    /// signature against the **pinned** CA fingerprint, and rejects a strictly
-    /// older `seq` (anti-rollback). On a newer bundle it refreshes the member's
-    /// cached `policy` and `last_bundle_seq`, and flags whether this node has been
-    /// revoked mesh-wide.
+    /// Fetches the self-verifying bundle over plain HTTP, then delegates to
+    /// [`apply_trust_bundle`](Self::apply_trust_bundle) for verification and
+    /// application. Members run this on the role loop (ADR-023): self-management is
+    /// intrinsic to membership.
     pub async fn pull_trust_bundle(&self) -> Result<BundleOutcome, CertmeshError> {
         let member_path = self.state.paths.member_state_path();
-        let Some(mut state) = member::load(&member_path) else {
+        let Some(state) = member::load(&member_path) else {
             return Ok(BundleOutcome::NotApplicable);
         };
 
@@ -509,9 +546,37 @@ impl CertmeshCore {
         let signed: bundle::SignedBundle = serde_json::from_str(&body)
             .map_err(|e| CertmeshError::Internal(format!("malformed trust bundle: {e}")))?;
 
+        self.apply_trust_bundle(&signed).await
+    }
+
+    /// Verify and apply a trust bundle obtained over **any** transport (ADR-023 §4).
+    ///
+    /// The verify+persist core of [`pull_trust_bundle`](Self::pull_trust_bundle),
+    /// minus the HTTP fetch — the supported seam for a consumer that carries the
+    /// signed bundle over its *own* plane (so it needs no reachability to the CA's
+    /// HTTP port). Koi stays the owner of ES256 + anti-rollback verification: this
+    /// ingests a `SignedBundle`, never a bare, unverifiable fingerprint list.
+    ///
+    /// A no-op ([`BundleOutcome::NotApplicable`]) unless this node joined a mesh — a CA
+    /// node keeps no `member.json` (it owns the authoritative roster directly), so it
+    /// returns `NotApplicable` here rather than ingesting its own bundle.
+    /// Verifies the detached ES256 signature against this member's **pinned** CA
+    /// fingerprint and rejects a strictly older `seq` (anti-rollback). On a verified
+    /// bundle it self-heals the on-disk CA anchor and **applies the bundle's full
+    /// cross-member revoked set** into the persisted member-side store that
+    /// `verify`/`open` honor — so a pure member rejects *other* revoked members, not
+    /// only itself (ADR-023 §3). Full-replace, so an un-revoked entry also clears.
+    pub async fn apply_trust_bundle(
+        &self,
+        signed: &bundle::SignedBundle,
+    ) -> Result<BundleOutcome, CertmeshError> {
+        let member_path = self.state.paths.member_state_path();
+        let Some(mut state) = member::load(&member_path) else {
+            return Ok(BundleOutcome::NotApplicable);
+        };
+
         // Verify signature against the pinned CA + anti-rollback floor.
-        if let Err(e) = bundle::verify(&signed, &state.ca_fingerprint, Some(state.last_bundle_seq))
-        {
+        if let Err(e) = bundle::verify(signed, &state.ca_fingerprint, Some(state.last_bundle_seq)) {
             // F5 fail-safe: a bundle whose CA fingerprint differs from our pin is
             // rejected, and we KEEP the old pin. There is no supported live CA
             // re-key path today, so a fingerprint change is treated as hostile; an
@@ -532,7 +597,7 @@ impl CertmeshCore {
         // F5 anchor self-heal: the bundle's `ca_cert_pem` provably hashes to our pin
         // (verify enforced it), so writing it keeps the on-disk `ca.pem` — the trust
         // root the mTLS renewal client loads — in sync and repairs drift/corruption.
-        // Done on every verified pull (even an unchanged seq) so a wiped anchor is
+        // Done on every verified bundle (even an unchanged seq) so a wiped anchor is
         // restored promptly; the write is skipped when the file already matches.
         {
             let anchor = self
@@ -545,8 +610,8 @@ impl CertmeshCore {
             // Best-effort: the closure logs its own write error, and any JoinError
             // (task panic) is intentionally dropped. A write failure is harmless —
             // the bundle was already pin-verified, and because this heal runs on
-            // every verified pull (before the seq short-circuit below) the next pull
-            // simply retries it.
+            // every verified bundle (before the seq short-circuit below) the next
+            // pull simply retries it.
             let _ = tokio::task::spawn_blocking(move || {
                 let current = std::fs::read_to_string(&anchor).ok();
                 if current.as_deref() != Some(want.as_str()) {
@@ -562,23 +627,53 @@ impl CertmeshCore {
             .await;
         }
 
-        let seq = signed.bundle.seq;
-        if seq == state.last_bundle_seq {
-            return Ok(BundleOutcome::NoChange { seq });
-        }
-
+        // Apply the cross-member revoked set on EVERY verified bundle — including an
+        // unchanged `seq` — so a member already at the current seq still materializes
+        // it (ADR-023 §3(a): the one-time post-upgrade / partial-write case). Full-
+        // replace is safe because a strictly older/smaller set arrives only with an
+        // older seq, which `bundle::verify` already rejected above. Persisted in the
+        // SAME atomic `member.json` write as the seq floor, so the floor can never
+        // advance without its data.
         let hostname = state.hostname.clone();
         let self_revoked = signed.bundle.is_revoked(&hostname);
-        state.last_bundle_seq = seq;
-        state.policy = signed.bundle.policy.clone();
-        tokio::task::spawn_blocking(move || member::save(&member_path, &state))
-            .await
-            .map_err(|e| CertmeshError::Internal(format!("member state save task: {e}")))??;
+        let seq = signed.bundle.seq;
+        let seq_advanced = seq != state.last_bundle_seq;
+        let revoked = signed.bundle.revoked_fingerprints();
+
+        let mut dirty = false;
+        if state.revoked_fingerprints != revoked {
+            state.revoked_fingerprints = revoked;
+            dirty = true;
+        }
+        // Persist self-revocation (hostname-keyed, authoritative) so the outbound
+        // self-gate survives a restart and clears on un-revocation — applied on every
+        // verified bundle, like the revoked set.
+        if state.self_revoked != self_revoked {
+            state.self_revoked = self_revoked;
+            dirty = true;
+        }
+        if seq_advanced {
+            state.last_bundle_seq = seq;
+            state.policy = signed.bundle.policy.clone();
+            dirty = true;
+        }
+        if dirty {
+            tokio::task::spawn_blocking(move || member::save(&member_path, &state))
+                .await
+                .map_err(|e| CertmeshError::Internal(format!("member state save task: {e}")))??;
+        }
+
+        if !seq_advanced {
+            // No newer bundle: either a true no-op, or a one-time revoked-set
+            // materialization (already persisted above). Either way, no event.
+            return Ok(BundleOutcome::NoChange { seq });
+        }
 
         if self_revoked {
             tracing::error!(
                 %hostname,
-                "This node has been REVOKED in the mesh trust bundle (seq {seq}); renewal will be refused by the CA"
+                "This node has been REVOKED in the mesh trust bundle (seq {seq}); it will stop \
+                 asserting an authenticated identity (ADR-023 §5) and renewal will be refused by the CA"
             );
         } else {
             tracing::debug!(seq, "Trust bundle updated");

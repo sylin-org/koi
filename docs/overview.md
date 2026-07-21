@@ -6,38 +6,68 @@ else. If you already know you want it, skip to [where to go next](#where-to-go-n
 
 ---
 
-## The problem
+## The promise
 
-A local network ships with almost nothing. Plug in machines and containers and you get
-IP addresses and a lot of manual work. Out of the box your LAN has no usable service
-discovery you can drive from code, no way to give a host a stable name without editing a
-zone file somewhere, no trusted HTTPS for private addresses (public CAs won't sign
-`.internal` names or RFC-1918 IPs — by rule), and no quick way to put a TLS endpoint in
-front of a plain service.
+> **Let everything local find, trust, and talk.**
 
-Each of those has a point solution. The pain is the *wiring between them*: discovery is
-useless until things have names, names are half a solution until the certs behind them are
-trusted, and certs only matter once something terminates TLS. Stitching that together by
-hand — Avahi here, a dnsmasq zone there, a hand-rolled CA, a reverse proxy config — is the
-job nobody wants. **That wiring is what Koi is.**
+Koi is an open-source local connectivity substrate that makes containers,
+applications, and devices delightfully discoverable, secure, and interconnected.
+It runs as one cross-platform binary, has no hosted control plane, and continues to
+work when the internet does not.
 
-## Koi's model: discover → name → trust → serve
+A local network gives participants addresses, but very little shared context. Devices
+may advertise over mDNS while bridge-networked containers cannot hear them. Applications
+accumulate IP addresses and ports in configuration. Private services need useful names,
+yet those names still produce certificate warnings unless every machine shares a trust
+root. Each layer has a point solution; the boundaries between them become repeated work.
 
-Koi is one static binary that runs as a small daemon on each machine and gives the network
-the four things it never gets, wired together as one pipeline:
+Koi owns that connective tissue.
 
-1. **Discover** — mDNS/DNS-SD service discovery with a real lifecycle. Services that go
-   away actually disappear (leases, not stale ghosts).
-2. **Name** — a local DNS zone (`.internal` by default) where names appear automatically:
-   from discovery, from containers, from issued certificates. No zone-file editing.
-3. **Trust** — a private certificate authority with guided enrollment and OS trust-store
-   installation, so `https://` on the LAN is green in the browser without a public CA.
-4. **Serve** — a zero-config TLS endpoint for those certificates, plus health checks to
-   watch the whole thing.
+## How Koi grew
 
-Label a container and the pipeline runs end to end — announced, named, certified, watched —
-without touching the image. There are no accounts and no cloud; it works when the internet
-doesn't.
+Koi began as a host-side mDNS bridge for containers. The host could participate in
+multicast while isolated workloads used ordinary HTTP, preserving container network
+isolation without making every image carry platform-specific discovery machinery.
+
+Making containers first-class network citizens revealed the adjacent gaps. Something
+that arrives needs a name. Something found needs a reliable way to be reached. A name
+needs identity before people and applications can trust it. Health and lifecycle must
+keep the entire picture honest when the participant changes or leaves.
+
+Those are not unrelated features. They are the missing seams in one local-participation
+lifecycle:
+
+`arrive → receive a name → be discovered → be reached → be trusted → report health → change → leave cleanly`
+
+## Find. Trust. Connect.
+
+### Find
+
+Koi speaks mDNS/DNS-SD, gives services meaningful names in a local DNS zone
+(`.internal` by default), observes container runtime events, and maintains leases so
+departed services disappear instead of becoming stale ghosts. A participant can be
+found whether it began as a device announcement, a container label, a static record,
+or a certificate identity.
+
+### Trust
+
+Koi provides a private certificate authority, guided enrollment, automatic renewal,
+OS trust-store installation, mTLS, signing and verification, and a trust doctor that
+makes failures explicit. The result is locally governed identity and warning-free HTTPS
+for in-zone services without pretending that an unverified discovery announcement is
+proof. Security is one pillar of Koi, not its entire identity.
+
+### Connect
+
+Koi bridges the boundaries that normally keep local participants apart. Containers can
+announce, discover, and watch mDNS without host networking; applications can use the
+CLI, HTTP, IPC, or an embedded Rust API; UDP can cross a container bridge; and existing
+proxies, resolvers, monitoring systems, runtimes, and agents can consume standard
+interfaces. This is bidirectional participation, not merely an inbound route.
+
+The familiar `discover → name → trust → serve → watch` pipeline remains one useful
+end-to-end journey beneath these outcomes. It is evidence that Koi's capabilities
+compose, not the boundary of what Koi enables.
 
 ## Who it's for
 
@@ -48,15 +78,30 @@ Koi is built for people who own the network they run on:
   without a public DNS name or a Let's Encrypt round-trip.
 - **Small teams** running a handful of machines who want naming and trust without standing
   up enterprise DNS or PKI.
-- **Container hosts**, where bridge networks can't do multicast — the host daemon speaks
-  mDNS, containers speak plain HTTP to it.
+- **Container hosts**, where bridge networks cannot carry multicast — the host daemon
+  lets workloads announce, discover, and watch the LAN through ordinary interfaces.
 
-## Four ways to run it
+## Works with the stack you already have
 
-The same binary is four things depending on how you call it:
+Koi is connective infrastructure, not a demand to replace working tools:
 
-- **Daemon** — `koi --daemon` (or installed as a service). All capabilities, the HTTP API
-  on `127.0.0.1:5641`, the dashboard, and the trust plane. This is the full toolbox.
+- Keep Pi-hole, AdGuard, dnsmasq, or Unbound and delegate only the Koi zone.
+- Keep Caddy, Traefik, or another reverse proxy and let its ACME client obtain local
+  certificates from Koi.
+- Keep Tailscale or another overlay and route `.internal` lookups to Koi through its
+  split-DNS mechanism.
+- Keep Docker or Podman labels, Prometheus service discovery, and MCP clients; Koi
+  consumes or exports the formats those tools already speak.
+
+Koi can be the authority for a small greenfield network or the feeder beneath an
+existing stack. Every capability can be disabled independently.
+
+## Ways to use it
+
+The same binary supports four access modes:
+
+- **Daemon** — `koi --daemon` (or installed as a service). The composed capabilities,
+  HTTP API on `127.0.0.1:5641`, dashboard, and trust plane.
 - **Standalone** — `koi mdns discover` with no daemon running does the work directly and
   exits. Instant, zero config.
 - **Client** — the same command *with* a daemon running talks to it over HTTP instead.
@@ -90,6 +135,11 @@ Koi is honest about its edges. Reach for something else when:
 - **You're on the public internet / WAN.** Koi is a LAN substrate. It is not a
   public-facing edge, and its private CA is not a public CA. Use real public DNS and a
   public ACME CA (Let's Encrypt) for anything internet-facing.
+- **You need an overlay network or application traffic policy.** Koi does not create
+  routes between subnets, encrypt arbitrary host traffic, inject sidecars, or manage
+  application-level routing. Keep Tailscale, WireGuard, Cilium, or a service mesh for
+  those responsibilities and integrate Koi where local discovery, identity, or naming
+  is useful.
 - **You need enterprise PKI or DNS at scale.** One token per daemon, one CA, no per-client
   accounts or scopes. For org-wide identity, RBAC, and large authoritative DNS, use the
   tools built for that.
@@ -121,3 +171,6 @@ might want any of it again.
   maps of a single capability.
 - **Have a specific goal?** The [by-goal table](index.md#by-goal) routes you straight to
   the right guide.
+
+The positioning and product-boundary decision behind this model is recorded in
+[ADR-024: Public Identity — Find, Trust, Connect](adr/024-public-identity-find-trust-connect.md).

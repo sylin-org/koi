@@ -25,11 +25,15 @@
 
 .PARAMETER NoModifyPath
     Do not add the install directory to your user PATH.
+
+.PARAMETER ExpectedSha256
+    Trusted expected archive digest supplied by a verified bootstrap manifest.
 #>
 [CmdletBinding()]
 param(
     [string]$Version = $env:KOI_VERSION,
     [string]$InstallDir = $env:KOI_INSTALL_DIR,
+    [string]$ExpectedSha256 = $env:KOI_EXPECTED_SHA256,
     [switch]$NoModifyPath
 )
 
@@ -105,14 +109,23 @@ try {
     Say "downloading $archive"
     try {
         Invoke-WebRequest -Uri "$baseUrl/$archive" -OutFile $zipPath -UseBasicParsing
-        Invoke-WebRequest -Uri "$baseUrl/$archive.sha256" -OutFile $shaPath -UseBasicParsing
+        if (-not $ExpectedSha256) {
+            Invoke-WebRequest -Uri "$baseUrl/$archive.sha256" -OutFile $shaPath -UseBasicParsing
+        }
     } catch {
         throw "koi: download failed — does $Version have a $target build? See https://github.com/$Repo/releases"
     }
 
     # ── Verify checksum ───────────────────────────────────────────
     # TrimStart strips a UTF-8 BOM if a regenerated checksum file carries one.
-    $expected = ((Get-Content $shaPath -Raw).TrimStart([char]0xFEFF).Trim() -split '\s+')[0].ToLower()
+    if ($ExpectedSha256) {
+        $expected = $ExpectedSha256.ToLower()
+        if ($expected -notmatch '^[a-f0-9]{64}$') {
+            throw "koi: ExpectedSha256 must be exactly 64 hexadecimal characters"
+        }
+    } else {
+        $expected = ((Get-Content $shaPath -Raw).TrimStart([char]0xFEFF).Trim() -split '\s+')[0].ToLower()
+    }
     $actual = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLower()
     if (-not $expected) { throw "koi: checksum file was empty" }
     if ($expected -ne $actual) {

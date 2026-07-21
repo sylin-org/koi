@@ -23,28 +23,45 @@ jobs:
     outputs:
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      npm_tag: ${{ steps.meta.outputs.npm_tag }}
       description: ${{ steps.meta.outputs.description }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
 
       - name: Extract version metadata
         id: meta
         shell: bash
         run: |
-          VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
-          TAG="v${VERSION}"
+          set -euo pipefail
+          METADATA=$(node scripts/release-version.mjs --cargo Cargo.toml)
+          VERSION=$(jq -r '.version' <<<"$METADATA")
+          TAG=$(jq -r '.tag' <<<"$METADATA")
+          PRERELEASE=$(jq -r '.prerelease' <<<"$METADATA")
+          NPM_TAG=$(jq -r '.npmTag' <<<"$METADATA")
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "$TAG" ]]; then
+            echo "Tag $GITHUB_REF_NAME disagrees with workspace release $TAG" >&2
+            exit 1
+          fi
           # Release description is the body of the latest CHANGELOG.md section
           # (everything between the first "## [" heading and the next one).
           DESCRIPTION=$(awk '/^## \[/{c++; if(c==2) exit; next} c==1' CHANGELOG.md)
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "prerelease=$PRERELEASE"
+            echo "npm_tag=$NPM_TAG"
             echo "description<<__KOI_EOF__"
             echo "$DESCRIPTION"
             echo "__KOI_EOF__"
           } >> "$GITHUB_OUTPUT"
           echo "Tag: $TAG"
           echo "Version: $VERSION"
+          echo "Prerelease: $PRERELEASE"
+          echo "npm dist-tag: $NPM_TAG"
           echo "Description:"
           echo "$DESCRIPTION"
 
@@ -159,9 +176,49 @@ jobs:
             ${{ env.ASSET }}
             ${{ env.ASSET }}.sha256
 
+  # ── Distribution contract ────────────────────────────────────────
+  # Exercise every thin publication consumer against the exact build matrix.
+  # A manual dispatch reaches this job but publishes nothing.
+  channels:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: packages/npm/package-lock.json
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Build and verify the release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test scripts/release-manifest.test.mjs
+          MANIFEST="artifacts/koi-${{ needs.prepare.outputs.tag }}-manifest.json"
+          node scripts/release-manifest.mjs \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --artifacts artifacts \
+            --output "$MANIFEST"
+          cp "$MANIFEST" packages/npm/release-manifest.json
+
+      - name: Test and pack the npm bootstrap
+        working-directory: packages/npm
+        run: |
+          npm ci
+          npm test
+          npm pack --dry-run
+
   # ── Release ───────────────────────────────────────────────────────
   release:
-    needs: [prepare, test, build]
+    needs: [prepare, test, channels]
     # Only create a GitHub Release on a real tag push; workflow_dispatch runs
     # the build matrix as a dry run and stops here.
     if: startsWith(github.ref, 'refs/tags/')
@@ -180,14 +237,24 @@ jobs:
           pattern: release-*
           merge-multiple: true
 
+      - name: Generate the canonical release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release-manifest.mjs \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --artifacts artifacts \
+            --output "artifacts/koi-${{ needs.prepare.outputs.tag }}-manifest.json"
+
       # Signed build provenance for every published archive: `gh attestation verify
       # <file> --repo sylin-org/koi` proves it was built by this workflow, not a mirror.
-      - name: Attest binary provenance
+      - name: Attest binary and manifest provenance
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
             artifacts/*.tar.gz
             artifacts/*.zip
+            artifacts/*.json
 
       - name: Generate release notes
         shell: bash
@@ -226,9 +293,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ needs.prepare.outputs.tag }}"
+          RELEASE_FLAGS=(--verify-tag)
+          if [[ "${{ needs.prepare.outputs.prerelease }}" == "true" ]]; then
+            RELEASE_FLAGS+=(--prerelease --latest=false)
+          else
+            RELEASE_FLAGS+=(--latest)
+          fi
           gh release create "$TAG" \
             --title "$TAG" \
             --notes-file release-notes.md \
+            "${RELEASE_FLAGS[@]}" \
             artifacts/*
 
   # ── Container image (GHCR) ─────────────────────────────────────────
@@ -286,10 +360,13 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          # Disable metadata-action's implicit floating tag. The centralized
+          # release classifier below is the only evaluator allowed to advance it.
+          flavor: latest=false
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ !contains(needs.prepare.outputs.tag, '-') }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.prerelease == 'false' }}
 
       - name: Build and push
         id: build
@@ -323,3 +400,42 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     uses: ./.github/workflows/publish.yml
     secrets: inherit
+
+  # npm is a bootstrap channel for the native binary, not a second Koi runtime.
+  # Publication stays inert until the @sylin/koi package has been created once,
+  # its trusted publisher points at release.yml, and NPM_PUBLISH_ENABLED=true.
+  publish-npm:
+    needs: [prepare, release]
+    if: startsWith(github.ref, 'refs/tags/') && vars.NPM_PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: packages/npm/package-lock.json
+
+      - name: Use a trusted-publishing capable npm CLI
+        run: npm install --global npm@latest
+
+      - name: Download the released artifact contract
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${{ needs.prepare.outputs.tag }}" \
+            --pattern "koi-${{ needs.prepare.outputs.tag }}-manifest.json" \
+            --dir packages/npm
+          mv "packages/npm/koi-${{ needs.prepare.outputs.tag }}-manifest.json" \
+            packages/npm/release-manifest.json
+
+      - name: Verify and publish the npm bootstrap
+        working-directory: packages/npm
+        run: |
+          npm ci
+          npm test
+          npm publish --access public --tag "${{ needs.prepare.outputs.npm_tag }}"

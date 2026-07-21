@@ -482,7 +482,7 @@ body::before {
       $('certmesh-content').innerHTML = '<table style="font-size:0.82rem">'
         + '<tr><td style="color:var(--text-muted);padding-right:1rem">CA</td><td>' + (c.ca_initialized ? (c.ca_locked ? '🔒 locked' : '🔓 unlocked') : 'not initialized') + '</td></tr>'
         + (c.auth_method ? '<tr><td style="color:var(--text-muted);padding-right:1rem">Auth</td><td>' + esc(c.auth_method) + '</td></tr>' : '')
-        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Profile</td><td>' + esc(c.profile) + '</td></tr>'
+        + '<tr><td style="color:var(--text-muted);padding-right:1rem">Approval</td><td>' + (c.requires_approval ? 'operator required' : 'automatic') + '</td></tr>'
         + '<tr><td style="color:var(--text-muted);padding-right:1rem">Members</td><td>' + c.member_count + '</td></tr>'
         + '<tr><td style="color:var(--text-muted);padding-right:1rem">Enrollment</td><td>' + esc(c.enrollment_state) + '</td></tr>'
         + '</table>';
@@ -500,9 +500,10 @@ body::before {
         let html = '<table style="font-size:0.82rem"><thead><tr><th>Name</th><th>Listen</th><th>Backend</th><th>Status</th></tr></thead><tbody>';
         for (const e of p.entries) {
           const listener = p.listeners.find(l => l.name === e.name);
-          const running = listener ? listener.running : false;
+          const state = listener ? listener.state : 'stopped';
+          const running = state === 'running';
           html += '<tr><td>' + esc(e.name) + '</td><td>:' + e.listen_port + '</td><td style="font-family:var(--mono);font-size:0.75rem">' + esc(e.backend) + '</td>'
-            + '<td class="' + (running ? 'status-up' : 'status-down') + '">' + (running ? 'running' : 'stopped') + '</td></tr>';
+            + '<td class="' + (running ? 'status-up' : 'status-down') + '">' + esc(state) + '</td></tr>';
         }
         html += '</tbody></table>';
         $('proxy-content').innerHTML = html;

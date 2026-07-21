@@ -112,7 +112,7 @@ is unique to Koi — no other LAN SD source exposes certificate expiry.
 
 ```json
 {
-  "version": "0.9.0",
+  "version": "1.0.0-rc.1",
   "platform": "windows",
   "uptime_secs": 3600,
   "daemon": true,
@@ -293,7 +293,7 @@ data: {"event":"removed","service":{"name":"...","type":"..."}}
 {
   "hostname": "workstation-01",
   "auth": { "method": "totp", "code": "123456" },
-  "sans": ["workstation-01.lan"]
+  "sans": ["workstation-01.internal"]
 }
 ```
 
@@ -373,7 +373,7 @@ conditional-forwarding recipes (AdGuard Home, Pi-hole, dnsmasq, Unbound,
 Technitium) that let Koi sit alongside your existing resolver.
 
 ```json
-{ "name": "grafana.lan.", "ips": ["192.168.1.42"], "source": "static" }
+{ "name": "grafana.internal.", "ips": ["192.168.1.42"], "source": "static" }
 ```
 
 Sources: `static`, `certmesh`, `mdns`.

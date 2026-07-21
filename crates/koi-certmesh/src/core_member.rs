@@ -91,30 +91,28 @@ impl CertmeshCore {
 
     // ── Member-side key custody (ADR-015 F1) ────────────────────────
 
-    /// Generate this member's keypair + CSR and persist the **private key** locally.
+    /// Generate this member's keypair + CSR and stage the **private key** locally.
     ///
-    /// The daemon generates the keypair, writes the private key to
-    /// `certs/<hostname>/key.pem` (0600 on Unix), and returns only the CSR. The
-    /// key never leaves the daemon; the CLI carries only the public CSR to the
-    /// remote CA. Paired with [`Self::install_member_cert`].
+    /// The daemon generates the keypair, writes the private key to a pending file
+    /// (0600 on Unix), and returns only the CSR. The active `key.pem` is not
+    /// replaced until [`Self::install_member_cert`] has received and validated a
+    /// matching CA-signed leaf. A refused or interrupted enrollment therefore
+    /// cannot destroy an existing member identity. The key never leaves the
+    /// daemon; the CLI carries only the public CSR to the remote CA.
     pub async fn prepare_member_csr(
         &self,
         hostname: &str,
         sans: &[String],
     ) -> Result<String, CertmeshError> {
         validate_hostname(hostname)?;
-        let (key_pem, csr_pem) = csr::generate_keypair_and_csr(hostname, sans)?;
+        let authorized_sans = self.state.issuance_names.member_sans(hostname, sans)?;
+        let (key_pem, csr_pem) = csr::generate_keypair_and_csr(hostname, &authorized_sans)?;
 
         let cert_dir = self.state.paths.certs_dir().join(hostname);
-        let key_path = cert_dir.join("key.pem");
+        let key_path = cert_dir.join("key.pending.pem");
         tokio::task::spawn_blocking(move || -> Result<(), CertmeshError> {
             std::fs::create_dir_all(&cert_dir)?;
-            std::fs::write(&key_path, key_pem.as_bytes())?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
-            }
+            write_file_atomic(&key_path, key_pem.as_bytes(), true)?;
             Ok(())
         })
         .await
@@ -127,10 +125,13 @@ impl CertmeshCore {
         Ok(csr_pem)
     }
 
-    /// Install a CA-signed leaf next to the member key from [`Self::prepare_member_csr`].
+    /// Validate and install a CA-signed leaf with the pending member key from
+    /// [`Self::prepare_member_csr`].
     ///
-    /// Writes `cert.pem`, `ca.pem`, and `fullchain.pem` into `certs/<hostname>/`
-    /// (the key is already there) and installs the CA root in the OS trust store
+    /// Before changing the active identity, verifies that the leaf chains to the
+    /// supplied CA and corresponds to the pending private key. It then promotes
+    /// that key and writes `cert.pem`, `ca.pem`, and `fullchain.pem` into
+    /// `certs/<hostname>/`, and installs the CA root in the OS trust store
     /// (best-effort). Returns the cert directory path.
     ///
     /// When `ca_endpoint` + `ca_fingerprint` are supplied (the normal join flow),
@@ -145,11 +146,18 @@ impl CertmeshCore {
         cert_pem: &str,
         ca_pem: &str,
         ca_endpoint: Option<&str>,
+        ca_mtls_port: Option<u16>,
         ca_fingerprint: Option<&str>,
         sans: &[String],
         policy: Option<roster::CertPolicy>,
     ) -> Result<String, CertmeshError> {
         validate_hostname(hostname)?;
+        let authorized_sans = self.state.issuance_names.member_sans(hostname, sans)?;
+        if ca_mtls_port == Some(0) {
+            return Err(CertmeshError::InvalidPayload(
+                "CA mTLS port must be greater than zero".into(),
+            ));
+        }
 
         // Enforce the pin BEFORE writing anything (ADR-017 F3). When the caller
         // supplied a pinned fingerprint (the out-of-band-trusted one from the
@@ -171,15 +179,32 @@ impl CertmeshCore {
         }
 
         let cert_dir = self.state.paths.certs_dir().join(hostname);
+        let pending_key_path = cert_dir.join("key.pending.pem");
+        let pending_key = std::fs::read_to_string(&pending_key_path).map_err(|error| {
+            CertmeshError::InvalidPayload(format!(
+                "no pending member key for {hostname}; prepare a CSR before installing: {error}"
+            ))
+        })?;
+        if !diagnosis::identity_material_is_usable(cert_pem, &pending_key, ca_pem) {
+            return Err(CertmeshError::InvalidPayload(
+                "signed member certificate does not chain to the supplied CA or match the pending private key"
+                    .into(),
+            ));
+        }
+
         let cert_owned = cert_pem.to_string();
         let ca_owned = ca_pem.to_string();
         let fullchain = format!("{cert_owned}{ca_owned}");
+        let key_owned = pending_key;
         let dir = cert_dir.clone();
         tokio::task::spawn_blocking(move || -> Result<(), CertmeshError> {
             std::fs::create_dir_all(&dir)?;
-            write_file_atomic(&dir.join("cert.pem"), cert_owned.as_bytes(), false)?;
             write_file_atomic(&dir.join("ca.pem"), ca_owned.as_bytes(), false)?;
             write_file_atomic(&dir.join("fullchain.pem"), fullchain.as_bytes(), false)?;
+            write_file_atomic(&dir.join("key.pem"), key_owned.as_bytes(), true)?;
+            // `cert.pem` is the commit marker: readers require both it and key.pem.
+            write_file_atomic(&dir.join("cert.pem"), cert_owned.as_bytes(), false)?;
+            std::fs::remove_file(dir.join("key.pending.pem"))?;
             Ok(())
         })
         .await
@@ -197,15 +222,18 @@ impl CertmeshCore {
         // MemberState records a fingerprint we have confirmed matches the installed
         // CA root.
         if let (Some(endpoint), Some(fingerprint)) = (ca_endpoint, ca_fingerprint) {
+            let ca_mtls_port = ca_mtls_port.unwrap_or(member::DEFAULT_CA_MTLS_PORT);
             let state = member::MemberState {
                 hostname: hostname.to_string(),
                 ca_host: member::host_from_endpoint(endpoint),
-                ca_mtls_port: member::DEFAULT_CA_MTLS_PORT,
+                ca_mtls_port,
                 ca_http_port: member::port_from_endpoint(endpoint),
                 ca_fingerprint: fingerprint.to_string(),
-                sans: sans.to_vec(),
+                sans: authorized_sans,
                 policy: policy.unwrap_or_default(),
                 last_bundle_seq: 0,
+                revoked_fingerprints: Vec::new(),
+                self_revoked: false,
                 reload_hook: None,
             };
             if let Err(e) = member::save(&self.state.paths.member_state_path(), &state) {

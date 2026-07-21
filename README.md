@@ -1,24 +1,32 @@
 # Koi 𓆝
 
-**The missing LAN toolbox.** Discover services, name them, trust them, serve them —
-one cross-platform binary, no accounts, no cloud, works when the internet doesn't.
+### Let everything local find, trust, and talk.
+
+Koi makes containers, applications, and devices delightfully discoverable, secure,
+and interconnected on your private network.
+
+Bring container workloads onto mDNS. Give services meaningful `.internal` names.
+Establish shared identity and trust. Connect applications across container, host, and
+device boundaries. Observe them as they arrive, change, and leave.
+
+One open-source, cross-platform binary. No hosted control plane. Built to work with
+the tools and networks you already have — even when the internet is unavailable.
 
 <p align="center">
   <img src="res/koi.gif" alt="Koi dashboard" />
 </p>
 
-Koi runs as a small daemon on each machine and gives your local network the four
-things it never gets out of the box, wired together as one pipeline:
+Koi's promise has three parts:
 
-| | Pillar | What it means |
+| | Outcome | What it means |
 | --- | --- | --- |
-| 🔎 | **Discover** | mDNS/DNS-SD service discovery with a real lifecycle — services that vanish actually disappear (leases, not ghosts) |
-| 🏷️ | **Name** | A local DNS zone where names appear automatically — from discovery, from containers, from certificates |
-| 🔐 | **Trust** | A private CA with guided enrollment and OS trust-store installation — HTTPS on the LAN without browser warnings |
-| 🛰️ | **Serve** | A zero-config TLS endpoint for those certificates, plus health checks to watch it all |
+| 🔎 | **Find** | Discover services over mDNS/DNS-SD, give them stable `.internal` names, and keep the view honest through leases and lifecycle events |
+| 🔐 | **Trust** | Give local names and peers shared identity through a private CA, guided enrollment, OS trust-store installation, mTLS, and diagnosis |
+| 🔗 | **Connect** | Let containers, host applications, devices, proxies, resolvers, monitors, and agents participate across their usual network boundaries |
 
-Label a container, and the pipeline runs end to end: it gets announced, named,
-certified, and watched — without touching the image.
+Label a container and Koi can announce, name, certify, and watch it without touching
+the image. A container can also discover and watch LAN services through ordinary HTTP,
+or bridge UDP without giving up network isolation. Participation works both ways.
 
 Everything is reachable three ways: a **CLI** built for discoverability, an
 **HTTP API** with interactive docs, and a **web dashboard** with a live mDNS
@@ -65,7 +73,8 @@ Then:
 koi mdns discover        # works instantly, no daemon, no config
 ```
 
-For the full toolbox, run the daemon — foreground or as a system service:
+For always-on naming, trust, connectivity, and observation, run the daemon —
+foreground or as a system service:
 
 ```bash
 koi --daemon             # foreground (Ctrl+C to stop)
@@ -82,9 +91,20 @@ command catalog; `koi <domain>` shows curated examples; any command + `?`
 
 ## Why Koi exists
 
-mDNS is the invisible backbone of local networking. Printers, smart speakers,
-AirPlay, Chromecast, IoT devices — everything uses it. But **using** it
-programmatically is surprisingly painful:
+Koi began as an mDNS bridge for containers. Containers live on the network, but their
+default bridge networks do not carry multicast, so they cannot naturally see or join
+the local discovery fabric. A small host service could speak mDNS on the physical LAN
+and expose it to isolated workloads through ordinary interfaces.
+
+That solved the first gap and exposed the rest. A workload that can be found still
+needs a useful name. A named service still needs identity and trust. Containers,
+applications, and devices still need practical ways to communicate across their
+boundaries, and the entire picture has to change when something arrives, becomes
+unhealthy, or leaves.
+
+mDNS itself illustrates why those seams exist. It is the invisible backbone of local
+networking — printers, smart speakers, AirPlay, Chromecast, and IoT devices use it —
+but using it programmatically is surprisingly painful:
 
 - **Windows** has native mDNS since Windows 10, but the Win32 APIs are poorly
   documented, 64-bit only, and don't expose full DNS-SD. The alternative — Apple's
@@ -97,19 +117,18 @@ programmatically is surprisingly painful:
 - **Cross-platform libraries** exist, but they're libraries: you re-implement
   discovery per language, and then hit the container multicast wall anyway.
 
-And discovery is only the first step. The moment you can *find* services, you want
-to *name* them (without hand-editing zone files) and *trust* them (HTTPS on private
-addresses, where public CAs are forbidden from issuing — for `.internal` names and
-RFC-1918 IPs, a private CA is the only path). Each layer has point solutions; the
-wiring between them is what you end up building by hand. **The wiring is what Koi
-is.**
+Point solutions exist for most individual layers. The unowned problem is the connective
+tissue: letting a participant arrive, receive a name, be discovered, be reached, be
+trusted, report health, change, and leave cleanly. Koi owns those seams once, at the
+host and network boundaries, so every container and application does not have to solve
+them again.
 
 ## Works with your stack
 
 Koi is the substrate *under* the tools you already run, not a replacement for them:
 
 - **Keep your DNS ad-blocker.** Delegate one zone via conditional forwarding —
-  Pi-hole/AdGuard/dnsmasq forward `*.lan` to Koi; everything else stays put.
+  Pi-hole/AdGuard/dnsmasq forward `*.internal` to Koi; everything else stays put.
 - **Keep Tailscale.** Point a tailnet split-DNS rule at Koi's resolver and remote
   devices resolve your LAN names; Koi covers the printers, TVs, and guests the
   tailnet can't see.
@@ -124,9 +143,12 @@ The doctrine: export in *their* formats, consume what you already wrote, and mak
 every capability easy to leave — tools that are easy to stop using are easy to
 start using.
 
-## Capabilities
+## How Koi delivers the outcomes
 
-Core pillars:
+Find, Trust, and Connect are the product model. The implementation is a set of focused
+domains that compose at the daemon boundary:
+
+Foundation:
 
 | Capability | What it does | CLI | Guide |
 | --- | --- | --- | --- |
@@ -135,7 +157,7 @@ Core pillars:
 | **Certmesh** | Private CA, guided enrollment, truststore install | `koi certmesh …` | [Certmesh guide](docs/guides/certmesh.md) |
 | **Runtime** | Container lifecycle → announce/name/cert/watch via labels | `--runtime` | [Runtime guide](docs/guides/runtime.md) |
 
-Supporting cast:
+Connectivity and operations:
 
 | Capability | What it does | CLI | Guide |
 | --- | --- | --- | --- |
@@ -178,11 +200,11 @@ single line — and re-arm any subset à la carte:
 
 ```toml
 # everything (default) — unchanged
-koi-embedded = "0.9"
+koi-embedded = "1.0.0-rc.1"
 # lean: no bollard, no OS-keychain/D-Bus, no image codec
-koi-embedded = { version = "0.9", default-features = false }
+koi-embedded = { version = "1.0.0-rc.1", default-features = false }
 # à la carte
-koi-embedded = { version = "0.9", default-features = false, features = ["docker"] }
+koi-embedded = { version = "1.0.0-rc.1", default-features = false, features = ["docker"] }
 ```
 
 See [ADR-014](docs/adr/014-optional-backend-features.md). The `koi` binary always ships
@@ -238,8 +260,17 @@ docker run -d --name koi -p 5641:5641 ghcr.io/sylin-org/koi:latest   # daemon
 [GitHub Releases](https://github.com/sylin-org/koi/releases), extract, put `koi`
 (or `koi.exe`) on your `PATH`.
 
-**crates.io**: `cargo install koi-net` (the package is named `koi-net` — see
-[Name](#name) below — and installs a `koi` binary).
+**crates.io**: `cargo install koi-net` remains the source-build escape hatch (the
+package is named `koi-net` — see [Name](#name) below — and installs a `koi`
+binary). It needs a Rust toolchain; the recommended installer above does not.
+
+The v1 release-candidate line carries an artifact manifest and `cargo-binstall`
+metadata, so Rust users can install the official prebuilt archive without compiling.
+Prereleases are deliberately explicit: use `cargo binstall koi-net --version 1.0.0-rc.1`
+or `npx @sylin/koi@1.0.0-rc.1`. Stable unqualified commands remain on the latest stable
+release until Koi 1.0.0 ships.
+See [ADR-025](docs/adr/025-release-channels-and-bootstrap-contract.md) for the
+artifact-first channel contract and its deliberately honest rollout states.
 
 **Build from source** — requires [Rust](https://rustup.rs/) 1.92 or later:
 
@@ -254,26 +285,22 @@ build-provenance attestation. A trust tool should let you verify its own supply
 chain in one line:
 
 ```bash
-gh attestation verify koi-v0.9.0-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
-gh attestation verify oci://ghcr.io/sylin-org/koi:0.9.0 --repo sylin-org/koi
+gh attestation verify koi-v1.0.0-rc.1-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
+gh attestation verify oci://ghcr.io/sylin-org/koi:1.0.0-rc.1 --repo sylin-org/koi
 ```
 
 ## Project status
 
-Koi is **pre-1.0, feasibility-validated, and consolidating**. The architecture and
-the end-to-end pipeline are real; a thorough June 2026 assessment
-([docs/assessment/](docs/assessment/README.md)) mapped what's solid, what's broken,
-and what's being cut in the name of *less but more meaningful parts*. The latest
-release, **v0.9.0**, is a release-tooling cut — a one-command version bump and a
-one-command release tag — with no runtime changes; v0.8.0 before it made trust
-self-maintaining (a continuously-up CA renews its own leaf and hot-reloads its
-mTLS/ACME listeners), and v0.7.0 made the secure path the easy path on the envelope
-authorization plane (`Assurance::identity_for`, ADR-022) ([CHANGELOG](CHANGELOG.md)).
-The work plan is public
-([docs/prompts/](docs/prompts/README.md)). Expect breaking changes until 1.0 (0.9.0 is a
-drop-in — no runtime changes; see the CHANGELOG and the [upgrade guide](docs/guides/upgrading.md));
-don't run it as load-bearing infrastructure yet — do play with it, and file issues when
-reality disagrees with the docs.
+Koi is at **v1.0.0-rc.1: feature-complete for the v1 contract and ready for real-network
+evaluation**. The release candidate brings the Find / Trust / Connect promise, artifact-first
+distribution, self-managing certmesh trust, truthful runtime recovery, and repeatable physical
+Windows/Linux validation into one candidate ([CHANGELOG](CHANGELOG.md)).
+
+An RC is not the stable declaration: pin `1.0.0-rc.1`, read the
+[upgrade guide](docs/guides/upgrading.md), and report anything that disagrees with the docs.
+The remaining road to 1.0 is defect discovery and contract hardening—not another expansion of
+scope. The assessment and validation record remain public under
+[docs/assessment/](docs/assessment/README.md) and [docs/prompts/](docs/prompts/README.md).
 
 ## Documentation
 
@@ -308,14 +335,19 @@ for the copy-paste client config.
 [Ceremony protocol](docs/reference/ceremony-protocol.md) ·
 [Envelope encryption](docs/reference/envelope-encryption.md)
 
-**Decisions & direction:** [ADRs](docs/adr/) ·
+**Decisions & direction:** [Find, Trust, Connect](docs/adr/024-public-identity-find-trust-connect.md) ·
+[Release channels](docs/adr/025-release-channels-and-bootstrap-contract.md) ·
+[All ADRs](docs/adr/) ·
 [Assessment & roadmap](docs/assessment/README.md)
 
 ## Name
 
 Koi (鯉) are the fish that live in garden ponds. They're visible — they surface,
 they announce themselves by simply existing. You look into the pond and see what's
-there. That's service discovery: the network is the pond, the services are the koi.
+there. That was the original service-discovery idea: the network is the pond, the
+services are the koi. The project grew beyond seeing what is there, but the name still
+fits its purpose—helping everything in the local environment participate rather than
+remain hidden behind a boundary.
 
 The binary is `koi`. The crates.io package is `koi-net` because `koi` was taken.
 

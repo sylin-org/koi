@@ -1,33 +1,36 @@
 <#
 .SYNOPSIS
-  Bump the Koi workspace version everywhere, then commit + push, in one shot.
+  Bump the Koi release version everywhere, then commit + push, in one shot.
 
 .DESCRIPTION
   The mechanical half of a release version bump:
     - Cargo: the `[workspace.package] version` and every `=X` inter-crate pin
     - Cargo.lock: refreshed to the new member versions (external deps held)
+    - npm bootstrap: package.json and package-lock.json
     - CHANGELOG: stamps `## [Unreleased]` -> `## [<version>] - <date>`
     - Docs: the current-version strings in the SHIPPED docs only —
       capability-card `koi_version:` frontmatter, the install / `gh attestation`
       examples, the `koi-embedded = "X.Y"` dependency recipes, the `koi status`
       sample, the http-api `version` field, and the CLI `KOI_VERSION` example.
 
-  It then **commits ALL working-tree changes** as `chore(release): prep <version>`
-  (the commit body is pulled from the CHANGELOG section) and **pushes**.
+  It then commits only the release-owned files as `chore(release): prep <version>`
+  (the commit body is pulled from the CHANGELOG section) and pushes. Unrelated
+  working-tree changes remain untouched and unstaged.
 
   It deliberately does NOT touch historical version references (past CHANGELOG
   entries, past `upgrading.md` sections, ADRs, `SURFACES.md` shipped-markers,
   docs/assessment, docs/prompts) — only the curated current-version surfaces.
 
-  Per-release PROSE is yours to write, and because the commit sweeps the whole tree
-  you should write it BEFORE running so it lands in the release commit: the CHANGELOG
+  Per-release PROSE is yours to write. Write it BEFORE running so the curated release
+  files land in the release commit: the CHANGELOG
   `[Unreleased]` entry body, a `The <version> upgrade` section in
   docs/guides/upgrading.md, and the README "latest release" blurb. Use -NoCommit to
   do the mechanical bump only and review first.
 
 .PARAMETER NewVersion
-  The new semver version, e.g. 0.9.0. OPTIONAL — if omitted, the minor version is
-  auto-incremented and the patch reset to 0 (0.8.0 -> 0.9.0 -> 0.10.0).
+  The new semver version, e.g. 1.0.0-rc.1 or 1.0.0. OPTIONAL for stable releases —
+  if omitted, the minor version is auto-incremented and the patch reset to 0
+  (0.8.0 -> 0.9.0 -> 0.10.0). A prerelease requires an explicit successor.
 .PARAMETER Date
   CHANGELOG release date (default: today, yyyy-MM-dd).
 .PARAMETER SkipLock
@@ -41,6 +44,8 @@
   ./scripts/bump-version.ps1          # auto: bump the minor (e.g. 0.8.0 -> 0.9.0), commit + push
 .EXAMPLE
   ./scripts/bump-version.ps1 1.0.0    # an explicit version (e.g. a major bump)
+.EXAMPLE
+  ./scripts/bump-version.ps1 1.0.0-rc.1 -NoCommit  # prepare a release candidate for review
 .EXAMPLE
   ./scripts/bump-version.ps1 -NoCommit  # mechanical bump only, review before committing
 #>
@@ -57,31 +62,39 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot   # scripts/ -> repo root
 Set-Location $repo
 
-# Current workspace version (the single source of truth for what we're bumping FROM).
-$cargoText = Get-Content -Raw 'Cargo.toml'
-$m = [regex]::Match($cargoText, '(?m)^\s*version\s*=\s*"(\d+\.\d+\.\d+)"\s*$')
-if (-not $m.Success) { throw 'could not find [workspace.package] version in Cargo.toml' }
-$Old = $m.Groups[1].Value
+# Current workspace version and public-channel policy come from one evaluator shared
+# by bumping, tagging, manifests, and CI.
+$oldMetadataJson = & node scripts/release-version.mjs --cargo Cargo.toml
+if ($LASTEXITCODE -ne 0) { throw "could not read the workspace release version ($LASTEXITCODE)" }
+$oldMetadata = $oldMetadataJson | ConvertFrom-Json
+$Old = $oldMetadata.version
 
 # No version given -> auto-increment the minor, reset the patch (0.8.0 -> 0.9.0 -> 0.10.0).
 if (-not $NewVersion) {
-    $p = $Old -split '\.'
-    $NewVersion = '{0}.{1}.0' -f $p[0], ([int]$p[1] + 1)
+    if ($oldMetadata.prerelease) {
+        throw "current version $Old is a prerelease - provide the intended next version explicitly"
+    }
+    $NewVersion = '{0}.{1}.0' -f $oldMetadata.major, ([int]$oldMetadata.minor + 1)
     Write-Host ">> no version given - auto-incrementing minor" -ForegroundColor Cyan
 }
 
-if ($NewVersion -notmatch '^\d+\.\d+\.\d+$') { throw "version must be X.Y.Z, got '$NewVersion'" }
+$newMetadataJson = & node scripts/release-version.mjs --version $NewVersion
+if ($LASTEXITCODE -ne 0) { throw "invalid release version '$NewVersion'" }
+$newMetadata = $newMetadataJson | ConvertFrom-Json
+$NewVersion = $newMetadata.version
 if ($Old -eq $NewVersion) { Write-Host "Already at $NewVersion - nothing to do."; exit 0 }
-$NewMinor = ($NewVersion -split '\.')[0, 1] -join '.'
-Write-Host ">> bump $Old -> $NewVersion  (dependency recipes -> $NewMinor)" -ForegroundColor Cyan
+$DependencyRecipe = $newMetadata.cargoRequirement
+Write-Host ">> bump $Old -> $NewVersion  (dependency recipes -> $DependencyRecipe)" -ForegroundColor Cyan
 
 $script:total = 0
+$script:touched = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 function Swap($path, $from, $to) {
     if (-not (Test-Path $path)) { Write-Warning "missing: $path"; return }
     $c = Get-Content -Raw $path
     if (-not $c.Contains($from)) { return }
     $cnt = ([regex]::Matches($c, [regex]::Escape($from))).Count
     [System.IO.File]::WriteAllText((Convert-Path $path), $c.Replace($from, $to))
+    [void]$script:touched.Add($path)
     Write-Host ("   {0,-42} {1}x  {2} -> {3}" -f $path, $cnt, $from, $to)
     $script:total += $cnt
 }
@@ -91,6 +104,7 @@ function SwapRegex($path, $pattern, $replacement) {
     $cnt = ([regex]::Matches($c, $pattern)).Count
     if ($cnt -eq 0) { return }
     [System.IO.File]::WriteAllText((Convert-Path $path), [regex]::Replace($c, $pattern, $replacement))
+    [void]$script:touched.Add($path)
     Write-Host ("   {0,-42} {1}x  /{2}/ -> {3}" -f $path, $cnt, $pattern, $replacement)
     $script:total += $cnt
 }
@@ -98,6 +112,10 @@ function SwapRegex($path, $pattern, $replacement) {
 # 1) Cargo.toml: workspace version + the inter-crate `=X` pins.
 Swap 'Cargo.toml' "version = `"$Old`"" "version = `"$NewVersion`""
 Swap 'Cargo.toml' "version = `"=$Old`"" "version = `"=$NewVersion`""
+
+# The npm package is a version-locked bootstrap for the same native release.
+Swap 'packages/npm/package.json' "`"version`": `"$Old`"" "`"version`": `"$NewVersion`""
+Swap 'packages/npm/package-lock.json' "`"version`": `"$Old`"" "`"version`": `"$NewVersion`""
 
 # 2) CHANGELOG: stamp the Unreleased section (author the body first).
 if ((Get-Content -Raw 'CHANGELOG.md') -match '(?m)^##\s*\[Unreleased\]') {
@@ -122,11 +140,12 @@ Swap 'docs/guides/mdns.md' "Koi v$Old" "Koi v$NewVersion"
 Swap 'docs/reference/cli.md' "v$Old" "v$NewVersion"
 Swap 'docs/reference/http-api.md' "`"version`": `"$Old`"" "`"version`": `"$NewVersion`""
 
-# 5) `koi-embedded = "X.Y"` dependency recipes (any current minor -> new minor; also
-#    heals a recipe left stale by an earlier release).
+# 5) `koi-embedded` dependency recipes. Stable releases use the concise compatible
+#    X.Y requirement; prereleases must name the full version because Cargo does not
+#    select a prerelease from a stable-only requirement.
 foreach ($f in @('README.md', 'docs/guides/embedded.md')) {
-    SwapRegex $f '(?<=koi-embedded = ")\d+\.\d+(?=")' $NewMinor
-    SwapRegex $f '(?<=koi-embedded = \{ version = ")\d+\.\d+(?=")' $NewMinor
+    SwapRegex $f '(?<=koi-embedded = ")\d+\.\d+(?:\.\d+(?:-[0-9A-Za-z.-]+)?)?(?=")' $DependencyRecipe
+    SwapRegex $f '(?<=koi-embedded = \{ version = ")\d+\.\d+(?:\.\d+(?:-[0-9A-Za-z.-]+)?)?(?=")' $DependencyRecipe
 }
 
 # 6) Cargo.lock: refresh the workspace member versions (holds external deps).
@@ -134,6 +153,7 @@ if (-not $SkipLock) {
     Write-Host ">> cargo update --workspace (refresh Cargo.lock)" -ForegroundColor Cyan
     & cargo update --workspace
     if ($LASTEXITCODE -ne 0) { throw "cargo update --workspace failed ($LASTEXITCODE)" }
+    [void]$script:touched.Add('Cargo.lock')
 }
 
 Write-Host ""
@@ -145,9 +165,13 @@ if ($NoCommit) {
     return
 }
 
-# 7) Commit ALL working-tree changes (the bump + whatever release prose you wrote first)
-#    and push. The commit body is the CHANGELOG section's lead paragraph.
-if (-not (& git status --porcelain)) { Write-Host ">> nothing to commit (tree clean)."; return }
+# 7) Commit only release-owned files (the mechanical bump + curated prose) and push.
+#    Never sweep unrelated work into a release with `git add -A`.
+foreach ($releaseProse in @('CHANGELOG.md', 'README.md', 'docs/guides/upgrading.md')) {
+    if (Test-Path $releaseProse) { [void]$script:touched.Add($releaseProse) }
+}
+$releaseFiles = @($script:touched | Sort-Object)
+if ($releaseFiles.Count -eq 0) { Write-Host ">> nothing to commit."; return }
 
 $summary = "See CHANGELOG.md [$NewVersion]."
 $sec = [regex]::Match((Get-Content -Raw 'CHANGELOG.md'),
@@ -157,11 +181,20 @@ if ($sec.Success) {
     if ($lead) { $summary = "$lead`n`nSee CHANGELOG.md [$NewVersion]." }
 }
 
-Write-Host ">> committing all changes  (chore(release): prep $NewVersion)" -ForegroundColor Cyan
-& git add -A
+Write-Host ">> staging release-owned files  (chore(release): prep $NewVersion)" -ForegroundColor Cyan
+& git add -- @releaseFiles
+if ($LASTEXITCODE -ne 0) { throw "git add failed ($LASTEXITCODE)" }
+& git diff --cached --quiet
+if ($LASTEXITCODE -eq 0) { Write-Host ">> nothing to commit."; return }
 & git status --short
 & git commit -q -m "chore(release): prep $NewVersion" -m $summary
 if ($LASTEXITCODE -ne 0) { throw "git commit failed ($LASTEXITCODE)" }
+
+$remaining = @(& git status --porcelain)
+if ($remaining.Count -gt 0) {
+    Write-Host ">> unrelated changes remain untouched:" -ForegroundColor Yellow
+    $remaining | ForEach-Object { Write-Host "   $_" }
+}
 
 if ($NoPush) {
     Write-Host ">> committed; NOT pushed (-NoPush). Push with: git push" -ForegroundColor Yellow

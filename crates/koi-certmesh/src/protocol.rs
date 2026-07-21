@@ -31,8 +31,8 @@ pub struct JoinRequest {
     /// enrollment; the CA refuses to generate member keys server-side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub csr: Option<String>,
-    /// Optional extra SANs the joiner wants (IP addresses, aliases).
-    /// The server always includes `[hostname, hostname.local]`.
+    /// Optional extra SANs the joiner wants (IP addresses, aliases). The server
+    /// adds the hostname and its configured-zone FQDN at the issuance boundary.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sans: Vec<String>,
 }
@@ -107,6 +107,10 @@ pub struct InstallCertRequest {
     /// component is the mTLS renewal target. Absent → renewal state not armed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_endpoint: Option<String>,
+    /// Explicit CA inter-node mTLS port. Required when the CA does not use the
+    /// default 5642; persisted into member renewal state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_mtls_port: Option<u16>,
     /// The pinned CA fingerprint (from the join response). Absent → not armed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_fingerprint: Option<String>,
@@ -418,6 +422,20 @@ pub struct RenewResponse {
     pub policy: CertPolicy,
 }
 
+/// Response from the local operator-triggered self-renewal endpoint.
+///
+/// The inter-node renewal response remains [`RenewResponse`]; this smaller
+/// management response reports only the local outcome and never exposes key
+/// material.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RenewSelfResponse {
+    pub renewed: bool,
+    /// RFC 3339 expiry of the newly installed leaf.
+    pub expires: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hook: Option<HookResult>,
+}
+
 /// Result of executing a reload hook after cert renewal.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct HookResult {
@@ -550,6 +568,7 @@ mod tests {
             cert_pem: "CERT".to_string(),
             ca_pem: "CA".to_string(),
             ca_endpoint: Some("http://ca-host:5641".to_string()),
+            ca_mtls_port: Some(9443),
             ca_fingerprint: Some("deadbeef".to_string()),
             sans: vec!["web-01".to_string()],
             policy: Some(CertPolicy::default()),
@@ -559,12 +578,14 @@ mod tests {
         assert_eq!(parsed.hostname, "web-01");
         assert_eq!(parsed.cert_pem, "CERT");
         assert_eq!(parsed.ca_endpoint.as_deref(), Some("http://ca-host:5641"));
+        assert_eq!(parsed.ca_mtls_port, Some(9443));
         assert_eq!(parsed.ca_fingerprint.as_deref(), Some("deadbeef"));
 
         // Bare install (no renewal coords) still round-trips.
         let bare: InstallCertRequest =
             serde_json::from_str(r#"{"hostname":"web-01","cert_pem":"C","ca_pem":"CA"}"#).unwrap();
         assert!(bare.ca_endpoint.is_none());
+        assert!(bare.ca_mtls_port.is_none());
         assert!(bare.policy.is_none());
     }
 
@@ -753,6 +774,22 @@ mod tests {
         assert_eq!(parsed.hostname, "node-05");
         assert!(parsed.service_cert.contains("BEGIN CERTIFICATE"));
         assert_eq!(parsed.ca_fingerprint, "abc123");
+    }
+
+    #[test]
+    fn renew_self_response_round_trips_without_key_material() {
+        let response = RenewSelfResponse {
+            renewed: true,
+            expires: "2026-09-15T00:00:00Z".to_string(),
+            hook: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(!json.contains("key"));
+        assert!(!json.contains("hook"));
+        let parsed: RenewSelfResponse = serde_json::from_str(&json).unwrap();
+        assert!(parsed.renewed);
+        assert_eq!(parsed.expires, response.expires);
+        assert!(parsed.hook.is_none());
     }
 
     #[test]

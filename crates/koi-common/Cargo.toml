@@ -1,6 +1,6 @@
 [package]
 name = "koi-common"
-description = "Shared types, traits, and utilities for the Koi local network toolkit"
+description = "Shared types, traits, and utilities for Koi's local connectivity substrate"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

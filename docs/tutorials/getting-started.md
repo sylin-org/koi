@@ -1,9 +1,9 @@
 # Getting started with Koi
 
-Koi is one binary that gives your local network a toolbox it doesn't ship with:
-discover services, name them, trust them, serve them. This tutorial takes you from
-*nothing installed* to a **visible result in about a minute** — then points you at
-the deeper guides.
+**Let everything local find, trust, and talk.** Koi makes containers,
+applications, and devices discoverable, secure, and interconnected on your private
+network. This tutorial takes you from *nothing installed* to a **visible result in
+about a minute** — then points you at the deeper Find, Trust, and Connect journeys.
 
 You'll run four short steps:
 
@@ -111,8 +111,8 @@ here builds on the same binary.
 
 ## 3. Start the daemon
 
-One-off commands like `discover` work standalone. The rest of the toolbox — a local
-DNS resolver, certificates, health checks, the dashboard — lives in a long-running
+One-off commands like `discover` work standalone. The composed services — a local
+DNS resolver, certificates, health checks, the dashboard — live in a long-running
 **daemon**. Start one in the foreground:
 
 ```bash
@@ -170,7 +170,7 @@ If `koi launch` can't open a browser (a headless server, say), just visit
 
 ## 5. One real task: give a machine a name
 
-Time to *use* the toolbox. Typing `myapp.internal` into a browser is a different
+Time to give something a name. Typing `myapp.internal` into a browser is a different
 experience from remembering `10.0.0.42`. Koi's local DNS resolver makes that
 mapping, and it's already running inside the daemon you started.
 
@@ -217,8 +217,9 @@ as a secret. The full mechanism is in the
 
 ## Where to go next
 
-You now have the whole loop: a binary, instant discovery, a running daemon, a
-dashboard, and a named service. From here, follow the task that fits what you want:
+You now have the start of the Find path: a binary, instant discovery, a running
+daemon, a dashboard, and a named service. From here, add trust or connectivity—or
+go deeper on discovery—by following the task that fits what you want:
 
 - **Discover and advertise services** — leases, lifecycle events, and announcing your
   own service: the [mDNS guide](../guides/mdns.md).
@@ -231,8 +232,9 @@ dashboard, and a named service. From here, follow the task that fits what you wa
   [certmesh guide](../guides/certmesh.md).
 - **Serve over TLS** — a zero-config TLS endpoint for those certificates: the
   [proxy guide](../guides/proxy.md).
-- **Containers** — label a container and the pipeline runs end to end (announced,
-  named, certified, watched): [CONTAINERS.md](../../CONTAINERS.md).
+- **Connect containers and the LAN** — label a workload for automatic lifecycle
+  wiring, or let it announce, discover, watch, and bridge traffic through Koi:
+  [CONTAINERS.md](../../CONTAINERS.md).
 - **AI agents** — hand the LAN to an agent over the Model Context Protocol: the
   [MCP guide](../guides/mcp.md).
 - **Run it for real** — install as a system service, manage its lifecycle, and

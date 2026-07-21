@@ -99,7 +99,9 @@ pub fn accept_promotion(
     // certificate's public key. Decryption alone (correct DH) does not prove the
     // primary sent a *consistent* (cert, key) pair — verify the SPKI matches so a
     // standby never installs a key that can't sign for its own CA cert.
-    if !ca_key_matches_cert(&ca_key, &response.ca_cert_pem)? {
+    let key_matches = crate::ca::key_matches_certificate(&ca_key, &response.ca_cert_pem)
+        .map_err(|e| CertmeshError::PromotionFailed(e.to_string()))?;
+    if !key_matches {
         return Err(CertmeshError::PromotionFailed(
             "decrypted CA key does not match the transferred CA certificate public key".into(),
         ));
@@ -118,26 +120,6 @@ pub fn accept_promotion(
         .map_err(|e| CertmeshError::PromotionFailed(format!("roster deserialization: {e}")))?;
 
     Ok((ca_key, auth_state, roster))
-}
-
-/// Whether `ca_key`'s public key (SPKI) equals the public key in `ca_cert_pem`
-/// (ADR-017 F14). Compares the raw SubjectPublicKeyInfo DER on both sides.
-fn ca_key_matches_cert(ca_key: &CaKeyPair, ca_cert_pem: &str) -> Result<bool, CertmeshError> {
-    use x509_parser::prelude::FromDer;
-
-    let cert_der = pem::parse(ca_cert_pem)
-        .map_err(|e| CertmeshError::PromotionFailed(format!("ca_cert is not valid PEM: {e}")))?;
-    let (_, cert) = x509_parser::certificate::X509Certificate::from_der(cert_der.contents())
-        .map_err(|e| CertmeshError::PromotionFailed(format!("ca_cert is not valid DER: {e}")))?;
-    let cert_spki = cert.public_key().raw;
-
-    let key_pub_pem = ca_key
-        .public_key_pem()
-        .map_err(|e| CertmeshError::PromotionFailed(format!("CA key public-key export: {e}")))?;
-    let key_spki = pem::parse(&key_pub_pem)
-        .map_err(|e| CertmeshError::PromotionFailed(format!("CA key public-key PEM: {e}")))?;
-
-    Ok(cert_spki == key_spki.contents())
 }
 
 #[cfg(test)]

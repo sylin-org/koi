@@ -4,7 +4,7 @@
 [![Docs.rs](https://docs.rs/koi-common/badge.svg)](https://docs.rs/koi-common)
 [![License](https://img.shields.io/crates/l/koi-common.svg)](https://github.com/sylin-org/koi#license)
 
-Shared types, traits, and utilities for the Koi local network toolkit.
+Shared types, traits, and utilities for Koi's local connectivity substrate.
 
 ## Overview
 
@@ -29,5 +29,5 @@ used directly by end users.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT License](LICENSE-MIT) at your option.
+Licensed under either of [Apache License, Version 2.0](../../LICENSE-APACHE) or
+[MIT License](../../LICENSE-MIT) at your option.

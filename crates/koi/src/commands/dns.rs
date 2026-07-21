@@ -310,6 +310,38 @@ pub fn remove(name: &str, mode: Mode, json: bool, zone: &str) -> anyhow::Result<
     )
 }
 
+pub fn txt_set(name: &str, value: &str, mode: Mode, json: bool) -> anyhow::Result<()> {
+    with_mode_sync(
+        mode,
+        || anyhow::bail!("ephemeral TXT values require a running Koi daemon"),
+        |client| {
+            let response = client.dns_txt_set(name, value)?;
+            if json {
+                print_json(&response);
+            } else {
+                println!("Published TXT {name}");
+            }
+            Ok(())
+        },
+    )
+}
+
+pub fn txt_clear(name: &str, value: &str, mode: Mode, json: bool) -> anyhow::Result<()> {
+    with_mode_sync(
+        mode,
+        || anyhow::bail!("ephemeral TXT values require a running Koi daemon"),
+        |client| {
+            let response = client.dns_txt_clear(name, value)?;
+            if json {
+                print_json(&response);
+            } else {
+                println!("Removed TXT {name}");
+            }
+            Ok(())
+        },
+    )
+}
+
 pub async fn list(mode: Mode, json: bool, config: &Config) -> anyhow::Result<()> {
     with_mode(
         mode,

@@ -704,9 +704,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1995,7 +1995,7 @@ dependencies = [
 
 [[package]]
 name = "koi-certmesh"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -2036,7 +2036,7 @@ dependencies = [
 
 [[package]]
 name = "koi-client"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "hickory-proto",
  "koi-common",
@@ -2049,7 +2049,7 @@ dependencies = [
 
 [[package]]
 name = "koi-common"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -2067,7 +2067,7 @@ dependencies = [
 
 [[package]]
 name = "koi-compose"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "chrono",
  "hickory-proto",
@@ -2093,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "koi-config"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "koi-common",
  "serde",
@@ -2105,7 +2105,7 @@ dependencies = [
 
 [[package]]
 name = "koi-crypto"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -2135,7 +2135,7 @@ dependencies = [
 
 [[package]]
 name = "koi-dashboard"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-stream",
  "axum",
@@ -2161,7 +2161,7 @@ dependencies = [
 
 [[package]]
 name = "koi-dns"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -2181,7 +2181,7 @@ dependencies = [
 
 [[package]]
 name = "koi-embedded"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "axum",
  "base64",
@@ -2215,7 +2215,7 @@ dependencies = [
 
 [[package]]
 name = "koi-health"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -2232,8 +2232,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "koi-lab"
+version = "1.0.0-rc.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "instant-acme",
+ "pem",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "x509-parser 0.16.0",
+]
+
+[[package]]
 name = "koi-mcp"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2252,7 +2268,7 @@ dependencies = [
 
 [[package]]
 name = "koi-mdns"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2274,7 +2290,7 @@ dependencies = [
 
 [[package]]
 name = "koi-net"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2336,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "koi-proxy"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -2360,7 +2376,7 @@ dependencies = [
 
 [[package]]
 name = "koi-runtime"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -2381,7 +2397,7 @@ dependencies = [
 
 [[package]]
 name = "koi-serve"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2422,7 +2438,7 @@ dependencies = [
 
 [[package]]
 name = "koi-udp"
-version = "0.9.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3063,9 +3079,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",

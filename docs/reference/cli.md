@@ -67,11 +67,13 @@ koi mdns admin unregister ID                      # force-remove
 koi certmesh create [--profile just-me|team|organization]
                     [--operator NAME]             # interactive ceremony
 koi certmesh status                               # show mesh status
-koi certmesh join [ENDPOINT] [--invite TOKEN]     # join existing mesh
+koi certmesh join [ENDPOINT] [--invite TOKEN]
+                  [--ca-mtls-port PORT]            # explicit when CA does not use 5642
 koi certmesh invite HOSTNAME [--ttl MINUTES]      # mint a single-use, hostname-bound invite
 koi certmesh unlock                               # decrypt CA key
 koi certmesh log                                  # show audit log
 koi certmesh set-hook --reload "COMMAND"          # set renewal hook
+koi certmesh renew                                 # rotate this member's key now
 koi certmesh promote [ENDPOINT]                   # promote standby CA
 koi certmesh open-enrollment                      # open enrollment window
 koi certmesh close-enrollment                     # close enrollment
@@ -101,6 +103,8 @@ koi dns status                                    # resolver status
 koi dns lookup NAME [--record-type A|AAAA|ANY]    # query a name
 koi dns add NAME IP [--ttl SECS]                  # static entry
 koi dns remove NAME                               # remove static entry
+koi dns txt set NAME VALUE                        # publish ephemeral TXT value
+koi dns txt clear NAME VALUE                      # remove that exact TXT value
 koi dns list                                      # list all resolvable names
 ```
 
@@ -243,7 +247,7 @@ Not flags — read directly from the environment:
 | Env var              | Default              | Description                                            |
 | -------------------- | -------------------- | ------------------------------------------------------ |
 | `KOI_DATA_DIR`       | platform data dir    | Override the machine-scoped data directory             |
-| `KOI_VERSION`        | latest               | Pin a release tag for the install script (e.g. `v0.9.0`) |
+| `KOI_VERSION`        | latest               | Pin a release tag for the install script (e.g. `v1.0.0-rc.1`) |
 | `KOI_INSTALL_DIR`    | platform bin dir     | Install location for the install script                |
 | `KOI_NO_MODIFY_PATH` | unset                | Any non-empty value: `install.sh` skips PATH guidance (on `install.ps1` use `-NoModifyPath`) |
 

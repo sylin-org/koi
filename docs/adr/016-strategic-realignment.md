@@ -6,6 +6,7 @@
 **Incorporates:** ADR-015 (Certmesh Enrollment Hardening) as the security spine
 **Constrained by:** STACK-0001 (K2 consumer-neutrality, K3 frozen HKDF labels, D7 contract surface)
 **Informed by:** the 2026-06 maturity assessment ([docs/assessment/](../assessment/2026-06-maturity-assessment.md)) and a real cross-platform deploy (Debian 13 + Windows) on 2026-06-18
+**Public positioning refined by:** ADR-024 (Find, Trust, Connect); this ADR's technical direction and maturity ordering remain in force
 
 ---
 

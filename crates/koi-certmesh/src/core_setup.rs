@@ -20,6 +20,25 @@ impl CertmeshCore {
         &self.state.paths
     }
 
+    /// Replace the standalone `.internal` default with the composition root's
+    /// configured DNS zone. This consumes a freshly constructed core so the
+    /// immutable shared state cannot be reconfigured after publication.
+    pub fn with_dns_zone(mut self, zone: &str) -> Result<Self, CertmeshError> {
+        let issuance_names = IssuanceNames::new(zone)?;
+        let state = Arc::get_mut(&mut self.state).ok_or_else(|| {
+            CertmeshError::Internal(
+                "certificate naming cannot change after the certmesh core is shared".into(),
+            )
+        })?;
+        state.issuance_names = issuance_names;
+        Ok(self)
+    }
+
+    /// The normalized configured zone used for certmesh-issued FQDNs.
+    pub fn dns_zone(&self) -> &str {
+        self.state.issuance_names.zone()
+    }
+
     /// Create a new CertmeshCore with an unlocked CA and explicit paths.
     pub fn new_with_paths(
         ca: ca::CaState,
@@ -32,6 +51,7 @@ impl CertmeshCore {
         Self {
             state: Arc::new(CertmeshState {
                 paths,
+                issuance_names: IssuanceNames::default(),
                 ca: tokio::sync::Mutex::new(Some(ca)),
                 roster: tokio::sync::Mutex::new(roster),
                 auth: tokio::sync::Mutex::new(auth_state),
@@ -52,6 +72,7 @@ impl CertmeshCore {
         Self {
             state: Arc::new(CertmeshState {
                 paths,
+                issuance_names: IssuanceNames::default(),
                 ca: tokio::sync::Mutex::new(None),
                 roster: tokio::sync::Mutex::new(roster),
                 auth: tokio::sync::Mutex::new(None),
@@ -75,6 +96,7 @@ impl CertmeshCore {
         Self {
             state: Arc::new(CertmeshState {
                 paths,
+                issuance_names: IssuanceNames::default(),
                 ca: tokio::sync::Mutex::new(None),
                 roster: tokio::sync::Mutex::new(Roster::empty()),
                 auth: tokio::sync::Mutex::new(None),
@@ -133,7 +155,7 @@ impl CertmeshCore {
     ///
     /// The binary calls this when starting the dedicated server-auth TLS
     /// listener, passing the ACME base URL, the Koi DNS zone, and the
-    /// `AcmeDnsSolver` bridge. The returned `AcmeState` shares this core's CA and
+    /// `AcmeDnsResolver` bridge. The returned `AcmeState` shares this core's CA and
     /// roster (so ACME issuance lands in the same roster as TOTP enrollment), and
     /// is mounted via [`acme::routes`].
     pub fn acme_state(&self, config: acme::AcmeStateConfig) -> std::sync::Arc<acme::AcmeState> {

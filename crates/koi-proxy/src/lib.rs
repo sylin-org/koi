@@ -193,6 +193,21 @@ impl ProxyRuntime {
         self.apply_entries(entries).await
     }
 
+    /// Persist an entry and immediately reconcile the listener data plane.
+    ///
+    /// Cross-domain producers use this chokepoint so a configuration mutation
+    /// cannot be observed without its corresponding listener mutation.
+    pub async fn upsert(&self, entry: ProxyEntry) -> Result<(), ProxyError> {
+        let entries = self.core.upsert(entry).await?;
+        self.apply_entries(entries).await
+    }
+
+    /// Remove an entry and immediately reconcile the listener data plane.
+    pub async fn remove(&self, name: &str) -> Result<(), ProxyError> {
+        let entries = self.core.remove(name).await?;
+        self.apply_entries(entries).await
+    }
+
     async fn apply_entries(&self, entries: Vec<ProxyEntry>) -> Result<(), ProxyError> {
         let mut guard = self.instances.lock().await;
         let mut seen = HashMap::new();
@@ -348,5 +363,28 @@ mod tests {
 
         assert!(rx1.try_recv().is_ok());
         assert!(rx2.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn runtime_mutations_reconcile_listener_ownership() {
+        let core = Arc::new(test_core());
+        let runtime = ProxyRuntime::new(Arc::clone(&core));
+        let mut entry = sample_entry("runtime-owned");
+        entry.listen_port = 0;
+
+        runtime
+            .upsert(entry)
+            .await
+            .expect("runtime upsert should persist and apply");
+        let status = runtime.status().await;
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].name, "runtime-owned");
+
+        runtime
+            .remove("runtime-owned")
+            .await
+            .expect("runtime remove should persist and apply");
+        assert!(runtime.status().await.is_empty());
+        assert!(core.entries().await.is_empty());
     }
 }
