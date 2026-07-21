@@ -30,4 +30,4 @@ rustls.workspace = true
 rcgen.workspace = true
 url.workspace = true
 hostname.workspace = true
-toml = "0.8"
+toml = "1.1"
