@@ -3495,7 +3495,11 @@ fn windows_member_acl_script(root: &Path, hostname: &str) -> String {
 fn powershell_path_literal(path: &Path) -> String {
     let displayed = path.display().to_string();
     let displayed = displayed.strip_prefix(r"\\?\").unwrap_or(&displayed);
-    format!("'{}'", displayed.replace('\'', "''"))
+    // This boundary emits a Windows PowerShell program even when koi-lab's
+    // generator tests run on Unix. Never let the generator host choose the
+    // separators embedded in that program.
+    let windows = displayed.replace('/', r"\");
+    format!("'{}'", windows.replace('\'', "''"))
 }
 
 fn windows_curl_args(address: &str, hostname: &str, port: u16) -> Vec<String> {
@@ -4125,6 +4129,15 @@ mod tests {
         assert!(!script.contains("Get-Acl"));
         assert!(!script.contains("Everyone"));
         assert!(!script.contains("Authenticated Users"));
+    }
+
+    #[test]
+    fn powershell_path_literals_are_host_independent() {
+        let path = Path::new(r"F:\repo").join("quoted' dir").join("koi.exe");
+        assert_eq!(
+            powershell_path_literal(&path),
+            r"'F:\repo\quoted'' dir\koi.exe'"
+        );
     }
 
     #[test]
