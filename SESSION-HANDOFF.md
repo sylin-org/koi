@@ -1,7 +1,7 @@
 # Koi Epic to v1 — canonical continuation ledger
 
-**Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; V1-07 identity and publication-foundation slices complete
-**Last updated:** 2026-07-20 18:36 EDT
+**Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; V1-07 identity, publication foundation, and RC-channel policy locally complete
+**Last updated:** 2026-07-20 20:04 EDT
 **Resume phrase:** `continue the epic to v1`
 
 This is the repository's canonical handoff and progress ledger for the v1 epic. The plan is a
@@ -46,6 +46,9 @@ evidence rather than a one-off demo.
   and exact restoration.
 - External publication remains unauthorized. Do not post, contact communities, open external PRs,
   or publish packages. Commit and push also require a separate user request.
+- The user explicitly decided that the 6–24-hour soak gates stable `1.0.0`, not
+  `1.0.0-rc.1`. Publish an RC early enough to soak the exact distributed artifact; findings become
+  `rc.2`, `rc.3`, and so on rather than delaying the first candidate.
 - Preserve pre-existing user work. `docs/animations/` was already untracked before this epic.
 - On 2026-07-19 the user explicitly authorized the elevated Codex session to continue the V1 epic
   autonomously while they sleep. It may explore, refactor, implement, build locally, exercise the
@@ -81,6 +84,14 @@ evidence rather than a one-off demo.
   commit `330cda3`: workspace test, all six native build/package/checksum/upload lanes, canonical
   manifest validation, npm tests, and npm pack. Tag-only release, GHCR, crates.io, and npm jobs
   were skipped as designed, so the run published nothing.
+- The `1.0.0-rc.1` channel blocker is removed locally. `scripts/release-version.mjs` is now the
+  single evaluator for SemVer identity, tag, prerelease status, and npm dist-tag across version
+  preparation, tagging, manifests, and workflows. Tag/workspace disagreement fails before
+  publication. RCs become GitHub prereleases, exact-only GHCR tags, npm `next`, and exact-version
+  crates.io publications; stable releases alone advance public defaults. The combined stable/RC/
+  malformed-version/manifest/bootstrap/channel-wiring suite passes 13/13, PowerShell and workflow
+  YAML parse, npm's staged-manifest pack passes, Cargo metadata and the 17-crate publish inventory
+  agree, surface lint reports 26 honest rows, formatting passes, and `koi-lab` remains 45/45.
 - The existing whole-story design, ADR-018 tiers, surface ledger, QA workflow, physical-host
   runbook, deployment script, Linux↔Linux hardware harness, Windows↔Linux-container harness,
   certmesh/trust implementation, and external `os-truststore` behavior were inspected.
@@ -479,8 +490,9 @@ evidence rather than a one-off demo.
 
 - Workspace: `F:\Files\repo\github\sylin-org\koi`
 - Branch/upstream: `dev` tracking `origin/dev`, ahead 0 / behind 0 at handoff time.
-- Latest committed/pushed head: `7536417` (`test(lab): schedule physical full profile`). The
-  scheduler proof and this ledger update are uncommitted current-slice evidence documentation.
+- Latest committed/pushed head: `2600230` (`docs: record scheduled full profile`). The centralized
+  interruption-recovery implementation, its physical proof, and prerelease-safe channel integration
+  are the uncommitted current slice.
 - Product artifact and evidence publisher exercised through clean lab/controller commit
   `f4353821290d732580c9a317d36d315db9be7d60`; product binary content remains the truthful-startup
   build from `27b268d` (`fix(runtime): make capability startup truthful`). The Docker relay/evidence
@@ -585,8 +597,8 @@ evidence rather than a one-off demo.
 | V1-03 | Certificate lifecycle and adversarial trust cases | **in progress — Linux lifecycle/cold recovery and Windows lifecycle green** | Both Linux roles prove wrong-pin refusal, mode-0600 custody, key/leaf/chain/SAN integrity, renewal/key rotation, restart, revocation→RED and generic-TLS limits; both also survive encrypted backup, exact data loss, host-bound restore, locked restart and renewed mTLS continuity. Elevated Windows now proves SID-based custody, key/cert rotation and correspondence, CA-roster convergence, exact owned-child restart with identity/diagnosis/Schannel proxy continuity, revocation→RED/self-revoked, and mutation-free renewal/rejoin refusal. Windows cold recovery remains unclaimed. |
 | V1-04 | Real whole-story capability surface | **in progress — physical Linux story + portable Tier-1 aggregation green** | Acts 0, 3, 4, 5, 6, 7, 8, 10, and 11 plus real ACME dns-01 pass physically in both Linux directions. Two concurrent real local daemons now additionally prove the centralized HTTP status/host, dashboard, and authenticated MCP aggregation surfaces. Physical Windows whole-story breadth remains. |
 | V1-05 | Resilience, reconnect, fault and soak lanes | **in progress — startup, event reconnect, DNS recovery, Linux systemd supervision, and bounded soak physical** | Always-on regressions and Brook↔Granite rotations prove startup reconstruction, an isolated Docker event-stream fault, and DNS stop/bind-failure/retry in both directions. Brook's transient-systemd lane proves READY/restart-on-failure, while the bounded soak repeatedly proves complete container derivation/reversal and periodic restart reconstruction. Public install/uninstall, other safe faults, and a scheduled 6–24 hour release soak remain. |
-| V1-06 | Automation, evidence ledger and v1 release gate | **in progress — installed scheduler + full green 2/3 on 2026-07-20** | Every completed check-bearing scenario emits redaction-gated JSON, JUnit, and readable summaries from one publisher. The installed highest-privilege interactive-token task builds locally, consumes a CurrentUser-DPAPI lab credential, and delegates to the same full policy. Its clean retry passed 12/12 cases and aggregate 38/38 with exact cleanup, Windows root removal, and baseline restoration; Task Scheduler recorded exit 0. One more consecutive full green, long soak, and final release evidence remain. |
-| V1-07 | Adoption/public-surface polish backed by proved behavior | **in progress — identity + publication foundation complete 2026-07-19** | ADR-024 canonizes “Let everything local find, trust, and talk” plus Find/Trust/Connect; ADR-025 establishes one attested artifact contract, no-build cargo-binstall metadata, tested npx bootstrap, gated OIDC publication, and safer release operation; registry activation, native-manager channels, evidence-gated compatibility claims and golden demo remain |
+| V1-06 | Automation, evidence ledger and v1 release gate | **in progress — interruption recovery physically green; installed scheduler + full green 2/3 on 2026-07-20** | Every completed check-bearing scenario emits redaction-gated JSON, JUnit, and readable summaries from one publisher. Profiles journal each child identity before mutation, heartbeat live ownership, archive successful transactions, and expose one stale recovery command that reuses exact local/remote cleanup and baseline comparison. Controlled execution `v1-20260720T232552Z-d5dfe569` was killed after child `v1-20260720T232601Z-11b15882` owned locks and staged directories on both Linux nodes; stale recovery removed it and passed 3/3 with baseline restoration. Prepared-only and post-cleanup interruption shapes also passed. The installed task's clean retry passed 12/12 cases and aggregate 38/38. Full green 3/3 and the exact-RC soak remain stable-release evidence, not an rc.1 publication prerequisite. |
+| V1-07 | Adoption/public-surface polish backed by proved behavior | **in progress — identity, publication foundation, and RC-channel policy locally complete** | ADR-024 canonizes “Let everything local find, trust, and talk” plus Find/Trust/Connect; ADR-025 establishes one attested artifact contract, no-build cargo-binstall metadata, tested npx bootstrap, gated OIDC publication, and one stable/prerelease evaluator. RCs cannot advance stable GitHub/GHCR/npm defaults; tag identity and exact crates.io propagation fail closed. Hosted RC dry run, registry activation, native-manager channels, evidence-gated compatibility claims and golden demo remain. |
 
 ## Certmesh/native-trust acceptance matrix
 
@@ -622,12 +634,11 @@ releases; soak is scheduled or explicitly invoked.
 
 ## Resume here
 
-1. Add the smallest centralized interrupted-profile journal/recovery boundary so a forced controller
-   stop cannot leave the next scheduled invocation blocked. Reuse the existing owner-checked
-   `plan-cleanup`/`cleanup` authority; do not let the PowerShell clock adapter infer remote ownership.
-2. Accumulate complete full green 3/3 using the installed task, then schedule a longer bounded soak.
-   Keep every fault run-owned and require exact recovery plus cleanup. Do not count the interrupted
-   `v1-20260720T220251Z-48863adc` attempt as a green.
+1. Integrate the completed recovery + prerelease-channel slice: reconcile `dev` with current `main`,
+   commit/push only with explicit authority, open the integration PR, and require hosted CI/QA plus
+   a non-publishing Release workflow dry run to pass before tagging.
+2. Publish `1.0.0-rc.1` only with explicit external-publication authority. Then validate that exact
+   distributed candidate through full green 3/3 and the bounded soak before stable `1.0.0`.
 3. Design the public Linux install/uninstall contract only if fixed unit/binary/data paths and the
    default DNS-port conflict can be made byte-exact reversible. The safer systemd supervision proof
    is complete; do not broaden it into an install claim.
@@ -681,7 +692,7 @@ releases; soak is scheduled or explicitly invoked.
 - The current tree passes `cargo fmt --all -- --check`, all-target/all-feature Clippy with
   `-D warnings`, `cargo test --workspace --all-features --locked`, `cargo audit`, the surface-ledger
   lint, and `git diff --check` on 2026-07-20 after all work in this handoff. Focused counts are
-  `koi-runtime` 49, `koi-compose` 14, `koi-lab` 37, and the real-binary two-daemon integration 2;
+  `koi-runtime` 49, `koi-compose` 14, `koi-lab` 45, and the real-binary two-daemon integration 2;
   all passed. The gate caught and corrected a Windows test-only UDP/TCP ephemeral-port assumption;
   the focused retry and complete workspace rerun are green. Audit exits 0 with the two dispositioned
   allowed warnings (`anyhow` RUSTSEC-2026-0190 and yanked transitive `spin 0.9.8`).
@@ -694,7 +705,7 @@ releases; soak is scheduled or explicitly invoked.
   revocation, and mutation-free refusal are also proven. No permanent Windows trust root, Koi
   service, process, hosts mapping, or run-owned data remains.
 - Windows cold recovery, public install/uninstall, remaining safe fault lanes, long soak,
-  interruption recovery hardening, and the final complete full green are outstanding. Installed
+  and the final complete full green are outstanding. Installed
   scheduled invocation is physically green. Unattended profile
   orchestration is physically green for both Linux smoke directions. Linux systemd supervision and
   the bounded short soak are physically green. Portable Tier-1 HTTP/dashboard/MCP breadth and
@@ -704,9 +715,9 @@ releases; soak is scheduled or explicitly invoked.
   both directions.
 ## Open basket
 
-- **Now:** centralize interrupted-profile journaling/recovery using the existing exact ownership
-  checks; the installed scheduler itself is physically green.
-- **Next:** complete full green 3/3, then schedule and execute a 6–24 hour bounded soak.
+- **Now:** integrate and prepare `1.0.0-rc.1` with the complete local gate and hosted CI green.
+- **Next:** with explicit publication authority, publish the candidate; then complete full green 3/3 and
+  soak the exact published candidate for 6–24 hours before stable `1.0.0`.
 - **Later in epic:** Windows cold recovery, safe remaining faults, and the reversible public Linux
   install/uninstall contract where their exact mutation boundaries can be proved.
 - **Deferred:** remaining V1-07 evidence-backed adoption/golden-demo work; first npm publication

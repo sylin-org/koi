@@ -9,6 +9,7 @@ use crate::model::{
     output_path, CheckResult, LabProfile, NodeSnapshot, PreflightReport, ProfileCaseReport,
     ProfileReport, RunId, TrustRotation,
 };
+use crate::profile_journal::ProfileJournal;
 use crate::soak::validate_soak_bounds;
 
 const DEFAULT_SOAK_ITERATIONS: u32 = 20;
@@ -97,6 +98,12 @@ impl Lab {
 
         let initial = self.preflight()?;
         self.write_json(&output_dir.join("preflight-before.json"), &initial)?;
+        let mut journal = ProfileJournal::start(
+            self.repo_root(),
+            execution_id.clone(),
+            profile,
+            initial.git_commit.clone(),
+        )?;
         let mut checks = vec![phase_check(
             "preflight-before",
             initial.deploy_ready,
@@ -109,10 +116,26 @@ impl Lab {
         if !failed {
             for case in cases {
                 let case_name = case.name();
-                let manifest = match self.deploy(options.artifact.as_deref()) {
+                let run_id = RunId::generate();
+                journal.prepare_case(&case_name, &run_id)?;
+                let manifest = match self
+                    .deploy_with_run_id(options.artifact.as_deref(), run_id.clone())
+                {
                     Ok(manifest) => manifest,
                     Err(error) => {
                         eprintln!("profile case {case_name} deployment failed: {error:#}");
+                        let cleanup_passed = match self.cleanup(&run_id) {
+                            Ok(_) => {
+                                journal.case_cleaned(&run_id)?;
+                                true
+                            }
+                            Err(cleanup_error) => {
+                                eprintln!(
+                                    "profile case {case_name} deployment rollback verification failed: {cleanup_error:#}"
+                                );
+                                false
+                            }
+                        };
                         checks.push(phase_check(
                             &format!("{case_name}.deploy"),
                             false,
@@ -121,10 +144,10 @@ impl Lab {
                         ));
                         case_reports.push(ProfileCaseReport {
                             name: case_name,
-                            run_id: None,
+                            run_id: Some(run_id),
                             deployment_passed: false,
                             scenario_passed: false,
-                            cleanup_passed: false,
+                            cleanup_passed,
                         });
                         failed = true;
                         break;
@@ -154,6 +177,9 @@ impl Lab {
                 let cleanup_passed = cleanup.is_ok();
                 if let Err(error) = &cleanup {
                     eprintln!("profile case {case_name} cleanup failed: {error:#}");
+                }
+                if cleanup_passed {
+                    journal.case_cleaned(&run_id)?;
                 }
                 checks.push(phase_check(
                     &format!("{case_name}.cleanup"),
@@ -209,6 +235,11 @@ impl Lab {
             &output_dir.join(format!("profile-{}.json", profile.as_str())),
             &report,
         )?;
+        if !journal.has_pending_run() {
+            journal.finish(false)?;
+        } else {
+            failed = true;
+        }
         Ok(ProfileExecution {
             report,
             evidence_path,
@@ -333,7 +364,7 @@ fn phase_check(name: &str, passed: bool, success: &str, failure: &str) -> CheckR
     }
 }
 
-fn stable_baseline_matches(before: &PreflightReport, after: &PreflightReport) -> bool {
+pub(crate) fn stable_baseline_matches(before: &PreflightReport, after: &PreflightReport) -> bool {
     stable_node_matches(&before.local, &after.local)
         && stable_nodes_by_id(&before.remotes) == stable_nodes_by_id(&after.remotes)
 }

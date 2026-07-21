@@ -71,6 +71,9 @@ cargo run -p koi-lab --locked -- run-profile full --allow-system-mutation
 cargo run -p koi-lab --locked -- run-profile soak `
   --iterations 20 --max-minutes 15 --restart-every 5
 
+# Reconcile a stale interrupted profile before admitting another profile.
+cargo run -p koi-lab --locked -- recover-profile
+
 # Privileged trust rotation. Use a fresh deploy/run ID for each rotation.
 cargo run -p koi-lab --locked -- certmesh-native-trust --run-id <run-id> `
   --allow-system-mutation --rotation linux-forward
@@ -188,8 +191,9 @@ pwsh scripts/lab/scheduled-profile.ps1 -Remove
 
 The default trigger is Monday at 03:00 local time; `-DayOfWeek` and `-At` can override it during
 installation. The dedicated lab password is stored outside the repository as a Windows
-CurrentUser-DPAPI ciphertext and exists as plaintext only in the scheduled process environment
-while the physical profile runs. It is absent from the task action, scheduler arguments,
+CurrentUser-DPAPI ciphertext and exists as plaintext in the scheduled process environment only
+while recovery or the physical profile runs; it is explicitly removed during the local build.
+It is absent from the task action, scheduler arguments,
 transcript, and evidence; the existing PuTTY transport receives the throwaway credential through
 its established `KOI_LAB_PASSWORD` boundary. The task runs at highest privilege as the installing
 interactive user, so that same user must be logged on when the trigger fires. `StartWhenAvailable`
@@ -212,9 +216,24 @@ An earlier trigger, parent `v1-20260720T220251Z-48863adc`, was interrupted with 
 eighth case and is not counted as a green. Exact inspection of interrupted child
 `v1-20260720T221040Z-2f50a1df` found matching owners on both Linux nodes. Explicit owner-checked
 `plan-cleanup` and `cleanup` then removed only that child's run roots and locks; a fresh preflight
-confirmed the stable service/listener/artifact baseline. Forced process termination cannot run the
-controller's in-process final cleanup, so centralized interrupted-profile journaling/recovery is a
-remaining V1-06 hardening item; the PowerShell scheduler must not infer remote ownership.
+confirmed the stable service/listener/artifact baseline. `run-profile` now writes and synchronizes
+an append-only active journal before each child deployment, maintains a separate five-second
+heartbeat, and archives the journal only after exact cleanup. `recover-profile` refuses a live
+heartbeat, invalid/truncated non-tail records, foreign/inconsistent ownership, and mismatched local
+Windows owner/process/certificate identities. A stale journal delegates every mutation to the same
+central cleanup evaluator, covers staged Windows member processes and `LocalMachine\Root` state,
+and compares the result with the profile's captured preflight baseline. The scheduled adapter calls
+that command before the local artifact build; PowerShell never infers ownership. Physical execution
+`v1-20260720T232552Z-d5dfe569` was terminated immediately after journaled child
+`v1-20260720T232601Z-11b15882` published its deployment manifest. Read-only planning captured exact
+matching locks and staged run directories on both Linux nodes. After the 60-second threshold,
+recovery removed that child, archived the journal, published 3/3 recovery checks, and matched the
+captured baseline. Independent planning found both nodes absent; preflight
+`preflight-20260720T232854Z.json` left Brook inactive/not-found and preserved Granite PID 803, with
+no active journal or heartbeat. Two other stale shapes also passed: prepared-but-not-deployed
+execution `v1-20260720T232300Z-db22949a` was reconciled idempotently, while
+`v1-20260720T232005Z-8a173dd4` proved safe archival after both children had already cleaned but the
+controller vanished before journal completion.
 
 `certmesh-lifecycle` extends that protocol vertical without mutating native trust stores. It
 rejects a wrong invite fingerprint before local key creation; checks mode-`0600` key/state custody,

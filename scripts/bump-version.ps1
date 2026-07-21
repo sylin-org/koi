@@ -28,8 +28,9 @@
   do the mechanical bump only and review first.
 
 .PARAMETER NewVersion
-  The new semver version, e.g. 0.9.0. OPTIONAL — if omitted, the minor version is
-  auto-incremented and the patch reset to 0 (0.8.0 -> 0.9.0 -> 0.10.0).
+  The new semver version, e.g. 1.0.0-rc.1 or 1.0.0. OPTIONAL for stable releases —
+  if omitted, the minor version is auto-incremented and the patch reset to 0
+  (0.8.0 -> 0.9.0 -> 0.10.0). A prerelease requires an explicit successor.
 .PARAMETER Date
   CHANGELOG release date (default: today, yyyy-MM-dd).
 .PARAMETER SkipLock
@@ -43,6 +44,8 @@
   ./scripts/bump-version.ps1          # auto: bump the minor (e.g. 0.8.0 -> 0.9.0), commit + push
 .EXAMPLE
   ./scripts/bump-version.ps1 1.0.0    # an explicit version (e.g. a major bump)
+.EXAMPLE
+  ./scripts/bump-version.ps1 1.0.0-rc.1 -NoCommit  # prepare a release candidate for review
 .EXAMPLE
   ./scripts/bump-version.ps1 -NoCommit  # mechanical bump only, review before committing
 #>
@@ -59,23 +62,29 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot   # scripts/ -> repo root
 Set-Location $repo
 
-# Current workspace version (the single source of truth for what we're bumping FROM).
-$cargoText = Get-Content -Raw 'Cargo.toml'
-$m = [regex]::Match($cargoText, '(?m)^\s*version\s*=\s*"(\d+\.\d+\.\d+)"\s*$')
-if (-not $m.Success) { throw 'could not find [workspace.package] version in Cargo.toml' }
-$Old = $m.Groups[1].Value
+# Current workspace version and public-channel policy come from one evaluator shared
+# by bumping, tagging, manifests, and CI.
+$oldMetadataJson = & node scripts/release-version.mjs --cargo Cargo.toml
+if ($LASTEXITCODE -ne 0) { throw "could not read the workspace release version ($LASTEXITCODE)" }
+$oldMetadata = $oldMetadataJson | ConvertFrom-Json
+$Old = $oldMetadata.version
 
 # No version given -> auto-increment the minor, reset the patch (0.8.0 -> 0.9.0 -> 0.10.0).
 if (-not $NewVersion) {
-    $p = $Old -split '\.'
-    $NewVersion = '{0}.{1}.0' -f $p[0], ([int]$p[1] + 1)
+    if ($oldMetadata.prerelease) {
+        throw "current version $Old is a prerelease - provide the intended next version explicitly"
+    }
+    $NewVersion = '{0}.{1}.0' -f $oldMetadata.major, ([int]$oldMetadata.minor + 1)
     Write-Host ">> no version given - auto-incrementing minor" -ForegroundColor Cyan
 }
 
-if ($NewVersion -notmatch '^\d+\.\d+\.\d+$') { throw "version must be X.Y.Z, got '$NewVersion'" }
+$newMetadataJson = & node scripts/release-version.mjs --version $NewVersion
+if ($LASTEXITCODE -ne 0) { throw "invalid release version '$NewVersion'" }
+$newMetadata = $newMetadataJson | ConvertFrom-Json
+$NewVersion = $newMetadata.version
 if ($Old -eq $NewVersion) { Write-Host "Already at $NewVersion - nothing to do."; exit 0 }
-$NewMinor = ($NewVersion -split '\.')[0, 1] -join '.'
-Write-Host ">> bump $Old -> $NewVersion  (dependency recipes -> $NewMinor)" -ForegroundColor Cyan
+$DependencyRecipe = $newMetadata.cargoRequirement
+Write-Host ">> bump $Old -> $NewVersion  (dependency recipes -> $DependencyRecipe)" -ForegroundColor Cyan
 
 $script:total = 0
 $script:touched = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -131,11 +140,12 @@ Swap 'docs/guides/mdns.md' "Koi v$Old" "Koi v$NewVersion"
 Swap 'docs/reference/cli.md' "v$Old" "v$NewVersion"
 Swap 'docs/reference/http-api.md' "`"version`": `"$Old`"" "`"version`": `"$NewVersion`""
 
-# 5) `koi-embedded = "X.Y"` dependency recipes (any current minor -> new minor; also
-#    heals a recipe left stale by an earlier release).
+# 5) `koi-embedded` dependency recipes. Stable releases use the concise compatible
+#    X.Y requirement; prereleases must name the full version because Cargo does not
+#    select a prerelease from a stable-only requirement.
 foreach ($f in @('README.md', 'docs/guides/embedded.md')) {
-    SwapRegex $f '(?<=koi-embedded = ")\d+\.\d+(?=")' $NewMinor
-    SwapRegex $f '(?<=koi-embedded = \{ version = ")\d+\.\d+(?=")' $NewMinor
+    SwapRegex $f '(?<=koi-embedded = ")\d+\.\d+(?:\.\d+(?:-[0-9A-Za-z.-]+)?)?(?=")' $DependencyRecipe
+    SwapRegex $f '(?<=koi-embedded = \{ version = ")\d+\.\d+(?:\.\d+(?:-[0-9A-Za-z.-]+)?)?(?=")' $DependencyRecipe
 }
 
 # 6) Cargo.lock: refresh the workspace member versions (holds external deps).

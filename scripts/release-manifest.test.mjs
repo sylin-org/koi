@@ -9,13 +9,13 @@ import { buildReleaseManifest, RELEASE_TARGETS } from "./release-manifest.mjs";
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-async function fixture() {
+async function fixture(version = "1.2.3") {
   const root = await mkdtemp(path.join(tmpdir(), "koi-release-manifest-"));
   const artifactsDir = path.join(root, "artifacts");
   await mkdir(artifactsDir);
   for (const target of RELEASE_TARGETS) {
     const suffix = target.includes("windows") ? ".zip" : ".tar.gz";
-    const archive = `koi-v1.2.3-${target}${suffix}`;
+    const archive = `koi-v${version}-${target}${suffix}`;
     const contents = Buffer.from(`fixture:${target}`);
     await writeFile(path.join(artifactsDir, archive), contents);
     await writeFile(path.join(artifactsDir, `${archive}.sha256`), `${digest(contents)}  ${archive}\n`);
@@ -48,5 +48,18 @@ test("rejects an archive that disagrees with its checksum sidecar", async (t) =>
   await assert.rejects(
     buildReleaseManifest({ version: "1.2.3", ...files }),
     /checksum mismatch/,
+  );
+});
+
+test("builds the same contract for a release candidate", async (t) => {
+  const files = await fixture("1.0.0-rc.1");
+  t.after(() => rm(files.root, { recursive: true, force: true }));
+  const manifest = await buildReleaseManifest({ version: "1.0.0-rc.1", ...files });
+
+  assert.equal(manifest.version, "1.0.0-rc.1");
+  assert.equal(manifest.tag, "v1.0.0-rc.1");
+  assert.match(
+    manifest.artifacts["x86_64-unknown-linux-musl"].url,
+    /\/v1\.0\.0-rc\.1\/koi-v1\.0\.0-rc\.1-/,
   );
 });

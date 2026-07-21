@@ -21,6 +21,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - uses: Swatinem/rust-cache@v2
 
       # No pre-publish `cargo test` here: on the tag path release.yml's `test` job has
@@ -36,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          VERSION=$(node scripts/release-version.mjs --cargo Cargo.toml | jq -r '.version')
           echo "Workspace target version: $VERSION"
 
           CRATES=(
@@ -128,8 +132,7 @@ jobs:
             cargo publish -p "$crate" --locked 2>&1 | tee /tmp/publish_output.txt || {
               exit_code=${PIPESTATUS[0]}
               if grep -q "already exists" /tmp/publish_output.txt; then
-                echo "⏭️  ${crate}: version already published, skipping verification"
-                continue
+                echo "⏭️  ${crate}: version already published; verifying the exact registry entry"
               else
                 echo "❌ ${crate}: publish failed"
                 cat /tmp/publish_output.txt
@@ -142,13 +145,13 @@ jobs:
             echo "🔎 Verifying ${pkg_name} version on crates.io..."
             VERIFIED=false
             for i in {1..12}; do
-              MAX_VER=$(curl -s -H "User-Agent: koi-ci (https://github.com/sylin-org/koi)" "https://crates.io/api/v1/crates/${pkg_name}" | jq -r '.crate.max_version // empty' || echo "")
-              if [ "$MAX_VER" = "$VERSION" ]; then
+              PUBLISHED_VER=$(curl -fsS -H "User-Agent: koi-ci (https://github.com/sylin-org/koi)" "https://crates.io/api/v1/crates/${pkg_name}/${VERSION}" | jq -r '.version.num // empty' || echo "")
+              if [ "$PUBLISHED_VER" = "$VERSION" ]; then
                 echo "✅ Verified: ${pkg_name} is active at version ${VERSION} on crates.io"
                 VERIFIED=true
                 break
               fi
-              echo "⏳ Index not propagated yet (current: '${MAX_VER}', expected: '${VERSION}'). Retrying in 10 seconds (${i}/12)..."
+              echo "⏳ Exact version not propagated yet (current: '${PUBLISHED_VER}', expected: '${VERSION}'). Retrying in 10 seconds (${i}/12)..."
               sleep 10
             done
 

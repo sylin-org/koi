@@ -49,11 +49,13 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot   # scripts/ -> repo root
 Set-Location $repo
 
-# Version bump-version last set.
-$m = [regex]::Match((Get-Content -Raw 'Cargo.toml'), '(?m)^\s*version\s*=\s*"(\d+\.\d+\.\d+)"\s*$')
-if (-not $m.Success) { throw 'could not find [workspace.package] version in Cargo.toml' }
-$version = $m.Groups[1].Value
-$tag = "v$version"
+# Version and channel policy that bump-version last set. This is the same evaluator
+# used by manifests and CI, so a tag cannot reinterpret the release identity.
+$metadataJson = & node scripts/release-version.mjs --cargo Cargo.toml
+if ($LASTEXITCODE -ne 0) { throw "could not read the workspace release version ($LASTEXITCODE)" }
+$metadata = $metadataJson | ConvertFrom-Json
+$version = $metadata.version
+$tag = $metadata.tag
 
 # Guard: the CHANGELOG must carry a stamped section for this version (bump-version ran).
 if ((Get-Content -Raw 'CHANGELOG.md') -notmatch [regex]::Escape("## [$version]")) {
@@ -78,7 +80,7 @@ $npmPackage = Get-Content -Raw 'packages/npm/package.json' | ConvertFrom-Json
 if ($npmPackage.version -ne $version) {
     throw "packages/npm/package.json is $($npmPackage.version), expected $version - run bump-version.ps1."
 }
-$channelTests = @('scripts/release-manifest.test.mjs') + @(
+$channelTests = @(Get-ChildItem 'scripts' -Filter 'release-*.test.mjs' | ForEach-Object { $_.FullName }) + @(
     Get-ChildItem 'packages/npm/test' -Filter '*.test.js' | ForEach-Object { $_.FullName }
 )
 & node --test @channelTests

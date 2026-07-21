@@ -74,7 +74,7 @@ pub enum TrustRotation {
 
 /// Operator-facing hardware execution policies. Scenario membership is owned
 /// by the profile orchestrator; this enum is only the stable CLI/report name.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ValueEnum)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 #[value(rename_all = "kebab-case")]
 pub enum LabProfile {
@@ -371,9 +371,19 @@ impl LabPorts {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct RunId(String);
+
+impl<'de> Deserialize<'de> for RunId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl RunId {
     pub fn generate() -> Self {
@@ -451,7 +461,7 @@ impl ArtifactIdentity {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NodeSnapshot {
     pub id: String,
     pub expected_hostname: String,
@@ -475,14 +485,14 @@ pub struct NodeSnapshot {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ServiceSnapshot {
     pub active: String,
     pub enabled: String,
     pub exec_start: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PreflightReport {
     pub schema: u32,
     pub created_at: DateTime<Utc>,
@@ -523,9 +533,19 @@ pub struct NodeCleanupPlan {
     pub id: String,
     pub lock_dir: String,
     pub run_dir: String,
+    pub lock_present: bool,
     pub owner_matches: bool,
     pub run_dir_present: bool,
+    pub disposition: CleanupDisposition,
     pub files: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupDisposition {
+    Owned,
+    Absent,
+    Conflict,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -672,6 +692,19 @@ pub struct ProfileReport {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct ProfileRecoveryReport {
+    pub schema: u32,
+    pub execution_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub git_commit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<LabProfile>,
+    pub recovered_runs: Vec<RunId>,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct CheckResult {
     pub name: String,
     pub passed: bool,
@@ -709,6 +742,7 @@ impl_evidence_report!(
     ServiceLifecycleReport,
     BoundedSoakReport,
     ProfileReport,
+    ProfileRecoveryReport,
 );
 
 pub fn output_path(name: &str) -> PathBuf {

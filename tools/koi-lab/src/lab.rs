@@ -15,9 +15,9 @@ use x509_parser::prelude::{FromDer, X509Certificate};
 
 use crate::model::{
     output_path, ArtifactIdentity, BuildReport, CertmeshLifecycleReport, CertmeshRecoveryReport,
-    CertmeshSmokeReport, CheckResult, CleanupPlan, DeployedNode, DeploymentManifest, LabConfig,
-    NativeTrustReport, NodeCleanupPlan, NodeSnapshot, NodeSpec, PreflightReport, RunId,
-    ServiceSnapshot, TrustRotation,
+    CertmeshSmokeReport, CheckResult, CleanupDisposition, CleanupPlan, DeployedNode,
+    DeploymentManifest, LabConfig, NativeTrustReport, NodeCleanupPlan, NodeSnapshot, NodeSpec,
+    PreflightReport, RunId, ServiceSnapshot, TrustRotation,
 };
 use crate::putty::PuttyTransport;
 
@@ -109,6 +109,10 @@ impl Lab {
         })
     }
 
+    pub(crate) fn repo_root(&self) -> &Path {
+        &self.repo_root
+    }
+
     pub fn preflight(&self) -> Result<PreflightReport> {
         let local = self.probe_local(current_epoch()?)?;
         let remotes = self
@@ -177,12 +181,19 @@ impl Lab {
     }
 
     pub fn deploy(&self, artifact_path: Option<&Path>) -> Result<DeploymentManifest> {
+        self.deploy_with_run_id(artifact_path, RunId::generate())
+    }
+
+    pub(crate) fn deploy_with_run_id(
+        &self,
+        artifact_path: Option<&Path>,
+        run_id: RunId,
+    ) -> Result<DeploymentManifest> {
         let preflight = self.preflight()?;
         if !preflight.deploy_ready {
             bail!("deployment refused: preflight has deployment blockers");
         }
         let artifact = self.artifact_identity(artifact_path)?;
-        let run_id = RunId::generate();
         let remotes: Vec<&NodeSpec> = self.config.remotes().collect();
         let mut acquired: Vec<&NodeSpec> = Vec::new();
 
@@ -1047,17 +1058,25 @@ impl Lab {
 
     pub fn cleanup(&self, run_id: &RunId) -> Result<CleanupPlan> {
         let before = self.cleanup_plan(run_id)?;
-        if before.nodes.iter().any(|node| !node.owner_matches) {
-            bail!("cleanup refused: at least one node lock is absent or owned by another run");
+        self.validate_local_run_state(run_id)?;
+        if before
+            .nodes
+            .iter()
+            .any(|node| node.disposition == CleanupDisposition::Conflict)
+        {
+            bail!("cleanup refused: at least one node has foreign or inconsistent run state");
         }
-        for node in self.config.remotes() {
-            self.cleanup_node(node, run_id)?;
+        self.cleanup_local_run_state(run_id)?;
+        for (node, plan) in self.config.remotes().zip(&before.nodes) {
+            if plan.disposition == CleanupDisposition::Owned {
+                self.cleanup_node(node, run_id)?;
+            }
         }
         let after = self.cleanup_plan(run_id)?;
         if after
             .nodes
             .iter()
-            .any(|node| node.owner_matches || node.run_dir_present)
+            .any(|node| node.disposition != CleanupDisposition::Absent)
         {
             bail!("cleanup verification failed: run state remains on at least one node");
         }
@@ -2166,6 +2185,129 @@ impl Lab {
             .join("windows-trust")
     }
 
+    fn validate_local_run_state(&self, run_id: &RunId) -> Result<()> {
+        let trust_root = self.windows_trust_dir(run_id);
+        let member_root = self.windows_member_dir(run_id);
+        for root in [&trust_root, &member_root] {
+            if root.exists() {
+                if !root.is_dir() {
+                    bail!(
+                        "local cleanup refused: {} is not a directory",
+                        root.display()
+                    );
+                }
+                let owner = fs::read_to_string(root.join("owner")).with_context(|| {
+                    format!(
+                        "local cleanup refused: {} has no owner marker",
+                        root.display()
+                    )
+                })?;
+                if owner.trim() != run_id.as_str() {
+                    bail!(
+                        "local cleanup refused: {} is owned by another run",
+                        root.display()
+                    );
+                }
+            }
+        }
+        if member_root.exists() {
+            let processes = windows_process_ids_for_executable(&member_root.join("koi.exe"))?;
+            if processes.len() > 1 {
+                bail!("local cleanup refused: multiple processes use the run-owned executable");
+            }
+        }
+        Ok(())
+    }
+
+    fn cleanup_local_run_state(&self, run_id: &RunId) -> Result<()> {
+        if self.windows_trust_dir(run_id).exists() {
+            self.recover_windows_trust(run_id)?;
+        }
+        if self.windows_member_dir(run_id).exists() {
+            self.recover_windows_member(run_id)?;
+        }
+        Ok(())
+    }
+
+    fn recover_windows_trust(&self, run_id: &RunId) -> Result<()> {
+        let root = self.windows_trust_dir(run_id);
+        let source = root.join("ca-cert.pem");
+        let state = root.join("state");
+        let executable = root.join("koi.exe");
+
+        if executable.exists() {
+            let process_ids = windows_process_ids_for_executable(&executable)?;
+            if process_ids.len() > 1 {
+                bail!(
+                    "Windows trust recovery found multiple processes for {}",
+                    executable.display()
+                );
+            }
+            for process_id in process_ids {
+                stop_exact_windows_process(process_id, &executable)?;
+            }
+        }
+
+        let fingerprint = if source.is_file() {
+            let certificate = fs::read(&source)?;
+            match pem::parse(&certificate) {
+                Ok(parsed) => Some(format!("{:x}", Sha256::digest(parsed.contents()))),
+                Err(error) if !state.exists() => {
+                    eprintln!(
+                        "WARNING: removing an incomplete pre-install Windows trust source: {error}"
+                    );
+                    None
+                }
+                Err(error) => {
+                    return Err(error)
+                        .context("tracked Windows trust state has an invalid certificate source")
+                }
+            }
+        } else {
+            None
+        };
+
+        if let Some(fingerprint) = fingerprint {
+            remove_windows_store_fingerprint(&fingerprint)?;
+            if windows_store_contains(&fingerprint)? {
+                bail!("Windows recovery did not remove the exact run-owned root");
+            }
+        }
+        if state.exists() {
+            fs::remove_dir_all(&state)?;
+        }
+        if source.exists() {
+            fs::remove_file(&source)?;
+        }
+        if executable.exists() {
+            fs::remove_file(executable)?;
+        }
+        fs::remove_file(root.join("owner"))?;
+        fs::remove_dir(&root).with_context(|| {
+            format!(
+                "Windows trust recovery found unexpected files in {}",
+                root.display()
+            )
+        })?;
+        Ok(())
+    }
+
+    fn recover_windows_member(&self, run_id: &RunId) -> Result<()> {
+        let root = self.windows_member_dir(run_id);
+        let executable = root.join("koi.exe");
+        let process_ids = windows_process_ids_for_executable(&executable)?;
+        if process_ids.len() > 1 {
+            bail!(
+                "Windows member recovery found multiple processes for {}",
+                executable.display()
+            );
+        }
+        for process_id in process_ids {
+            stop_exact_windows_process(process_id, &executable)?;
+        }
+        self.remove_windows_member_dir(run_id, &root)
+    }
+
     fn prepare_windows_trust_dir(&self, run_id: &RunId) -> Result<PathBuf> {
         let root = self.windows_trust_dir(run_id);
         if root.exists() {
@@ -2177,6 +2319,11 @@ impl Lab {
         fs::create_dir_all(&root)
             .with_context(|| format!("could not create {}", root.display()))?;
         fs::write(root.join("owner"), format!("{}\n", run_id.as_str()))?;
+        fs::copy(
+            self.repo_root.join("target/release/koi.exe"),
+            root.join("koi.exe"),
+        )
+        .context("could not stage the run-owned Windows trust executable")?;
         Ok(root)
     }
 
@@ -2193,6 +2340,7 @@ impl Lab {
             fs::remove_dir_all(state)?;
         }
         fs::remove_file(source)?;
+        fs::remove_file(root.join("koi.exe"))?;
         fs::remove_file(root.join("owner"))?;
         fs::remove_dir(&root)?;
         Ok(())
@@ -2555,14 +2703,20 @@ impl Lab {
                 root.display()
             );
         }
-        fs::create_dir_all(root.join("program-data"))
-            .with_context(|| format!("could not create {}", root.display()))?;
+        fs::create_dir(&root).with_context(|| format!("could not create {}", root.display()))?;
         fs::write(root.join("owner"), format!("{}\n", run_id.as_str()))?;
+        fs::create_dir(root.join("program-data"))
+            .with_context(|| format!("could not create program-data below {}", root.display()))?;
+        fs::copy(
+            self.repo_root.join("target/release/koi.exe"),
+            root.join("koi.exe"),
+        )
+        .with_context(|| "could not stage the run-owned Windows member executable")?;
         Ok(root)
     }
 
     fn windows_member_command(&self, root: &Path) -> Result<Command> {
-        let koi = self.repo_root.join("target/release/koi.exe");
+        let koi = root.join("koi.exe");
         if !koi.is_file() {
             bail!(
                 "Windows release binary is missing at {}; build it locally first",
@@ -2713,7 +2867,10 @@ impl Lab {
         args: &[&str],
         trailing_path: Option<&Path>,
     ) -> Result<std::process::Output> {
-        let koi = self.repo_root.join("target/release/koi.exe");
+        let koi = state
+            .parent()
+            .context("Windows trust state path has no run-owned parent")?
+            .join("koi.exe");
         if !koi.is_file() {
             bail!(
                 "Windows release binary is missing at {}; build it locally first",
@@ -2968,6 +3125,8 @@ impl Lab {
     fn node_cleanup_plan(&self, node: &NodeSpec, run_id: &RunId) -> Result<NodeCleanupPlan> {
         let lock_dir = node.lock_dir()?;
         let run_dir = node.run_dir(run_id)?;
+        let lock_present =
+            self.remote_line(node, &format!("test -d {lock_dir} && echo yes || echo no"))? == "yes";
         let owner = self.remote_line(
             node,
             &format!("test -f {lock_dir}/owner && cat {lock_dir}/owner || true"),
@@ -2992,8 +3151,14 @@ impl Lab {
             id: node.id().to_owned(),
             lock_dir,
             run_dir,
+            lock_present,
             owner_matches: owner == run_id.as_str(),
             run_dir_present,
+            disposition: cleanup_disposition(
+                lock_present,
+                owner == run_id.as_str(),
+                run_dir_present,
+            ),
             files,
         })
     }
@@ -3002,7 +3167,7 @@ impl Lab {
         Ok(self.transport.run_checked(node, command)?.trim().to_owned())
     }
 
-    fn git_commit(&self) -> Result<String> {
+    pub(crate) fn git_commit(&self) -> Result<String> {
         command_stdout_in(&self.repo_root, "git", &["rev-parse", "HEAD"])
     }
 
@@ -3033,6 +3198,18 @@ impl Lab {
         report: &T,
     ) -> Result<PathBuf> {
         crate::evidence::write_bundle(&self.repo_root, relative_json_path, report)
+    }
+}
+
+fn cleanup_disposition(
+    lock_present: bool,
+    owner_matches: bool,
+    run_dir_present: bool,
+) -> CleanupDisposition {
+    match (lock_present, owner_matches, run_dir_present) {
+        (true, true, _) => CleanupDisposition::Owned,
+        (false, false, false) => CleanupDisposition::Absent,
+        _ => CleanupDisposition::Conflict,
     }
 }
 
@@ -3146,6 +3323,63 @@ fn windows_store_contains(fingerprint: &str) -> Result<bool> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim() == "yes")
+}
+
+fn remove_windows_store_fingerprint(fingerprint: &str) -> Result<()> {
+    if !is_sha256(fingerprint) {
+        bail!("invalid Windows certificate fingerprint");
+    }
+    let output = powershell_output(&windows_store_remove_script(fingerprint))?;
+    if !output.status.success() {
+        bail!(
+            "could not remove the exact Windows LocalMachine\\Root certificate: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    match String::from_utf8_lossy(&output.stdout).trim() {
+        "removed" | "absent" => Ok(()),
+        other => bail!("Windows certificate removal returned unexpected output {other:?}"),
+    }
+}
+
+fn windows_process_ids_for_executable(executable: &Path) -> Result<Vec<u32>> {
+    if !executable.is_absolute() {
+        bail!("Windows recovery executable path is not absolute");
+    }
+    let output = powershell_output(&windows_process_ids_script(executable))?;
+    if !output.status.success() {
+        bail!(
+            "could not inspect run-owned Windows processes: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    String::from_utf8(output.stdout)
+        .context("Windows process inspection returned non-UTF-8 output")?
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            line.trim()
+                .parse::<u32>()
+                .with_context(|| format!("invalid Windows process ID {line:?}"))
+        })
+        .collect()
+}
+
+fn stop_exact_windows_process(process_id: u32, executable: &Path) -> Result<()> {
+    if !executable.is_absolute() {
+        bail!("Windows recovery executable path is not absolute");
+    }
+    let output = powershell_output(&windows_process_stop_script(process_id, executable))?;
+    if !output.status.success() {
+        bail!(
+            "could not stop exact run-owned Windows process {process_id}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    match String::from_utf8_lossy(&output.stdout).trim() {
+        "stopped" | "absent" => Ok(()),
+        other => bail!("Windows process stop returned unexpected output {other:?}"),
+    }
 }
 
 fn windows_invoke_web_request(
@@ -3300,6 +3534,26 @@ fn windows_trust_fingerprint_script() -> &'static str {
 fn windows_store_contains_script(fingerprint: &str) -> String {
     format!(
         "$ErrorActionPreference='Stop'; $wanted='{fingerprint}'; $store=[Security.Cryptography.X509Certificates.X509Store]::new('Root','LocalMachine'); $sha=[Security.Cryptography.SHA256]::Create(); try {{ $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly); $found=@($store.Certificates | Where-Object {{ (($sha.ComputeHash($_.RawData) | ForEach-Object {{ $_.ToString('x2') }}) -join '') -eq $wanted }}).Count; if ($found -eq 1) {{ 'yes' }} elseif ($found -eq 0) {{ 'no' }} else {{ throw \"duplicate certificate identity in LocalMachine Root\" }} }} finally {{ $store.Close(); $sha.Dispose() }}"
+    )
+}
+
+fn windows_store_remove_script(fingerprint: &str) -> String {
+    format!(
+        "$ErrorActionPreference='Stop'; $wanted='{fingerprint}'; $store=[Security.Cryptography.X509Certificates.X509Store]::new('Root','LocalMachine'); $sha=[Security.Cryptography.SHA256]::Create(); try {{ $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite); $matches=@($store.Certificates | Where-Object {{ (($sha.ComputeHash($_.RawData) | ForEach-Object {{ $_.ToString('x2') }}) -join '') -eq $wanted }}); if ($matches.Count -gt 1) {{ throw 'duplicate certificate identity in LocalMachine Root' }}; if ($matches.Count -eq 1) {{ $store.Remove($matches[0]); 'removed' }} else {{ 'absent' }} }} finally {{ $store.Close(); $sha.Dispose() }}"
+    )
+}
+
+fn windows_process_ids_script(executable: &Path) -> String {
+    let executable = powershell_path_literal(executable);
+    format!(
+        "$ErrorActionPreference='Stop'; $wanted=[IO.Path]::GetFullPath({executable}); @(Get-CimInstance -ClassName Win32_Process | Where-Object {{ $null -ne $_.ExecutablePath -and [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($_.ExecutablePath),$wanted) }} | Sort-Object ProcessId | ForEach-Object {{ [string]$_.ProcessId }})"
+    )
+}
+
+fn windows_process_stop_script(process_id: u32, executable: &Path) -> String {
+    let executable = powershell_path_literal(executable);
+    format!(
+        "$ErrorActionPreference='Stop'; $wanted=[IO.Path]::GetFullPath({executable}); $process=Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = {process_id}'; if ($null -eq $process) {{ 'absent'; exit 0 }}; if ($null -eq $process.ExecutablePath -or -not [StringComparer]::OrdinalIgnoreCase.Equals([IO.Path]::GetFullPath($process.ExecutablePath),$wanted)) {{ throw 'process executable does not match the run-owned path' }}; Stop-Process -Id {process_id} -Force; $deadline=[DateTime]::UtcNow.AddSeconds(10); while ($null -ne (Get-Process -Id {process_id} -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) {{ Start-Sleep -Milliseconds 100 }}; if ($null -ne (Get-Process -Id {process_id} -ErrorAction SilentlyContinue)) {{ throw 'process did not exit' }}; 'stopped'"
     )
 }
 
@@ -3899,6 +4153,28 @@ mod tests {
             assert!(!script.contains("Cert:\\"));
             assert!(!script.contains("Import-Module"));
         }
+
+        let removal = windows_store_remove_script(fingerprint);
+        assert!(removal.contains("OpenFlags]::ReadWrite"));
+        assert!(removal.contains("$store.Remove($matches[0])"));
+        assert!(removal.contains("duplicate certificate identity"));
+        assert!(!removal.contains("Cert:\\"));
+    }
+
+    #[test]
+    fn windows_process_recovery_matches_one_exact_executable() {
+        let executable = Path::new(r"F:\repo\.lab-runs\v1-test\windows-member\koi.exe");
+        let inspection = windows_process_ids_script(executable);
+        assert!(inspection.contains("Get-CimInstance -ClassName Win32_Process"));
+        assert!(inspection.contains("OrdinalIgnoreCase.Equals"));
+        assert!(inspection.contains("ExecutablePath"));
+
+        let stop = windows_process_stop_script(4242, executable);
+        assert!(stop.contains("ProcessId = 4242"));
+        assert!(stop.contains("process executable does not match the run-owned path"));
+        assert!(stop.contains("Stop-Process -Id 4242 -Force"));
+        assert!(!stop.contains("Stop-Process -Name"));
+        assert!(!stop.contains("taskkill"));
     }
 
     #[test]
@@ -3979,5 +4255,33 @@ mod tests {
         let services = parse_services("koi|active|enabled\navahi-daemon|inactive|disabled\n");
         assert_eq!(services["koi"].active, "active");
         assert_eq!(services["avahi-daemon"].enabled, "disabled");
+    }
+
+    #[test]
+    fn cleanup_state_has_one_fail_closed_classification_point() {
+        assert_eq!(
+            cleanup_disposition(true, true, true),
+            CleanupDisposition::Owned
+        );
+        assert_eq!(
+            cleanup_disposition(true, true, false),
+            CleanupDisposition::Owned
+        );
+        assert_eq!(
+            cleanup_disposition(false, false, false),
+            CleanupDisposition::Absent
+        );
+        for state in [
+            (true, false, false),
+            (true, false, true),
+            (false, false, true),
+            (false, true, false),
+            (false, true, true),
+        ] {
+            assert_eq!(
+                cleanup_disposition(state.0, state.1, state.2),
+                CleanupDisposition::Conflict
+            );
+        }
     }
 }

@@ -5,6 +5,7 @@ mod lab;
 mod model;
 mod probe;
 mod profile;
+mod profile_journal;
 mod putty;
 mod runtime_reconnect;
 mod service_lifecycle;
@@ -136,6 +137,8 @@ enum LabCommand {
         #[arg(long)]
         restart_every: Option<u32>,
     },
+    /// Recover a stale interrupted profile using exact journal-owned run IDs.
+    RecoverProfile,
     /// Show exactly what cleanup would remove; never changes state.
     PlanCleanup {
         #[arg(long)]
@@ -247,6 +250,16 @@ fn main() -> Result<()> {
                     "{} profile failed; exact evidence was preserved",
                     profile.as_str()
                 );
+            }
+        }
+        LabCommand::RecoverProfile => {
+            let execution = lab.recover_profile()?;
+            print_json(&execution.report)?;
+            if let Some(path) = execution.evidence_path {
+                eprintln!("profile recovery evidence: {}", path.display());
+            }
+            if !execution.succeeded {
+                bail!("interrupted profile recovery refused or failed");
             }
         }
         LabCommand::PlanCleanup { run_id } => {

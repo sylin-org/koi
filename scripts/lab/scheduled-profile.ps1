@@ -122,7 +122,7 @@ function Show-Plan {
         Repository         = $script:RepoRoot
         CredentialStorage  = "$($script:CredentialPath) (CurrentUser DPAPI ciphertext)"
         TranscriptStorage  = $script:LogRoot
-        EvaluationBoundary = 'koi-lab run-profile full --allow-system-mutation'
+        EvaluationBoundary = 'koi-lab recover-profile, then run-profile full --allow-system-mutation'
         BuildBoundary      = 'koi-lab build (Windows native + Linux cross/Docker, both local)'
     }
 }
@@ -286,10 +286,6 @@ function Invoke-LabProfile {
         $transcriptStarted = $true
         Push-Location $script:RepoRoot
         try {
-            Invoke-Cargo `
-                -Arguments @('run', '-p', 'koi-lab', '--locked', '--', 'build') `
-                -Description 'Local Koi lab build'
-
             $ciphertext = Get-Content -LiteralPath $script:CredentialPath -Raw
             $securePassword = ConvertTo-SecureString -String $ciphertext
             $credential = [PSCredential]::new('koi-lab', $securePassword)
@@ -297,6 +293,20 @@ function Invoke-LabProfile {
             if ([string]::IsNullOrEmpty($plainPassword)) {
                 throw 'The DPAPI lab credential decrypted to an empty value.'
             }
+
+            $env:KOI_LAB_PASSWORD = $plainPassword
+            try {
+                Invoke-Cargo `
+                    -Arguments @('run', '-p', 'koi-lab', '--locked', '--', 'recover-profile') `
+                    -Description 'Interrupted Koi lab profile recovery'
+            }
+            finally {
+                Remove-Item Env:KOI_LAB_PASSWORD -ErrorAction SilentlyContinue
+            }
+
+            Invoke-Cargo `
+                -Arguments @('run', '-p', 'koi-lab', '--locked', '--', 'build') `
+                -Description 'Local Koi lab build'
 
             $env:KOI_LAB_PASSWORD = $plainPassword
             Invoke-Cargo `

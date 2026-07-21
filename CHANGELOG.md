@@ -26,6 +26,11 @@ self-management is **on by default**. Fire it up, join once, done — the window
   now true.
 
 ### Added
+- **Prerelease-safe publication.** One release-version evaluator now owns SemVer validation,
+  tag identity, and stable/prerelease channel policy. `1.0.0-rc.1` can flow through the existing
+  build-once pipeline as a GitHub prerelease, exact GHCR tag, crates.io prerelease, and npm `next`
+  package without advancing any stable `latest` pointer. Tag/workspace mismatches fail before a
+  release, and crates.io propagation verifies the exact requested version.
 - **`CertmeshCore::is_certmesh_member()`** — a cheap (no-lock, no-network) public predicate for
   "is this node an active mesh member?", the supported gate for a *membership = enforcement*
   consumer and the same fact Koi keys its own self-management on.

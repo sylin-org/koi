@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { releaseMetadata } from "./release-version.mjs";
+
 export const RELEASE_TARGETS = Object.freeze([
   "aarch64-apple-darwin",
   "aarch64-pc-windows-msvc",
@@ -21,14 +23,6 @@ function sha256(bytes) {
 
 async function fileSha256(file) {
   return sha256(await readFile(file));
-}
-
-function cleanVersion(value) {
-  const version = String(value ?? "").replace(/^v/, "");
-  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
-    throw new Error(`version must be semantic and may have one leading v; got '${value ?? ""}'`);
-  }
-  return version;
 }
 
 function archiveName(version, target) {
@@ -55,8 +49,7 @@ export async function buildReleaseManifest({
   installSh = "install.sh",
   installPs1 = "install.ps1",
 }) {
-  const version = cleanVersion(rawVersion);
-  const tag = `v${version}`;
+  const { version, tag } = releaseMetadata(rawVersion);
   const artifacts = {};
 
   for (const target of RELEASE_TARGETS) {

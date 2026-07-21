@@ -128,6 +128,30 @@ Unavailable commands are never presented as working quick-start commands. Once a
 channel is activated and independently verified, the installation guide may promote
 it without changing this architecture.
 
+### 7. One release identity controls every channel
+
+`scripts/release-version.mjs` is the release-domain boundary for parsing the workspace
+version and deciding whether it is stable or a prerelease. Version preparation, tag
+creation, release manifests, and both publication workflows consume that result instead
+of independently interpreting strings. A tag-triggered workflow refuses when the pushed
+tag differs from the workspace version.
+
+Stable releases advance the normal public defaults: the GitHub Latest release, npm's
+`latest` dist-tag, and GHCR's `latest` plus major/minor tag. Prereleases are deliberately
+opt-in: GitHub marks them as prereleases and not Latest, npm publishes them under `next`,
+and GHCR publishes only the exact prerelease version. crates.io receives the exact SemVer
+prerelease and propagation is checked through that exact version's registry entry, never
+inferred from whichever version the registry currently calls maximum.
+
+Cargo installation recipes follow the same decision. Stable documentation may use the
+compatible `major.minor` requirement; prerelease documentation names the full prerelease
+because Cargo will not select a prerelease from a stable-only requirement.
+
+Public release versions follow SemVer with three numeric components and optional
+prerelease identifiers. Build metadata is excluded because every channel and artifact
+must share one unambiguous public identity. An automatic bump from a prerelease is also
+refused: the operator must explicitly choose the next candidate or stable version.
+
 ## Consequences
 
 - Adding a publication channel does not add a Koi build or duplicate archive identity.
@@ -138,6 +162,8 @@ it without changing this architecture.
 - Release operation becomes safer in a shared, intentionally dirty development tree.
 - WinGet and Homebrew can be added as manifest consumers once their external homes and
   lifecycle expectations are ready.
+- A release candidate can ship early for exact-artifact soaking without displacing stable
+  defaults; defects become a subsequent candidate rather than retroactive artifact changes.
 
 The cost is that the manifest schema becomes a release compatibility surface. Schema
 changes require explicit versioning, and activation of each external registry still
