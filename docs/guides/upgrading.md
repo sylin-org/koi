@@ -23,6 +23,24 @@ So the rule is simple and it has no exceptions:
 > **Always read the [CHANGELOG](../../CHANGELOG.md) for every version between the one
 > you're running and the one you're upgrading to — before you upgrade.**
 
+## The 1.0.0-rc.2 upgrade
+
+rc.1 -> rc.2 is drop-in for data: no state format changed, and meshes created under
+rc.1 keep their stored cert policy.
+
+Three behavior changes deserve attention before you upgrade:
+
+1. **New meshes now issue 7-day leaves** renewed at 3 days remaining (ADR-027). An
+   existing rc.1 mesh is untouched - its roster policy travels with it. If you want
+   the short-lived posture on an old mesh, that is a CA-side `CertPolicy` change.
+2. **Healthy leaves inside the renewal window now diagnose `Ok`**, not `Warn` - the
+   old "expires soon" warning mislabeled steady-state under short-lived defaults.
+3. **The mTLS listener may now serve `/v1/mcp`** to certificate-bearing principals
+   (ADR-026). If your deployment never exposes non-loopback management access,
+   nothing changes; to disable, pass `--no-mgmt-mcp`. Loopback + DAT is unchanged.
+
+---
+
 Look specifically for:
 
 - A **`Removed (breaking)`** or **`Breaking`** section.

@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.2] - 2026-08-24
+
+**The second release candidate: non-human callers become first-class mesh citizens,
+and trust defaults shorten to match real threat models.**
+
+### Added
+- **Principal identity (ADR-026).** Non-human callers — scripts, automation, AI agents —
+  can enroll as client-role principals: a clientAuth-only leaf that structurally cannot
+  serve TLS, individually revocable, with operator-bound invites (`invite --client`).
+  The inter-node mTLS listener now also serves `/v1/mcp` behind per-request CN→roster
+  authorization; unknown/expired/revoked callers are refused with named reasons and an
+  audit trail. The loopback + DAT model is unchanged.
+- **Outbound webhook fan-out (ADR-028).** Every domain event can be delivered as an
+  HMAC-SHA256-signed HTTP POST to operator-declared sinks (`--webhooks <manifest>`),
+  with bounded retry, lag-tolerant subscription that never back-pressures the bus, and
+  embedded-instance parity.
+- **Adaptive mDNS coexistence (ADR-030).** On hosts already running another mDNS stack
+  (avahi is everywhere), Koi skips its own responder instead of sharing the socket;
+  every other capability continues, and status reports truthfully.
+- **TypeScript and Python SDK betas** driving status/events/MCP-discovery and raw-CSR
+  enrollment against the frozen HTTP API — the same Agent-Door conformance vector
+  executed by Rust, TypeScript, and Python tests.
+
+### Changed
+- **Short-lived leaves are the default posture (ADR-027):** new meshes issue 7-day
+  leaves renewed at 3 days remaining (1-day grace) instead of 90/30/14. Existing
+  meshes keep their stored policy. Diagnosis no longer degrades healthy leaves inside
+  the scheduled renewal window.
+- The mTLS listener mounts the management plane independently of the loopback MCP
+  switch (`--no-mgmt-mcp`); CA administration remains local-only.
+
 ## [1.0.0-rc.1] - 2026-07-20
 
 **The v1 release candidate: let everything local find, trust, and talk.** Koi's container,

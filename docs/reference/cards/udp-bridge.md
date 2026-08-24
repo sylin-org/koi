@@ -5,7 +5,7 @@ title: "UDP bridge for containers — capability card"
 audience: [operators, developers, ai-agents]
 status: current
 last_updated: 2026-06-22
-koi_version: v1.0.0-rc.1
+koi_version: v1.0.0-rc.2
 validation:
   date_last_tested: 2026-06-22
   status: verified

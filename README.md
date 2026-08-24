@@ -200,11 +200,11 @@ single line — and re-arm any subset à la carte:
 
 ```toml
 # everything (default) — unchanged
-koi-embedded = "1.0.0-rc.1"
+koi-embedded = "1.0.0-rc.2"
 # lean: no bollard, no OS-keychain/D-Bus, no image codec
-koi-embedded = { version = "1.0.0-rc.1", default-features = false }
+koi-embedded = { version = "1.0.0-rc.2", default-features = false }
 # à la carte
-koi-embedded = { version = "1.0.0-rc.1", default-features = false, features = ["docker"] }
+koi-embedded = { version = "1.0.0-rc.2", default-features = false, features = ["docker"] }
 ```
 
 See [ADR-014](docs/adr/014-optional-backend-features.md). The `koi` binary always ships
@@ -285,15 +285,16 @@ build-provenance attestation. A trust tool should let you verify its own supply
 chain in one line:
 
 ```bash
-gh attestation verify koi-v1.0.0-rc.1-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
-gh attestation verify oci://ghcr.io/sylin-org/koi:1.0.0-rc.1 --repo sylin-org/koi
+gh attestation verify koi-v1.0.0-rc.2-x86_64-unknown-linux-musl.tar.gz --repo sylin-org/koi
+gh attestation verify oci://ghcr.io/sylin-org/koi:1.0.0-rc.2 --repo sylin-org/koi
 ```
 
 ## Project status
 
-Koi is at **v1.0.0-rc.1: feature-complete for the v1 contract and ready for real-network
+Koi is at **v1.0.0-rc.2: feature-complete for the v1 contract and ready for real-network
 evaluation**. The release candidate brings the Find / Trust / Connect promise, artifact-first
-distribution, self-managing certmesh trust, truthful runtime recovery, and repeatable physical
+distribution, self-managing certmesh trust, truthful runtime recovery, principal identity for
+non-human callers, short-lived trust defaults, signed webhook fan-out, and repeatable physical
 Windows/Linux validation into one candidate ([CHANGELOG](CHANGELOG.md)).
 
 An RC is not the stable declaration: pin `1.0.0-rc.1`, read the

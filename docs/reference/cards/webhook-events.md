@@ -5,7 +5,7 @@ title: "Webhook events — your LAN talks to your tools"
 audience: [operators, developers]
 status: current
 last_updated: 2026-08-23
-koi_version: v1.0.0-rc.1
+koi_version: v1.0.0-rc.2
 validation:
   date_last_tested: 2026-08-24
   status: verified
