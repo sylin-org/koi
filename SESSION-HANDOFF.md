@@ -1,7 +1,7 @@
 # Koi Epic to v1 — canonical continuation ledger
 
-**Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; V1-07 identity, publication foundation, and RC-channel policy locally complete
-**Last updated:** 2026-07-20 20:04 EDT
+**Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; ADR-026/027/028 operator-ratified; **V1-10 webhooks implemented + physically green both rotations** (card/SURFACES/profile done); **V1-09 short-lived defaults implemented + physically green both rotations** (diagnosis semantics fixed per D9); V1-08 and V1-11 next
+**Last updated:** 2026-08-23
 **Resume phrase:** `continue the epic to v1`
 
 This is the repository's canonical handoff and progress ledger for the v1 epic. The plan is a
@@ -44,6 +44,15 @@ evidence rather than a one-off demo.
 - The Windows workstation is not a disposable test box. Privileged Windows mutations require an
   explicit runner flag such as `--allow-system-mutation`, an elevated process, pre-state capture,
   and exact restoration.
+- On 2026-08-23 the operator ratified **expanding the 1.0 scope** to include, before RC
+  publication: principal identity for non-human callers (ADR-026), short-lived leaves as the
+  default trust posture (ADR-027), outbound webhook fan-out (ADR-028), an in-tree
+  language-neutral trust/Agent-Door spec with conformance vectors (V1-11), and TS/Python SDK
+  betas against the frozen HTTP API (V1-11). The mDNS cross-subnet reflector, Terraform
+  provider, and Grafana dashboard were consciously deferred to the 1.1 ledger section below.
+  Rationale: Koi is unpublished — zero compatibility surface — so differentiating capabilities
+  are cheapest *before* the first public artifact; the prepped rc.1 tag is superseded and will
+  be re-prepped after V1-08..V1-11 land.
 - External publication remains unauthorized. Do not post, contact communities, open external PRs,
   or publish packages. Commit and push also require a separate user request.
 - The user explicitly decided that the 6–24-hour soak gates stable `1.0.0`, not
@@ -571,6 +580,48 @@ evidence rather than a one-off demo.
   single evaluation point now; isolated data roots no longer overwrite one another, while v1
   tables continue to resolve their legacy labels.
 
+### V1-10 implementation deviations (2026-08-23, numbered per house rules)
+
+- **D1 — wiring chokepoint:** the fan-out spawns once inside `koi_serve::serve()` next to
+  the event forwarder, not separately in the binary and koi-embedded as ADR §1 implied.
+  Every boot path through `serve()` inherits it by construction; `serve_adaptive` (embedded)
+  does **not** yet spawn it — explicit follow-up before any parity claim.
+- **D2 — queue semantics:** the drafted per-sink mpsc queue (256, drop-oldest) is replaced
+  by one broadcast receiver per sink: `Lagged` *is* drop-oldest against the shared buffer,
+  with fewer moving parts. Overflow diagnostic fires once per episode and closes on the
+  next successful delivery.
+- **D3 — manifest over config subsystem:** no TOML config file exists to host ADR's
+  `[webhooks]`; sinks load from a JSON manifest via `--webhooks <path>` / `KOI_WEBHOOKS`.
+  Parse errors are loud (`tracing::error!`) with fan-out disabled — non-fatal boot,
+  matching the mDNS-init precedent.
+- **D4 — envelope versioning:** SSE events carry no version field; the webhook envelope's
+  `v: 1` versions the *envelope* itself.
+- **D5 — diagnostics channel:** `webhook.*` diagnostics are injected onto the shared
+  `event_tx` (recursion-guarded by event-type prefix) so sinks and dashboard see them;
+  no separate channel was added.
+- **D6 — crypto placement:** HMAC-SHA256 lives in `koi_crypto::hmac` (subdomain boundary),
+  not inline in compose; RFC 4231 case-2 pinned.
+- **D7 — flag name pinned by hardware:** the manifest flag is explicitly `--webhooks`
+  (`#[arg(long = "webhooks")]`); clap's derived `--webhooks-manifest` was caught live by the
+  first physical run, not by any local gate — recorded as a worked example of the
+  CI-green ≠ works-on-hardware directive.
+- **D8 — crashed-daemon cleanup tolerance:** `stop_webhook_daemon` (lab) kills a live
+  run-owned PID or removes only its own stale PID marker; the generic stop script assumes a
+  live process and was never modified.
+- **D9 — diagnosis semantics aligned to ADR-027 (hardware finding):** the renewal check's
+  hardcoded `RENEW_SOON_DAYS = 7` warn — sensible under 90-day leaves — degraded *every*
+  healthy leaf under 7-day defaults (caught by the first physical lifecycle run: member
+  diagnosis `degraded`/"leaf expires soon (in 6 days)"). The in-scheduled-window state is
+  now Ok ("leaf in scheduled renewal window … renews automatically"); Warn-on-soon is gone;
+  expired remains Red. Repeated renewal failures still surface via `CertRenewalFailed`
+  events and Red-at-expiry. Unit test replaced:
+  `renewal_due_soon_is_a_warning_not_a_failure` →
+  `scheduled_renewal_window_is_healthy_not_degraded`.
+- **V1-10 doc closure:** capability card `docs/reference/cards/webhook-events.md`
+  (verified, physical runs cited) + cards index + SURFACES row + full-profile membership
+  (`WebhookFanout` forward/reverse inserted after reconnect; profile policy test updated to
+  14 cases).
+
 ### Working design choices — revise when evidence warrants
 
 - Build a non-published structured lab controller (`tools/koi-lab`) and keep PowerShell limited to
@@ -599,6 +650,17 @@ evidence rather than a one-off demo.
 | V1-05 | Resilience, reconnect, fault and soak lanes | **in progress — startup, event reconnect, DNS recovery, Linux systemd supervision, and bounded soak physical** | Always-on regressions and Brook↔Granite rotations prove startup reconstruction, an isolated Docker event-stream fault, and DNS stop/bind-failure/retry in both directions. Brook's transient-systemd lane proves READY/restart-on-failure, while the bounded soak repeatedly proves complete container derivation/reversal and periodic restart reconstruction. Public install/uninstall, other safe faults, and a scheduled 6–24 hour release soak remain. |
 | V1-06 | Automation, evidence ledger and v1 release gate | **in progress — interruption recovery physically green; installed scheduler + full green 2/3 on 2026-07-20** | Every completed check-bearing scenario emits redaction-gated JSON, JUnit, and readable summaries from one publisher. Profiles journal each child identity before mutation, heartbeat live ownership, archive successful transactions, and expose one stale recovery command that reuses exact local/remote cleanup and baseline comparison. Controlled execution `v1-20260720T232552Z-d5dfe569` was killed after child `v1-20260720T232601Z-11b15882` owned locks and staged directories on both Linux nodes; stale recovery removed it and passed 3/3 with baseline restoration. Prepared-only and post-cleanup interruption shapes also passed. The installed task's clean retry passed 12/12 cases and aggregate 38/38. Full green 3/3 and the exact-RC soak remain stable-release evidence, not an rc.1 publication prerequisite. |
 | V1-07 | Adoption/public-surface polish backed by proved behavior | **in progress — identity, publication foundation, and RC-channel policy locally complete** | ADR-024 canonizes “Let everything local find, trust, and talk” plus Find/Trust/Connect; ADR-025 establishes one attested artifact contract, no-build cargo-binstall metadata, tested npx bootstrap, gated OIDC publication, and one stable/prerelease evaluator. RCs cannot advance stable GitHub/GHCR/npm defaults; tag identity and exact crates.io propagation fail closed. Hosted RC dry run, registry activation, native-manager channels, evidence-gated compatibility claims and golden demo remain. |
+| V1-08 | Principal identity for non-human callers (ADR-026) | **proposed — ADR drafted 2026-08-23, not ratified/implemented** | Acceptance: ClientAuth-only leaf profile variant refuses ServerAuth for Client role; client-role enrollment over raw HTTP with local CSR custody; mTLS management authorization rejects unknown/expired/revoked CNs with named reasons while an active principal reaches `/v1/mcp`; audit entries carry actor attribution; two-daemon integration + physical third-participant lane green; SURFACES row. |
+| V1-09 | Short-lived leaves as default posture (ADR-027) | **in progress — implemented; unit + physical lifecycle green both Linux rotations 2026-08-24** | Defaults 7/3/1 live in `CertPolicy::default`, `ca::DEFAULT_LEAF_LIFETIME_DAYS`, `csr::DEFAULT_CSR_VALIDITY_DAYS`; oracle test `default_policy_is_the_adr_027_short_lived_posture` pins them. Three tests re-oracled to the 7-day schedule (ca round-trip, self-enroll identity, invite enrollment). **Hardware found a real defect**: `diagnosis.rs` warned "leaf expires soon" from a hardcoded 7-day constant sized for 90-day leaves — every healthy leaf would have been permanently Degraded (deviation D9). Fixed: in-scheduled-window is Ok; Warn reserved for anomalies; expired stays Red. Overview revocation bullet synced to the ≤8-day bound. Physical `certmesh-lifecycle` green forward run `v1-20260824T004010Z-ca93a718` and reverse run `v1-20260824T004259Z-acd1d6ca` (join/custody/SANs/key-rotating renewal/restart/revocation→RED), musl SHA-256 `0c7de764a824e4b025489f4868461a0e9ad06eeb6f3513e1e8fca25a6880fbc1`; exact cleanup + baseline restored (Brook not-found, Granite active/enabled koi 0.7.0). Owed: soak-lane re-run at the new cadence; long-haul posture documented in the certmesh capability card. |
+| V1-10 | Outbound webhook fan-out (ADR-028) | **in progress — engine implemented; local suites + physical cross-host green both Linux rotations 2026-08-23** | Local: 7 unit tests (RFC 4231 HMAC vector, redaction guard) + 3 real-TCP integration tests (exact headers/envelope, retry-after-500 with identical id/body, disabled-sink isolation); fmt/clippy/test green across crypto/compose/serve/binary/embedded. Physical (`webhook-fanout`, new koi-lab scenario): forward run brook→granite captured **45 deliveries**, reverse granite→brook **41**, every delivery HMAC-valid at receive time, envelope v=1 shape-correct, types observed `dns.updated/dns.txt_updated/mdns.found/mdns.resolved`, daemon healthy throughout, exact cleanup green, final preflight preserved Brook not-found and Granite's active/enabled koi 0.7.0 service. Musl artifact SHA-256 `db952c768413091c412a4048d7d6d2278633f7397f9a665e66392c89baab6719`. Hardware caught a real CLI defect (clap derived `--webhooks-manifest`; lab passes `--webhooks`) — fixed with explicit long name. Owed: capability card, SURFACES row, embedded (`serve_adaptive`) wiring decision, profile membership, Windows lane n/a (fan-out is node-side). Deviations D1–D6 below. |
+| V1-11 | Standard seed + SDK betas | **proposed — scope ratified 2026-08-23, design pending** | Acceptance: language-neutral trust/Agent-Door spec page in `docs/reference/` with pinned test vectors (Posture/Envelope/Sealed/handshake per STACK-0001 D7) executable against the Rust implementation; TypeScript + Python beta packages driving enroll/status/events/MCP discovery over the frozen HTTP API, published only after stable 1.0.0 ships (external authority still required). |
+
+## Deferred to 1.1 (consciously, 2026-08-23)
+
+- mDNS cross-subnet reflector — new network subsystem; revisit with its own ADR.
+- Terraform/OpenTofu provider — separate repository/artifact; accompanies but cannot join the binary's release.
+- Grafana dashboard/datasource — same separate-artifact nature.
+- Per-principal scopes/RBAC on the management plane (ADR-026 explicitly defers this).
 
 ## Certmesh/native-trust acceptance matrix
 
@@ -634,17 +696,21 @@ releases; soak is scheduled or explicitly invoked.
 
 ## Resume here
 
-1. Integrate the completed recovery + prerelease-channel slice: reconcile `dev` with current `main`,
-   commit/push only with explicit authority, open the integration PR, and require hosted CI/QA plus
-   a non-publishing Release workflow dry run to pass before tagging.
-2. Publish `1.0.0-rc.1` only with explicit external-publication authority. Then validate that exact
-   distributed candidate through full green 3/3 and the bounded soak before stable `1.0.0`.
-3. Design the public Linux install/uninstall contract only if fixed unit/binary/data paths and the
+1. Ratify ADR-026/027/028 (operator decision pending), then implement in risk order:
+   V1-10 webhooks → V1-09 short-lived defaults → V1-08 principal identity → V1-11 vectors/SDKs.
+   Each lands with its full pipeline: implementation behind runtime tunables, capability card,
+   SURFACES row, lab lane, and the complete local gate (`fmt`, all-feature clippy `-D warnings`,
+   locked workspace tests, audit).
+2. After V1-08..V1-11 land: re-prep the release version, hosted Release dry run, then — only
+   with explicit external-publication authority — tag/publish `1.0.0-rc.1`.
+3. Validate that exact distributed candidate through full green 3/3 and the bounded soak
+   before stable `1.0.0`.
+4. Design the public Linux install/uninstall contract only if fixed unit/binary/data paths and the
    default DNS-port conflict can be made byte-exact reversible. The safer systemd supervision proof
    is complete; do not broaden it into an install claim.
-4. Implement and physically execute Windows cold recovery only if exact encrypted backup/data-loss/
+5. Implement and physically execute Windows cold recovery only if exact encrypted backup/data-loss/
    restore ownership can stay within the tracked Windows transaction; until then leave it unclaimed.
-5. Upstream the Debian dangling-symlink fix to `os-truststore` when separate repository/publication
+6. Upstream the Debian dangling-symlink fix to `os-truststore` when separate repository/publication
    authority exists; then remove Koi lab's guarded compatibility branch.
 
 ## Implementation map
@@ -715,14 +781,16 @@ releases; soak is scheduled or explicitly invoked.
   both directions.
 ## Open basket
 
-- **Now:** integrate and prepare `1.0.0-rc.1` with the complete local gate and hosted CI green.
-- **Next:** with explicit publication authority, publish the candidate; then complete full green 3/3 and
+- **Now:** ratify ADR-026/027/028; implement V1-10 → V1-09 → V1-08 with full local gates per landing.
+- **Next:** V1-11 spec/vectors + SDK betas; then re-prep the release version, hosted Release dry run,
+  and — with explicit publication authority — publish the candidate; complete full green 3/3 and
   soak the exact published candidate for 6–24 hours before stable `1.0.0`.
 - **Later in epic:** Windows cold recovery, safe remaining faults, and the reversible public Linux
   install/uninstall contract where their exact mutation boundaries can be proved.
 - **Deferred:** remaining V1-07 evidence-backed adoption/golden-demo work; first npm publication
   and trusted-publisher activation; GHCR public-visibility verification/fix; WinGet/Homebrew
-  channel creation; and any other external publication.
+  channel creation; any other external publication; and the 1.1 section items (mDNS reflector,
+  Terraform provider, Grafana dashboard, per-principal scopes).
 - **Related readiness debt:** runtime list/watch reliability, off-loopback management transport,
   embedded data-root isolation, partner label semantics, Prometheus/Tailscale contract proof,
   and claim/documentation drift remain relevant to the v1 full-surface gate. The green Release
