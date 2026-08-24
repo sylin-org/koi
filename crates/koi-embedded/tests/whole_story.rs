@@ -266,6 +266,7 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
             invite_token: Some(secret.to_string()),
             csr: Some(csr),
             sans: sans.clone(),
+            role: None,
         })
         .send()
         .await
@@ -533,6 +534,7 @@ async fn wrong_fingerprint_invite_aborts_at_preflight() {
             invite_token: Some(secret.to_string()),
             csr: Some(csr),
             sans: sans.clone(),
+            role: None,
         })
         .send()
         .await
@@ -594,6 +596,7 @@ async fn bad_totp_join(client: &reqwest::Client, base: &str, hostname: &str) -> 
             invite_token: None,
             csr: None,
             sans: vec![],
+            role: None,
         })
         .send()
         .await

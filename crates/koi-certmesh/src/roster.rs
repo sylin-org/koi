@@ -44,13 +44,16 @@ pub struct CertPolicy {
 }
 
 impl Default for CertPolicy {
-    /// Operator-ratified default: 90-day leaves, renew at 30 days remaining,
-    /// 14-day post-expiry grace (ADR-017).
+    /// Operator-ratified default (ADR-027): 7-day leaves renewed at 3 days
+    /// remaining with 1-day post-expiry grace. Short-lived leaves make expiry
+    /// itself the revocation backstop (no CRL/OCSP), and the mDNS failover story
+    /// keeps a 7-day issuance horizon an availability non-issue. Existing meshes
+    /// keep their stored policy; this default applies at `certmesh create`.
     fn default() -> Self {
         Self {
-            leaf_lifetime_days: 90,
-            renew_threshold_days: 30,
-            grace_days: 14,
+            leaf_lifetime_days: 7,
+            renew_threshold_days: 3,
+            grace_days: 1,
         }
     }
 }
@@ -450,6 +453,16 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+
+    #[test]
+    fn default_policy_is_the_adr_027_short_lived_posture() {
+        // Oracle: new meshes issue 7-day leaves renewed at 3 days remaining with
+        // a 1-day grace. Changing this default is an ADR-level decision.
+        let policy = CertPolicy::default();
+        assert_eq!(policy.leaf_lifetime_days, 7);
+        assert_eq!(policy.renew_threshold_days, 3);
+        assert_eq!(policy.grace_days, 1);
     }
 
     #[test]

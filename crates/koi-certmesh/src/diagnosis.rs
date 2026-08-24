@@ -18,9 +18,6 @@ use x509_parser::prelude::FromDer;
 
 use crate::Identity;
 
-/// Days-before-expiry under which an un-overdue leaf is flagged `Warn` ("soon").
-const RENEW_SOON_DAYS: i64 = 7;
-
 /// Whether the leaf certificate chains to the CA it carries — a real "is my
 /// on-disk identity actually usable" check (catches a corrupted / half-written
 /// identity). Parses both PEMs and verifies the leaf's signature against the CA's
@@ -144,7 +141,12 @@ pub fn build_diagnosis(
 }
 
 /// The renewal check, derived from [`RenewalHealth`](crate::RenewalHealth): expired
-/// → Red, overdue/soon → Warn, else Ok.
+/// → Red, else Ok. Being inside the CA-scheduled renewal window (`renew_overdue`)
+/// is **normal steady-state under short-lived leaves** (ADR-027): every 7-day leaf
+/// spends most of its life within 3 days of its renewal point, and the hourly
+/// sweep rotates it automatically. Repeated renewal failures surface through
+/// `CertRenewalFailed` lifecycle events and Red-on-expiry — never as a permanent
+/// degraded posture for healthy identity.
 fn renewal_check(renewal: &crate::RenewalHealth) -> DiagnosisCheck {
     let days = renewal.expires_in_days;
     if renewal.expired {
@@ -152,15 +154,12 @@ fn renewal_check(renewal: &crate::RenewalHealth) -> DiagnosisCheck {
             "renewal is automatic; if it persists, re-enroll: `koi certmesh join <endpoint>`",
         )
     } else if renewal.renew_overdue {
-        DiagnosisCheck::warn(
+        DiagnosisCheck::ok(
             "renewal",
             format!(
-                "renewal overdue — leaf expires in {days} days; the renewal loop should rotate it"
+                "leaf in scheduled renewal window (expires in {days} days); the daemon renews automatically"
             ),
         )
-        .with_remedy("check the daemon's renewal loop (`koi certmesh status`)")
-    } else if days <= RENEW_SOON_DAYS {
-        DiagnosisCheck::warn("renewal", format!("leaf expires soon (in {days} days)"))
     } else {
         DiagnosisCheck::ok("renewal", format!("leaf healthy (expires in {days} days)"))
     }
@@ -264,8 +263,10 @@ mod tests {
     }
 
     #[test]
-    fn renewal_due_soon_is_a_warning_not_a_failure() {
-        let id = identity(renewal(5, false, false));
+    fn scheduled_renewal_window_is_healthy_not_degraded() {
+        // ADR-027: inside the CA-scheduled renewal window is normal steady-state
+        // for a short-lived leaf — Ok, never Warn, never degraded.
+        let id = identity(renewal(2, true, false));
         let d = build_diagnosis(
             Posture::new(true, false),
             Some(&id),
@@ -273,9 +274,12 @@ mod tests {
             false,
             Utc::now(),
         );
-        assert_eq!(find(&d, "renewal").status, CheckStatus::Warn);
-        assert_eq!(d.overall, DiagnosisStatus::Degraded);
-        assert_eq!(d.exit_code(), 0, "a warning is loud but not a failure");
+        assert_eq!(find(&d, "renewal").status, CheckStatus::Ok);
+        assert!(find(&d, "renewal")
+            .detail
+            .contains("scheduled renewal window"));
+        assert_eq!(d.overall, DiagnosisStatus::Healthy);
+        assert_eq!(d.exit_code(), 0);
     }
 
     #[test]

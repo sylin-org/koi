@@ -147,10 +147,12 @@ Koi is honest about its edges. Reach for something else when:
   reader and assumes the machine owner runs it. It does not defend against a hostile
   process already running as your user, or against other tenants on a shared box.
 - **You need certificate revocation that TLS verifiers honor.** Revocation in Koi is
-  **roster-level**: revoking a member stops Koi-mediated renewal and enrollment, but it
-  does **not** invalidate an already-issued certificate until it expires (90 days). There
-  is no CRL or OCSP distribution. If real-time revocation is a requirement, Koi's CA is the
-  wrong tool.
+  **roster-level**: revoking a member stops Koi-mediated renewal and enrollment and is
+  enforced at Koi's own boundaries, but it does **not** invalidate an already-issued
+  certificate for generic TLS verifiers. There is no CRL or OCSP distribution. Instead Koi
+  bounds the exposure by default: new meshes issue **7-day leaves renewed automatically at
+  3 days remaining**, so a revoked leaf's residual validity is ≤ 8 days (ADR-027). If
+  real-time revocation is a requirement, Koi's CA is the wrong tool.
 
 Koi is also pre-1.0 and consolidating — play with it, but don't run it as load-bearing
 infrastructure yet.

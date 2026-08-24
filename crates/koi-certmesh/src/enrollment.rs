@@ -114,6 +114,30 @@ pub fn process_enrollment(
         return Err(CertmeshError::AlreadyEnrolled(hostname.to_string()));
     }
 
+    // 4b. Resolve the requested membership kind (ADR-026 §2/§3). Absent = member
+    //     (wire-compatible with every pre-ADR-026 client). The first enrollee
+    //     bootstraps the CA host and must be a host role.
+    let requested_role = request.role.as_deref().map(str::to_ascii_lowercase);
+    let leaf_usage = match requested_role.as_deref() {
+        None | Some("member") => (crate::ca::LeafUsage::Host, "member"),
+        Some("client") => {
+            if roster.members.is_empty() {
+                audit_denied("enroll_client_profile_refused");
+                return Err(CertmeshError::InvalidPayload(
+                    "the first enrollee bootstraps the CA host and cannot be a client principal"
+                        .to_string(),
+                ));
+            }
+            (crate::ca::LeafUsage::Client, "client")
+        }
+        Some(other) => {
+            audit_denied("enroll_client_profile_refused");
+            return Err(CertmeshError::InvalidPayload(format!(
+                "unknown membership kind {other:?}; expected \"member\" or \"client\""
+            )));
+        }
+    };
+
     // 5. Approval handled by caller when required
     if roster.requires_approval() && approved_by.as_deref().unwrap_or("").is_empty() {
         audit_denied("enroll_approval_denied");
@@ -135,7 +159,7 @@ pub fn process_enrollment(
     };
     // Leaf lifetime is the CA-held policy (ADR-017), not a hardcoded constant.
     let lifetime_days = roster.metadata.policy.leaf_lifetime_days;
-    let leaf_pem = crate::csr::sign_csr(ca, csr_pem, sans, lifetime_days)?;
+    let leaf_pem = crate::csr::sign_csr_with_usage(ca, csr_pem, sans, lifetime_days, leaf_usage.0)?;
 
     // Fingerprint + expiry derived from the issued leaf. The member persists its
     // own cert files locally; the CA records membership only (no cert_path here).
@@ -148,10 +172,12 @@ pub fn process_enrollment(
     let is_primary = roster.members.is_empty();
     let role = if is_primary {
         MemberRole::Primary
+    } else if leaf_usage.1 == "client" {
+        MemberRole::Client
     } else {
         MemberRole::Member
     };
-    let role_str = if is_primary { "primary" } else { "member" };
+    let role_str = if is_primary { "primary" } else { leaf_usage.1 };
 
     let ca_fp = ca::ca_fingerprint(ca);
     let member = RosterMember {
@@ -281,6 +307,7 @@ mod tests {
             invite_token: None,
             csr: None,
             sans: vec![],
+            role: None,
         };
 
         let result = process_enrollment(
@@ -323,6 +350,7 @@ mod tests {
             invite_token: None,
             csr: None,
             sans: vec![],
+            role: None,
         };
 
         let result = process_enrollment(
@@ -357,6 +385,7 @@ mod tests {
             invite_token: None,
             csr: None,
             sans: vec![],
+            role: None,
         };
 
         // Fail 3 times to trigger lockout
@@ -414,6 +443,7 @@ mod tests {
             invite_token: Some(token.clone()),
             csr: Some(csr_pem),
             sans: vec![],
+            role: None,
         };
 
         let result = process_enrollment(
@@ -434,12 +464,9 @@ mod tests {
             "CSR flow: the CA must NOT return a member private key"
         );
         assert!(resp.service_cert.contains("BEGIN CERTIFICATE"));
-        // Leaf lifetime comes from the CA-held policy default (90 days, ADR-017).
+        // Leaf lifetime comes from the CA-held policy default (7 days, ADR-027).
         let days = (issued.expires - Utc::now()).num_days();
-        assert!(
-            (89..=90).contains(&days),
-            "expected ~90-day leaf, got {days}"
-        );
+        assert!((6..=7).contains(&days), "expected ~7-day leaf, got {days}");
 
         // Single-use: the now-spent token is rejected on a second attempt.
         let mut roster2 = Roster::new(JUST_ME.0, JUST_ME.1, None);
@@ -449,6 +476,7 @@ mod tests {
             invite_token: Some(token),
             csr: None,
             sans: vec![],
+            role: None,
         };
         let result2 = process_enrollment(
             &ca,
@@ -486,6 +514,7 @@ mod tests {
             invite_token: Some(token),
             csr: None, // no CSR supplied
             sans: vec![],
+            role: None,
         };
         let result = process_enrollment(
             &ca,

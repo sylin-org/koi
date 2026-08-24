@@ -347,6 +347,7 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
             invite_token: Some(secret.to_string()),
             csr: Some(csr.csr),
             sans: sans.clone(),
+            role: None,
         })
         .send()
         .await
@@ -461,6 +462,7 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
             invite_token: Some(secret2.to_string()),
             csr: Some(csr2.csr),
             sans: sans.clone(),
+            role: None,
         })
         .send()
         .await

@@ -16,10 +16,10 @@ use crate::error::CertmeshError;
 /// caller passes `validity_days = 0`.
 ///
 /// Matches the CA-held [`crate::roster::CertPolicy`] default
-/// (`leaf_lifetime_days = 90`, ADR-017) and [`crate::ca::DEFAULT_LEAF_LIFETIME_DAYS`]
+/// (`leaf_lifetime_days = 7`, ADR-027) and [`crate::ca::DEFAULT_LEAF_LIFETIME_DAYS`]
 /// so every issuance path — enrollment, renewal, and CA self-enroll — ages on
 /// the same schedule.
-pub const DEFAULT_CSR_VALIDITY_DAYS: u32 = 90;
+pub const DEFAULT_CSR_VALIDITY_DAYS: u32 = 7;
 
 /// Generate a fresh member keypair and a PKCS#10 CSR for `hostname` (ADR-015 F1).
 ///
@@ -87,6 +87,18 @@ pub fn sign_csr(
     sans: &[String],
     validity_days: u32,
 ) -> Result<String, CertmeshError> {
+    sign_csr_with_usage(ca, csr_pem, sans, validity_days, crate::ca::LeafUsage::Host)
+}
+
+/// [`sign_csr`] with an explicit leaf usage (ADR-026 §3): client principals get
+/// a `clientAuth`-only leaf that structurally cannot serve TLS.
+pub fn sign_csr_with_usage(
+    ca: &CaState,
+    csr_pem: &str,
+    sans: &[String],
+    validity_days: u32,
+    usage: crate::ca::LeafUsage,
+) -> Result<String, CertmeshError> {
     // Parse + verify the CSR self-signature. A corrupted signature, malformed
     // PEM, or unsupported extension fails here.
     let mut csr_params = CertificateSigningRequestParams::from_pem(csr_pem)
@@ -94,12 +106,12 @@ pub fn sign_csr(
 
     // SECURITY: drop whatever SANs the CSR embedded and substitute the
     // caller-authorized set. The CSR's requested SANs are only read above for
-    // signature verification — they never reach the issued certificate.
+    // signature verification - they never reach the issued certificate.
     csr_params.params.subject_alt_names = build_san_list(sans);
 
-    // Least-privilege leaf profile (ADR-017 F10) — same as the CA self-enroll
-    // path. A CSR cannot smuggle in CA capability or extra key usages.
-    crate::ca::apply_leaf_profile(&mut csr_params.params);
+    // Least-privilege leaf profile (ADR-017 F10 / ADR-026 §3). A CSR cannot
+    // smuggle in CA capability or extra key usages — the usage enum decides.
+    crate::ca::apply_leaf_profile_for_usage(&mut csr_params.params, usage);
 
     // Leaf validity window.
     let days = if validity_days == 0 {

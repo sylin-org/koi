@@ -35,6 +35,11 @@ pub struct JoinRequest {
     /// adds the hostname and its configured-zone FQDN at the issuance boundary.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sans: Vec<String>,
+    /// Requested membership kind (ADR-026): `"member"` (default — a serving
+    /// host) or `"client"` (a non-serving principal whose leaf carries a
+    /// `clientAuth`-only profile). Any other value is rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 /// Request to mint an enrollment invite token (operator-only, DAT-gated).
@@ -514,6 +519,7 @@ mod tests {
             invite_token: None,
             csr: None,
             sans: vec!["10.0.0.5".to_string()],
+            role: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: JoinRequest = serde_json::from_str(&json).unwrap();

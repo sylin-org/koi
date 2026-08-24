@@ -50,6 +50,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use zeroize::Zeroizing;
 
 pub use bundle::SignedBundle;
+pub use ca::LeafUsage;
 pub use client::PeerClient;
 pub use csr::sign_csr;
 pub use error::CertmeshError;

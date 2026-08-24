@@ -113,10 +113,10 @@ async fn local_identity_loads_after_self_enroll() {
     assert!(id.cert_pem.contains("BEGIN CERTIFICATE"));
     assert!(id.key_pem.contains("BEGIN"));
     assert_eq!(id.ca_fingerprint.len(), 64); // sha256 hex
-                                             // A fresh 90-day leaf (renew at 30 days remaining) is healthy.
+                                             // A fresh 7-day leaf (renew at 3 days remaining, ADR-027) is healthy.
     assert!(!id.renewal.expired);
     assert!(!id.renewal.renew_overdue);
-    assert!(id.renewal.expires_in_days > 30);
+    assert!(id.renewal.expires_in_days > 3);
     // Redacted Debug must never leak key material.
     assert!(!format!("{id:?}").contains("BEGIN"));
 }
@@ -570,6 +570,7 @@ async fn member_pull_renewal_round_trip() {
             invite_token: Some(invite),
             csr: Some(csr),
             sans: vec!["renew-host".to_string()],
+            role: None,
         })
         .await
         .expect("enroll");
@@ -687,6 +688,7 @@ async fn trust_bundle_pull_round_trip() {
             invite_token: Some(invite),
             csr: Some(csr),
             sans: vec!["bundle-host".to_string()],
+            role: None,
         })
         .await
         .unwrap();
@@ -787,6 +789,7 @@ async fn trust_bundle_applies_cross_member_revocation() {
                 invite_token: Some(invite),
                 csr: Some(csr),
                 sans: vec![host.to_string()],
+                role: None,
             })
             .await
             .unwrap();
@@ -1084,6 +1087,7 @@ async fn install_member_cert_rejects_pin_mismatch() {
             invite_token: Some(secret.to_string()),
             csr: Some(csr),
             sans: vec!["pin-host".to_string()],
+            role: None,
         })
         .await
         .unwrap();
@@ -1176,6 +1180,7 @@ async fn refused_rejoin_cannot_replace_active_member_identity() {
             invite_token: Some(invite::decode_code(&invite.token).0.to_string()),
             csr: Some(csr),
             sans: sans.to_vec(),
+            role: None,
         })
         .await
         .unwrap();
@@ -1267,6 +1272,7 @@ async fn pull_trust_bundle_self_heals_ca_anchor() {
             invite_token: Some(secret.to_string()),
             csr: Some(csr),
             sans: vec!["heal-host".to_string()],
+            role: None,
         })
         .await
         .unwrap();
@@ -1668,6 +1674,7 @@ async fn uninitialized_core_enroll_returns_error() {
         invite_token: None,
         csr: None,
         sans: vec![],
+        role: None,
     };
     let result = core.enroll(&request).await;
     assert!(result.is_err());
