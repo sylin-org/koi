@@ -340,8 +340,17 @@ fn profile_cases(profile: LabProfile) -> Vec<ProfileCase> {
     match profile {
         LabProfile::Smoke => vec![CertmeshSmoke(LinuxForward), CertmeshSmoke(LinuxReverse)],
         LabProfile::Certmesh => certmesh_cases(),
-        LabProfile::Full => {
+        LabProfile::Full | LabProfile::Linux => {
             let mut cases = certmesh_cases();
+            // The linux profile is `full` minus the Windows workstation's
+            // native-trust lane: identical breadth, runnable from an unelevated
+            // controller session (ADR-026-era working choice — privilege lanes
+            // are separated, never silently skipped inside a transaction).
+            if profile == LabProfile::Linux {
+                cases.retain(|case| {
+                    *case != ProfileCase::CertmeshNativeTrust(TrustRotation::WindowsClient)
+                });
+            }
             cases.extend([
                 RuntimeReconnect(LinuxForward),
                 RuntimeReconnect(LinuxReverse),
@@ -468,6 +477,34 @@ mod tests {
                 .count(),
             6
         );
+
+        // The linux profile is `full` minus exactly the Windows workstation's
+        // native-trust case — same order, same breadth, runnable unelevated.
+        let linux = profile_cases(LabProfile::Linux);
+        assert_eq!(linux.len(), 15);
+        let windows_case = ProfileCase::CertmeshNativeTrust(crate::TrustRotation::WindowsClient);
+        assert!(
+            !linux.contains(&windows_case),
+            "the linux profile must not contain the Windows-host lane"
+        );
+        assert!(full.contains(&windows_case));
+        for (full_case, linux_case) in full
+            .iter()
+            .filter(|c| **c != windows_case)
+            .zip(linux.iter())
+        {
+            assert_eq!(full_case, linux_case, "linux preserves full's ordering");
+        }
+        // The Linux native-trust rotations stay in: they mutate only the two
+        // dedicated test hosts' trust stores (the flagged privilege lane).
+        assert_eq!(
+            linux
+                .iter()
+                .filter(|case| case.requires_system_mutation())
+                .count(),
+            5
+        );
+
         assert_eq!(
             profile_cases(LabProfile::Soak),
             vec![ProfileCase::BoundedSoak]

@@ -81,6 +81,10 @@ pub enum LabProfile {
     Smoke,
     Certmesh,
     Full,
+    /// Every `full` case that runs on the two Linux hosts — the Windows
+    /// workstation's native-trust lane is excluded, so the profile is runnable
+    /// from an unelevated controller session.
+    Linux,
     Soak,
 }
 
@@ -90,6 +94,7 @@ impl LabProfile {
             Self::Smoke => "smoke",
             Self::Certmesh => "certmesh",
             Self::Full => "full",
+            Self::Linux => "linux",
             Self::Soak => "soak",
         }
     }
