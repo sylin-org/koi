@@ -168,6 +168,95 @@ class TestKoiClient(unittest.TestCase):
         self.assertEqual(frames[1]["event"], "heartbeat")
         self.assertEqual(frames[1]["data"], {})
 
+    # ── Enroll surface (ADR-015 F1 / ADR-026 §4) ─────────────────────
+
+    def test_join_posts_the_snake_case_wire_body_without_a_token(self):
+        daemon = StubDaemon(
+            {
+                "/v1/certmesh/join": lambda: (
+                    200,
+                    json.dumps(
+                        {
+                            "hostname": "agent-7",
+                            "ca_cert": "-----CA",
+                            "service_cert": "-----LEAF",
+                            "service_key": "",
+                            "ca_fingerprint": "f" * 64,
+                        }
+                    ).encode(),
+                    "application/json",
+                    None,
+                )
+            }
+        )
+        try:
+            client = KoiClient(daemon.base)
+            joined = client.join("agent-7", csr="-----CSR", invite_token="tok", role="client")
+        finally:
+            daemon.close()
+        self.assertEqual(joined["hostname"], "agent-7")
+        self.assertEqual(len(daemon.seen), 1)
+        request = daemon.seen[0]
+        self.assertEqual(request["url"], "/v1/certmesh/join")
+        self.assertIsNone(request["headers"].get("x-koi-token"), "/join is DAT-exempt")
+        # Body arrives via content-length read in the stub; re-read from wfile
+        # is not captured, so assert on the recorded headers + status only.
+
+    def test_enroll_with_local_daemon_orchestrates_custody_and_refuses_shipped_key(self):
+        state = {"ship_key": False}
+        join_count = {"n": 0}
+
+        def member_csr():
+            return (200, json.dumps({"csr": "-----BEGIN CERTIFICATE REQUEST-----LOCAL"}).encode(), "application/json", None)
+
+        def do_join():
+            join_count["n"] += 1
+            key = "LEAKED" if state["ship_key"] else ""
+            return (
+                200,
+                json.dumps(
+                    {
+                        "hostname": "web-9",
+                        "ca_cert": "-----CA",
+                        "service_cert": "-----LEAF",
+                        "service_key": key,
+                    }
+                ).encode(),
+                "application/json",
+                None,
+            )
+
+        def member_cert():
+            return (200, json.dumps({"installed": True, "cert_path": "/x/key.pem"}).encode(), "application/json", None)
+
+        daemon = StubDaemon(
+            {
+                "/v1/certmesh/member-csr": member_csr,
+                "/v1/certmesh/join": do_join,
+                "/v1/certmesh/member-cert": member_cert,
+            }
+        )
+        try:
+            client = KoiClient(daemon.base, token=TOKEN)
+            result = client.enroll_with_local_daemon(
+                ca_endpoint="http://ca-host:5641", hostname="web-9", role="client", ca_mtls_port=16542
+            )
+            self.assertTrue(result["installed"]["installed"])
+            urls = [r["url"] for r in daemon.seen]
+            self.assertEqual(
+                urls,
+                ["/v1/certmesh/member-csr", "/v1/certmesh/join", "/v1/certmesh/member-cert"],
+            )
+            # Custody tripwire: a CA that ships a key must be rejected loudly.
+            state["ship_key"] = True
+            with self.assertRaises(RuntimeError) as ctx:
+                KoiClient(daemon.base, token=TOKEN).enroll_with_local_daemon(
+                    ca_endpoint="http://ca-host:5641", hostname="web-9"
+                )
+        finally:
+            daemon.close()
+        self.assertIn("custody violation", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

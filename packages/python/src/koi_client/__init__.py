@@ -68,6 +68,75 @@ class KoiClient:
         """/v1/certmesh/posture — ``{signed, encrypted, level}``."""
         return self._json("GET", "/v1/certmesh/posture")
 
+    def join(
+        self,
+        hostname: str,
+        csr: Optional[str] = None,
+        invite_token: Optional[str] = None,
+        sans: Optional[list] = None,
+        role: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Enroll against a CA: ``POST /v1/certmesh/join`` — the ONE DAT-exempt
+        mutation. The caller keeps its private key and sends only the CSR
+        (ADR-015 F1); the response carries ``ca_cert`` + ``service_cert`` and
+        NEVER a ``service_key``.
+
+        Bring your own CSR (any X.509 library can produce one for a P-256 key),
+        or use :meth:`enroll_with_local_daemon` to have the local daemon hold
+        the key. A ``role`` of ``"client"`` enrolls a non-serving principal
+        (ADR-026).
+        """
+        if not hostname:
+            raise ValueError("hostname is required")
+        body: Dict[str, Any] = {"hostname": hostname, "sans": sans or []}
+        if invite_token:
+            body["invite_token"] = invite_token
+        if csr:
+            body["csr"] = csr
+        if role:
+            if role not in ("member", "client"):
+                raise ValueError(f'unknown membership kind {role!r}; expected "member" or "client"')
+            body["role"] = role
+        # noAuth: /join is DAT-exempt and targets a REMOTE CA — this daemon's
+        # local token must never travel to another host.
+        return self._json("POST", "/v1/certmesh/join", body=body, no_auth=True)
+
+    def enroll_with_local_daemon(
+        self,
+        ca_endpoint: str,
+        hostname: str,
+        role: Optional[str] = None,
+        ca_mtls_port: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Full enrollment using the LOCAL daemon for key custody (the same
+        flow ``koi certmesh join`` drives): this client's base must point at
+        the local daemon; the keypair is generated daemon-side (0600), only
+        the CSR crosses to the CA, and the signed leaf is installed locally
+        with pull-renewal armed.
+        """
+        if not ca_endpoint:
+            raise ValueError("ca_endpoint is required")
+        if not hostname:
+            raise ValueError("hostname is required (SDK callers state their identity explicitly)")
+        member_csr = self._json("POST", "/v1/certmesh/member-csr", body={"hostname": hostname})
+        joined = self.join(hostname, csr=member_csr["csr"], sans=[hostname], role=role)
+        if joined.get("service_key"):
+            raise RuntimeError(
+                "custody violation: the join response carried a private key (ADR-015 F1)"
+            )
+        installed = self._json(
+            "POST",
+            "/v1/certmesh/member-cert",
+            body={
+                "hostname": hostname,
+                "cert_pem": joined["service_cert"],
+                "ca_pem": joined["ca_cert"],
+                "ca_endpoint": ca_endpoint,
+                **({"ca_mtls_port": ca_mtls_port} if ca_mtls_port else {}),
+            },
+        )
+        return {"joined": joined, "installed": installed}
+
     def events(self) -> Iterator[Dict[str, Any]]:
         """Iterate the merged domain event stream (``GET /v1/events``, SSE).
 
@@ -87,25 +156,31 @@ class KoiClient:
         except urllib.error.HTTPError as err:
             raise KoiHttpError(err.code, err.read().decode("utf-8", "replace")) from None
 
-    def _request(self, method: str, path: str) -> Any:
+    def _request(self, method: str, path: str, body: Optional[Dict[str, Any]] = None, no_auth: bool = False) -> Any:
+        headers = {
+            "accept": "application/json",
+            **({"x-koi-token": self._token} if self._token and not no_auth else {}),
+        }
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["content-type"] = "application/json"
         req = urllib.request.Request(
             f"{self._base}{path}",
             method=method,
-            headers={
-                "accept": "application/json",
-                **({"x-koi-token": self._token} if self._token else {}),
-            },
+            data=data,
+            headers=headers,
         )
         try:
             return urllib.request.urlopen(req, timeout=self._timeout)
         except urllib.error.HTTPError as err:
             raise KoiHttpError(err.code, err.read().decode("utf-8", "replace")) from None
 
-    def _json(self, method: str, path: str) -> Dict[str, Any]:
-        with self._request(method, path) as res:
-            body = res.read().decode("utf-8")
+    def _json(self, method: str, path: str, body: Optional[Dict[str, Any]] = None, no_auth: bool = False) -> Dict[str, Any]:
+        with self._request(method, path, body=body, no_auth=no_auth) as res:
+            payload = res.read().decode("utf-8")
         try:
-            return json.loads(body)
+            return json.loads(payload)
         except json.JSONDecodeError as err:
             raise ValueError(f"koi returned non-JSON body for {path}: {err}") from None
 
