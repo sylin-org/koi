@@ -171,7 +171,10 @@ async fn invite_handler(
     Json(request): Json<InviteRequest>,
 ) -> impl IntoResponse {
     let core = CertmeshCore::from_state(Arc::clone(&state));
-    match core.mint_invite(&request.hostname, request.ttl_mins).await {
+    match core
+        .mint_invite(&request.hostname, request.ttl_mins, request.role.as_deref())
+        .await
+    {
         Ok(response) => match serde_json::to_value(&response) {
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
             Err(e) => error_response(

@@ -50,6 +50,10 @@ pub struct InviteRequest {
     /// Time-to-live in minutes. Non-positive falls back to the default (60).
     #[serde(default)]
     pub ttl_mins: i64,
+    /// Membership kind this invite may enroll as (ADR-026 §4): `"member"` or
+    /// `"client"`. Absent = unbound — the token may enroll either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 /// Response carrying a freshly minted invite token (returned exactly once).

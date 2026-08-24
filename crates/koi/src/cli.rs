@@ -639,6 +639,10 @@ pub enum CertmeshSubcommand {
         /// Invite lifetime in minutes
         #[arg(long, default_value_t = 60)]
         ttl: i64,
+        /// Bind this invite to a client principal (ADR-026): the token may only
+        /// enroll a non-serving principal holding a clientAuth-only leaf.
+        #[arg(long)]
+        client: bool,
     },
     /// Show certificate mesh status
     Status,
@@ -1172,10 +1176,16 @@ mod tests {
         let cli = Cli::try_parse_from(["koi", "certmesh", "invite", "web-01"]).unwrap();
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
-                command: Some(CertmeshSubcommand::Invite { hostname, ttl }),
+                command:
+                    Some(CertmeshSubcommand::Invite {
+                        hostname,
+                        ttl,
+                        client,
+                    }),
             })) => {
                 assert_eq!(hostname, "web-01");
                 assert_eq!(ttl, 60);
+                assert!(!client, "--client is opt-in");
             }
             other => panic!("Expected Certmesh Invite, got: {other:?}"),
         }
@@ -1187,10 +1197,34 @@ mod tests {
             Cli::try_parse_from(["koi", "certmesh", "invite", "web-01", "--ttl", "15"]).unwrap();
         match cli.command {
             Some(Command::Certmesh(CertmeshCommand {
-                command: Some(CertmeshSubcommand::Invite { hostname, ttl }),
+                command:
+                    Some(CertmeshSubcommand::Invite {
+                        hostname,
+                        ttl,
+                        client,
+                    }),
             })) => {
                 assert_eq!(hostname, "web-01");
                 assert_eq!(ttl, 15);
+                assert!(!client);
+            }
+            other => panic!("Expected Certmesh Invite, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_certmesh_invite_client_binds_role() {
+        let cli =
+            Cli::try_parse_from(["koi", "certmesh", "invite", "agent-7", "--client"]).unwrap();
+        match cli.command {
+            Some(Command::Certmesh(CertmeshCommand {
+                command:
+                    Some(CertmeshSubcommand::Invite {
+                        hostname, client, ..
+                    }),
+            })) => {
+                assert_eq!(hostname, "agent-7");
+                assert!(client, "--client must set the client-principal binding");
             }
             other => panic!("Expected Certmesh Invite, got: {other:?}"),
         }

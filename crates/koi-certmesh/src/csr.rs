@@ -388,6 +388,50 @@ mod tests {
     }
 
     #[test]
+    fn client_profile_refuses_server_auth_and_key_encipherment() {
+        // ADR-026 §3: a Client-role leaf authenticates its holder and nothing
+        // else — clientAuth EKU, digitalSignature KU; never ServerAuth, never
+        // keyEncipherment. A principal credential can never be presented as a
+        // service identity to proxies or browsers.
+        let ca = test_ca();
+        let (csr_pem, _key) = make_csr(&["principal-1.internal"]);
+        let leaf_pem = sign_csr_with_usage(
+            &ca,
+            &csr_pem,
+            &["principal-1.internal".to_string()],
+            30,
+            crate::ca::LeafUsage::Client,
+        )
+        .unwrap();
+        let der = pem::parse(&leaf_pem).unwrap();
+        let (_, cert) =
+            x509_parser::certificate::X509Certificate::from_der(der.contents()).unwrap();
+
+        let eku = cert
+            .extended_key_usage()
+            .unwrap()
+            .expect("ExtendedKeyUsage present");
+        assert!(
+            eku.value.client_auth,
+            "client-profile leaf must carry clientAuth"
+        );
+        assert!(
+            !eku.value.server_auth,
+            "client-profile leaf must NEVER carry serverAuth (ADR-026 §3)"
+        );
+
+        let ku = cert.key_usage().unwrap().expect("KeyUsage present");
+        assert!(
+            ku.value.digital_signature(),
+            "client KU must allow digitalSignature"
+        );
+        assert!(
+            !ku.value.key_encipherment(),
+            "client KU must NOT allow keyEncipherment (ADR-026 §3)"
+        );
+    }
+
+    #[test]
     fn requested_sans_extracts_cn_and_dns_sans() {
         // A CSR requesting an extra name surfaces both the CN and the SANs.
         let (csr_pem, _key) = make_csr(&["host-a.lan", "extra.lan"]);

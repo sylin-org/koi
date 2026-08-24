@@ -64,12 +64,16 @@ pub fn process_enrollment(
     //
     // The posture booleans (`enrollment_open` above, `requires_approval` at
     // step 5) gate both paths identically — the invite only swaps the credential.
+    let mut invited_role: Option<Option<String>> = None;
     if let Some(token) = request.invite_token.as_deref() {
-        if !crate::invite::verify_and_consume(&paths.invites_path(), token, hostname) {
+        match crate::invite::verify_and_consume_details(&paths.invites_path(), token, hostname) {
+            Some(bound_role) => invited_role = Some(bound_role),
             // verify_and_consume folds invalid / expired / reused / wrong-host into
-            // one fail-closed false, so a single event covers the token rejection.
-            audit_denied("enroll_token_invalid");
-            return Err(CertmeshError::InvalidAuth);
+            // one fail-closed None, so a single event covers the token rejection.
+            None => {
+                audit_denied("enroll_token_invalid");
+                return Err(CertmeshError::InvalidAuth);
+            }
         }
     } else {
         let auth = match request.auth.as_ref() {
@@ -118,8 +122,8 @@ pub fn process_enrollment(
     //     (wire-compatible with every pre-ADR-026 client). The first enrollee
     //     bootstraps the CA host and must be a host role.
     let requested_role = request.role.as_deref().map(str::to_ascii_lowercase);
-    let leaf_usage = match requested_role.as_deref() {
-        None | Some("member") => (crate::ca::LeafUsage::Host, "member"),
+    let requested_role_name: &str = match requested_role.as_deref() {
+        None | Some("member") => "member",
         Some("client") => {
             if roster.members.is_empty() {
                 audit_denied("enroll_client_profile_refused");
@@ -128,7 +132,7 @@ pub fn process_enrollment(
                         .to_string(),
                 ));
             }
-            (crate::ca::LeafUsage::Client, "client")
+            "client"
         }
         Some(other) => {
             audit_denied("enroll_client_profile_refused");
@@ -136,6 +140,22 @@ pub fn process_enrollment(
                 "unknown membership kind {other:?}; expected \"member\" or \"client\""
             )));
         }
+    };
+    // An operator-minted role-bound invite (ADR-026 §4) pins what this token may
+    // enroll as. The token was already burned at step 2 — a mismatched attempt
+    // spends it, so the refusal is fail-closed by construction.
+    if let Some(Some(bound)) = invited_role.as_ref() {
+        if requested_role_name != bound.as_str() {
+            audit_denied("enroll_role_mismatch");
+            return Err(CertmeshError::InvalidPayload(format!(
+                "this invite may only enroll a {bound:?} principal; the request asked for \
+                 {requested_role_name:?}"
+            )));
+        }
+    }
+    let leaf_usage = match requested_role_name {
+        "member" => crate::ca::LeafUsage::Host,
+        _ => crate::ca::LeafUsage::Client,
     };
 
     // 5. Approval handled by caller when required
@@ -159,7 +179,7 @@ pub fn process_enrollment(
     };
     // Leaf lifetime is the CA-held policy (ADR-017), not a hardcoded constant.
     let lifetime_days = roster.metadata.policy.leaf_lifetime_days;
-    let leaf_pem = crate::csr::sign_csr_with_usage(ca, csr_pem, sans, lifetime_days, leaf_usage.0)?;
+    let leaf_pem = crate::csr::sign_csr_with_usage(ca, csr_pem, sans, lifetime_days, leaf_usage)?;
 
     // Fingerprint + expiry derived from the issued leaf. The member persists its
     // own cert files locally; the CA records membership only (no cert_path here).
@@ -172,12 +192,16 @@ pub fn process_enrollment(
     let is_primary = roster.members.is_empty();
     let role = if is_primary {
         MemberRole::Primary
-    } else if leaf_usage.1 == "client" {
+    } else if requested_role_name == "client" {
         MemberRole::Client
     } else {
         MemberRole::Member
     };
-    let role_str = if is_primary { "primary" } else { leaf_usage.1 };
+    let role_str = if is_primary {
+        "primary"
+    } else {
+        requested_role_name
+    };
 
     let ca_fp = ca::ca_fingerprint(ca);
     let member = RosterMember {
@@ -199,11 +223,17 @@ pub fn process_enrollment(
     };
     roster.members.push(member);
 
-    // 9. Audit log
+    // 9. Audit log. `via` records the credential that admitted the join
+    // (ADR-026 §6 attribution: invite token vs interactive TOTP).
     let operator_str = approved_by
         .as_deref()
         .or(roster.metadata.operator.as_deref())
         .unwrap_or("self");
+    let via = if request.invite_token.is_some() {
+        "invite"
+    } else {
+        "totp"
+    };
     let _ = audit::append_entry_to(
         &paths.audit_log_path(),
         "member_joined",
@@ -212,6 +242,7 @@ pub fn process_enrollment(
             ("fingerprint", &fingerprint),
             ("role", role_str),
             ("approved_by", operator_str),
+            ("via", via),
         ],
     );
 
@@ -367,6 +398,77 @@ mod tests {
         );
 
         assert!(matches!(result, Err(CertmeshError::EnrollmentClosed)));
+    }
+
+    #[test]
+    fn role_bound_invite_refuses_mismatched_join_and_burns_the_token() {
+        // ADR-026 §4: an operator's `invite --client` may only enroll a client
+        // principal. A host join presenting that token is refused with a named
+        // payload error — and the single-use token is already spent.
+        let ca = make_test_ca();
+        let paths = unique_test_paths("role-mismatch");
+        let mut roster = Roster::new(JUST_ME.0, JUST_ME.1, None);
+
+        let minted =
+            crate::invite::mint_with_role(&paths.invites_path(), "agent-1", 60, Some("client"))
+                .unwrap();
+        let request = JoinRequest {
+            hostname: "agent-1".to_string(),
+            auth: None,
+            invite_token: Some(minted.token.clone()),
+            csr: None,
+            sans: vec![],
+            role: None, // defaults to "member" — mismatches the client binding
+        };
+
+        let result = process_enrollment(
+            &ca,
+            &mut roster,
+            None,
+            &AuthChallenge::Totp,
+            &mut RateLimiter::new(),
+            &request,
+            "agent-1",
+            &["agent-1".to_string()],
+            None,
+            &paths,
+        );
+        match result {
+            Err(CertmeshError::InvalidPayload(msg)) => {
+                assert!(
+                    msg.contains("may only enroll"),
+                    "refusal names the bound role: {msg}"
+                );
+            }
+            other => panic!("expected InvalidPayload role-mismatch refusal, got {other:?}"),
+        }
+
+        // Fail-closed by construction: the token was consumed at step 2, so even
+        // the CORRECT role cannot reuse it afterwards.
+        let retry = JoinRequest {
+            hostname: "agent-1".to_string(),
+            auth: None,
+            invite_token: Some(minted.token),
+            csr: None,
+            sans: vec![],
+            role: Some("client".to_string()),
+        };
+        let result = process_enrollment(
+            &ca,
+            &mut roster,
+            None,
+            &AuthChallenge::Totp,
+            &mut RateLimiter::new(),
+            &retry,
+            "agent-1",
+            &["agent-1".to_string()],
+            None,
+            &paths,
+        );
+        assert!(
+            matches!(result, Err(CertmeshError::InvalidAuth)),
+            "the burned token must not enroll anything afterwards"
+        );
     }
 
     #[test]

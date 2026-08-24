@@ -42,6 +42,10 @@ pub struct TrustPlaneConfig {
     /// HTTP port to advertise in the `_certmesh._tcp` discovery record, or `None`
     /// when HTTP is disabled (then no discovery record is published).
     pub announce_http_port: Option<u16>,
+    /// Mount `/v1/mcp` on the mTLS listener behind CN → roster principal
+    /// authorization (ADR-026 §5). Off when MCP is disabled entirely
+    /// (`--no-mcp-http`): one switch owns the tool surface, two transports.
+    pub mgmt_mcp: bool,
 }
 
 /// Spawn the posture-reactive trust-plane supervisor (no-op when certmesh is
@@ -59,6 +63,13 @@ pub fn spawn(
     };
     let dns = cores.dns.clone();
     let mdns = cores.mdns.clone();
+    // The management plane mounts the MCP tool surface on the mTLS listener
+    // (ADR-026 §5); it needs the full cores, captured once here.
+    let mgmt_mcp = cfg.mgmt_mcp.then(|| crate::mtls::MgmtMcp {
+        cores: cores.clone(),
+        started_at: std::time::Instant::now(),
+    });
+    let started_at = std::time::Instant::now();
 
     tasks.push(tokio::spawn(async move {
         let mut posture_rx = certmesh.watch_posture();
@@ -71,8 +82,16 @@ pub fn spawn(
             match (secure, live.is_some()) {
                 // CA appeared → bring the trust plane up.
                 (true, false) => {
-                    if let Some(started) =
-                        start_listeners(&certmesh, &dns, &mdns, &cfg, &cancel).await
+                    if let Some(started) = start_listeners(
+                        &certmesh,
+                        &dns,
+                        &mdns,
+                        &mgmt_mcp,
+                        &started_at,
+                        &cfg,
+                        &cancel,
+                    )
+                    .await
                     {
                         tracing::info!("trust-plane presence started (CA available)");
                         live = Some(started);
@@ -151,6 +170,8 @@ async fn start_listeners(
     certmesh: &Arc<koi_certmesh::CertmeshCore>,
     dns: &Option<Arc<koi_dns::DnsRuntime>>,
     mdns: &Option<Arc<koi_mdns::MdnsCore>>,
+    mgmt_mcp: &Option<crate::mtls::MgmtMcp>,
+    started_at: &std::time::Instant,
     cfg: &TrustPlaneConfig,
     parent_cancel: &CancellationToken,
 ) -> Option<Live> {
@@ -183,15 +204,22 @@ async fn start_listeners(
     let mut handles = Vec::new();
     let cert_watcher = spawn_cert_reload_watcher(resolver.clone(), token.clone());
 
-    // ── mTLS inter-node listener (always, when secure) ──
+    // ── mTLS inter-node + management listener (always, when secure) ──
     {
         let cm = certmesh.clone();
         let port = cfg.mtls_port;
         let token = token.clone();
         let resolver = resolver.clone();
         let ca_cert_pem = enrollment.ca_cert_pem.clone();
+        // Fresh per listener start: the MCP change pump binds to this attempt's
+        // child token, so teardown fully drains it.
+        let mgmt = mgmt_mcp.as_ref().map(|m| crate::mtls::MgmtMcp {
+            cores: m.cores.clone(),
+            started_at: *started_at,
+        });
         handles.push(tokio::spawn(async move {
-            if let Err(e) = crate::mtls::start(port, cm, resolver, &ca_cert_pem, token).await {
+            if let Err(e) = crate::mtls::start(port, cm, resolver, &ca_cert_pem, token, mgmt).await
+            {
                 tracing::error!(error = %e, "mTLS adapter failed");
             }
         }));

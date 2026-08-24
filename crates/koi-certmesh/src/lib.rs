@@ -30,6 +30,7 @@ mod issuance_names;
 pub mod lifecycle;
 pub mod member;
 pub mod mtls;
+pub mod principal;
 pub mod profiles;
 pub mod protocol;
 pub mod roster;

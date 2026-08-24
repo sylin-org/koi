@@ -144,6 +144,7 @@ pub fn serve(
             no_acme: cfg.no_acme,
             dns_zone: cfg.dns_zone.clone(),
             announce_http_port: (!cfg.no_http).then_some(cfg.http_port),
+            mgmt_mcp: !cfg.no_mcp_http,
         },
         cancel.clone(),
         tasks,

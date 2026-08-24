@@ -52,6 +52,7 @@ impl CertmeshCore {
         &self,
         hostname: &str,
         ttl_mins: i64,
+        role: Option<&str>,
     ) -> Result<protocol::InviteResponse, CertmeshError> {
         if !self.state.paths.is_ca_initialized() {
             return Err(CertmeshError::CaNotInitialized);
@@ -68,18 +69,24 @@ impl CertmeshCore {
             .await
             .ok_or(CertmeshError::CaNotInitialized)?;
 
-        let minted = invite::mint(&self.state.paths.invites_path(), hostname, ttl_mins)?;
+        let minted =
+            invite::mint_with_role(&self.state.paths.invites_path(), hostname, ttl_mins, role)?;
         let expires_at = minted.expires_at.to_rfc3339();
         // The operator-facing code carries the pinned CA fingerprint (F3) so the
         // joiner can preflight + pin before sending its CSR.
         let code = invite::encode_code(&minted.token, &ca_fingerprint);
 
+        let role_str = role.unwrap_or("any");
         let _ = audit::append_entry_to(
             &self.state.paths.audit_log_path(),
             "invite_minted",
-            &[("hostname", hostname), ("expires_at", &expires_at)],
+            &[
+                ("hostname", hostname),
+                ("expires_at", &expires_at),
+                ("role", role_str),
+            ],
         );
-        tracing::info!(hostname, "Enrollment invite minted");
+        tracing::info!(hostname, role = role_str, "Enrollment invite minted");
 
         Ok(protocol::InviteResponse {
             token: code,

@@ -132,9 +132,11 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         )
                         .await
                     }
-                    Some(CertmeshSubcommand::Invite { hostname, ttl }) => {
-                        commands::certmesh::invite(hostname, *ttl, cli.json, ep, tok)
-                    }
+                    Some(CertmeshSubcommand::Invite {
+                        hostname,
+                        ttl,
+                        client,
+                    }) => commands::certmesh::invite(hostname, *ttl, *client, cli.json, ep, tok),
                     Some(CertmeshSubcommand::Promote { ca_endpoint }) => {
                         // Local standby daemon resolved from the breadcrumb inside
                         // `promote`; the CA is `ca_endpoint` (or mDNS). See `Join`.

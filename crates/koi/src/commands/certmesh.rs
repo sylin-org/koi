@@ -835,19 +835,27 @@ pub async fn join(
 /// Delegates to the running daemon (`POST /v1/certmesh/invite`), which owns the
 /// certmesh data dir and writes the audit entry. The endpoint is DAT-gated, so
 /// this requires the local daemon token (operator-only).
+///
+/// With `client` set, the invite is role-bound to a client principal (ADR-026):
+/// the token may only enroll a non-serving principal whose leaf carries the
+/// clientAuth-only profile — never a serving host.
 pub fn invite(
     hostname: &str,
     ttl: i64,
+    client: bool,
     json: bool,
     endpoint: Option<&str>,
     token: Option<&str>,
 ) -> anyhow::Result<()> {
-    let client = require_daemon(endpoint, token)?;
-    let body = serde_json::json!({
+    let client_ = require_daemon(endpoint, token)?;
+    let mut body = serde_json::json!({
         "hostname": hostname,
         "ttl_mins": ttl,
     });
-    let resp = client.post_json("/v1/certmesh/invite", &body)?;
+    if client {
+        body["role"] = serde_json::json!("client");
+    }
+    let resp = client_.post_json("/v1/certmesh/invite", &body)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);

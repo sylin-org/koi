@@ -136,11 +136,15 @@ Be aware of the trade-offs in the current model:
   machine, don't run the daemon there. The audit log (`/v1/certmesh/log`) and the
   `/v1/udp/*` surface are the exception — they require the token even on loopback (see
   the carve-outs above), and the DNS zone / diagnose reads require it from a remote peer.
-- **The token authorizes writes, not identities.** There is one token per daemon —
-  no per-client accounts or scopes.
+- **The token authorizes writes, not identities — on loopback.** There is one token
+  per daemon and no per-caller scopes. Non-loopback callers can hold a *principal*
+  identity instead (ADR-026): an enrolled client-role certificate that names its holder,
+  is individually revocable, and authorizes at coarse grain (any active principal ≈
+  the token holder, minus human-only surfaces like invite minting).
 - **Certificate revocation is roster-level.** Revoking a member stops Koi-mediated
   renewal and enrollment; it does not invalidate the already-issued certificate for
-  TLS verifiers until its (90-day) expiry. There is no CRL/OCSP distribution.
+  TLS verifiers until its short-lived expiry (7 days by default, ADR-027). There is
+  no CRL/OCSP distribution.
 
 ## DNS rate limiting
 

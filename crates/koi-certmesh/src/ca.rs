@@ -109,22 +109,29 @@ pub enum LeafUsage {
 /// - `KeyUsage = digitalSignature, keyEncipherment`,
 /// - `ExtendedKeyUsage = serverAuth, clientAuth` (mesh peers act as both).
 ///
-/// Client principals (ADR-026) get the [`LeafUsage::Client`] variant:
-/// `ExtendedKeyUsage = clientAuth` only.
+/// Client principals (ADR-026 §3) get the [`LeafUsage::Client`] variant:
+/// `ExtendedKeyUsage = clientAuth` only and `KeyUsage = digitalSignature`
+/// — a principal credential authenticates; it neither serves TLS nor performs
+/// key establishment, so no ServerAuth EKU and no keyEncipherment is ever
+/// issued to it.
 pub(crate) fn apply_leaf_profile_for_usage(params: &mut CertificateParams, usage: LeafUsage) {
     params.is_ca = IsCa::ExplicitNoCa;
-    params.key_usages = vec![
-        KeyUsagePurpose::DigitalSignature,
-        KeyUsagePurpose::KeyEncipherment,
-    ];
-    params.extended_key_usages = match usage {
-        LeafUsage::Host => vec![
-            ExtendedKeyUsagePurpose::ServerAuth,
-            ExtendedKeyUsagePurpose::ClientAuth,
-        ],
-        // A principal credential authenticates; it never serves (ADR-026 §3).
-        LeafUsage::Client => vec![ExtendedKeyUsagePurpose::ClientAuth],
-    };
+    match usage {
+        LeafUsage::Host => {
+            params.key_usages = vec![
+                KeyUsagePurpose::DigitalSignature,
+                KeyUsagePurpose::KeyEncipherment,
+            ];
+            params.extended_key_usages = vec![
+                ExtendedKeyUsagePurpose::ServerAuth,
+                ExtendedKeyUsagePurpose::ClientAuth,
+            ];
+        }
+        LeafUsage::Client => {
+            params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+            params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        }
+    }
 }
 
 /// The host-role profile (every pre-ADR-026 issuance path).

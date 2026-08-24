@@ -273,6 +273,7 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
         .json(&InviteRequest {
             hostname: MEMBER.to_string(),
             ttl_mins: 60,
+            role: None,
         })
         .send()
         .await
@@ -294,6 +295,7 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
         .json(&InviteRequest {
             hostname: MEMBER.to_string(),
             ttl_mins: 60,
+            role: None,
         })
         .send()
         .await
@@ -433,6 +435,7 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
         .json(&InviteRequest {
             hostname: MEMBER.to_string(),
             ttl_mins: 60,
+            role: None,
         })
         .send()
         .await
@@ -646,5 +649,216 @@ async fn two_daemon_http_dashboard_and_mcp_surfaces_are_isolated_and_complete() 
     assert_aggregation_surface(&http, &b).await;
 
     drop(b);
+    drop(a);
+}
+
+// ── ADR-026 §5: principal identity over the mTLS management plane ───
+
+/// One raw HTTP/1.1 exchange over an established mTLS stream. Hand-rolled so the
+/// test adds zero dependencies: write head+body, read to EOF (`connection: close`),
+/// return `(status, body)`.
+async fn mtls_exchange<S>(
+    mut tls: S,
+    method: &str,
+    body: Option<&serde_json::Value>,
+) -> (u16, String)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let payload = body.map(|v| serde_json::to_string(v).unwrap());
+    let mut req = format!("{method} /v1/mcp HTTP/1.1\r\nHost: 127.0.0.1\r\naccept: application/json, text/event-stream\r\nconnection: close\r\n");
+    if let Some(p) = &payload {
+        req.push_str("content-type: application/json\r\n");
+        req.push_str(&format!("content-length: {}\r\n", p.len()));
+    }
+    req.push_str("\r\n");
+    tls.write_all(req.as_bytes()).await.expect("write request");
+    if let Some(p) = &payload {
+        tls.write_all(p.as_bytes()).await.expect("write body");
+    }
+    let mut buf = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(10), tls.read_to_end(&mut buf)).await;
+    let raw = String::from_utf8_lossy(&buf).to_string();
+    let status: u16 = raw
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let body = raw
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .unwrap_or_default();
+    (status, body)
+}
+
+/// Dial the management plane as `identity` (leaf+key) pinned to `ca_pem`.
+async fn mtls_dial(
+    port: u16,
+    identity_leaf: &str,
+    identity_key: &str,
+    ca_pem: &str,
+) -> impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin {
+    use rustls::pki_types::ServerName;
+    let config = koi_certmesh::mtls::build_client_config(identity_leaf, identity_key, ca_pem)
+        .expect("client tls config");
+    let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+    let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("dial mTLS listener");
+    connector
+        .connect(ServerName::try_from("127.0.0.1".to_string()).unwrap(), tcp)
+        .await
+        .expect("TLS handshake with mesh identity")
+}
+
+/// ADR-026 end-to-end over the REAL binary: a foreign caller generates its keypair
+/// locally, enrolls as a **client principal** over raw HTTP (role-bound invite),
+/// reaches `/v1/mcp` through the mTLS management plane, and loses access the moment
+/// it is revoked — while a client-bound invite refuses a host-role join.
+#[tokio::test]
+async fn client_principal_enrolls_reaches_mgmt_plane_and_revocation_closes_it() {
+    const PRINCIPAL: &str = "tier2-agent-7";
+    let client = reqwest::Client::new();
+    let a = spawn_daemon(true); // MCP enabled → the mgmt plane mounts on mTLS
+    let a_base = a.base();
+    wait_ready(&client, &a_base).await;
+    let a_tok = a.token();
+
+    let created = client
+        .post(format!("{a_base}/v1/certmesh/create"))
+        .header("x-koi-token", &a_tok)
+        .json(&CreateCaRequest {
+            passphrase: "tier2-pass".to_string(),
+            entropy_hex: "07".repeat(32),
+            operator: Some("ops".to_string()),
+            enrollment_open: true,
+            requires_approval: false,
+            auto_unlock: true,
+            totp_secret_hex: None,
+        })
+        .send()
+        .await
+        .expect("create");
+    assert!(created.status().is_success(), "create must succeed");
+    wait_tcp_up(a.mtls_port, "mTLS listener after create").await;
+
+    // The operator binds the invite to a client principal.
+    let invite_resp: InviteResponse = client
+        .post(format!("{a_base}/v1/certmesh/invite"))
+        .header("x-koi-token", &a_tok)
+        .json(&InviteRequest {
+            hostname: PRINCIPAL.to_string(),
+            ttl_mins: 60,
+            role: Some("client".to_string()),
+        })
+        .send()
+        .await
+        .expect("invite")
+        .json()
+        .await
+        .expect("invite json");
+
+    // Custody invariant (ADR-015 F1 / ADR-026 §4): the keypair is generated HERE;
+    // only the CSR crosses the wire.
+    let (key_pem, csr_pem) =
+        koi_certmesh::csr::generate_keypair_and_csr(PRINCIPAL, &[PRINCIPAL.to_string()])
+            .expect("local keygen + CSR");
+    let csr_pem_for_rejoin = csr_pem.clone();
+
+    let joined: JoinResponse = client
+        .post(format!("{a_base}/v1/certmesh/join"))
+        .json(&JoinRequest {
+            hostname: PRINCIPAL.to_string(),
+            auth: None,
+            invite_token: Some(invite_resp.token.clone()),
+            csr: Some(csr_pem),
+            sans: vec![PRINCIPAL.to_string()],
+            role: Some("client".to_string()),
+        })
+        .send()
+        .await
+        .expect("join")
+        .json()
+        .await
+        .expect("join json");
+    assert!(
+        joined.service_key.is_empty(),
+        "the CA must never ship a private key — custody stays with the caller"
+    );
+
+    // A host-role join presenting that SAME (already burned) client invite is
+    // refused — and after the burn, even the correct role cannot reuse it, which
+    // this second assertion subsumes via the token-invalid path.
+    let host_join = client
+        .post(format!("{a_base}/v1/certmesh/join"))
+        .json(&JoinRequest {
+            hostname: PRINCIPAL.to_string(),
+            auth: None,
+            invite_token: Some(invite_resp.token.clone()),
+            csr: Some(csr_pem_for_rejoin),
+            sans: vec![PRINCIPAL.to_string()],
+            role: None, // defaults to member/host
+        })
+        .send()
+        .await
+        .expect("rejoin attempt");
+    assert_ne!(
+        host_join.status().as_u16(),
+        200,
+        "the spent client-bound invite must not admit anything"
+    );
+
+    // ── Healthy principal reaches /v1/mcp through the mTLS management plane ──
+    let session = mtls_dial(a.mtls_port, &joined.service_cert, &key_pem, &joined.ca_cert).await;
+    let (status, body) = mtls_exchange(
+        session,
+        "POST",
+        Some(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "principal-probe", "version": "0.0.0" }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "an active principal must pass CN→roster authorization and reach the MCP layer; body: {body}"
+    );
+    assert!(
+        !body.contains("scope_violation"),
+        "the healthy principal must never see an authorization rejection"
+    );
+
+    // ── Revocation closes the door immediately (named reason) ──
+    let revoked = client
+        .post(format!("{a_base}/v1/certmesh/revoke"))
+        .header("x-koi-token", &a_tok)
+        .json(&RevokeRequest {
+            hostname: PRINCIPAL.to_string(),
+            reason: Some("principal lifecycle proof".into()),
+            operator: Some("ops".into()),
+        })
+        .send()
+        .await
+        .expect("revoke");
+    assert!(revoked.status().is_success(), "revoke must succeed");
+
+    let session = mtls_dial(a.mtls_port, &joined.service_cert, &key_pem, &joined.ca_cert).await;
+    let (status, body) = mtls_exchange(session, "GET", None).await;
+    assert_eq!(
+        status, 403,
+        "the revoked principal must be refused at the management plane"
+    );
+    assert!(
+        body.contains("revoked"),
+        "the rejection must name its reason (ADR-020 vocabulary), got: {body}"
+    );
+
     drop(a);
 }

@@ -559,7 +559,7 @@ async fn member_pull_renewal_round_trip() {
         .await
         .expect("member CSR");
     let invite = ca_core
-        .mint_invite("renew-host", 60)
+        .mint_invite("renew-host", 60, None)
         .await
         .expect("invite")
         .token;
@@ -680,7 +680,11 @@ async fn trust_bundle_pull_round_trip() {
     let ca_core = CertmeshCore::new_with_paths(ca_state, roster, Some(auth), ca_paths.clone());
     let (_k, csr) =
         csr::generate_keypair_and_csr("bundle-host", &["bundle-host".to_string()]).unwrap();
-    let invite = ca_core.mint_invite("bundle-host", 60).await.unwrap().token;
+    let invite = ca_core
+        .mint_invite("bundle-host", 60, None)
+        .await
+        .unwrap()
+        .token;
     ca_core
         .enroll(&protocol::JoinRequest {
             hostname: "bundle-host".to_string(),
@@ -781,7 +785,7 @@ async fn trust_bundle_applies_cross_member_revocation() {
     let ca_core = CertmeshCore::new_with_paths(ca_state, roster, Some(auth), ca_paths.clone());
     for host in ["m-host", "p-host"] {
         let (_k, csr) = csr::generate_keypair_and_csr(host, &[host.to_string()]).unwrap();
-        let invite = ca_core.mint_invite(host, 60).await.unwrap().token;
+        let invite = ca_core.mint_invite(host, 60, None).await.unwrap().token;
         ca_core
             .enroll(&protocol::JoinRequest {
                 hostname: host.to_string(),
@@ -1073,7 +1077,7 @@ async fn install_member_cert_rejects_pin_mismatch() {
         .prepare_member_csr("pin-host", &["pin-host".to_string()])
         .await
         .unwrap();
-    let invite = ca_core.mint_invite("pin-host", 60).await.unwrap();
+    let invite = ca_core.mint_invite("pin-host", 60, None).await.unwrap();
     // The invite code embeds the real CA fingerprint (F3).
     let (secret, real_fp) = invite::decode_code(&invite.token);
     let real_fp = real_fp
@@ -1172,7 +1176,7 @@ async fn refused_rejoin_cannot_replace_active_member_identity() {
         .prepare_member_csr("custody-host", &sans)
         .await
         .unwrap();
-    let invite = ca_core.mint_invite("custody-host", 60).await.unwrap();
+    let invite = ca_core.mint_invite("custody-host", 60, None).await.unwrap();
     let join = ca_core
         .enroll(&protocol::JoinRequest {
             hostname: "custody-host".to_string(),
@@ -1262,7 +1266,7 @@ async fn pull_trust_bundle_self_heals_ca_anchor() {
         .prepare_member_csr("heal-host", &["heal-host".to_string()])
         .await
         .unwrap();
-    let invite = ca_core.mint_invite("heal-host", 60).await.unwrap();
+    let invite = ca_core.mint_invite("heal-host", 60, None).await.unwrap();
     let (secret, fp) = invite::decode_code(&invite.token);
     let pin = fp.unwrap().to_string();
     let join = ca_core

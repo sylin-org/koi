@@ -176,7 +176,7 @@ async fn whole_story_join_renew_revoke_over_http_and_mtls() {
 
     // Step 2: mint a host-bound invite (`<secret>.<ca_fp>`).
     let invite_code = a_core
-        .mint_invite(host, 60)
+        .mint_invite(host, 60, None)
         .await
         .expect("mint invite")
         .token;
@@ -492,7 +492,7 @@ async fn wrong_fingerprint_invite_aborts_at_preflight() {
     create_ca(&a_core).await;
 
     // A genuine invite pins A's real fingerprint; a forged invite carries an attacker's.
-    let real_code = a_core.mint_invite(host, 60).await.unwrap().token;
+    let real_code = a_core.mint_invite(host, 60, None).await.unwrap().token;
     let (secret, real_fp) = invite::decode_code(&real_code);
     let real_fp = real_fp.unwrap().to_string();
     let forged_fp = "0".repeat(64);

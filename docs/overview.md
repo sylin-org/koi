@@ -140,9 +140,10 @@ Koi is honest about its edges. Reach for something else when:
   application-level routing. Keep Tailscale, WireGuard, Cilium, or a service mesh for
   those responsibilities and integrate Koi where local discovery, identity, or naming
   is useful.
-- **You need enterprise PKI or DNS at scale.** One token per daemon, one CA, no per-client
-  accounts or scopes. For org-wide identity, RBAC, and large authoritative DNS, use the
-  tools built for that.
+- **You need enterprise PKI or DNS at scale.** One token per daemon, one CA. Koi gives
+  every non-human caller a named, individually revocable identity (ADR-026 principals)
+  but still no per-caller scopes or RBAC — for org-wide identity policy and large
+  authoritative DNS, use the tools built for that.
 - **The host is untrusted or multi-tenant.** Koi treats every local process as a trusted
   reader and assumes the machine owner runs it. It does not defend against a hostile
   process already running as your user, or against other tenants on a shared box.

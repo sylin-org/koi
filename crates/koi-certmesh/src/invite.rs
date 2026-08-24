@@ -73,6 +73,11 @@ struct Invite {
     expires_at: DateTime<Utc>,
     #[serde(default)]
     used: bool,
+    /// Membership kind this invite may enroll as (ADR-026 §4): `"member"` or
+    /// `"client"`. `None` = unbound (any host role). Older stores without the
+    /// field deserialize as unbound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
 }
 
 fn token_hash(token: &str) -> String {
@@ -123,6 +128,30 @@ pub struct MintedInvite {
 /// The plaintext is returned exactly once (for the operator to copy); only its
 /// hash is persisted. Expired/used entries are pruned opportunistically.
 pub fn mint(path: &Path, hostname: &str, ttl_mins: i64) -> Result<MintedInvite, CertmeshError> {
+    mint_with_role(path, hostname, ttl_mins, None)
+}
+
+/// Mint a role-bound invite (ADR-026 §4): `Some("member"|"client")` restricts
+/// what the token may enroll as; `None` leaves it unbound (any host role).
+///
+/// An unknown role is rejected loudly at mint time — never persisted to be
+/// silently treated as unbound later.
+pub fn mint_with_role(
+    path: &Path,
+    hostname: &str,
+    ttl_mins: i64,
+    role: Option<&str>,
+) -> Result<MintedInvite, CertmeshError> {
+    let bound_role = role.map(|r| r.to_ascii_lowercase());
+    match bound_role.as_deref() {
+        None | Some("member") | Some("client") => {}
+        Some(other) => {
+            return Err(CertmeshError::InvalidPayload(format!(
+                "unknown invite role {other:?}; expected \"member\" or \"client\""
+            )))
+        }
+    }
+
     let mut buf = [0u8; TOKEN_BYTES];
     rand::rng().fill_bytes(&mut buf);
     let token = koi_common::encoding::hex_encode(&buf);
@@ -142,15 +171,21 @@ pub fn mint(path: &Path, hostname: &str, ttl_mins: i64) -> Result<MintedInvite, 
         token_hash: token_hash(&token),
         expires_at,
         used: false,
+        role: bound_role,
     });
     save(path, &store)?;
     Ok(MintedInvite { token, expires_at })
 }
 
-/// Verify `token` for `hostname` and burn it. Returns `true` iff a matching,
-/// unexpired, unused invite existed and was just consumed. Fail-closed: any
-/// I/O or parse error yields `false`.
-pub fn verify_and_consume(path: &Path, token: &str, hostname: &str) -> bool {
+/// Verify `token` for `hostname` and burn it. Returns the consumed invite's
+/// bound role on success (`None` inside = unbound — any host role), or `None`
+/// overall when no matching, unexpired, unused invite existed. Fail-closed: any
+/// I/O or parse error yields `None`.
+pub fn verify_and_consume_details(
+    path: &Path,
+    token: &str,
+    hostname: &str,
+) -> Option<Option<String>> {
     // Accept either the bare secret or the full F3 code (`<secret>.<fp>`): the CA
     // only ever hashes + consumes the secret half; the fingerprint is a
     // client-side pinning hint the CA does not need.
@@ -167,10 +202,20 @@ pub fn verify_and_consume(path: &Path, token: &str, hostname: &str) -> bool {
     match pos {
         Some(idx) => {
             store.invites[idx].used = true;
-            save(path, &store).is_ok()
+            match save(path, &store) {
+                Ok(()) => Some(store.invites[idx].role.clone()),
+                Err(_) => None,
+            }
         }
-        None => false,
+        None => None,
     }
+}
+
+/// Verify `token` for `hostname` and burn it. Returns `true` iff a matching,
+/// unexpired, unused invite existed and was just consumed. Fail-closed: any
+/// I/O or parse error yields `false`.
+pub fn verify_and_consume(path: &Path, token: &str, hostname: &str) -> bool {
+    verify_and_consume_details(path, token, hostname).is_some()
 }
 
 #[cfg(test)]
@@ -266,6 +311,65 @@ mod tests {
         assert!(
             !verify_and_consume(&p, &secret, "host-a"),
             "single-use: the underlying secret is already burned"
+        );
+    }
+
+    // ── Role-bound invites (ADR-026 §4) ──────────────────────────────
+
+    #[test]
+    fn role_bound_invite_survives_the_store_roundtrip() {
+        let p = store_path("role-bound");
+        let token = mint_with_role(&p, "agent-1", 60, Some("client"))
+            .unwrap()
+            .token;
+        assert_eq!(
+            verify_and_consume_details(&p, &token, "agent-1"),
+            Some(Some("client".to_string())),
+            "the consumed invite reports its client binding"
+        );
+    }
+
+    #[test]
+    fn unbound_invite_reports_no_binding() {
+        // Legacy mints (no role argument) and explicit None behave identically:
+        // the token may enroll any host role.
+        let p = store_path("unbound-legacy");
+        let legacy = mint(&p, "host-a", 60).unwrap().token;
+        assert_eq!(
+            verify_and_consume_details(&p, &legacy, "host-a"),
+            Some(None)
+        );
+
+        let p2 = store_path("unbound-explicit");
+        let explicit = mint_with_role(&p2, "host-b", 60, None).unwrap().token;
+        assert_eq!(
+            verify_and_consume_details(&p2, &explicit, "host-b"),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn mint_rejects_unknown_roles_loudly() {
+        let p = store_path("bad-role");
+        let err = mint_with_role(&p, "host-a", 60, Some("admin")).unwrap_err();
+        assert!(
+            err.to_string().contains("\"member\" or \"client\""),
+            "unknown roles fail at mint time with named expectations: {err}"
+        );
+        // Nothing was persisted — a failed mint cannot leave an invite behind.
+        assert!(load(&p).invites.is_empty());
+    }
+
+    #[test]
+    fn mint_normalizes_role_case() {
+        // A hand-written JSON body might not use lowercase for the role.
+        let p = store_path("role-case");
+        let token = mint_with_role(&p, "agent-9", 60, Some("CLIENT"))
+            .unwrap()
+            .token;
+        assert_eq!(
+            verify_and_consume_details(&p, &token, "agent-9"),
+            Some(Some("client".to_string()))
         );
     }
 }

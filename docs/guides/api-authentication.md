@@ -189,10 +189,14 @@ token yourself:
 koi --endpoint http://node-01:5641 --token "$REMOTE_TOKEN" dns list
 ```
 
-There are no per-client accounts or scopes: one token per daemon authorizes all
-writes to that daemon. Treat it as a machine-wide secret. For the rest of the model —
-CORS, what `GET` does *not* protect, certificate revocation, and the LAN threat model —
-see the [security model](../reference/security-model.md). For the full endpoint
-catalog, see the [HTTP API reference](../reference/http-api.md), and to browse and try
-calls interactively, open `GET /docs` on a running daemon. Back to the
+There are no per-client scopes: one token per daemon authorizes all writes to that
+daemon. Treat it as a machine-wide secret. Remote callers that need *identity* rather
+than a shared bearer token enroll as principals (ADR-026) — a named client-role
+certificate, individually revocable, authorized by CN on the mTLS management plane.
+For the rest of the model — CORS, what `GET` does *not* protect, certificate
+revocation, and the LAN threat model — see the
+[security model](../reference/security-model.md). For the full endpoint catalog, see
+the [HTTP API reference](../reference/http-api.md), and to browse and try calls
+interactively, open `GET /docs` on a running daemon. Back to the
 [guides index](../index.md).
+
