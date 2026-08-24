@@ -38,7 +38,7 @@ const TEST_PORTS: &[u16] = &[5641, 5642, 5643];
 const MAX_CLOCK_SKEW_SECONDS: i64 = 5;
 
 pub struct Lab {
-    repo_root: PathBuf,
+    pub(crate) repo_root: PathBuf,
     config: LabConfig,
     transport: PuttyTransport,
 }
@@ -3542,7 +3542,7 @@ pub(crate) fn require_system_mutation(allow_system_mutation: bool) -> Result<()>
     Ok(())
 }
 
-fn ensure_windows_elevated() -> Result<()> {
+pub fn ensure_windows_elevated() -> Result<()> {
     #[cfg(windows)]
     {
         let status = Command::new("net.exe")

@@ -18,8 +18,8 @@
       "dns_port": 18553,
       "fixture_port": 18554,
       "container_port": 18555,
-      "roles": ["principal", "sdk-caller"],
-      "mutations": [],
+      "roles": ["principal", "sdk-caller", "member"],
+"mutations": ["scm"],
       "privilege": "workstation"
     },
     {

@@ -729,6 +729,16 @@ pub struct MgmtPrincipalReport {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct ServiceLifecycleWindowsReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub artifact_sha256: String,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct ServiceLifecycleReport {
     pub schema: u32,
     pub run_id: RunId,
@@ -843,6 +853,7 @@ impl_evidence_report!(
     RuntimeReconnectReport,
     WebhookFanoutReport,
     MgmtPrincipalReport,
+    ServiceLifecycleWindowsReport,
     ServiceLifecycleReport,
     BoundedSoakReport,
     ProfileReport,

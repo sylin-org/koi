@@ -11,6 +11,7 @@ mod profile_journal;
 mod putty;
 mod runtime_reconnect;
 mod service_lifecycle;
+mod service_lifecycle_windows;
 mod soak;
 mod story;
 mod webhook_fanout;
@@ -121,6 +122,13 @@ enum LabCommand {
         /// probe (stages the identity and dials the management plane).
         #[arg(long)]
         probe: Option<String>,
+    },
+    /// Prove SCM service supervision on this Windows workstation (ADR-032 W1).
+    ServiceLifecycleWindows {
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        allow_system_mutation: bool,
     },
     /// List every two-role assignment the catalog planner generates.
     Pairings {
@@ -258,6 +266,14 @@ fn main() -> Result<()> {
                 primary.as_deref(),
                 probe.as_deref(),
             )?)?;
+        }
+        LabCommand::ServiceLifecycleWindows {
+            run_id,
+            allow_system_mutation,
+        } => {
+            print_json(
+                &lab.service_lifecycle_windows(&RunId::parse(&run_id)?, allow_system_mutation)?,
+            )?;
         }
         LabCommand::Pairings {
             primary_role,
