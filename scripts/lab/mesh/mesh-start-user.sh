@@ -15,6 +15,7 @@ if [ -f "$RUNTIME_DIR/daemon.pid" ]; then
   exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)
   case "$exe" in
     "$ROOT"/koi) kill "$pid" 2>/dev/null || true;;
+    "") ;;  # stale pidfile: the owner died (e.g. reboot); nothing to kill
     *) echo "REFUSED_WRONG_EXE: $exe"; exit 75;;
   esac
   i=0; while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i+1)); done

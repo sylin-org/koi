@@ -39,3 +39,6 @@ Desktop.ini
 
 # Debug
 *.pdb
+
+# Local working memory (never committed)
+/local/
