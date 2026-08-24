@@ -268,6 +268,17 @@ impl Builder {
         self
     }
 
+    /// Deliver every domain event as an HMAC-signed HTTP POST to these sinks
+    /// (ADR-028) — programmatic parity with the daemon's `--webhooks` manifest,
+    /// sharing the exact delivery engine from [`koi_compose::webhook`]. Sinks ride
+    /// the same merged event stream as the dashboard, so they require
+    /// [`dashboard`](Self::dashboard) **and** [`http`](Self::http) enabled;
+    /// otherwise a configured sink logs one loud warning and stays inert.
+    pub fn webhooks(mut self, sinks: Vec<koi_compose::webhook::WebhookSink>) -> Self {
+        self.config.webhooks = sinks;
+        self
+    }
+
     pub fn events<F>(mut self, handler: F) -> Self
     where
         F: Fn(KoiEvent) + Send + Sync + 'static,
@@ -442,6 +453,10 @@ impl KoiEmbedded {
             });
 
             let (dash_event_tx, _) = broadcast::channel(256);
+            // Webhook workers must subscribe before any event can flow: the tap
+            // clones the sender here, and `spawn_webhook_fanout` subscribes its
+            // receivers synchronously — before either spawned task is first polled.
+            let webhook_event_tx = dash_event_tx.clone();
             let ds = koi_dashboard::dashboard::DashboardState {
                 identity: koi_dashboard::dashboard::DashboardIdentity {
                     version: env!("CARGO_PKG_VERSION").to_string(),
@@ -468,8 +483,30 @@ impl KoiEmbedded {
                 cancel.clone(),
             ));
 
+            // ── Outbound webhook fan-out (ADR-028): same tap, same engine as the
+            // daemon's serve() path — one subscription per enabled sink on this
+            // merged stream, diagnostics delivered back onto it.
+            if !self.config.webhooks.is_empty() {
+                tasks.extend(koi_compose::webhook::spawn_webhook_fanout(
+                    &webhook_event_tx,
+                    self.config.webhooks.clone(),
+                    koi_compose::webhook::WebhookProvenance::local(
+                        self.config.dns_config.zone.clone(),
+                    ),
+                    Some(webhook_event_tx.clone()),
+                    cancel.clone(),
+                ));
+            }
+
             Some(ds)
         } else {
+            if !self.config.webhooks.is_empty() {
+                tracing::warn!(
+                    sinks = self.config.webhooks.len(),
+                    "webhook sinks configured but the dashboard event stream is off \
+                     (dashboard+http disabled) — fan-out is inert"
+                );
+            }
             None
         };
 
@@ -529,7 +566,7 @@ impl KoiEmbedded {
                 auth: self.config.http_token.clone(),
                 mdns_snapshot: mdns_bridge.clone(),
                 mcp_http: false,
-                webhooks: Vec::new(),
+                webhooks: self.config.webhooks.clone(),
                 admin_shutdown: false,
                 api_docs: self.config.api_docs_enabled,
                 daemon: false,

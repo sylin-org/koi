@@ -7,9 +7,9 @@ status: current
 last_updated: 2026-08-23
 koi_version: v1.0.0-rc.1
 validation:
-  date_last_tested: 2026-08-23
+  date_last_tested: 2026-08-24
   status: verified
-  scope: "compose unit suite (envelope/redaction/backoff/manifest), real-TCP integration tests (exact headers, retry-after-failure, disabled-sink isolation), and koi-lab webhook-fanout physical runs v1-20260823T234022Z-ae31ed73 forward (45 deliveries) + reverse (41) — every delivery HMAC-verified at receive on the peer node over the real LAN."
+  scope: "compose unit suite (envelope/redaction/backoff/manifest), real-TCP integration tests (exact headers, retry-after-failure, disabled-sink isolation), embedded parity test (configured sink receives a signed dns.updated over real TCP + /v1/status reports it), and koi-lab webhook-fanout physical runs v1-20260823T234022Z-ae31ed73 forward (45 deliveries) + reverse (41) — every delivery HMAC-verified at receive on the peer node over the real LAN."
 ---
 
 # Webhook events — your LAN talks to your tools
@@ -63,13 +63,36 @@ assert hmac.compare_digest(expected, headers["x-koi-signature"])
 starts with fan-out disabled — matching the mDNS-init precedent (additive transport, never a
 boot blocker).
 
+## Embedding Koi
+
+An embedded instance takes sinks programmatically — same engine, same wire contract, no
+manifest file:
+
+```rust
+use koi_compose::webhook::WebhookSink;
+
+let handle = koi_embedded::Builder::new()
+    .http(true)
+    .http_port(0)
+    .dashboard(true)
+    .webhooks(vec![WebhookSink {
+        url: "https://notify.internal/koi".into(),
+        secret: "<long random string>".into(),
+        enabled: true,
+    }])
+    .build()?
+    .start()
+    .await?;
+```
+
+Sinks ride the merged event stream, so the instance needs `dashboard` **and** `http`
+enabled; otherwise the sink logs one loud warning and stays inert.
+
 ## The escape hatch / limits
 
 Best-effort means best-effort: no durable queue, no redelivery after process exit, no
 transforms or per-event rules — consumers own logic. The certmesh append-only audit log is
-**not** event-bus traffic and cannot leak through a sink. Embedded (`koi-embedded`) wiring
-is pending (see ADR-028 D1); today fan-out rides `koi_serve::serve()` paths (daemon +
-Windows service).
+**not** event-bus traffic and cannot leak through a sink.
 
 ## The proof it works
 

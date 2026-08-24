@@ -1,7 +1,7 @@
 # Koi Epic to v1 — canonical continuation ledger
 
-**Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; ADR-026/027/028 operator-ratified; **V1-10 webhooks implemented + physically green both rotations** (card/SURFACES/profile done); **V1-09 short-lived defaults implemented + physically green both rotations** (diagnosis semantics fixed per D9); V1-08 and V1-11 next
-**Last updated:** 2026-08-23
+**Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; ADR-026/027/028 operator-ratified; **V1-10 webhooks COMPLETE** (embedded parity closed 2026-08-24 per D10; card/SURFACES/profile done); **V1-09 short-lived defaults implemented + physically green both rotations** (diagnosis semantics fixed per D9); V1-08 and V1-11 next
+**Last updated:** 2026-08-24
 **Resume phrase:** `continue the epic to v1`
 
 This is the repository's canonical handoff and progress ledger for the v1 epic. The plan is a
@@ -617,6 +617,15 @@ evidence rather than a one-off demo.
   events and Red-at-expiry. Unit test replaced:
   `renewal_due_soon_is_a_warning_not_a_failure` →
   `scheduled_renewal_window_is_healthy_not_degraded`.
+- **D10 — embedded parity closed programmatically (2026-08-24):** `serve_adaptive` itself
+  is only a connection dispatcher and owns no event stream, so "wire koi-embedded
+  identically" resolves to the instance's `start()`: `KoiConfig.webhooks` (default empty)
+  feeds the same `spawn_webhook_fanout` engine next to the shared event forwarder, with
+  `/v1/status` reporting parity via `HttpConfig.webhooks`. Sinks ride the dashboard event
+  stream, so they require `dashboard_enabled && http_enabled`; configured sinks without
+  that stream log one loud warning and stay inert. Proven by
+  `crates/koi-embedded/tests/webhook_embedded.rs`: a configured sink receives a signed
+  `dns.updated` over real TCP and `/v1/status` reports `{enabled:true, sinks:1}`.
 - **V1-10 doc closure:** capability card `docs/reference/cards/webhook-events.md`
   (verified, physical runs cited) + cards index + SURFACES row + full-profile membership
   (`WebhookFanout` forward/reverse inserted after reconnect; profile policy test updated to
@@ -652,7 +661,7 @@ evidence rather than a one-off demo.
 | V1-07 | Adoption/public-surface polish backed by proved behavior | **in progress — identity, publication foundation, and RC-channel policy locally complete** | ADR-024 canonizes “Let everything local find, trust, and talk” plus Find/Trust/Connect; ADR-025 establishes one attested artifact contract, no-build cargo-binstall metadata, tested npx bootstrap, gated OIDC publication, and one stable/prerelease evaluator. RCs cannot advance stable GitHub/GHCR/npm defaults; tag identity and exact crates.io propagation fail closed. Hosted RC dry run, registry activation, native-manager channels, evidence-gated compatibility claims and golden demo remain. |
 | V1-08 | Principal identity for non-human callers (ADR-026) | **proposed — ADR drafted 2026-08-23, not ratified/implemented** | Acceptance: ClientAuth-only leaf profile variant refuses ServerAuth for Client role; client-role enrollment over raw HTTP with local CSR custody; mTLS management authorization rejects unknown/expired/revoked CNs with named reasons while an active principal reaches `/v1/mcp`; audit entries carry actor attribution; two-daemon integration + physical third-participant lane green; SURFACES row. |
 | V1-09 | Short-lived leaves as default posture (ADR-027) | **in progress — implemented; unit + physical lifecycle green both Linux rotations 2026-08-24** | Defaults 7/3/1 live in `CertPolicy::default`, `ca::DEFAULT_LEAF_LIFETIME_DAYS`, `csr::DEFAULT_CSR_VALIDITY_DAYS`; oracle test `default_policy_is_the_adr_027_short_lived_posture` pins them. Three tests re-oracled to the 7-day schedule (ca round-trip, self-enroll identity, invite enrollment). **Hardware found a real defect**: `diagnosis.rs` warned "leaf expires soon" from a hardcoded 7-day constant sized for 90-day leaves — every healthy leaf would have been permanently Degraded (deviation D9). Fixed: in-scheduled-window is Ok; Warn reserved for anomalies; expired stays Red. Overview revocation bullet synced to the ≤8-day bound. Physical `certmesh-lifecycle` green forward run `v1-20260824T004010Z-ca93a718` and reverse run `v1-20260824T004259Z-acd1d6ca` (join/custody/SANs/key-rotating renewal/restart/revocation→RED), musl SHA-256 `0c7de764a824e4b025489f4868461a0e9ad06eeb6f3513e1e8fca25a6880fbc1`; exact cleanup + baseline restored (Brook not-found, Granite active/enabled koi 0.7.0). Owed: soak-lane re-run at the new cadence; long-haul posture documented in the certmesh capability card. |
-| V1-10 | Outbound webhook fan-out (ADR-028) | **in progress — engine implemented; local suites + physical cross-host green both Linux rotations 2026-08-23** | Local: 7 unit tests (RFC 4231 HMAC vector, redaction guard) + 3 real-TCP integration tests (exact headers/envelope, retry-after-500 with identical id/body, disabled-sink isolation); fmt/clippy/test green across crypto/compose/serve/binary/embedded. Physical (`webhook-fanout`, new koi-lab scenario): forward run brook→granite captured **45 deliveries**, reverse granite→brook **41**, every delivery HMAC-valid at receive time, envelope v=1 shape-correct, types observed `dns.updated/dns.txt_updated/mdns.found/mdns.resolved`, daemon healthy throughout, exact cleanup green, final preflight preserved Brook not-found and Granite's active/enabled koi 0.7.0 service. Musl artifact SHA-256 `db952c768413091c412a4048d7d6d2278633f7397f9a665e66392c89baab6719`. Hardware caught a real CLI defect (clap derived `--webhooks-manifest`; lab passes `--webhooks`) — fixed with explicit long name. Owed: capability card, SURFACES row, embedded (`serve_adaptive`) wiring decision, profile membership, Windows lane n/a (fan-out is node-side). Deviations D1–D6 below. |
+| V1-10 | Outbound webhook fan-out (ADR-028) | **complete — engine + embedded parity + docs; local suites + physical cross-host green both Linux rotations 2026-08-23/24** | Local: 7 unit tests (RFC 4231 HMAC vector, redaction guard) + 3 real-TCP integration tests (exact headers/envelope, retry-after-500 with identical id/body, disabled-sink isolation) + embedded parity test (`webhook_embedded.rs`: signed `dns.updated` delivered to a configured sink over real TCP, `/v1/status` reports it); fmt/clippy/test green across crypto/compose/serve/embedded/binary. Physical (`webhook-fanout`, new koi-lab scenario): forward run brook→granite captured **45 deliveries**, reverse granite→brook **41**, every delivery HMAC-valid at receive time, envelope v=1 shape-correct, types observed `dns.updated/dns.txt_updated/mdns.found/mdns.resolved`, daemon healthy throughout, exact cleanup green, final preflight preserved Brook not-found and Granite's active/enabled koi 0.7.0 service. Musl artifact SHA-256 `db952c768413091c412a4048d7d6d2278633f7397f9a665e66392c89baab6719`. Hardware caught a real CLI defect (clap derived `--webhooks-manifest`; lab passes `--webhooks`) — fixed with explicit long name. Deviations D1–D6 below; D1's owed embedded wiring closed per D10 on 2026-08-24. |
 | V1-11 | Standard seed + SDK betas | **proposed — scope ratified 2026-08-23, design pending** | Acceptance: language-neutral trust/Agent-Door spec page in `docs/reference/` with pinned test vectors (Posture/Envelope/Sealed/handshake per STACK-0001 D7) executable against the Rust implementation; TypeScript + Python beta packages driving enroll/status/events/MCP discovery over the frozen HTTP API, published only after stable 1.0.0 ships (external authority still required). |
 
 ## Deferred to 1.1 (consciously, 2026-08-23)
@@ -696,10 +705,13 @@ releases; soak is scheduled or explicitly invoked.
 
 ## Resume here
 
-1. Ratify ADR-026/027/028 (operator decision pending), then implement in risk order:
-   V1-10 webhooks → V1-09 short-lived defaults → V1-08 principal identity → V1-11 vectors/SDKs.
-   Each lands with its full pipeline: implementation behind runtime tunables, capability card,
-   SURFACES row, lab lane, and the complete local gate (`fmt`, all-feature clippy `-D warnings`,
+1. ~~Ratify ADR-026/027/028; implement V1-10 webhooks~~ (done — V1-10 complete
+   2026-08-24, V1-09 implemented + physically green). **Next: implement V1-08 principal
+   identity (ADR-026)** — the protocol/CA chokepoint groundwork (`LeafUsage`,
+   `JoinRequest.role`, client-profile refusal for the first enrollee) is already landed;
+   remaining: client-role CSR/enrollment CLI path, mTLS management-plane CN
+   authorization, actor-attributed audit entries, two-daemon + physical lanes, SURFACES
+   row. Each landing keeps its full local gate (`fmt`, all-feature clippy `-D warnings`,
    locked workspace tests, audit).
 2. After V1-08..V1-11 land: re-prep the release version, hosted Release dry run, then — only
    with explicit external-publication authority — tag/publish `1.0.0-rc.1`.

@@ -46,6 +46,12 @@ pub struct KoiConfig {
     /// `x-koi-token` header on every mutation (parity with the daemon); `None` leaves
     /// mutations unauthenticated — safe only behind the loopback bind that is the default.
     pub http_token: Option<String>,
+    /// Outbound webhook sinks (ADR-028). Empty (default) = fan-out off. Sinks are
+    /// programmatic here — an embedder supplies [`koi_compose::webhook::WebhookSink`]s
+    /// directly instead of a manifest path. They ride the same merged event stream as
+    /// the dashboard, so they require `dashboard_enabled && http_enabled`; configured
+    /// sinks without that stream log one loud warning and stay inert.
+    pub webhooks: Vec<koi_compose::webhook::WebhookSink>,
     pub dns_config: DnsConfig,
     pub dns_auto_start: bool,
     pub health_auto_start: bool,
@@ -117,6 +123,7 @@ impl Default for KoiConfig {
             mdns_browser_enabled: false,
             announce_http: false,
             http_token: None,
+            webhooks: Vec::new(),
             dns_config: DnsConfig::default(),
             dns_auto_start: false,
             health_auto_start: false,
@@ -200,6 +207,7 @@ mod tests {
         assert!(!cfg.api_docs_enabled);
         assert!(!cfg.mdns_browser_enabled);
         assert!(!cfg.announce_http);
+        assert!(cfg.webhooks.is_empty());
         assert!(!cfg.dns_auto_start);
         assert!(!cfg.health_auto_start);
         assert!(!cfg.proxy_auto_start);
