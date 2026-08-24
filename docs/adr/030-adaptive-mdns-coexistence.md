@@ -40,6 +40,15 @@ The probe-to-bind window has a documented race (a foreign stack could grab the p
 in between); closing it would mean owning mdns-sd's socket setup, which is out of
 scope. The race fails safe: worst case is today's behavior, never a crash.
 
+**Measured limitation (CI kernel, Ubuntu 24):** a `SO_REUSEADDR` holder does **not**
+reliably make a no-reuse probe fail — modern kernels permitted the mixed bind. The
+probe therefore *guards against exclusive holders* but cannot portably detect
+reuse-holders by bind semantics. Final coexistence behavior on reuse-sharing hosts
+(the avahi case) is decided empirically: physical validation runs Koi alongside a
+live foreign responder and records whether shared-socket operation is healthy; if it
+is not, the skip trigger moves to foreign-responder detection (e.g. D-Bus/service
+probe) in a follow-up change to this ADR.
+
 ### 2. Skipping is coexistence, not error
 
 The skip logs at **info** with reason `port 5353 in use by another mDNS stack` —

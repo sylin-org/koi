@@ -30,6 +30,3 @@ tokio-util.workspace = true
 hostname = "0.4"
 if-addrs.workspace = true
 
-[target.'cfg(unix)'.dev-dependencies]
-# The ADR-030 port-probe test emulates an avahi-style reuse holder (Unix only).
-libc.workspace = true
