@@ -10,6 +10,11 @@
 /packages/npm/release-manifest.json
 /packages/npm/*.tgz
 
+# Python build artifacts (packages/python)
+__pycache__/
+*.pyc
+*.egg-info/
+
 # Cargo lock is committed for binaries
 # Cargo.lock
 

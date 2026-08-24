@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sylin-koi-client"
+version = "0.1.0b1"
+description = "Python client for Koi's frozen HTTP API: status, health, certmesh posture, events, and Agent-Door MCP discovery"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "sylin.org" }]
+keywords = ["koi", "mdns", "lan", "mcp", "discovery"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Networking",
+]
+
+[project.urls]
+Repository = "https://github.com/sylin-org/koi"
+Directory = "packages/python"
+
+[tool.setuptools.packages.find]
+where = ["src"]
