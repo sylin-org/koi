@@ -2,6 +2,7 @@ mod admin;
 pub(crate) mod cli;
 mod client;
 mod commands;
+mod config_file;
 mod daemon;
 mod dispatch;
 mod format;
@@ -9,10 +10,11 @@ mod help;
 mod infra;
 mod integrations;
 mod platform;
+mod welcome;
 
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 
 use cli::{Cli, Command, Config};
 use dispatch::run;
@@ -54,8 +56,26 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    let cli = Cli::parse();
-    let config = Config::from_cli(&cli);
+    // ── Two-phase parse: config-file precedence needs arg sources ──
+    let matches = Cli::command().get_matches();
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(c) => c,
+        Err(e) => e.exit(),
+    };
+
+    let config_file_path =
+        config_file::discover(cli.config.as_deref()).map_err(|e| anyhow::anyhow!(e))?;
+
+    let mut config = Config::from_cli(&cli);
+    if let Some(path) = &config_file_path {
+        if let Some(file) = config_file::load(path).map_err(|e| anyhow::anyhow!(e))? {
+            config_file::apply(&file, &matches, &mut config);
+            tracing::info!(
+                path = %path.display(),
+                "configuration file applied (CLI > env > file > default)"
+            );
+        }
+    }
 
     // Initialize logging
     let level = match cli.verbose {
@@ -72,6 +92,9 @@ fn main() -> anyhow::Result<()> {
     // ── Trivially synchronous subcommands ────────────────────────────
     if let Some(command) = &cli.command {
         match command {
+            Command::Config { action } => {
+                return config_file::run_action(action, cli.config.as_deref());
+            }
             Command::Install => {
                 return {
                     #[cfg(windows)]

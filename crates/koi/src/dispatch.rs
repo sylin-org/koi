@@ -17,6 +17,11 @@ use crate::{commands, format, help};
 pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     if let Some(command) = &cli.command {
         return match command {
+            // `koi config …` is handled synchronously in main before the
+            // runtime exists; unreachable here, but keep the match exhaustive.
+            Command::Config { .. } => {
+                anyhow::bail!("config subcommand is handled in main")
+            }
             Command::Status => commands::status::status(&cli, &config),
             Command::Mdns(mdns_cmd) => {
                 config.require_capability("mdns")?;

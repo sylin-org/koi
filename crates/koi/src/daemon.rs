@@ -112,6 +112,34 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
 
     tracing::info!("Ready.");
 
+    // ── L0 welcome (ADR-031): exactly three lines, once per data root ──
+    {
+        let zone = &config.dns_zone;
+        let hostname = hostname::get()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "localhost".to_string());
+        let lan_name = format!("{hostname}.{zone}");
+        let host_for_url = if config.http_bind == "loopback" || config.http_bind.is_empty() {
+            "127.0.0.1".to_string()
+        } else if let Some(lan_ip) = if_addrs::get_if_addrs().ok().and_then(|addrs| {
+            addrs.into_iter().find_map(|a| match a.addr {
+                if_addrs::IfAddr::V4(v4) if !v4.ip.is_loopback() => Some(v4.ip),
+                _ => None,
+            })
+        }) {
+            lan_ip.to_string()
+        } else {
+            "127.0.0.1".to_string()
+        };
+        let dashboard = format!("http://{host_for_url}:{}/v1/dashboard", config.http_port);
+        let next = if config.no_certmesh {
+            "koi status"
+        } else {
+            "koi certmesh create"
+        };
+        crate::welcome::emit_once(&config.data_dir, &lan_name, &dashboard, next);
+    }
+
     // Wait for shutdown signal
     shutdown_signal(cancel.clone()).await;
     tracing::info!("Shutting down...");

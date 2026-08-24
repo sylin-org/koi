@@ -501,6 +501,57 @@ Requires elevated privileges (Administrator / sudo).",
         confirmation: None,
     },
     CommandMeta {
+        name: "config init",
+        summary: "Write the documented default config file",
+        long_description: "\
+Writes a fully commented TOML config to the platform location (or --config path).
+Precedence: CLI flag > environment variable > config file > built-in default.
+Refuses to overwrite an existing file unless --force is passed.",
+        category: KoiCategory::Core,
+        tags: &[KoiTag::ReadOnly],
+        scope: KoiScope::Public,
+        examples: &[Example {
+            command: "koi config init",
+            description: "Create the default config",
+        }],
+        see_also: &["config show", "config path"],
+        api: &[],
+        confirmation: None,
+    },
+    CommandMeta {
+        name: "config show",
+        summary: "Print the config file in effect",
+        long_description: "\
+Prints the resolved config file with its location, or \"none\" when this
+installation runs on built-in defaults.",
+        category: KoiCategory::Core,
+        tags: &[KoiTag::ReadOnly],
+        scope: KoiScope::Public,
+        examples: &[Example {
+            command: "koi config show",
+            description: "Show the active config",
+        }],
+        see_also: &["config init", "config path"],
+        api: &[],
+        confirmation: None,
+    },
+    CommandMeta {
+        name: "config path",
+        summary: "Print the config file path",
+        long_description: "\
+Prints the path this installation would use for its TOML config file.",
+        category: KoiCategory::Core,
+        tags: &[KoiTag::ReadOnly],
+        scope: KoiScope::Public,
+        examples: &[Example {
+            command: "koi config path",
+            description: "Show the config path",
+        }],
+        see_also: &["config show"],
+        api: &[],
+        confirmation: None,
+    },
+    CommandMeta {
         name: "version",
         summary: "Show version information",
         long_description: "\

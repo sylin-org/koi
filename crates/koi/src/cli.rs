@@ -105,6 +105,11 @@ pub struct Cli {
     #[arg(long, env = "KOI_LOG_FILE", value_name = "PATH", global = true)]
     pub log_file: Option<PathBuf>,
 
+    /// TOML configuration file (ADR-031). Defaults to the platform config
+    /// path when present. Precedence: flag > env > file > default.
+    #[arg(long, value_name = "PATH", global = true)]
+    pub config: Option<PathBuf>,
+
     /// Disable the HTTP adapter
     #[arg(long, env = "KOI_NO_HTTP", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_http: bool,
@@ -226,6 +231,11 @@ pub enum Command {
     Install,
     /// Uninstall the Koi system service
     Uninstall,
+    /// Manage the TOML configuration file (ADR-031)
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
     /// Show version information
     Version,
     /// Open the dashboard in a web browser
@@ -259,6 +269,20 @@ pub enum Command {
 pub struct TokenCommand {
     #[command(subcommand)]
     pub command: Option<TokenSubcommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigAction {
+    /// Write the documented default config to the platform path (or --config)
+    Init {
+        /// Overwrite an existing file
+        #[arg(long)]
+        force: bool,
+    },
+    /// Print the config file in effect (or "none")
+    Show,
+    /// Print the config file path this installation would use
+    Path,
 }
 
 #[derive(Subcommand, Debug)]
