@@ -40,7 +40,8 @@ Then ask the agent to orient: it calls **`lan_inventory`** first (status + healt
 |---|---|
 | `koi mcp serve` | Serve MCP over **stdio** against the local daemon (for an MCP host to spawn). |
 | `GET/POST /v1/mcp` | In-process MCP over Streamable HTTP. **Token on every method** — incl. the server→client SSE **GET** (carved out of the GET exemption). |
-| `--no-mcp-http` (`KOI_NO_MCP_HTTP`) | Disable the HTTP transport. Default **enabled**; disabled → `/v1/mcp` returns `503 capability_disabled`. Reported on `/v1/status` as `mcp_http`. |
+| `--no-mcp-http` (`KOI_NO_MCP_HTTP`) | Disable the loopback HTTP transport. Default **enabled**; disabled → `/v1/mcp` on the HTTP adapter returns `503 capability_disabled`. Reported on `/v1/status` as `mcp_http`. |
+| `--no-mgmt-mcp` (`KOI_NO_MGMT_MCP`) | Disable the **mTLS management plane** — the same `/v1/mcp` mounted on the inter-node mTLS listener, authorized per request by client-certificate CN (ADR-026). Independent of the loopback switch above. |
 | `koi token show` / `koi token write <path>` | Print the daemon token / write a `0600` file (containers). The token is **never** echoed in MCP output. |
 | `GET /.well-known/mcp/server-card.json` | **Unauthenticated** discovery descriptor (the "Door"): `{name, version, mcp:{enabled, transport:"streamable-http", path:"/v1/mcp", auth:{scheme:"bearer", header}}}`. No secrets. |
 
@@ -48,7 +49,7 @@ Then ask the agent to orient: it calls **`lan_inventory`** first (status + healt
 
 ## The escape hatch / limits
 
-`/v1/mcp` rides the daemon's `--http-bind` — **loopback by default**. For cross-host reach, front it with Koi's TLS proxy + a certmesh/ACME-issued in-zone cert so the token travels inside real HTTPS with a verifiable Origin. **LAN discovery is automatic:** the daemon advertises exactly one `_mcp._tcp` mDNS record per host (`transport=streamable-http;path=/v1/mcp`), an in-zone `_mcp.<host>.<zone>` DNS TXT when DNS serves the zone, and the public server-card above — so an agent can find a Koi MCP door without prior config. MCP-HTTP is a **transport, not a domain rung**, and is **not** in `/openapi.json`. Need only the baseline? stdio always works; the HTTP transport is purely additive.
+`/v1/mcp` rides the daemon's `--http-bind` — **loopback by default**. For cross-host reach you have two sanctioned shapes: front it with Koi's TLS proxy + a certmesh/ACME-issued in-zone cert so the token travels inside real HTTPS, or enroll the caller as a **principal** (ADR-026) and let it use the mTLS management plane — same `/v1/mcp`, mutually authenticated by client certificate, authorized per request by CN → roster (unknown/expired/revoked are refused with named reasons), revocable individually without touching the shared token. **LAN discovery is automatic:** the daemon advertises exactly one `_mcp._tcp` mDNS record per host (`transport=streamable-http;path=/v1/mcp`), an in-zone `_mcp.<host>.<zone>` DNS TXT when DNS serves the zone, and the public server-card above — so an agent can find a Koi MCP door without prior config. MCP-HTTP is a **transport, not a domain rung**, and is **not** in `/openapi.json`. Need only the baseline? stdio always works; the HTTP transport is purely additive.
 
 ## The proof it works
 

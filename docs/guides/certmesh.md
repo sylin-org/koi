@@ -218,7 +218,7 @@ This is your paper trail. When something goes wrong three months from now, the l
 
 ## Certificate renewal and hooks
 
-Koi renews certificates automatically before they expire. Leaf certificates live for **90 days**; a member renews when fewer than **30 days** remain, and a CA-held policy allows a **14-day** post-expiry grace window before a member must re-enroll. Renewal is **member-pull**: each enrolled host's daemon runs a background loop that rotates its key and pulls a fresh leaf from the CA over mTLS (port 5642) before expiry - the member, not the CA, drives the rotation. The CA's *own* leaf renews when the daemon restarts.
+Koi renews certificates automatically before they expire. Leaf certificates live for **7 days** by default (ADR-027 short-lived posture); a member renews when fewer than **3 days** remain, and a CA-held policy allows a **1-day** post-expiry grace window before a member must re-enroll. Renewal is **member-pull**: each enrolled host's daemon runs a background loop that rotates its key and pulls a fresh leaf from the CA over mTLS (port 5642) before expiry - the member, not the CA, drives the rotation. The CA's *own* leaf renews when the daemon restarts.
 
 But your applications need to know when a cert changes - a web server can't use a new certificate without reloading. That's what hooks are for:
 
@@ -291,7 +291,7 @@ The CA signs the CSR and returns the certificate chain - never a private key (th
   "ca_cert": "-----BEGIN CERTIFICATE-----\n...",
   "service_cert": "-----BEGIN CERTIFICATE-----\n...",
   "ca_fingerprint": "a1b2c3d4...",
-  "policy": { "leaf_lifetime_days": 90, "renew_threshold_days": 30, "grace_days": 14 }
+  "policy": { "leaf_lifetime_days": 7, "renew_threshold_days": 3, "grace_days": 1 }
 }
 ```
 
@@ -314,7 +314,7 @@ Understanding what certmesh produces helps when debugging TLS issues:
 
 - **Algorithm**: ECDSA P-256 (fast, widely supported, small keys)
 - **CA validity**: 10 years
-- **Leaf cert lifetime**: 90 days (auto-renewed at 30 days remaining, 14-day grace - the CA-held `CertPolicy`)
+- **Leaf cert lifetime**: 7 days (auto-renewed at 3 days remaining, 1-day grace - the CA-held `CertPolicy`, ADR-027)
 - **CA self-enrollment SANs**: hostname, hostname.local, localhost, 127.0.0.1
 - **Member cert SANs**: hostname, hostname.local
 - **Trust store**: CA cert is installed in the system trust store at creation time
@@ -379,7 +379,7 @@ If a machine is compromised, decommissioned, or simply no longer trusted, revoke
 koi certmesh revoke node-02 --reason "decommissioned"
 ```
 
-This marks the member as revoked in the roster and records the event in the audit log. The revoked host's certificate remains on disk and will no longer be renewed - so it stops working once it expires (within the 90-day leaf lifetime). Revocation also takes effect immediately at the CA boundary: a revoked member's `/renew` and `/health` calls over mTLS are rejected with `403`, so it can neither pull a fresh leaf nor report healthy. Revocation is otherwise **roster state**, not a network-wide CRL or OCSP push: there is no revocation list distributed to other members, and an already-issued, still-valid leaf keeps working against third parties until it expires. The leaf lifetime is the bound on that residual access (see "What certmesh deliberately does not do").
+This marks the member as revoked in the roster and records the event in the audit log. The revoked host's certificate remains on disk and will no longer be renewed - so it stops working once it expires (within the short 7-day leaf lifetime). Revocation also takes effect immediately at the CA boundary: a revoked member's `/renew` and `/health` calls over mTLS are rejected with `403`, so it can neither pull a fresh leaf nor report healthy. Revocation is otherwise **roster state**, not a network-wide CRL or OCSP push: there is no revocation list distributed to other members, and an already-issued, still-valid leaf keeps working against third parties until it expires. The leaf lifetime is the bound on that residual access (see "What certmesh deliberately does not do").
 
 Koi deliberately does not implement CRL or OCSP — the distribution infrastructure for network-wide revocation is exactly the operational weight certmesh exists to avoid. For security-sensitive deployments, the answer is a **short leaf lifetime** rather than a revocation list: a member renewing a 24-hour cert is functionally equivalent to instantaneous revocation, because cutting off renewal (revoke in the roster) takes the member offline within a day with no list to push or consult. Short-lived certificates (`--cert-lifetime`, planned for 0.6) lean on the renewal loop you already run instead of adding a second, distributed source of truth.
 
@@ -397,7 +397,7 @@ As with `join`, the positional `<ca-endpoint>` (or mDNS) is the **remote CA** be
 
 Promotion is a **deliberate operator action**, not an automatic election. There is no absence-watch loop, no lexicographic tiebreaker, and no background roster sync - that machinery was removed. Promotion only happens when you run the command.
 
-Manual is fine here because of how certmesh degrades. Member certificates live for 90 days and are renewed well before expiry. If the CA goes offline, **renewals pause - they do not fail closed**. Existing certificates keep working until they near expiry, which gives you weeks of runway to either bring the original CA back or promote a standby on your own schedule. A dead CA is a maintenance task, not an outage, so the complexity and failure modes of automatic failover are not justified.
+Manual is fine here because of how certmesh degrades. Member certificates live for 7 days (ADR-027) and are renewed well before expiry. If the CA goes offline, **renewals pause - they do not fail closed**. Existing certificates keep working for days, and the renewal window means a healthy member holds days of validity in hand — runway enough to either bring the original CA back or promote a standby on your own schedule. A dead CA is a maintenance task, not an outage, so the complexity and failure modes of automatic failover are not justified.
 
 ---
 
@@ -454,8 +454,8 @@ koi certmesh destroy --json
 
 Certmesh is intentionally small. Knowing what it does *not* do is as important as knowing what it does:
 
-- **No network-wide revocation (CRL/OCSP).** Revocation takes effect at the CA boundary (a revoked member's `/renew` and `/health` get `403`) and in roster state, but already-issued, still-valid certificates are **not** actively revoked across the network - peers do not consult a distributed revocation list. The 90-day leaf lifetime is the bound on a revoked member's residual access to third parties.
-- **No automatic failover.** Continuity is the manual `koi certmesh promote`. There is no absence-watch, no automatic election, and no tiebreaker. A dead CA pauses renewals (weeks of runway), it does not cause an outage.
+- **No network-wide revocation (CRL/OCSP).** Revocation takes effect at the CA boundary (a revoked member's `/renew` and `/health` get `403`) and in roster state, but already-issued, still-valid certificates are **not** actively revoked across the network - peers do not consult a distributed revocation list. The short (7-day default, ADR-027) leaf lifetime is the bound on a revoked member's residual access to third parties.
+- **No automatic failover.** Continuity is the manual `koi certmesh promote`. There is no absence-watch, no automatic election, and no tiebreaker. A dead CA pauses renewals (days of runway under the short-lived posture, ADR-027), it does not cause an outage.
 - **No enterprise compliance or audit-export endpoint.** There is no compliance summary and no policy/scope engine. The audit trail is the append-only log (`koi certmesh log`) and the live view is `koi certmesh status` - use those.
 - **No FIDO2 / hardware-key auth.** Enrollment and unlock use TOTP and passphrase only. The extension point is the `AuthAdapter` trait in `koi-crypto` (`adapter_by_name`): a future hardware-key method would re-enter through there rather than as special-cased code.
 
@@ -464,3 +464,6 @@ Certmesh is intentionally small. Knowing what it does *not* do is as important a
 ## Embedding certmesh in a Rust app
 
 To run certmesh as a library — in-process, no daemon, the full `CertmeshCore` plus the network adapters you compose for your role (a mesh member or the CA host) — see [Embedding certmesh](certmesh-embedded.md).
+
+
+

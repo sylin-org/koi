@@ -44,6 +44,7 @@ Under the hood the joiner's CLI orchestrates three calls, carrying only public m
 | Command / flag | What it does |
 |---|---|
 | `koi certmesh invite <hostname> [--ttl <mins>]` | Mint a single-use invite bound to `<hostname>` (default 60 min). |
+| `koi certmesh invite <hostname> --client` | Bind the invite to a **client principal** (ADR-026): it may only enroll a non-serving principal holding a clientAuth-only leaf — never a host. |
 | `koi certmesh join <endpoint> --invite <token>` | Enroll non-interactively; the local daemon keeps the key. |
 | `koi certmesh join <endpoint>` | Same, but prompt for the mesh TOTP instead of an invite. |
 | `koi certmesh open-enrollment` | Open the window — required for **any** join (invite or TOTP) to be accepted. |
@@ -53,9 +54,9 @@ Under the hood the joiner's CLI orchestrates three calls, carrying only public m
 
 No invite? `koi certmesh join <endpoint>` falls back to the interactive **mesh TOTP** prompt (still CSR-based — the key stays local). For a closed/approval mesh, an invite does **not** skip the gate: `open-enrollment` and approve as usual. The **trust anchor is out-of-band delivery** of the invite (the irreducible "one trusted bit"; see [ADR-015](../../adr/015-certmesh-enrollment-hardening.md) "Accepted residual risks").
 
-## Cert profile & lifecycle policy (ADR-017 phase 1a, shipped)
+## Cert profile & lifecycle policy (ADR-017 phase 1a, ADR-027 defaults, ADR-026 roles)
 
-Every issued leaf carries a least-privilege profile — `KeyUsage=[DigitalSignature,KeyEncipherment]`, `EKU=[ServerAuth,ClientAuth]`, `CA:FALSE` — and the CA cert is `pathlen=0` (it signs leaves, never sub-CAs). Lifetimes are a **CA-held policy** (`CertPolicy`, default **90-day** leaves / renew at **30 days** remaining / **14-day** grace), stored in roster metadata and applied at **both** enrollment and renewal. It will be distributed to members in the signed trust bundle (phase 2).
+Every issued leaf carries a least-privilege profile — hosts get `KeyUsage=[DigitalSignature,KeyEncipherment]`, `EKU=[ServerAuth,ClientAuth]`, `CA:FALSE`; **client principals** (ADR-026) get `EKU=[ClientAuth]`, `KeyUsage=[DigitalSignature]` only — a principal credential can never serve TLS. The CA cert is `pathlen=0` (it signs leaves, never sub-CAs). Lifetimes are a **CA-held policy** (`CertPolicy`, default **7-day** leaves / renew at **3 days** remaining / **1-day** grace, ADR-027), stored in roster metadata and applied at **both** enrollment and renewal. It will be distributed to members in the signed trust bundle (phase 2).
 
 ## Renewal — member-pull, rotate-key (ADR-017 F6, phase 1b, shipped)
 
