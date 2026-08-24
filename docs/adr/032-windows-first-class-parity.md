@@ -1,0 +1,88 @@
+# ADR-032: Windows First-Class Parity Program
+
+**Status:** Accepted (operator-approved 2026-08-24). **Gates stable 1.0.**
+**Date:** 2026-08-24
+**Builds on:** ADR-018 (integration tiers), ADR-029 (role-matrix testbed + host classes), the July elevated Windows lifecycle evidence (historical, pre-rc.1 tree)
+**Constrained by:** workstation-class safety rules; no broad system mutation without flags and exact restoration
+
+---
+
+## Context
+
+Windows is a mandatory first-class citizen with 1:1 capabilities: every capability
+provable on Linux must have an equally proven Windows lane. Today Windows has proven
+trust-plane evidence (exact `LocalMachine\Root` install/remove, Schannel verification,
+hosts restoration — re-proven on the rc.2-era tree) plus July-era member-lifecycle
+evidence that predates V1-08..V1-11 and must be redone. Unclaimed: service
+supervision via SCM, named-pipe IPC, whole-story breadth (proxy/DNS/health/webhooks/
+mDNS serving *from* Windows), backup/cold recovery, and installer distribution.
+
+The operator decision: **Windows parity gates stable 1.0.** The rc.2 soak continues in
+parallel; stable ships only when this program's matrix is green.
+
+## Decision
+
+### Parity definition
+
+A capability is *Windows-parity-proven* when its Linux lane's assertions pass on
+Windows with OS-native verification adapters (Schannel vs OpenSSL, SCM vs systemd,
+named pipes vs Unix sockets, Resolve-DnsName vs dig) in both rotations where the
+capability involves a peer, through the same evidence pipeline (redaction-attested
+reports, baseline restoration).
+
+### Acceptance matrix
+
+| # | Capability lane | Linux proof | Windows lane | Adapter notes | Status |
+|---|---|---|---|---|---|
+| W1 | Service supervision | systemd transient unit (`Type=notify`, restart-on-failure) | **SCM service**: install/start/restart/recovery/stop via `platform/windows.rs` service support; run as SYSTEM so privileged ports work | koi-lab SCM driver; exact unit identity checks | not started |
+| W2 | Named-pipe IPC | Unix socket NDJSON protocol | Same protocol over `\\.\pipe\koi-*` | pipe path adapter; same request corpus | not started |
+| W3 | Trust install/remove | `update-ca-certificates` + fingerprint scan | `LocalMachine\Root` via .NET X509Store | existing lanes; redo on current tree both directions | ✅ trust plane re-proven rc.2 era |
+| W4 | Enrollment/join/renew/revoke | CLI custody flow over HTTP+mTLS | Same CLI against a Linux CA (July-era shape), plus **Windows-hosted CA** rotation | invite pin + CSR custody identical | redo required |
+| W5 | mDNS announce/browse | mdns-sd multicast | mdns-sd on Windows + firewall rule provisioning for 5353/high ports (`extra_firewall_ports`) | adaptive skip also validated if a Windows responder exists | partial |
+| W6 | DNS serve + resolve | UDP/TCP 53 + cross-host `dig` | Daemon as SYSTEM serves 53; verify via `Resolve-DnsName` cross-host | port privilege note documented | not started |
+| W7 | TLS proxy serve/verify | openssl client → Linux proxy | **Proxy serving ON Windows** verified by Schannel AND openssl from Linux | both directions = true inter-OS pairing | not started |
+| W8 | Webhooks origin/sink | python fixture on Linux | Origin on Windows daemon → sink on Linux fixture; reverse optional | HMAC verify at receive | not started |
+| W9 | Health checks | HTTP Up→Down→Up cross-host | Windows daemon checking Linux target and vice versa | same API | not started |
+| W10 | Backup/cold recovery | recovery profile | Encrypted backup → exact data loss → restore → identity continuity | unclaimed anywhere; Windows first | not started |
+| W11 | Runtime auto-wire | Docker label derivation | **Capability-tagged exclusion**: Docker Desktop presence optional, not required for parity | honest scope line | excluded-by-tag |
+| W12 | ACME dns-01 | instant-acme cross-host | Same flow with Windows-side daemon serving TXT | reuses W6 | after W6 |
+
+Non-goals: Windows containers, Hyper-V-specific isolation, MSI/winget submission
+timing (external authority; P4 below covers the local installer groundwork).
+
+### Program phases
+
+- **P1 — Foundations:** W1 (SCM) + W2 (named pipe). Everything desktop/install-and-done
+  stands on these. Includes koi-lab drivers for both.
+- **P2 — Breadth acts:** W4–W9, W12 as scenario extensions driven by the catalog
+  planner (Windows already declares caller roles; extend to serving roles).
+- **P3 — Recovery:** W10.
+- **P4 — Installer groundwork:** signed archive layout + silent-install script;
+  winget submission remains externally gated.
+
+### Stable-gate redefinition
+
+Stable `1.0.0` requires, in addition to the existing gates:
+
+- Every matrix row green in its stated rotations, executed by `run-profile full`
+  extended with the Windows breadth cases.
+- Elevated scheduled-task profile green including all W-cases.
+- Soak of the final candidate clean, with Windows participants included per ADR-029
+  host classes.
+
+## Consequences
+
+- The role-matrix planner earns its keep immediately: W7/W9 pairings are generated,
+  not hand-wired.
+- OS-native verification adapters become first-class lab components with their own
+  tests — the cross-compatible testbed's core mechanism.
+- Honest scope line: Docker Desktop automation and winget are explicitly outside
+  parity; they are tagged, not silently missing.
+
+## Alternatives considered
+
+- Ship stable on Linux evidence, treat Windows as 1.x — rejected by operator decision:
+  Windows users hitting an unsupported-service experience at "stable" would contradict
+  the honesty doctrine at its most visible moment.
+- Cross-platform service abstraction crate — deferred: two implementations behind one
+  trait is cheaper than adapting a generic crate to SCM's recovery semantics.
