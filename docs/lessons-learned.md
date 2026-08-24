@@ -119,3 +119,32 @@ reality (tree state, registries) rather than trusting prose.
 
 **Rule:** every resume step begins by re-verifying its written premises. Update the
 ledger in the same breath as the discovery, not at session end.
+
+## Product soak
+
+### RL-12 — Test machines run the real installer; transient scaffolding lies (2026-08-24)
+
+The standing mesh bootstrapped daemons with hand-rolled transient units and a
+setsid user process. The result soaked fine for hours and then failed the first
+honest question — "why doesn't it survive reboot?" — because what it soaked was
+not the product users get. Operator verdict: *"there should be no transient
+install. Everything on the TEST machines must be real."*
+
+**Rules:** (a) long-running soak evidence must come from `koi install`'s own
+output — enabled unit, default data root, default binds — with deviations (like a
+CA's LAN-expose drop-in) explicit, minimal, and reversible; (b) when a soak setup
+script exists only because the real path is inconvenient, that inconvenience IS
+the finding.
+
+### RL-13 — Per-machine credentials fail loudly, wrong-variable credentials fail confusingly (2026-08-24)
+
+A session repeatedly sent brook's password to test-01 (wrong variable from a
+shared helper). Each failure looked like something else: rate limiting, PAM
+lockout, "the password changed". Two operator reboots were spent chasing phantoms
+before the diff (`-pw 'test'` vs `-pw $pw`) surfaced.
+
+**Rules:** (a) per-machine credentials go through the catalog's `password_env`,
+never through a shared variable reused across hosts; (b) before theorizing about
+bans or lockouts, diff the exact bytes you sent — auth infrastructure is rarely
+wrong, credential plumbing often is; (c) when one host's credential differs,
+prove which one you are sending *first*.

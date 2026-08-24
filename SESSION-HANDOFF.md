@@ -4,6 +4,33 @@
 **Last updated:** 2026-08-24
 **Resume phrase:** continue the epic to v1 - lessons ledger at docs/lessons-learned.md (RL-1..RL-11)
 **STRATEGY SHIFT (2026-08-24, operator-approved): ADR-031 desktop control plane + ADR-032 Windows 1:1 parity program (GATES STABLE 1.0) + docs/LAUNCH.md.** Stable `1.0.0` now requires: full elevated profile extended with Windows breadth cases (W-matrix in ADR-032), all parity rows green both rotations, clean soak incl. Windows participants. rc.2 soak continues unchanged meanwhile. Next implementation order: (1) ADR-031 config substrate basics (versioned TOML, precedence CLI>env>file>defaults, loud unknown keys, `koi config init`), (2) L0 welcome contract, (3) W1 SCM driver + W2 named-pipe IPC lanes, (4) tray MVP.
+**REAL-INSTALL MESH CUTOVER (2026-08-24 late, operator-directed): "no transient
+install - everything on the test machines must be real."** The standing mesh now runs
+the product's own installer path on all three Linux hosts: `sudo koi install` →
+`/usr/local/bin/koi` + enabled `/etc/systemd/system/koi.service` (Type=notify,
+Restart=on-failure 5s), default machine data root `/var/lib/koi`, root-owned
+breadcrumb `/var/run/koi.endpoint`. Brook re-cut over as CA (CA re-created on the
+real service, enrollment open); granite + test-01 enrolled fresh through it
+(roster converged 3/3: brook primary + both members active; all diagnoses healthy;
+custody 0600). Collector evidence lines appended per host to
+`~/koi-dogfood/evidence.jsonl`; scripts committed under `scripts/lab/mesh/`
+(mesh-real-install/ca-init/invite-mint/join-real/lan-expose + collector
+mesh-status.sh + driver mesh-status-all.ps1). Artifact provenance pinned by
+hashing the INNER binary of the published rc.2 GitHub asset:
+`006ef30d793fe70c0a7b69c5a71fffcf3b38092f3663508bdaf20a34a27658b8` — verified
+byte-identical to what was deployed AND to each installed /usr/local/bin/koi.
+(The handoff's earlier `94e7d652…` was the pre-release evidence-series build.)
+Deviations: **D16** CA-only LAN exposure via the installer's own documented
+mechanism (`systemctl edit koi` drop-in setting `KOI_HTTP_BIND=0.0.0.0`) — real
+defaults are loopback-only HTTP (mTLS 5642 is 0.0.0.0 natively); reverse = delete
+the drop-in. **D17** old `~/koi-dogfood` trees left in place inert (retire-by-
+rename judged needless mutation; rollback = `koi uninstall` + restart old shape).
+test-01 additionally had PAM faillock disabled (`deny=0`) by operator decision
+after lockouts masqueraded as auth failures; granites' historical 0.7.0
+/usr/local/bin/koi artifact preserved by copy before overwrite. Soak clock
+restarts at this bring-up (~23:14Z) — the soak now exercises installer-produced
+services, which was the point.
+
 **V1-12 progress (2026-08-24 late): config substrate + L0 welcome LANDED (`43a3dc8`).** `koi config init|show|path` shipped; versioned TOML (deny-unknown-keys, loud wrong-version) at platform paths; precedence **CLI > env > file > default** implemented via clap value-source detection and proven LIVE both directions on Windows (file-only port 6001 bound; explicit `--port 5641` overrode it); template restored after probe. L0 welcome banner: three-line contract (LAN name / dashboard URL / next command), marker-gated once-per-data-root, unit-tested. Next under V1-12: tray MVP; then ADR-032 P1 (W1 SCM driver + W2 named-pipe lanes). Launch assets A1-A6 in docs/LAUNCH.md drafted during soak; every external post is operator-executed.
 
 **RC PUBLISHED + STANDING MESH LIVE (2026-08-24 evening):** `v1.0.0-rc.2` released after two dry-run gates caught a release-blocking gitignore drop (RL-1) — see docs/lessons-learned.md (11 rules, RL-1..RL-11). Published: GitHub prerelease (6 archives + sha256 + canonical manifest), crates.io koi-* 1.0.0-rc.2 (org CARGO_REGISTRY_TOKEN resolved; July rc.1 was already burned there, hence the rc.2 supersede per RL-2), GHCR image, npm inert by gate. Standing dogfood mesh LIVE on published artifacts: brook `koi-dogfood.service` primary (CA created, enrollment open), granite member joined+healthy (legacy 0.7.0 service stopped/disabled by operator-approved cutover), roster converged 2/2, granite diagnosis healthy w/ 0600 custody. Workstations join cyclically per ADR-029 host classes (scripts in scripts/lab/mesh/). Soak week clock started at mesh bring-up ~19:40Z.
