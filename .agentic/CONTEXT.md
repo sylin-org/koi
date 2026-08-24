@@ -14,6 +14,11 @@ an epic session, update the ledger with completed evidence, changed assumptions,
 still owed, machine state, and one unambiguous next action. The plan is intentionally revisable:
 change it when evidence demands, but record why.
 
+**Project memory map**: [`docs/MEMORY.md`](../docs/MEMORY.md) indexes durable state
+(ledger, lessons, ADRs). Sensitive/working notes live in gitignored `local/NOTES.md`
+(credential *locations*, operator out-of-band answers) — see `local/README.md`.
+Never commit `local/`.
+
 ---
 
 ## Before Writing Code
