@@ -516,6 +516,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 dashboard: true,
                 mode: "daemon",
                 dat_token: dat_token.clone(),
+                webhooks: config.webhook_sinks(),
             },
             &cancel,
             &mut tasks,

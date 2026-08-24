@@ -11,6 +11,7 @@ mod runtime_reconnect;
 mod service_lifecycle;
 mod soak;
 mod story;
+mod webhook_fanout;
 
 use std::path::PathBuf;
 
@@ -92,6 +93,13 @@ enum LabCommand {
     },
     /// Interrupt only Koi's run-owned Docker API relay and prove exact reconnect deltas.
     RuntimeReconnect {
+        #[arg(long)]
+        run_id: String,
+        #[arg(long, value_enum, default_value = "linux-forward")]
+        rotation: TrustRotation,
+    },
+    /// Prove cross-host webhook fan-out: signed delivery to a run-owned sink fixture.
+    WebhookFanout {
         #[arg(long)]
         run_id: String,
         #[arg(long, value_enum, default_value = "linux-forward")]
@@ -205,6 +213,9 @@ fn main() -> Result<()> {
         }
         LabCommand::RuntimeReconnect { run_id, rotation } => {
             print_json(&lab.runtime_reconnect(&RunId::parse(&run_id)?, rotation)?)?;
+        }
+        LabCommand::WebhookFanout { run_id, rotation } => {
+            print_json(&lab.webhook_fanout(&RunId::parse(&run_id)?, rotation)?)?;
         }
         LabCommand::ServiceLifecycle {
             run_id,

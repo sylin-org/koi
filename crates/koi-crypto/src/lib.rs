@@ -13,6 +13,7 @@
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 pub mod auth;
+pub mod hmac;
 pub mod key_agreement;
 pub mod keys;
 pub mod pinning;

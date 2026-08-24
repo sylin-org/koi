@@ -38,6 +38,7 @@ enum ProfileCase {
     CertmeshRecovery(TrustRotation),
     CapabilityStory(TrustRotation),
     RuntimeReconnect(TrustRotation),
+    WebhookFanout(TrustRotation),
     ServiceLifecycle,
     BoundedSoak,
 }
@@ -62,6 +63,9 @@ impl ProfileCase {
             }
             Self::RuntimeReconnect(rotation) => {
                 format!("runtime-reconnect-{}", rotation.as_str())
+            }
+            Self::WebhookFanout(rotation) => {
+                format!("webhook-fanout-{}", rotation.as_str())
             }
             Self::ServiceLifecycle => "service-lifecycle-linux".to_owned(),
             Self::BoundedSoak => "bounded-soak-linux".to_owned(),
@@ -272,6 +276,9 @@ impl Lab {
             ProfileCase::RuntimeReconnect(rotation) => {
                 self.runtime_reconnect(run_id, rotation)?;
             }
+            ProfileCase::WebhookFanout(rotation) => {
+                self.webhook_fanout(run_id, rotation)?;
+            }
             ProfileCase::ServiceLifecycle => {
                 self.service_lifecycle(run_id, true)?;
             }
@@ -331,6 +338,8 @@ fn profile_cases(profile: LabProfile) -> Vec<ProfileCase> {
             cases.extend([
                 RuntimeReconnect(LinuxForward),
                 RuntimeReconnect(LinuxReverse),
+                WebhookFanout(LinuxForward),
+                WebhookFanout(LinuxReverse),
                 CapabilityStory(LinuxForward),
                 CapabilityStory(LinuxReverse),
                 ServiceLifecycle,
@@ -413,6 +422,7 @@ impl<'a> From<&'a NodeSnapshot> for StableNode<'a> {
 mod tests {
     use super::*;
     use crate::model::ServiceSnapshot;
+    use crate::TrustRotation::{LinuxForward, LinuxReverse};
 
     #[test]
     fn profiles_are_one_policy_list_over_existing_scenarios() {
@@ -431,8 +441,16 @@ mod tests {
         );
 
         let full = profile_cases(LabProfile::Full);
-        assert_eq!(full.len(), 12);
+        assert_eq!(full.len(), 14);
         assert_eq!(&full[..certmesh.len()], certmesh.as_slice());
+        // The two webhook cases ride the same non-privileged lane as reconnect.
+        assert_eq!(
+            &full[certmesh.len() + 2..certmesh.len() + 4],
+            [
+                ProfileCase::WebhookFanout(LinuxForward),
+                ProfileCase::WebhookFanout(LinuxReverse)
+            ]
+        );
         assert_eq!(
             full.iter()
                 .filter(|case| case.requires_system_mutation())

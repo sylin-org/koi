@@ -529,6 +529,7 @@ impl KoiEmbedded {
                 auth: self.config.http_token.clone(),
                 mdns_snapshot: mdns_bridge.clone(),
                 mcp_http: false,
+                webhooks: Vec::new(),
                 admin_shutdown: false,
                 api_docs: self.config.api_docs_enabled,
                 daemon: false,

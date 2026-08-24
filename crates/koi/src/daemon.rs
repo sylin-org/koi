@@ -89,6 +89,7 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             dashboard: true,
             mode: "daemon",
             dat_token: dat_token.clone(),
+            webhooks: config.webhook_sinks(),
         },
         &cancel,
         &mut tasks,

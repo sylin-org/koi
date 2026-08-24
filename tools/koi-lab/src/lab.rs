@@ -88,6 +88,7 @@ enum DaemonProfile {
     Certmesh,
     CapabilityStory,
     RuntimeReconnect,
+    WebhookFanout,
 }
 
 impl Lab {
@@ -1200,6 +1201,14 @@ impl Lab {
         self.launch_run_daemon(node, run_id, false, DaemonProfile::RuntimeReconnect)
     }
 
+    pub(crate) fn start_webhook_fanout_daemon(
+        &self,
+        node: &NodeSpec,
+        run_id: &RunId,
+    ) -> Result<()> {
+        self.launch_run_daemon(node, run_id, false, DaemonProfile::WebhookFanout)
+    }
+
     pub(crate) fn restart_story_daemon(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
         self.stop_run_daemon(node, run_id)?;
         self.launch_run_daemon(node, run_id, true, DaemonProfile::CapabilityStory)
@@ -1247,12 +1256,17 @@ impl Lab {
             DaemonProfile::CapabilityStory | DaemonProfile::RuntimeReconnect => format!(
                 "--dns-port {dns_port} --dns-public --announce-http --runtime docker"
             ),
+            DaemonProfile::WebhookFanout => format!(
+                "--dns-port {dns_port} --dns-public --announce-http --webhooks {run_dir}/webhooks.json"
+            ),
         };
         let guarded_ports = match profile {
             DaemonProfile::Certmesh => {
                 format!("{http_port}|{mtls_port}|{acme_port}|{proxy_port}")
             }
-            DaemonProfile::CapabilityStory | DaemonProfile::RuntimeReconnect => format!(
+            DaemonProfile::CapabilityStory
+            | DaemonProfile::RuntimeReconnect
+            | DaemonProfile::WebhookFanout => format!(
                 "{http_port}|{mtls_port}|{acme_port}|{proxy_port}|{dns_port}|{fixture_port}|{}",
                 ports.container
             ),
@@ -1261,7 +1275,9 @@ impl Lab {
             DaemonProfile::RuntimeReconnect => {
                 format!(" DOCKER_HOST=unix://{run_dir}/docker-proxy.sock")
             }
-            DaemonProfile::Certmesh | DaemonProfile::CapabilityStory => String::new(),
+            DaemonProfile::Certmesh
+            | DaemonProfile::CapabilityStory
+            | DaemonProfile::WebhookFanout => String::new(),
         };
         let command = format!(
             "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/daemon.pid; ! ss -H -lntup | grep -Eq ':({guarded_ports}) '; {prepare}; setsid -f sh -c 'echo $$ > {run_dir}/daemon.pid; exec env KOI_DATA_DIR={run_dir}/data KOI_DNS_ZONE=internal XDG_RUNTIME_DIR={run_dir}/runtime KOI_NO_CREDENTIAL_STORE=1{runtime_env} {run_dir}/koi --daemon --port {http_port} --http-bind 0.0.0.0 --mtls-port {mtls_port} --acme-port {acme_port} {profile_args} >>{run_dir}/daemon.log 2>&1'",
@@ -1378,6 +1394,131 @@ impl Lab {
     pub(crate) fn stop_runtime_proxy(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
         self.transport
             .run_checked(node, &runtime_proxy_stop_script(node, run_id, true)?)?;
+        Ok(())
+    }
+
+    /// Stage the webhook sink manifest onto the primary's run directory. The
+    /// secret travels inside the file (never in a remote command line).
+    pub(crate) fn stage_webhook_manifest(
+        &self,
+        node: &NodeSpec,
+        run_id: &RunId,
+        url: &str,
+        secret: &str,
+    ) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        let local = output_path(run_id.as_str()).join("webhooks.json");
+        std::fs::create_dir_all(output_path(run_id.as_str()))?;
+        std::fs::write(
+            &local,
+            serde_json::to_string_pretty(&serde_json::json!([{
+                "url": url,
+                "secret": secret,
+                "enabled": true,
+            }]))?,
+        )?;
+        self.transport.run_checked(
+            node,
+            &format!(
+                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/webhooks.json",
+                run_id.as_str(),
+                run_id.as_str()
+            ),
+        )?;
+        self.transport
+            .copy_to(node, &local, &format!("{run_dir}/webhooks.json"))?;
+        Ok(())
+    }
+
+    /// Stage the Python sink fixture onto the sink node's run directory.
+    pub(crate) fn stage_webhook_sink(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        let remote_script = format!("{run_dir}/webhook_sink.py");
+        let local_script = self
+            .repo_root
+            .join("tools/koi-lab/fixtures/webhook_sink.py");
+        self.transport.run_checked(
+            node,
+            &format!(
+                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {remote_script}; test ! -e {run_dir}/sink.exe",
+                run_id.as_str(),
+                run_id.as_str()
+            ),
+        )?;
+        self.transport
+            .copy_to(node, &local_script, &remote_script)?;
+        self.transport.run_checked(
+            node,
+            &format!(
+                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; chmod 700 {remote_script}; python=$(realpath \"$(command -v python3)\"); test -x \"$python\"; printf '%s' \"$python\" > {run_dir}/sink.exe",
+                run_id.as_str(),
+                run_id.as_str()
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// Start the sink on the fixture port (all interfaces — deliveries arrive
+    /// from the primary over the real LAN). The HMAC secret is passed through
+    /// the process environment only.
+    pub(crate) fn start_webhook_sink(
+        &self,
+        node: &NodeSpec,
+        run_id: &RunId,
+        secret: &str,
+    ) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        let port = node.lab_ports()?.fixture;
+        let command = format!(
+            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test -x {run_dir}/webhook_sink.py; test -f {run_dir}/sink.exe; test ! -e {run_dir}/sink.pid; ! ss -H -lnt | grep -Eq ':{port} '; setsid -f sh -c 'echo $$ > {run_dir}/sink.pid; exec env KOI_SINK_SECRET={} \"$(cat {run_dir}/sink.exe)\" {run_dir}/webhook_sink.py --port {port} --out {run_dir}/deliveries.jsonl >>{run_dir}/sink.log 2>&1'; i=0; while ! ss -H -lnt | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ss -H -lnt | grep -Eq ':{port} '; pid=$(cat {run_dir}/sink.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$(cat {run_dir}/sink.exe)\"",
+            run_id.as_str(),
+            run_id.as_str(),
+            secret
+        );
+        self.transport.run_checked(node, &command)?;
+        Ok(())
+    }
+
+    /// Stop a run-owned daemon that may have already exited: kill it when the
+    /// recorded PID is alive, remove only its own stale PID marker when dead.
+    pub(crate) fn stop_webhook_daemon(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        let command = format!(
+            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; if test ! -f {run_dir}/daemon.pid; then exit 0; fi; pid=$(cat {run_dir}/daemon.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; if kill -0 \"$pid\" 2>/dev/null; then exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = {run_dir}/koi; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; fi; rm -f {run_dir}/daemon.pid",
+            run_id.as_str(),
+            run_id.as_str()
+        );
+        self.transport.run_checked(node, &command)?;
+        Ok(())
+    }
+
+    pub(crate) fn stop_webhook_sink(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        let command = format!(
+            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; if test ! -f {run_dir}/sink.pid; then exit 0; fi; pid=$(cat {run_dir}/sink.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = \"$(cat {run_dir}/sink.exe)\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; rm -f {run_dir}/sink.pid",
+            run_id.as_str(),
+            run_id.as_str()
+        );
+        self.transport.run_checked(node, &command)?;
+        Ok(())
+    }
+
+    pub(crate) fn remove_webhook_sink_files(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        self.transport.run_checked(
+            node,
+            &format!(
+                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/sink.pid; rm -f {run_dir}/sink.log {run_dir}/sink.exe {run_dir}/webhook_sink.py {run_dir}/deliveries.jsonl {run_dir}/webhooks.json",
+                run_id.as_str(),
+                run_id.as_str()
+            ),
+        )?;
         Ok(())
     }
 

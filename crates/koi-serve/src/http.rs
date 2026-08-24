@@ -73,7 +73,9 @@ struct AppState {
     /// Whether the in-process MCP HTTP transport (`/v1/mcp`) is mounted. Reported
     /// on `/v1/status` as a field (MCP-HTTP is a transport, not a domain rung).
     mcp_http_enabled: bool,
-    /// `/v1/status` `daemon` field — a full daemon (`true`) vs an embedded instance.
+    /// Enabled outbound webhook sink count (ADR-028). Zero = fan-out off.
+    webhook_sinks: usize,
+    /// `/v1/status` `daemon` field - a full daemon (`true`) vs an embedded instance.
     daemon: bool,
 }
 
@@ -99,6 +101,9 @@ pub struct HttpConfig {
     pub mdns_snapshot: Option<Arc<dyn koi_common::integration::MdnsSnapshot>>,
     /// Mount the in-process MCP HTTP transport at `/v1/mcp`.
     pub mcp_http: bool,
+    /// Outbound webhook sinks (ADR-028). Reported on `/v1/status`; the fan-out
+    /// itself is spawned by [`crate::serve`], not this adapter.
+    pub webhooks: Vec<koi_compose::webhook::WebhookSink>,
     /// Mount `POST /v1/admin/shutdown` (cancels the serving token).
     pub admin_shutdown: bool,
     /// Mount `/docs` (Scalar) + `/openapi.json`.
@@ -128,11 +133,13 @@ pub async fn start(
         auth,
         mdns_snapshot,
         mcp_http: mcp_http_enabled,
+        webhooks,
         admin_shutdown,
         api_docs,
         daemon,
         ready,
     } = cfg;
+    let webhook_sinks = webhooks.len();
 
     let app_state = AppState {
         mdns: cores.mdns.clone(),
@@ -148,6 +155,7 @@ pub async fn start(
         mdns_browse: browser_state.as_ref().map(|b| b.meta.clone()),
         mdns_snapshot,
         mcp_http_enabled,
+        webhook_sinks,
         daemon,
     };
 
@@ -797,6 +805,10 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
         "http_bind": state.http_bind,
         "mdns_browse_active": state.mdns_browse.as_ref().map(|m| m.is_active()),
         "mcp_http": state.mcp_http_enabled,
+        "webhooks": {
+            "enabled": state.webhook_sinks > 0,
+            "sinks": state.webhook_sinks,
+        },
         "seal": seal,
         "capabilities": capabilities,
     }))
@@ -1526,6 +1538,7 @@ mod tests {
             mdns_browse: None,
             mdns_snapshot: None,
             mcp_http_enabled: false,
+            webhook_sinks: 0,
             daemon: true,
         }
     }

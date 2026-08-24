@@ -38,6 +38,10 @@ pub mod orchestrator;
 /// daemon and the Windows service share), `init_certmesh_core`, and `ordered_shutdown`.
 pub mod cores;
 
+/// Outbound webhook fan-out (ADR-028): HMAC-signed delivery of the merged event
+/// stream to operator-declared sinks. Composition-layer adapter, not a domain.
+pub mod webhook;
+
 /// Unified capability-status assembly (`assemble_capabilities`) — the single capability
 /// ladder shared by `/v1/status`, the dashboard snapshot, and the embedded snapshot.
 pub mod status;

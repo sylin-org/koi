@@ -51,6 +51,8 @@ pub struct ServeConfig {
     pub mode: &'static str,
     /// Daemon Access Token authenticating mutation requests on the HTTP adapter.
     pub dat_token: String,
+    /// Webhook sinks for outbound event fan-out (ADR-028). Empty = disabled.
+    pub webhooks: Vec<koi_compose::webhook::WebhookSink>,
 }
 
 /// Spawn the full serving stack for `cores` into `(cancel, tasks)`. The caller owns the
@@ -79,6 +81,23 @@ pub fn serve(
         cancel.clone(),
     ));
 
+    // ── Outbound webhook fan-out (ADR-028) ──
+    // One worker per enabled sink, each subscribing to the same merged channel the
+    // dashboard consumes. Spawned here (not in the binary) so every boot path that
+    // uses `serve()` — daemon, Windows service — inherits it by construction.
+    if !cfg.webhooks.is_empty() {
+        let provenance = koi_compose::webhook::WebhookProvenance::local(cfg.dns_zone.clone());
+        for handle in koi_compose::webhook::spawn_webhook_fanout(
+            &dashboard_state.event_tx,
+            cfg.webhooks.clone(),
+            provenance,
+            Some(dashboard_state.event_tx.clone()),
+            cancel.clone(),
+        ) {
+            tasks.push(handle);
+        }
+    }
+
     // ── mDNS browser state (conditional on mDNS being enabled) ──
     // The LAN-wide meta-browse worker is NOT started here: it starts on the first
     // browser request and idles out (koi_dashboard::meta_browse).
@@ -101,6 +120,7 @@ pub fn serve(
             auth: Some(cfg.dat_token.clone()),
             mdns_snapshot: cores.mdns_snapshot.clone(),
             mcp_http: !cfg.no_mcp_http,
+            webhooks: cfg.webhooks.clone(),
             admin_shutdown: true,
             api_docs: true,
             daemon: true,

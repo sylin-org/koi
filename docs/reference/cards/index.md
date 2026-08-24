@@ -37,6 +37,7 @@ code-reviewed but not independently live-tested.
 - [Health](machine-health.md) — service checks + auto-derived machine health.
 - [UDP bridge](udp-bridge.md) — reach LAN UDP from a bridge-networked container.
 - [Container auto-wire](container-autowire.md) — one Docker label → mDNS + DNS + health + proxy.
+- [Webhook events](webhook-events.md) — every domain event delivered as a signed HTTP POST to your sinks.
 
 ## Interfaces & embedding
 

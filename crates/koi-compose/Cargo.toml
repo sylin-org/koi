@@ -36,6 +36,9 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 hostname.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+ureq = { version = "2", features = ["json"] }
 
 [dev-dependencies]
 # Orchestrator tests construct a runtime `Instance` (its `discovered_at` is a

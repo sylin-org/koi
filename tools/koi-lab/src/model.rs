@@ -627,6 +627,20 @@ pub struct RuntimeReconnectReport {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct WebhookFanoutReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub rotation: TrustRotation,
+    pub primary_node: String,
+    pub sink_node: String,
+    pub artifact_sha256: String,
+    pub deliveries_captured: u32,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct ServiceLifecycleReport {
     pub schema: u32,
     pub run_id: RunId,
@@ -739,6 +753,7 @@ impl_evidence_report!(
     CertmeshRecoveryReport,
     CapabilityStoryReport,
     RuntimeReconnectReport,
+    WebhookFanoutReport,
     ServiceLifecycleReport,
     BoundedSoakReport,
     ProfileReport,

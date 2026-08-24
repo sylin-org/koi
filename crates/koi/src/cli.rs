@@ -149,6 +149,14 @@ pub struct Cli {
     #[arg(long, env = "KOI_NO_MCP_HTTP", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_mcp_http: bool,
 
+    /// Path to the webhook sink manifest (JSON array of {url, secret, enabled})
+    #[arg(long = "webhooks", env = "KOI_WEBHOOKS", value_name = "PATH")]
+    pub webhooks_manifest: Option<PathBuf>,
+
+    /// Disable the outbound webhook fan-out entirely (ADR-028)
+    #[arg(long, env = "KOI_NO_WEBHOOKS", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
+    pub no_webhooks: bool,
+
     /// Port for the ACME (RFC 8555) server-auth TLS listener
     #[arg(long, env = "KOI_ACME_PORT", default_value = "5643")]
     pub acme_port: u16,
@@ -716,6 +724,9 @@ pub struct Config {
     pub no_runtime: bool,
     pub no_acme: bool,
     pub no_mcp_http: bool,
+    /// Path to the webhook sink manifest (ADR-028); `None` = fan-out off.
+    pub webhooks_manifest: Option<PathBuf>,
+    pub no_webhooks: bool,
     pub runtime: String,
     pub announce_http: bool,
     pub dns_port: u16,
@@ -754,6 +765,8 @@ impl Config {
             no_runtime: cli.no_runtime,
             no_acme: cli.no_acme,
             no_mcp_http: cli.no_mcp_http,
+            webhooks_manifest: cli.webhooks_manifest.clone(),
+            no_webhooks: cli.no_webhooks,
             runtime: cli.runtime.clone(),
             announce_http: cli.announce_http,
             dns_port: cli.dns_port,
@@ -797,6 +810,30 @@ impl Config {
         }
     }
 
+    /// Resolve the webhook sink list for the serving stack (ADR-028).
+    ///
+    /// Disabled by `--no-webhooks`/`KOI_NO_WEBHOOKS` or an absent manifest. A
+    /// manifest that exists but is invalid is a startup-time `tracing::error!`
+    /// with the fan-out disabled (matching the non-fatal mDNS init precedent):
+    /// webhooks are additive transport, never a boot blocker — and the error is
+    /// loud, not silent.
+    pub fn webhook_sinks(&self) -> Vec<koi_compose::webhook::WebhookSink> {
+        if self.no_webhooks {
+            tracing::info!("Webhook fan-out disabled by configuration (--no-webhooks)");
+            return Vec::new();
+        }
+        let Some(path) = self.webhooks_manifest.as_deref() else {
+            return Vec::new();
+        };
+        match koi_compose::webhook::parse_sinks_file(path) {
+            Ok(sinks) => sinks,
+            Err(e) => {
+                tracing::error!("Webhook fan-out disabled: {e}");
+                Vec::new()
+            }
+        }
+    }
+
     /// Build config from environment variables only.
     /// Used by service mode where CLI args aren't available.
     #[cfg(windows)]
@@ -832,6 +869,8 @@ impl Config {
         let no_runtime = env_bool("KOI_NO_RUNTIME");
         let no_acme = env_bool("KOI_NO_ACME");
         let no_mcp_http = env_bool("KOI_NO_MCP_HTTP");
+        let no_webhooks = env_bool("KOI_NO_WEBHOOKS");
+        let webhooks_manifest = std::env::var("KOI_WEBHOOKS").ok().map(PathBuf::from);
 
         let runtime = std::env::var("KOI_RUNTIME").unwrap_or_else(|_| "auto".to_string());
 
@@ -876,6 +915,8 @@ impl Config {
             no_runtime,
             no_acme,
             no_mcp_http,
+            webhooks_manifest,
+            no_webhooks,
             runtime,
             announce_http,
             dns_port,
@@ -908,6 +949,8 @@ impl Default for Config {
             no_runtime: false,
             no_acme: false,
             no_mcp_http: false,
+            webhooks_manifest: None,
+            no_webhooks: false,
             runtime: "auto".to_string(),
             announce_http: false,
             dns_port: 53,
