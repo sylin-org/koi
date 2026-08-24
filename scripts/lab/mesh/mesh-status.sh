@@ -115,13 +115,19 @@ if [ -d "$ROOT" ]; then
 fi
 
 # --- member posture (meaningful on members; empty on a CA-only primary) -------
-# Local CSR custody + trust diagnosis, exactly like mesh-verify-member.sh.
+# Local CSR custody + trust diagnosis. Custody lives under the machine data
+# root (/var/lib/koi) for real installs, or the scoped tree for legacy shapes.
+# Diagnosis needs the daemon's breadcrumb: direct CLI when readable, then
+# sudo -n (passwordless boxes); evidence stays tolerant when neither works.
 m_custody=false ; m_overall="" ; m_healthy="" ; m_total=""
-if [ -f "$ROOT/data/certs/$hostname_now/key.pem" ]; then
+if [ -f "/var/lib/koi/certs/$hostname_now/key.pem" ] \
+  || [ -f "$ROOT/data/certs/$hostname_now/key.pem" ]; then
   m_custody=true
 fi
-diag=$(env KOI_DATA_DIR="$ROOT/data" KOI_DNS_ZONE=internal KOI_NO_CREDENTIAL_STORE=1 \
-  "$ROOT/koi" trust diagnose --json 2>/dev/null || true)
+diag=$("$ROOT/koi" trust diagnose --json 2>/dev/null || true)
+if [ -z "$diag" ]; then
+  diag=$(sudo -n /usr/local/bin/koi trust diagnose --json 2>/dev/null || true)
+fi
 if [ -n "$diag" ] && command -v python3 >/dev/null 2>&1; then
   dparsed=$(printf '%s' "$diag" | python3 -c '
 import json, sys
@@ -146,7 +152,11 @@ print("total=%d" % len(checks))
 fi
 
 # --- artifact identity --------------------------------------------------------
-version=$("$ROOT/koi" --version 2>/dev/null | head -n 1 || true)
+if [ -x /usr/local/bin/koi ]; then
+  version=$("/usr/local/bin/koi" --version 2>/dev/null | head -n 1 || true)
+else
+  version=$("$ROOT/koi" --version 2>/dev/null | head -n 1 || true)
+fi
 
 # --- one evidence line --------------------------------------------------------
 cm_reachable=false
