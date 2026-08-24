@@ -20,8 +20,12 @@ impl PuttyTransport {
         if remote_command.contains('\0') {
             bail!("remote command contains a NUL byte");
         }
-        let password = self.password()?;
+        let password = self.resolved_password(node)?;
         let (address, user, host_key) = remote_details(node)?;
+        // Force POSIX sh regardless of the account's login shell (a
+        // workstation may run fish/zsh): every lab snippet is written for sh,
+        // so the transport pins the interpreter instead of assuming one.
+        let remote = format!("sh -c '{}'", remote_command.replace('\'', "'\\''"));
         let output = Command::new("plink")
             .args([
                 "-batch",
@@ -29,9 +33,9 @@ impl PuttyTransport {
                 "-hostkey",
                 host_key,
                 "-pw",
-                password,
+                &password,
                 &format!("{user}@{address}"),
-                remote_command,
+                &remote,
             ])
             .output()
             .with_context(|| format!("failed to start plink for node {}", node.id()))?;
@@ -63,11 +67,11 @@ impl PuttyTransport {
         {
             bail!("unsafe remote copy path {remote_path:?}");
         }
-        let password = self.password()?;
+        let password = self.resolved_password(node)?;
         let (address, user, host_key) = remote_details(node)?;
         let destination = format!("{user}@{address}:{remote_path}");
         let output = Command::new("pscp")
-            .args(["-batch", "-q", "-hostkey", host_key, "-pw", password])
+            .args(["-batch", "-q", "-hostkey", host_key, "-pw", &password])
             .arg(local)
             .arg(destination)
             .output()
@@ -103,11 +107,11 @@ impl PuttyTransport {
                 parent.display()
             );
         }
-        let password = self.password()?;
+        let password = self.resolved_password(node)?;
         let (address, user, host_key) = remote_details(node)?;
         let source = format!("{user}@{address}:{remote_path}");
         let output = Command::new("pscp")
-            .args(["-batch", "-q", "-hostkey", host_key, "-pw", password])
+            .args(["-batch", "-q", "-hostkey", host_key, "-pw", &password])
             .arg(source)
             .arg(local)
             .output()
@@ -124,15 +128,33 @@ impl PuttyTransport {
         Ok(())
     }
 
-    fn password(&self) -> Result<&str> {
+    /// Per-machine credential resolution (catalog-driven, schema 2): a node's
+    /// `password_env` names the environment variable holding ITS password;
+    /// machines without one share the global `KOI_LAB_PASSWORD`.
+    fn resolved_password(&self, node: &NodeSpec) -> Result<String> {
+        if let Some(env_name) = node.password_env() {
+            let password = std::env::var(env_name).map_err(|_| {
+                anyhow::anyhow!(
+                    "{env_name} is required for remote operations on {}",
+                    node.id()
+                )
+            })?;
+            Self::validate_password(&password, env_name)?;
+            return Ok(password);
+        }
         let password = self
             .password
             .as_deref()
             .context("KOI_LAB_PASSWORD is required for remote lab operations")?;
+        Self::validate_password(password, "KOI_LAB_PASSWORD")?;
+        Ok(password.to_owned())
+    }
+
+    fn validate_password(password: &str, source: &str) -> Result<()> {
         if password.is_empty() || password.chars().any(|c| matches!(c, '\r' | '\n' | '\0')) {
-            bail!("KOI_LAB_PASSWORD contains an invalid value");
+            bail!("{source} contains an invalid value");
         }
-        Ok(password)
+        Ok(())
     }
 }
 
@@ -165,6 +187,9 @@ mod tests {
             dns_port: 18553,
             fixture_port: 18554,
             container_port: 18555,
+            roles: Vec::new(),
+            mutations: Vec::new(),
+            privilege: "workstation".into(),
         };
         assert!(remote_details(&node).is_err());
     }

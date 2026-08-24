@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "artifact": {
     "target": "x86_64-unknown-linux-musl",
     "package": "koi-net",
@@ -17,7 +17,10 @@
       "proxy_port": 18544,
       "dns_port": 18553,
       "fixture_port": 18554,
-      "container_port": 18555
+      "container_port": 18555,
+      "roles": ["principal", "sdk-caller"],
+      "mutations": [],
+      "privilege": "workstation"
     },
     {
       "kind": "putty_linux",
@@ -34,7 +37,10 @@
       "proxy_port": 16544,
       "dns_port": 16553,
       "fixture_port": 16554,
-      "container_port": 16555
+      "container_port": 16555,
+      "roles": ["ca", "member", "observer", "sink"],
+      "mutations": ["trust-store", "systemd"],
+      "privilege": "dedicated-box"
     },
     {
       "kind": "putty_linux",
@@ -51,7 +57,31 @@
       "proxy_port": 17544,
       "dns_port": 17553,
       "fixture_port": 17554,
-      "container_port": 17555
+      "container_port": 17555,
+      "roles": ["ca", "member", "observer", "sink"],
+      "mutations": ["trust-store", "systemd"],
+      "privilege": "dedicated-box"
+    },
+    {
+      "kind": "putty_linux",
+      "id": "test01",
+      "hostname": "test-01",
+      "address": "192.168.1.109",
+      "user": "test",
+      "host_key": "SHA256:xw/JKOjleL/nhvx06mWtXQSlec9Ue/ydUHbmFHopdNw",
+      "architecture": "x86_64",
+      "remote_root": "/home/test/koi-test",
+      "http_port": 19441,
+      "mtls_port": 19442,
+      "acme_port": 19443,
+      "proxy_port": 19444,
+      "dns_port": 19453,
+      "fixture_port": 19454,
+      "container_port": 19455,
+      "roles": ["ca", "member", "observer", "sink"],
+      "mutations": [],
+      "privilege": "workstation",
+      "password_env": "KOI_TEST01_PASSWORD"
     }
   ]
 }

@@ -461,6 +461,17 @@ impl Lab {
         let service = self.remote_by_id(roles.service)?;
         let client = self.config.node(roles.client)?;
         self.require_native_client_privilege(client)?;
+        // Catalog mutation grants: every host whose trust store this scenario
+        // touches must declare the grant (schema-2 `mutations`), independent
+        // of the operator flag.
+        for machine in [ca, service, client] {
+            if !machine.allows_mutation("trust-store") {
+                bail!(
+                    "{} does not grant trust-store mutations in the lab catalog",
+                    machine.id()
+                );
+            }
+        }
 
         // This establishes certmesh and proves its non-privileged invariants first.
         // It does not alter either system trust store.
@@ -1153,6 +1164,16 @@ impl Lab {
             address: node.address().to_owned(),
             operating_system: "windows".to_owned(),
             architecture: std::env::consts::ARCH.to_owned(),
+            catalog_roles: match node {
+                NodeSpec::LocalWindows { roles, .. } | NodeSpec::PuttyLinux { roles, .. } => {
+                    roles.clone()
+                }
+            },
+            catalog_mutations: match node {
+                NodeSpec::LocalWindows { mutations, .. }
+                | NodeSpec::PuttyLinux { mutations, .. } => mutations.clone(),
+            },
+            catalog_privilege: node.privilege().to_owned(),
             utc_epoch: now_epoch,
             clock_skew_seconds: 0,
             clock_probe_span_seconds: 0,
@@ -1171,10 +1192,13 @@ impl Lab {
     }
 
     pub(crate) fn remote_by_id(&self, id: &str) -> Result<&NodeSpec> {
-        self.config
-            .remotes()
-            .find(|node| node.id() == id)
-            .with_context(|| format!("lab config has no remote node {id}"))
+        crate::planner::machine_by_id(&self.config, id)
+            .ok_or_else(|| anyhow::anyhow!("no machine {id:?} in the lab catalog"))
+    }
+
+    /// The loaded machine catalog (planner + reporting consumers).
+    pub fn config(&self) -> &LabConfig {
+        &self.config
     }
 
     pub(crate) fn node_url(&self, node: &NodeSpec) -> Result<String> {
@@ -3269,6 +3293,24 @@ impl Lab {
             address: node.address().to_owned(),
             operating_system,
             architecture,
+            catalog_roles: [
+                "ca",
+                "member",
+                "observer",
+                "sink",
+                "principal",
+                "sdk-caller",
+            ]
+            .iter()
+            .filter(|role| node.supports_role(role))
+            .map(|role| role.to_string())
+            .collect(),
+            catalog_mutations: ["trust-store", "systemd"]
+                .iter()
+                .filter(|op| node.allows_mutation(op))
+                .map(|op| op.to_string())
+                .collect(),
+            catalog_privilege: node.privilege().to_owned(),
             utc_epoch,
             clock_skew_seconds,
             clock_probe_span_seconds,
@@ -4234,6 +4276,10 @@ mod tests {
             dns_port: 16553,
             fixture_port: 16554,
             container_port: 16555,
+            roles: Vec::new(),
+            mutations: Vec::new(),
+            privilege: "dedicated-box".into(),
+            password_env: None,
         }
     }
 

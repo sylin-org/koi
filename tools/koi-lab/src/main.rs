@@ -4,6 +4,7 @@ mod evidence;
 mod lab;
 mod mgmt_principal;
 mod model;
+mod planner;
 mod probe;
 mod profile;
 mod profile_journal;
@@ -112,6 +113,23 @@ enum LabCommand {
         run_id: String,
         #[arg(long, value_enum, default_value = "linux-forward")]
         rotation: TrustRotation,
+        /// Explicit catalog assignment overriding the rotation mapping:
+        /// machine to enroll FROM (runs the CA-side daemon).
+        #[arg(long)]
+        primary: Option<String>,
+        /// Explicit catalog assignment: machine that plays the principal's
+        /// probe (stages the identity and dials the management plane).
+        #[arg(long)]
+        probe: Option<String>,
+    },
+    /// List every two-role assignment the catalog planner generates.
+    Pairings {
+        /// Role played by the first machine (e.g. "ca", "principal").
+        #[arg(long)]
+        primary_role: String,
+        /// Role played by the second machine (e.g. "member", "sink").
+        #[arg(long)]
+        secondary_role: String,
     },
     /// Prove run-owned systemd readiness, supervision, reconstruction, and removal on Brook.
     ServiceLifecycle {
@@ -225,8 +243,31 @@ fn main() -> Result<()> {
         LabCommand::WebhookFanout { run_id, rotation } => {
             print_json(&lab.webhook_fanout(&RunId::parse(&run_id)?, rotation)?)?;
         }
-        LabCommand::MgmtPrincipal { run_id, rotation } => {
-            print_json(&lab.mgmt_principal(&RunId::parse(&run_id)?, rotation)?)?;
+        LabCommand::MgmtPrincipal {
+            run_id,
+            rotation,
+            primary,
+            probe,
+        } => {
+            if (primary.is_some()) != (probe.is_some()) {
+                anyhow::bail!("--primary and --probe must be supplied together");
+            }
+            print_json(&lab.mgmt_principal(
+                &RunId::parse(&run_id)?,
+                rotation,
+                primary.as_deref(),
+                probe.as_deref(),
+            )?)?;
+        }
+        LabCommand::Pairings {
+            primary_role,
+            secondary_role,
+        } => {
+            print_json(&crate::planner::pairings(
+                lab.config(),
+                &primary_role,
+                &secondary_role,
+            ))?;
         }
         LabCommand::ServiceLifecycle {
             run_id,

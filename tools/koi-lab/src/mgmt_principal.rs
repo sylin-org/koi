@@ -22,12 +22,13 @@ struct MgmtPrincipalResources {
     ca_created: bool,
     identity_staged: bool,
 }
-
 impl Lab {
     pub fn mgmt_principal(
         &self,
         run_id: &RunId,
         rotation: TrustRotation,
+        primary_id: Option<&str>,
+        probe_id: Option<&str>,
     ) -> Result<MgmtPrincipalReport> {
         if rotation == TrustRotation::WindowsClient {
             bail!("mgmt-principal requires one of the two physical Linux rotations");
@@ -41,9 +42,32 @@ impl Lab {
             bail!("mgmt-principal refused: run does not own both staged node directories");
         }
 
-        let roles = rotation.roles();
-        let primary = self.remote_by_id(roles.ca)?;
-        let probe_node = self.remote_by_id(roles.service)?;
+        // Catalog-driven assignment when explicit ids are supplied; otherwise
+        // the legacy rotation mapping. Explicit ids may name ANY catalog
+        // machine that declares the needed roles — adding test-01 required no
+        // code change here, only data.
+        let (primary, probe_node): (&NodeSpec, &NodeSpec) = match (primary_id, probe_id) {
+            (Some(primary_id), Some(probe_id)) => {
+                let primary = self.remote_by_id(primary_id)?;
+                let probe = self.remote_by_id(probe_id)?;
+                if primary.id() == probe.id() {
+                    bail!("primary and probe must be distinct machines");
+                }
+                for (machine, role) in [(primary, "ca"), (probe, "observer")] {
+                    if !machine.supports_role(role) {
+                        bail!(
+                            "{} does not declare the {role:?} role in the catalog",
+                            machine.id()
+                        );
+                    }
+                }
+                (primary, probe)
+            }
+            _ => (
+                self.remote_by_id(rotation.roles().ca)?,
+                self.remote_by_id(rotation.roles().service)?,
+            ),
+        };
         let mut resources = MgmtPrincipalResources::default();
         let result = self.run_mgmt_principal(run_id, rotation, primary, probe_node, &mut resources);
         let cleanup = self.cleanup_mgmt_principal(run_id, primary, probe_node, &mut resources);

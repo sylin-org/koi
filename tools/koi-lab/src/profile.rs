@@ -284,7 +284,7 @@ impl Lab {
                 self.webhook_fanout(run_id, rotation)?;
             }
             ProfileCase::MgmtPrincipal(rotation) => {
-                self.mgmt_principal(run_id, rotation)?;
+                self.mgmt_principal(run_id, rotation, None, None)?;
             }
             ProfileCase::ServiceLifecycle => {
                 self.service_lifecycle(run_id, true)?;
@@ -561,6 +561,9 @@ mod tests {
             address: "127.0.0.1".into(),
             operating_system: "test".into(),
             architecture: "x86_64".into(),
+            catalog_roles: Vec::new(),
+            catalog_mutations: Vec::new(),
+            catalog_privilege: "dedicated-box".into(),
             utc_epoch: 1,
             clock_skew_seconds: 0,
             clock_probe_span_seconds: 0,

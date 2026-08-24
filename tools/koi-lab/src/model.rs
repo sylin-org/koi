@@ -42,6 +42,17 @@ pub enum NodeSpec {
         dns_port: u16,
         fixture_port: u16,
         container_port: u16,
+        /// What this machine may run in generated assignments.
+        #[serde(default)]
+        roles: Vec<String>,
+        /// What may be mutated on it (trust-store, systemd). Empty = never
+        /// assigned a mutating lane, even with the operator flag present.
+        #[serde(default)]
+        mutations: Vec<String>,
+        /// `dedicated-box` or `workstation`. Workstations are daily-driver
+        /// machines: every lane stays run-scoped and exactly restored.
+        #[serde(default = "default_privilege")]
+        privilege: String,
     },
     PuttyLinux {
         id: String,
@@ -58,7 +69,57 @@ pub enum NodeSpec {
         dns_port: u16,
         fixture_port: u16,
         container_port: u16,
+        #[serde(default)]
+        roles: Vec<String>,
+        #[serde(default)]
+        mutations: Vec<String>,
+        #[serde(default = "default_privilege")]
+        privilege: String,
+        /// Environment variable holding this machine's SSH password. Falls
+        /// back to the shared `KOI_LAB_PASSWORD` when absent — credentials
+        /// live in the environment, never in the catalog file.
+        #[serde(default)]
+        password_env: Option<String>,
     },
+}
+
+fn default_privilege() -> String {
+    "dedicated-box".to_string()
+}
+
+impl NodeSpec {
+    pub fn password_env(&self) -> Option<&str> {
+        match self {
+            Self::PuttyLinux { password_env, .. } => password_env.as_deref(),
+            Self::LocalWindows { .. } => None,
+        }
+    }
+
+    /// Whether this machine may play `role` in a generated assignment.
+    /// Machines with an empty role list are legacy entries: they opt into
+    /// nothing and the planner will not schedule them.
+    pub fn supports_role(&self, role: &str) -> bool {
+        match self {
+            Self::PuttyLinux { roles, .. } | Self::LocalWindows { roles, .. } => {
+                roles.iter().any(|r| r == role)
+            }
+        }
+    }
+
+    /// Whether `op` (e.g. `trust-store`, `systemd`) may be mutated here.
+    pub fn allows_mutation(&self, op: &str) -> bool {
+        match self {
+            Self::PuttyLinux { mutations, .. } | Self::LocalWindows { mutations, .. } => {
+                mutations.iter().any(|m| m == op)
+            }
+        }
+    }
+
+    pub fn privilege(&self) -> &str {
+        match self {
+            Self::PuttyLinux { privilege, .. } | Self::LocalWindows { privilege, .. } => privilege,
+        }
+    }
 }
 
 /// Named V1-02 role rotations. Node assignment lives here so scenario code
@@ -148,7 +209,7 @@ impl LabConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.schema != 1 {
+        if self.schema != 2 {
             bail!("unsupported lab config schema {}", self.schema);
         }
         if self.artifact.target != "x86_64-unknown-linux-musl" {
@@ -157,8 +218,8 @@ impl LabConfig {
         if self.artifact.package != "koi-net" {
             bail!("the physical lab artifact package must be koi-net");
         }
-        if self.nodes.len() != 3 {
-            bail!("the v1 lab inventory must contain exactly three nodes");
+        if self.nodes.len() < 3 {
+            bail!("the lab inventory requires one local Windows node and at least two Linux nodes");
         }
 
         let mut ids = HashSet::new();
@@ -249,8 +310,8 @@ impl LabConfig {
                 }
             }
         }
-        if local_count != 1 || remote_count != 2 {
-            bail!("the v1 lab requires one local Windows node and two PuTTY Linux nodes");
+        if local_count != 1 || remote_count < 2 {
+            bail!("the lab requires one local Windows node and at least two PuTTY Linux nodes");
         }
         Ok(())
     }
@@ -474,6 +535,15 @@ pub struct NodeSnapshot {
     pub address: String,
     pub operating_system: String,
     pub architecture: String,
+    /// Catalog metadata (schema 2): what the machine may run, what may be
+    /// mutated on it, and its privilege class. Surfaced so operators see the
+    /// planner's grants at a glance.
+    #[serde(default)]
+    pub catalog_roles: Vec<String>,
+    #[serde(default)]
+    pub catalog_mutations: Vec<String>,
+    #[serde(default)]
+    pub catalog_privilege: String,
     pub utc_epoch: i64,
     pub clock_skew_seconds: i64,
     pub clock_probe_span_seconds: i64,
@@ -892,6 +962,10 @@ mod tests {
             dns_port: 16553,
             fixture_port: 16554,
             container_port: 16555,
+            roles: Vec::new(),
+            mutations: Vec::new(),
+            privilege: "dedicated-box".into(),
+            password_env: None,
         };
         let run_id = RunId::parse("v1-20260719T000000Z-deadbeef").unwrap();
         assert_eq!(

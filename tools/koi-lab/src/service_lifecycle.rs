@@ -29,6 +29,13 @@ impl Lab {
         allow_system_mutation: bool,
     ) -> Result<ServiceLifecycleReport> {
         require_system_mutation(allow_system_mutation)?;
+        let service = self.remote_by_id(SERVICE_NODE)?;
+        if !service.allows_mutation("systemd") {
+            bail!(
+                "{} does not grant systemd mutations in the lab catalog",
+                service.id()
+            );
+        }
         let plan = self.cleanup_plan(run_id)?;
         if plan
             .nodes
@@ -373,6 +380,10 @@ mod tests {
             dns_port: 16553,
             fixture_port: 16554,
             container_port: 16555,
+            roles: Vec::new(),
+            mutations: Vec::new(),
+            privilege: "dedicated-box".into(),
+            password_env: None,
         }
     }
 
