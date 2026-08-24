@@ -264,15 +264,13 @@ pub async fn build_cores(
 ) -> Result<Cores, BuildCoresError> {
     // ── mDNS ──
     let mdns_core = if !spec.no_mdns {
-        // Adaptive coexistence (ADR-030): if another mDNS stack already holds
-        // 5353, skip rather than share the socket — two responders on one port
-        // produce duplicate answers and flappy peer caches. Coexistence is a
-        // normal steady state on desktop distros (avahi), so the skip logs at
-        // info with its reason; only genuine init failures log error.
-        if !koi_mdns::udp_port_exclusively_free(koi_mdns::MDNS_PORT) {
+        // Adaptive coexistence (ADR-030, revised): launch unless a known
+        // foreign responder is active. Socket reuse-holders that never answer
+        // mDNS (Chrome, dnscache) are safe to coexist with; avahi is not.
+        if let Some(reason) = koi_mdns::foreign_responder_reason() {
             tracing::info!(
-                "mDNS capability: skipped — UDP 5353 is held by another mDNS stack \
-                 (coexistence per ADR-030); all other capabilities continue"
+                "mDNS capability: skipped — {reason}; coexistence per ADR-030, \
+                 all other capabilities continue"
             );
             None
         } else {

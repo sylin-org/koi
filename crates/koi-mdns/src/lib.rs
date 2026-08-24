@@ -72,6 +72,38 @@ pub fn udp_port_exclusively_free(port: u16) -> bool {
     }
 }
 
+/// Whether a foreign mDNS responder makes starting Koi's own stack unwise
+/// right now (ADR-030 revised after measurement). Returns the reason.
+///
+/// Measured reality (RL-7 / CI + desktop): modern kernels permit mixed
+/// reuse/non-reuse binds, so socket probes cannot identify responders —
+/// Chrome and svchost hold 5353 with reuse on ordinary Windows machines
+/// without answering mDNS at all. Detection therefore keys on *known
+/// responder stacks*, plus the conservative exclusive-holder guard.
+///
+/// - Unix: avahi active (the dominant desktop stack) or an exclusive holder.
+/// - Windows: never — stock Windows ships reuse-holders (dnscache/svchost,
+///   sometimes Chrome) that are legal cohabitants under RFC 6762
+///   multi-responder rules; auto-skipping here would disable discovery on
+///   every Windows machine. `--no-mdns` remains the explicit control.
+pub fn foreign_responder_reason() -> Option<&'static str> {
+    #[cfg(unix)]
+    {
+        let avahi = std::process::Command::new("systemctl")
+            .args(["is-active", "--quiet", "avahi-daemon"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if avahi {
+            return Some("avahi-daemon is active");
+        }
+        if !udp_port_exclusively_free(MDNS_PORT) {
+            return Some("UDP 5353 is exclusively held");
+        }
+    }
+    None
+}
+
 /// Firewall ports required by the mDNS capability.
 pub fn firewall_ports() -> Vec<FirewallPort> {
     vec![FirewallPort::new("mDNS", FirewallProtocol::Udp, MDNS_PORT)]
