@@ -2280,6 +2280,7 @@ dependencies = [
  "hostname",
  "if-addrs",
  "koi-common",
+ "libc",
  "mdns-sd",
  "serde",
  "serde_json",

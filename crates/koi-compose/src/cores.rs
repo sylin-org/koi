@@ -264,14 +264,27 @@ pub async fn build_cores(
 ) -> Result<Cores, BuildCoresError> {
     // ── mDNS ──
     let mdns_core = if !spec.no_mdns {
-        match koi_mdns::MdnsCore::with_cancel(cancel.clone()) {
-            Ok(core) => Some(Arc::new(core)),
-            Err(e) => {
-                if spec.fail_fast {
-                    return Err(e.into());
+        // Adaptive coexistence (ADR-030): if another mDNS stack already holds
+        // 5353, skip rather than share the socket — two responders on one port
+        // produce duplicate answers and flappy peer caches. Coexistence is a
+        // normal steady state on desktop distros (avahi), so the skip logs at
+        // info with its reason; only genuine init failures log error.
+        if !koi_mdns::udp_port_exclusively_free(koi_mdns::MDNS_PORT) {
+            tracing::info!(
+                "mDNS capability: skipped — UDP 5353 is held by another mDNS stack \
+                 (coexistence per ADR-030); all other capabilities continue"
+            );
+            None
+        } else {
+            match koi_mdns::MdnsCore::with_cancel(cancel.clone()) {
+                Ok(core) => Some(Arc::new(core)),
+                Err(e) => {
+                    if spec.fail_fast {
+                        return Err(e.into());
+                    }
+                    tracing::error!(error = %e, "Failed to initialize mDNS core");
+                    None
                 }
-                tracing::error!(error = %e, "Failed to initialize mDNS core");
-                None
             }
         }
     } else {

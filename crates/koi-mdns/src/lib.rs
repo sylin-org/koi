@@ -42,6 +42,36 @@ const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 /// mDNS UDP port.
 pub const MDNS_PORT: u16 = 5353;
 
+/// Whether a UDP port is **exclusively free** — safe for Koi to start its own
+/// mDNS responder (ADR-030).
+///
+/// mdns-sd binds 5353 with reuse semantics, so where another responder used
+/// reuse too (avahi, systemd-resolved), Koi's bind would *also* succeed and
+/// two responders would share one socket. This probe attempts a plain bind
+/// with NO reuse flags:
+///
+/// - **Unix** (the homelab case): fails with `AddrInUse` when ANY socket holds
+///   the port, including reuse-holders — exact detection.
+/// - **Windows**: plain binds do not conflict unless the holder asked for
+///   exclusivity, so a reuse-holding stack may go undetected here. Windows
+///   mDNS coexistence conflicts are rare (no avahi equivalent ships by
+///   default); the residual risk is documented rather than pulled in via a
+///   raw-socket dependency.
+///
+/// Any non-`AddrInUse` bind error also reports "not free": we could not prove
+/// exclusivity, so we degrade instead of starting into an unknown environment.
+pub fn udp_port_exclusively_free(port: u16) -> bool {
+    match std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port)) {
+        // Drop closes and releases the hold; the subsequent mdns-sd bind
+        // re-acquires with its own reuse semantics.
+        Ok(s) => {
+            drop(s);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 /// Firewall ports required by the mDNS capability.
 pub fn firewall_ports() -> Vec<FirewallPort> {
     vec![FirewallPort::new("mDNS", FirewallProtocol::Udp, MDNS_PORT)]
@@ -360,5 +390,68 @@ impl Capability for MdnsCore {
             summary,
             healthy,
         }
+    }
+}
+
+#[cfg(test)]
+mod port_probe_tests {
+    use super::*;
+
+    #[test]
+    fn free_port_reports_free() {
+        // OS assigns an unbound ephemeral port: the probe must succeed and
+        // release the hold (binding the same port again right after works).
+        let probe_ok = {
+            let s = std::net::UdpSocket::bind(("127.0.0.1", 0)).expect("bind");
+            let port = s.local_addr().unwrap().port();
+            drop(s);
+            udp_port_exclusively_free(port)
+        };
+        assert!(
+            probe_ok,
+            "an unbound ephemeral port must report exclusively free"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn held_port_reports_taken_even_for_reuse_holders() {
+        // The avahi shape (Unix): a holder WITH SO_REUSEADDR must make the
+        // no-reuse probe fail — this is exactly how Koi detects a foreign
+        // responder before starting its own (ADR-030).
+        use std::os::fd::AsRawFd;
+
+        fn bind_with_reuse(port: u16) -> std::io::Result<std::net::UdpSocket> {
+            let sock = std::net::UdpSocket::bind(("0.0.0.0", 0))?;
+            unsafe {
+                let opt: libc::c_int = 1;
+                let r = libc::setsockopt(
+                    sock.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_REUSEADDR,
+                    &opt as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as u32,
+                );
+                if r != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(sock)
+        }
+
+        // Reserve a port with a plain socket first so both holders agree on it.
+        let plain = std::net::UdpSocket::bind(("0.0.0.0", 0)).expect("reserve");
+        let port = plain.local_addr().unwrap().port();
+        drop(plain);
+        let avahi_like = bind_with_reuse(port).expect("bind reuse holder");
+        assert!(
+            !udp_port_exclusively_free(port),
+            "a reuse-held port must NOT report exclusively free (ADR-030)"
+        );
+        drop(avahi_like);
+        assert!(
+            udp_port_exclusively_free(port),
+            "released port reports free again"
+        );
     }
 }
