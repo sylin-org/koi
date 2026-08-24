@@ -1017,6 +1017,30 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
+    /// Agent-Door conformance vector (V1-11): the served card must match the
+    /// pinned shape in docs/reference/vectors/agent-door-card.json exactly
+    /// (module version substituted for the `<semver>` placeholder).
+    #[test]
+    fn agent_door_vector_matches_the_impl() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/reference/vectors/agent-door-card.json"
+        ))
+        .expect("agent-door vector parses");
+        let card = build_server_card("9.9.9", true);
+        let mut expected = vector["card"].clone();
+        expected["version"] = serde_json::json!("9.9.9");
+        assert_eq!(
+            card, expected,
+            "served Agent-Door card drifted from the pinned vector"
+        );
+
+        let disabled = build_server_card("9.9.9", false);
+        assert_eq!(
+            disabled["mcp"]["enabled"],
+            vector["disabled_variant"]["mcp"]["enabled"]
+        );
+    }
+
     #[tokio::test]
     async fn disabled_fallback_returns_503() {
         let app = disabled_fallback_router("mdns");

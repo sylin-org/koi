@@ -242,7 +242,7 @@ the client presents the node's CA-signed leaf.
   "overall": "healthy",
   "checks": [
     { "name": "posture",  "status": "ok",  "detail": "Authenticated" },
-    { "name": "renewal",  "status": "warn","detail": "leaf expires soon (in 5 days)" },
+    { "name": "renewal",  "status": "ok",  "detail": "leaf healthy (expires in 5 days)" },
     { "name": "self_revocation", "status": "red", "detail": "...REVOKED...",
       "remedy": "re-enroll with a fresh invite: koi certmesh join <endpoint>" }
   ]
@@ -361,6 +361,59 @@ A consumer that receives `signed: false` knows the node is Open and will route
 plaintext HTTP; `signed: true` means mTLS is available and `client_for` should be
 used. This is the HTTP path for consumers that cannot embed Koi — a non-Rust
 sibling, a browser dashboard, any HTTP client.
+
+---
+
+## 8. Agent-Door (MCP discovery contract)
+
+The **Door** is how a non-human caller finds Koi's tool surface without prior
+configuration. It is unauthenticated by design (no secrets) and pinned as a
+conformance vector (`docs/reference/vectors/agent-door-card.json`, executed
+against the reference implementation).
+
+### Server card
+
+`GET /.well-known/mcp/server-card.json` → exactly:
+
+```json
+{
+  "name": "koi",
+  "version": "<semver>",
+  "mcp": {
+    "enabled": true,
+    "transport": "streamable-http",
+    "path": "/v1/mcp",
+    "auth": { "scheme": "bearer", "header": "x-koi-token" }
+  }
+}
+```
+
+- `mcp.enabled: false` when the loopback MCP transport is disabled; the shape
+  does not otherwise change.
+- The card never names principals, tokens, or sinks.
+
+### Discovery records
+
+| Record | Shape |
+|--------|-------|
+| mDNS `_mcp._tcp` | One per host; TXT `transport=streamable-http`, `path=/v1/mcp`. |
+| DNS TXT `_mcp.<host>.<zone>` | Present when the node serves the zone. |
+
+### Authenticating at the Door (two sanctioned shapes)
+
+1. **Loopback / token:** every `/v1/mcp` method carries the DAT header named by
+   `mcp.auth.header`. Loopback-only trust model (ADR-026 §5/§7).
+2. **Principal (ADR-026):** the same `path` mounted on the inter-node **mTLS**
+   listener; the caller presents a CA-chained client-role certificate whose CN
+   must resolve to an active, unexpired, unrevoked roster member. Rejections are
+   named (`unknown_signer` / `expired` / `revoked`) and audited
+   (`mtls_unknown_cn` / `mtls_expired_cn` / `mtls_revoked_rejected`). Coarse
+   authority: any active principal ≈ the DAT holder minus human-only surfaces;
+   per-principal scopes are explicitly out of scope.
+
+A consumer dials a principal-authenticated Door by a name the server leaf's SAN
+carries (e.g. `<host>.<zone>`) — generic TLS clients enforce hostname
+verification against DNS SANs; Koi leaves carry no IP SANs.
 
 ---
 

@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "description": "Agent-Door conformance vector (ADR-026 / V1-11): the exact JSON shape of GET /.well-known/mcp/server-card.json. `version` in the template is the literal string a consumer should treat as any SemVer; the reference implementation substitutes its crate version. Executed against the Rust implementation by koi-serve's agent_door_vector_matches_the_impl test.",
+  "card": {
+    "name": "koi",
+    "version": "<semver>",
+    "mcp": {
+      "enabled": true,
+      "transport": "streamable-http",
+      "path": "/v1/mcp",
+      "auth": { "scheme": "bearer", "header": "x-koi-token" }
+    }
+  },
+  "disabled_variant": {
+    "mcp": { "enabled": false }
+  },
+  "rules": [
+    "`name` is the constant \"koi\" (K2 neutral vocabulary).",
+    "`version` is the daemon's SemVer.",
+    "`mcp.path` is the absolute path of the Streamable HTTP endpoint.",
+    "`mcp.auth.scheme` is always \"bearer\" and `mcp.auth.header` names the DAT header; principals (ADR-026) instead present a client certificate on the mTLS management plane — the card does not change shape for them.",
+    "The card is unauthenticated and carries no secrets."
+  ]
+}
