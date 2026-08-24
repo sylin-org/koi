@@ -2,6 +2,7 @@ mod acme;
 mod derived;
 mod evidence;
 mod lab;
+mod mgmt_principal;
 mod model;
 mod probe;
 mod profile;
@@ -100,6 +101,13 @@ enum LabCommand {
     },
     /// Prove cross-host webhook fan-out: signed delivery to a run-owned sink fixture.
     WebhookFanout {
+        #[arg(long)]
+        run_id: String,
+        #[arg(long, value_enum, default_value = "linux-forward")]
+        rotation: TrustRotation,
+    },
+    /// Prove principal identity end-to-end over the physical management plane (ADR-026).
+    MgmtPrincipal {
         #[arg(long)]
         run_id: String,
         #[arg(long, value_enum, default_value = "linux-forward")]
@@ -216,6 +224,9 @@ fn main() -> Result<()> {
         }
         LabCommand::WebhookFanout { run_id, rotation } => {
             print_json(&lab.webhook_fanout(&RunId::parse(&run_id)?, rotation)?)?;
+        }
+        LabCommand::MgmtPrincipal { run_id, rotation } => {
+            print_json(&lab.mgmt_principal(&RunId::parse(&run_id)?, rotation)?)?;
         }
         LabCommand::ServiceLifecycle {
             run_id,

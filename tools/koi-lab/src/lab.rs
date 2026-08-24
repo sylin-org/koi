@@ -1185,7 +1185,7 @@ impl Lab {
         ))
     }
 
-    fn start_run_daemon(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+    pub(crate) fn start_run_daemon(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
         self.launch_run_daemon(node, run_id, false, DaemonProfile::Certmesh)
     }
 
@@ -1520,6 +1520,88 @@ impl Lab {
             ),
         )?;
         Ok(())
+    }
+
+    /// Stage a run-owned client identity (leaf/key/CA PEMs) onto the probe
+    /// node's run directory at mode 0600 for its OpenSSL-backed curl probes
+    /// (ADR-026 physical lane). The private key was generated in-controller and
+    /// reached the CA only as a CSR; this moves it over the pinned SSH transport
+    /// into the controller's own run-owned directory so the probe host can
+    /// present it — never to the CA, never in any URL or command argument.
+    pub(crate) fn stage_principal_identity(
+        &self,
+        node: &NodeSpec,
+        run_id: &RunId,
+        leaf_pem: &str,
+        key_pem: &str,
+        ca_pem: &str,
+    ) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        let local_dir = output_path(run_id.as_str());
+        std::fs::create_dir_all(&local_dir)?;
+        for (name, body) in [
+            ("principal-leaf.pem", leaf_pem),
+            ("principal-key.pem", key_pem),
+            ("principal-ca.pem", ca_pem),
+        ] {
+            let local = local_dir.join(name);
+            std::fs::write(&local, body)?;
+            self.transport
+                .copy_to(node, &local, &format!("{run_dir}/{name}"))?;
+            std::fs::remove_file(&local)?;
+        }
+        self.transport.run_checked(
+            node,
+            &format!(
+                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; chmod 600 {run_dir}/principal-key.pem {run_dir}/principal-leaf.pem {run_dir}/principal-ca.pem",
+                run_id.as_str(),
+                run_id.as_str()
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// Remove the staged principal identity and probe artifacts (ownership-checked).
+    pub(crate) fn remove_principal_identity_files(
+        &self,
+        node: &NodeSpec,
+        run_id: &RunId,
+    ) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        self.transport.run_checked(
+            node,
+            &format!(
+                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; rm -f {run_dir}/principal-leaf.pem {run_dir}/principal-key.pem {run_dir}/principal-ca.pem {run_dir}/principal-probe.json",
+                run_id.as_str(),
+                run_id.as_str()
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// Run one OpenSSL-curl management-plane probe on `node` and return
+    /// `(status, body)` — the shared driver for the ADR-026 physical lane.
+    pub(crate) fn mtls_probe(
+        &self,
+        probe_node: &NodeSpec,
+        run_id: &RunId,
+        command: &str,
+    ) -> Result<(u16, String)> {
+        let run_dir = probe_node.run_dir(run_id)?;
+        let stdout = self
+            .transport
+            .run_checked(probe_node, command)
+            .context("management-plane probe failed to execute")?;
+        let code: u16 = stdout
+            .trim()
+            .parse()
+            .with_context(|| format!("probe returned non-numeric status {stdout:?}"))?;
+        let body = self
+            .remote_line(probe_node, &format!("cat {run_dir}/principal-probe.json"))
+            .unwrap_or_default();
+        Ok((code, body))
     }
 
     pub(crate) fn remove_runtime_proxy_files(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {

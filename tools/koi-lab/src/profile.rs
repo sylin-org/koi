@@ -39,6 +39,7 @@ enum ProfileCase {
     CapabilityStory(TrustRotation),
     RuntimeReconnect(TrustRotation),
     WebhookFanout(TrustRotation),
+    MgmtPrincipal(TrustRotation),
     ServiceLifecycle,
     BoundedSoak,
 }
@@ -66,6 +67,9 @@ impl ProfileCase {
             }
             Self::WebhookFanout(rotation) => {
                 format!("webhook-fanout-{}", rotation.as_str())
+            }
+            Self::MgmtPrincipal(rotation) => {
+                format!("mgmt-principal-{}", rotation.as_str())
             }
             Self::ServiceLifecycle => "service-lifecycle-linux".to_owned(),
             Self::BoundedSoak => "bounded-soak-linux".to_owned(),
@@ -279,6 +283,9 @@ impl Lab {
             ProfileCase::WebhookFanout(rotation) => {
                 self.webhook_fanout(run_id, rotation)?;
             }
+            ProfileCase::MgmtPrincipal(rotation) => {
+                self.mgmt_principal(run_id, rotation)?;
+            }
             ProfileCase::ServiceLifecycle => {
                 self.service_lifecycle(run_id, true)?;
             }
@@ -340,6 +347,8 @@ fn profile_cases(profile: LabProfile) -> Vec<ProfileCase> {
                 RuntimeReconnect(LinuxReverse),
                 WebhookFanout(LinuxForward),
                 WebhookFanout(LinuxReverse),
+                MgmtPrincipal(LinuxForward),
+                MgmtPrincipal(LinuxReverse),
                 CapabilityStory(LinuxForward),
                 CapabilityStory(LinuxReverse),
                 ServiceLifecycle,
@@ -441,14 +450,16 @@ mod tests {
         );
 
         let full = profile_cases(LabProfile::Full);
-        assert_eq!(full.len(), 14);
+        assert_eq!(full.len(), 16);
         assert_eq!(&full[..certmesh.len()], certmesh.as_slice());
-        // The two webhook cases ride the same non-privileged lane as reconnect.
+        // The webhook + principal cases ride the same non-privileged lane as reconnect.
         assert_eq!(
-            &full[certmesh.len() + 2..certmesh.len() + 4],
+            &full[certmesh.len() + 2..certmesh.len() + 6],
             [
                 ProfileCase::WebhookFanout(LinuxForward),
-                ProfileCase::WebhookFanout(LinuxReverse)
+                ProfileCase::WebhookFanout(LinuxReverse),
+                ProfileCase::MgmtPrincipal(LinuxForward),
+                ProfileCase::MgmtPrincipal(LinuxReverse),
             ]
         );
         assert_eq!(

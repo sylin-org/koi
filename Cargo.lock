@@ -2243,6 +2243,7 @@ dependencies = [
  "clap",
  "instant-acme",
  "pem",
+ "rcgen 0.13.2",
  "serde",
  "serde_json",
  "sha2",
