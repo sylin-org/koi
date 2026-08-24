@@ -626,15 +626,19 @@ evidence rather than a one-off demo.
   that stream log one loud warning and stay inert. Proven by
   `crates/koi-embedded/tests/webhook_embedded.rs`: a configured sink receives a signed
   `dns.updated` over real TCP and `/v1/status` reports `{enabled:true, sinks:1}`.
-- **D11 — management-plane mounting shape (2026-08-24):** ADR-026 §5 offered two
-  sanctioned transports; this landing extends the existing inter-node mTLS listener
-  (`5642` style) rather than adding a second port: `TrustPlaneConfig.mgmt_mcp`
-  (= `!no_mcp_http`, one switch owns the tool surface) mounts `/v1/mcp` behind a
-  per-request CN → roster guard (`CertmeshCore::authorize_principal`). Named rejections
-  reuse the shared `ErrorBody {error, message}` contract with the ADR-020 reason as the
-  message prefix (`unknown_signer: …`) instead of extending the shared type. The guard
-  is coarse by design (§5): any active principal ≈ DAT authority minus human-only
-  surfaces; `/v1/certmesh/*` CA administration remains off the management router.
+- **D11 — management-plane mounting shape (2026-08-24, corrected same day):** ADR-026 §5
+  offered two sanctioned transports; this landing extends the existing inter-node mTLS
+  listener (`5642` style) rather than adding a second port: `TrustPlaneConfig.mgmt_mcp`
+  mounts `/v1/mcp` behind a per-request CN → roster guard
+  (`CertmeshCore::authorize_principal`). Named rejections reuse the shared
+  `ErrorBody {error, message}` contract with the ADR-020 reason as the message prefix
+  (`unknown_signer: …`) instead of extending the shared type. The guard is coarse by
+  design (§5): any active principal ≈ DAT authority minus human-only surfaces;
+  `/v1/certmesh/*` CA administration remains off the management router.
+  **Correction (hardware finding):** the initial wiring coupled `mgmt_mcp` to
+  `--no-mcp-http`; the first physical run proved that wrong — the certmesh lab profile
+  disables loopback MCP and got a 404 management plane. The switch is now an independent
+  `--no-mgmt-mcp` / `KOI_NO_MGMT_MCP` (default on), per §7 additivity; see D14.
 - **D12 — audit attribution scope (2026-08-24):** §6 landed as (a) named failure events
   for principal authorization (`mtls_unknown_cn` / `mtls_expired_cn` /
   `mtls_revoked_rejected`, each carrying the CN), and (b) credential provenance on
@@ -647,6 +651,13 @@ evidence rather than a one-off demo.
   mint time (`invite --client` → `InviteRequest.role`), enforced CA-side
   (`enroll_role_mismatch`, token burned on attempt). Unbound invites preserve the old
   any-role behavior; legacy stores deserialize unbound.
+- **D14 — generic-TLS hostname verification is a feature boundary (hardware finding,
+  2026-08-24):** OpenSSL curl refuses the management plane when dialed by IP because
+  Koi leaves carry DNS SANs only — correct behavior, and deliberately different from
+  Koi's own pinned-CA client, which relaxes the name check for LAN realities. The
+  physical lane therefore dials `<host>.internal` via curl `--resolve` onto the node's
+  real address (verification honest against a carried SAN, traffic still cross-host).
+  Documented as the principal-consumer contract: dial principals by SAN name.
 - **V1-10 doc closure:** capability card `docs/reference/cards/webhook-events.md`
   (verified, physical runs cited) + cards index + SURFACES row + full-profile membership
   (`WebhookFanout` forward/reverse inserted after reconnect; profile policy test updated to

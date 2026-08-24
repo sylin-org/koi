@@ -53,6 +53,11 @@ pub struct ServeConfig {
     pub dat_token: String,
     /// Webhook sinks for outbound event fan-out (ADR-028). Empty = disabled.
     pub webhooks: Vec<koi_compose::webhook::WebhookSink>,
+    /// Disable the mTLS management plane (`/v1/mcp` behind principal
+    /// authorization, ADR-026 §5). Independent of [`Self::no_mcp_http`]: that
+    /// switch owns the loopback tool surface; this one owns the mutually
+    /// authenticated remote surface the trust plane mounts.
+    pub no_mgmt_mcp: bool,
 }
 
 /// Spawn the full serving stack for `cores` into `(cancel, tasks)`. The caller owns the
@@ -144,7 +149,7 @@ pub fn serve(
             no_acme: cfg.no_acme,
             dns_zone: cfg.dns_zone.clone(),
             announce_http_port: (!cfg.no_http).then_some(cfg.http_port),
-            mgmt_mcp: !cfg.no_mcp_http,
+            mgmt_mcp: !cfg.no_mgmt_mcp,
         },
         cancel.clone(),
         tasks,

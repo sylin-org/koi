@@ -152,31 +152,33 @@ impl Lab {
             .get("service_key")
             .and_then(Value::as_str)
             .unwrap_or("");
-        let roster_role_ok = {
-            let status = curl_json(
-                "GET",
-                &format!("{primary_url}/v1/certmesh/status"),
-                Some(&token),
-                None,
-            )?;
-            status
-                .get("members")
-                .and_then(Value::as_array)
-                .and_then(|members| {
-                    members.iter().find_map(|m| {
-                        let is_ours =
-                            m.get("hostname").and_then(Value::as_str) == Some(principal.as_str());
-                        let role = m.get("role").and_then(Value::as_str)?;
-                        Some(is_ours && role.eq_ignore_ascii_case("client"))
+        let roster_role_ok = joined_raw
+            .get("hostname")
+            .and_then(Value::as_str)
+            .map(|h| h == principal)
+            .unwrap_or(false)
+            && {
+                let status = curl_json(
+                    "GET",
+                    &format!("{primary_url}/v1/certmesh/status"),
+                    Some(&token),
+                    None,
+                )?;
+                status["members"]
+                    .as_array()
+                    .and_then(|members| {
+                        members.iter().find(|m| {
+                            m.get("hostname").and_then(Value::as_str) == Some(principal.as_str())
+                        })
                     })
-                })
-                .unwrap_or(false)
-        };
+                    .and_then(|m| m.get("role").and_then(Value::as_str))
+                    .map(|role| role.eq_ignore_ascii_case("client"))
+                    .unwrap_or(false)
+            };
 
         // ── Healthy principal reaches the management plane across the LAN ──
         self.stage_principal_identity(probe_node, run_id, &leaf_pem, &key_pem, &ca_pem)?;
         resources.identity_staged = true;
-        let mtls_port = primary.lab_ports()?.mtls;
         let initialize = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -192,8 +194,7 @@ impl Lab {
             probe_node,
             run_id,
             &mtls_probe_command(
-                primary.address(),
-                mtls_port,
+                primary,
                 &probe_run_dir,
                 "POST",
                 Some(&initialize.to_string()),
@@ -215,7 +216,7 @@ impl Lab {
         let (revoked_status, revoked_body) = self.mtls_probe(
             probe_node,
             run_id,
-            &mtls_probe_command(primary.address(), mtls_port, &probe_run_dir, "GET", None),
+            &mtls_probe_command(primary, &probe_run_dir, "GET", None),
         )?;
 
         wait_for_http(&format!("{primary_url}/healthz")).context("post-scenario health check")?;
@@ -289,25 +290,38 @@ impl Lab {
 
 /// Build the remote OpenSSL-curl probe command. The JSON payload travels inside
 /// single quotes (JSON never contains one); response body lands in the run dir.
+///
+/// The dial uses `--resolve` to map the leaf's **actual SAN** (`<host>.internal`)
+/// onto the node's real LAN address: generic OpenSSL curl enforces hostname
+/// verification (unlike Koi's own pinned-CA client, which deliberately relaxes
+/// the name check), so the probe must present a name the certificate carries —
+/// while still crossing the physical network to the pinned address.
 fn mtls_probe_command(
-    host: &str,
-    port: u16,
+    ca_node: &NodeSpec,
     run_dir: &str,
     method: &str,
     json_body: Option<&str>,
 ) -> String {
+    let port = ca_node.lab_ports().expect("node lab ports").mtls;
+    let fqdn = format!("{}.internal", ca_node.hostname());
     let mut cmd = format!(
         "set -eu; test -f {run_dir}/principal-key.pem; curl -sS --max-time 20 \
          --cert {run_dir}/principal-leaf.pem --key {run_dir}/principal-key.pem \
-         --cacert {run_dir}/principal-ca.pem -X {method} \
+         --cacert {run_dir}/principal-ca.pem \
+         --resolve {fqdn}:{port}:{addr} \
+         -X {method} \
          -H 'content-type: application/json' \
-         -H 'accept: application/json, text/event-stream' "
+         -H 'accept: application/json, text/event-stream' ",
+        fqdn = fqdn,
+        port = port,
+        addr = ca_node.address(),
+        method = method,
     );
     if let Some(body) = json_body {
         cmd.push_str(&format!("-d '{body}' "));
     }
     cmd.push_str(&format!(
-        "-o {run_dir}/principal-probe.json -w '%{{http_code}}' https://{host}:{port}/v1/mcp"
+        "-o {run_dir}/principal-probe.json -w '%{{http_code}}' https://{fqdn}:{port}/v1/mcp"
     ));
     cmd
 }

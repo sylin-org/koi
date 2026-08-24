@@ -157,6 +157,13 @@ pub struct Cli {
     #[arg(long, env = "KOI_NO_WEBHOOKS", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
     pub no_webhooks: bool,
 
+    /// Disable the mTLS management plane (`/v1/mcp` behind principal
+    /// authorization, ADR-026 §5). Independent of `--no-mcp-http`: that switch
+    /// owns the loopback tool surface; this one owns the mutually-authenticated
+    /// remote surface the trust plane mounts.
+    #[arg(long, env = "KOI_NO_MGMT_MCP", action = ArgAction::SetTrue, value_parser = parse_bool_flag)]
+    pub no_mgmt_mcp: bool,
+
     /// Port for the ACME (RFC 8555) server-auth TLS listener
     #[arg(long, env = "KOI_ACME_PORT", default_value = "5643")]
     pub acme_port: u16,
@@ -731,6 +738,8 @@ pub struct Config {
     /// Path to the webhook sink manifest (ADR-028); `None` = fan-out off.
     pub webhooks_manifest: Option<PathBuf>,
     pub no_webhooks: bool,
+    /// Disable the mTLS management plane (ADR-026 §5); independent of `no_mcp_http`.
+    pub no_mgmt_mcp: bool,
     pub runtime: String,
     pub announce_http: bool,
     pub dns_port: u16,
@@ -771,6 +780,7 @@ impl Config {
             no_mcp_http: cli.no_mcp_http,
             webhooks_manifest: cli.webhooks_manifest.clone(),
             no_webhooks: cli.no_webhooks,
+            no_mgmt_mcp: cli.no_mgmt_mcp,
             runtime: cli.runtime.clone(),
             announce_http: cli.announce_http,
             dns_port: cli.dns_port,
@@ -874,6 +884,7 @@ impl Config {
         let no_acme = env_bool("KOI_NO_ACME");
         let no_mcp_http = env_bool("KOI_NO_MCP_HTTP");
         let no_webhooks = env_bool("KOI_NO_WEBHOOKS");
+        let no_mgmt_mcp = env_bool("KOI_NO_MGMT_MCP");
         let webhooks_manifest = std::env::var("KOI_WEBHOOKS").ok().map(PathBuf::from);
 
         let runtime = std::env::var("KOI_RUNTIME").unwrap_or_else(|_| "auto".to_string());
@@ -921,6 +932,7 @@ impl Config {
             no_mcp_http,
             webhooks_manifest,
             no_webhooks,
+            no_mgmt_mcp,
             runtime,
             announce_http,
             dns_port,
@@ -955,6 +967,7 @@ impl Default for Config {
             no_mcp_http: false,
             webhooks_manifest: None,
             no_webhooks: false,
+            no_mgmt_mcp: false,
             runtime: "auto".to_string(),
             announce_http: false,
             dns_port: 53,
