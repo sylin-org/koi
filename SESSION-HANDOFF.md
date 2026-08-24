@@ -1,6 +1,6 @@
 # Koi Epic to v1 — canonical continuation ledger
 
-**Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; ADR-026/027/028 operator-ratified; **V1-10 webhooks COMPLETE** (embedded parity closed 2026-08-24 per D10; card/SURFACES/profile done); **V1-09 short-lived defaults implemented + physically green both rotations** (diagnosis semantics fixed per D9); V1-08 and V1-11 next
+**Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; ADR-026/027/028 operator-ratified; **V1-10 webhooks COMPLETE** (embedded parity closed 2026-08-24 per D10; card/SURFACES/profile done); **V1-09 short-lived defaults implemented + physically green both rotations** (diagnosis semantics fixed per D9); **V1-08 principal identity implemented locally 2026-08-24** — profile variant, role-bound invites, mTLS management plane with CN authorization, Tier-2 principal lifecycle green; physical third-participant lane unclaimed; V1-11 next
 **Last updated:** 2026-08-24
 **Resume phrase:** `continue the epic to v1`
 
@@ -626,6 +626,27 @@ evidence rather than a one-off demo.
   that stream log one loud warning and stay inert. Proven by
   `crates/koi-embedded/tests/webhook_embedded.rs`: a configured sink receives a signed
   `dns.updated` over real TCP and `/v1/status` reports `{enabled:true, sinks:1}`.
+- **D11 — management-plane mounting shape (2026-08-24):** ADR-026 §5 offered two
+  sanctioned transports; this landing extends the existing inter-node mTLS listener
+  (`5642` style) rather than adding a second port: `TrustPlaneConfig.mgmt_mcp`
+  (= `!no_mcp_http`, one switch owns the tool surface) mounts `/v1/mcp` behind a
+  per-request CN → roster guard (`CertmeshCore::authorize_principal`). Named rejections
+  reuse the shared `ErrorBody {error, message}` contract with the ADR-020 reason as the
+  message prefix (`unknown_signer: …`) instead of extending the shared type. The guard
+  is coarse by design (§5): any active principal ≈ DAT authority minus human-only
+  surfaces; `/v1/certmesh/*` CA administration remains off the management router.
+- **D12 — audit attribution scope (2026-08-24):** §6 landed as (a) named failure events
+  for principal authorization (`mtls_unknown_cn` / `mtls_expired_cn` /
+  `mtls_revoked_rejected`, each carrying the CN), and (b) credential provenance on
+  enrollment audits (`member_joined.via = invite|totp`, plus the existing `role`).
+  Per-mutation actor fields across every domain handler are deferred to the V1-11 SDK
+  slice, where callers self-identify; until then successful MCP sessions attribute at
+  the transport layer only (tracing), not the audit log.
+- **D13 — invite role binding strengthens §4 (2026-08-24):** the ADR specified role on
+  the enroll body only; implementation additionally lets the operator bind the role at
+  mint time (`invite --client` → `InviteRequest.role`), enforced CA-side
+  (`enroll_role_mismatch`, token burned on attempt). Unbound invites preserve the old
+  any-role behavior; legacy stores deserialize unbound.
 - **V1-10 doc closure:** capability card `docs/reference/cards/webhook-events.md`
   (verified, physical runs cited) + cards index + SURFACES row + full-profile membership
   (`WebhookFanout` forward/reverse inserted after reconnect; profile policy test updated to
@@ -659,7 +680,7 @@ evidence rather than a one-off demo.
 | V1-05 | Resilience, reconnect, fault and soak lanes | **in progress — startup, event reconnect, DNS recovery, Linux systemd supervision, and bounded soak physical** | Always-on regressions and Brook↔Granite rotations prove startup reconstruction, an isolated Docker event-stream fault, and DNS stop/bind-failure/retry in both directions. Brook's transient-systemd lane proves READY/restart-on-failure, while the bounded soak repeatedly proves complete container derivation/reversal and periodic restart reconstruction. Public install/uninstall, other safe faults, and a scheduled 6–24 hour release soak remain. |
 | V1-06 | Automation, evidence ledger and v1 release gate | **in progress — interruption recovery physically green; installed scheduler + full green 2/3 on 2026-07-20** | Every completed check-bearing scenario emits redaction-gated JSON, JUnit, and readable summaries from one publisher. Profiles journal each child identity before mutation, heartbeat live ownership, archive successful transactions, and expose one stale recovery command that reuses exact local/remote cleanup and baseline comparison. Controlled execution `v1-20260720T232552Z-d5dfe569` was killed after child `v1-20260720T232601Z-11b15882` owned locks and staged directories on both Linux nodes; stale recovery removed it and passed 3/3 with baseline restoration. Prepared-only and post-cleanup interruption shapes also passed. The installed task's clean retry passed 12/12 cases and aggregate 38/38. Full green 3/3 and the exact-RC soak remain stable-release evidence, not an rc.1 publication prerequisite. |
 | V1-07 | Adoption/public-surface polish backed by proved behavior | **in progress — identity, publication foundation, and RC-channel policy locally complete** | ADR-024 canonizes “Let everything local find, trust, and talk” plus Find/Trust/Connect; ADR-025 establishes one attested artifact contract, no-build cargo-binstall metadata, tested npx bootstrap, gated OIDC publication, and one stable/prerelease evaluator. RCs cannot advance stable GitHub/GHCR/npm defaults; tag identity and exact crates.io propagation fail closed. Hosted RC dry run, registry activation, native-manager channels, evidence-gated compatibility claims and golden demo remain. |
-| V1-08 | Principal identity for non-human callers (ADR-026) | **proposed — ADR drafted 2026-08-23, not ratified/implemented** | Acceptance: ClientAuth-only leaf profile variant refuses ServerAuth for Client role; client-role enrollment over raw HTTP with local CSR custody; mTLS management authorization rejects unknown/expired/revoked CNs with named reasons while an active principal reaches `/v1/mcp`; audit entries carry actor attribution; two-daemon integration + physical third-participant lane green; SURFACES row. |
+| V1-08 | Principal identity for non-human callers (ADR-026) | **in progress — implemented locally 2026-08-24; Tier-2 principal lifecycle green; physical lane unclaimed** | Client-role leaves: clientAuth-only EKU + digitalSignature-only KU, ServerAuth structurally unreachable (`client_profile_refuses_server_auth_and_key_encipherment`). Role-bound invites (`invite --client`) enforced CA-side with burn-on-mismatch (`enroll_role_mismatch` unit + store round-trip tests). Management plane: `/v1/mcp` mounted on the mTLS listener behind `CertmeshCore::authorize_principal` — unknown/expired/revoked CNs refused with named ADR-020 reasons, audited (D11). Tier-2 real-binary run `client_principal_enrolls_reaches_mgmt_plane_and_revocation_closes_it`: local keygen + CSR custody (empty `service_key`), client join over raw HTTP, healthy principal completes an MCP initialize over mTLS, revocation flips it to 403-with-named-reason immediately. Enrollment audits carry role + `via` provenance; per-mutation actor attribution deferred per D12. SURFACES row added; overview/security-model/api-authentication synced to the amended ADR-024 wording. Owed: physical third-participant lane (Linux↔Linux), MCP/certmesh capability-card mentions of principals. |
 | V1-09 | Short-lived leaves as default posture (ADR-027) | **in progress — implemented; unit + physical lifecycle green both Linux rotations 2026-08-24** | Defaults 7/3/1 live in `CertPolicy::default`, `ca::DEFAULT_LEAF_LIFETIME_DAYS`, `csr::DEFAULT_CSR_VALIDITY_DAYS`; oracle test `default_policy_is_the_adr_027_short_lived_posture` pins them. Three tests re-oracled to the 7-day schedule (ca round-trip, self-enroll identity, invite enrollment). **Hardware found a real defect**: `diagnosis.rs` warned "leaf expires soon" from a hardcoded 7-day constant sized for 90-day leaves — every healthy leaf would have been permanently Degraded (deviation D9). Fixed: in-scheduled-window is Ok; Warn reserved for anomalies; expired stays Red. Overview revocation bullet synced to the ≤8-day bound. Physical `certmesh-lifecycle` green forward run `v1-20260824T004010Z-ca93a718` and reverse run `v1-20260824T004259Z-acd1d6ca` (join/custody/SANs/key-rotating renewal/restart/revocation→RED), musl SHA-256 `0c7de764a824e4b025489f4868461a0e9ad06eeb6f3513e1e8fca25a6880fbc1`; exact cleanup + baseline restored (Brook not-found, Granite active/enabled koi 0.7.0). Owed: soak-lane re-run at the new cadence; long-haul posture documented in the certmesh capability card. |
 | V1-10 | Outbound webhook fan-out (ADR-028) | **complete — engine + embedded parity + docs; local suites + physical cross-host green both Linux rotations 2026-08-23/24** | Local: 7 unit tests (RFC 4231 HMAC vector, redaction guard) + 3 real-TCP integration tests (exact headers/envelope, retry-after-500 with identical id/body, disabled-sink isolation) + embedded parity test (`webhook_embedded.rs`: signed `dns.updated` delivered to a configured sink over real TCP, `/v1/status` reports it); fmt/clippy/test green across crypto/compose/serve/embedded/binary. Physical (`webhook-fanout`, new koi-lab scenario): forward run brook→granite captured **45 deliveries**, reverse granite→brook **41**, every delivery HMAC-valid at receive time, envelope v=1 shape-correct, types observed `dns.updated/dns.txt_updated/mdns.found/mdns.resolved`, daemon healthy throughout, exact cleanup green, final preflight preserved Brook not-found and Granite's active/enabled koi 0.7.0 service. Musl artifact SHA-256 `db952c768413091c412a4048d7d6d2278633f7397f9a665e66392c89baab6719`. Hardware caught a real CLI defect (clap derived `--webhooks-manifest`; lab passes `--webhooks`) — fixed with explicit long name. Deviations D1–D6 below; D1's owed embedded wiring closed per D10 on 2026-08-24. |
 | V1-11 | Standard seed + SDK betas | **proposed — scope ratified 2026-08-23, design pending** | Acceptance: language-neutral trust/Agent-Door spec page in `docs/reference/` with pinned test vectors (Posture/Envelope/Sealed/handshake per STACK-0001 D7) executable against the Rust implementation; TypeScript + Python beta packages driving enroll/status/events/MCP discovery over the frozen HTTP API, published only after stable 1.0.0 ships (external authority still required). |
@@ -706,13 +727,13 @@ releases; soak is scheduled or explicitly invoked.
 ## Resume here
 
 1. ~~Ratify ADR-026/027/028; implement V1-10 webhooks~~ (done — V1-10 complete
-   2026-08-24, V1-09 implemented + physically green). **Next: implement V1-08 principal
-   identity (ADR-026)** — the protocol/CA chokepoint groundwork (`LeafUsage`,
-   `JoinRequest.role`, client-profile refusal for the first enrollee) is already landed;
-   remaining: client-role CSR/enrollment CLI path, mTLS management-plane CN
-   authorization, actor-attributed audit entries, two-daemon + physical lanes, SURFACES
-   row. Each landing keeps its full local gate (`fmt`, all-feature clippy `-D warnings`,
-   locked workspace tests, audit).
+   2026-08-24, V1-09 implemented + physically green, **V1-08 implemented locally
+   2026-08-24**). **Next: V1-08 physical third-participant lane** (Linux↔Linux via the
+   tracked `certmesh-lifecycle` transaction: enroll a client principal on the observer
+   node, prove mgmt-plane reach + revocation over the real LAN), then MCP/certmesh card
+   mentions of principals, then **V1-11** (spec vectors + SDK betas). Each landing keeps
+   its full local gate (`fmt`, all-feature clippy `-D warnings`, locked workspace tests,
+   audit).
 2. After V1-08..V1-11 land: re-prep the release version, hosted Release dry run, then — only
    with explicit external-publication authority — tag/publish `1.0.0-rc.1`.
 3. Validate that exact distributed candidate through full green 3/3 and the bounded soak
