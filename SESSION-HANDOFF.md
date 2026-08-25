@@ -33,8 +33,28 @@ services, which was the point.
 
 **V1-12 progress (2026-08-24 late): config substrate + L0 welcome LANDED (`43a3dc8`).** `koi config init|show|path` shipped; versioned TOML (deny-unknown-keys, loud wrong-version) at platform paths; precedence **CLI > env > file > default** implemented via clap value-source detection and proven LIVE both directions on Windows (file-only port 6001 bound; explicit `--port 5641` overrode it); template restored after probe. L0 welcome banner: three-line contract (LAN name / dashboard URL / next command), marker-gated once-per-data-root, unit-tested. Next under V1-12: tray MVP; then ADR-032 P1 (W1 SCM driver + W2 named-pipe lanes). Launch assets A1-A6 in docs/LAUNCH.md drafted during soak; every external post is operator-executed.
 
-**MDNS RECEPTION VERDICT + WORKBENCH TRUTHFULNESS (2026-08-24/25 night).**
-Physical measurement closed ADR-030's open question on Windows: **elevated
+**MESH DISCOVERY FACTS (2026-08-25 early): servers are silent by design.**
+Investigating "why does Discover show so few koi peers" revealed the standing
+mesh's mDNS topology: **brook and granite do not announce via mDNS and never
+did** — Debian 13's systemd-resolved holds 5353, and both servers carry the
+operator's own `zen-garden.conf` drop-in (`MulticastDNS=resolve`, Feb 26 — the
+ZenGarden/Moss deployment deliberately owns resolved's mDNS). Koi's ADR-030
+coexistence skip therefore fires on both at every boot (info-level, truthful
+`mdns => disabled`); roster convergence never depended on it (certmesh/mTLS).
+`garden-moss` is installed on brook (June, idle — no running process). A
+`mesh-mdns-enable.sh` was drafted and TESTED on brook: it works mechanically
+(drop-in + restarts) but zen-garden.conf wins drop-in merge order (z > 9), so
+enabling koi-announcing on the servers requires an explicit garden-first-vs-
+koi-first decision — the script header documents the conflict and the revert.
+Verdict recorded: leave the servers silent (garden-first); the workbench pond
+shows the Windows peer + the non-koi LAN, servers are found via DNS/certmesh.
+Workstation reception note: the rc.2+ service receives continuously (107
+events/min-window, "receiving" in status); third-party answer volume is
+time-of-day dependent (4 AM LAN is quiet). Also measured: the workstation's
+DHCP lease moved .138→.137 (an Android now holds .138 — catalog lab.json still
+says .138 for the local node; harmless, local).
+
+**MDNS RECEPTION VERDICT + WORKBENCH TRUTHFULNESS (2026-08-24/25 night).**Physical measurement closed ADR-030's open question on Windows: **elevated
 service-mode (SCM/SYSTEM) receives mDNS fully and instantly** — one burst
 surfaced 20 service types / 14 devices (Nest Hubs, Brother printer, PS5,
 Matter, NAS/Xserve, ZenGarden boxes, Androids) with resolved endpoints — while
