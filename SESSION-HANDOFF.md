@@ -33,8 +33,33 @@ services, which was the point.
 
 **V1-12 progress (2026-08-24 late): config substrate + L0 welcome LANDED (`43a3dc8`).** `koi config init|show|path` shipped; versioned TOML (deny-unknown-keys, loud wrong-version) at platform paths; precedence **CLI > env > file > default** implemented via clap value-source detection and proven LIVE both directions on Windows (file-only port 6001 bound; explicit `--port 5641` overrode it); template restored after probe. L0 welcome banner: three-line contract (LAN name / dashboard URL / next command), marker-gated once-per-data-root, unit-tested. Next under V1-12: tray MVP; then ADR-032 P1 (W1 SCM driver + W2 named-pipe lanes). Launch assets A1-A6 in docs/LAUNCH.md drafted during soak; every external post is operator-executed.
 
-**DESKTOP PIVOT — koi-desktop workbench (2026-08-24 late, operator-directed).**
-ADR-033 accepted (koi/docs/adr/033): the desktop surface is a purpose-built Tauri 2
+**WORKBENCH ARC 2 — event-driven Discover + query burst (2026-08-24 night).**
+koi-desktop iterated to the operator's delight bar: full Ghostlight stylesheet
+adopted verbatim (single delta: Koi accent tokens), lampband nav (Status/About/
+Discover), About = the TCG card. **Transport rule (the Ghostlight rule, learned
+the hard way): the webview holds no network** — WebView2's stack intermittently
+eats loopback fetch/EventSource from the tauri origin, so ALL daemon bytes cross
+via Tauri commands (ureq in Rust); live events are pushed to the webview via
+emit. Lamp + status ride the daemon's unified `/v1/events` SSE (breadcrumb DAT
+auth) — no polling; 60s reconcile is a safety net only. Discover = "inhabitants
+of the network": grouped by device, TXT-friendly names, type labels, resolved
+endpoints, presence states (live/fading/gone — the workbench remembers past the
+daemon's cache eviction), type/state/text filters, update-in-place rows (CSP
+lesson: style-src-attr blocks inline styles in injected markup — classes only;
+debug sink at %LOCALAPPDATA%\Koi\workbench-debug.log caught it). **New daemon
+capability (1:1 doors): `POST /v1/mdns/browser/query` + `koi mdns ping` +
+workbench "Ping the pond"** — LazyMetaBrowse::requery restarts the meta+per-type
+query burst so every mDNS client answers immediately (idempotent; koi-dashboard
+10+5 tests green; full gate green incl. a latent W2 test-binding fix caught by
+--all-targets). **W5 finding (physical, this machine):** stale-path firewall
+rules left koi.exe unable to receive mDNS resolution responses on the Public
+profile — announce-only, never resolved; fixed by adding the product-convention
+rule `Koi mDNS (udp 5353)` scoped to the current exe (UAC one-shot). Product
+ticket: unelevated `Run once` should surface the daemon's own firewall warning.
+Also noted: dozens of stale lab-era firewall rules (udp-*/koi_proxy-*) on this
+workstation await operator-approved cleanup.
+
+**DESKTOP PIVOT — koi-desktop workbench (2026-08-24 late, operator-directed).**ADR-033 accepted (koi/docs/adr/033): the desktop surface is a purpose-built Tauri 2
 workbench in NEW repo `sylin-org/koi-desktop` (public, Ghostlight-version-pinned:
 tauri =2.11.5 / tauri-build =2.6.3), superseding ADR-031's tray-icon L1 before it was
 built and resolving ADR-031's deferred L2. Visual system = Ghostlight's stylesheet
