@@ -1312,7 +1312,7 @@ impl Lab {
         Ok(())
     }
 
-    fn stop_run_daemon(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+    pub(crate) fn stop_run_daemon(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
         let run_dir = node.run_dir(run_id)?;
         let lock_dir = node.lock_dir()?;
         let command = format!(
