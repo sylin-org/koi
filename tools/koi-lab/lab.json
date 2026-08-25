@@ -10,7 +10,7 @@
       "kind": "local_windows",
       "id": "windows",
       "hostname": "stone-leaded-sparkle",
-      "address": "192.168.1.138",
+      "address": "192.168.1.137",
       "http_port": 18541,
       "mtls_port": 18542,
       "acme_port": 18543,
