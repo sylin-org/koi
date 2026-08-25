@@ -293,13 +293,12 @@ impl Lab {
         )?;
         // A daemon restart forces the trust-bundle pull that carries the
         // revocation (the member has no other reason to contact the CA).
-        // The stop uses the pid-file-based, owner-checked primitive — a raw
-        // `pkill -f` would match the transport's own `sh -c` wrapper (its
-        // argv embeds the pattern) and kill the session out from under
+        // The restart is the shared preserve-state primitive: a fresh
+        // `start_run_daemon` would refuse because the run's data directory
+        // already exists, and a raw `pkill -f` would match the transport's
+        // own `sh -c` wrapper argv and kill the session out from under
         // itself.
-        self.stop_run_daemon(member, run_id)
-            .context("stop member daemon before the revocation-pull restart")?;
-        self.start_run_daemon(member, run_id)
+        self.restart_run_daemon(member, run_id)
             .context("restart member daemon for the revocation pull")?;
         wait_for_http(&format!("{member_url}/healthz")).context("member restart health")?;
         let red = self

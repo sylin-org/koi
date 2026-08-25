@@ -1242,7 +1242,7 @@ impl Lab {
         self.stop_run_daemon(node, run_id)
     }
 
-    fn restart_run_daemon(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+    pub(crate) fn restart_run_daemon(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
         self.stop_run_daemon(node, run_id)?;
         self.launch_run_daemon(node, run_id, true, DaemonProfile::Certmesh)
     }
