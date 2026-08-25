@@ -98,10 +98,12 @@ impl Lab {
         member: &crate::model::NodeSpec,
         resources: &mut WindowsCaResources,
     ) -> Result<WindowsCaReport> {
-        let artifact_sha256 = self.remote_line(
-            member,
-            &format!("cat {}/artifact.sha256", member.run_dir(run_id)?),
-        )?;
+        let artifact_sha256 = self
+            .remote_line(
+                member,
+                &format!("cat {}/artifact.sha256", member.run_dir(run_id)?),
+            )
+            .context("read staged artifact sha256 from the member")?;
 
         // ── Scenario-scoped firewall: the CA answers the LAN on 18541/18542 ──
         let ca_root = self.prepare_windows_member_dir(run_id)?;
@@ -138,7 +140,8 @@ impl Lab {
         resources.ca_created = true;
 
         // ── Linux member daemon ──
-        self.start_run_daemon(member, run_id)?;
+        self.start_run_daemon(member, run_id)
+            .context("start the Linux member run daemon")?;
         resources.member_daemon = true;
         let member_url = self.node_url(member)?;
         wait_for_http(&format!("{member_url}/healthz"))
@@ -166,14 +169,16 @@ impl Lab {
             "env KOI_DATA_DIR={member_run_dir}/data \
              XDG_RUNTIME_DIR={member_run_dir}/runtime KOI_NO_CREDENTIAL_STORE=1"
         );
-        let wrong_pin = self.remote_line(
-            member,
-            &format!(
-                "{koi_env} {member_run_dir}/koi certmesh join {ca_url} --invite '{mismatched}' \
+        let wrong_pin = self
+            .remote_line(
+                member,
+                &format!(
+                    "{koi_env} {member_run_dir}/koi certmesh join {ca_url} --invite '{mismatched}' \
                  --ca-mtls-port {} --json",
-                ports.mtls
-            ),
-        );
+                    ports.mtls
+                ),
+            )
+            .context("wrong-pin refusal attempt on the member");
         if wrong_pin.is_ok() {
             bail!("Linux member accepted a deliberately mismatched invite pin");
         }
@@ -200,14 +205,17 @@ impl Lab {
                  --ca-mtls-port {} --json",
                 ports.mtls
             ),
-        )?;
-        let mode = self.remote_line(
-            member,
-            &format!(
-                "stat -c '%a' {member_run_dir}/data/certs/{}/key.pem",
-                member.hostname()
-            ),
-        )?;
+        )
+        .context("member join with local CSR custody")?;
+        let mode = self
+            .remote_line(
+                member,
+                &format!(
+                    "stat -c '%a' {member_run_dir}/data/certs/{}/key.pem",
+                    member.hostname()
+                ),
+            )
+            .context("stat member private key mode")?;
         if mode.trim() != "600" {
             bail!("Linux member private key is mode {mode}, not 0600");
         }
@@ -231,12 +239,15 @@ impl Lab {
         );
 
         // ── Renewal rotates the identity; the CA converges ──
-        let before = member_identity_evidence(self, member, run_id)?;
+        let before = member_identity_evidence(self, member, run_id)
+            .context("capture member identity before renewal")?;
         self.remote_line(
             member,
             &format!("{koi_env} {member_run_dir}/koi certmesh renew --json"),
-        )?;
-        let rotated = member_identity_evidence(self, member, run_id)?;
+        )
+        .context("explicit member renewal")?;
+        let rotated = member_identity_evidence(self, member, run_id)
+            .context("capture member identity after renewal")?;
         if rotated.key_sha256 == before.key_sha256 {
             bail!("renewal did not rotate the member private key");
         }
@@ -285,13 +296,17 @@ impl Lab {
         self.remote_line(
             member,
             &format!("pkill -f '{member_run_dir}/koi --daemon' || true; sleep 1"),
-        )?;
-        self.start_run_daemon(member, run_id)?;
-        wait_for_http(&format!("{member_url}/healthz"))?;
-        let red = self.remote_line(
-            member,
-            &format!("{koi_env} {member_run_dir}/koi trust diagnose --json"),
-        )?;
+        )
+        .context("stop member daemon before the revocation-pull restart")?;
+        self.start_run_daemon(member, run_id)
+            .context("restart member daemon for the revocation pull")?;
+        wait_for_http(&format!("{member_url}/healthz")).context("member restart health")?;
+        let red = self
+            .remote_line(
+                member,
+                &format!("{koi_env} {member_run_dir}/koi trust diagnose --json"),
+            )
+            .context("member trust diagnosis after revocation")?;
         let red: Value = serde_json::from_str(&red).context("member diagnosis was not JSON")?;
         if red.get("overall").and_then(Value::as_str) != Some("red") {
             bail!("revoked member diagnosis was not RED");
@@ -314,10 +329,12 @@ impl Lab {
         );
 
         // ── Refused renewal and rejoin; identity immutable ──
-        let denied_renewal = self.remote_line(
-            member,
-            &format!("{koi_env} {member_run_dir}/koi certmesh renew --json"),
-        );
+        let denied_renewal = self
+            .remote_line(
+                member,
+                &format!("{koi_env} {member_run_dir}/koi certmesh renew --json"),
+            )
+            .context("revoked-member renewal attempt");
         if denied_renewal.is_ok() || !denied_renewal.unwrap_or_default().contains("revoked") {
             bail!("revoked member renewal was not refused by the Windows CA");
         }
@@ -331,18 +348,21 @@ impl Lab {
             })),
         )?;
         let rejoin_token = required_str(&rejoin_invite, "token")?;
-        let denied_rejoin = self.remote_line(
-            member,
-            &format!(
+        let denied_rejoin = self
+            .remote_line(
+                member,
+                &format!(
                 "{koi_env} {member_run_dir}/koi certmesh join {ca_url} --invite '{rejoin_token}' \
                  --ca-mtls-port {} --json",
                 ports.mtls
             ),
-        );
+            )
+            .context("revoked-member rejoin attempt");
         if denied_rejoin.is_ok() || !denied_rejoin.unwrap_or_default().contains("revoked") {
             bail!("revoked member rejoin was not refused by the Windows CA");
         }
-        let after = member_identity_evidence(self, member, run_id)?;
+        let after = member_identity_evidence(self, member, run_id)
+            .context("capture member identity after refused renewal/rejoin")?;
         if after.key_sha256 != rotated.key_sha256 || after.cert_sha256 != rotated.cert_sha256 {
             bail!("refused renewal/rejoin changed the active local identity");
         }
@@ -438,8 +458,25 @@ impl Lab {
             }
         }
         if resources.ca_daemon {
-            if let Err(e) = self.remove_windows_member_dir(run_id, &self.windows_member_dir(run_id))
-            {
+            // The spawned CA daemon may still be running (it outlives failed
+            // health checks); stop it by exact executable identity, then
+            // remove the directory it was holding open.
+            let root = self.windows_member_dir(run_id);
+            let exe = root.join("koi.exe");
+            if exe.is_file() {
+                match crate::lab::windows_process_ids_for_executable(&exe) {
+                    Ok(process_ids) => {
+                        for process_id in process_ids {
+                            if let Err(e) = crate::lab::stop_exact_windows_process(process_id, &exe)
+                            {
+                                errors.push(format!("stop CA daemon pid {process_id}: {e:#}"));
+                            }
+                        }
+                    }
+                    Err(e) => errors.push(format!("enumerate CA daemon processes: {e:#}")),
+                }
+            }
+            if let Err(e) = self.remove_windows_member_dir(run_id, &root) {
                 errors.push(format!("remove Windows CA run dir: {e:#}"));
             }
         }

@@ -3650,7 +3650,7 @@ fn remove_windows_store_fingerprint(fingerprint: &str) -> Result<()> {
     }
 }
 
-fn windows_process_ids_for_executable(executable: &Path) -> Result<Vec<u32>> {
+pub(crate) fn windows_process_ids_for_executable(executable: &Path) -> Result<Vec<u32>> {
     if !executable.is_absolute() {
         bail!("Windows recovery executable path is not absolute");
     }
@@ -3673,7 +3673,7 @@ fn windows_process_ids_for_executable(executable: &Path) -> Result<Vec<u32>> {
         .collect()
 }
 
-fn stop_exact_windows_process(process_id: u32, executable: &Path) -> Result<()> {
+pub(crate) fn stop_exact_windows_process(process_id: u32, executable: &Path) -> Result<()> {
     if !executable.is_absolute() {
         bail!("Windows recovery executable path is not absolute");
     }
