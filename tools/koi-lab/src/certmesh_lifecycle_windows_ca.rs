@@ -384,12 +384,15 @@ impl Lab {
             ])
             .args(["dir=in", "action=allow", "protocol=tcp"])
             .arg(format!("localport={port}"))
-            .arg(format!("program={}", exe.display()))
+            .arg(format!("program={}", netsh_program_path(exe)))
             .output()
             .context("netsh add failed")?;
         if !add.status.success() {
+            // netsh reports parameter errors on STDOUT; surface both streams
+            // so a refusal is never diagnosed from an empty message.
             bail!(
-                "firewall rule {name} was refused: {}",
+                "firewall rule {name} was refused: stdout={} stderr={}",
+                String::from_utf8_lossy(&add.stdout).trim(),
                 String::from_utf8_lossy(&add.stderr).trim()
             );
         }
@@ -467,6 +470,19 @@ fn required_str(value: &Value, key: &str) -> Result<String> {
         .context(format!("invite response omitted {key}"))
 }
 
+/// Present a path the way external tools accept it. `std::fs::canonicalize`
+/// hands out `\\?\`-prefixed paths on Windows; netsh rejects those as program
+/// paths ("The parameter is incorrect."), so strip the prefix.
+fn netsh_program_path(path: &std::path::Path) -> String {
+    let text = path.display().to_string();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    text.strip_prefix(r"\\?\")
+        .map(str::to_owned)
+        .unwrap_or(text)
+}
+
 fn mismatch_invite_fingerprint(token: &str, real_fingerprint: &str) -> Result<String> {
     // Flip the first hex character of the embedded CA fingerprint so the pin
     // differs while the token shape stays plausible.
@@ -539,5 +555,27 @@ fn passed(name: impl Into<String>, detail: impl Into<String>) -> CheckResult {
         name: name.into(),
         passed: true,
         detail: detail.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::netsh_program_path;
+
+    #[test]
+    fn netsh_program_path_strips_extended_length_prefixes() {
+        assert_eq!(
+            netsh_program_path(std::path::Path::new(r"\\?\F:\repo\.lab-runs\r1\koi.exe")),
+            r"F:\repo\.lab-runs\r1\koi.exe"
+        );
+        assert_eq!(
+            netsh_program_path(std::path::Path::new(r"\\?\UNC\server\share\koi.exe")),
+            r"\\server\share\koi.exe"
+        );
+        // Plain paths pass through untouched.
+        assert_eq!(
+            netsh_program_path(std::path::Path::new(r"F:\repo\koi.exe")),
+            r"F:\repo\koi.exe"
+        );
     }
 }
