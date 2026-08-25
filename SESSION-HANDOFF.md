@@ -4,6 +4,24 @@
 **Last updated:** 2026-08-25
 **Resume phrase:** continue the epic to v1 - lessons ledger at docs/lessons-learned.md (RL-1..RL-16)
 
+**ADR-034 RATIFIED (2026-08-25, operator): multi-channel distribution + free signing.** Research in
+`docs/distribution-prior-art.md`; decisions in `docs/adr/034`. Ratified: SignPath Foundation for free
+Windows Authenticode (attribution line accepted); macOS terminal-first for 1.0 (notarization deferred);
+landing page on the operator's sylin.org Koi page (`install.sh`/`install.ps1` paths, OS-detect,
+sha256-verify, invoke `koi install`); npm amended to esbuild-pattern platform carriers
+(`@sylin-org/koi-{win32-x64,linux-x64,linux-arm64,darwin-x64,darwin-arm64}` via optionalDependencies —
+amends ADR-025's dispatcher shape and its per-target-package rejection; §3 placement rule restated as
+law: services never register from npm-managed paths); all top free package managers authorized in order:
+Homebrew tap → winget → AUR(-bin) → Scoop bucket → Nix flake (Flathub/Snap/Store deferred with reasons);
+tray-minimized autostart via tauri-plugin-autostart with `--minimized` (daemon never spawns GUI).
+Implementation phases (each independently landable, external touches operator-gated):
+P-A local work — landing-page scripts, Tauri updater keys + latest.json feed, `--minimized` flag +
+autostart toggle in koi-desktop, GitHub build attestations in release workflow;
+P-B operator console actions — npm trusted publishers (per package) + `NPM_PUBLISH_ENABLED`;
+P-C SignPath application (operator submits; pipeline step secret-gated until approved);
+P-D taps/submissions one by one; P-E optional Apple $99/yr later.
+Next implementation slice: P-A.
+
 **W4 GREEN — ADR-032 Windows-hosted CA rotation physically proven (2026-08-25, run `v1-20260825T145514Z-c2be3c52`).**
 `certmesh-lifecycle-windows-ca` passed 7/7 elevated: wrong-pin refusal before keygen, brook join with
 local CSR custody (0600), CA roster membership, renewal with key rotation + roster fingerprint convergence,

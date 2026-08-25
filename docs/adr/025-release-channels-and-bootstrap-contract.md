@@ -5,6 +5,14 @@
 **Builds on:** ADR-024 (Find, Trust, Connect)
 **Applies to:** native archives, direct installers, crates.io, cargo-binstall, npm, GHCR, and future OS package manifests
 
+> **Amended 2026-08-25 by [ADR-034](034-multi-channel-distribution.md) (D5):** the npm channel changes
+> shape from a download-dispatcher to the platform-carrier pattern (`optionalDependencies` with `os`/`cpu`
+> per target). Two things here are **not** amended: §3's placement rule — a service is never registered
+> from an npm-managed path; installation still places the binary in Koi's stable per-user location — and
+> §1's single-build/single-manifest chokepoint, which carriers consume like every other channel. The
+> "one npm binary package per target" rejection below is accordingly superseded; the remaining rejected
+> alternatives stand.
+
 ---
 
 ## Context
