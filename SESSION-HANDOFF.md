@@ -33,6 +33,22 @@ services, which was the point.
 
 **V1-12 progress (2026-08-24 late): config substrate + L0 welcome LANDED (`43a3dc8`).** `koi config init|show|path` shipped; versioned TOML (deny-unknown-keys, loud wrong-version) at platform paths; precedence **CLI > env > file > default** implemented via clap value-source detection and proven LIVE both directions on Windows (file-only port 6001 bound; explicit `--port 5641` overrode it); template restored after probe. L0 welcome banner: three-line contract (LAN name / dashboard URL / next command), marker-gated once-per-data-root, unit-tested. Next under V1-12: tray MVP; then ADR-032 P1 (W1 SCM driver + W2 named-pipe lanes). Launch assets A1-A6 in docs/LAUNCH.md drafted during soak; every external post is operator-executed.
 
+**DESKTOP PIVOT — koi-desktop workbench (2026-08-24 late, operator-directed).**
+ADR-033 accepted (koi/docs/adr/033): the desktop surface is a purpose-built Tauri 2
+workbench in NEW repo `sylin-org/koi-desktop` (public, Ghostlight-version-pinned:
+tauri =2.11.5 / tauri-build =2.6.3), superseding ADR-031's tray-icon L1 before it was
+built and resolving ADR-031's deferred L2. Visual system = Ghostlight's stylesheet
+VERBATIM with one delta (accent tokens → Koi site blue #60a5fa/#93c5fd); card anatomy
+ported from Ghostlight's About view (TCG card: halo/echo/disc/notch/foil, pointer-
+driven --mx/--my/--holo); lampband header + tabs; lamp states via body.runtime-*
+classes. Scope: the WHOLE capability surface through this UI over the frozen loopback
+API (pane map in ADR-033 §5; DNS editor first among editors, ceremony wizard next).
+Landed so far: tray (status line/Open/Quit + graceful degradation), Status page
+(service strip: Start service / Run once / Stop — run-scoped to its own spawned PID;
+honest elevation errors), diagnostic tiles, About card+facts. Daemon stays headless;
+CLI/HTTP/workbench are sibling intake adapters. Old web dashboard: deprecated UX per
+operator, not embedded, not extended.
+
 **RC PUBLISHED + STANDING MESH LIVE (2026-08-24 evening):** `v1.0.0-rc.2` released after two dry-run gates caught a release-blocking gitignore drop (RL-1) — see docs/lessons-learned.md (11 rules, RL-1..RL-11). Published: GitHub prerelease (6 archives + sha256 + canonical manifest), crates.io koi-* 1.0.0-rc.2 (org CARGO_REGISTRY_TOKEN resolved; July rc.1 was already burned there, hence the rc.2 supersede per RL-2), GHCR image, npm inert by gate. Standing dogfood mesh LIVE on published artifacts: brook `koi-dogfood.service` primary (CA created, enrollment open), granite member joined+healthy (legacy 0.7.0 service stopped/disabled by operator-approved cutover), roster converged 2/2, granite diagnosis healthy w/ 0600 custody. Workstations join cyclically per ADR-029 host classes (scripts in scripts/lab/mesh/). Soak week clock started at mesh bring-up ~19:40Z.
 **test-01 joined the standing mesh (2026-08-24 ~19:50Z):** published rc.2 deployed to the CachyOS workstation as a user-level cyclical participant (ADR-029 host class; `mesh-start-user.sh` restarts after reboots, persistent data root preserves membership). Adaptive mDNS (ADR-030) validated in real deployment: avahi holds 5353, Koi logged the coexistence skip at info, status truthfully omits the rung. Enrolled as member via pinned invite with local CSR custody; diagnosis healthy 7/7 checks; roster converged **brook primary + granite member + test-01 member**.
 **ADR-032 P1 progress (2026-08-24 night): W2 named-pipe IPC lane GREEN (`named_pipe_ipc.rs`, Windows-gated, runs in CI).** Proves: pipe transport to `\\.\pipe\koi`, mDNS-core bridge, structured error envelopes for resolve-miss AND malformed frames, connection survives bad input. **ADR-030 revised after measurement (RL-7 pattern):** bind-probes cannot identify responders on modern kernels — Chrome/svchost hold 5353 with reuse on stock Windows; exclusive-holder detection would have disabled discovery on every Windows machine. Revised heuristic: Unix skips on avahi-active or exclusive-held; Windows never auto-skips (`--no-mdns` remains operator control). Pipe test initially failed BECAUSE the old skip fired on this workstation - the test caught its own environment assumption, exactly as designed. Remaining P1: W1 SCM supervision scenario (machinery verified present: AutoStart + recovery 5s/10s + non-crash failures + upgrade path); tray MVP queued.

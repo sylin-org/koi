@@ -1,6 +1,9 @@
 # ADR-031: Desktop Control Plane — Tray, Dashboard-as-Pane, Config Substrate
 
-**Status:** Accepted (operator-approved 2026-08-24)
+**Status:** Accepted (operator-approved 2026-08-24). Amended 2026-08-24 by
+[ADR-033](033-koi-desktop-workbench.md): L1's tray-icon MVP and the L2
+non-decision are superseded — the desktop surface is the Tauri workbench in
+`sylin-org/koi-desktop`. Config substrate (below) stands unchanged.
 **Date:** 2026-08-24
 **Builds on:** ADR-020 (truthful capability ladder), ADR-026 (posture vocabulary), ADR-029 (host classes), the D3 deferral (no config subsystem) which this ADR partially reverses
 **Constrained by:** zero-telemetry / no-background-services-beyond-the-daemon doctrine; binary-size discipline
