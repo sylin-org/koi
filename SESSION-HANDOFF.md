@@ -33,6 +33,32 @@ services, which was the point.
 
 **V1-12 progress (2026-08-24 late): config substrate + L0 welcome LANDED (`43a3dc8`).** `koi config init|show|path` shipped; versioned TOML (deny-unknown-keys, loud wrong-version) at platform paths; precedence **CLI > env > file > default** implemented via clap value-source detection and proven LIVE both directions on Windows (file-only port 6001 bound; explicit `--port 5641` overrode it); template restored after probe. L0 welcome banner: three-line contract (LAN name / dashboard URL / next command), marker-gated once-per-data-root, unit-tested. Next under V1-12: tray MVP; then ADR-032 P1 (W1 SCM driver + W2 named-pipe lanes). Launch assets A1-A6 in docs/LAUNCH.md drafted during soak; every external post is operator-executed.
 
+**W4 STATE AT HANDOFF (2026-08-25 ~04:30 local): scenario built, physical run pending.**
+The Windows-member half of W4 was already physically green (exercise_windows_member_custody
+inside certmesh-native-trust-windows-client, elevated 16-scenario profile 50/50 on
+2026-08-24). The remaining half — **Windows-hosted CA rotation** — is IMPLEMENTED and
+gate-green but NOT yet physically run: `certmesh-lifecycle-windows-ca` (tools/koi-lab,
+commit e0a57aa) runs the CA daemon on this workstation (catalog ports 18541/18542,
+HTTP bound to the LAN) behind scenario-scoped firewall rules, with brook as the Linux
+member (wrong-pin refusal → 0600 CSR custody join → roster → renewal rotation +
+fingerprint convergence → revocation → RED self_revocation → refused renewal/rejoin
+with byte-identical identity → exact cleanup incl. firewall removal). Operator
+approved the catalog widening: windows mutations now ["scm","firewall"] (1c7efe4).
+A fresh musl artifact IS staged and BOTH LAB LOCKS ARE HELD by run
+**v1-20260825T125244Z-879cc67a** (deploy succeeded; the scenario then refused on the
+not-yet-committed catalog grant — since fixed). Exact next action, elevated:
+`cargo run -p koi-lab --locked -- certmesh-lifecycle-windows-ca --run-id
+v1-20260825T125244Z-879cc67a --member brook --allow-system-mutation` (verify the
+staged artifact version is rc.2 first — an earlier deploy staged a stale rc.1 binary
+because deploy reused the old local musl; the fresh build replaced it). On green:
+ADR-032 W4 row → green, ledger, cleanup the run (releases locks), push. Fallback:
+`.tmp/w4-run.ps1` (untracked scratch) does stop-service→build→restore→deploy(with
+run-id propagation)→scenario in one elevated session. Also landed this arc: W2 pipe
+test now uses a per-run pipe name (the standing service owns \\.\pipe\koi — the old
+fixed name made the test fail whenever a daemon was up), and repo-local `.tmp/`
+(gitignored) is the scratch home for UAC one-shots/transcripts per operator policy —
+no more %TEMP% litter.
+
 **MESH DISCOVERY FACTS (2026-08-25 early): servers are silent by design.**
 Investigating "why does Discover show so few koi peers" revealed the standing
 mesh's mDNS topology: **brook and granite do not announce via mDNS and never
