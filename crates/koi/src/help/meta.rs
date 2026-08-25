@@ -715,6 +715,33 @@ services until you press Ctrl+C or the --timeout expires.",
         confirmation: None,
     },
     CommandMeta {
+        name: "mdns ping",
+        summary: "Actively query the LAN now",
+        long_description: "\
+Forces the daemon's mDNS query burst: the meta-browse worker restarts,
+re-querying _services._dns-sd._udp (the question every mDNS client answers)
+and then each known service type, so every host on the network replies
+immediately instead of waiting for its own announcement timer.
+
+Use this when the discovery view feels stale or a device that just joined
+has not shown up yet. Idempotent - repeated pings simply restart the burst.",
+        category: KoiCategory::Discovery,
+        tags: &[KoiTag::Mutating],
+        scope: KoiScope::Public,
+        examples: &[
+            Example {
+                command: "koi mdns ping",
+                description: "Ask every mDNS client to announce itself now",
+            },
+        ],
+        see_also: &["mdns discover"],
+        api: &[ApiEndpoint {
+            method: "POST",
+            path: "/v1/mdns/browser/query",
+        }],
+        confirmation: None,
+    },
+    CommandMeta {
         name: "mdns announce",
         summary: "Announce a service on the local network",
         long_description: "\

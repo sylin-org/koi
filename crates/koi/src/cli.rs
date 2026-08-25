@@ -313,6 +313,8 @@ pub enum MdnsSubcommand {
         /// Service type (e.g. "http", "_http._tcp"). Omit to discover all types.
         service_type: Option<String>,
     },
+    /// Actively query the LAN now: every mDNS client is asked to speak up
+    Ping,
     /// Announce (register) a service on the local network
     Announce {
         /// Service instance name

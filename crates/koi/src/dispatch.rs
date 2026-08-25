@@ -50,6 +50,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                         )
                         .await
                     }
+                    Some(MdnsSubcommand::Ping) => commands::mdns::ping(&cli, cli.json).await,
                     Some(MdnsSubcommand::Announce {
                         name,
                         service_type,

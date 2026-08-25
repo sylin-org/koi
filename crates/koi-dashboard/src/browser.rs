@@ -17,7 +17,7 @@ use std::time::Instant;
 use axum::extract::Extension;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Json};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use chrono::Utc;
 use serde::Serialize;
@@ -77,6 +77,12 @@ struct ServiceInstance {
 }
 
 impl BrowserCache {
+    /// How many service types the cache currently knows (used by the
+    /// meta-browse's requery burst report).
+    pub async fn known_type_count(&self) -> usize {
+        self.inner.read().await.types.len()
+    }
+
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(CacheInner {
@@ -190,7 +196,7 @@ impl BrowserCache {
         inner.types.retain(|_, dtype| !dtype.instances.is_empty());
     }
 
-    async fn snapshot(&self) -> BrowserSnapshot {
+    pub async fn snapshot(&self) -> BrowserSnapshot {
         let inner = self.inner.read().await;
 
         let mut all_instances = Vec::new();
@@ -507,6 +513,7 @@ pub fn routes(state: BrowserState) -> Router {
     Router::new()
         .route("/snapshot", get(get_snapshot))
         .route("/events", get(get_events))
+        .route("/query", post(post_query))
         .layer(axum::Extension(state))
 }
 
@@ -536,4 +543,16 @@ async fn get_events(
         state.cache.clone(),
     ))
     .keep_alive(KeepAlive::default())
+}
+
+/// `POST /v1/mdns/browser/query` — force a fresh mDNS query burst ("ping the
+/// pond"): restarts the meta-browse worker so `_services._dns-sd._udp` and
+/// every known type are re-queried immediately. Idempotent. DAT-gated like
+/// every other POST (a mutation of the browse session).
+async fn post_query(Extension(state): Extension<BrowserState>) -> Json<serde_json::Value> {
+    let types_known = state.meta.requery().await;
+    Json(serde_json::json!({
+        "restarted": true,
+        "types_known": types_known,
+    }))
 }

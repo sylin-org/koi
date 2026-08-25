@@ -109,6 +109,25 @@ impl LazyMetaBrowse {
         self.locked().worker_cancel.is_some()
     }
 
+    /// Force a fresh query burst: cancel the current worker and start a new one.
+    /// The new worker re-queries `_services._dns-sd._udp` (the mDNS "what types
+    /// exist?" question every client answers) and then re-queries each known
+    /// type, so every mDNS host on the LAN speaks up immediately instead of
+    /// waiting for its own announcement timer. Idempotent: repeated calls just
+    /// restart the burst. Returns the number of types the cache already knows —
+    /// the burst re-discovers them within moments.
+    pub async fn requery(self: &Arc<Self>) -> usize {
+        {
+            let mut inner = self.locked();
+            if let Some(cancel) = inner.worker_cancel.take() {
+                cancel.cancel();
+            }
+        }
+        // touch() restarts the worker on a fresh token.
+        self.touch();
+        self.cache.known_type_count().await
+    }
+
     /// Idle supervisor: stop the worker once it has been inactive for `idle`. Lives for
     /// the controller's lifetime so a later `touch` can restart it.
     async fn supervise(self: Arc<Self>) {
@@ -214,6 +233,34 @@ mod tests {
         tokio::task::yield_now().await;
         assert_eq!(source.browse_count(), 1);
         assert!(lazy.is_active());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn requery_forces_a_fresh_query_burst() {
+        let (lazy, source) = controller(Duration::from_secs(60), Duration::from_secs(10));
+        lazy.touch();
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(source.browse_count(), 1);
+
+        // requery restarts the burst: a new meta-browse is issued even though
+        // the worker is already running, and the call stays idempotent-safe.
+        let known = lazy.requery().await;
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert!(lazy.is_active(), "a worker is running again after requery");
+        assert_eq!(
+            source.browse_count(),
+            2,
+            "requery cancels the old worker and starts a fresh meta-browse"
+        );
+        assert_eq!(known, 0, "the empty cache knows no types yet");
+
+        // Repeated requeries keep working (idempotent restarts, no panic).
+        lazy.requery().await;
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(source.browse_count(), 3);
     }
 
     #[tokio::test(start_paused = true)]

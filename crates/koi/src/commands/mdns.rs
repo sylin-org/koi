@@ -40,6 +40,24 @@ pub fn admin(subcmd: &AdminSubcommand, cli: &crate::cli::Cli) -> anyhow::Result<
 
 // ── Discover ────────────────────────────────────────────────────────
 
+/// `koi mdns ping` — force a fresh mDNS query burst on the daemon ("ping the
+/// pond"): the meta-browse worker restarts, re-querying `_services._dns-sd._udp`
+/// and every known type so all mDNS clients answer immediately.
+pub async fn ping(cli: &crate::cli::Cli, json: bool) -> anyhow::Result<()> {
+    let client = super::require_client(cli.endpoint.as_deref(), super::cli_token(cli))?;
+    let result = client.post_json("/v1/mdns/browser/query", &serde_json::json!({}))?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        let types = result["types_known"].as_u64().unwrap_or(0);
+        println!(
+            "Pinged the pond — fresh query burst running across {types} known service type(s)."
+        );
+        println!("Watch `koi mdns discover` or the workbench Discover pane for replies.");
+    }
+    Ok(())
+}
+
 pub async fn discover(
     service_type: Option<&str>,
     json: bool,

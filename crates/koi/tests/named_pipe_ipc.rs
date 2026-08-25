@@ -110,7 +110,8 @@ async fn exchange(
 #[tokio::test]
 async fn named_pipe_ipc_speaks_the_mdns_protocol() {
     let data = temp_data_dir();
-    let daemon = spawn_daemon(&data);
+    // Held for the whole test: dropping early would kill the daemon mid-run.
+    let _daemon = spawn_daemon(&data);
 
     let mut pipe = connect_pipe().await;
 
