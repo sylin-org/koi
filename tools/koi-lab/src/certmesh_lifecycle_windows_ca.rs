@@ -301,13 +301,18 @@ impl Lab {
         self.restart_run_daemon(member, run_id)
             .context("restart member daemon for the revocation pull")?;
         wait_for_http(&format!("{member_url}/healthz")).context("member restart health")?;
-        let red = self
-            .remote_line(
+        // `trust diagnose` exits non-zero BY DESIGN when the diagnosis is RED
+        // (fail-loud contract) — and RED is exactly what this check expects,
+        // so capture stdout regardless of exit status instead of
+        // run_checked's fail-on-nonzero.
+        let red_output = self
+            .remote_output(
                 member,
                 &format!("{koi_env} {member_run_dir}/koi trust diagnose --json"),
             )
             .context("member trust diagnosis after revocation")?;
-        let red: Value = serde_json::from_str(&red).context("member diagnosis was not JSON")?;
+        let red: Value = serde_json::from_str(String::from_utf8_lossy(&red_output.stdout).trim())
+            .context("member diagnosis was not JSON")?;
         if red.get("overall").and_then(Value::as_str) != Some("red") {
             bail!("revoked member diagnosis was not RED");
         }
@@ -329,13 +334,22 @@ impl Lab {
         );
 
         // ── Refused renewal and rejoin; identity immutable ──
+        // Refusals are CLI errors: the reason lands on stderr with a
+        // non-zero exit, so judge the captured output, not run_checked.
         let denied_renewal = self
-            .remote_line(
+            .remote_output(
                 member,
                 &format!("{koi_env} {member_run_dir}/koi certmesh renew --json"),
             )
-            .context("revoked-member renewal attempt");
-        if denied_renewal.is_ok() || !denied_renewal.unwrap_or_default().contains("revoked") {
+            .context("revoked-member renewal attempt")?;
+        let denied_renewal_text = format!(
+            "{} {}",
+            String::from_utf8_lossy(&denied_renewal.stdout),
+            String::from_utf8_lossy(&denied_renewal.stderr)
+        );
+        if denied_renewal.status.success()
+            || !denied_renewal_text.to_ascii_lowercase().contains("revoked")
+        {
             bail!("revoked member renewal was not refused by the Windows CA");
         }
         let rejoin_invite = curl_json(
@@ -349,16 +363,23 @@ impl Lab {
         )?;
         let rejoin_token = required_str(&rejoin_invite, "token")?;
         let denied_rejoin = self
-            .remote_line(
+            .remote_output(
                 member,
                 &format!(
-                "{koi_env} {member_run_dir}/koi certmesh join {ca_url} --invite '{rejoin_token}' \
+                    "{koi_env} {member_run_dir}/koi certmesh join {ca_url} --invite '{rejoin_token}' \
                  --ca-mtls-port {} --json",
-                ports.mtls
-            ),
+                    ports.mtls
+                ),
             )
-            .context("revoked-member rejoin attempt");
-        if denied_rejoin.is_ok() || !denied_rejoin.unwrap_or_default().contains("revoked") {
+            .context("revoked-member rejoin attempt")?;
+        let denied_rejoin_text = format!(
+            "{} {}",
+            String::from_utf8_lossy(&denied_rejoin.stdout),
+            String::from_utf8_lossy(&denied_rejoin.stderr)
+        );
+        if denied_rejoin.status.success()
+            || !denied_rejoin_text.to_ascii_lowercase().contains("revoked")
+        {
             bail!("revoked member rejoin was not refused by the Windows CA");
         }
         let after = member_identity_evidence(self, member, run_id)

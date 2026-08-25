@@ -3475,6 +3475,16 @@ impl Lab {
         Ok(self.transport.run_checked(node, command)?.trim().to_owned())
     }
 
+    /// Run a remote command and return the raw output even when the exit
+    /// status is non-zero — for steps whose failure IS the expected evidence.
+    pub(crate) fn remote_output(
+        &self,
+        node: &NodeSpec,
+        command: &str,
+    ) -> Result<std::process::Output> {
+        self.transport.run(node, command)
+    }
+
     pub(crate) fn git_commit(&self) -> Result<String> {
         command_stdout_in(&self.repo_root, "git", &["rev-parse", "HEAD"])
     }
