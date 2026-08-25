@@ -407,7 +407,10 @@ impl Lab {
                 red_check,
                 refusal_check,
             ],
-            secrets_redacted: false,
+            // The report carries only run ids, node ids, the artifact hash,
+            // and fixed check strings — never invite tokens, pins, or
+            // passphrases.
+            secrets_redacted: true,
         })
     }
 
