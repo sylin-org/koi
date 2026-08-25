@@ -42,3 +42,6 @@ Desktop.ini
 
 # Local working memory (never committed)
 /local/
+
+# Repo-local scratch (UAC one-shots, transcripts, probe data) — never committed
+/.tmp/
