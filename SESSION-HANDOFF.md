@@ -33,8 +33,28 @@ services, which was the point.
 
 **V1-12 progress (2026-08-24 late): config substrate + L0 welcome LANDED (`43a3dc8`).** `koi config init|show|path` shipped; versioned TOML (deny-unknown-keys, loud wrong-version) at platform paths; precedence **CLI > env > file > default** implemented via clap value-source detection and proven LIVE both directions on Windows (file-only port 6001 bound; explicit `--port 5641` overrode it); template restored after probe. L0 welcome banner: three-line contract (LAN name / dashboard URL / next command), marker-gated once-per-data-root, unit-tested. Next under V1-12: tray MVP; then ADR-032 P1 (W1 SCM driver + W2 named-pipe lanes). Launch assets A1-A6 in docs/LAUNCH.md drafted during soak; every external post is operator-executed.
 
-**WORKBENCH ARC 2 — event-driven Discover + query burst (2026-08-24 night).**
-koi-desktop iterated to the operator's delight bar: full Ghostlight stylesheet
+**MDNS RECEPTION VERDICT + WORKBENCH TRUTHFULNESS (2026-08-24/25 night).**
+Physical measurement closed ADR-030's open question on Windows: **elevated
+service-mode (SCM/SYSTEM) receives mDNS fully and instantly** — one burst
+surfaced 20 service types / 14 devices (Nest Hubs, Brother printer, PS5,
+Matter, NAS/Xserve, ZenGarden boxes, Androids) with resolved endpoints — while
+the **same binary unelevated receives sparsely** (minute-scale inbound gaps
+despite a program-scoped allow rule). ADR-030 amended with the measurement;
+skip-trigger redesign deliberately deferred (partial reception > silence).
+Daemon-side fix landed: a held-open `/v1/mdns/browser/events` subscription now
+re-touches the lazy meta-browse on every heartbeat — "subscribed = browsing" —
+with a regression test (the pond used to silently drain 5 minutes after
+subscribe; that was the "old page had LOADS, new pane has 5" mystery).
+Workbench truthfulness fixes: the Rust readers now PUSH stream state
+(`discover-stream` events; "live" is never stale) and `down` is emitted only
+when healthz also fails (older daemons without `/v1/events` keep the lamp up,
+reconcile covers them). Operator context: the old dist koi was installed as a
+service on this workstation mid-investigation and is crash-looping against the
+rc.2-era data dir (old binary, new format) — the machine currently has NO
+serving daemon on 5641; install the current build as the service when the
+workstation demo should be permanent.
+
+**WORKBENCH ARC 2 — event-driven Discover + query burst (2026-08-24 night).**koi-desktop iterated to the operator's delight bar: full Ghostlight stylesheet
 adopted verbatim (single delta: Koi accent tokens), lampband nav (Status/About/
 Discover), About = the TCG card. **Transport rule (the Ghostlight rule, learned
 the hard way): the webview holds no network** — WebView2's stack intermittently
