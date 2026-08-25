@@ -48,11 +48,11 @@ subscribe; that was the "old page had LOADS, new pane has 5" mystery).
 Workbench truthfulness fixes: the Rust readers now PUSH stream state
 (`discover-stream` events; "live" is never stale) and `down` is emitted only
 when healthz also fails (older daemons without `/v1/events` keep the lamp up,
-reconcile covers them). Operator context: the old dist koi was installed as a
-service on this workstation mid-investigation and is crash-looping against the
-rc.2-era data dir (old binary, new format) — the machine currently has NO
-serving daemon on 5641; install the current build as the service when the
-workstation demo should be permanent.
+reconcile covers them). workstation context: the operator installed the old dist koi as a service mid-
+investigation; it serves correctly (the "crash loop" this ledger previously
+claimed was wrong — probes had caught the service mid-restart). The remaining
+entry-count gap was the idle-stop bug running in that pre-fix binary; upgrading
+the service to the current build closes it.
 
 **WORKBENCH ARC 2 — event-driven Discover + query burst (2026-08-24 night).**koi-desktop iterated to the operator's delight bar: full Ghostlight stylesheet
 adopted verbatim (single delta: Koi accent tokens), lampband nav (Status/About/
