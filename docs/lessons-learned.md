@@ -148,3 +148,45 @@ never through a shared variable reused across hosts; (b) before theorizing about
 bans or lockouts, diff the exact bytes you sent — auth infrastructure is rarely
 wrong, credential plumbing often is; (c) when one host's credential differs,
 prove which one you are sending *first*.
+
+## Physical-run findings
+
+### RL-14 — `canonicalize()` hands out `\\?\` paths; external tools reject them (2026-08-25)
+
+W4's first physical run added firewall rules with
+`program=\\?\F:\...\koi.exe` because `Lab::load` canonicalizes the repo root and
+Rust's `std::fs::canonicalize` prefixes Windows paths with `\\?\`. netsh refused
+the rule ("The parameter is incorrect.") **on stdout**, so the scenario's
+stderr-only error surfaced as an empty message. Three direct pwsh repros passed,
+which is what isolated the argv from the path.
+
+**Rules:** (a) paths crossing a process boundary into non-Rust tools get the
+extended-length prefix stripped first (see `netsh_program_path`); (b) when an
+external tool fails, capture BOTH streams in the error — netsh reports parameter
+errors on stdout, so a stderr-only message diagnoses nothing.
+
+### RL-15 — A remote kill pattern must not match its own transport wrapper (2026-08-25)
+
+W4's revocation step ran `pkill -f '{run_dir}/koi --daemon'` over the lab
+transport, which wraps every command as `sh -c '<command>'`. The shell's own
+argv contained the pattern, so pkill killed its own session: empty output,
+mysterious exit 128, no stderr. The pid-file-based, owner-checked
+`stop_run_daemon` primitive exists precisely to avoid this.
+
+**Rules:** (a) never inline process-kill patterns into transported commands;
+use the run-owned pid file primitives (`stop_run_daemon`, preserve-state
+`restart_run_daemon`) — they are owner-checked AND wrapper-safe; (b) a restart
+of a daemon whose data dir already exists needs the preserve-state variant;
+fresh-start prepare refuses by design.
+
+### RL-16 — Fail-loud CLI exit codes are evidence, not errors, when RED is expected (2026-08-25)
+
+`koi trust diagnose` exits non-zero on a RED diagnosis and refusal reasons land
+on stderr with a non-zero exit. W4's checks *expected* both, but used
+fail-on-nonzero plumbing — so the expected results aborted the scenario. Fixed
+by judging captured stdout/stderr (`remote_output`) instead of exit-status-only
+helpers.
+
+**Rule:** for any step whose negative outcome is the assertion, use raw-output
+capture and assert on content + status together; reserve `run_checked` for
+steps that must succeed.

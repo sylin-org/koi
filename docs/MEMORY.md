@@ -8,7 +8,7 @@ out-of-band answers) lives in gitignored `local/NOTES.md` — see
 | Kind | Where |
 |---|---|
 | Canonical continuation ledger (epic state, evidence, next action) | [`SESSION-HANDOFF.md`](../SESSION-HANDOFF.md) |
-| Lessons/rules that govern how work is done (RL-1..RL-11) | [`docs/lessons-learned.md`](lessons-learned.md) |
+| Lessons/rules that govern how work is done (RL-1..RL-16) | [`docs/lessons-learned.md`](lessons-learned.md) |
 | Decision records (why things are built this way) | [`docs/adr/`](adr/) |
 | Standing lab facts (hosts, credentials-by-env-name, catalog) | [`tools/koi-lab/lab.json`](../tools/koi-lab/lab.json), `local/NOTES.md` |
 | Tool-agnostic agent bootstrap | [`.agentic/CONTEXT.md`](../.agentic/CONTEXT.md) |

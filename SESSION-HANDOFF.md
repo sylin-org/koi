@@ -1,8 +1,30 @@
 # Koi Epic to v1 — canonical continuation ledger
 
 **Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; ADR-026/027/028 operator-ratified; **V1-10 webhooks COMPLETE** (embedded parity closed 2026-08-24 per D10; card/SURFACES/profile done); **V1-09 short-lived defaults implemented + physically green both rotations** (diagnosis semantics fixed per D9); **V1-08 principal identity COMPLETE 2026-08-24** — implementation, Tier-2 real-binary lifecycle, and physical mgmt-principal lane green both Linux rotations; **V1-11 step 1 COMPLETE** (Agent-Door spec + executable vector) and **step 2 scaffolded** (TS + Python SDK betas, read-side, tested); owed: SDK enroll-side + publication gating
-**Last updated:** 2026-08-24
-**Resume phrase:** continue the epic to v1 - lessons ledger at docs/lessons-learned.md (RL-1..RL-11)
+**Last updated:** 2026-08-25
+**Resume phrase:** continue the epic to v1 - lessons ledger at docs/lessons-learned.md (RL-1..RL-16)
+
+**W4 GREEN — ADR-032 Windows-hosted CA rotation physically proven (2026-08-25, run `v1-20260825T145514Z-c2be3c52`).**
+`certmesh-lifecycle-windows-ca` passed 7/7 elevated: wrong-pin refusal before keygen, brook join with
+local CSR custody (0600), CA roster membership, renewal with key rotation + roster fingerprint convergence,
+revocation pulled to RED self_revocation, refused renewal/rejoin with byte-identical identity, exact
+run-owned cleanup. Artifact `b47f1fe0e8d5…` (rc.2 musl), controller tip `b04cefb`. ADR-032 W4 row is now
+green both halves (Windows-member half was `certmesh-native-trust-windows-client`, 2026-08-24).
+Correction of the prior handoff: the "locks held by v1-…879cc67a" premise was wrong — that id was a stale
+hard-coded scenario argument; the real deploy/lock owner then was `v1-…9582ed31`. The physical run exposed
+and fixed FIVE first-run defects (all committed 2e7f152..b04cefb): (1) netsh rejects `\\?\` program paths
+from `canonicalize()` and reports errors on stdout → strip prefix + surface stdout (`netsh_program_path`,
+RL-14); (2) member-side koi CLI calls needed the lane-convention env pinning
+(`KOI_DATA_DIR`/`XDG_RUNTIME_DIR={run}/runtime`) — ambient breadcrumb resolution hit the standing service
+era (/var/run/koi.endpoint exists post-cutover) and bailed pre-cutover; (3) raw `pkill -f` matched the
+transport's own `sh -c` argv and killed the session (exit 128, empty output) → pid-file
+`stop_run_daemon`/preserve-state `restart_run_daemon` primitives (RL-15); (4) RED diagnosis + refusal
+checks judged exit codes instead of captured content — trust diagnose exits non-zero on RED BY DESIGN
+(RL-16, new `remote_output` helper); (5) report now attests secrets_redacted (it only ever carried ids,
+hashes, fixed strings). Also: catalog windows address corrected .138→.137 (DHCP lease move measured);
+compensating cleanup stops the live CA daemon by exact exe before dir removal; every W4 step is named in
+errors (D15 discipline). Standing koi service stopped before / restored after each attempt (RUNNING at
+close). Next in W-queue: W5-W9+W12 breadth, W10 recovery, then extended full profile + soak.
 **STRATEGY SHIFT (2026-08-24, operator-approved): ADR-031 desktop control plane + ADR-032 Windows 1:1 parity program (GATES STABLE 1.0) + docs/LAUNCH.md.** Stable `1.0.0` now requires: full elevated profile extended with Windows breadth cases (W-matrix in ADR-032), all parity rows green both rotations, clean soak incl. Windows participants. rc.2 soak continues unchanged meanwhile. Next implementation order: (1) ADR-031 config substrate basics (versioned TOML, precedence CLI>env>file>defaults, loud unknown keys, `koi config init`), (2) L0 welcome contract, (3) W1 SCM driver + W2 named-pipe IPC lanes, (4) tray MVP.
 **REAL-INSTALL MESH CUTOVER (2026-08-24 late, operator-directed): "no transient
 install - everything on the test machines must be real."** The standing mesh now runs
