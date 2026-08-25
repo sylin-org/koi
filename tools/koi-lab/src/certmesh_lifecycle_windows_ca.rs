@@ -158,10 +158,18 @@ impl Lab {
         let ca_fingerprint = required_str(&invite, "ca_fingerprint")?;
         let mismatched = mismatch_invite_fingerprint(&invite_token, &ca_fingerprint)?;
         let member_run_dir = member.run_dir(run_id)?;
+        // Every member-side koi CLI invocation resolves its LOCAL custody
+        // daemon through the breadcrumb, so it must see the RUN's runtime dir
+        // — never an ambient XDG_RUNTIME_DIR or the node's standing service
+        // (/var/run/koi.endpoint exists since the real-install cutover).
+        let koi_env = format!(
+            "env KOI_DATA_DIR={member_run_dir}/data \
+             XDG_RUNTIME_DIR={member_run_dir}/runtime KOI_NO_CREDENTIAL_STORE=1"
+        );
         let wrong_pin = self.remote_line(
             member,
             &format!(
-                "{member_run_dir}/koi certmesh join {ca_url} --invite '{mismatched}' \
+                "{koi_env} {member_run_dir}/koi certmesh join {ca_url} --invite '{mismatched}' \
                  --ca-mtls-port {} --json",
                 ports.mtls
             ),
@@ -188,7 +196,7 @@ impl Lab {
         self.remote_line(
             member,
             &format!(
-                "{member_run_dir}/koi certmesh join {ca_url} --invite '{invite_token}' \
+                "{koi_env} {member_run_dir}/koi certmesh join {ca_url} --invite '{invite_token}' \
                  --ca-mtls-port {} --json",
                 ports.mtls
             ),
@@ -226,7 +234,7 @@ impl Lab {
         let before = member_identity_evidence(self, member, run_id)?;
         self.remote_line(
             member,
-            &format!("{member_run_dir}/koi certmesh renew --json"),
+            &format!("{koi_env} {member_run_dir}/koi certmesh renew --json"),
         )?;
         let rotated = member_identity_evidence(self, member, run_id)?;
         if rotated.key_sha256 == before.key_sha256 {
@@ -282,7 +290,7 @@ impl Lab {
         wait_for_http(&format!("{member_url}/healthz"))?;
         let red = self.remote_line(
             member,
-            &format!("{member_run_dir}/koi trust diagnose --json"),
+            &format!("{koi_env} {member_run_dir}/koi trust diagnose --json"),
         )?;
         let red: Value = serde_json::from_str(&red).context("member diagnosis was not JSON")?;
         if red.get("overall").and_then(Value::as_str) != Some("red") {
@@ -308,7 +316,7 @@ impl Lab {
         // ── Refused renewal and rejoin; identity immutable ──
         let denied_renewal = self.remote_line(
             member,
-            &format!("{member_run_dir}/koi certmesh renew --json"),
+            &format!("{koi_env} {member_run_dir}/koi certmesh renew --json"),
         );
         if denied_renewal.is_ok() || !denied_renewal.unwrap_or_default().contains("revoked") {
             bail!("revoked member renewal was not refused by the Windows CA");
@@ -326,7 +334,7 @@ impl Lab {
         let denied_rejoin = self.remote_line(
             member,
             &format!(
-                "{member_run_dir}/koi certmesh join {ca_url} --invite '{rejoin_token}' \
+                "{koi_env} {member_run_dir}/koi certmesh join {ca_url} --invite '{rejoin_token}' \
                  --ca-mtls-port {} --json",
                 ports.mtls
             ),
