@@ -406,9 +406,10 @@ pub async fn worker(source: Arc<dyn BrowseSource>, cache: BrowserCache, cancel: 
 
 // ── SSE stream ──────────────────────────────────────────────────────
 
-fn browser_event_stream(
+pub(crate) fn browser_event_stream(
     source: Arc<dyn BrowseSource>,
     cache: BrowserCache,
+    meta: Option<Arc<crate::meta_browse::LazyMetaBrowse>>,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     async_stream::stream! {
         let mut rx = source.subscribe();
@@ -461,6 +462,13 @@ fn browser_event_stream(
                     }
                 },
                 _ = heartbeat.tick() => {
+                    // An open subscription IS active use: every heartbeat re-touches
+                    // the lazy meta-browse so the query worker never idles out under
+                    // a connected client. Without this, browsing stops 5 minutes
+                    // after subscribe and the pond silently drains.
+                    if let Some(meta) = &meta {
+                        meta.touch();
+                    }
                     let snap = cache.snapshot().await;
                     if let Ok(ev) = Event::default()
                         .event("heartbeat")
@@ -541,6 +549,7 @@ async fn get_events(
     Sse::new(browser_event_stream(
         state.source.clone(),
         state.cache.clone(),
+        Some(state.meta.clone()),
     ))
     .keep_alive(KeepAlive::default())
 }
@@ -555,4 +564,54 @@ async fn post_query(Extension(state): Extension<BrowserState>) -> Json<serde_jso
         "restarted": true,
         "types_known": types_known,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meta_browse::{tests::StubSource, LazyMetaBrowse};
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use tokio_stream::StreamExt;
+
+    /// The contract the workbench (and any long-lived subscriber) depends on:
+    /// a held-open events stream keeps the lazy meta-browse worker alive past
+    /// the idle window, because every heartbeat re-touches the controller.
+    /// Regression: the worker used to idle-stop 5 minutes after subscribe and
+    /// the pond silently drained to a handful of entries.
+    #[tokio::test(start_paused = true)]
+    async fn held_open_event_stream_keeps_meta_browse_alive() {
+        let idle = Duration::from_secs(300);
+        let stub = StubSource::new();
+        let dyn_source = stub.clone() as Arc<dyn BrowseSource>;
+        let meta = LazyMetaBrowse::with_intervals(
+            dyn_source.clone(),
+            BrowserCache::new(),
+            CancellationToken::new(),
+            idle,
+            Duration::from_secs(30),
+        );
+        meta.touch();
+
+        let stream = browser_event_stream(dyn_source, BrowserCache::new(), Some(meta.clone()));
+        tokio::pin!(stream);
+
+        // Drive the stream past the idle window in heartbeat-sized steps.
+        for _ in 0..24 {
+            tokio::time::advance(Duration::from_secs(15)).await;
+            tokio::task::yield_now().await;
+            // Each poll consumes one heartbeat, which must re-touch the meta.
+            let _ = stream.next().await;
+        }
+
+        assert!(
+            meta.is_active(),
+            "worker must still run after {}s: heartbeats keep the surface active",
+            idle.as_secs()
+        );
+        assert!(stub.browse_count() >= 1, "the meta-browse was started");
+        // The touch count is not directly exposed; browse_count staying >= 1
+        // with is_active() true past the idle window IS the contract.
+        let _ = stub.browses.load(Ordering::SeqCst);
+    }
 }

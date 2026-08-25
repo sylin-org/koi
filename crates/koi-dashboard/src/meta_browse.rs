@@ -57,7 +57,7 @@ impl LazyMetaBrowse {
         )
     }
 
-    fn with_intervals(
+    pub(crate) fn with_intervals(
         source: Arc<dyn BrowseSource>,
         cache: BrowserCache,
         parent_cancel: CancellationToken,
@@ -152,7 +152,7 @@ impl LazyMetaBrowse {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::browse_source::{BrowseError, BrowseHandle, BrowserEvent};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -161,14 +161,14 @@ mod tests {
 
     /// A `BrowseSource` that never emits events but counts `browse()` calls and keeps
     /// each handle's sender alive so the worker parks instead of seeing EOF.
-    struct StubSource {
-        browses: AtomicUsize,
+    pub(crate) struct StubSource {
+        pub(crate) browses: AtomicUsize,
         keepalive: Mutex<Vec<mpsc::Sender<BrowserEvent>>>,
         tx: broadcast::Sender<BrowserEvent>,
     }
 
     impl StubSource {
-        fn new() -> Arc<Self> {
+        pub(crate) fn new() -> Arc<Self> {
             let (tx, _) = broadcast::channel(16);
             Arc::new(Self {
                 browses: AtomicUsize::new(0),
@@ -176,7 +176,7 @@ mod tests {
                 tx,
             })
         }
-        fn browse_count(&self) -> usize {
+        pub(crate) fn browse_count(&self) -> usize {
             self.browses.load(Ordering::SeqCst)
         }
     }
@@ -202,7 +202,10 @@ mod tests {
         }
     }
 
-    fn controller(idle: Duration, tick: Duration) -> (Arc<LazyMetaBrowse>, Arc<StubSource>) {
+    pub(crate) fn controller(
+        idle: Duration,
+        tick: Duration,
+    ) -> (Arc<LazyMetaBrowse>, Arc<StubSource>) {
         let source = StubSource::new();
         let cache = BrowserCache::new();
         let dyn_source = source.clone() as Arc<dyn BrowseSource>;

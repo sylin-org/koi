@@ -49,6 +49,18 @@ live foreign responder and records whether shared-socket operation is healthy; i
 is not, the skip trigger moves to foreign-responder detection (e.g. D-Bus/service
 probe) in a follow-up change to this ADR.
 
+**Measured on Windows (2026-08-24, workstation, physical):** shared-socket
+operation is healthy **only when Koi runs elevated** (SCM service, SYSTEM): full
+reception, instant — one query burst surfaced 20 service types / 14 devices.
+The same binary as an **unelevated user process** receives sparsely (minute-scale
+gaps with no inbound multicast despite a program-scoped inbound allow rule) —
+announcements may land but resolution queries go unanswered. Verdict: on Windows,
+discovery-grade mDNS requires the service path; the unelevated shape degrades to
+partial reception and must say so (W5 tracks surfacing this). The foreign-responder
+skip trigger remains deferred: skipping would disable discovery entirely, which is
+worse than partial reception — the honest fix is mode-aware expectations, not
+silence.
+
 ### 2. Skipping is coexistence, not error
 
 The skip logs at **info** with reason `port 5353 in use by another mDNS stack` —
