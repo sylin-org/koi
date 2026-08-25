@@ -2,9 +2,11 @@
 //!
 //! Proves the Windows IPC transport speaks the same NDJSON protocol as the
 //! Unix socket: spawn a real daemon child, connect a tokio named-pipe client
-//! to `\\.\pipe\koi`, and drive read-only mDNS requests end-to-end — exact
+//! to a per-run pipe, and drive read-only mDNS requests end-to-end — exact
 //! response shapes for browse, resolve-miss, and malformed input.
 //!
+//! The pipe name is unique per run: a standing system daemon owns the default
+//! `\\.\pipe\koi`, and the test must never talk to (or collide with) it.
 //! Requires mDNS enabled (the pipe adapter bridges the mDNS core); all probes
 //! are read-only so nothing is announced to the LAN.
 
@@ -18,8 +20,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::ClientOptions;
 
-const PIPE_NAME: &str = r"\\.\pipe\koi";
-
 fn temp_data_dir() -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
@@ -30,6 +30,13 @@ fn temp_data_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("koi-pipe-{}-{nanos}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
+}
+
+fn pipe_name(data_dir: &std::path::Path) -> String {
+    format!(
+        r"\\.\pipe\koi-test-{}",
+        data_dir.file_name().unwrap().to_string_lossy()
+    )
 }
 
 struct Daemon(Child);
@@ -51,6 +58,8 @@ fn spawn_daemon(data_dir: &PathBuf) -> Daemon {
         .args(["--acme-port", &free_port().to_string()])
         // Keep the DNS listener off privileged/well-known ports.
         .args(["--dns-port", "19353"])
+        // A per-run pipe: the standing system daemon owns the default name.
+        .args(["--pipe", &pipe_name(data_dir)])
         // IPC stays ON (the system under test); mdns stays ON (the pipe
         // adapter bridges the mDNS core); everything else off.
         .args([
@@ -79,10 +88,10 @@ fn free_port() -> u16 {
         .port()
 }
 
-async fn connect_pipe() -> BufReader<tokio::net::windows::named_pipe::NamedPipeClient> {
+async fn connect_pipe(name: &str) -> BufReader<tokio::net::windows::named_pipe::NamedPipeClient> {
     let mut last_err = None;
     for _ in 0..50 {
-        match ClientOptions::new().open(PIPE_NAME) {
+        match ClientOptions::new().open(name) {
             Ok(client) => return BufReader::new(client),
             Err(e) => last_err = Some(e),
         }
@@ -113,7 +122,7 @@ async fn named_pipe_ipc_speaks_the_mdns_protocol() {
     // Held for the whole test: dropping early would kill the daemon mid-run.
     let _daemon = spawn_daemon(&data);
 
-    let mut pipe = connect_pipe().await;
+    let mut pipe = connect_pipe(&pipe_name(&data)).await;
 
     // Resolve miss: a single structured error envelope — proves the pipe
     // transport, the mDNS core bridge, and the response framing.

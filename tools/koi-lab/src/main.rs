@@ -1,4 +1,5 @@
 mod acme;
+mod certmesh_lifecycle_windows_ca;
 mod derived;
 mod evidence;
 mod lab;
@@ -122,6 +123,17 @@ enum LabCommand {
         /// probe (stages the identity and dials the management plane).
         #[arg(long)]
         probe: Option<String>,
+    },
+    /// W4 (ADR-032): Windows-hosted CA rotation — a physical Linux member
+    /// enrolls, renews, and is revoked against a CA daemon on this workstation.
+    CertmeshLifecycleWindowsCa {
+        #[arg(long)]
+        run_id: String,
+        /// Member node id (must be a physical Linux node with the member role).
+        #[arg(long)]
+        member: Option<String>,
+        #[arg(long)]
+        allow_system_mutation: bool,
     },
     /// Prove SCM service supervision on this Windows workstation (ADR-032 W1).
     ServiceLifecycleWindows {
@@ -265,6 +277,17 @@ fn main() -> Result<()> {
                 rotation,
                 primary.as_deref(),
                 probe.as_deref(),
+            )?)?;
+        }
+        LabCommand::CertmeshLifecycleWindowsCa {
+            run_id,
+            member,
+            allow_system_mutation,
+        } => {
+            print_json(&lab.certmesh_lifecycle_windows_ca(
+                &RunId::parse(&run_id)?,
+                member.as_deref(),
+                allow_system_mutation,
             )?)?;
         }
         LabCommand::ServiceLifecycleWindows {

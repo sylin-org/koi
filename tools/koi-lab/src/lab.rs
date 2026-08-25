@@ -2593,7 +2593,7 @@ impl Lab {
         Ok(())
     }
 
-    fn windows_member_dir(&self, run_id: &RunId) -> PathBuf {
+    pub(crate) fn windows_member_dir(&self, run_id: &RunId) -> PathBuf {
         self.repo_root
             .join(output_path(run_id.as_str()))
             .join("windows-member")
@@ -2942,7 +2942,7 @@ impl Lab {
         }
     }
 
-    fn prepare_windows_member_dir(&self, run_id: &RunId) -> Result<PathBuf> {
+    pub(crate) fn prepare_windows_member_dir(&self, run_id: &RunId) -> Result<PathBuf> {
         let root = self.windows_member_dir(run_id);
         if root.exists() {
             bail!(
@@ -2962,7 +2962,7 @@ impl Lab {
         Ok(root)
     }
 
-    fn windows_member_command(&self, root: &Path) -> Result<Command> {
+    pub(crate) fn windows_member_command(&self, root: &Path) -> Result<Command> {
         let koi = root.join("koi.exe");
         if !koi.is_file() {
             bail!(
@@ -2980,7 +2980,7 @@ impl Lab {
         Ok(command)
     }
 
-    fn start_windows_member_daemon(
+    pub(crate) fn start_windows_member_daemon(
         &self,
         root: &Path,
         ports: &crate::model::LabPorts,
@@ -3012,7 +3012,42 @@ impl Lab {
             .context("failed to start the run-owned Windows member daemon")
     }
 
-    fn restart_windows_member_daemon(
+    pub(crate) fn start_windows_ca_daemon(
+        &self,
+        root: &Path,
+        ports: &crate::model::LabPorts,
+    ) -> Result<std::process::Child> {
+        // The CA variant differs from the member daemon in exactly one way:
+        // HTTP binds to the LAN so a cross-host member can preflight the CA
+        // and enroll (mTLS already binds 0.0.0.0 unconditionally).
+        let log = fs::File::create(root.join("daemon.log"))?;
+        let stderr = log.try_clone()?;
+        let mut command = self.windows_member_command(root)?;
+        command
+            .args(["--daemon", "--port"])
+            .arg(ports.http.to_string())
+            .args(["--http-bind", "0.0.0.0", "--mtls-port"])
+            .arg(ports.mtls.to_string())
+            .args(["--acme-port"])
+            .arg(ports.acme.to_string())
+            .args([
+                "--no-ipc",
+                "--no-mdns",
+                "--no-dns",
+                "--no-health",
+                "--no-udp",
+                "--no-runtime",
+                "--no-acme",
+                "--no-mcp-http",
+            ])
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(stderr));
+        command
+            .spawn()
+            .context("failed to start the run-owned Windows CA daemon")
+    }
+
+    pub(crate) fn restart_windows_member_daemon(
         &self,
         root: &Path,
         ports: &crate::model::LabPorts,
@@ -3030,14 +3065,22 @@ impl Lab {
         Ok(new_pid)
     }
 
-    fn run_windows_member_koi(&self, root: &Path, args: &[String]) -> Result<std::process::Output> {
+    pub(crate) fn run_windows_member_koi(
+        &self,
+        root: &Path,
+        args: &[String],
+    ) -> Result<std::process::Output> {
         self.windows_member_command(root)?
             .args(args)
             .output()
             .context("failed to start the Windows member CLI")
     }
 
-    fn require_windows_breadcrumb(&self, root: &Path, expected_endpoint: &str) -> Result<String> {
+    pub(crate) fn require_windows_breadcrumb(
+        &self,
+        root: &Path,
+        expected_endpoint: &str,
+    ) -> Result<String> {
         let breadcrumb = root.join("program-data").join("koi").join("koi.endpoint");
         for _ in 0..50 {
             if let Ok(contents) = fs::read_to_string(&breadcrumb) {
@@ -3093,7 +3136,7 @@ impl Lab {
         self.remove_windows_member_dir(run_id, root)
     }
 
-    fn remove_windows_member_dir(&self, run_id: &RunId, root: &Path) -> Result<()> {
+    pub(crate) fn remove_windows_member_dir(&self, run_id: &RunId, root: &Path) -> Result<()> {
         if root != self.windows_member_dir(run_id) {
             bail!("Windows member cleanup path escaped the exact run-owned directory");
         }
