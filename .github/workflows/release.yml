@@ -330,14 +330,20 @@ jobs:
             --version "${{ needs.prepare.outputs.version }}" \
             --artifacts artifacts \
             --output "$MANIFEST"
-          cp "$MANIFEST" packages/npm/release-manifest.json
 
-      - name: Test and pack the npm bootstrap
+      - name: Assemble and pack the npm carriers
         working-directory: packages/npm
         run: |
+          node scripts/build-carriers.mjs \
+            --artifacts artifacts \
+            --manifest "artifacts/koi-${{ needs.prepare.outputs.tag }}-manifest.json" \
+            --out carriers
           npm ci
           npm test
           npm pack --dry-run
+          for carrier in carriers/@sylin-org/koi-*; do
+            (cd "$carrier" && npm pack --dry-run)
+          done
 
   # ── Release ───────────────────────────────────────────────────────
   release:
@@ -556,19 +562,35 @@ jobs:
       - name: Use a trusted-publishing capable npm CLI
         run: npm install --global npm@latest
 
-      - name: Download the released artifact contract
+      - name: Download the released artifacts and contract
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          mkdir -p artifacts-release
           gh release download "${{ needs.prepare.outputs.tag }}" \
             --pattern "koi-${{ needs.prepare.outputs.tag }}-manifest.json" \
-            --dir packages/npm
-          mv "packages/npm/koi-${{ needs.prepare.outputs.tag }}-manifest.json" \
-            packages/npm/release-manifest.json
+            --pattern "koi-${{ needs.prepare.outputs.tag }}-*.tar.gz" \
+            --pattern "koi-${{ needs.prepare.outputs.tag }}-*.zip" \
+            --dir artifacts-release
+          for target in aarch64-apple-darwin aarch64-pc-windows-msvc aarch64-unknown-linux-musl x86_64-apple-darwin x86_64-pc-windows-msvc x86_64-unknown-linux-musl; do
+            mkdir -p "artifacts-release/release-${target}"
+            mv "artifacts-release/koi-${{ needs.prepare.outputs.tag }}-${target}".* "artifacts-release/release-${target}/"
+          done
 
-      - name: Verify and publish the npm bootstrap
+      - name: Assemble carriers from the released bytes
         working-directory: packages/npm
         run: |
+          node scripts/build-carriers.mjs \
+            --artifacts ../artifacts-release \
+            --manifest ../artifacts-release/koi-${{ needs.prepare.outputs.tag }}-manifest.json \
+            --out carriers
           npm ci
           npm test
+
+      - name: Publish carriers, then the entry package
+        working-directory: packages/npm
+        run: |
+          for carrier in carriers/@sylin-org/koi-*; do
+            (cd "$carrier" && npm publish --access public --tag "${{ needs.prepare.outputs.npm_tag }}")
+          done
           npm publish --access public --tag "${{ needs.prepare.outputs.npm_tag }}"

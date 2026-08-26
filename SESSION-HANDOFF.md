@@ -34,6 +34,15 @@ secret `TAURI_SIGNING_PRIVATE_KEY[+_PASSWORD]`, then pubkey into koi-desktop tau
 Packaging scaffolds for the P-D channels drafted under `packaging/` (homebrew formula, scoop manifest,
 winget manifest notes, AUR PKGBUILD) — deliberately version/hash-placeholdered: they fill at the
 stable 1.0 release (prereleases do not belong in these channels; registries immutable per RL-2).
+**npm carrier pattern IMPLEMENTED (ADR-034 D5):** `@sylin-org/koi` is now a thin launcher over six
+exact-pinned platform carriers (`@sylin-org/koi-{darwin,linux,win32}-{x64,arm64}`); the old
+download-dispatcher (bootstrap.js + in-package release manifest) is deleted. Placement law kept:
+`koi install` copies the carried binary to the stable per-user location and execs THAT, so services
+never register from npm-managed paths; every other subcommand runs the carried binary directly.
+`scripts/build-carriers.mjs` assembles carriers in CI from the released bytes — every archive digest
+is recomputed against the release manifest before extraction (tamper-tested). Release workflow:
+channels job pack-tests entry + all six carriers; publish job (trusted publishing/OIDC) publishes
+carriers first, then the entry. 7/7 node tests green; YAML validated.
 P-B operator console actions — npm trusted publishers (per package) + `NPM_PUBLISH_ENABLED`;
 P-D taps/submissions one by one; P-E optional Apple $99/yr later.
 
