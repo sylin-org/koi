@@ -46,6 +46,20 @@ carriers first, then the entry. 7/7 node tests green; YAML validated.
 P-B operator console actions — npm trusted publishers (per package) + `NPM_PUBLISH_ENABLED`;
 P-D taps/submissions one by one; P-E optional Apple $99/yr later.
 
+**W5 PARTIAL — announce green, browse-cache defect found (2026-08-26, run `v1-20260826T202817Z-8530fd7f` + diagnostics).**
+`windows-mdns` scenario: direction A green (Windows announce API → **avahi-browse on test01 discovers it** —
+standards-conformance proof; the Linux koi daemons deliberately skip their own mDNS per ADR-030, so the
+honest pairing is Koi vs the OS stacks; avahi tools want the type WITHOUT the `.local` suffix — measured).
+Direction B (avahi-publish → Windows browser) exposed a real product defect: **the mDNS browser cache
+never populates on Windows** — live events flow (workbench pond unaffected), core reception healthy
+(37 packets/12s raw-socket verified, IGMP join fine), but the cache the snapshot API serves stays empty;
+reproduced on the standing SYSTEM-context service after hours of runtime. Fix belongs in the browser
+worker's cache write path (koi-dashboard browser.rs / mdns-sd Windows reception). Scenario kept as the
+regression test; W5 row = partial (announce green, browse ticketed). RL-13 recurrence: test01's
+test/test vs the lab password bit once more — per-machine credentials only.
+Commits fd89f5f..913a6ab. Remaining W-lanes: W7 (TLS proxy dual-stack), W8 (webhooks), W10 (recovery),
+W12 (ACME via W6 DNS), browse-cache fix (new ticket, blocks W5-green), then extended profile + soak.
+
 **W6+W9 GREEN — `windows-breadth` physically proven (2026-08-26, run `v1-20260826T191612Z-b559ca5d`, 4/4 checks).**
 Windows-hosted serving lane: DNS authoritative zone served on a lane port picked exclusively-free at
 run time (18653+), answered cross-host by brook's dig AND locally by a PowerShell loopback wire probe;
