@@ -46,19 +46,22 @@ carriers first, then the entry. 7/7 node tests green; YAML validated.
 P-B operator console actions — npm trusted publishers (per package) + `NPM_PUBLISH_ENABLED`;
 P-D taps/submissions one by one; P-E optional Apple $99/yr later.
 
-**W5 PARTIAL — announce green, browse-cache defect found (2026-08-26, run `v1-20260826T202817Z-8530fd7f` + diagnostics).**
-`windows-mdns` scenario: direction A green (Windows announce API → **avahi-browse on test01 discovers it** —
-standards-conformance proof; the Linux koi daemons deliberately skip their own mDNS per ADR-030, so the
-honest pairing is Koi vs the OS stacks; avahi tools want the type WITHOUT the `.local` suffix — measured).
-Direction B (avahi-publish → Windows browser) exposed a real product defect: **the mDNS browser cache
-never populates on Windows** — live events flow (workbench pond unaffected), core reception healthy
-(37 packets/12s raw-socket verified, IGMP join fine), but the cache the snapshot API serves stays empty;
-reproduced on the standing SYSTEM-context service after hours of runtime. Fix belongs in the browser
-worker's cache write path (koi-dashboard browser.rs / mdns-sd Windows reception). Scenario kept as the
-regression test; W5 row = partial (announce green, browse ticketed). RL-13 recurrence: test01's
-test/test vs the lab password bit once more — per-machine credentials only.
-Commits fd89f5f..913a6ab. Remaining W-lanes: W7 (TLS proxy dual-stack), W8 (webhooks), W10 (recovery),
-W12 (ACME via W6 DNS), browse-cache fix (new ticket, blocks W5-green), then extended profile + soak.
+**W5 GREEN — browser-cache defect found AND fixed (2026-08-26, run `v1-20260826T215040Z-c21a6aac`, 3/3 checks).**
+`windows-mdns` verifies against the OS stacks themselves (the Linux koi daemons deliberately skip their
+own mDNS per ADR-030, so Koi is the lab's only koi-side participant): Windows announce API →
+**avahi-browse on test01 discovers it** (standards conformance); **avahi-publish on test01 → the Windows
+browser snapshot discovers it**. Direction B initially exposed a real product defect, root-caused by
+layer isolation (standalone mdns-sd probe: 17 ServiceFound ✓; koi-mdns MdnsCore probe: 17 Found ✓ →
+defect in the dashboard wiring): the mDNS hub's replay cache stored only Resolved events — meta-query
+Found events (which ARE the discovered type names) were broadcast live but never cached, so the lazy
+browser's late subscription replayed nothing on a quiet LAN. Chatty LANs masked it with live events.
+Fix: `cache_update` caches meta Found events; `replay_events` replays meta entries as Found (regression
+tests pin both shapes). Also measured: `Resolve-DnsName` has no `-Port`; Windows nslookup sends ZERO
+packets for non-53 ports; avahi tools want types without the `.local` suffix; SO_REUSEADDR vs a
+non-reuse holder = WSAEACCES 10013 (cooperative binding is not a squatter rescue). Mass dependency
+refresh landed too (167 packages: mdns-sd 0.20.3, flume 0.12, tokio 1.53, rustls 0.23.43). Commits
+fd89f5f..e3df29e..ca6a650. Remaining W-lanes: W7 (TLS proxy dual-stack), W8 (webhooks origin-on-Windows),
+W10 (recovery), W12 (ACME via W6 DNS), then extended profile + soak.
 
 **W6+W9 GREEN — `windows-breadth` physically proven (2026-08-26, run `v1-20260826T191612Z-b559ca5d`, 4/4 checks).**
 Windows-hosted serving lane: DNS authoritative zone served on a lane port picked exclusively-free at
