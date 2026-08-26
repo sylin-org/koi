@@ -46,6 +46,17 @@ carriers first, then the entry. 7/7 node tests green; YAML validated.
 P-B operator console actions — npm trusted publishers (per package) + `NPM_PUBLISH_ENABLED`;
 P-D taps/submissions one by one; P-E optional Apple $99/yr later.
 
+**W7 GREEN — `windows-proxy` first-physical-run (2026-08-26, run `v1-20260826T221922Z-0fe825ee`, 5/5 checks).**
+TLS proxy serving ON Windows with a certmesh-sourced leaf: brook hosted the CA (story daemon +
+certmesh create, enrollment open), the Windows member daemon joined with local key custody (restart
+loads the identity; trust diagnose healthy as stone-leaded-sparkle.internal), tracked native-trust
+installed on BOTH sides (Linux self-trust + Windows LocalMachine\Root), proxy added with
+`allow_remote: true` and `cert_source: certmesh` verified. Verification both stacks: **openssl from
+brook** (chain + hostname via -verify_return_error -verify_hostname against the system store; wrong-host
+rejected) and **Schannel curl from Windows** (--resolve, no hosts-file mutation). Commit b72436f.
+Remaining W-lanes: W8 (webhooks origin-on-Windows), W12 (ACME via W6 DNS), W10 (recovery), then
+extended profile + soak.
+
 **W5 GREEN — browser-cache defect found AND fixed (2026-08-26, run `v1-20260826T215040Z-c21a6aac`, 3/3 checks).**
 `windows-mdns` verifies against the OS stacks themselves (the Linux koi daemons deliberately skip their
 own mDNS per ADR-030, so Koi is the lab's only koi-side participant): Windows announce API →
