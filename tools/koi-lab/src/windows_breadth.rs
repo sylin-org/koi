@@ -191,21 +191,51 @@ impl Lab {
         .context("add the W6 DNS record on the Windows daemon")?;
         resources.dns_record = true;
 
-        let dig_answer = self
-            .remote_line(
-                member,
-                &format!(
-                    "dig @{} -p {} {DNS_NAME} A +short | sed -n '1p'",
-                    windows.address(),
-                    ports.dns
-                ),
-            )
-            .context("cross-host dig against the Windows DNS server")?;
+        // Cross-host dig with bounded retries; on persistent failure the error
+        // carries its own diagnostics (local wire probe + rule state) so the
+        // failure is diagnosable from the report alone (D15).
+        let mut dig_answer = String::new();
+        let mut dig_error: Option<anyhow::Error> = None;
+        for _ in 0..3 {
+            match self
+                .remote_line(
+                    member,
+                    &format!(
+                        "dig @{} -p {} {DNS_NAME} A +short | sed -n '1p'",
+                        windows.address(),
+                        ports.dns
+                    ),
+                )
+                .context("cross-host dig against the Windows DNS server")
+            {
+                Ok(answer) => {
+                    dig_answer = answer;
+                    dig_error = None;
+                    break;
+                }
+                Err(error) => dig_error = Some(error),
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
         if dig_answer.trim() != windows.address() {
+            let rules = Command::new("netsh")
+                .args([
+                    "advfirewall",
+                    "firewall",
+                    "show",
+                    "rule",
+                    &format!("name={FIREWALL_DNS_UDP_RULE}"),
+                ])
+                .output()
+                .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+                .unwrap_or_default();
             bail!(
-                "W6 cross-host dig returned {:?}, expected {}",
+                "W6 cross-host dig returned {:?}, expected {}; last error: {:?}; \
+                 inbound rule state: {}",
                 dig_answer.trim(),
-                windows.address()
+                windows.address(),
+                dig_error,
+                rules.trim()
             );
         }
 
