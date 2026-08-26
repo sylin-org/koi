@@ -306,12 +306,16 @@ impl Lab {
 
         // OS-native resolver verification. `Resolve-DnsName` cannot target a
         // non-53 port, so the Windows-native verifier for a lane-scoped port
-        // is `nslookup -port=` (same wire contract, standard tool).
+        // is `nslookup -port=` (equals form; the space form prints usage).
         let resolve = Command::new("nslookup")
-            .args(["-port", &dns_port.to_string(), DNS_NAME, "127.0.0.1"])
+            .args([&format!("-port={dns_port}"), DNS_NAME, "127.0.0.1"])
             .output()
             .context("run nslookup against the Windows DNS server")?;
-        let resolve_text = String::from_utf8_lossy(&resolve.stdout).to_string();
+        let resolve_text = format!(
+            "{} {}",
+            String::from_utf8_lossy(&resolve.stdout),
+            String::from_utf8_lossy(&resolve.stderr)
+        );
         if !resolve_text.contains(windows_address) || resolve_text.contains("No response") {
             bail!(
                 "W6 nslookup did not return {}: output={}",
