@@ -1348,6 +1348,21 @@ impl Lab {
         self.transport.run_checked(node, &command)?;
         Ok(())
     }
+    /// Cross-host variant of the story fixture: binds 0.0.0.0 instead of
+    /// loopback so a peer daemon's health checker can reach it over the LAN
+    /// (W9's whole point). Same owner-checked, pid-file discipline.
+    pub(crate) fn start_cross_host_fixture(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
+        let run_dir = node.run_dir(run_id)?;
+        let lock_dir = node.lock_dir()?;
+        let port = node.lab_ports()?.fixture;
+        let command = format!(
+            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/fixture.pid; ! ss -H -lnt | grep -Eq ':{port} '; nc_exe=$(realpath \"$(command -v nc)\"); printf '%s' \"$nc_exe\" > {run_dir}/fixture.exe; setsid -f sh -c 'echo $$ > {run_dir}/fixture.pid; exec nc -lk 0.0.0.0 {port} >>{run_dir}/fixture.log 2>&1'; i=0; while ! ss -H -lnt | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ss -H -lnt | grep -Eq ':{port} '",
+            run_id.as_str(),
+            run_id.as_str()
+        );
+        self.transport.run_checked(node, &command)?;
+        Ok(())
+    }
 
     pub(crate) fn start_story_dns_blocker(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
         let run_dir = node.run_dir(run_id)?;

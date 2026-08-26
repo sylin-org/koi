@@ -352,7 +352,7 @@ impl Lab {
         );
 
         // ── W9 (Windows → Linux): the real Up → Down → Up state machine ──
-        self.start_story_fixture(member, run_id)
+        self.start_cross_host_fixture(member, run_id)
             .context("start the Linux member fixture")?;
         resources.fixture_active = true;
         curl_json(
@@ -376,7 +376,7 @@ impl Lab {
         resources.fixture_active = false;
         wait_for_health(&windows_url, HEALTH_WINDOWS_TO_LINUX, "down")
             .context("Windows→Linux check did not go down")?;
-        self.start_story_fixture(member, run_id)
+        self.start_cross_host_fixture(member, run_id)
             .context("restart the Linux member fixture (up phase)")?;
         resources.fixture_active = true;
         wait_for_health(&windows_url, HEALTH_WINDOWS_TO_LINUX, "up")
