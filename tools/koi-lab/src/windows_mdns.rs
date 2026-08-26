@@ -1,16 +1,22 @@
-//! W5 (ADR-032): mDNS announce/browse from Windows, over the real LAN.
+//! W5 (ADR-032): mDNS announce/browse from Windows, verified by the OS
+//! stacks themselves.
 //!
-//! A run-owned daemon on THIS workstation announces an ephemeral service via
-//! mDNS (firewall provisioned: UDP 5353 + the announced TCP port, both
-//! program-scoped), and the physical Linux member discovers it through its
-//! own browse subscription. Then the direction flips: the member announces
-//! and the Windows daemon's browser sees it.
+//! The standing lab's koi daemons deliberately skip their own mDNS on Linux
+//! (garden-first ADR-030 decision: resolved/avahi own 5353 there) — Windows
+//! is the only koi mDNS participant. The honest lane therefore pairs Koi's
+//! mDNS against the OS stacks on the avahi-equipped member (test01):
 //!
-//! Measured context (ADR-030 amendment + this arc): Windows never auto-skips
-//! mDNS; elevated processes receive multicast fully; this workstation's 5353
-//! is held with reuse semantics by system services and the daemon coexists
-//! with it (reception proven 2026-08-24/25). Discovery here is the missing
-//! claim.
+//! - Direction A: the Windows daemon announces an ephemeral service via its
+//!   announce API; `avahi-browse` on the member (THE standard mDNS consumer)
+//!   discovers it — proof that Koi's announcements are standards-conformant.
+//! - Direction B: `avahi-publish` on the member announces a service; the
+//!   Windows daemon's browser sees it — proof that Koi's browser consumes
+//!   standard announcements.
+//!
+//! Measured context (ADR-030 amendment): Windows never auto-skips mDNS;
+//! elevated processes receive multicast fully; this workstation's 5353 is
+//! held with reuse semantics by system services and the daemon coexists with
+//! it. Firewall provisioned: UDP 5353, program-scoped.
 //!
 //! Gated on elevation, `--allow-system-mutation`, and the catalog granting
 //! the workstation `firewall` mutations; every rule is scenario-named and
@@ -19,21 +25,15 @@
 use anyhow::{bail, Context, Result};
 use std::time::Duration;
 
-use crate::model::{output_path, CheckResult, RunId, WindowsMdnsReport};
-use crate::probe::SseCapture;
-
 use crate::lab::{curl_json, wait_for_http, Lab};
+use crate::model::{output_path, CheckResult, RunId, WindowsMdnsReport};
 
 const FIREWALL_MDNS_RULE: &str = "koi-lab w5 mdns (udp 5353)";
-const FIREWALL_HTTP_RULE: &str = "koi-lab w5 http (tcp 18541)";
-const SERVICE_TYPE: &str = "_koi-v1._tcp.local.";
-/// Squat-free scratch ports for the ephemeral announcements (probed free).
-const ANNOUNCE_PORT_CANDIDATES: std::ops::RangeInclusive<u16> = 18673..=18692;
+const SERVICE_TYPE: &str = "_http._tcp.local.";
 
 #[derive(Default)]
 struct MdnsResources {
     windows_daemon: bool,
-    member_daemon: bool,
     firewall_rules: Vec<String>,
 }
 
@@ -55,10 +55,25 @@ impl Lab {
                 windows.id()
             );
         }
-        let member = crate::planner::machine_by_id(self.config(), member_id.unwrap_or("brook"))
+        let member = crate::planner::machine_by_id(self.config(), member_id.unwrap_or("test01"))
             .context("catalog has no such member machine")?;
         if !matches!(member, crate::model::NodeSpec::PuttyLinux { .. }) {
             bail!("the W5 member must be a physical Linux node");
+        }
+        // The member is the OS mDNS stack (avahi), not a koi daemon — the
+        // Linux koi daemons deliberately skip their own mDNS (ADR-030).
+        let avahi = self
+            .remote_line(
+                member,
+                "command -v avahi-browse >/dev/null && echo yes || echo no",
+            )
+            .context("check avahi on the member")?;
+        if avahi.trim() != "yes" {
+            bail!(
+                "the W5 member {} has no avahi tooling; the lane verifies against the OS \
+                 mDNS stack",
+                member.id()
+            );
         }
 
         let mut resources = MdnsResources::default();
@@ -68,7 +83,7 @@ impl Lab {
             (Ok(mut report), Ok(())) => {
                 report.checks.push(passed(
                     "run_owned_cleanup",
-                    "firewall rules and both daemons were removed",
+                    "firewall rules and the Windows daemon were removed",
                 ));
                 let path = output_path(run_id.as_str()).join("windows-mdns.json");
                 self.write_evidence(&path, &report)?;
@@ -102,29 +117,16 @@ impl Lab {
             .context("catalog has no windows machine")?
             .lab_ports()?;
 
-        // Scratch ports for the ephemeral announcements: probed exclusively
-        // free so the announced TCP port is real (a browser can connect).
-        let windows_announce_port = ANNOUNCE_PORT_CANDIDATES
-            .clone()
-            .find(|candidate| std::net::TcpListener::bind(("0.0.0.0", *candidate)).is_ok())
-            .context("no free announce port in 18673..=18692")?;
-        let member_announce_port = ((windows_announce_port + 1)..=18692)
-            .find(|candidate| std::net::TcpListener::bind(("0.0.0.0", *candidate)).is_ok())
-            .context("no second free announce port in 18673..=18692")?;
-
-        // ── Scenario-scoped firewall: mDNS + the announced HTTP surface ──
+        // ── Scenario-scoped firewall: mDNS multicast for the run daemon ──
         let ca_root = self
             .prepare_windows_member_dir(run_id)
             .context("stage the Windows mDNS daemon directory")?;
         let exe = ca_root.join("koi.exe");
-        for (name, protocol, port) in [
-            (FIREWALL_MDNS_RULE, "udp", "5353".to_string()),
-            (FIREWALL_HTTP_RULE, "tcp", ports.http.to_string()),
-        ] {
-            crate::lab::firewall_rule(name, protocol, &port, &exe)
-                .with_context(|| format!("firewall rule {name}"))?;
-            resources.firewall_rules.push(name.to_string());
-        }
+        crate::lab::firewall_rule(FIREWALL_MDNS_RULE, "udp", "5353", &exe)
+            .with_context(|| format!("firewall rule {FIREWALL_MDNS_RULE}"))?;
+        resources
+            .firewall_rules
+            .push(FIREWALL_MDNS_RULE.to_string());
 
         // ── Windows daemon with mDNS announcing enabled ──
         let _windows_child = self
@@ -138,116 +140,103 @@ impl Lab {
             .require_windows_breadcrumb(&ca_root, &format!("http://127.0.0.1:{}", ports.http))
             .context("read the Windows daemon breadcrumb")?;
 
-        // ── Linux member daemon (announcing enabled by the story profile) ──
-        self.start_story_daemon(member, run_id)
-            .context("start the Linux member run daemon")?;
-        resources.member_daemon = true;
-        let member_url = self.node_url(member)?;
-        wait_for_http(&format!("{member_url}/healthz"))
-            .context("Linux member daemon did not become healthy")?;
-        let member_dat = self
-            .remote_line(
-                member,
-                &format!("cat {}/runtime/koi.endpoint", member.run_dir(run_id)?),
-            )
-            .context("read the Linux member breadcrumb")
-            .ok()
-            .and_then(|body| {
-                body.lines()
-                    .nth(1)
-                    .and_then(|line| line.trim().strip_prefix("dat:").map(str::to_owned))
-            });
-
-        // ── W5 direction A: Windows announces, the member discovers ──
-        // The member subscribes (type-scoped browse) BEFORE the announcement,
-        // exactly like story Act 4.
-        let member_capture = SseCapture::start(
-            &format!("{member_url}/v1/mdns/subscribe?type={SERVICE_TYPE}&idle_for=8"),
-            None,
-            25,
-            "member mDNS",
-        )?;
-        std::thread::sleep(Duration::from_millis(500));
-        let service_name = format!("win-{}._{}", run_id.as_str(), SERVICE_TYPE);
+        // ── Direction A: Windows announces, avahi discovers ──
+        let instance_a = format!("w5-win-{}", run_id.as_str());
+        // avahi-browse in the background, dumping to a file; -p = parseable.
+        self.remote_line(
+            member,
+            &format!(
+                "nohup timeout 20 avahi-browse -p -t -- {SERVICE_TYPE} > /tmp/w5-{}-browse.txt 2>&1 &",
+                run_id.as_str()
+            ),
+        )
+        .context("start avahi-browse on the member")?;
+        std::thread::sleep(Duration::from_millis(700));
         curl_json(
             "POST",
             &format!("{windows_url}/v1/mdns/announce"),
             Some(&windows_token),
             Some(&serde_json::json!({
-                "name": service_name,
+                "name": instance_a,
                 "type": SERVICE_TYPE,
-                "port": windows_announce_port,
+                "port": ports.http,
                 "ip": windows_address,
                 "lease_secs": 60,
                 "txt": {"run": run_id.as_str(), "surface": "w5-mdns"}
             })),
         )
         .context("Windows mDNS announce")?;
-        let member_capture_text = member_capture.finish().context("member mDNS capture")?;
-        if !member_capture_text.contains(&service_name) {
+        std::thread::sleep(Duration::from_secs(4));
+        let browse = self
+            .remote_line(
+                member,
+                &format!(
+                    "grep -F '{instance_a}' /tmp/w5-{}-browse.txt | sed -n '1p'",
+                    run_id.as_str()
+                ),
+            )
+            .unwrap_or_default();
+        self.remote_line(
+            member,
+            &format!("rm -f /tmp/w5-{}-browse.txt", run_id.as_str()),
+        )
+        .ok();
+        if !browse.contains(&instance_a) {
             bail!(
-                "W5 direction A failed: the member's browse stream never carried \
-                 {service_name}; capture tail: {}",
-                member_capture_text
-                    .lines()
-                    .rev()
-                    .take(6)
-                    .collect::<Vec<_>>()
-                    .join(" | ")
+                "W5 direction A failed: avahi-browse never saw {instance_a}; the Windows \
+                 announcement is not standards-conformant (or the member's multicast path \
+                 is down)"
             );
         }
         let w5_windows_announces = passed(
-            "w5_windows_announces_member_discovers",
+            "w5_windows_announces_avahi_discovers",
             format!(
-                "the Windows daemon announced {service_name} on {}:{windows_announce_port} \
-                 and the {} browser subscription discovered it",
-                windows_address,
+                "the Windows daemon announced {instance_a} ({windows_address}:{}) and \
+                 avahi-browse on {} discovered it through the standard mDNS stack",
+                ports.http,
                 member.id()
             ),
         );
 
-        // ── W5 direction B: the member announces, Windows discovers ──
-        let windows_capture = SseCapture::start(
-            &format!("{windows_url}/v1/mdns/subscribe?type={SERVICE_TYPE}&idle_for=8"),
-            Some(&windows_token),
-            25,
-            "windows mDNS",
-        )?;
-        std::thread::sleep(Duration::from_millis(500));
-        let member_service_name = format!("nix-{}._{}", run_id.as_str(), SERVICE_TYPE);
-        curl_json(
-            "POST",
-            &format!("{member_url}/v1/mdns/announce"),
-            member_dat.as_deref(),
-            Some(&serde_json::json!({
-                "name": member_service_name,
-                "type": SERVICE_TYPE,
-                "port": member_announce_port,
-                "ip": member.address(),
-                "lease_secs": 60,
-                "txt": {"run": run_id.as_str(), "surface": "w5-mdns"}
-            })),
+        // ── Direction B: avahi publishes, Windows discovers ──
+        let instance_b = format!("w5-nix-{}", run_id.as_str());
+        // The published record is truthful: member SSH on port 22.
+        self.remote_line(
+            member,
+            &format!(
+                "nohup timeout 25 avahi-publish -s '{instance_b}' {SERVICE_TYPE} 22 run={} >/dev/null 2>&1 &",
+                run_id.as_str()
+            ),
         )
-        .context("member mDNS announce")?;
-        let windows_capture_text = windows_capture.finish().context("windows mDNS capture")?;
-        if !windows_capture_text.contains(&member_service_name) {
+        .context("start avahi-publish on the member")?;
+        let mut snapshot_hit = String::new();
+        for _ in 0..40 {
+            if let Ok(snapshot) = curl_json(
+                "GET",
+                &format!("{windows_url}/v1/mdns/browser/snapshot"),
+                Some(&windows_token),
+                None,
+            ) {
+                let text = snapshot.to_string();
+                if text.contains(&instance_b) {
+                    snapshot_hit = text;
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        if snapshot_hit.is_empty() {
             bail!(
-                "W5 direction B failed: the Windows browse stream never carried \
-                 {member_service_name}; capture tail: {}",
-                windows_capture_text
-                    .lines()
-                    .rev()
-                    .take(6)
-                    .collect::<Vec<_>>()
-                    .join(" | ")
+                "W5 direction B failed: the Windows browser never saw {instance_b} \
+                 announced by avahi on {}",
+                member.address()
             );
         }
         let w5_member_announces = passed(
-            "w5_member_announces_windows_discovers",
+            "w5_avahi_publishes_windows_discovers",
             format!(
-                "the {} daemon announced {member_service_name} on {}:{member_announce_port} \
-                 and the Windows browser subscription discovered it",
-                member.id(),
+                "avahi-publish on {} announced {instance_b} and the Windows browser \
+                 snapshot discovered it",
                 member.address()
             ),
         );
@@ -271,14 +260,11 @@ impl Lab {
         resources: &mut MdnsResources,
     ) -> Result<()> {
         let mut errors: Vec<String> = Vec::new();
-        if resources.member_daemon {
-            if let Err(e) = self.stop_webhook_daemon(member, run_id) {
-                errors.push(format!("stop member daemon: {e:#}"));
-            }
-            if let Err(e) = self.remove_webhook_sink_files(member, run_id) {
-                errors.push(format!("remove member run files: {e:#}"));
-            }
-        }
+        self.remote_line(
+            member,
+            &format!("rm -f /tmp/w5-{}-browse.txt", run_id.as_str()),
+        )
+        .ok();
         if resources.windows_daemon {
             let root = self.windows_member_dir(run_id);
             let exe = root.join("koi.exe");
