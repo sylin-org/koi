@@ -229,13 +229,48 @@ impl Lab {
                 .output()
                 .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
                 .unwrap_or_default();
+            // Local wire probe: distinguishes "the daemon is not answering at
+            // all" (bind/start failure) from "the LAN path is blocked".
+            let local_probe = Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    &format!(
+                        "$c = New-Object Net.Sockets.UdpClient; $c.Connect('127.0.0.1', {}); \
+                         $q = [byte[]](0x12,0x34,0x01,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00, \
+                         0x0A,0x77,0x69,0x6E,0x62,0x72,0x65,0x61,0x64,0x74,0x68,0x08,0x69,0x6E,0x74,0x65,0x72,0x6E,0x61,0x6C,0x00,0x00,0x01,0x00,0x01); \
+                         [void]$c.Send($q, $q.Length); $c.Client.ReceiveTimeout = 3000; \
+                         try {{ $r = $c.Receive([ref][Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)); \
+                         'local reply an=' + $r[6].ToString() + $r[7].ToString() }} \
+                         catch {{ 'local probe timed out' }}",
+                        ports.dns
+                    ),
+                ])
+                .output()
+                .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+                .unwrap_or_default();
+            let daemon_log =
+                std::fs::read_to_string(self.windows_member_dir(run_id).join("daemon.log"))
+                    .unwrap_or_default();
+            let log_tail: String = daemon_log
+                .lines()
+                .rev()
+                .take(12)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join(" | ");
             bail!(
                 "W6 cross-host dig returned {:?}, expected {}; last error: {:?}; \
-                 inbound rule state: {}",
+                 inbound rule state: {}; local probe: {}; daemon log tail: {}",
                 dig_answer.trim(),
                 windows.address(),
                 dig_error,
-                rules.trim()
+                rules.trim(),
+                local_probe.trim(),
+                log_tail
             );
         }
 
