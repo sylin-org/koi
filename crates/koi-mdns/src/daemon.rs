@@ -327,12 +327,7 @@ impl MdnsDaemon {
             // mdns-sd already resolved — exactly why a long-lived daemon's browse found
             // nothing while a cold standalone resolved fine. Replaying `records` here
             // closes that gap deterministically, without re-broadcasting to peers.
-            let replay: VecDeque<KoiEvent> = entry
-                .records
-                .values()
-                .cloned()
-                .map(KoiEvent::Resolved)
-                .collect();
+            let replay = replay_events(is_meta, &entry.records);
             (entry.tx.subscribe(), entry.gen, replay)
         };
 
@@ -462,15 +457,7 @@ impl MdnsDaemon {
             if entry.gen != gen {
                 return; // a newer browse owns this type now
             }
-            match &event {
-                KoiEvent::Resolved(record) => {
-                    entry.records.insert(record.name.clone(), record.clone());
-                }
-                KoiEvent::Removed { name, .. } => {
-                    entry.records.remove(name);
-                }
-                KoiEvent::Found(_) => {}
-            }
+            cache_update(key, &mut entry.records, &event);
             let _ = entry.tx.send(event.clone());
         }
         let _ = self.event_tx.send(event);
@@ -709,6 +696,45 @@ fn spawn_type_pump(
 
 fn next_browse_retry(current: Duration) -> Duration {
     current.saturating_mul(2).min(BROWSE_RETRY_MAX)
+}
+
+/// Apply one pump event to the hub entry's replay cache. Resolved services are
+/// cached for every type; meta-query Found events (which ARE the discovered
+/// type names — there is no further resolution step) are cached only for the
+/// meta entry, so a late subscriber still learns the LAN's service types.
+/// Plain Found events on normal types stay uncached: they are unresolved
+/// teasers whose Resolved follow-up is the durable fact.
+fn cache_update(key: &str, records: &mut HashMap<String, ServiceRecord>, event: &KoiEvent) {
+    match event {
+        KoiEvent::Resolved(record) => {
+            records.insert(record.name.clone(), record.clone());
+        }
+        KoiEvent::Removed { name, .. } => {
+            records.remove(name);
+        }
+        KoiEvent::Found(record) => {
+            if key == META_QUERY {
+                records.insert(record.name.clone(), record.clone());
+            }
+        }
+    }
+}
+
+/// Build the replay for a new subscriber of a type. Meta entries replay as
+/// Found events (the browser worker treats them as discovered types); normal
+/// entries replay as Resolved (the durable, resolved facts).
+fn replay_events(is_meta: bool, records: &HashMap<String, ServiceRecord>) -> VecDeque<KoiEvent> {
+    records
+        .values()
+        .cloned()
+        .map(|record| {
+            if is_meta {
+                KoiEvent::Found(record)
+            } else {
+                KoiEvent::Resolved(record)
+            }
+        })
+        .collect()
 }
 
 /// Translate a raw mdns-sd event into a pump action. The boundary parse of
@@ -1287,6 +1313,101 @@ mod tests {
         let (name, service_type) = parse_removed("_http._tcp.local.", "My NAS._http._tcp.local.");
         assert_eq!(name, "My NAS");
         assert_eq!(service_type, "_http._tcp");
+    }
+
+    // ── meta replay regression (Windows quiet-LAN browser defect) ────────
+
+    fn type_record(name: &str) -> ServiceRecord {
+        ServiceRecord {
+            name: name.to_owned(),
+            service_type: String::new(),
+            host: None,
+            ip: None,
+            port: None,
+            txt: Default::default(),
+        }
+    }
+
+    #[test]
+    fn meta_found_events_are_cached_for_replay() {
+        let mut records = HashMap::new();
+        cache_update(
+            META_QUERY,
+            &mut records,
+            &KoiEvent::Found(type_record("_http._tcp")),
+        );
+        cache_update(
+            META_QUERY,
+            &mut records,
+            &KoiEvent::Found(type_record("_ipp._tcp")),
+        );
+        assert_eq!(records.len(), 2, "meta Found events must be cached");
+
+        let replay = replay_events(true, &records);
+        assert_eq!(replay.len(), 2);
+        assert!(
+            replay
+                .iter()
+                .all(|event| matches!(event, KoiEvent::Found(_))),
+            "meta replay must be Found events (the browser worker matches Found)"
+        );
+    }
+
+    #[test]
+    fn normal_type_found_events_stay_uncached() {
+        let mut records = HashMap::new();
+        cache_update(
+            "_http._tcp.local.",
+            &mut records,
+            &KoiEvent::Found(type_record("My NAS")),
+        );
+        assert!(
+            records.is_empty(),
+            "unresolved Found teasers must not displace the durable Resolved facts"
+        );
+    }
+
+    #[test]
+    fn normal_type_replay_is_resolved() {
+        let mut records = HashMap::new();
+        let resolved = ServiceRecord {
+            name: "My NAS".to_owned(),
+            service_type: "_http._tcp".to_owned(),
+            host: Some("nas.local.".to_owned()),
+            ip: Some("192.168.1.10".to_owned()),
+            port: Some(5000),
+            txt: Default::default(),
+        };
+        cache_update(
+            "_http._tcp.local.",
+            &mut records,
+            &KoiEvent::Resolved(resolved.clone()),
+        );
+        let replay = replay_events(false, &records);
+        assert_eq!(replay.len(), 1);
+        assert!(
+            matches!(&replay[0], KoiEvent::Resolved(r) if r.name == "My NAS"),
+            "normal replay stays Resolved"
+        );
+    }
+
+    #[test]
+    fn removed_event_still_evicts_from_meta_cache() {
+        let mut records = HashMap::new();
+        cache_update(
+            META_QUERY,
+            &mut records,
+            &KoiEvent::Found(type_record("_http._tcp")),
+        );
+        cache_update(
+            META_QUERY,
+            &mut records,
+            &KoiEvent::Removed {
+                name: "_http._tcp".to_owned(),
+                service_type: String::new(),
+            },
+        );
+        assert!(records.is_empty(), "removals evict meta cache entries");
     }
 
     #[test]

@@ -15,6 +15,7 @@ anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
 instant-acme.workspace = true
+mdns-sd = "0.20"
 koi-mdns = { path = "../../crates/koi-mdns" }
 pem.workspace = true
 rcgen.workspace = true
