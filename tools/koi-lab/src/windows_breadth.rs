@@ -1,14 +1,15 @@
 //! W6 + W9 (ADR-032): Windows-hosted serving lane.
 //!
-//! A run-owned daemon on THIS workstation serves the LAN for real: DNS on the
-//! catalog port (the same contract as the Linux lanes — the workstation's
-//! standard port 53 is held by system services with reuse semantics, measured
+//! A run-owned daemon on THIS workstation serves the LAN for real: DNS on a
+//! lane-scoped port picked free at run time (18653+; the workstation's
+//! standard port 53 is held by system services with reuse semantics, and its
+//! catalog-range history includes orphan run daemons — both measured
 //! 2026-08-26), and the health runtime. A physical Linux member is the
 //! cross-host verifier and the health target:
 //!
 //! - W6: an A record added on the Windows daemon is answered cross-host by
 //!   `dig` from the Linux member AND by the OS-native resolver
-//!   (`Resolve-DnsName`) locally.
+//!   (`nslookup -port=`) locally.
 //! - W9 (Windows → Linux): the Windows daemon's TCP health check drives a
 //!   run-owned fixture on the Linux member through the real Up → Down → Up
 //!   state machine.
@@ -28,8 +29,8 @@ use crate::lab::{curl_json, wait_for_http, Lab};
 use crate::model::{output_path, CheckResult, RunId, WindowsBreadthReport};
 
 const FIREWALL_HTTP_RULE: &str = "koi-lab w6 http (tcp 18541)";
-const FIREWALL_DNS_UDP_RULE: &str = "koi-lab w6 dns (udp 18553)";
-const FIREWALL_DNS_TCP_RULE: &str = "koi-lab w6 dns (tcp 18553)";
+const FIREWALL_DNS_UDP_RULE: &str = "koi-lab w6 dns (udp)";
+const FIREWALL_DNS_TCP_RULE: &str = "koi-lab w6 dns (tcp)";
 const DNS_NAME: &str = "winbreadth.internal";
 const HEALTH_WINDOWS_TO_LINUX: &str = "w9-linux-fixture";
 const HEALTH_LINUX_TO_WINDOWS: &str = "w9-windows-http";
@@ -39,12 +40,13 @@ struct BreadthResources {
     windows_daemon: bool,
     member_daemon: bool,
     fixture_active: bool,
-    firewall_rules: Vec<&'static str>,
+    firewall_rules: Vec<String>,
     dns_record: bool,
     health_windows_to_linux: bool,
     health_linux_to_windows: bool,
     windows_token: Option<String>,
     member_token: Option<String>,
+    dns_port: u16,
 }
 
 impl Lab {
@@ -115,24 +117,46 @@ impl Lab {
         let ports = windows.lab_ports()?;
         let member_ports = member.lab_ports()?;
 
+        // DNS lane port: the first genuinely free candidate from 18653 up.
+        // The workstation's port history (orphan run daemons, shifting HNS
+        // reservations) makes any fixed choice a collision lottery; a fresh
+        // exclusive-free probe makes the lane deterministic. Declared before
+        // the daemon starts so rules, flags, and verifiers all agree.
+        let dns_port = (18653..=18672)
+            .find(|candidate| koi_mdns::udp_port_exclusively_free(*candidate))
+            .context("no free DNS lane port in 18653..=18672")?;
+        resources.dns_port = dns_port;
+
         // ── Scenario-scoped firewall: HTTP on the LAN, DNS on the standard port ──
         let ca_root = self
             .prepare_windows_member_dir(run_id)
             .context("stage the Windows serving daemon directory")?;
         let exe = ca_root.join("koi.exe");
         for (name, protocol, port) in [
-            (FIREWALL_HTTP_RULE, "tcp", ports.http.to_string()),
-            (FIREWALL_DNS_UDP_RULE, "udp", ports.dns.to_string()),
-            (FIREWALL_DNS_TCP_RULE, "tcp", ports.dns.to_string()),
+            (
+                FIREWALL_HTTP_RULE.to_string(),
+                "tcp",
+                ports.http.to_string(),
+            ),
+            (
+                format!("{FIREWALL_DNS_UDP_RULE} {dns_port}"),
+                "udp",
+                dns_port.to_string(),
+            ),
+            (
+                format!("{FIREWALL_DNS_TCP_RULE} {dns_port}"),
+                "tcp",
+                dns_port.to_string(),
+            ),
         ] {
-            crate::lab::firewall_rule(name, protocol, &port, &exe)
+            crate::lab::firewall_rule(&name, protocol, &port, &exe)
                 .with_context(|| format!("firewall rule {name}"))?;
             resources.firewall_rules.push(name);
         }
 
         // ── Windows serving daemon ──
         let _windows_child = self
-            .start_windows_serving_daemon(&ca_root, &ports)
+            .start_windows_serving_daemon(&ca_root, &ports, dns_port)
             .context("start the Windows serving daemon")?;
         resources.windows_daemon = true;
         let windows_url = format!("http://{windows_address}:{}", ports.http);
@@ -142,6 +166,12 @@ impl Lab {
             .require_windows_breadcrumb(&ca_root, &format!("http://127.0.0.1:{}", ports.http))
             .context("read the Windows daemon breadcrumb")?;
         resources.windows_token = Some(windows_token.clone());
+        // The DNS runtime reports its own bind failures as stopped-and-retryable:
+        // a port squatter (leftover run daemon, HNS reservation, ICS) makes
+        // healthz pass while DNS is dead. Wait until the capability is actually
+        // healthy before trusting this lane.
+        wait_for_dns_capability(&windows_url, &windows_token, dns_port)
+            .context("Windows DNS capability did not become healthy (port conflict?)")?;
 
         // ── Linux member daemon (serving profile, as the cross-host verifier) ──
         self.start_story_daemon(member, run_id)
@@ -203,7 +233,7 @@ impl Lab {
                     &format!(
                         "dig @{} -p {} {DNS_NAME} A +short | sed -n '1p'",
                         windows.address(),
-                        ports.dns
+                        dns_port
                     ),
                 )
                 .context("cross-host dig against the Windows DNS server")
@@ -224,7 +254,7 @@ impl Lab {
                     "firewall",
                     "show",
                     "rule",
-                    &format!("name={FIREWALL_DNS_UDP_RULE}"),
+                    &format!("name={FIREWALL_DNS_UDP_RULE} {dns_port}"),
                 ])
                 .output()
                 .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
@@ -243,8 +273,8 @@ impl Lab {
                          [void]$c.Send($q, $q.Length); $c.Client.ReceiveTimeout = 3000; \
                          try {{ $r = $c.Receive([ref][Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)); \
                          'local reply an=' + $r[6].ToString() + $r[7].ToString() }} \
-                         catch {{ 'local probe timed out' }}",
-                        ports.dns
+                          catch {{ 'local probe timed out' }}",
+                        dns_port
                     ),
                 ])
                 .output()
@@ -274,30 +304,27 @@ impl Lab {
             );
         }
 
-        let resolve = Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &format!("(Resolve-DnsName -Server 127.0.0.1 -Port {} -Name {DNS_NAME} -Type A).IPAddress", ports.dns),
-            ])
+        // OS-native resolver verification. `Resolve-DnsName` cannot target a
+        // non-53 port, so the Windows-native verifier for a lane-scoped port
+        // is `nslookup -port=` (same wire contract, standard tool).
+        let resolve = Command::new("nslookup")
+            .args(["-port", &dns_port.to_string(), DNS_NAME, "127.0.0.1"])
             .output()
-            .context("run Resolve-DnsName")?;
+            .context("run nslookup against the Windows DNS server")?;
         let resolve_text = String::from_utf8_lossy(&resolve.stdout).to_string();
-        if !resolve.status.success() || !resolve_text.contains(windows_address) {
+        if !resolve_text.contains(windows_address) || resolve_text.contains("No response") {
             bail!(
-                "W6 Resolve-DnsName did not return {}: status={} output={}",
+                "W6 nslookup did not return {}: output={}",
                 windows.address(),
-                resolve.status,
                 resolve_text.trim()
             );
         }
         let w6_check = passed(
             "w6_dns_served_from_windows",
             format!(
-                "the Windows daemon served {DNS_NAME} on the catalog DNS port {}, answered \
-                 cross-host by dig from {} and locally by Resolve-DnsName",
-                ports.dns,
+                "the Windows daemon served {DNS_NAME} on the lane DNS port {}, answered \
+                 cross-host by dig from {} and locally by nslookup",
+                dns_port,
                 member.id()
             ),
         );
@@ -477,6 +504,88 @@ impl Lab {
             bail!("cleanup errors: {}", errors.join("; "))
         }
     }
+}
+
+/// The DNS capability must report healthy (bind succeeded) before the lane
+/// trusts it. Failures name the port holder so the squatter is never a guess.
+fn wait_for_dns_capability(base: &str, token: &str, port: u16) -> Result<()> {
+    let mut last = String::new();
+    for _ in 0..40 {
+        if let Ok(status) = curl_json("GET", &format!("{base}/v1/status"), Some(token), None) {
+            if let Some(capabilities) = status.get("capabilities").and_then(Value::as_array) {
+                if let Some(dns) = capabilities.iter().find(|capability| {
+                    capability.get("name").and_then(Value::as_str) == Some("dns")
+                }) {
+                    let healthy = dns.get("healthy").and_then(Value::as_bool) == Some(true);
+                    if healthy {
+                        return Ok(());
+                    }
+                    last = dns
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                        .to_owned();
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    // Identify the squatter on the DNS port before bailing.
+    let holders = port_holders(port);
+    bail!(
+        "DNS capability did not become healthy (last: {last}); port {port} holders: {}",
+        if holders.is_empty() {
+            "none visible (socket may have just been released)".to_owned()
+        } else {
+            holders.join(", ")
+        }
+    )
+}
+
+/// Best-effort identification of processes holding a TCP+UDP port (elevated
+/// sessions can read the image path).
+fn port_holders(port: u16) -> Vec<String> {
+    let mut holders = Vec::new();
+    let mut process_ids = Vec::new();
+    if let Ok(output) = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!(
+                "(Get-NetUDPEndpoint -LocalPort {port} -ErrorAction SilentlyContinue).OwningProcess + \
+                 (Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue).OwningProcess | Sort-Object -Unique"
+            ),
+        ])
+        .output()
+    {
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Ok(pid) = line.trim().parse::<u32>() {
+                process_ids.push(pid);
+            }
+        }
+    }
+    for pid in process_ids {
+        let path = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!("(Get-Process -Id {pid} -ErrorAction SilentlyContinue).Path"),
+            ])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            .unwrap_or_default();
+        holders.push(format!(
+            "pid {pid} ({})",
+            if path.is_empty() {
+                "path unreadable"
+            } else {
+                &path
+            }
+        ));
+    }
+    holders
 }
 
 fn wait_for_health(base: &str, name: &str, expected: &str) -> Result<()> {

@@ -423,6 +423,11 @@ impl DnsCore {
 
     pub(crate) async fn bind_server(&self) -> Result<BoundDnsServer, DnsError> {
         let addr = SocketAddr::new(self.config.bind_addr, self.config.port);
+        // Exclusive UDP bind, deliberately: on Windows a SO_REUSEADDR open
+        // against a non-reuse holder fails with WSAEACCES (10013, measured
+        // 2026-08-26) — cooperative binding cannot rescue a squatter collision
+        // there. The DNS runtime's stopped-and-retryable state plus the lab
+        // lanes' free-port selection handle contention instead.
         let udp = UdpSocket::bind(addr)
             .await
             .map_err(|e| DnsError::Bind(e.to_string()))?;

@@ -2242,6 +2242,7 @@ dependencies = [
  "chrono",
  "clap",
  "instant-acme",
+ "koi-mdns",
  "pem",
  "rcgen 0.13.2",
  "serde",

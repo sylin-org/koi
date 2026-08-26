@@ -29,7 +29,7 @@ struct WindowsCaResources {
     ca_daemon: bool,
     ca_created: bool,
     member_daemon: bool,
-    firewall_rules: Vec<&'static str>,
+    firewall_rules: Vec<String>,
 }
 
 impl Lab {
@@ -109,7 +109,10 @@ impl Lab {
         let exe = ca_root.join("koi.exe");
         self.firewall_rule(FIREWALL_HTTP_RULE, "18541", &exe)?;
         self.firewall_rule(FIREWALL_MTLS_RULE, "18542", &exe)?;
-        resources.firewall_rules = vec![FIREWALL_HTTP_RULE, FIREWALL_MTLS_RULE];
+        resources.firewall_rules = vec![
+            FIREWALL_HTTP_RULE.to_string(),
+            FIREWALL_MTLS_RULE.to_string(),
+        ];
 
         // ── Windows CA daemon (HTTP+mTLS on the LAN, everything else off) ──
         let ports = windows.lab_ports()?;

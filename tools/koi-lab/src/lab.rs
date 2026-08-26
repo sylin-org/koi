@@ -3051,6 +3051,7 @@ impl Lab {
         &self,
         root: &Path,
         ports: &crate::model::LabPorts,
+        dns_port: u16,
     ) -> Result<std::process::Child> {
         // Serving variant for the W6/W7/W9 breadth lanes (ADR-032): HTTP on
         // the LAN, DNS public on the standard port 53 (the lane's claim —
@@ -3064,7 +3065,7 @@ impl Lab {
             .arg(ports.http.to_string())
             .args(["--http-bind", "0.0.0.0", "--mtls-port"])
             .arg(ports.mtls.to_string())
-            .args(["--dns-port", "53", "--dns-public"])
+            .args(["--dns-port", &dns_port.to_string(), "--dns-public"])
             .args([
                 "--no-ipc",
                 "--no-mdns",
@@ -3684,7 +3685,7 @@ pub(crate) fn firewall_rule(
 }
 
 /// Remove scenario-named rules and verify exact removal by name.
-pub(crate) fn firewall_rules_remove(rules: &[&str]) -> Result<()> {
+pub(crate) fn firewall_rules_remove(rules: &[String]) -> Result<()> {
     let mut errors = Vec::new();
     for name in rules {
         let _ = Command::new("netsh")
