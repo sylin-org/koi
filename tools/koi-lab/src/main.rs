@@ -17,6 +17,7 @@ mod soak;
 mod story;
 mod webhook_fanout;
 mod windows_breadth;
+mod windows_mdns;
 
 use std::path::PathBuf;
 
@@ -142,6 +143,16 @@ enum LabCommand {
         #[arg(long)]
         run_id: String,
         /// Member node id (physical Linux verifier and health target).
+        #[arg(long)]
+        member: Option<String>,
+        #[arg(long)]
+        allow_system_mutation: bool,
+    },
+    /// W5 (ADR-032): mDNS announce/browse from Windows over the real LAN.
+    WindowsMdns {
+        #[arg(long)]
+        run_id: String,
+        /// Member node id (physical Linux discoverer/announcer).
         #[arg(long)]
         member: Option<String>,
         #[arg(long)]
@@ -308,6 +319,17 @@ fn main() -> Result<()> {
             allow_system_mutation,
         } => {
             print_json(&lab.windows_breadth(
+                &RunId::parse(&run_id)?,
+                member.as_deref(),
+                allow_system_mutation,
+            )?)?;
+        }
+        LabCommand::WindowsMdns {
+            run_id,
+            member,
+            allow_system_mutation,
+        } => {
+            print_json(&lab.windows_mdns(
                 &RunId::parse(&run_id)?,
                 member.as_deref(),
                 allow_system_mutation,

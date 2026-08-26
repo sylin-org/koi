@@ -3067,11 +3067,12 @@ impl Lab {
         root: &Path,
         ports: &crate::model::LabPorts,
         dns_port: u16,
+        mdns: bool,
     ) -> Result<std::process::Child> {
-        // Serving variant for the W6/W7/W9 breadth lanes (ADR-032): HTTP on
-        // the LAN, DNS public on the standard port 53 (the lane's claim —
-        // requires the elevated session the scenario already gates on), proxy
-        // and health runtimes enabled. mDNS/UDP/runtime/ACME/MCP stay off.
+        // Serving variant for the Windows breadth lanes (ADR-032): HTTP on
+        // the LAN, DNS public on the lane port, proxy and health runtimes
+        // enabled. mDNS is opt-in (W5 announces); UDP/runtime/ACME/MCP stay
+        // off.
         let log = fs::File::create(root.join("daemon.log"))?;
         let stderr = log.try_clone()?;
         let mut command = self.windows_member_command(root)?;
@@ -3080,10 +3081,15 @@ impl Lab {
             .arg(ports.http.to_string())
             .args(["--http-bind", "0.0.0.0", "--mtls-port"])
             .arg(ports.mtls.to_string())
-            .args(["--dns-port", &dns_port.to_string(), "--dns-public"])
+            .args(["--dns-port", &dns_port.to_string(), "--dns-public"]);
+        if mdns {
+            command.args(["--announce-http"]);
+        } else {
+            command.args(["--no-mdns"]);
+        }
+        command
             .args([
                 "--no-ipc",
-                "--no-mdns",
                 "--no-udp",
                 "--no-runtime",
                 "--no-acme",

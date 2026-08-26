@@ -758,6 +758,21 @@ pub struct WindowsBreadthReport {
     pub secrets_redacted: bool,
 }
 
+/// W5 (ADR-032): mDNS announce/browse from Windows over the real LAN, both
+/// directions (Windows announces → member discovers; member announces →
+/// Windows discovers).
+#[derive(Clone, Debug, Serialize)]
+pub struct WindowsMdnsReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub windows_node: String,
+    pub member_node: String,
+    pub artifact_sha256: String,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ServiceLifecycleWindowsReport {
     pub schema: u32,
@@ -886,6 +901,7 @@ impl_evidence_report!(
     ServiceLifecycleWindowsReport,
     WindowsCaReport,
     WindowsBreadthReport,
+    WindowsMdnsReport,
     ServiceLifecycleReport,
     BoundedSoakReport,
     ProfileReport,

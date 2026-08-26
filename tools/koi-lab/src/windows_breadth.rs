@@ -156,7 +156,7 @@ impl Lab {
 
         // ── Windows serving daemon ──
         let _windows_child = self
-            .start_windows_serving_daemon(&ca_root, &ports, dns_port)
+            .start_windows_serving_daemon(&ca_root, &ports, dns_port, false)
             .context("start the Windows serving daemon")?;
         resources.windows_daemon = true;
         let windows_url = format!("http://{windows_address}:{}", ports.http);
