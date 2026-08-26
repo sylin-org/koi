@@ -787,6 +787,20 @@ pub struct WindowsProxyReport {
     pub secrets_redacted: bool,
 }
 
+/// W8 (ADR-032): webhook origin ON Windows, sink on the Linux member, HMAC
+/// verified at receive.
+#[derive(Clone, Debug, Serialize)]
+pub struct WindowsWebhookReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub windows_node: String,
+    pub member_node: String,
+    pub artifact_sha256: String,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ServiceLifecycleWindowsReport {
     pub schema: u32,
@@ -917,6 +931,7 @@ impl_evidence_report!(
     WindowsBreadthReport,
     WindowsMdnsReport,
     WindowsProxyReport,
+    WindowsWebhookReport,
     ServiceLifecycleReport,
     BoundedSoakReport,
     ProfileReport,

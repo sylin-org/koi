@@ -153,7 +153,7 @@ impl Lab {
 
         // ── Windows member daemon (certmesh on, proxy runtime on) ──
         let mut windows_child = self
-            .start_windows_serving_daemon(&ca_root, &ports, 18653, false)
+            .start_windows_serving_daemon(&ca_root, &ports, 18653, false, None)
             .context("start the Windows member daemon")?;
         resources.windows_daemon = true;
         let windows_url = format!("http://127.0.0.1:{}", ports.http);
@@ -205,7 +205,7 @@ impl Lab {
             .wait()
             .context("wait for the Windows daemon stop")?;
         let _windows_child = self
-            .start_windows_serving_daemon(&ca_root, &ports, 18653, false)
+            .start_windows_serving_daemon(&ca_root, &ports, 18653, false, None)
             .context("restart the Windows member daemon with its identity")?;
         wait_for_http(&format!("{windows_url}/healthz"))
             .context("Windows member daemon did not become healthy after restart")?;

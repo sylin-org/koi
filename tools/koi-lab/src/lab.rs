@@ -3068,6 +3068,7 @@ impl Lab {
         ports: &crate::model::LabPorts,
         dns_port: u16,
         mdns: bool,
+        webhooks_manifest: Option<&Path>,
     ) -> Result<std::process::Child> {
         // Serving variant for the Windows breadth lanes (ADR-032): HTTP on
         // the LAN, DNS public on the lane port, proxy and health runtimes
@@ -3086,6 +3087,9 @@ impl Lab {
             command.args(["--announce-http"]);
         } else {
             command.args(["--no-mdns"]);
+        }
+        if let Some(manifest) = webhooks_manifest {
+            command.arg(format!("--webhooks {}", manifest.display()));
         }
         command
             .args([

@@ -19,6 +19,7 @@ mod webhook_fanout;
 mod windows_breadth;
 mod windows_mdns;
 mod windows_proxy;
+mod windows_webhook;
 
 use std::path::PathBuf;
 
@@ -165,6 +166,17 @@ enum LabCommand {
         #[arg(long)]
         run_id: String,
         /// CA host node id (physical Linux ca-role host).
+        #[arg(long)]
+        member: Option<String>,
+        #[arg(long)]
+        allow_system_mutation: bool,
+    },
+    /// W8 (ADR-032): webhook origin ON Windows, sink on the Linux member,
+    /// HMAC verified at receive.
+    WindowsWebhook {
+        #[arg(long)]
+        run_id: String,
+        /// Sink host node id (physical Linux node).
         #[arg(long)]
         member: Option<String>,
         #[arg(long)]
@@ -353,6 +365,17 @@ fn main() -> Result<()> {
             allow_system_mutation,
         } => {
             print_json(&lab.windows_proxy(
+                &RunId::parse(&run_id)?,
+                member.as_deref(),
+                allow_system_mutation,
+            )?)?;
+        }
+        LabCommand::WindowsWebhook {
+            run_id,
+            member,
+            allow_system_mutation,
+        } => {
+            print_json(&lab.windows_webhook(
                 &RunId::parse(&run_id)?,
                 member.as_deref(),
                 allow_system_mutation,

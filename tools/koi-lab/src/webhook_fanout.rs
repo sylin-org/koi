@@ -212,7 +212,7 @@ impl Lab {
     }
 
     /// Poll the observer's deliveries file until it holds `want` lines.
-    fn wait_for_deliveries(
+    pub(crate) fn wait_for_deliveries(
         &self,
         sink_node: &NodeSpec,
         run_id: &RunId,

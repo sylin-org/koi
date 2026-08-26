@@ -134,7 +134,7 @@ impl Lab {
 
         // ── Windows daemon with mDNS announcing enabled ──
         let _windows_child = self
-            .start_windows_serving_daemon(&ca_root, &ports, 18653, true)
+            .start_windows_serving_daemon(&ca_root, &ports, 18653, true, None)
             .context("start the Windows mDNS daemon")?;
         resources.windows_daemon = true;
         let windows_url = format!("http://{windows_address}:{}", ports.http);
