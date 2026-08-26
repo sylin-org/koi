@@ -1,0 +1,32 @@
+{
+  "$schema": "https://aka.ms/scoop-schema.json",
+  "_comment": "Scoop manifest draft — fills at stable 1.0.0 (see ../README.md). Hashes come from the release manifest, never guessed.",
+  "version": "1.0.0",
+  "description": "Local connectivity substrate: discover, trust, and connect your LAN",
+  "homepage": "https://github.com/sylin-org/koi",
+  "license": "MIT|Apache-2.0",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/sylin-org/koi/releases/download/v1.0.0/koi-1.0.0-x86_64-pc-windows-msvc.zip",
+      "hash": "TODO"
+    },
+    "arm64": {
+      "url": "https://github.com/sylin-org/koi/releases/download/v1.0.0/koi-1.0.0-aarch64-pc-windows-msvc.zip",
+      "hash": "TODO"
+    }
+  },
+  "bin": "koi.exe",
+  "checkver": {
+    "github": "https://github.com/sylin-org/koi"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/sylin-org/koi/releases/download/v$version/koi-$version-x86_64-pc-windows-msvc.zip"
+      },
+      "arm64": {
+        "url": "https://github.com/sylin-org/koi/releases/download/v$version/koi-$version-aarch64-pc-windows-msvc.zip"
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+# AUR PKGBUILD for koi-bin — draft, fills at stable 1.0.0 (see ../README.md)
+# Maintainer: sylin-org (or hand to a community maintainer)
+pkgname=koi-bin
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Local connectivity substrate: discover, trust, and connect your LAN"
+arch=('x86_64')
+url="https://github.com/sylin-org/koi"
+license=('MIT' 'Apache')
+provides=('koi')
+conflicts=('koi')
+# TODO(release): exact tag URL + sha256 from the release manifest
+source=("koi-${pkgver}.tar.gz::https://github.com/sylin-org/koi/releases/download/v${pkgver}/koi-${pkgver}-x86_64-unknown-linux-musl.tar.gz")
+sha256sums=('TODO')
+
+package() {
+    install -Dm755 "${srcdir}/koi-${pkgver}-x86_64-unknown-linux-musl/koi" \
+        "${pkgdir}/usr/bin/koi"
+}

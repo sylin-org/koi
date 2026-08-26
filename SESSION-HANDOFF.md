@@ -26,11 +26,14 @@ P-A progress: koi-desktop login autostart + `--minimized` tray launch LANDED (ko
 tauri-plugin-autostart =2.5.1 under the Ghostlight pin policy; Status-pane toggle with honest failure
 reporting); landing-page draft LANDED (`site/index.html` + hosting contract in `site/README.md`;
 install.sh/install.ps1 already satisfy D2 — checksum-verified, per-user, guidance-not-autostart);
-build provenance attestations already shipped in the release workflow. Remaining in P-A: Tauri updater
-feed — requires an Ed25519 keypair (`pnpm tauri signer generate` equivalent: `cargo tauri signer
-generate`) whose private key the OPERATOR must hold (CI secret `TAURI_SIGNING_PRIVATE_KEY[+_PASSWORD]`),
-then pubkey into koi-desktop tauri.conf.json + `createUpdaterArtifacts: true` + `latest.json`
-generation in its release flow.
+build provenance attestations already shipped in the release workflow. **Tauri updater feed DEFERRED
+by operator decision (2026-08-25)** — workbench updates via re-install until revisited; when wanted:
+operator generates the Ed25519 keypair (`cargo tauri signer generate`), holds the private key as CI
+secret `TAURI_SIGNING_PRIVATE_KEY[+_PASSWORD]`, then pubkey into koi-desktop tauri.conf.json +
+`createUpdaterArtifacts: true` + `latest.json` generation in its release flow.
+Packaging scaffolds for the P-D channels drafted under `packaging/` (homebrew formula, scoop manifest,
+winget manifest notes, AUR PKGBUILD) — deliberately version/hash-placeholdered: they fill at the
+stable 1.0 release (prereleases do not belong in these channels; registries immutable per RL-2).
 P-B operator console actions — npm trusted publishers (per package) + `NPM_PUBLISH_ENABLED`;
 P-D taps/submissions one by one; P-E optional Apple $99/yr later.
 
