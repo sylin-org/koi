@@ -137,6 +137,7 @@ jobs:
           TARGET="${{ matrix.target }}"
           ARCHIVE_DIR="${BIN_NAME}-${VERSION}-${TARGET}"
           mkdir "$ARCHIVE_DIR"
+          echo "ARCHIVE_DIR=${ARCHIVE_DIR}" >> "$GITHUB_ENV"
 
           # Copy binary
           BIN_SUFFIX=""
@@ -151,24 +152,23 @@ jobs:
 
           # Create archive
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a "${ARCHIVE_DIR}.zip" "$ARCHIVE_DIR"
-            echo "ASSET=${ARCHIVE_DIR}.zip" >> "$GITHUB_ENV"
+            mkdir unsigned-staging
+            mv "$ARCHIVE_DIR" unsigned-staging/
+            echo "WINDOWS_STAGING=unsigned-staging" >> "$GITHUB_ENV"
           else
             tar czf "${ARCHIVE_DIR}.tar.gz" "$ARCHIVE_DIR"
             echo "ASSET=${ARCHIVE_DIR}.tar.gz" >> "$GITHUB_ENV"
           fi
 
       - name: Checksum
+        if: matrix.os != 'windows-latest'
         shell: bash
         run: |
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            sha256sum "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
-          else
-            shasum -a 256 "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
-          fi
+          shasum -a 256 "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
           cat "${{ env.ASSET }}.sha256"
 
-      - name: Upload artifacts
+      - name: Upload release artifact
+        if: matrix.os != 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
@@ -176,11 +176,134 @@ jobs:
             ${{ env.ASSET }}
             ${{ env.ASSET }}.sha256
 
+      - name: Upload unsigned Windows artifact
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-windows-${{ matrix.target }}
+          path: ${{ env.WINDOWS_STAGING }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Windows code signing ─────────────────────────────────────────
+  # Both Windows architectures share one manually approved SignPath request. Signing is
+  # transitional: disabled repositories still produce explicit unsigned archives, while an enabled
+  # repository fails closed if SignPath configuration, signing, metadata, or verification fails.
+  sign-windows:
+    needs: [prepare, build]
+    runs-on: windows-latest
+    outputs:
+      signed: ${{ steps.signing-state.outputs.signed }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download unsigned Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: signing-input
+          pattern: unsigned-windows-*
+
+      - name: Require complete SignPath configuration
+        if: startsWith(github.ref, 'refs/tags/') && vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+        run: |
+          $required = @(
+            'SIGNPATH_API_TOKEN',
+            'SIGNPATH_ORGANIZATION_ID',
+            'SIGNPATH_PROJECT_SLUG',
+            'SIGNPATH_SIGNING_POLICY_SLUG',
+            'SIGNPATH_ARTIFACT_CONFIGURATION_SLUG'
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "SIGNPATH_ENABLED is true but '$name' is not configured."
+            }
+          }
+
+      - name: Upload combined unsigned artifact
+        if: startsWith(github.ref, 'refs/tags/') && vars.SIGNPATH_ENABLED == 'true'
+        id: upload-unsigned-windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: koi-windows-signing-input-${{ github.sha }}
+          path: signing-input
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Submit the SignPath signing request
+        if: startsWith(github.ref, 'refs/tags/') && vars.SIGNPATH_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@a790881fc89970675894221b0be3bb12a87eb391 # v2.3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned-windows.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-output
+          parameters: |
+            version: ${{ toJSON(needs.prepare.outputs.version) }}
+
+      - name: Finalize signed Windows archives
+        if: startsWith(github.ref, 'refs/tags/') && vars.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          ./scripts/verify-windows-signing.ps1 `
+            -SourceDirectory signed-output `
+            -OutputDirectory finalized `
+            -VersionTag '${{ needs.prepare.outputs.tag }}' `
+            -RequireSignature
+
+      - name: Finalize unsigned Windows archives
+        if: ${{ !startsWith(github.ref, 'refs/tags/') || vars.SIGNPATH_ENABLED != 'true' }}
+        shell: pwsh
+        run: |
+          ./scripts/verify-windows-signing.ps1 `
+            -SourceDirectory signing-input `
+            -OutputDirectory finalized `
+            -VersionTag '${{ needs.prepare.outputs.tag }}'
+
+      - name: Record signing state
+        id: signing-state
+        shell: pwsh
+        run: |
+          $signed = '${{ startsWith(github.ref, 'refs/tags/') && vars.SIGNPATH_ENABLED == 'true' }}'.ToLowerInvariant()
+          "signed=$signed" >> $env:GITHUB_OUTPUT
+
+      - name: Upload x86_64 Windows release
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-x86_64-pc-windows-msvc
+          path: |
+            finalized/koi-${{ needs.prepare.outputs.tag }}-x86_64-pc-windows-msvc.zip
+            finalized/koi-${{ needs.prepare.outputs.tag }}-x86_64-pc-windows-msvc.zip.sha256
+          if-no-files-found: error
+
+      - name: Upload arm64 Windows release
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-aarch64-pc-windows-msvc
+          path: |
+            finalized/koi-${{ needs.prepare.outputs.tag }}-aarch64-pc-windows-msvc.zip
+            finalized/koi-${{ needs.prepare.outputs.tag }}-aarch64-pc-windows-msvc.zip.sha256
+          if-no-files-found: error
+
   # ── Distribution contract ────────────────────────────────────────
   # Exercise every thin publication consumer against the exact build matrix.
   # A manual dispatch reaches this job but publishes nothing.
   channels:
-    needs: [prepare, build]
+    needs: [prepare, build, sign-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -218,7 +341,7 @@ jobs:
 
   # ── Release ───────────────────────────────────────────────────────
   release:
-    needs: [prepare, test, channels]
+    needs: [prepare, test, channels, sign-windows]
     # Only create a GitHub Release on a real tag push; workflow_dispatch runs
     # the build matrix as a dry run and stops here.
     if: startsWith(github.ref, 'refs/tags/')
@@ -265,6 +388,7 @@ jobs:
           # step with exit 127 on any backtick in the notes.)
           VERSION: ${{ needs.prepare.outputs.tag }}
           DESCRIPTION: ${{ needs.prepare.outputs.description }}
+          WINDOWS_SIGNED: ${{ needs.sign-windows.outputs.signed }}
         run: |
           # Read the template and substitute
           TEMPLATE=$(cat .github/release-template.md)
@@ -274,6 +398,15 @@ jobs:
           VERSION_NO_V="${VERSION#v}"
           NOTES="${NOTES//\$\{VERSION_NO_V\}/$VERSION_NO_V}"
           NOTES="${NOTES//\$\{DESCRIPTION\}/$DESCRIPTION}"
+          if [[ "$WINDOWS_SIGNED" == "true" ]]; then
+            CODE_SIGNING="The Windows executables are Authenticode-signed by SignPath Foundation."
+            CODE_SIGNING_ATTRIBUTION="Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/)."
+          else
+            CODE_SIGNING="The Windows executables in this release are unsigned; verify their GitHub provenance and checksum below."
+            CODE_SIGNING_ATTRIBUTION=""
+          fi
+          NOTES="${NOTES//\$\{CODE_SIGNING\}/$CODE_SIGNING}"
+          NOTES="${NOTES//\$\{CODE_SIGNING_ATTRIBUTION\}/$CODE_SIGNING_ATTRIBUTION}"
 
           # Build checksums table
           CHECKSUMS=""

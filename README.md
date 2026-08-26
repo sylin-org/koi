@@ -361,6 +361,15 @@ conflict resolution, known-answer suppression, goodbye packets, and all the
 multicast plumbing. Koi gives it a friendly front door and builds the naming and
 trust layers on top.
 
+## Code signing policy
+
+Windows release executables are prepared for Authenticode signing through SignPath Foundation.
+The signing scope, release controls, privacy boundary, system changes, removal instructions, and
+verification steps live in the [Code signing policy](CODE_SIGNING_POLICY.md).
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
+[SignPath Foundation](https://signpath.org/).
+
 ## License
 
 Dual licensed under Apache-2.0 and MIT. See [LICENSE-APACHE](LICENSE-APACHE) and

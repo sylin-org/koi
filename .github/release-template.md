@@ -42,6 +42,16 @@ koi install        # Windows (Administrator)
 | Windows | x86_64 | `koi-${VERSION}-x86_64-pc-windows-msvc.zip` |
 | Windows | aarch64 | `koi-${VERSION}-aarch64-pc-windows-msvc.zip` |
 
+## Code signing policy
+
+${CODE_SIGNING}
+
+${CODE_SIGNING_ATTRIBUTION}
+
+Read Koi's
+[Code signing policy](https://github.com/sylin-org/koi/blob/main/CODE_SIGNING_POLICY.md) for scope,
+release controls, privacy, system changes, removal, and verification.
+
 ## Verify
 
 Every archive **and** the container image carry a signed build-provenance

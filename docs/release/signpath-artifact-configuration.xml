@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file
+      path="unsigned-windows-x86_64-pc-windows-msvc/koi-v${version}-x86_64-pc-windows-msvc/koi.exe"
+      product-name="Koi"
+      product-version="${version}"
+      file-version="${version}"
+      company-name="Sylin.org"
+      copyright="Copyright (c) Sylin.org contributors"
+      original-filename="koi.exe">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file
+      path="unsigned-windows-aarch64-pc-windows-msvc/koi-v${version}-aarch64-pc-windows-msvc/koi.exe"
+      product-name="Koi"
+      product-version="${version}"
+      file-version="${version}"
+      company-name="Sylin.org"
+      copyright="Copyright (c) Sylin.org contributors"
+      original-filename="koi.exe">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>
