@@ -46,6 +46,24 @@ carriers first, then the entry. 7/7 node tests green; YAML validated.
 P-B operator console actions — npm trusted publishers (per package) + `NPM_PUBLISH_ENABLED`;
 P-D taps/submissions one by one; P-E optional Apple $99/yr later.
 
+**W6+W9 GREEN — `windows-breadth` physically proven (2026-08-26, run `v1-20260826T191612Z-b559ca5d`, 4/4 checks).**
+Windows-hosted serving lane: DNS authoritative zone served on a lane port picked exclusively-free at
+run time (18653+), answered cross-host by brook's dig AND locally by a PowerShell loopback wire probe;
+cross-host TCP health both directions (Windows daemon drove brook's 0.0.0.0-bound fixture through
+up→down→up via the new `start_cross_host_fixture`; brook daemon watched the Windows HTTP surface).
+Operator decision honored: Koi is a zone contributor, never the system resolver — the standard-port 53
+serving originally drafted was dropped. Measured workstation facts now recorded in ADR-032 W6: ICS
+holds 53 with reuse semantics (bind "succeeds", receives nothing); `Resolve-DnsName` has no `-Port`;
+**nslookup sends ZERO packets for non-53 ports** (system DNS client is 53-only) — the PowerShell wire
+probe is the Windows-native verifier for lane-scoped ports. Also measured: SO_REUSEADDR bind against a
+non-reuse holder fails WSAEACCES 10013 on Windows — cooperative binding is NOT a squatter rescue
+(koi-dns keeps the exclusive bind; rationale in code). Fixes landed across the debugging arc: orphan
+koi sweep in the runner (the operator called the squatter as our own leftovers — confirmed),
+capability-health gate before trusting the lane, dig/nslookup failures carry rule state + local probe
++ daemon log tail (D15). Commits 25b7e42..acad61b. Remaining W-lanes: W5 (mDNS announce/browse),
+W7 (TLS proxy dual-stack verification — extend the native-trust windows-client lane), W8 (webhooks
+origin-on-Windows), W10 (recovery), W12 (ACME, reuses W6 DNS), then extended profile + soak.
+
 **W4 GREEN — ADR-032 Windows-hosted CA rotation physically proven (2026-08-25, run `v1-20260825T145514Z-c2be3c52`).**
 `certmesh-lifecycle-windows-ca` passed 7/7 elevated: wrong-pin refusal before keygen, brook join with
 local CSR custody (0600), CA roster membership, renewal with key rotation + roster fingerprint convergence,
