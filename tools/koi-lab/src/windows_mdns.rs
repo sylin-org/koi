@@ -28,8 +28,11 @@ use std::time::Duration;
 use crate::lab::{curl_json, wait_for_http, Lab};
 use crate::model::{output_path, CheckResult, RunId, WindowsMdnsReport};
 
+const AVAHI_BROWSE_TYPE: &str = "_http._tcp";
 const FIREWALL_MDNS_RULE: &str = "koi-lab w5 mdns (udp 5353)";
 const SERVICE_TYPE: &str = "_http._tcp.local.";
+/// avahi tools want the type WITHOUT the domain suffix ("Invalid service
+/// type" otherwise, measured on test01).
 
 #[derive(Default)]
 struct MdnsResources {
@@ -146,7 +149,7 @@ impl Lab {
         self.remote_line(
             member,
             &format!(
-                "nohup timeout 20 avahi-browse -p -t -- {SERVICE_TYPE} > /tmp/w5-{}-browse.txt 2>&1 &",
+                "nohup timeout 20 avahi-browse -p -t -- {AVAHI_BROWSE_TYPE} > /tmp/w5-{}-browse.txt 2>&1 &",
                 run_id.as_str()
             ),
         )
@@ -204,7 +207,7 @@ impl Lab {
         self.remote_line(
             member,
             &format!(
-                "nohup timeout 25 avahi-publish -s '{instance_b}' {SERVICE_TYPE} 22 run={} >/dev/null 2>&1 &",
+                "nohup timeout 25 avahi-publish -s '{instance_b}' {AVAHI_BROWSE_TYPE} 22 run={} >/dev/null 2>&1 &",
                 run_id.as_str()
             ),
         )
