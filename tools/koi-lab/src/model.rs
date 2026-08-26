@@ -773,6 +773,20 @@ pub struct WindowsMdnsReport {
     pub secrets_redacted: bool,
 }
 
+/// W7 (ADR-032): TLS proxy serving ON Windows, verified by Schannel AND
+/// openssl from the Linux CA host, with a certmesh-sourced leaf.
+#[derive(Clone, Debug, Serialize)]
+pub struct WindowsProxyReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub windows_node: String,
+    pub member_node: String,
+    pub artifact_sha256: String,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ServiceLifecycleWindowsReport {
     pub schema: u32,
@@ -902,6 +916,7 @@ impl_evidence_report!(
     WindowsCaReport,
     WindowsBreadthReport,
     WindowsMdnsReport,
+    WindowsProxyReport,
     ServiceLifecycleReport,
     BoundedSoakReport,
     ProfileReport,
