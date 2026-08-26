@@ -743,6 +743,21 @@ pub struct WindowsCaReport {
     pub secrets_redacted: bool,
 }
 
+/// W6+W9 (ADR-032): Windows-hosted serving lane — DNS on the standard port
+/// verified cross-host and via the native resolver, plus cross-host health
+/// checks in both directions, over the real LAN.
+#[derive(Clone, Debug, Serialize)]
+pub struct WindowsBreadthReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub windows_node: String,
+    pub member_node: String,
+    pub artifact_sha256: String,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ServiceLifecycleWindowsReport {
     pub schema: u32,
@@ -870,6 +885,7 @@ impl_evidence_report!(
     MgmtPrincipalReport,
     ServiceLifecycleWindowsReport,
     WindowsCaReport,
+    WindowsBreadthReport,
     ServiceLifecycleReport,
     BoundedSoakReport,
     ProfileReport,

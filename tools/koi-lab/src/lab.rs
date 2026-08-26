@@ -3047,6 +3047,39 @@ impl Lab {
             .context("failed to start the run-owned Windows CA daemon")
     }
 
+    pub(crate) fn start_windows_serving_daemon(
+        &self,
+        root: &Path,
+        ports: &crate::model::LabPorts,
+    ) -> Result<std::process::Child> {
+        // Serving variant for the W6/W7/W9 breadth lanes (ADR-032): HTTP on
+        // the LAN, DNS public on the standard port 53 (the lane's claim —
+        // requires the elevated session the scenario already gates on), proxy
+        // and health runtimes enabled. mDNS/UDP/runtime/ACME/MCP stay off.
+        let log = fs::File::create(root.join("daemon.log"))?;
+        let stderr = log.try_clone()?;
+        let mut command = self.windows_member_command(root)?;
+        command
+            .args(["--daemon", "--port"])
+            .arg(ports.http.to_string())
+            .args(["--http-bind", "0.0.0.0", "--mtls-port"])
+            .arg(ports.mtls.to_string())
+            .args(["--dns-port", "53", "--dns-public"])
+            .args([
+                "--no-ipc",
+                "--no-mdns",
+                "--no-udp",
+                "--no-runtime",
+                "--no-acme",
+                "--no-mcp-http",
+            ])
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(stderr));
+        command
+            .spawn()
+            .context("failed to start the run-owned Windows serving daemon")
+    }
+
     pub(crate) fn restart_windows_member_daemon(
         &self,
         root: &Path,
@@ -3593,6 +3626,116 @@ pub(crate) fn require_system_mutation(allow_system_mutation: bool) -> Result<()>
         bail!("system mutation refused: pass --allow-system-mutation only for a dedicated lab run");
     }
     Ok(())
+}
+
+/// Present a path the way external tools accept it. `std::fs::canonicalize`
+/// hands out `\\?\`-prefixed paths on Windows; netsh rejects those as program
+/// paths ("The parameter is incorrect."), so strip the prefix.
+pub(crate) fn netsh_program_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    text.strip_prefix(r"\\?\")
+        .map(str::to_owned)
+        .unwrap_or(text)
+}
+
+/// Idempotently ensure one scenario-named inbound allow rule, program-scoped
+/// to the run-owned executable. netsh reports parameter errors on STDOUT, so
+/// both streams surface in the refusal.
+pub(crate) fn firewall_rule(
+    name: &str,
+    protocol: &str,
+    port: &str,
+    exe: &std::path::Path,
+) -> Result<()> {
+    let _ = Command::new("netsh")
+        .args([
+            "advfirewall",
+            "firewall",
+            "delete",
+            "rule",
+            &format!("name={name}"),
+        ])
+        .output()
+        .context("netsh delete failed")?;
+    let add = Command::new("netsh")
+        .args([
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
+            &format!("name={name}"),
+        ])
+        .args(["dir=in", "action=allow", &format!("protocol={protocol}")])
+        .arg(format!("localport={port}"))
+        .arg(format!("program={}", netsh_program_path(exe)))
+        .output()
+        .context("netsh add failed")?;
+    if !add.status.success() {
+        bail!(
+            "firewall rule {name} was refused: stdout={} stderr={}",
+            String::from_utf8_lossy(&add.stdout).trim(),
+            String::from_utf8_lossy(&add.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Remove scenario-named rules and verify exact removal by name.
+pub(crate) fn firewall_rules_remove(rules: &[&str]) -> Result<()> {
+    let mut errors = Vec::new();
+    for name in rules {
+        let _ = Command::new("netsh")
+            .args([
+                "advfirewall",
+                "firewall",
+                "delete",
+                "rule",
+                &format!("name={name}"),
+            ])
+            .output();
+        let check = Command::new("netsh")
+            .args([
+                "advfirewall",
+                "firewall",
+                "show",
+                "rule",
+                &format!("name={name}"),
+            ])
+            .output();
+        if matches!(check, Ok(output) if output.status.success()) {
+            errors.push(format!("firewall rule {name} still present"));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        bail!("cleanup errors: {}", errors.join("; "))
+    }
+}
+
+#[cfg(test)]
+mod netsh_tests {
+    use super::netsh_program_path;
+
+    #[test]
+    fn netsh_program_path_strips_extended_length_prefixes() {
+        assert_eq!(
+            netsh_program_path(std::path::Path::new(r"\\?\F:\repo\.lab-runs\r1\koi.exe")),
+            r"F:\repo\.lab-runs\r1\koi.exe"
+        );
+        assert_eq!(
+            netsh_program_path(std::path::Path::new(r"\\?\UNC\server\share\koi.exe")),
+            r"\\server\share\koi.exe"
+        );
+        // Plain paths pass through untouched.
+        assert_eq!(
+            netsh_program_path(std::path::Path::new(r"F:\repo\koi.exe")),
+            r"F:\repo\koi.exe"
+        );
+    }
 }
 
 pub fn ensure_windows_elevated() -> Result<()> {

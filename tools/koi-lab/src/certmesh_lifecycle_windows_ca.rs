@@ -17,7 +17,6 @@
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use sha2::Digest;
-use std::process::Command;
 
 use crate::lab::{curl_json, wait_for_http, Lab};
 use crate::model::{output_path, CheckResult, RunId, WindowsCaReport};
@@ -415,54 +414,7 @@ impl Lab {
     }
 
     fn firewall_rule(&self, name: &'static str, port: &str, exe: &std::path::Path) -> Result<()> {
-        let delete = Command::new("netsh")
-            .args([
-                "advfirewall",
-                "firewall",
-                "delete",
-                "rule",
-                &format!("name={name}"),
-            ])
-            .output()
-            .context("netsh delete failed")?;
-        let _ = delete;
-        let add = Command::new("netsh")
-            .args([
-                "advfirewall",
-                "firewall",
-                "add",
-                "rule",
-                &format!("name={name}"),
-            ])
-            .args(["dir=in", "action=allow", "protocol=tcp"])
-            .arg(format!("localport={port}"))
-            .arg(format!("program={}", netsh_program_path(exe)))
-            .output()
-            .context("netsh add failed")?;
-        if !add.status.success() {
-            // netsh reports parameter errors on STDOUT; surface both streams
-            // so a refusal is never diagnosed from an empty message.
-            bail!(
-                "firewall rule {name} was refused: stdout={} stderr={}",
-                String::from_utf8_lossy(&add.stdout).trim(),
-                String::from_utf8_lossy(&add.stderr).trim()
-            );
-        }
-        Ok(())
-    }
-
-    fn firewall_rules_remove(rules: &[&'static str]) {
-        for name in rules {
-            let _ = Command::new("netsh")
-                .args([
-                    "advfirewall",
-                    "firewall",
-                    "delete",
-                    "rule",
-                    &format!("name={name}"),
-                ])
-                .output();
-        }
+        crate::lab::firewall_rule(name, "tcp", port, exe)
     }
 
     fn cleanup_windows_ca(
@@ -505,21 +457,8 @@ impl Lab {
             }
         }
         if !resources.firewall_rules.is_empty() {
-            Self::firewall_rules_remove(&resources.firewall_rules);
-            // Verify exact removal by name.
-            for name in &resources.firewall_rules {
-                let check = Command::new("netsh")
-                    .args([
-                        "advfirewall",
-                        "firewall",
-                        "show",
-                        "rule",
-                        &format!("name={name}"),
-                    ])
-                    .output();
-                if matches!(check, Ok(output) if output.status.success()) {
-                    errors.push(format!("firewall rule {name} still present"));
-                }
+            if let Err(e) = crate::lab::firewall_rules_remove(&resources.firewall_rules) {
+                errors.push(format!("{e:#}"));
             }
         }
         let _ = windows;
@@ -537,19 +476,6 @@ fn required_str(value: &Value, key: &str) -> Result<String> {
         .and_then(Value::as_str)
         .map(str::to_owned)
         .context(format!("invite response omitted {key}"))
-}
-
-/// Present a path the way external tools accept it. `std::fs::canonicalize`
-/// hands out `\\?\`-prefixed paths on Windows; netsh rejects those as program
-/// paths ("The parameter is incorrect."), so strip the prefix.
-fn netsh_program_path(path: &std::path::Path) -> String {
-    let text = path.display().to_string();
-    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-        return format!(r"\\{rest}");
-    }
-    text.strip_prefix(r"\\?\")
-        .map(str::to_owned)
-        .unwrap_or(text)
 }
 
 fn mismatch_invite_fingerprint(token: &str, real_fingerprint: &str) -> Result<String> {
@@ -624,27 +550,5 @@ fn passed(name: impl Into<String>, detail: impl Into<String>) -> CheckResult {
         name: name.into(),
         passed: true,
         detail: detail.into(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::netsh_program_path;
-
-    #[test]
-    fn netsh_program_path_strips_extended_length_prefixes() {
-        assert_eq!(
-            netsh_program_path(std::path::Path::new(r"\\?\F:\repo\.lab-runs\r1\koi.exe")),
-            r"F:\repo\.lab-runs\r1\koi.exe"
-        );
-        assert_eq!(
-            netsh_program_path(std::path::Path::new(r"\\?\UNC\server\share\koi.exe")),
-            r"\\server\share\koi.exe"
-        );
-        // Plain paths pass through untouched.
-        assert_eq!(
-            netsh_program_path(std::path::Path::new(r"F:\repo\koi.exe")),
-            r"F:\repo\koi.exe"
-        );
     }
 }

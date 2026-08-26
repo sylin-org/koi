@@ -16,6 +16,7 @@ mod service_lifecycle_windows;
 mod soak;
 mod story;
 mod webhook_fanout;
+mod windows_breadth;
 
 use std::path::PathBuf;
 
@@ -130,6 +131,17 @@ enum LabCommand {
         #[arg(long)]
         run_id: String,
         /// Member node id (must be a physical Linux node with the member role).
+        #[arg(long)]
+        member: Option<String>,
+        #[arg(long)]
+        allow_system_mutation: bool,
+    },
+    /// W6+W9 (ADR-032): Windows-hosted serving lane — DNS on the standard
+    /// port plus cross-host health checks in both directions.
+    WindowsBreadth {
+        #[arg(long)]
+        run_id: String,
+        /// Member node id (physical Linux verifier and health target).
         #[arg(long)]
         member: Option<String>,
         #[arg(long)]
@@ -285,6 +297,17 @@ fn main() -> Result<()> {
             allow_system_mutation,
         } => {
             print_json(&lab.certmesh_lifecycle_windows_ca(
+                &RunId::parse(&run_id)?,
+                member.as_deref(),
+                allow_system_mutation,
+            )?)?;
+        }
+        LabCommand::WindowsBreadth {
+            run_id,
+            member,
+            allow_system_mutation,
+        } => {
+            print_json(&lab.windows_breadth(
                 &RunId::parse(&run_id)?,
                 member.as_deref(),
                 allow_system_mutation,
