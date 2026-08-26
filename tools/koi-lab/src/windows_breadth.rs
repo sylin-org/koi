@@ -304,30 +304,48 @@ impl Lab {
             );
         }
 
-        // OS-native resolver verification. `Resolve-DnsName` cannot target a
-        // non-53 port, so the Windows-native verifier for a lane-scoped port
-        // is `nslookup -port=` (equals form; the space form prints usage).
-        let resolve = Command::new("nslookup")
-            .args([&format!("-port={dns_port}"), DNS_NAME, "127.0.0.1"])
+        // Local verification over the loopback wire. Measured on this Windows
+        // build (2026-08-26): Resolve-DnsName has no -Port, and nslookup sends
+        // ZERO packets for non-53 ports (it rides the system DNS client, which
+        // is 53-only) — neither native CLI can target a lane-scoped port. The
+        // Windows-native scripting surface (PowerShell sockets) IS the adapter:
+        // a well-formed A query over loopback UDP, asserting the authoritative
+        // answer. The load-bearing proof remains cross-host dig from the member.
+        let probe = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!(
+                    "$c = New-Object Net.Sockets.UdpClient; $c.Connect('127.0.0.1', {}); \
+                     $q = [byte[]](0x12,0x34,0x01,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00, \
+                     0x0A,0x77,0x69,0x6E,0x62,0x72,0x65,0x61,0x64,0x74,0x68,0x08,0x69,0x6E,0x74,0x65,0x72,0x6E,0x61,0x6C,0x00,0x00,0x01,0x00,0x01); \
+                     [void]$c.Send($q, $q.Length); $c.Client.ReceiveTimeout = 3000; \
+                     try {{ $r = $c.Receive([ref][Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)); \
+                     if ($r[6] -eq 0 -and $r[7] -eq 1) {{ 'answer ' + \
+                     ([byte[]]@($r[$r.Length-4], $r[$r.Length-3], $r[$r.Length-2], $r[$r.Length-1]) -join '.') }} \
+                     else {{ 'no answer; an=' + $r[6] + $r[7] }} }} \
+                     catch {{ 'local probe timed out' }}",
+                    dns_port
+                ),
+            ])
             .output()
-            .context("run nslookup against the Windows DNS server")?;
-        let resolve_text = format!(
-            "{} {}",
-            String::from_utf8_lossy(&resolve.stdout),
-            String::from_utf8_lossy(&resolve.stderr)
-        );
-        if !resolve_text.contains(windows_address) || resolve_text.contains("No response") {
+            .context("run the local wire probe against the Windows DNS server")?;
+        let probe_text = String::from_utf8_lossy(&probe.stdout).to_string();
+        if !probe_text.contains(windows_address) {
             bail!(
-                "W6 nslookup did not return {}: output={}",
+                "W6 local wire probe did not return {}: output={}",
                 windows.address(),
-                resolve_text.trim()
+                probe_text.trim()
             );
         }
         let w6_check = passed(
             "w6_dns_served_from_windows",
             format!(
                 "the Windows daemon served {DNS_NAME} on the lane DNS port {}, answered \
-                 cross-host by dig from {} and locally by nslookup",
+                 cross-host by dig from {} and locally over the loopback wire \
+                 (PowerShell A query; measured: Resolve-DnsName has no -Port and \
+                 nslookup sends nothing for non-53 ports on this build)",
                 dns_port,
                 member.id()
             ),
