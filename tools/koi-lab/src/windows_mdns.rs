@@ -27,6 +27,7 @@ use std::time::Duration;
 
 use crate::lab::{curl_json, wait_for_http, Lab};
 use crate::model::{output_path, CheckResult, RunId, WindowsMdnsReport};
+use crate::probe::SseCapture;
 
 const AVAHI_BROWSE_TYPE: &str = "_http._tcp";
 const FIREWALL_MDNS_RULE: &str = "koi-lab w5 mdns (udp 5353)";
@@ -202,6 +203,16 @@ impl Lab {
         );
 
         // ── Direction B: avahi publishes, Windows discovers ──
+        // The browser is LAZY: subscribed = browsing (ADR-030 fix). Open a
+        // browser-events subscription first, or the snapshot stays empty
+        // no matter what avahi publishes.
+        let browser_wake = SseCapture::start(
+            &format!("{windows_url}/v1/mdns/browser/events"),
+            Some(&windows_token),
+            30,
+            "windows browser wake",
+        )?;
+        std::thread::sleep(Duration::from_secs(2));
         let instance_b = format!("w5-nix-{}", run_id.as_str());
         // The published record is truthful: member SSH on port 22.
         self.remote_line(
@@ -228,6 +239,7 @@ impl Lab {
             }
             std::thread::sleep(Duration::from_millis(500));
         }
+        drop(browser_wake); // end the wake subscription; the loop already proved discovery
         if snapshot_hit.is_empty() {
             bail!(
                 "W5 direction B failed: the Windows browser never saw {instance_b} \
