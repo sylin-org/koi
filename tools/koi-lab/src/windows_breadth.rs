@@ -1,9 +1,10 @@
 //! W6 + W9 (ADR-032): Windows-hosted serving lane.
 //!
 //! A run-owned daemon on THIS workstation serves the LAN for real: DNS on the
-//! standard port 53 (the lane's claim — the scenario is elevation-gated), and
-//! the health runtime. A physical Linux member is the cross-host verifier and
-//! the health target:
+//! catalog port (the same contract as the Linux lanes — the workstation's
+//! standard port 53 is held by system services with reuse semantics, measured
+//! 2026-08-26), and the health runtime. A physical Linux member is the
+//! cross-host verifier and the health target:
 //!
 //! - W6: an A record added on the Windows daemon is answered cross-host by
 //!   `dig` from the Linux member AND by the OS-native resolver
@@ -27,8 +28,8 @@ use crate::lab::{curl_json, wait_for_http, Lab};
 use crate::model::{output_path, CheckResult, RunId, WindowsBreadthReport};
 
 const FIREWALL_HTTP_RULE: &str = "koi-lab w6 http (tcp 18541)";
-const FIREWALL_DNS_UDP_RULE: &str = "koi-lab w6 dns (udp 53)";
-const FIREWALL_DNS_TCP_RULE: &str = "koi-lab w6 dns (tcp 53)";
+const FIREWALL_DNS_UDP_RULE: &str = "koi-lab w6 dns (udp 18553)";
+const FIREWALL_DNS_TCP_RULE: &str = "koi-lab w6 dns (tcp 18553)";
 const DNS_NAME: &str = "winbreadth.internal";
 const HEALTH_WINDOWS_TO_LINUX: &str = "w9-linux-fixture";
 const HEALTH_LINUX_TO_WINDOWS: &str = "w9-windows-http";
@@ -121,8 +122,8 @@ impl Lab {
         let exe = ca_root.join("koi.exe");
         for (name, protocol, port) in [
             (FIREWALL_HTTP_RULE, "tcp", ports.http.to_string()),
-            (FIREWALL_DNS_UDP_RULE, "udp", "53".to_string()),
-            (FIREWALL_DNS_TCP_RULE, "tcp", "53".to_string()),
+            (FIREWALL_DNS_UDP_RULE, "udp", ports.dns.to_string()),
+            (FIREWALL_DNS_TCP_RULE, "tcp", ports.dns.to_string()),
         ] {
             crate::lab::firewall_rule(name, protocol, &port, &exe)
                 .with_context(|| format!("firewall rule {name}"))?;
@@ -194,8 +195,9 @@ impl Lab {
             .remote_line(
                 member,
                 &format!(
-                    "dig @{} -p 53 {DNS_NAME} A +short | sed -n '1p'",
-                    windows.address()
+                    "dig @{} -p {} {DNS_NAME} A +short | sed -n '1p'",
+                    windows.address(),
+                    ports.dns
                 ),
             )
             .context("cross-host dig against the Windows DNS server")?;
@@ -212,7 +214,7 @@ impl Lab {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                &format!("(Resolve-DnsName -Server 127.0.0.1 -Name {DNS_NAME} -Type A).IPAddress"),
+                &format!("(Resolve-DnsName -Server 127.0.0.1 -Port {} -Name {DNS_NAME} -Type A).IPAddress", ports.dns),
             ])
             .output()
             .context("run Resolve-DnsName")?;
@@ -226,10 +228,11 @@ impl Lab {
             );
         }
         let w6_check = passed(
-            "w6_dns_standard_port_served_from_windows",
+            "w6_dns_served_from_windows",
             format!(
-                "the Windows daemon served {DNS_NAME} on port 53, answered cross-host by dig \
-                 from {} and locally by Resolve-DnsName",
+                "the Windows daemon served {DNS_NAME} on the catalog DNS port {}, answered \
+                 cross-host by dig from {} and locally by Resolve-DnsName",
+                ports.dns,
                 member.id()
             ),
         );
