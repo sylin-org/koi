@@ -115,7 +115,13 @@ impl Lab {
         let sink_url = format!("http://{}:{}/hook", sink_node.address(), sink_ports.fixture);
 
         // ── Manifest: staged to the Windows daemon's data dir ──
-        let stage_dir = ca_root.join("program-data");
+        // Manifest staged beside the daemon; PLAIN path only. The staged root
+        // carries the \\?\ canonical prefix, and a \\?\ --webhooks value died
+        // silently in the first physical run (healthz never answered). The
+        // firewall helper strips the same prefix for the same reason.
+        let stage_dir = std::path::PathBuf::from(crate::lab::netsh_program_path(
+            &ca_root.join("program-data"),
+        ));
         std::fs::create_dir_all(stage_dir.join("koi"))?;
         let manifest_local = output_path(run_id.as_str()).join("webhooks.json");
         std::fs::create_dir_all(output_path(run_id.as_str()))?;
@@ -127,18 +133,13 @@ impl Lab {
                 "enabled": true,
             }]))?,
         )?;
-        std::fs::copy(&manifest_local, stage_dir.join("koi").join("webhooks.json"))
+        let manifest_path = stage_dir.join("koi").join("webhooks.json");
+        std::fs::copy(&manifest_local, &manifest_path)
             .context("stage the webhook manifest beside the Windows daemon")?;
 
         // ── Windows origin daemon (webhooks manifest wired in) ──
         let _windows_child = self
-            .start_windows_serving_daemon(
-                &ca_root,
-                &ports,
-                18653,
-                false,
-                Some(&stage_dir.join("koi").join("webhooks.json")),
-            )
+            .start_windows_serving_daemon(&ca_root, &ports, 18653, false, Some(&manifest_path))
             .context("start the Windows webhook origin daemon")?;
         resources.windows_daemon = true;
         let windows_url = format!("http://127.0.0.1:{}", ports.http);
