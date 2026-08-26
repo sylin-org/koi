@@ -15,16 +15,24 @@ law: services never register from npm-managed paths); all top free package manag
 Homebrew tap → winget → AUR(-bin) → Scoop bucket → Nix flake (Flathub/Snap/Store deferred with reasons);
 tray-minimized autostart via tauri-plugin-autostart with `--minimized` (daemon never spawns GUI).
 Implementation phases (each independently landable, external touches operator-gated):
-P-A local work — landing-page scripts, Tauri updater keys + latest.json feed, `--minimized` flag +
-autostart toggle in koi-desktop, GitHub build attestations in release workflow;
+P-C SignPath repository preparation LANDED (`adb4c73`): public CODE_SIGNING_POLICY.md, PE version
+metadata via winresource build script, fail-closed `sign-windows` workflow lane (explicit unsigned
+status while `SIGNPATH_ENABLED` is false), post-signing checksums/manifest/attestations,
+verify-windows-signing.ps1 + checked-in artifact configuration. **Foundation application SUBMITTED
+2026-08-25** (project "Koi", repo sylin-org/koi, independent community project, GitHub Actions; account
+email on file in local/NOTES.md) — review pending; after approval the operator configures
+SignPath/GitHub values and flips `SIGNPATH_ENABLED`.
+P-A progress: koi-desktop login autostart + `--minimized` tray launch LANDED (koi-desktop `4f7a38b`,
+tauri-plugin-autostart =2.5.1 under the Ghostlight pin policy; Status-pane toggle with honest failure
+reporting); landing-page draft LANDED (`site/index.html` + hosting contract in `site/README.md`;
+install.sh/install.ps1 already satisfy D2 — checksum-verified, per-user, guidance-not-autostart);
+build provenance attestations already shipped in the release workflow. Remaining in P-A: Tauri updater
+feed — requires an Ed25519 keypair (`pnpm tauri signer generate` equivalent: `cargo tauri signer
+generate`) whose private key the OPERATOR must hold (CI secret `TAURI_SIGNING_PRIVATE_KEY[+_PASSWORD]`),
+then pubkey into koi-desktop tauri.conf.json + `createUpdaterArtifacts: true` + `latest.json`
+generation in its release flow.
 P-B operator console actions — npm trusted publishers (per package) + `NPM_PUBLISH_ENABLED`;
-P-C SignPath repository preparation is implemented locally: public policy, PE metadata, one-request
-Windows signing/finalization, post-signing checksums and attestations, and fail-closed enablement.
-**Foundation application SUBMITTED 2026-08-25** (project "Koi", repo sylin-org/koi, independent
-community project, GitHub Actions; account email on file in local/NOTES.md) — review pending; after
-approval the operator configures SignPath/GitHub values and flips `SIGNPATH_ENABLED`;
 P-D taps/submissions one by one; P-E optional Apple $99/yr later.
-Next implementation slice: P-A.
 
 **W4 GREEN — ADR-032 Windows-hosted CA rotation physically proven (2026-08-25, run `v1-20260825T145514Z-c2be3c52`).**
 `certmesh-lifecycle-windows-ca` passed 7/7 elevated: wrong-pin refusal before keygen, brook join with

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Koi — Find. Trust. Connect.</title>
+<meta name="description" content="Koi is an open-source local connectivity substrate: discover services, trust devices, and connect everything on your LAN.">
+<style>
+  :root {
+    --ground: #0f0e12; --panel: #17161c; --panel-2: #1d1b23;
+    --line: rgba(255,255,255,.08); --ink: #e8e6ee; --muted: #9d99ab;
+    --a: #60a5fa; --a-light: #93c5fd;
+    --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--ground); color: var(--ink);
+         font: 15px/1.55 system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  main { max-width: 780px; margin: 0 auto; padding: 48px 22px 64px; }
+  h1 { font-size: 34px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 6px; }
+  h1 .accent { color: var(--a); }
+  .tagline { color: var(--muted); font-size: 16px; margin: 0 0 36px; }
+  h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--muted); margin: 34px 0 10px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 11px;
+          padding: 18px; margin-bottom: 14px; }
+  .card .os { font-weight: 600; font-size: 14px; margin-bottom: 10px; }
+  .cmd { display: flex; align-items: center; gap: 10px; background: var(--ground);
+         border: 1px solid var(--line); border-radius: 8px; padding: 11px 13px; }
+  .cmd code { font-family: var(--mono); font-size: 12.5px; color: var(--a-light);
+              overflow-x: auto; white-space: nowrap; flex: 1; }
+  .copy { flex: none; background: none; border: 1px solid var(--line); color: var(--muted);
+          border-radius: 6px; padding: 4px 10px; font-size: 11px; cursor: pointer; }
+  .copy:hover { color: var(--ink); border-color: var(--a); }
+  .note { color: var(--muted); font-size: 12px; margin: 10px 2px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td { padding: 8px 10px; border-top: 1px solid var(--line); }
+  td:first-child { font-weight: 600; white-space: nowrap; }
+  .state { font-size: 11px; padding: 2px 8px; border-radius: 999px; }
+  .state.available { color: #86efac; border: 1px solid rgba(134,239,172,.35); }
+  .state.prepared  { color: var(--a-light); border: 1px solid rgba(147,197,253,.35); }
+  .state.planned   { color: var(--muted); border: 1px solid var(--line); }
+  footer { margin-top: 44px; color: var(--muted); font-size: 12px; }
+  a { color: var(--a-light); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="accent">Koi</span> — Find. Trust. Connect.</h1>
+  <p class="tagline">An open-source local connectivity substrate: discover services and
+     devices on your LAN, give them short-lived mTLS identities, and connect them —
+     with one small daemon and zero cloud.</p>
+
+  <h2>Install</h2>
+  <div class="card">
+    <div class="os">macOS &amp; Linux</div>
+    <div class="cmd">
+      <code id="cmd-sh">curl -fsSL https://sylin.org/koi/install.sh | sh</code>
+      <button class="copy" data-copy="cmd-sh">copy</button>
+    </div>
+    <p class="note">Verifies the archive checksum, installs <code>koi</code> onto your PATH
+       (per-user by default), and shows the next commands. Nothing is auto-started.</p>
+  </div>
+
+  <div class="card">
+    <div class="os">Windows (PowerShell)</div>
+    <div class="cmd">
+      <code id="cmd-ps1">irm https://sylin.org/koi/install.ps1 | iex</code>
+      <button class="copy" data-copy="cmd-ps1">copy</button>
+    </div>
+    <p class="note">Same contract: checksum-verified archive, per-user PATH install.
+       To run as a background service afterwards:
+       <code style="font-family:var(--mono)">koi install</code> from an elevated shell.</p>
+  </div>
+
+  <h2>Run it</h2>
+  <div class="card">
+    <table>
+      <tr><td>See your network</td><td><code style="font-family:var(--mono)">koi mdns discover</code></td>
+          <td>instant, no daemon needed</td></tr>
+      <tr><td>Start the daemon</td><td><code style="font-family:var(--mono)">koi</code></td>
+          <td>serves mDNS, DNS, health, proxy on your LAN</td></tr>
+      <tr><td>Install as a service</td><td><code style="font-family:var(--mono)">koi install</code></td>
+          <td>systemd (Linux) or SCM (Windows, elevated)</td></tr>
+    </table>
+  </div>
+
+  <h2>Other ways to get Koi</h2>
+  <div class="card">
+    <table>
+      <tr><td>cargo</td><td><code style="font-family:var(--mono)">cargo install koi-net</code></td>
+          <td><span class="state available">available</span></td></tr>
+      <tr><td>containers</td><td><code style="font-family:var(--mono)">docker pull ghcr.io/sylin-org/koi</code></td>
+          <td><span class="state available">available</span></td></tr>
+      <tr><td>npm</td><td><code style="font-family:var(--mono)">npx @sylin-org/koi</code></td>
+          <td><span class="state prepared">prepared</span></td></tr>
+      <tr><td>Homebrew / winget / AUR / Scoop / Nix</td><td></td>
+          <td><span class="state planned">planned</span></td></tr>
+    </table>
+  </div>
+
+  <footer>
+    Koi is open source under Apache-2.0 OR MIT —
+    <a href="https://github.com/sylin-org/koi">github.com/sylin-org/koi</a>.
+    Release archives carry SHA-256 sidecars and signed build provenance
+    (<code style="font-family:var(--mono)">gh attestation verify</code>).
+  </footer>
+</main>
+<script>
+  // Copy buttons + naive OS hint: reorder cards so the visitor's platform is first.
+  document.querySelectorAll('.copy').forEach(function (button) {
+    button.addEventListener('click', function () {
+      var text = document.getElementById(button.dataset.copy).textContent.trim();
+      navigator.clipboard.writeText(text).then(function () {
+        button.textContent = 'copied';
+        setTimeout(function () { button.textContent = 'copy'; }, 1400);
+      });
+    });
+  });
+  var ua = navigator.userAgent;
+  if (/Windows/.test(ua)) {
+    var parent = document.querySelector('main');
+    parent.insertBefore(parent.children[3], parent.children[2]); // Windows card above sh card
+  }
+</script>
+</body>
+</html>
