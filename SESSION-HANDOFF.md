@@ -18,7 +18,11 @@ Implementation phases (each independently landable, external touches operator-ga
 P-A local work — landing-page scripts, Tauri updater keys + latest.json feed, `--minimized` flag +
 autostart toggle in koi-desktop, GitHub build attestations in release workflow;
 P-B operator console actions — npm trusted publishers (per package) + `NPM_PUBLISH_ENABLED`;
-P-C SignPath application (operator submits; pipeline step secret-gated until approved);
+P-C SignPath repository preparation is implemented locally: public policy, PE metadata, one-request
+Windows signing/finalization, post-signing checksums and attestations, and fail-closed enablement.
+**Foundation application SUBMITTED 2026-08-25** (project "Koi", repo sylin-org/koi, independent
+community project, GitHub Actions; account email on file in local/NOTES.md) — review pending; after
+approval the operator configures SignPath/GitHub values and flips `SIGNPATH_ENABLED`;
 P-D taps/submissions one by one; P-E optional Apple $99/yr later.
 Next implementation slice: P-A.
 

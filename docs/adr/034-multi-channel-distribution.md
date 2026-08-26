@@ -32,14 +32,18 @@ release checksums, then invoke the product's own installer (`koi install`) plus 
 registration. Terminal installs never set a quarantine attribute → no Gatekeeper/SmartScreen surface on
 this path. Precedent: deno.land/install.{sh,ps1}, bun.sh, rustup.rs.
 
-### D3 — Windows Authenticode via SignPath Foundation (free)
+### D3 — Windows Authenticode via SignPath Foundation (free) — application submitted 2026-08-25
 
-Apply to the SignPath Foundation open-source program. Eligibility holds: OSI dual license
+The Foundation application was submitted 2026-08-25 (project "Koi", repository
+`sylin-org/koi`, maintainer type "Independent community project", build system "GitHub Actions");
+Foundation review is pending. Eligibility holds: OSI dual license
 (MIT/Apache-2.0), public repos, actively maintained, released artifacts, documented download page.
 Strings attached and accepted: publisher identity reads "SignPath Foundation"; README carries
-"Free code signing provided by SignPath.io, certificate by SignPath Foundation"; their origin-verification
-step joins the release pipeline. The pipeline step is gated on secret presence so releases stay possible
-before approval (unsigned builds keep the honest warning in notes). SmartScreen reputation accrues under
+"Free code signing provided by SignPath.io, certificate by SignPath Foundation" (added to README and
+release notes when signing goes live); their origin-verification
+step joins the release pipeline. `SIGNPATH_ENABLED` remains false before approval, so releases stay
+possible with an explicit unsigned status. Once enabled, missing credentials or a failed signing request
+stops publication. SmartScreen reputation accrues under
 the Foundation's identity across consecutive signed releases; EV certificates are explicitly rejected
 (no SmartScreen bypass since 2024); Azure Artifact Signing ($9.99/mo, geo-limited) is the fallback only
 if SignPath declines.
