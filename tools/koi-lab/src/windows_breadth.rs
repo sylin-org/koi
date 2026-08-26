@@ -155,23 +155,25 @@ impl Lab {
                 &format!("cat {}/runtime/koi.endpoint", member.run_dir(run_id)?),
             )
             .context("read the Linux member breadcrumb")?;
-        let member_endpoint = breadcrumb
+        // The breadcrumb advertises loopback; the catalog URL is the same
+        // daemon over the LAN (this is exactly how the story lanes read the
+        // daemon token). Sanity-check the port so a staging mixup cannot
+        // silently target the wrong daemon.
+        let member_port = breadcrumb
             .lines()
             .next()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .context("Linux member breadcrumb had no endpoint")?
-            .to_owned();
+            .and_then(|line| line.trim().rsplit(':').next()?.parse::<u16>().ok());
+        if member_port != Some(member_ports.http) {
+            bail!(
+                "Linux member breadcrumb port {member_port:?} does not match the catalog \
+                 HTTP port {}",
+                member_ports.http
+            );
+        }
         let member_dat = breadcrumb
             .lines()
             .nth(1)
             .and_then(|line| line.trim().strip_prefix("dat:").map(str::to_owned));
-        if member_endpoint != member_url {
-            bail!(
-                "Linux member breadcrumb endpoint {member_endpoint} does not match the \
-                 catalog URL {member_url}"
-            );
-        }
         resources.member_token = member_dat.clone();
 
         // ── W6: DNS served on the standard port, verified from both OSes ──
