@@ -9,7 +9,7 @@ async fn main() -> anyhow::Result<()> {
     // The koi-lab dependency graph links both aws-lc-rs and ring; rustls 0.23
     // refuses to guess. The daemon installs its own provider; a standalone
     // client must too.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let args: Vec<String> = std::env::args().collect();
     let (directory, ca_pem) = (args[1].clone(), args[2].clone());
 
