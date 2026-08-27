@@ -4,9 +4,9 @@ You are continuing Koi (LAN connectivity substrate, Rust) toward stable 1.0.
 Read FIRST, in order — then re-verify every premise against the tree (RL-11):
 
 1. `SESSION-HANDOFF.md` — canonical ledger; trust it over this file where they
-   diverge. The top paragraphs (W12 GREEN, W8 GREEN + WindowsLabDaemon,
-   W7 GREEN, W5 GREEN + browser-defect fix, W6+W9 GREEN, W4 GREEN) are the
-   current arc.
+   diverge. The top paragraphs (W10 GREEN — matrix complete, W12 GREEN,
+   W8 GREEN + WindowsLabDaemon, W7 GREEN, W5 GREEN + browser-defect fix,
+   W6+W9 GREEN, W4 GREEN) are the current arc.
 2. `docs/lessons-learned.md` — RL-1..RL-16 stand; RL-17 (loud guards + the
    cleanup-then-redeploy retry protocol) and RL-18 (probe vs wired path;
    per-node port namespaces) were added during the W12 arc.
@@ -16,50 +16,51 @@ Read FIRST, in order — then re-verify every premise against the tree (RL-11):
    pointer index. `docs/distribution-prior-art.md` + `docs/adr/034` — the
    distribution arc (ratified, partially implemented).
 
-## Verified state (2026-08-27 ~17:00 local)
+## Verified state (2026-08-27 ~17:10 local)
 
 - Branches `dev` == `main` == `origin` at `c66d2f9` + the W12-landing commits
-  (`fd2f7e5` loud guards, `bfab513` directory URL, `8315d40` DNS lane port,
-  docs). Tree state: re-verify with `git status`.
-- **ADR-032 matrix: 10 of 11 lanes green.**
-  - Green: W1 (SCM), W2 (pipe), W3 (trust), W4 (Windows CA rotation),
-    W5 (mDNS both directions), W6 (DNS serve, lane-scoped port), W7 (TLS
-    proxy dual-stack), W8 (webhooks origin-on-Windows), W9 (health
-    cross-host), **W12 (ACME dns-01 via Windows DNS, run
-    `v1-20260827T203030Z-2c5a7de8`)**.
-  - Remaining: **W10** (backup/cold recovery on Windows — not started; the
-    Linux `certmesh-recovery` lane is the pattern, the Windows variant needs
-    the WindowsLabDaemon + tracked trust machinery). W11 is excluded-by-tag.
+  (`fd2f7e5`, `bfab513`, `8315d40`), the W10 lane (`36c0ed4`), its cleanup fix
+  (`1e75a19`), and the docs. Tree state: re-verify with `git status`.
+- **ADR-032 matrix COMPLETE: every lane green (W11 excluded-by-tag).**
+  - W1 SCM, W2 pipe, W3 trust, W4 Windows CA rotation, W5 mDNS both
+    directions, W6 DNS serve, W7 TLS proxy dual-stack, W8 webhooks,
+    W9 health cross-host, W10 backup/cold recovery (run
+    `v1-20260827T205903Z-e6881df9`), W12 ACME dns-01 (run
+    `v1-20260827T203030Z-2c5a7de8`).
 - Standing mesh: brook + granite run REAL `koi install` services; test01 is
   the avahi-equipped workstation (W5 peer). Windows workstation (LEO-MAIN /
   stone-leaded-sparkle) at 192.168.1.137; standing koi service RUNNING.
-- Locks: released (post-W12 cleanup green on all nodes).
+- Locks: released (post-W10 cleanup green on all nodes).
 
-## THE exact next task: W10 — backup/cold recovery on Windows (ADR-032 row)
+## THE exact next task: the extended full profile (ADR-032 stable-gate redefinition)
 
-Not started. The lane to build: encrypted backup → exact data loss → restore →
-identity continuity, with a Windows-hosted CA and WindowsLabDaemon staging.
+Fold all Windows lanes into `run-profile full` and run it elevated
+end-to-end. Included cases: W1 (service-lifecycle-windows), W2 (pipe), W4
+(certmesh-lifecycle-windows-ca), and the five windows-* lanes
+(windows-breadth, windows-mdns, windows-proxy, windows-webhook,
+windows-acme) plus the new certmesh-recovery-windows. See the
+"Stable-gate redefinition" section of docs/adr/032 for the target shape and
+docs/adr/032 P2/P3 for the lane list. The profile runner is
+tools/koi-lab/src/profile.rs; each lane is a driven scenario with its own
+evidence — the fold is composition + sequencing, not re-implementation.
 
-- `certmesh-recovery` (lab.rs ~line 960: backup → data loss → restore →
-  CA restarts locked with same fingerprint → member renewal refused while
-  locked → unlock with pre-restore passphrase) is the assertion pattern.
-- Build on WindowsLabDaemon (tools/koi-lab/src/windows_daemon.rs) — the one
-  owner for staging/paths/env/flags/log/kill. New lanes MUST use it.
-- Reuse the elevated one-shot runner pattern: `.tmp/w12-run2.ps1` is
-  parameterized by `-RunId` (stop standing service → sweep orphans →
-  scenario → restore service → transcript to `.tmp/*.log`).
+After it passes elevated: **clean soak incl. Windows participants**
+(soak.rs), and that closes the stable 1.0 gate (rc.3 only if findings force
+it, RL-2: registries immutable).
+
+## Runner / deploy discipline (unchanged, proven)
+
 - Deploy-locks protocol: `deploy` acquires the locks with ITS run id; the
   scenario runs with that SAME run id; lab `cleanup --run-id <id>` releases
   them. After ANY failed attempt: full cleanup, fresh deploy, FRESH run id
   (RL-17b — a reused run id inherits stale run-scoped state).
-
-## After W10: the 1.0 gate
-
-- **Extended full profile** — fold all Windows lanes (W1/W2/W4 + windows-
-  breadth/mdns/proxy/webhook/acme) into `run-profile full` (ADR-032
-  stable-gate redefinition), then run it elevated end-to-end.
-- **Soak** — clean soak incl. Windows participants. Gates stable 1.0.
-- rc.3 only if findings force it (RL-2: registries immutable).
+- Elevated one-shot runner pattern: `.tmp/w10-run.ps1` (parameterized by
+  `-RunId`: stop standing service → sweep orphans → scenario → restore
+  service → transcript to `.tmp/*.log`).
+- WindowsLabDaemon is the one owner for staging/paths/env/flags/log/kill;
+  its `root()` is the PREFIX-STRIPPED path — cleanup APIs that compare paths
+  by identity want the constructed `windows_member_dir(run_id)` instead
+  (the exact defect `1e75a19` fixed).
 
 ## Environment notes (measured, important)
 
@@ -79,11 +80,10 @@ identity continuity, with a Windows-hosted CA and WindowsLabDaemon staging.
   tools want types without the `.local` suffix; dig exit 9 = "no servers
   could be reached" (wrong port or unreachability — check which namespace a
   port came from, RL-18b).
-- **Lab discipline**: WindowsLabDaemon is the one owner for staging/paths/
-  env/flags/log/kill. Evidence-before-cleanup is doctrine — and it now WORKS:
+- **Lab discipline**: evidence-before-cleanup is doctrine — and it now WORKS:
   daemon-launch guards fail loud (exit 71, self-describing stderr, fd2f7e5).
-  Scenario error-cleanup still sweeps the Windows member dir (daemon.log with
-  it); the error text is the retained evidence — read it before retrying.
+  Scenario error-cleanup sweeps the Windows member dir (daemon.log with it);
+  the error text is the retained evidence — read it before retrying.
   Per-machine credentials (RL-13): test01 = test/test, NEVER the lab password.
 - **plink quoting from a session shell**: write probe/runner .ps1 files into
   `.tmp/` and run them with `pwsh -File`; inline one-liners with embedded
@@ -106,8 +106,8 @@ identity continuity, with a Windows-hosted CA and WindowsLabDaemon staging.
   password for test01). Never commit values.
 - Scratch lives in repo-local `.tmp/` (gitignored) — never %TEMP%, never
   outside the project folder.
-- Stable 1.0 gate = ADR-032 matrix all green + extended full profile + clean
-  soak incl. Windows participants. rc.3 only if findings force it.
+- Stable 1.0 gate = ADR-032 matrix all green (DONE) + extended full profile +
+  clean soak incl. Windows participants. rc.3 only if findings force it.
 
 ## Distribution arc (ADR-034, paused by operator — resume after 1.0 or on demand)
 
