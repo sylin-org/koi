@@ -509,7 +509,20 @@ impl Lab {
         let installed = self.install_native_trust(client, ca, run_id)?;
 
         let exercise_result = (|| -> Result<Vec<CheckResult>> {
-            let native_curl = self.native_tls_curl(client, service, service.hostname())?;
+            // The machine-root import lands moments before the first
+            // handshake; lsass can still be settling its view of the store
+            // when the first ClientHello goes out. Bounded settle-retry: the
+            // assertion must judge the SETTLED state, not the race window.
+            let mut native_curl = self.native_tls_curl(client, service, service.hostname())?;
+            let mut attempts = 1;
+            while (!native_curl.status.success()
+                || String::from_utf8_lossy(&native_curl.stdout).trim() != "OK")
+                && attempts < 5
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                native_curl = self.native_tls_curl(client, service, service.hostname())?;
+                attempts += 1;
+            }
             if !native_curl.status.success()
                 || String::from_utf8_lossy(&native_curl.stdout).trim() != "OK"
             {
@@ -544,9 +557,10 @@ impl Lab {
                     Err(e) => format!("could not run: {e:#}"),
                 };
                 bail!(
-                    "native curl did not trust the Koi proxy after install: {}\n\
+                    "native curl did not trust the Koi proxy after install ({} attempts): {}\n\
                      localization: schannel forced TLS1.2 → {downgrade_text}\n\
                      localization: openssl from {} → {openssl_text}",
+                    attempts,
                     String::from_utf8_lossy(&native_curl.stderr).trim(),
                     ca.id(),
                 );
