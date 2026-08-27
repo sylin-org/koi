@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     };
     let mut authorization = result.context("authorization failed")?;
-    let Some(mut challenge) = authorization.challenge(ChallengeType::Dns01) else {
+    let Some(challenge) = authorization.challenge(ChallengeType::Dns01) else {
         println!("dns-01 challenge not offered");
         return Ok(());
     };
