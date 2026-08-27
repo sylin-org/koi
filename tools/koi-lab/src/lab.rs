@@ -513,9 +513,39 @@ impl Lab {
             if !native_curl.status.success()
                 || String::from_utf8_lossy(&native_curl.stdout).trim() != "OK"
             {
+                // D15/RL-16: the refusal carries the localization probes — a
+                // forced-TLS1.2 Schannel pass/fail (version-specific vs
+                // fundamental) and openssl's view of the same endpoint from
+                // the CA node (server-side vs Schannel-specific).
+                let downgrade =
+                    self.native_tls_curl_downgraded(client, service, service.hostname());
+                let downgrade_text = match downgrade {
+                    Ok(output) => format!(
+                        "exit {} stderr: {}",
+                        output.status.code().unwrap_or(-1),
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    ),
+                    Err(e) => format!("could not run: {e:#}"),
+                };
+                let openssl_view = self.transport.run(
+                    ca,
+                    &format!(
+                        "echo | openssl s_client -connect {}:{} -servername {} -brief 2>&1 | head -12",
+                        service.address(),
+                        service.lab_ports()?.proxy,
+                        service.hostname()
+                    ),
+                );
+                let openssl_text = match openssl_view {
+                    Ok(output) => String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+                    Err(e) => format!("could not run: {e:#}"),
+                };
                 bail!(
-                    "native curl did not trust the Koi proxy after install: {}",
-                    String::from_utf8_lossy(&native_curl.stderr).trim()
+                    "native curl did not trust the Koi proxy after install: {}\n\
+                     localization: schannel forced TLS1.2 → {downgrade_text}\n\
+                     localization: openssl from {} → {openssl_text}",
+                    String::from_utf8_lossy(&native_curl.stderr).trim(),
+                    ca.id(),
                 );
             }
 
@@ -2216,6 +2246,31 @@ impl Lab {
                     hostname,
                     port,
                 ))
+                .output()
+                .context("failed to start Windows curl.exe"),
+        }
+    }
+
+    /// Diagnostic variant that forces TLS 1.2: distinguishes a
+    /// version-specific Schannel failure from a fundamental one.
+    pub(crate) fn native_tls_curl_downgraded(
+        &self,
+        client: &NodeSpec,
+        service: &NodeSpec,
+        hostname: &str,
+    ) -> Result<std::process::Output> {
+        let port = service.lab_ports()?.proxy;
+        match client {
+            NodeSpec::PuttyLinux { .. } => self.transport.run(
+                client,
+                &format!(
+                    "curl --noproxy '*' --silent --show-error --fail --max-time 10 --tlsv1.2 --tls-max 1.2 --resolve {hostname}:{port}:{} https://{hostname}:{port}/healthz",
+                    service.address()
+                ),
+            ),
+            NodeSpec::LocalWindows { .. } => Command::new("curl.exe")
+                .args(windows_curl_args(service.address(), hostname, port))
+                .args(["--tlsv1.2", "--tls-max", "1.2"])
                 .output()
                 .context("failed to start Windows curl.exe"),
         }
