@@ -277,7 +277,8 @@ impl Lab {
         _token: &str,
     ) -> Result<String> {
         // The CA cert lives under the staged data dir (the daemon wrote it on
-        // create); read it directly — same file the trust lanes use.
+        // create); read it directly — same file the trust lanes use. Bounded
+        // retry: the daemon may still be flushing the brand-new CA files.
         let path = resources
             .daemon
             .as_ref()
@@ -287,7 +288,16 @@ impl Lab {
             .join("certmesh")
             .join("ca")
             .join("ca-cert.pem");
-        std::fs::read_to_string(&path).with_context(|| format!("could not read {}", path.display()))
+        let mut last = String::new();
+        for _ in 0..20 {
+            match std::fs::read_to_string(&path) {
+                Ok(content) if !content.trim().is_empty() => return Ok(content),
+                Ok(content) => last = format!("empty ca-cert.pem ({content})"),
+                Err(e) => last = format!("{e}"),
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        bail!("could not read {}: {last}", path.display())
     }
 
     #[allow(clippy::too_many_arguments)]
