@@ -1265,11 +1265,11 @@ impl Lab {
         let fixture_port = ports.fixture;
         let prepare = if preserve_state {
             format!(
-                "test -d {run_dir}/data; mkdir -p {run_dir}/runtime; rm -f {run_dir}/runtime/koi.endpoint"
+                "test -d {run_dir}/data || guard \"no data dir to preserve under {run_dir}\"; mkdir -p {run_dir}/runtime; rm -f {run_dir}/runtime/koi.endpoint"
             )
         } else {
             format!(
-                "test ! -e {run_dir}/data; test ! -e {run_dir}/runtime; mkdir {run_dir}/data {run_dir}/runtime"
+                "test ! -e {run_dir}/data || guard \"stale data dir under {run_dir}\"; test ! -e {run_dir}/runtime || guard \"stale runtime dir under {run_dir}\"; mkdir {run_dir}/data {run_dir}/runtime"
             )
         };
         let profile_args = match profile {
@@ -1303,10 +1303,14 @@ impl Lab {
             | DaemonProfile::CapabilityStory
             | DaemonProfile::WebhookFanout => String::new(),
         };
+        // Guards fail loud (RL-16): a bare `test` under `set -eu` kills the
+        // script silently and the transport error arrives with empty stderr,
+        // which cost the first W12 physical run its retained evidence. Exit 71
+        // marks a guard refusal; the message names the exact refusal.
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/daemon.pid; ! ss -H -lntup | grep -Eq ':({guarded_ports}) '; {prepare}; setsid -f sh -c 'echo $$ > {run_dir}/daemon.pid; exec env KOI_DATA_DIR={run_dir}/data KOI_DNS_ZONE=internal XDG_RUNTIME_DIR={run_dir}/runtime KOI_NO_CREDENTIAL_STORE=1{runtime_env} {run_dir}/koi --daemon --port {http_port} --http-bind 0.0.0.0 --mtls-port {mtls_port} --acme-port {acme_port} {profile_args} >>{run_dir}/daemon.log 2>&1'",
-            run_id.as_str(),
-            run_id.as_str()
+            "set -eu; guard() {{ echo \"koi-lab daemon-launch guard failed on {node_id}: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {run_id_str} || guard \"lab lock held by '$lock_owner', expected {run_id_str}\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {run_id_str} || guard \"run dir owned by '$run_owner', expected {run_id_str}\"; test ! -e {run_dir}/daemon.pid || guard \"stale daemon.pid under {run_dir}\"; if ss -H -lntup | grep -Eq ':({guarded_ports}) '; then guard \"guarded ports busy: {guarded_ports}\"; fi; {prepare}; setsid -f sh -c 'echo $$ > {run_dir}/daemon.pid; exec env KOI_DATA_DIR={run_dir}/data KOI_DNS_ZONE=internal XDG_RUNTIME_DIR={run_dir}/runtime KOI_NO_CREDENTIAL_STORE=1{runtime_env} {run_dir}/koi --daemon --port {http_port} --http-bind 0.0.0.0 --mtls-port {mtls_port} --acme-port {acme_port} {profile_args} >>{run_dir}/daemon.log 2>&1'",
+            node_id = node.id(),
+            run_id_str = run_id.as_str(),
         );
         self.transport.run_checked(node, &command)?;
         Ok(())
