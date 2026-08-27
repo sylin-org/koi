@@ -1,8 +1,8 @@
 # Koi Epic to v1 — canonical continuation ledger
 
 **Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; ADR-026/027/028 operator-ratified; **V1-10 webhooks COMPLETE** (embedded parity closed 2026-08-24 per D10; card/SURFACES/profile done); **V1-09 short-lived defaults implemented + physically green both rotations** (diagnosis semantics fixed per D9); **V1-08 principal identity COMPLETE 2026-08-24** — implementation, Tier-2 real-binary lifecycle, and physical mgmt-principal lane green both Linux rotations; **V1-11 step 1 COMPLETE** (Agent-Door spec + executable vector) and **step 2 scaffolded** (TS + Python SDK betas, read-side, tested); owed: SDK enroll-side + publication gating
-**Last updated:** 2026-08-25
-**Resume phrase:** continue the epic to v1 - lessons ledger at docs/lessons-learned.md (RL-1..RL-16)
+**Last updated:** 2026-08-27
+**Resume phrase:** continue the epic to v1 - lessons ledger at docs/lessons-learned.md (RL-1..RL-18)
 
 **ADR-034 RATIFIED (2026-08-25, operator): multi-channel distribution + free signing.** Research in
 `docs/distribution-prior-art.md`; decisions in `docs/adr/034`. Ratified: SignPath Foundation for free
@@ -45,6 +45,9 @@ channels job pack-tests entry + all six carriers; publish job (trusted publishin
 carriers first, then the entry. 7/7 node tests green; YAML validated.
 P-B operator console actions — npm trusted publishers (per package) + `NPM_PUBLISH_ENABLED`;
 P-D taps/submissions one by one; P-E optional Apple $99/yr later.
+
+**W12 GREEN — `windows-acme` (2026-08-27, run `v1-20260827T203030Z-2c5a7de8`, 2/2 checks). ADR-032 matrix now 10 of 11 lanes green; only W10 (backup/cold recovery on Windows) remains before the stable-1.0 gate (extended full profile + soak).**
+instant-acme issued `acme-w12-2c5a7de8.internal` through the Windows RFC 8555 server; the dns-01 TXT was published through the daemon API, served by the Windows DNS lane port (18653), observed cross-host by brook's dig, chain verified to the run CA, identity recorded in the roster; exact cleanup. The scenario was already implemented and compiles-clean, but the PHYSICAL arc exposed three more real defects on top of the four fixed 2026-08-26 (commits fd2f7e5, bfab513, 8315d40; lessons RL-17/RL-18): (1) the ACME directory URL lacked its `/acme/directory` path — the client GETs the URL verbatim, so it fetched `/` and parsed an empty body; every earlier attempt died before `newAccount` and the hand probes dialed the full path, so the wired string was never exercised; (2) the cross-host dig wired the member's own catalog dns_port (16553) where the Windows lane port (18653) was required — dig exit 9, "no servers could be reached"; (3) `launch_run_daemon`'s fresh-start guards were bare `test`s under `set -eu`: the FIRST run (23:38 2026-08-26) died silently on stale run state left by an earlier aborted attempt, with empty stderr and no retained evidence — guards now print a self-describing refusal and exit 71 (fd2f7e5), which is what pinpointed (1) and (2) within two retries. Retry protocol honored: full lab `cleanup` → fresh `deploy` → fresh run id before each attempt (RL-17b). Environment note: a disk-cleanup sweep had also taken `target\release\koi.exe` (the Windows staging source) — rebuilt with `cargo build --locked --release -p koi-net`. Remaining W-lanes: W10, then extended full profile + soak.
 
 **W8 GREEN — `windows-webhook` (2026-08-27, run `v1-20260827T002150Z-5f463890`, 4/4 checks) + the WindowsLabDaemon hardening slice.**
 Origin ON Windows (manifest-driven fan-out), sink on brook; two real DNS-record events fired through

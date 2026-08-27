@@ -190,3 +190,42 @@ helpers.
 **Rule:** for any step whose negative outcome is the assertion, use raw-output
 capture and assert on content + status together; reserve `run_checked` for
 steps that must succeed.
+
+### RL-17 — Transported precondition checks must fail loud; a bare `test` under `set -eu` is a silent kill (2026-08-27)
+
+`launch_run_daemon`'s fresh-start guards (lock owner, run owner, no stale
+`daemon.pid`, free guarded ports, no stale `data`/`runtime`) were bare `test`s
+under `set -eu`. Any refusal exited 1 with empty stderr, and the transport
+error arrived as "remote command failed on brook (exit 1):" with nothing after
+the colon — un-diagnosable once cleanup had swept the run dir. W12's first
+physical run died exactly this way (stale run state left by an earlier aborted
+attempt) and cost a full diagnosis cycle. Fixed: every guard now routes
+through an inline `guard()` that prints a self-describing refusal to stderr
+and exits 71.
+
+**Rules:** (a) in transported scripts, no bare precondition `test`s — route
+refusals through a labeled echo + distinct exit code so the retained error
+IS the evidence (extends RL-16 to the must-succeed direction); (b) after any
+partial/aborted lab attempt, run the full lab `cleanup` and re-`deploy` with a
+FRESH run id before retrying — a reused run id inherits the previous attempt's
+run-scoped state (stale `data`/`runtime` are exactly what fresh-start guards
+refuse); (c) cleanup removes run-owned evidence, so the error message must
+carry it (see (a)) — never rely on post-mortem inspection of a swept run dir.
+
+### RL-18 — A hand-run probe validates the probe's URL, not the wired one (2026-08-27)
+
+W12's ACME defects were diagnosed with hand-written probe scripts, which dialed
+the correct full directory URL (`https://host:port/acme/directory`). The
+scenario's own wired string was `https://host:port` — no path — so instant-acme
+GET `/` and parsed an empty body. Every earlier run died before `newAccount`
+(provider panic, then a silent guard), and the probes passed, so the wrong
+string was never exercised until the fifth physical attempt. Same family: the
+cross-host dig wired the member's own catalog dns_port where the server's lane
+port was required — two port namespaces, one copy-paste.
+
+**Rules:** (a) a manual probe may localize a defect, but the fix is only
+proven when the SCENARIO's actual code path performs the same exchange — keep
+probe and wired shapes identical or assert the wired string against what the
+probe validated; (b) when a node's port appears in a URI aimed at a DIFFERENT
+node, stop and re-derive it — ports are per-node namespaces, not interchangeable
+integers.
