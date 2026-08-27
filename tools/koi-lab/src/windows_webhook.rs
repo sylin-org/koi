@@ -132,7 +132,9 @@ impl Lab {
             .context("stage the webhook manifest beside the Windows daemon")?;
 
         // ── Windows origin daemon ──
+        // DNS enabled: the lane's domain events are DNS-record mutations.
         let capabilities = WindowsDaemonCapabilities {
+            dns_public_port: Some(18653),
             webhooks_manifest: Some(manifest_path),
             ..Default::default()
         };
