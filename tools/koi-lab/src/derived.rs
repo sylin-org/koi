@@ -92,12 +92,14 @@ pub(crate) fn wait_for_derived_service_absence(
     let mut mdns_status = 0;
     for _ in 0..20 {
         mdns_status = curl_status("GET", &mdns_url, None)?;
-        if matches!(mdns_status, 404 | 504) {
+        // 503 = ADR-030 coexistence-skipped responder: the surface is
+        // absent by the product's own contract.
+        if matches!(mdns_status, 404 | 503 | 504) {
             break;
         }
         thread::sleep(Duration::from_millis(250));
     }
-    if !matches!(mdns_status, 404 | 504) {
+    if !matches!(mdns_status, 404 | 503 | 504) {
         bail!("mDNS service {full_service_name} remained visible with HTTP {mdns_status}");
     }
 
@@ -194,15 +196,26 @@ fn wait_for_dns(base: &str, name: &str, expected: &str) -> Result<()> {
 fn wait_for_mdns(base: &str, name: &str) -> Result<()> {
     let mut last = Value::Null;
     for _ in 0..60 {
-        match curl_json(
-            "GET",
-            &format!("{base}/v1/mdns/resolve?name={name}"),
-            None,
-            None,
-        ) {
-            Ok(value) if value.get("resolved").is_some() => return Ok(()),
-            Ok(value) => last = value,
-            Err(error) => last = Value::String(format!("{error:#}")),
+        // ADR-030 coexistence: a daemon whose responder deliberately skipped
+        // (UDP 5353 already held — every standing service on the mesh since
+        // the real-install cutover) has no mDNS surface at all; HTTP 503
+        // capability_disabled IS the converged state for this capability.
+        let status = curl_status("GET", &format!("{base}/v1/mdns/resolve?name={name}"), None)?;
+        match status {
+            503 => return Ok(()),
+            200 => {
+                let value = curl_json(
+                    "GET",
+                    &format!("{base}/v1/mdns/resolve?name={name}"),
+                    None,
+                    None,
+                )?;
+                if value.get("resolved").is_some() {
+                    return Ok(());
+                }
+                last = value;
+            }
+            other => last = Value::String(format!("HTTP {other}")),
         }
         thread::sleep(Duration::from_millis(250));
     }

@@ -7,7 +7,7 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::derived::wait_for_derived_service;
-use crate::lab::{curl_json, wait_for_http, Lab, RuntimeFaultRole};
+use crate::lab::{curl_json, curl_status, wait_for_http, Lab, RuntimeFaultRole};
 use crate::model::{
     output_path, CheckResult, NodeSpec, RunId, RuntimeReconnectReport, TrustRotation,
 };
@@ -209,7 +209,7 @@ impl Lab {
         let registration_after = mdns_registration_id(&primary_url, &service_name)?;
         if registration_after != registration_before {
             bail!(
-                "unchanged service registration churned across reconnect: {registration_before} -> {registration_after}"
+                "unchanged service registration churned across reconnect: {registration_before:?} -> {registration_after:?}"
             );
         }
 
@@ -237,7 +237,7 @@ impl Lab {
                 passed(
                     "unchanged_resources_preserved",
                     format!(
-                        "mDNS registration {registration_before} plus DNS, health, proxy configuration, and live proxy traffic survived without churn"
+                        "mDNS registration {registration_before:?} plus DNS, health, proxy configuration, and live proxy traffic survived without churn"
                     ),
                 ),
                 passed(
@@ -373,16 +373,23 @@ fn require_inventory(base: &str, present: &[&str], absent: &[&str]) -> Result<()
     bail!("runtime inventory did not converge: {last}")
 }
 
-fn mdns_registration_id(base: &str, name: &str) -> Result<String> {
+/// Registration id for `name`, or `None` when the primary daemon's mDNS
+/// capability is coexistence-skipped (ADR-030: HTTP 503 capability_disabled —
+/// there is no registration surface to observe on a node whose 5353 is held
+/// by a standing responder).
+fn mdns_registration_id(base: &str, name: &str) -> Result<Option<String>> {
+    let status = curl_status("GET", &format!("{base}/v1/mdns/admin/ls"), None)?;
+    if status == 503 {
+        return Ok(None);
+    }
     let registrations = curl_json("GET", &format!("{base}/v1/mdns/admin/ls"), None, None)?;
-    registrations
+    Ok(registrations
         .as_array()
         .context("mDNS admin list was not an array")?
         .iter()
         .find(|item| item.get("name").and_then(Value::as_str) == Some(name))
         .and_then(|item| item.get("id").and_then(Value::as_str))
-        .map(str::to_owned)
-        .with_context(|| format!("mDNS admin list did not contain {name}"))
+        .map(str::to_owned))
 }
 
 fn require_same_operational_json(before: &Value, after: &Value) -> Result<()> {
