@@ -3997,7 +3997,9 @@ fn windows_curl_args(address: &str, hostname: &str, port: u16) -> Vec<String> {
     vec![
         "--noproxy".into(),
         "*".into(),
-        "--silent".into(),
+        // Verbose rides stderr into the refusal context (RL-16): the TLS
+        // stage that failed is exactly what a red run must carry.
+        "--verbose".into(),
         "--show-error".into(),
         "--fail".into(),
         "--max-time".into(),
