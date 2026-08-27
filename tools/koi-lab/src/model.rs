@@ -815,6 +815,22 @@ pub struct WindowsAcmeReport {
     pub secrets_redacted: bool,
 }
 
+/// W10 (ADR-032): encrypted backup, exact run-scoped data loss, restore, and
+/// identity continuity with the CA hosted on the Windows workstation and a
+/// physical Linux member keeping custody across the whole arc.
+#[derive(Clone, Debug, Serialize)]
+pub struct WindowsRecoveryReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub windows_node: String,
+    pub member_node: String,
+    pub artifact_sha256: String,
+    pub ca_fingerprint: String,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ServiceLifecycleWindowsReport {
     pub schema: u32,
@@ -947,6 +963,7 @@ impl_evidence_report!(
     WindowsProxyReport,
     WindowsWebhookReport,
     WindowsAcmeReport,
+    WindowsRecoveryReport,
     ServiceLifecycleReport,
     BoundedSoakReport,
     ProfileReport,

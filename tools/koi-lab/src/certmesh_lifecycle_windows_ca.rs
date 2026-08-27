@@ -473,7 +473,7 @@ impl Lab {
     }
 }
 
-fn required_str(value: &Value, key: &str) -> Result<String> {
+pub(crate) fn required_str(value: &Value, key: &str) -> Result<String> {
     value
         .get(key)
         .and_then(Value::as_str)
@@ -496,7 +496,7 @@ fn mismatch_invite_fingerprint(token: &str, real_fingerprint: &str) -> Result<St
     Ok(format!("{secret}.{mutated}"))
 }
 
-fn status_has_active_member(status: &Value, hostname: &str) -> bool {
+pub(crate) fn status_has_active_member(status: &Value, hostname: &str) -> bool {
     status
         .get("members")
         .and_then(Value::as_array)
@@ -508,13 +508,13 @@ fn status_has_active_member(status: &Value, hostname: &str) -> bool {
         })
 }
 
-struct MemberIdentity {
-    key_sha256: String,
-    cert_sha256: String,
-    cert_fingerprint: String,
+pub(crate) struct MemberIdentity {
+    pub key_sha256: String,
+    pub cert_sha256: String,
+    pub cert_fingerprint: String,
 }
 
-fn member_identity_evidence(
+pub(crate) fn member_identity_evidence(
     lab: &Lab,
     member: &crate::model::NodeSpec,
     run_id: &RunId,
@@ -548,7 +548,7 @@ fn member_identity_evidence(
     })
 }
 
-fn passed(name: impl Into<String>, detail: impl Into<String>) -> CheckResult {
+pub(crate) fn passed(name: impl Into<String>, detail: impl Into<String>) -> CheckResult {
     CheckResult {
         name: name.into(),
         passed: true,

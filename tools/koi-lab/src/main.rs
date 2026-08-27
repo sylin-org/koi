@@ -1,5 +1,6 @@
 mod acme;
 mod certmesh_lifecycle_windows_ca;
+mod certmesh_recovery_windows;
 mod derived;
 mod evidence;
 mod lab;
@@ -190,6 +191,17 @@ enum LabCommand {
         #[arg(long)]
         run_id: String,
         /// Observer node id (physical Linux node).
+        #[arg(long)]
+        member: Option<String>,
+        #[arg(long)]
+        allow_system_mutation: bool,
+    },
+    /// Exercise encrypted backup, exact Windows-side data loss, restore, and
+    /// identity continuity with the CA hosted on the workstation (ADR-032 W10).
+    CertmeshRecoveryWindows {
+        #[arg(long)]
+        run_id: String,
+        /// Member node id (physical Linux node).
         #[arg(long)]
         member: Option<String>,
         #[arg(long)]
@@ -400,6 +412,17 @@ fn main() -> Result<()> {
             allow_system_mutation,
         } => {
             print_json(&lab.windows_acme(
+                &RunId::parse(&run_id)?,
+                member.as_deref(),
+                allow_system_mutation,
+            )?)?;
+        }
+        LabCommand::CertmeshRecoveryWindows {
+            run_id,
+            member,
+            allow_system_mutation,
+        } => {
+            print_json(&lab.certmesh_recovery_windows(
                 &RunId::parse(&run_id)?,
                 member.as_deref(),
                 allow_system_mutation,
