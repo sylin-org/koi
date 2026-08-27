@@ -4,98 +4,122 @@ You are continuing Koi (LAN connectivity substrate, Rust) toward stable 1.0.
 Read FIRST, in order — then re-verify every premise against the tree (RL-11):
 
 1. `SESSION-HANDOFF.md` — canonical ledger; trust it over this file where they
-   diverge. The top paragraphs (W4 STATE AT HANDOFF, MESH DISCOVERY FACTS, MDNS
-   RECEPTION VERDICT, WORKBENCH ARCS, REAL-INSTALL MESH CUTOVER) are tonight's.
-2. `docs/lessons-learned.md` — RL-1..RL-13. RL-12 (test machines run the real
-   installer), RL-13 (per-machine credentials), and RL-5 (payloads cross shells
-   as files — you WILL be tempted to inline-quote again) are tonight's.
-3. `docs/adr/032` (Windows parity, gates stable 1.0), `033` (koi-desktop
-   workbench), `030` (adaptive mDNS, amended with the Windows measurement).
+   diverge. The top paragraphs (W8 GREEN + WindowsLabDaemon, W7 GREEN, W5 GREEN
+   + browser-defect fix, W6+W9 GREEN, W4 GREEN) are the current arc.
+2. `docs/lessons-learned.md` — RL-1..RL-13 stand; RL-14 (netsh vs \\?\ paths),
+   RL-15 (pkill vs own transport argv), RL-16 (fail-loud exit codes are
+   evidence) were added during this arc.
+3. `docs/adr/032` — Windows parity matrix, GATES STABLE 1.0. Current state
+   below; re-verify against the file.
 4. `local/NOTES.md` (untracked) — credential locations. `docs/MEMORY.md` —
-   pointer index.
+   pointer index. `docs/distribution-prior-art.md` + `docs/adr/034` — the
+   distribution arc (ratified, partially implemented).
 
-## Verified state (2026-08-25 ~04:45 local)
+## Verified state (2026-08-27 ~00:45 local)
 
-- Branches `dev` == `main` == `1c7efe4` on both repos; tree clean; pushed.
-  - koi: query-burst endpoint + `koi mdns ping` (7abe320), ADR-033 + ADR-031
-    amendment (619a2fb), heartbeat-touch meta-browse fix + ADR-030 Windows
-    measurement (a6365be), mesh-mdns-enable script + garden-mDNS facts
-    (59b7b16), W4 scenario code + per-run pipe name (e0a57aa), catalog grant
-    windows mutations ["scm","firewall"] (1c7efe4).
-  - koi-desktop (github.com/sylin-org/koi-desktop): Ghostlight stylesheet,
-    lampband nav, Status/Discover/DNS/About panes, Rust-owned transport,
-    event-driven lamp, Ping-the-pond, truthful stream state (704286e).
-- Standing mesh: brook + granite run REAL `koi install` services (rc.2-era
-  binary from the Aug 24 cutover); roster 3/3 via certmesh. **brook and
-  granite do NOT announce mDNS** — the operator's `zen-garden.conf` owns
-  resolved's mDNS on both; koi skips per ADR-030 (info-level, by design).
-  Workstation: koi service (rc.2+ tonight's build) RUNNING, receives mDNS.
-- **Locks are HELD** on both Linux nodes by run `v1-20260825T125244Z-879cc67a`
-  (deploy succeeded there; a fresh musl artifact is staged under it). The
-  scenario step refused because the catalog grant wasn't committed yet — it
-  is now.
+- Branches `dev` == `main` == `origin` == `b7053a9` + subsequent W12 work
+  through `12d8dd8` (Cargo.lock refresh). Tree state: re-verify with
+  `git status` — the W12 physical run had NOT yet been attempted green at
+  the time of this writing.
+- **ADR-032 matrix: 9 of 11 lanes green.**
+  - Green: W1 (SCM), W2 (pipe), W3 (trust), W4 (Windows CA rotation),
+    W5 (mDNS both directions, incl. browser-cache product fix),
+    W6 (DNS serve, lane-scoped port), W7 (TLS proxy dual-stack verify),
+    W8 (webhooks origin-on-Windows), W9 (health cross-host).
+  - Remaining: **W12** (ACME dns-01 via Windows DNS — scenario IMPLEMENTED,
+    physical run pending), **W10** (backup/cold recovery on Windows — not
+    started). W11 is excluded-by-tag (no Docker Desktop requirement).
+- Standing mesh: brook + granite run REAL `koi install` services; test01 is
+  the avahi-equipped workstation (W5 peer). Windows workstation (LEO-MAIN /
+  stone-leaded-sparkle) is at **192.168.1.137** (DHCP moved from .138; catalog
+  updated). Standing koi service: RUNNING.
+- Locks: released (last cleanup green). Fresh deploy required before any lane
+  (musl artifact was rebuilt after the disk cleanup swept `target\`).
 
-## THE exact next task: W4 physical run (ADR-032 row → green)
+## THE exact next task: W12 physical run (ADR-032 row → green)
 
-From an **elevated** shell in the repo (UAC one-shot pattern; the operator
-approves the prompt):
+The scenario `windows-acme` is implemented and compiles clean. Four real
+defects were already fixed through its debugging (see git log: a9c190d..HEAD):
+CA-read retry (flush timing), CA persist to the path instant-acme opens,
+ACME directory dials the daemon's hostname (leaf SAN coverage), and the
+rustls CryptoProvider install (lab graph links both aws-lc-rs and ring).
 
-```
-cargo run -p koi-lab --locked -- certmesh-lifecycle-windows-ca --run-id v1-20260825T125244Z-879cc67a --member brook --allow-system-mutation
-```
+From an **elevated** shell (UAC one-shot pattern — see `.tmp/w12-run.ps1`,
+which is the ready runner: it stops the standing service, sweeps orphans,
+runs the scenario, restores the service, transcripts to `.tmp/w12-run.log`):
 
-Before firing: verify the staged artifact is the fresh rc.2 build, not the
-stale rc.1 one —
-`ssh brook: cat koi-test/runs/v1-20260825T125244Z-879cc67a/artifact.sha256`
-and confirm the sha is NOT `f9c3847c…` (that was the stale rc.1 reuse; the
-fresh build replaced it — if it IS f9c3847c, instead run `.tmp/w4-run.ps1`
-elevated, which stops the service, rebuilds, restores, redeploys with proper
-run-id propagation, and runs the scenario).
+1. `cargo run -p koi-lab --locked -- deploy --artifact
+   target\x86_64-unknown-linux-musl\release\koi` (fresh run id, holds locks)
+2. Run `.tmp\w12-run.ps1` elevated (verify its run_id matches the deploy).
+3. Expected checks: instant-acme issued <name> via the Windows RFC 8555
+   server; dns-01 TXT served by the Windows DNS runtime and observed
+   cross-host by dig from brook; chain verified to the run CA; identity
+   recorded in the certmesh roster; exact cleanup.
+4. On green: ADR-032 W12 row → green, ledger paragraph, cleanup (releases
+   locks), commit, push dev+main.
+5. On red: READ THE RETAINED EVIDENCE FIRST (daemon.log tail rides the
+   failure; WindowsLabDaemon.evidence()). Diagnose before touching anything.
 
-Expected: JSON report with checks — wrong_pin_refusal_before_keygen,
-member_join_local_custody (0600), ca_roster_contains_member,
-renewal_rotates_identity_and_converges, revocation_pull_red (self_revocation),
-renewal_and_rejoin_refused_identity_immutable, run_owned_cleanup. On green:
-mark ADR-032 W4 row green (docs/adr/032 matrix), add the ledger paragraph,
-`koi-lab cleanup --run-id v1-20260825T125244Z-879cc67a` (releases locks),
-commit, push dev+main. On failure: the transcript is `.tmp/w4-run.log`;
-diagnose before rerunning; `koi-lab cleanup --run-id <id>` recovers locks.
+## After W12: W10, then the 1.0 gate
 
-## Constraints (standing, unchanged)
+- **W10** — backup/cold recovery on Windows (encrypted backup → exact data
+  loss → restore → identity continuity). Not started. The Linux recovery lane
+  (`certmesh-recovery`) is the pattern; the Windows variant needs the
+  WindowsLabDaemon + tracked trust machinery.
+- **Extended full profile** — fold all new lanes (windows-breadth,
+  windows-mdns, windows-proxy, windows-webhook, windows-acme, plus W1/W2/W4)
+  into `run-profile full` extended with the Windows cases (ADR-032 stable-gate
+  redefinition), then run it elevated end-to-end.
+- **Soak** — clean soak incl. Windows participants. Gates stable 1.0.
+- rc.3 only if findings force it (RL-2: registries immutable).
 
-- External publication/posts: operator-only. You draft, never post.
+## Environment notes (measured, important)
+
+- **Disk**: Docker data vhdx moved to `E:\vhd\docker\docker_data.vhdx`
+  (compacted to 3.6 GB; C:\...\docker_data.vhdx is now a symlink → E:).
+  C: free ~291 GB, E: free ~433 GB. Never let rust/cross/docker content
+  accumulate on C: again — it filled the disk and manufactured a whole
+  failure loop (deploy/cleanup exit-1s that looked like code bugs).
+- **Toolchain**: `rustup target add x86_64-unknown-linux-musl` was REINSTALLED
+  (swept by disk cleanup). Linux musl builds should go through **Docker/cross**
+  (cross 0.2.5 present; the host musl-gcc is absent by design).
+- **Windows mDNS/verifier facts** (ADR-032 W5/W6): ICS holds 53 with reuse
+  semantics; Resolve-DnsName has no -Port; nslookup sends ZERO packets for
+  non-53 ports; SO_REUSEADDR vs non-reuse holder = WSAEACCES 10013; avahi
+  tools want types without the `.local` suffix.
+- **Lab discipline**: WindowsLabDaemon (tools/koi-lab/src/windows_daemon.rs)
+  is the one owner for staging/paths/env/flags/log/kill — new lanes MUST
+  build on it. Evidence-before-cleanup is doctrine. Orphan koi sweep is in
+  the runners. Per-machine credentials (RL-13): test01 = test/test, NEVER the
+  lab password.
+
+## Standing constraints (unchanged)
+
+- External publication/posts: operator-only. Draft, never post.
 - Elevation + `--allow-system-mutation` for any workstation mutation; catalog
-  grants are enforced (windows now ["scm","firewall"] — operator-approved).
+  grants enforced (windows mutations: ["scm","firewall"]).
 - Workstations are daily drivers: run-scoped, preflighted, exactly restored.
+  The standing koi service must be stopped deliberately before lanes that
+  need it, and restored after (runners do this).
 - Full gates per landing: fmt, clippy -D warnings (--all-targets
   --all-features), locked workspace tests, audit. Commit per slice; push
   dev+main; clean tree before lab deploys.
 - Credentials: brook/granite via DPAPI blob
   (`%LOCALAPPDATA%\Koi\lab-scheduler\lab-password.dpapi` → KOI_LAB_PASSWORD);
-  test-01 is test/test → KOI_TEST01_PASSWORD (disposable, operator-sanctioned;
-  see local/NOTES.md). Never commit values.
-- Scratch lives in repo-local `.tmp/` (gitignored) — never %TEMP%, never the
-  OS. The workbench debug sink follows the same rule.
+  test-01 is test/test → KOI_TEST01_PASSWORD (RL-13: never reuse the lab
+  password for test01). Never commit values.
+- Scratch lives in repo-local `.tmp/` (gitignored) — never %TEMP%, never
+  outside the project folder.
 - Stable 1.0 gate = ADR-032 matrix all green + extended full profile + clean
   soak incl. Windows participants. rc.3 only if findings force it.
 
-## Queue after W4
+## Distribution arc (ADR-034, paused by operator — resume after 1.0 or on demand)
 
-1. Stale firewall-rule cleanup list for operator approval (dozens of dead
-   `udp-*`/`koi_proxy-*`/old-path rules on this workstation).
-2. Tickets: surface the daemon's firewall warning for unelevated `Run once`
-   (W5); `dns/lookup` vs `dns/entries` normalization mismatch.
-3. Next workbench pane in value order (health checks, then webhook sinks —
-   sink CRUD needs a daemon-side API ticket first).
-4. W5–W9+W12 breadth, W10 recovery, then extended full profile + soak.
-
-## Do not
-
-- Do not republish rc.1/rc.2 versions (registries immutable; RL-2).
-- Do not touch the garden's `zen-garden.conf` on brook/granite (operator
-  decision pending; mesh-mdns-enable.sh documents the conflict).
-- Do not run the W1 lane or W4 while a koi daemon/service is running on this
-  workstation (they refuse; that refusal is correct — stop the standing thing
-  deliberately and restore it after).
-- Do not parse CLI tables for assertions; use JSON/HTTP surfaces.
-- Do not widen catalog grants or add system mutations without operator say-so.
+- Landed: ADR-034 ratified; landing-page draft (`site/`); npm carrier pattern
+  implemented (packages/npm); SignPath repo prep (CODE_SIGNING_POLICY.md,
+  release.yml lane, verify script) — **SignPath application SUBMITTED
+  2026-08-25, review pending**; P-D channel scaffolds in `packaging/`
+  (fill at stable 1.0); koi-desktop autostart + --minimized landed.
+- Operator actions pending: npm trusted publishers + NPM_PUBLISH_ENABLED;
+  SignPath approval follow-up; landing page hosting on sylin.org.
+- Deferred by operator: Tauri updater feed (keys + latest.json).
