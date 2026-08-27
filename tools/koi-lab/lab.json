@@ -19,7 +19,7 @@
       "fixture_port": 18554,
       "container_port": 18555,
       "roles": ["principal", "sdk-caller", "member"],
-"mutations": ["scm", "firewall"],
+      "mutations": ["scm", "firewall", "trust-store"],
       "privilege": "workstation"
     },
     {
