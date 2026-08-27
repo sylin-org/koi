@@ -215,7 +215,11 @@ impl Lab {
 
         let runtime =
             tokio::runtime::Runtime::new().context("could not start the ACME client runtime")?;
-        let directory = format!("https://{}:{}", windows.hostname(), ports.acme);
+        let directory = format!(
+            "https://{}:{}/acme/directory",
+            windows.hostname(),
+            ports.acme
+        );
         let mut txt_published: Vec<String> = Vec::new();
         let issued = runtime.block_on(self.issue_windows_acme(
             &name,
