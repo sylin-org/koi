@@ -17,6 +17,7 @@ mod soak;
 mod story;
 mod webhook_fanout;
 mod windows_breadth;
+mod windows_daemon;
 mod windows_mdns;
 mod windows_proxy;
 mod windows_webhook;

@@ -1,30 +1,28 @@
 //! W8 (ADR-032): webhooks with the ORIGIN on Windows and the sink on Linux,
-//! over the real LAN.
+//! over the real LAN. Built on [`crate::windows_daemon::WindowsLabDaemon`] —
+//! staging, paths, env, flags, log, and kill live in one owner; failure
+//! evidence is captured before teardown (the doctrine the first physical run
+//! violated by deleting its own daemon.log).
 //!
-//! A run-owned daemon on THIS workstation loads a webhook manifest pointing
-//! at the python sink fixture on the Linux member (HMAC secret passed only
-//! through the sink's process environment). Real domain events are triggered
-//! through the Windows daemon's authenticated API; every delivery the sink
-//! captures must be signature-valid and shape-correct.
-//!
-//! Gated on elevation (the daemon runs from the staged LAN-reachable shape),
-//! `--allow-system-mutation`, and the catalog granting the workstation
-//! `firewall` mutations; every rule is scenario-named and removed on every
-//! path.
+//! The Windows daemon loads a webhook manifest pointing at the python sink
+//! fixture on the Linux member (HMAC secret passed only through the sink's
+//! process environment). Real domain events are triggered through the
+//! Windows daemon's authenticated API; every delivery the sink captures must
+//! be signature-valid and shape-correct.
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::time::Duration;
 
-use crate::lab::{curl_json, wait_for_http, Lab};
+use crate::lab::{curl_json, Lab};
 use crate::model::{output_path, CheckResult, RunId, WindowsWebhookReport};
+use crate::windows_daemon::{WindowsDaemonCapabilities, WindowsLabDaemon};
 
 const FIREWALL_HTTP_RULE: &str = "koi-lab w8 http (tcp 18541)";
 
 #[derive(Default)]
 struct WebhookResources {
-    windows_daemon: bool,
-    member_daemon: bool,
+    daemon: Option<WindowsLabDaemon>,
     sink_active: bool,
     firewall_rules: Vec<String>,
     dns_names: Vec<String>,
@@ -95,10 +93,8 @@ impl Lab {
         let sink_ports = sink_node.lab_ports()?;
 
         // ── Firewall: the Windows daemon is LAN-reachable (retry surface) ──
-        let ca_root = self
-            .prepare_windows_member_dir(run_id)
-            .context("stage the Windows webhook daemon directory")?;
-        let exe = ca_root.join("koi.exe");
+        let mut daemon = WindowsLabDaemon::stage(self, run_id, ports)?;
+        let exe = daemon.exe().to_path_buf();
         crate::lab::firewall_rule(FIREWALL_HTTP_RULE, "tcp", &ports.http.to_string(), &exe)
             .with_context(|| format!("firewall rule {FIREWALL_HTTP_RULE}"))?;
         resources
@@ -114,15 +110,14 @@ impl Lab {
         resources.sink_active = true;
         let sink_url = format!("http://{}:{}/hook", sink_node.address(), sink_ports.fixture);
 
-        // ── Manifest: staged to the Windows daemon's data dir ──
-        // Manifest staged beside the daemon; PLAIN path only. The staged root
-        // carries the \\?\ canonical prefix, and a \\?\ --webhooks value died
-        // silently in the first physical run (healthz never answered). The
-        // firewall helper strips the same prefix for the same reason.
-        let stage_dir = std::path::PathBuf::from(crate::lab::netsh_program_path(
-            &ca_root.join("program-data"),
-        ));
-        std::fs::create_dir_all(stage_dir.join("koi"))?;
+        // ── Manifest: staged beside the daemon (plain path — the builder's
+        //    choke point already stripped \\?\) ──
+        let manifest_path = daemon
+            .root()
+            .join("program-data")
+            .join("koi")
+            .join("webhooks.json");
+        std::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))?;
         let manifest_local = output_path(run_id.as_str()).join("webhooks.json");
         std::fs::create_dir_all(output_path(run_id.as_str()))?;
         std::fs::write(
@@ -133,21 +128,27 @@ impl Lab {
                 "enabled": true,
             }]))?,
         )?;
-        let manifest_path = stage_dir.join("koi").join("webhooks.json");
         std::fs::copy(&manifest_local, &manifest_path)
             .context("stage the webhook manifest beside the Windows daemon")?;
 
-        // ── Windows origin daemon (webhooks manifest wired in) ──
-        let _windows_child = self
-            .start_windows_serving_daemon(&ca_root, &ports, 18653, false, Some(&manifest_path))
+        // ── Windows origin daemon ──
+        let capabilities = WindowsDaemonCapabilities {
+            webhooks_manifest: Some(manifest_path),
+            ..Default::default()
+        };
+        daemon
+            .spawn(&capabilities)
             .context("start the Windows webhook origin daemon")?;
-        resources.windows_daemon = true;
-        let windows_url = format!("http://127.0.0.1:{}", ports.http);
-        wait_for_http(&format!("{windows_url}/healthz"))
-            .context("Windows webhook origin daemon did not become healthy")?;
-        let windows_token = self
-            .require_windows_breadcrumb(&ca_root, &format!("http://127.0.0.1:{}", ports.http))
-            .context("read the Windows daemon breadcrumb")?;
+        resources.daemon = Some(daemon);
+        let windows_url = {
+            let daemon = resources.daemon.as_ref().expect("daemon staged");
+            daemon.http_url()
+        };
+        let windows_token = {
+            let daemon = resources.daemon.as_ref().expect("daemon staged");
+            self.require_windows_breadcrumb(daemon.root(), &windows_url)
+                .context("read the Windows daemon breadcrumb")?
+        };
 
         // Status ladder must report the enabled transport.
         let status = curl_json(
@@ -164,6 +165,11 @@ impl Lab {
             .pointer("/webhooks/enabled")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        if sinks != 1 || !enabled {
+            // Capture the daemon's own words before any cleanup runs.
+            let evidence = resources.daemon.as_ref().expect("daemon staged").evidence();
+            bail!("webhooks did not activate (enabled: {enabled}, sinks: {sinks}); {evidence}");
+        }
         let w8_status = passed(
             "w8_status_reports_enabled_sink",
             format!("/v1/status webhooks = {{enabled: {enabled}, sinks: {sinks}}}"),
@@ -245,17 +251,17 @@ impl Lab {
         let windows_url = format!("http://127.0.0.1:{}", ports.http);
 
         if !resources.dns_names.is_empty() {
-            if let Ok(token) =
-                self.require_windows_breadcrumb(&self.windows_member_dir(run_id), &windows_url)
-            {
-                for name in &resources.dns_names {
-                    if let Err(e) = curl_json(
-                        "DELETE",
-                        &format!("{windows_url}/v1/dns/remove/{name}"),
-                        Some(&token),
-                        None,
-                    ) {
-                        errors.push(format!("remove DNS record {name}: {e:#}"));
+            if let Some(daemon) = &resources.daemon {
+                if let Ok(token) = self.require_windows_breadcrumb(daemon.root(), &windows_url) {
+                    for name in &resources.dns_names {
+                        if let Err(e) = curl_json(
+                            "DELETE",
+                            &format!("{windows_url}/v1/dns/remove/{name}"),
+                            Some(&token),
+                            None,
+                        ) {
+                            errors.push(format!("remove DNS record {name}: {e:#}"));
+                        }
                     }
                 }
             }
@@ -265,29 +271,12 @@ impl Lab {
                 errors.push(format!("stop webhook sink: {e:#}"));
             }
         }
-        if resources.windows_daemon {
-            let root = self.windows_member_dir(run_id);
-            let exe = root.join("koi.exe");
-            if exe.is_file() {
-                match crate::lab::windows_process_ids_for_executable(&exe) {
-                    Ok(process_ids) => {
-                        for process_id in process_ids {
-                            if let Err(e) = crate::lab::stop_exact_windows_process(process_id, &exe)
-                            {
-                                errors.push(format!("stop Windows daemon pid {process_id}: {e:#}"));
-                            }
-                        }
-                    }
-                    Err(e) => errors.push(format!("enumerate Windows daemon processes: {e:#}")),
-                }
+        if let Some(mut daemon) = resources.daemon.take() {
+            if let Err(e) = daemon.stop() {
+                errors.push(format!("stop Windows daemon: {e:#}"));
             }
-            if let Err(e) = self.remove_windows_member_dir(run_id, &root) {
+            if let Err(e) = daemon.teardown(self, run_id) {
                 errors.push(format!("remove Windows run dir: {e:#}"));
-            }
-        }
-        if resources.member_daemon {
-            if let Err(e) = self.stop_webhook_daemon(sink_node, run_id) {
-                errors.push(format!("stop member daemon: {e:#}"));
             }
         }
         if let Err(e) = self.remove_webhook_sink_files(sink_node, run_id) {
