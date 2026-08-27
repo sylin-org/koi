@@ -99,7 +99,9 @@ impl WindowsLabDaemon {
         }
         match &capabilities.webhooks_manifest {
             Some(manifest) => {
-                command.arg(format!("--webhooks {}", manifest.display()));
+                command
+                    .arg("--webhooks")
+                    .arg(manifest.display().to_string());
             }
             None => {
                 command.arg("--no-webhooks");
