@@ -26,6 +26,10 @@ pub struct WindowsDaemonCapabilities {
     pub mdns_announce: bool,
     pub dns_public_port: Option<u16>,
     pub webhooks_manifest: Option<PathBuf>,
+    /// Bring up the posture-reactive trust plane (inter-node mTLS + the ACME
+    /// server-auth listener on the catalog ACME port). Requires a CA to exist
+    /// (certmesh create) before the listeners appear.
+    pub trust_plane: bool,
 }
 
 pub struct WindowsLabDaemon {
@@ -107,13 +111,12 @@ impl WindowsLabDaemon {
                 command.arg("--no-webhooks");
             }
         }
-        command.args([
-            "--no-ipc",
-            "--no-udp",
-            "--no-runtime",
-            "--no-acme",
-            "--no-mcp-http",
-        ]);
+        command.args(["--no-ipc", "--no-udp", "--no-runtime", "--no-mcp-http"]);
+        if capabilities.trust_plane {
+            command.arg("--acme-port").arg(self.ports.acme.to_string());
+        } else {
+            command.arg("--no-acme");
+        }
 
         let log_file = std::fs::OpenOptions::new()
             .create(true)

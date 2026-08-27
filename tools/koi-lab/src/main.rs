@@ -16,6 +16,7 @@ mod service_lifecycle_windows;
 mod soak;
 mod story;
 mod webhook_fanout;
+mod windows_acme;
 mod windows_breadth;
 mod windows_daemon;
 mod windows_mdns;
@@ -178,6 +179,17 @@ enum LabCommand {
         #[arg(long)]
         run_id: String,
         /// Sink host node id (physical Linux node).
+        #[arg(long)]
+        member: Option<String>,
+        #[arg(long)]
+        allow_system_mutation: bool,
+    },
+    /// W12 (ADR-032): ACME dns-01 with the Windows daemon as the RFC 8555
+    /// server, TXT served through its own DNS runtime.
+    WindowsAcme {
+        #[arg(long)]
+        run_id: String,
+        /// Observer node id (physical Linux node).
         #[arg(long)]
         member: Option<String>,
         #[arg(long)]
@@ -377,6 +389,17 @@ fn main() -> Result<()> {
             allow_system_mutation,
         } => {
             print_json(&lab.windows_webhook(
+                &RunId::parse(&run_id)?,
+                member.as_deref(),
+                allow_system_mutation,
+            )?)?;
+        }
+        LabCommand::WindowsAcme {
+            run_id,
+            member,
+            allow_system_mutation,
+        } => {
+            print_json(&lab.windows_acme(
                 &RunId::parse(&run_id)?,
                 member.as_deref(),
                 allow_system_mutation,
