@@ -257,9 +257,44 @@ fn build_certified_key(cert_pem: &[u8], key_pem: &[u8]) -> Result<Arc<CertifiedK
 /// Process-wide rustls crypto provider (aws-lc-rs, the workspace default). Built
 /// explicitly to avoid depending on a global `install_default` ordering elsewhere
 /// in the daemon (reqwest / axum-server also use rustls).
+///
+/// Key-exchange preference is classic-only, deliberately: rustls 0.23.4x's
+/// aws-lc-rs default puts the X25519MLKEM768 hybrid FIRST, and Windows Schannel
+/// fails that handshake outright at the LSA (SEC_E_INTERNAL_ERROR) even when the
+/// client itself offers the group — measured 2026-08-27 against Schannel curl on
+/// Windows 10.0.26200 (mirrors koi-certmesh's provider rationale).
 fn provider() -> Arc<CryptoProvider> {
     static PROVIDER: OnceLock<Arc<CryptoProvider>> = OnceLock::new();
     PROVIDER
-        .get_or_init(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+        .get_or_init(|| {
+            let mut provider = rustls::crypto::aws_lc_rs::default_provider();
+            provider.kx_groups = vec![
+                rustls::crypto::aws_lc_rs::kx_group::X25519,
+                rustls::crypto::aws_lc_rs::kx_group::SECP256R1,
+                rustls::crypto::aws_lc_rs::kx_group::SECP384R1,
+            ];
+            Arc::new(provider)
+        })
         .clone()
+}
+
+#[cfg(test)]
+mod kx_group_tests {
+    use super::*;
+
+    /// The proxy's TLS must never offer a post-quantum hybrid: Schannel cannot
+    /// complete that handshake, and OS-native clients are the product surface.
+    #[test]
+    fn key_exchange_preference_is_classic_only() {
+        use rustls::NamedGroup;
+        let groups: Vec<NamedGroup> = provider().kx_groups.iter().map(|g| g.name()).collect();
+        assert_eq!(
+            groups,
+            vec![
+                NamedGroup::X25519,
+                NamedGroup::secp256r1,
+                NamedGroup::secp384r1
+            ]
+        );
+    }
 }

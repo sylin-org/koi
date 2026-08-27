@@ -39,11 +39,47 @@ use crate::http::ClientCn;
 /// `aws-lc-rs` (via rustls) and `ring` (via koi-crypto) are linked, so a bare
 /// `builder()` would panic at "could not determine the process-level CryptoProvider".
 /// Mirrors koi-proxy's deliberate choice.
+///
+/// The key-exchange preference is classic-only, deliberately: rustls 0.23.4x's
+/// aws-lc-rs default puts the X25519MLKEM768 hybrid FIRST, and Windows Schannel
+/// fails that handshake outright at the LSA (SEC_E_INTERNAL_ERROR) even when the
+/// client itself offers the group — measured 2026-08-27 against Schannel curl on
+/// Windows 10.0.26200. Koi is a LAN substrate: OS-native client interop wins
+/// over post-quantum key exchange until Schannel's hybrid path is reliable.
 fn provider() -> Arc<CryptoProvider> {
     static PROVIDER: OnceLock<Arc<CryptoProvider>> = OnceLock::new();
     PROVIDER
-        .get_or_init(|| Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+        .get_or_init(|| {
+            let mut provider = rustls::crypto::aws_lc_rs::default_provider();
+            provider.kx_groups = vec![
+                rustls::crypto::aws_lc_rs::kx_group::X25519,
+                rustls::crypto::aws_lc_rs::kx_group::SECP256R1,
+                rustls::crypto::aws_lc_rs::kx_group::SECP384R1,
+            ];
+            Arc::new(provider)
+        })
         .clone()
+}
+
+#[cfg(test)]
+mod kx_group_tests {
+    use super::*;
+
+    /// The server must never offer a post-quantum hybrid ahead of (or instead
+    /// of) the classic groups: Schannel cannot complete that handshake.
+    #[test]
+    fn key_exchange_preference_is_classic_only() {
+        use rustls::NamedGroup;
+        let groups: Vec<NamedGroup> = provider().kx_groups.iter().map(|g| g.name()).collect();
+        assert_eq!(
+            groups,
+            vec![
+                NamedGroup::X25519,
+                NamedGroup::secp256r1,
+                NamedGroup::secp384r1
+            ]
+        );
+    }
 }
 
 fn cert_err(what: &str, e: String) -> CertmeshError {
