@@ -207,6 +207,12 @@ impl Lab {
         std::fs::write(&ca_pem_path, &ca_pem)
             .with_context(|| format!("could not persist {}", ca_pem_path.display()))?;
 
+        // The koi-lab graph links both aws-lc-rs and ring; rustls 0.23 refuses
+        // to guess, and instant-acme's client panics without a provider. The
+        // daemon installs its own; the lab client installs the one actually
+        // compiled into its rustls (aws-lc-rs, via instant-acme's features).
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
         let runtime =
             tokio::runtime::Runtime::new().context("could not start the ACME client runtime")?;
         let directory = format!("https://{}:{}", windows.hostname(), ports.acme);
