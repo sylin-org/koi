@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::Utc;
 
 use crate::lab::Lab;
@@ -42,6 +42,15 @@ enum ProfileCase {
     MgmtPrincipal(TrustRotation),
     ServiceLifecycle,
     BoundedSoak,
+    ServiceLifecycleWindows,
+    WindowsPipeIpc,
+    WindowsCaLifecycle,
+    WindowsMdns,
+    WindowsBreadth,
+    WindowsProxy,
+    WindowsWebhook,
+    WindowsRecovery,
+    WindowsAcme,
 }
 
 impl ProfileCase {
@@ -73,13 +82,50 @@ impl ProfileCase {
             }
             Self::ServiceLifecycle => "service-lifecycle-linux".to_owned(),
             Self::BoundedSoak => "bounded-soak-linux".to_owned(),
+            Self::ServiceLifecycleWindows => "service-lifecycle-windows".to_owned(),
+            Self::WindowsPipeIpc => "windows-pipe-ipc".to_owned(),
+            Self::WindowsCaLifecycle => "certmesh-lifecycle-windows-ca".to_owned(),
+            Self::WindowsMdns => "windows-mdns".to_owned(),
+            Self::WindowsBreadth => "windows-breadth".to_owned(),
+            Self::WindowsProxy => "windows-proxy".to_owned(),
+            Self::WindowsWebhook => "windows-webhook".to_owned(),
+            Self::WindowsRecovery => "windows-recovery".to_owned(),
+            Self::WindowsAcme => "windows-acme".to_owned(),
         }
     }
 
     fn requires_system_mutation(self) -> bool {
         matches!(
             self,
-            Self::CertmeshNativeTrust(_) | Self::CapabilityStory(_) | Self::ServiceLifecycle
+            Self::CertmeshNativeTrust(_)
+                | Self::CapabilityStory(_)
+                | Self::ServiceLifecycle
+                | Self::ServiceLifecycleWindows
+                | Self::WindowsCaLifecycle
+                | Self::WindowsMdns
+                | Self::WindowsBreadth
+                | Self::WindowsProxy
+                | Self::WindowsWebhook
+                | Self::WindowsRecovery
+                | Self::WindowsAcme
+        )
+    }
+
+    /// Lanes that run ON the Windows workstation and need its elevation:
+    /// the `linux` profile is `full` minus exactly these.
+    fn windows_workstation_lane(self) -> bool {
+        matches!(
+            self,
+            Self::CertmeshNativeTrust(TrustRotation::WindowsClient)
+                | Self::ServiceLifecycleWindows
+                | Self::WindowsPipeIpc
+                | Self::WindowsCaLifecycle
+                | Self::WindowsMdns
+                | Self::WindowsBreadth
+                | Self::WindowsProxy
+                | Self::WindowsWebhook
+                | Self::WindowsRecovery
+                | Self::WindowsAcme
         )
     }
 }
@@ -297,6 +343,53 @@ impl Lab {
                     soak.restart_every,
                 )?;
             }
+            ProfileCase::ServiceLifecycleWindows => {
+                self.service_lifecycle_windows(run_id, true)?;
+            }
+            ProfileCase::WindowsPipeIpc => {
+                self.windows_pipe_ipc_test()?;
+            }
+            ProfileCase::WindowsCaLifecycle => {
+                self.certmesh_lifecycle_windows_ca(run_id, None, true)?;
+            }
+            ProfileCase::WindowsMdns => {
+                self.windows_mdns(run_id, None, true)?;
+            }
+            ProfileCase::WindowsBreadth => {
+                self.windows_breadth(run_id, None, true)?;
+            }
+            ProfileCase::WindowsProxy => {
+                self.windows_proxy(run_id, None, true)?;
+            }
+            ProfileCase::WindowsWebhook => {
+                self.windows_webhook(run_id, None, true)?;
+            }
+            ProfileCase::WindowsRecovery => {
+                self.certmesh_recovery_windows(run_id, None, true)?;
+            }
+            ProfileCase::WindowsAcme => {
+                self.windows_acme(run_id, None, true)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// W2 (ADR-032): the named-pipe IPC lane is a product integration test
+    /// (crates/koi/tests/named_pipe_ipc.rs) that spawns its own per-run
+    /// daemon on ephemeral ports and drives read-only probes — the profile
+    /// case is the invocation, not a re-implementation.
+    fn windows_pipe_ipc_test(&self) -> Result<()> {
+        let output = std::process::Command::new("cargo")
+            .args(["test", "--locked", "-p", "koi", "--test", "named_pipe_ipc"])
+            .current_dir(&self.repo_root)
+            .output()
+            .context("failed to start cargo for the named-pipe IPC test")?;
+        if !output.status.success() {
+            bail!(
+                "named-pipe IPC test failed (exit {}): {}",
+                output.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
         }
         Ok(())
     }
@@ -342,15 +435,6 @@ fn profile_cases(profile: LabProfile) -> Vec<ProfileCase> {
         LabProfile::Certmesh => certmesh_cases(),
         LabProfile::Full | LabProfile::Linux => {
             let mut cases = certmesh_cases();
-            // The linux profile is `full` minus the Windows workstation's
-            // native-trust lane: identical breadth, runnable from an unelevated
-            // controller session (ADR-026-era working choice — privilege lanes
-            // are separated, never silently skipped inside a transaction).
-            if profile == LabProfile::Linux {
-                cases.retain(|case| {
-                    *case != ProfileCase::CertmeshNativeTrust(TrustRotation::WindowsClient)
-                });
-            }
             cases.extend([
                 RuntimeReconnect(LinuxForward),
                 RuntimeReconnect(LinuxReverse),
@@ -361,7 +445,24 @@ fn profile_cases(profile: LabProfile) -> Vec<ProfileCase> {
                 CapabilityStory(LinuxForward),
                 CapabilityStory(LinuxReverse),
                 ServiceLifecycle,
+                ServiceLifecycleWindows,
+                WindowsPipeIpc,
+                WindowsCaLifecycle,
+                WindowsMdns,
+                WindowsBreadth,
+                WindowsProxy,
+                WindowsWebhook,
+                WindowsRecovery,
+                WindowsAcme,
             ]);
+            // The linux profile is `full` minus exactly the Windows
+            // workstation's lanes: identical breadth otherwise, runnable from
+            // an unelevated controller session (ADR-026-era working choice —
+            // privilege lanes are separated, never silently skipped inside a
+            // transaction).
+            if profile == LabProfile::Linux {
+                cases.retain(|case| !case.windows_workstation_lane());
+            }
             cases
         }
         LabProfile::Soak => vec![BoundedSoak],
@@ -459,7 +560,7 @@ mod tests {
         );
 
         let full = profile_cases(LabProfile::Full);
-        assert_eq!(full.len(), 16);
+        assert_eq!(full.len(), 25);
         assert_eq!(&full[..certmesh.len()], certmesh.as_slice());
         // The webhook + principal cases ride the same non-privileged lane as reconnect.
         assert_eq!(
@@ -475,22 +576,37 @@ mod tests {
             full.iter()
                 .filter(|case| case.requires_system_mutation())
                 .count(),
-            6
+            14
         );
+        // The Windows workstation's lanes ride the tail of `full`, in matrix
+        // order; the pipe lane is the one that needs no system mutation.
+        assert_eq!(
+            &full[16..],
+            [
+                ProfileCase::ServiceLifecycleWindows,
+                ProfileCase::WindowsPipeIpc,
+                ProfileCase::WindowsCaLifecycle,
+                ProfileCase::WindowsMdns,
+                ProfileCase::WindowsBreadth,
+                ProfileCase::WindowsProxy,
+                ProfileCase::WindowsWebhook,
+                ProfileCase::WindowsRecovery,
+                ProfileCase::WindowsAcme,
+            ]
+        );
+        assert!(!ProfileCase::WindowsPipeIpc.requires_system_mutation());
 
         // The linux profile is `full` minus exactly the Windows workstation's
-        // native-trust case — same order, same breadth, runnable unelevated.
+        // lanes — same order, runnable unelevated.
         let linux = profile_cases(LabProfile::Linux);
         assert_eq!(linux.len(), 15);
-        let windows_case = ProfileCase::CertmeshNativeTrust(crate::TrustRotation::WindowsClient);
         assert!(
-            !linux.contains(&windows_case),
-            "the linux profile must not contain the Windows-host lane"
+            !linux.iter().any(|case| case.windows_workstation_lane()),
+            "the linux profile must not contain Windows workstation lanes"
         );
-        assert!(full.contains(&windows_case));
         for (full_case, linux_case) in full
             .iter()
-            .filter(|c| **c != windows_case)
+            .filter(|c| !c.windows_workstation_lane())
             .zip(linux.iter())
         {
             assert_eq!(full_case, linux_case, "linux preserves full's ordering");
