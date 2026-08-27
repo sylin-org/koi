@@ -530,7 +530,10 @@ impl Lab {
                 let openssl_view = self.transport.run(
                     ca,
                     &format!(
-                        "echo | openssl s_client -connect {}:{} -servername {} -brief 2>&1 | head -12",
+                        "echo | openssl s_client -connect {}:{} -servername {} -brief 2>&1 | head -12; echo ---msg---; echo | openssl s_client -connect {}:{} -servername {} -tls1_3 -msg 2>&1 | grep -E 'HelloRetryRequest|ServerHello|key_share|Named Group|named_group' | head -12",
+                        service.address(),
+                        service.lab_ports()?.proxy,
+                        service.hostname(),
                         service.address(),
                         service.lab_ports()?.proxy,
                         service.hostname()
