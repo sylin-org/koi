@@ -481,7 +481,11 @@ impl Lab {
                 errors.push(format!("stop CA daemon: {e:#}"));
             }
             daemon.await_quiescence();
-            if let Err(e) = self.remove_windows_member_dir(run_id, daemon.root()) {
+            // The exact constructed path is required: remove_windows_member_dir
+            // refuses anything but the run-owned directory by identity, and the
+            // daemon's stored root is the prefix-stripped variant.
+            let root = self.windows_member_dir(run_id);
+            if let Err(e) = self.remove_windows_member_dir(run_id, &root) {
                 errors.push(format!("remove Windows CA run dir: {e:#}"));
             }
         }
