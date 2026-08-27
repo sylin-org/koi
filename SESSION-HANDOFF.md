@@ -46,6 +46,18 @@ carriers first, then the entry. 7/7 node tests green; YAML validated.
 P-B operator console actions — npm trusted publishers (per package) + `NPM_PUBLISH_ENABLED`;
 P-D taps/submissions one by one; P-E optional Apple $99/yr later.
 
+**W8 GREEN — `windows-webhook` (2026-08-27, run `v1-20260827T002150Z-5f463890`, 4/4 checks) + the WindowsLabDaemon hardening slice.**
+Origin ON Windows (manifest-driven fan-out), sink on brook; two real DNS-record events fired through
+the Windows daemon's API; both deliveries HMAC- and body-verified at the sink. The first two physical
+runs failed, and the difference is the hardening slice built from that loop (operator question: "is
+this an architecture failure?"): **WindowsLabDaemon** (tools/koi-lab/src/windows_daemon.rs) is one
+owner for staging, \\?\-stripped plain paths, env, capability flag matrix, appended daemon.log, and
+kill-by-exe; **evidence-before-cleanup** is doctrine — the first hardened run failed with the daemon's
+own words in the error (`unexpected argument '--webhooks <path>'` = clap argv form, fixed; second run
+surfaced `dns capability disabled` = the lane's event source needs DNS, fixed) instead of the old
+silent-guessing loop. New lanes must build on the builder. Commits af77ef8..5107eda. Remaining
+W-lanes: W12 (ACME via W6 DNS), W10 (recovery), then extended profile + soak.
+
 **W7 GREEN — `windows-proxy` first-physical-run (2026-08-26, run `v1-20260826T221922Z-0fe825ee`, 5/5 checks).**
 TLS proxy serving ON Windows with a certmesh-sourced leaf: brook hosted the CA (story daemon +
 certmesh create, enrollment open), the Windows member daemon joined with local key custody (restart
