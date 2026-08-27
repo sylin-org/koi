@@ -101,23 +101,26 @@ impl Lab {
             .context("read staged artifact sha256 from the member")?;
 
         let ports = windows.lab_ports()?;
-        let member_ports = member.lab_ports()?;
+        // The public DNS surface is a lane-scoped port (W6 convention), not
+        // any node's catalog dns_port — the firewall rule, the daemon
+        // capability, and the cross-host dig must all name THIS port.
+        let dns_public_port = 18653u16;
 
         // ── Firewall: the ACME listener is LAN-reachable (the client dials it) ──
         let mut daemon = WindowsLabDaemon::stage(self, run_id, ports)?;
         let exe = daemon.exe().to_path_buf();
         let acme_rule = format!("koi-lab w12 acme (tcp {})", ports.acme);
-        let dns_rule = format!("koi-lab w12 dns (udp {})", 18653);
+        let dns_rule = format!("koi-lab w12 dns (udp {dns_public_port})");
         crate::lab::firewall_rule(&acme_rule, "tcp", &ports.acme.to_string(), &exe)
             .with_context(|| format!("firewall rule {acme_rule}"))?;
         resources.firewall_rules.push(acme_rule);
-        crate::lab::firewall_rule(&dns_rule, "udp", "18653", &exe)
+        crate::lab::firewall_rule(&dns_rule, "udp", &dns_public_port.to_string(), &exe)
             .with_context(|| format!("firewall rule {dns_rule}"))?;
         resources.firewall_rules.push(dns_rule);
 
         // ── Windows CA daemon (trust plane on: ACME listener is posture-reactive) ──
         let capabilities = WindowsDaemonCapabilities {
-            dns_public_port: Some(18653),
+            dns_public_port: Some(dns_public_port),
             trust_plane: true,
             ..Default::default()
         };
@@ -228,7 +231,7 @@ impl Lab {
             &windows_url,
             &windows_token,
             member,
-            member_ports.dns,
+            dns_public_port,
             windows.address(),
             &mut txt_published,
         ))?;
@@ -323,7 +326,7 @@ impl Lab {
         windows_url: &str,
         windows_token: &str,
         member: &crate::model::NodeSpec,
-        member_dns_port: u16,
+        windows_dns_port: u16,
         windows_address: &str,
         txt_published: &mut Vec<String>,
     ) -> Result<IssuedAcmeCertificate> {
@@ -373,7 +376,7 @@ impl Lab {
                     member,
                     &format!(
                         "dig @{} -p {} {} TXT +short",
-                        windows_address, member_dns_port, dns_name
+                        windows_address, windows_dns_port, dns_name
                     ),
                 )?;
                 if !observed.lines().any(|line| line.trim_matches('"') == value) {
@@ -397,7 +400,7 @@ impl Lab {
                     member,
                     &format!(
                         "dig @{} -p {} {} TXT +short",
-                        windows_address, member_dns_port, dns_name
+                        windows_address, windows_dns_port, dns_name
                     ),
                 )?;
                 if !after.is_empty() {
