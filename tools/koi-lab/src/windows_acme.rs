@@ -203,6 +203,9 @@ impl Lab {
         )
         .context("certmesh status")?;
         let ca_pem = self.windows_ca_pem(resources, run_id, &windows_token)?;
+        // instant-acme's builder opens a PATH: persist the fetched root there.
+        std::fs::write(ca_pem_path, &ca_pem)
+            .with_context(|| format!("could not persist {}", ca_pem_path.display()))?;
 
         let runtime =
             tokio::runtime::Runtime::new().context("could not start the ACME client runtime")?;
