@@ -32,20 +32,24 @@ Read FIRST, in order — then re-verify every premise against the tree (RL-11):
   stone-leaded-sparkle) at 192.168.1.137; standing koi service RUNNING.
 - Locks: released (post-W10 cleanup green on all nodes).
 
-## THE exact next task: the clean soak — the LAST 1.0 gate
+## Status: the stable-1.0 gate is CLOSED (2026-08-28)
 
-The extended full profile is GREEN (2026-08-28, `v1-20260828T165112Z-f6a23b30`,
-25/25 cases incl. all Windows-workstation lanes; ADR-035 ratified + P1
-implemented). The only remaining stable-1.0 requirement is a **clean soak of
-the final candidate incl. Windows participants** (tools/koi-lab/src/soak.rs,
-`Soak` profile), then 1.0 ships (rc.3 only if findings force it, RL-2).
+All three ADR-032 requirements are met: matrix complete; extended full profile
+green twice (`v1-20260828T165112Z-f6a23b30` and post-soak
+`v1-20260828T173654Z-770faf21`, 25/25 each); bounded soak clean
+(`v1-20260828T173214Z-403b0fdd`, 20/20 iterations). The remaining steps are
+OPERATOR-GATED release mechanics — do not start them unprompted:
 
-Notes for the soak: run elevated like the profile (`.tmp/full-profile.ps1`
-pattern); the Windows koi service is currently UNINSTALLED on this
-workstation (operator-approved, so W1 could run in-profile) — reinstall with
-`koi install` from target/release/koi.exe if the soak's baseline should
-include it; the soak bounds are iterations/max-minutes/restart-every
-(profile.rs `DEFAULT_SOAK_*`).
+1. Version bump rc.2 → 1.0.0 across the workspace (Cargo.toml workspace deps),
+   tags; RL-2: registries are immutable — publication is one-shot.
+2. SignPath review follow-up + `SIGNPATH_ENABLED` flip (ADR-034; application
+   submitted 2026-08-25, review pending).
+3. Landing page hosting on sylin.org; npm trusted publishers +
+   `NPM_PUBLISH_ENABLED` (P-B, operator console actions).
+4. P-D packaging channels fill at the stable release (homebrew/winget/AUR/
+   scoop scaffolds under `packaging/`).
+5. The Windows koi service is currently UNINSTALLED on this workstation
+   (operator-approved for W1 in-profile) — `koi install` restores it.
 
 ## Runner / deploy discipline (unchanged, proven)
 

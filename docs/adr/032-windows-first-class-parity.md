@@ -74,7 +74,15 @@ Stable `1.0.0` requires, in addition to the existing gates:
   `koi install`, which exists on this workstation.**
 - Elevated scheduled-task profile green including all W-cases.
 - Soak of the final candidate clean, with Windows participants included per ADR-029
-  host classes. **This is the only remaining 1.0 gate.**
+  host classes. **DONE — 2026-08-28: the bounded soak ran 20/20 iterations clean
+  (4 supervised daemon restarts, exact cleanup; `v1-20260828T173214Z-403b0fdd`),
+  and the full extended profile re-ran green post-soak on the same candidate
+  (`v1-20260828T173654Z-770faf21`, 25/25 — all Windows-workstation lanes
+  participating).**
+
+**All three stable-gate requirements are MET. Koi is stable-1.0-ready; the
+remaining steps are the operator-gated release mechanics (version bump, tags,
+registries, signing — ADR-034).**
 
 ## Consequences
 
