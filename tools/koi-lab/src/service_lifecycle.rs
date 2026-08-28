@@ -340,7 +340,7 @@ fn require_brook_baseline(lab: &Lab, node: &NodeSpec, run_id: &RunId) -> Result<
 fn original_service_identity(lab: &Lab, node: &NodeSpec) -> Result<String> {
     lab.remote_line(
         node,
-        "set -eu; test \"$(systemctl show --value -p ActiveState koi.service)\" = active; test \"$(systemctl is-enabled koi.service)\" = enabled; pid=$(systemctl show --value -p MainPID koi.service); case \"$pid\" in ''|0|*[!0-9]*) exit 76;; esac; systemctl show koi.service -p MainPID -p FragmentPath -p ExecStart -p ActiveState -p UnitFileState",
+        "set -eu; guard() { echo \"koi-lab service-lifecycle precondition failed: $1\" >&2; exit 71; }; i=0; while [ \"$(systemctl show --value -p ActiveState koi.service)\" != active ] && [ \"$i\" -lt 40 ]; do sleep .5; i=$((i+1)); done; test \"$(systemctl show --value -p ActiveState koi.service)\" = active || guard \"koi.service not active (state: $(systemctl show --value -p ActiveState koi.service))\"; test \"$(systemctl is-enabled koi.service)\" = enabled || guard \"koi.service not enabled\"; pid=$(systemctl show --value -p MainPID koi.service); case \"$pid\" in ''|0|*[!0-9]*) exit 76;; esac; systemctl show koi.service -p MainPID -p FragmentPath -p ExecStart -p ActiveState -p UnitFileState",
     )
 }
 
