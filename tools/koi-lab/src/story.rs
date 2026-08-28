@@ -118,7 +118,7 @@ impl Lab {
             self.run_remote_checked(
                 node,
                 &format!(
-                    "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test -d {run_dir}/data; test -d {run_dir}/runtime; test \"$(stat -c %a {run_dir}/runtime/koi.endpoint)\" = 600; test -S {run_dir}/runtime/koi.sock",
+                    "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test -d {run_dir}/data || guard \"no data dir under {run_dir}\"; test -d {run_dir}/runtime || guard \"no runtime dir under {run_dir}\"; test \"$(stat -c %a {run_dir}/runtime/koi.endpoint)\" = 600 || guard \"koi.endpoint mode is $(stat -c %a {run_dir}/runtime/koi.endpoint 2>/dev/null || echo absent), not 600\"; test -S {run_dir}/runtime/koi.sock || guard \"no koi.sock under {run_dir}/runtime\"",
                     run_id.as_str()
                 ),
             )?;
