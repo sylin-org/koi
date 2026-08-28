@@ -10,6 +10,7 @@ const OBSERVER_NODE: &str = "granite";
 
 #[derive(Default)]
 struct ServiceResources {
+    standing_isolated: bool,
     service_attempted: bool,
     observer_daemon: bool,
     image_owned: bool,
@@ -91,6 +92,11 @@ impl Lab {
         resources: &mut ServiceResources,
     ) -> Result<ServiceLifecycleReport> {
         resources.service_attempted = true;
+        // Exclusive runtime watching on brook (ADR-035): the standing root
+        // daemon shares the Docker socket and would derive the lane's labeled
+        // container, racing the transient unit's daemon for its proxy port.
+        self.stop_standing_service(service)?;
+        resources.standing_isolated = true;
         start_transient_service(self, service, run_id)?;
         let unit_name = transient_unit_name(run_id);
         let initial = require_service_state(self, service, run_id, 0, 0)?;
@@ -195,6 +201,12 @@ impl Lab {
         resources: &mut ServiceResources,
     ) -> Result<()> {
         let mut failures = Vec::new();
+        if resources.standing_isolated {
+            if let Err(e) = self.start_standing_service(service) {
+                failures.push(format!("standing service restore: {e:#}"));
+            }
+            resources.standing_isolated = false;
+        }
         if resources.service_attempted {
             let script = transient_service_cleanup_script(service, run_id, false)?;
             if let Err(error) = self.run_remote_checked(service, &script) {
@@ -243,7 +255,7 @@ fn start_transient_service(lab: &Lab, node: &NodeSpec, run_id: &RunId) -> Result
     let guarded_ports = ports.all().map(|port| port.to_string()).join("|");
     let unit = transient_unit_name(run_id);
     let command = format!(
-        "set -eu; guard() {{ echo \"koi-lab service-lifecycle guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; command -v systemd-run >/dev/null; sudo -n true; test ! -e /etc/systemd/system/koi.service; test ! -e /usr/local/bin/koi; test ! -e /var/lib/koi; test \"$(systemctl show --value -p LoadState koi.service)\" = not-found; test \"$(systemctl show --value -p LoadState {unit})\" = not-found; test ! -e {run_dir}/systemd-unit; test ! -e {run_dir}/data; test ! -e {run_dir}/runtime; ! ss -H -lntup | grep -Eq ':({guarded_ports}) '; mkdir {run_dir}/data {run_dir}/runtime; printf '%s' {unit} > {run_dir}/systemd-unit; sudo -n systemd-run --quiet --collect --unit={unit} --property=Type=notify --property=Restart=on-failure --property=RestartSec=1s --property=TimeoutStartSec=30s --property=TimeoutStopSec=30s --property=User={user} --property=WorkingDirectory={run_dir} --setenv=KOI_DATA_DIR={run_dir}/data --setenv=KOI_DNS_ZONE=internal --setenv=XDG_RUNTIME_DIR={run_dir}/runtime --setenv=KOI_NO_CREDENTIAL_STORE=1 {run_dir}/koi --daemon --port {} --http-bind 0.0.0.0 --mtls-port {} --acme-port {} --dns-port {} --dns-public --announce-http --runtime docker",
+        "set -eu; guard() {{ echo \"koi-lab service-lifecycle guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; command -v systemd-run >/dev/null; sudo -n true; test \"$(systemctl show --value -p LoadState {unit})\" = not-found || guard \"unit {unit} already exists\"; test ! -e {run_dir}/systemd-unit || guard \"stale systemd-unit marker under {run_dir}\"; test ! -e {run_dir}/data || guard \"stale data dir under {run_dir}\"; test ! -e {run_dir}/runtime || guard \"stale runtime dir under {run_dir}\"; i=0; while ss -H -lntup | grep -Eq ':({guarded_ports}) ' && test \"$i\" -lt 24; do sleep .5; i=$((i+1)); done; if ss -H -lntup | grep -Eq ':({guarded_ports}) '; then guard \"guarded ports busy after 12s: {guarded_ports}\"; fi; mkdir {run_dir}/data {run_dir}/runtime; printf '%s' {unit} > {run_dir}/systemd-unit; sudo -n systemd-run --quiet --collect --unit={unit} --property=Type=notify --property=Restart=on-failure --property=RestartSec=1s --property=TimeoutStartSec=30s --property=TimeoutStopSec=30s --property=User={user} --property=WorkingDirectory={run_dir} --setenv=KOI_DATA_DIR={run_dir}/data --setenv=KOI_DNS_ZONE=internal --setenv=XDG_RUNTIME_DIR={run_dir}/runtime --setenv=KOI_NO_CREDENTIAL_STORE=1 {run_dir}/koi --daemon --port {} --http-bind 0.0.0.0 --mtls-port {} --acme-port {} --dns-port {} --dns-public --announce-http --runtime docker",
         run_id.as_str(),
         run_id.as_str(),
         ports.http,
@@ -323,15 +335,13 @@ pub(crate) fn transient_service_cleanup_script(
 
 fn require_brook_baseline(lab: &Lab, node: &NodeSpec, run_id: &RunId) -> Result<()> {
     let unit = transient_unit_name(run_id);
-    let ports = node
-        .lab_ports()?
-        .all()
-        .map(|port| port.to_string())
-        .join("|");
+    let run_dir = node.run_dir(run_id)?;
+    let ports = node.lab_ports()?;
+    let guarded_ports = ports.all().map(|port| port.to_string()).join("|");
     lab.run_remote_checked(
         node,
         &format!(
-            "set -eu; test \"$(systemctl show --value -p LoadState {unit})\" = not-found; test \"$(systemctl show --value -p LoadState koi.service)\" = not-found; test ! -e /etc/systemd/system/koi.service; test ! -e /usr/local/bin/koi; test ! -e /var/lib/koi; test ! -e /run/koi; test ! -e /run/koi.sock; test ! -e /run/koi.endpoint; test ! -e /root/.koi; ! ss -H -lntup | grep -Eq ':({ports}) '; echo clean"
+            "set -eu; guard() {{ echo \"koi-lab brook baseline guard failed: $1\" >&2; exit 71; }}; test \"$(systemctl show --value -p ActiveState koi.service)\" = active || guard \"standing koi.service is not active (state: $(systemctl show --value -p ActiveState koi.service))\"; test \"$(systemctl show --value -p LoadState {unit})\" = not-found || guard \"lab unit {unit} remained loaded\"; test ! -e {run_dir}/systemd-unit || guard \"stale systemd-unit marker remained\"; ! ss -H -lntup | grep -Eq ':({guarded_ports}) ' || guard \"lab ports remained held: {guarded_ports}\"",
         ),
     )?;
     Ok(())
