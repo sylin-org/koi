@@ -93,6 +93,13 @@ pub struct KoiMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable: Option<bool>,
 
+    /// Docker-watch scope (ADR-035): a daemon with `KOI_SCOPE = <scope>` derives
+    /// only instances labeled `koi.scope = <scope>`; the base daemon (no scope)
+    /// derives unlabeled instances only. Lets two koi daemons share one Docker
+    /// socket without deriving the same container.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+
     /// mDNS service type override (e.g., `_http._tcp`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_type: Option<String>,
@@ -189,6 +196,7 @@ impl KoiMetadata {
         for (key, value) in labels {
             match key.as_str() {
                 "koi.enable" => meta.enable = value.parse().ok(),
+                "koi.scope" => meta.scope = Some(value.clone()),
                 "koi.type" => meta.service_type = Some(value.clone()),
                 "koi.name" => meta.name = Some(value.clone()),
                 "koi.dns.name" => meta.dns_name = Some(value.clone()),

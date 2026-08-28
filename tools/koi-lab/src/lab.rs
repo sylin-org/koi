@@ -1380,7 +1380,10 @@ impl Lab {
         };
         let runtime_env = match profile {
             DaemonProfile::RuntimeReconnect => {
-                format!(" DOCKER_HOST=unix://{run_dir}/docker-proxy.sock")
+                format!(
+                    " DOCKER_HOST=unix://{run_dir}/docker-proxy.sock KOI_SCOPE={}",
+                    run_id.as_str()
+                )
             }
             DaemonProfile::Certmesh
             | DaemonProfile::CapabilityStory
@@ -1759,7 +1762,8 @@ impl Lab {
         let ports = node.lab_ports()?;
         let managed = if role == RuntimeFaultRole::Unchanged {
             format!(
-                "--label koi.enable=true --label koi.name=koi-reconnect-{} --label koi.type=_http._tcp --label koi.dns.name=reconnect-{} --label koi.health.path=/healthz --label koi.health.kind=http --label koi.health.interval=1 --label koi.health.timeout=1 --label koi.proxy.port={} --label koi.proxy.remote=true --label koi.txt.run={} --publish {}:{}:5641",
+                "--label koi.enable=true --label koi.scope={} --label koi.name=koi-reconnect-{} --label koi.type=_http._tcp --label koi.dns.name=reconnect-{} --label koi.health.path=/healthz --label koi.health.kind=http --label koi.health.interval=1 --label koi.health.timeout=1 --label koi.proxy.port={} --label koi.proxy.remote=true --label koi.txt.run={} --publish {}:{}:5641",
+                run_id.as_str(),
                 runtime_fault_suffix(run_id),
                 runtime_fault_suffix(run_id),
                 ports.proxy,

@@ -433,6 +433,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
         // Shared with daemon_mode via koi-compose, so `koi install` constructs the identical
         // daemon (P07) — the fix for the verified parity defect. (An mDNS init failure is now
         // non-fatal, matching the foreground daemon, rather than stopping the service.)
+        let mut capability_notes = Vec::new();
         let cores = koi_compose::cores::build_cores(
             &koi_compose::cores::CoreSpec {
                 no_mdns: config.no_mdns,
@@ -446,14 +447,17 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 dns_config: config.dns_config(),
                 runtime: config.runtime.clone(),
                 http_port: config.http_port,
+                runtime_scope: std::env::var("KOI_SCOPE").ok().filter(|s| !s.is_empty()),
                 ..koi_compose::cores::CoreSpec::daemon_defaults()
             },
             &cancel,
             &mut tasks,
+            &mut capability_notes,
         )
         .await
         // fail_fast = false (daemon default) → always Ok; default is a panic-free guard.
         .unwrap_or_default();
+        koi_common::capability::record_notes(capability_notes);
 
         // Generate a Daemon Access Token (DAT) for authenticating mutation requests
         let dat_token = crate::infra::mint_dat();

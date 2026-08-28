@@ -119,16 +119,42 @@ impl Lab {
         resources.image_owned = true;
         self.stage_story_container_image(primary, run_id)?;
 
-        // Act 0: both real daemons are healthy, isolated, and advertise protected breadcrumbs.
+        // Act 0: both real daemons are healthy, isolated, and advertise protected
+        // breadcrumbs. The IPC surface is asserted through the daemon's own
+        // capability state (ADR-035): mounted (socket) or deliberately skipped
+        // under coexistence with the breadcrumb intact — never probed as a file.
         for node in [primary, observer] {
             let run_dir = node.run_dir(run_id)?;
             self.run_remote_checked(
                 node,
                 &format!(
-                    "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test -d {run_dir}/data || guard \"no data dir under {run_dir}\"; test -d {run_dir}/runtime || guard \"no runtime dir under {run_dir}\"; test \"$(stat -c %a {run_dir}/runtime/koi.endpoint)\" = 600 || guard \"koi.endpoint mode is $(stat -c %a {run_dir}/runtime/koi.endpoint 2>/dev/null || echo absent), not 600\"; test -S {run_dir}/runtime/koi.sock || guard \"no koi.sock under {run_dir}/runtime\"",
+                    "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test -d {run_dir}/data || guard \"no data dir under {run_dir}\"; test -d {run_dir}/runtime || guard \"no runtime dir under {run_dir}\"; test \"$(stat -c %a {run_dir}/runtime/koi.endpoint)\" = 600 || guard \"koi.endpoint mode is $(stat -c %a {run_dir}/runtime/koi.endpoint 2>/dev/null || echo absent), not 600\"",
                     run_id.as_str()
                 ),
             )?;
+        }
+        for node in [primary, observer] {
+            let node_url = self.node_url(node)?;
+            let status = curl_json("GET", &format!("{node_url}/v1/status"), None, None)?;
+            let ipc = status
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .and_then(|caps| {
+                    caps.iter()
+                        .find(|cap| cap.get("name").and_then(Value::as_str) == Some("ipc"))
+                })
+                .context("daemon status did not report an ipc capability")?;
+            let healthy = ipc.get("healthy").and_then(Value::as_bool) == Some(true);
+            let summary = ipc
+                .get("summary")
+                .and_then(Value::as_str)
+                .context("ipc capability had no summary")?;
+            if !healthy && !summary.contains("skipped") {
+                bail!(
+                    "{} ipc capability is unhealthy for an undeclared reason: {summary}",
+                    node.id()
+                );
+            }
         }
         checks.push(passed(
             "act_0_genesis_isolation",
@@ -1434,6 +1460,29 @@ fn require_ipc_resolution(
     service_name: &str,
 ) -> Result<()> {
     let run_dir = node.run_dir(run_id)?;
+    let node_url = lab.node_url(node)?;
+    let status = curl_json("GET", &format!("{node_url}/v1/status"), None, None)?;
+    let ipc_skipped = status
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .and_then(|caps| {
+            caps.iter()
+                .find(|cap| cap.get("name").and_then(Value::as_str) == Some("ipc"))
+        })
+        .map(|cap| {
+            cap.get("healthy").and_then(Value::as_bool) != Some(true)
+                && cap
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .is_some_and(|summary| summary.contains("skipped"))
+        })
+        .unwrap_or(false);
+    if ipc_skipped {
+        // ADR-030 coexistence: the IPC surface is deliberately unmounted
+        // (the mDNS core it bridges was yielded). There is no resolution
+        // surface to assert in this state.
+        return Ok(());
+    }
     let request = json!({"resolve": service_name}).to_string();
     let output = lab.run_remote(
         node,

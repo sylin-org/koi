@@ -132,6 +132,45 @@ pub async fn assemble_capabilities(cores: &Cores) -> Vec<CapabilityReport> {
         None => CapabilityReport::disabled("runtime"),
     });
 
+    // IPC (bridges the mDNS core — W2). Mounted exactly when mDNS is mounted
+    // and the adapter was requested; its skip reasons are declared, never
+    // silent (ADR-035 "yield, but declare").
+    let notes = koi_common::capability::notes_snapshot();
+    let ipc_note = notes
+        .iter()
+        .find(|note| note.capability == "ipc" && note.state != "mounted");
+    let ipc = match (&cores.mdns, ipc_note) {
+        (Some(_), None) => CapabilityReport {
+            status: CapabilityStatus {
+                name: "ipc".to_string(),
+                summary: "unix IPC socket mounted".to_string(),
+                healthy: true,
+            },
+            enabled: true,
+        },
+        (_, Some(note)) => CapabilityReport {
+            status: CapabilityStatus {
+                name: "ipc".to_string(),
+                summary: format!("skipped: {} (depends on mdns)", note.reason),
+                healthy: false,
+            },
+            enabled: true,
+        },
+        (None, None) => CapabilityReport::disabled("ipc"),
+    };
+    caps.push(ipc);
+
+    // Merge assembly notes into the rungs they describe: a capability that
+    // carries a note wears the note's reason as its summary (ADR-035).
+    for cap in caps.iter_mut() {
+        if let Some(note) = notes
+            .iter()
+            .find(|note| note.capability == cap.status.name && note.state != "mounted")
+        {
+            cap.status.summary = format!("{}: {}", note.state, note.reason);
+        }
+    }
+
     caps
 }
 
@@ -140,10 +179,11 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn all_disabled_ladder_is_the_canonical_seven_rungs() {
-        // Golden contract: with no cores, the ladder is exactly these seven rungs, in this
+    async fn all_disabled_ladder_is_the_canonical_eight_rungs() {
+        // Golden contract: with no cores, the ladder is exactly these eight rungs, in this
         // order, each disabled. This is the shape /v1/status, the dashboard, and embedded
-        // all serialize — locking the three projections to one source.
+        // all serialize — locking the three projections to one source. (The ipc rung joined
+        // in ADR-035: it bridges the mDNS core and reports its own skip state.)
         let caps = assemble_capabilities(&Cores::default()).await;
         let rungs: Vec<(&str, &str, bool, bool)> = caps
             .iter()
@@ -166,8 +206,47 @@ mod tests {
                 ("proxy", "disabled", false, false),
                 ("udp", "disabled", false, false),
                 ("runtime", "disabled", false, false),
+                ("ipc", "disabled", false, false),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn mdns_skip_note_surfaces_as_the_rung_summary_and_ipc_declares_its_dependency() {
+        // ADR-035 "yield, but declare": an mDNS coexistence skip must be visible
+        // in the ladder with its reason, and the IPC rung must name the mDNS
+        // dependency it inherited the skip from.
+        koi_common::capability::record_notes(vec![
+            koi_common::capability::CapabilityNote {
+                capability: "mdns".to_string(),
+                state: "skipped".to_string(),
+                reason: "UDP 5353 held by systemd-resolved".to_string(),
+                depends_on: Vec::new(),
+            },
+            koi_common::capability::CapabilityNote {
+                capability: "ipc".to_string(),
+                state: "skipped".to_string(),
+                reason: "depends on mdns: UDP 5353 held by systemd-resolved".to_string(),
+                depends_on: vec!["mdns".to_string()],
+            },
+        ]);
+        let caps = assemble_capabilities(&Cores::default()).await;
+        koi_common::capability::clear_notes();
+
+        let mdns = caps
+            .iter()
+            .find(|c| c.status.name == "mdns")
+            .expect("mdns rung");
+        assert!(mdns
+            .status
+            .summary
+            .contains("UDP 5353 held by systemd-resolved"));
+        let ipc = caps
+            .iter()
+            .find(|c| c.status.name == "ipc")
+            .expect("ipc rung");
+        assert!(!ipc.status.healthy);
+        assert!(ipc.status.summary.contains("depends on mdns"));
     }
 
     #[tokio::test]

@@ -156,7 +156,28 @@ pub fn serve(
     );
 
     // ── IPC adapter (only if mDNS is enabled - IPC speaks the mDNS NDJSON protocol) ──
+    if cfg.no_ipc {
+        koi_common::capability::record_notes(vec![koi_common::capability::CapabilityNote {
+            capability: "ipc".to_string(),
+            state: "disabled".to_string(),
+            reason: "--no-ipc".to_string(),
+            depends_on: vec!["mdns".to_string()],
+        }]);
+    }
     if !cfg.no_ipc {
+        if cores.mdns.is_none() {
+            let mdns_reason = koi_common::capability::notes_snapshot()
+                .iter()
+                .find(|note| note.capability == "mdns")
+                .map(|note| note.reason.clone())
+                .unwrap_or_else(|| "unavailable".to_string());
+            koi_common::capability::record_notes(vec![koi_common::capability::CapabilityNote {
+                capability: "ipc".to_string(),
+                state: "skipped".to_string(),
+                reason: mdns_reason,
+                depends_on: vec!["mdns".to_string()],
+            }]);
+        }
         if let Some(ref mdns) = cores.mdns {
             let c = mdns.clone();
             let path = cfg.pipe_path.clone();

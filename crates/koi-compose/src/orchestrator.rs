@@ -56,6 +56,7 @@ pub struct OrchestrationTargets {
 pub fn spawn_orchestrator(
     runtime: &Arc<RuntimeCore>,
     targets: OrchestrationTargets,
+    scope: Option<String>,
     cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     let mut rx = runtime.subscribe();
@@ -65,6 +66,7 @@ pub fn spawn_orchestrator(
 
     let resources_clone = Arc::clone(&resources);
     let targets = Arc::new(targets);
+    let scope = scope.as_deref().map(str::to_owned);
 
     tokio::spawn(async move {
         // The runtime connects and inventories existing instances before the
@@ -75,7 +77,7 @@ pub fn spawn_orchestrator(
         match runtime.list_instances().await {
             Ok(instances) => {
                 for instance in instances {
-                    handle_start(&instance, &resources_clone, &targets).await;
+                    handle_start(&instance, &resources_clone, &targets, scope.as_deref()).await;
                 }
             }
             Err(error) => {
@@ -93,7 +95,8 @@ pub fn spawn_orchestrator(
                 event = rx.recv() => {
                     match event {
                         Ok(RuntimeEvent::Started(instance)) => {
-                            handle_start(&instance, &resources_clone, &targets).await;
+                            handle_start(&instance, &resources_clone, &targets, scope.as_deref())
+                                .await;
                         }
                         Ok(RuntimeEvent::Stopped { id, name }) => {
                             handle_stop(&id, &name, &resources_clone, &targets).await;
@@ -101,7 +104,8 @@ pub fn spawn_orchestrator(
                         Ok(RuntimeEvent::Updated(instance)) => {
                             // Re-register: stop then start
                             handle_stop(&instance.id, &instance.name, &resources_clone, &targets).await;
-                            handle_start(&instance, &resources_clone, &targets).await;
+                            handle_start(&instance, &resources_clone, &targets, scope.as_deref())
+                                .await;
                         }
                         Ok(RuntimeEvent::BackendDisconnected { backend, reason }) => {
                             tracing::warn!(
@@ -136,9 +140,10 @@ async fn handle_start(
     instance: &Instance,
     resources: &Arc<Mutex<HashMap<String, OrchestratedResources>>>,
     targets: &Arc<OrchestrationTargets>,
+    scope: Option<&str>,
 ) {
     // Only orchestrate containers that opted in
-    if !should_orchestrate(instance) {
+    if !should_orchestrate(instance, scope) {
         return;
     }
 
@@ -362,13 +367,21 @@ async fn cleanup_all(
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /// Determine whether an instance should be orchestrated (opt-in policy).
-fn should_orchestrate(instance: &Instance) -> bool {
+fn should_orchestrate(instance: &Instance, scope: Option<&str>) -> bool {
     // Explicit disable always wins
     if instance.metadata.is_disabled() {
         return false;
     }
-    // Must have an explicit opt-in signal
-    instance.metadata.enable == Some(true)
+    // Scope membership (ADR-035): a base-scope daemon derives unlabeled
+    // containers only; a scoped daemon derives exactly its own scope. Two
+    // daemons sharing one Docker socket therefore never derive the same
+    // container, and never race for the same derived surfaces.
+    let scope_matches = match (instance.metadata.scope.as_deref(), scope) {
+        (Some(container_scope), Some(daemon_scope)) => container_scope == daemon_scope,
+        (None, None) => true,
+        _ => false,
+    };
+    scope_matches && instance.metadata.enable == Some(true)
 }
 
 /// Derive the effective service name for an instance.
@@ -664,6 +677,7 @@ mod tests {
                 health: Some(Arc::clone(&health)),
                 proxy: Some(Arc::clone(&proxy)),
             },
+            None,
             cancel.clone(),
         );
 
@@ -766,5 +780,63 @@ mod tests {
         proxy.stop_all().await;
         mdns.shutdown().await.expect("mDNS shutdown");
         std::fs::remove_dir_all(&root).expect("remove isolated story root");
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use koi_runtime::instance::{InstanceState, KoiMetadata};
+
+    fn labeled_instance(scope: Option<&str>, enabled: bool) -> Instance {
+        let mut labels: HashMap<String, String> = HashMap::new();
+        labels.insert("koi.enable".to_string(), enabled.to_string());
+        if let Some(scope) = scope {
+            labels.insert("koi.scope".to_string(), scope.to_string());
+        }
+        Instance {
+            id: "c1".into(),
+            name: "svc".into(),
+            ports: vec![],
+            ips: vec!["10.0.0.5".into()],
+            metadata: KoiMetadata::from_labels(&labels),
+            backend: "docker".into(),
+            state: InstanceState::Running,
+            discovered_at: chrono::Utc::now(),
+            image: None,
+        }
+    }
+
+    #[test]
+    fn base_daemon_derives_unlabeled_containers_only() {
+        assert!(should_orchestrate(&labeled_instance(None, true), None));
+        assert!(!should_orchestrate(
+            &labeled_instance(Some("run-1"), true),
+            None
+        ));
+    }
+
+    #[test]
+    fn scoped_daemon_derives_only_its_own_scope() {
+        assert!(should_orchestrate(
+            &labeled_instance(Some("run-1"), true),
+            Some("run-1")
+        ));
+        assert!(!should_orchestrate(
+            &labeled_instance(Some("run-2"), true),
+            Some("run-1")
+        ));
+        assert!(!should_orchestrate(
+            &labeled_instance(None, true),
+            Some("run-1")
+        ));
+    }
+
+    #[test]
+    fn explicit_disable_wins_over_scope() {
+        assert!(!should_orchestrate(
+            &labeled_instance(Some("run-1"), false),
+            Some("run-1")
+        ));
     }
 }

@@ -90,6 +90,11 @@ pub struct CoreSpec {
     /// Start the DNS server after constructing its core. The daemon always does; embedded
     /// gates it on `dns_auto_start`.
     pub dns_auto_start: bool,
+    /// This daemon's Docker-watch scope (ADR-035): only containers labeled
+    /// `koi.scope = <scope>` are derived. `None` is the base scope — it derives
+    /// unlabeled containers only. Lets a standing daemon and a run-scoped daemon
+    /// share one Docker socket without racing for derived surfaces.
+    pub runtime_scope: Option<String>,
     /// Start health checks after constructing the core (daemon: always; embedded: opt-in).
     pub health_auto_start: bool,
     /// Start the proxy listeners after constructing the core (daemon: always; embedded: opt-in).
@@ -134,6 +139,7 @@ impl CoreSpec {
             http_port: 0,
             dns_state_path: None,
             proxy_data_dir: None,
+            runtime_scope: None,
             dns_auto_start: true,
             health_auto_start: true,
             proxy_auto_start: true,
@@ -261,6 +267,7 @@ pub async fn build_cores(
     spec: &CoreSpec,
     cancel: &CancellationToken,
     tasks: &mut Vec<JoinHandle<()>>,
+    notes: &mut Vec<koi_common::capability::CapabilityNote>,
 ) -> Result<Cores, BuildCoresError> {
     // ── mDNS ──
     let mdns_core = if !spec.no_mdns {
@@ -272,6 +279,12 @@ pub async fn build_cores(
                 "mDNS capability: skipped — {reason}; coexistence per ADR-030, \
                  all other capabilities continue"
             );
+            notes.push(koi_common::capability::CapabilityNote {
+                capability: "mdns".to_string(),
+                state: "skipped".to_string(),
+                reason: reason.to_string(),
+                depends_on: Vec::new(),
+            });
             None
         } else {
             match koi_mdns::MdnsCore::with_cancel(cancel.clone()) {
@@ -281,12 +294,24 @@ pub async fn build_cores(
                         return Err(e.into());
                     }
                     tracing::error!(error = %e, "Failed to initialize mDNS core");
+                    notes.push(koi_common::capability::CapabilityNote {
+                        capability: "mdns".to_string(),
+                        state: "error".to_string(),
+                        reason: e.to_string(),
+                        depends_on: Vec::new(),
+                    });
                     None
                 }
             }
         }
     } else {
         tracing::info!("mDNS capability: disabled");
+        notes.push(koi_common::capability::CapabilityNote {
+            capability: "mdns".to_string(),
+            state: "disabled".to_string(),
+            reason: "--no-mdns".to_string(),
+            depends_on: Vec::new(),
+        });
         None
     };
 
@@ -502,6 +527,7 @@ pub async fn build_cores(
                     health: health_runtime.clone(),
                     proxy: proxy_runtime.clone(),
                 },
+                spec.runtime_scope.clone(),
                 cancel.clone(),
             ));
         }

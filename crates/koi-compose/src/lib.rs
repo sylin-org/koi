@@ -126,6 +126,7 @@ mod parity_tests {
                 health: None,
                 proxy: None,
             },
+            None,
             cancel.clone(),
         ));
 

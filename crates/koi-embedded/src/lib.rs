@@ -387,8 +387,10 @@ impl KoiEmbedded {
         // daemon and the Windows service use, so the three boot paths construct an identical
         // graph. `fail_fast` is the only embedded-specific knob: a library surfaces a failed
         // capability as an error rather than logging it and dropping the capability.
+        let mut capability_notes = Vec::new();
         let cores = koi_compose::cores::build_cores(
             &koi_compose::cores::CoreSpec {
+                runtime_scope: None,
                 no_mdns: !self.config.mdns_enabled,
                 no_certmesh: !self.config.certmesh_enabled,
                 no_dns: !self.config.dns_enabled,
@@ -417,8 +419,10 @@ impl KoiEmbedded {
             },
             &cancel,
             &mut tasks,
+            &mut capability_notes,
         )
         .await?;
+        koi_common::capability::record_notes(capability_notes);
         let koi_compose::cores::Cores {
             mdns,
             certmesh,

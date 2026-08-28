@@ -43,6 +43,7 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     // ── Build all domain cores + bridges + domain background tasks ──
     // The construction graph, the orchestrator, and the certmesh role loops live in
     // koi-compose so the Windows service constructs the identical daemon (P07).
+    let mut capability_notes = Vec::new();
     let cores = koi_compose::cores::build_cores(
         &koi_compose::cores::CoreSpec {
             no_mdns: config.no_mdns,
@@ -56,10 +57,12 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             dns_config: config.dns_config(),
             runtime: config.runtime.clone(),
             http_port: config.http_port,
+            runtime_scope: std::env::var("KOI_SCOPE").ok().filter(|s| !s.is_empty()),
             ..koi_compose::cores::CoreSpec::daemon_defaults()
         },
         &cancel,
         &mut tasks,
+        &mut capability_notes,
     )
     .await
     // fail_fast = false (daemon default): build_cores logs+drops a failed capability and
@@ -71,6 +74,7 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
     // posture-reactive trust plane (mTLS + ACME + _certmesh._tcp), the IPC adapter, and
     // the posture-reactive _http/_mcp self-announce — one call so the two boot paths
     // cannot drift. The daemon always serves the dashboard.
+    koi_common::capability::record_notes(capability_notes);
     koi_serve::serve(
         &cores,
         started_at,
