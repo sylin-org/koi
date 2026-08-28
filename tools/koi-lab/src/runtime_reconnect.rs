@@ -122,7 +122,7 @@ impl Lab {
         let dns_name = format!("reconnect-{suffix}.internal");
         let full_service_name = format!("{service_name}._http._tcp.local.");
         let health_name = format!("runtime:{service_name}");
-        wait_for_derived_service(
+        if let Err(error) = wait_for_derived_service(
             self,
             primary,
             observer,
@@ -132,7 +132,17 @@ impl Lab {
             &dns_name,
             &full_service_name,
             &health_name,
-        )?;
+        ) {
+            // D15/RL-16: a convergence refusal carries the primary's listener
+            // table — a proxy bind refusal ("address in use") must name the
+            // socket that held the port.
+            let sockets = self.remote_output(primary, "ss -lntp 2>/dev/null | head -24");
+            let sockets_text = match sockets {
+                Ok(output) => String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+                Err(e) => format!("could not run: {e:#}"),
+            };
+            return Err(error).context(format!("primary listener table: {sockets_text}"));
+        }
         let registration_before = mdns_registration_id(&primary_url, &service_name)?;
         let artifact_sha256 = self.remote_line(
             primary,
