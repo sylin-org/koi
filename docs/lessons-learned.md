@@ -229,3 +229,29 @@ probe and wired shapes identical or assert the wired string against what the
 probe validated; (b) when a node's port appears in a URI aimed at a DIFFERENT
 node, stop and re-derive it — ports are per-node namespaces, not interchangeable
 integers.
+
+### RL-19 — The mesh is a living environment; lanes assert capability state, and artifacts follow the tree (2026-08-28)
+
+The first extended-full-profile shakedown failed seven times at seven different
+points, and none was a product defect. The classes: (1) the real-install cutover
+gave every node a standing koi daemon that watches the same Docker socket as the
+run daemons — two daemons deriving the same labeled services race for derived
+ports (fixed by `koi.scope` scoping + lane-level service isolation); (2)
+systemd-resolved holds 5353 on Debian 13, so run daemons legitimately skip mDNS
+and, transitively, IPC (fixed by capability-aware assertions + ADR-035 declared
+skips); (3) machine trust stores settle asynchronously after a root import, so
+the first Schannel handshake can lose a race (fixed by settle-retries); (4) a
+workstation rebooted mid-profile; (5) product changes after the last artifact
+build left the staged binaries stale (fixed by rebuilding both artifacts before
+the run).
+
+**Rules:** (a) rebuild BOTH artifacts (musl via cross, Windows release via
+`cargo build --release -p koi-net`) after ANY product change, before any
+profile/lane run; (b) lanes assert capability state via `/v1/status` (ADR-035
+ladder, with skip reasons), never socket-file presence — a topology change is a
+different designed state, not a failure; (c) lanes that need exclusive runtime
+watching stop the standing service themselves (systemd-granted nodes) and
+restore it in their own cleanup — isolation lives inside the transaction; (d)
+baselines compare service definitions, never pids/start-times — a healthy
+restart is not drift; (e) environment configuration on dedicated lab boxes
+(e.g. disabling resolved's mDNS) is legitimate and must be recorded.

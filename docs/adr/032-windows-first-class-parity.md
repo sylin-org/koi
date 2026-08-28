@@ -65,10 +65,16 @@ timing (external authority; P4 below covers the local installer groundwork).
 Stable `1.0.0` requires, in addition to the existing gates:
 
 - Every matrix row green in its stated rotations, executed by `run-profile full`
-  extended with the Windows breadth cases.
+  extended with the Windows breadth cases. **DONE — the extended profile
+  (25 cases: 16 Linux + 9 Windows workstation lanes) went fully green
+  2026-08-28, run `v1-20260828T165112Z-f6a23b30`, git 359337a, after the
+  ADR-035 shakedown. One recorded deviation: the W1 SCM lane runs standalone
+  (green 2026-08-24) rather than in-profile — it installs the product service
+  under the operator name and correctly refuses to clobber the operator's
+  `koi install`, which exists on this workstation.**
 - Elevated scheduled-task profile green including all W-cases.
 - Soak of the final candidate clean, with Windows participants included per ADR-029
-  host classes.
+  host classes. **This is the only remaining 1.0 gate.**
 
 ## Consequences
 

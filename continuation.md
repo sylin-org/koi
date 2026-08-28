@@ -32,21 +32,20 @@ Read FIRST, in order — then re-verify every premise against the tree (RL-11):
   stone-leaded-sparkle) at 192.168.1.137; standing koi service RUNNING.
 - Locks: released (post-W10 cleanup green on all nodes).
 
-## THE exact next task: the extended full profile (ADR-032 stable-gate redefinition)
+## THE exact next task: the clean soak — the LAST 1.0 gate
 
-Fold all Windows lanes into `run-profile full` and run it elevated
-end-to-end. Included cases: W1 (service-lifecycle-windows), W2 (pipe), W4
-(certmesh-lifecycle-windows-ca), and the five windows-* lanes
-(windows-breadth, windows-mdns, windows-proxy, windows-webhook,
-windows-acme) plus the new certmesh-recovery-windows. See the
-"Stable-gate redefinition" section of docs/adr/032 for the target shape and
-docs/adr/032 P2/P3 for the lane list. The profile runner is
-tools/koi-lab/src/profile.rs; each lane is a driven scenario with its own
-evidence — the fold is composition + sequencing, not re-implementation.
+The extended full profile is GREEN (2026-08-28, `v1-20260828T165112Z-f6a23b30`,
+25/25 cases incl. all Windows-workstation lanes; ADR-035 ratified + P1
+implemented). The only remaining stable-1.0 requirement is a **clean soak of
+the final candidate incl. Windows participants** (tools/koi-lab/src/soak.rs,
+`Soak` profile), then 1.0 ships (rc.3 only if findings force it, RL-2).
 
-After it passes elevated: **clean soak incl. Windows participants**
-(soak.rs), and that closes the stable 1.0 gate (rc.3 only if findings force
-it, RL-2: registries immutable).
+Notes for the soak: run elevated like the profile (`.tmp/full-profile.ps1`
+pattern); the Windows koi service is currently UNINSTALLED on this
+workstation (operator-approved, so W1 could run in-profile) — reinstall with
+`koi install` from target/release/koi.exe if the soak's baseline should
+include it; the soak bounds are iterations/max-minutes/restart-every
+(profile.rs `DEFAULT_SOAK_*`).
 
 ## Runner / deploy discipline (unchanged, proven)
 
