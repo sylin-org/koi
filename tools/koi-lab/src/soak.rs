@@ -16,6 +16,7 @@ const MAX_DURATION_MINUTES: u32 = 24 * 60;
 
 #[derive(Default)]
 struct SoakResources {
+    standing_isolated: bool,
     primary_daemon: bool,
     observer_daemon: bool,
     image_owned: bool,
@@ -84,6 +85,12 @@ impl Lab {
         restart_every: u32,
         resources: &mut SoakResources,
     ) -> Result<BoundedSoakReport> {
+        // Exclusive runtime watching (ADR-035): the standing root daemons on
+        // these nodes share the Docker socket and would derive the soak
+        // containers too, racing the run daemons for derived ports.
+        self.stop_standing_service(primary)?;
+        self.stop_standing_service(observer)?;
+        resources.standing_isolated = true;
         self.start_story_daemon(primary, run_id)?;
         resources.primary_daemon = true;
         self.start_story_daemon(observer, run_id)?;
@@ -228,6 +235,14 @@ impl Lab {
         resources: &mut SoakResources,
     ) -> Result<()> {
         let mut failures = Vec::new();
+        if resources.standing_isolated {
+            for node in [primary, observer] {
+                if let Err(e) = self.start_standing_service(node) {
+                    failures.push(format!("standing service restore: {e:#}"));
+                }
+            }
+            resources.standing_isolated = false;
+        }
         if resources.container_owned {
             if let Err(error) = self.cleanup_story_container(primary, run_id) {
                 failures.push(format!("container: {error:#}"));
