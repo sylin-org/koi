@@ -380,7 +380,14 @@ impl Lab {
     /// case is the invocation, not a re-implementation.
     fn windows_pipe_ipc_test(&self) -> Result<()> {
         let output = std::process::Command::new("cargo")
-            .args(["test", "--locked", "-p", "koi", "--test", "named_pipe_ipc"])
+            .args([
+                "test",
+                "--locked",
+                "-p",
+                "koi-net",
+                "--test",
+                "named_pipe_ipc",
+            ])
             .current_dir(&self.repo_root)
             .output()
             .context("failed to start cargo for the named-pipe IPC test")?;
