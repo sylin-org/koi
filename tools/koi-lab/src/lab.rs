@@ -1380,9 +1380,9 @@ impl Lab {
         let lock_dir = node.lock_dir()?;
         let port = node.lab_ports()?.fixture;
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/fixture.pid; ! ss -H -lnt | grep -Eq ':{port} '; nc_exe=$(realpath \"$(command -v nc)\"); printf '%s' \"$nc_exe\" > {run_dir}/fixture.exe; setsid -f sh -c 'echo $$ > {run_dir}/fixture.pid; exec nc -lk 127.0.0.1 {port} >>{run_dir}/fixture.log 2>&1'; i=0; while ! ss -H -lnt | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ss -H -lnt | grep -Eq ':{port} '",
-            run_id.as_str(),
-            run_id.as_str()
+            "set -eu; guard() {{ echo \"koi-lab story-fixture guard failed on {node_id}: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {run_id_str} || guard \"lab lock held by '$lock_owner', expected {run_id_str}\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {run_id_str} || guard \"run dir owned by '$run_owner', expected {run_id_str}\"; test ! -e {run_dir}/fixture.pid || guard \"stale fixture.pid under {run_dir}\"; if ss -H -lnt | grep -Eq ':{port} '; then guard \"fixture port {port} busy\"; fi; nc_exe=$(realpath \"$(command -v nc)\"); printf '%s' \"$nc_exe\" > {run_dir}/fixture.exe; setsid -f sh -c 'echo $$ > {run_dir}/fixture.pid; exec nc -lk 127.0.0.1 {port} >>{run_dir}/fixture.log 2>&1'; i=0; while ! ss -H -lnt | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ss -H -lnt | grep -Eq ':{port} '",
+            node_id = node.id(),
+            run_id_str = run_id.as_str(),
         );
         self.transport.run_checked(node, &command)?;
         Ok(())
@@ -1390,11 +1390,9 @@ impl Lab {
 
     pub(crate) fn stop_story_fixture(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
         let run_dir = node.run_dir(run_id)?;
-        let lock_dir = node.lock_dir()?;
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test -f {run_dir}/fixture.pid; test -f {run_dir}/fixture.exe; pid=$(cat {run_dir}/fixture.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; expected=$(cat {run_dir}/fixture.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ! kill -0 \"$pid\" 2>/dev/null; rm -f {run_dir}/fixture.pid",
-            run_id.as_str(),
-            run_id.as_str()
+            "set -eu; guard() {{ echo \"koi-lab story-fixture stop guard failed on {node_id}: $1\" >&2; exit 71; }}; test -f {run_dir}/fixture.pid || guard \"no fixture.pid under {run_dir}\"; pid=$(cat {run_dir}/fixture.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; expected=$(cat {run_dir}/fixture.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\" || guard \"fixture pid $pid is not the run-owned executable\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ! kill -0 \"$pid\" 2>/dev/null || guard \"fixture pid $pid survived SIGTERM\"; rm -f {run_dir}/fixture.pid",
+            node_id = node.id(),
         );
         self.transport.run_checked(node, &command)?;
         Ok(())
@@ -1407,9 +1405,9 @@ impl Lab {
         let lock_dir = node.lock_dir()?;
         let port = node.lab_ports()?.fixture;
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/fixture.pid; ! ss -H -lnt | grep -Eq ':{port} '; nc_exe=$(realpath \"$(command -v nc)\"); printf '%s' \"$nc_exe\" > {run_dir}/fixture.exe; setsid -f sh -c 'echo $$ > {run_dir}/fixture.pid; exec nc -lk 0.0.0.0 {port} >>{run_dir}/fixture.log 2>&1'; i=0; while ! ss -H -lnt | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ss -H -lnt | grep -Eq ':{port} '",
-            run_id.as_str(),
-            run_id.as_str()
+            "set -eu; guard() {{ echo \"koi-lab cross-host-fixture guard failed on {node_id}: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {run_id_str} || guard \"lab lock held by '$lock_owner', expected {run_id_str}\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {run_id_str} || guard \"run dir owned by '$run_owner', expected {run_id_str}\"; test ! -e {run_dir}/fixture.pid || guard \"stale fixture.pid under {run_dir}\"; if ss -H -lnt | grep -Eq ':{port} '; then guard \"fixture port {port} busy\"; fi; nc_exe=$(realpath \"$(command -v nc)\"); printf '%s' \"$nc_exe\" > {run_dir}/fixture.exe; setsid -f sh -c 'echo $$ > {run_dir}/fixture.pid; exec nc -lk 0.0.0.0 {port} >>{run_dir}/fixture.log 2>&1'; i=0; while ! ss -H -lnt | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ss -H -lnt | grep -Eq ':{port} '",
+            node_id = node.id(),
+            run_id_str = run_id.as_str(),
         );
         self.transport.run_checked(node, &command)?;
         Ok(())
@@ -1420,9 +1418,9 @@ impl Lab {
         let lock_dir = node.lock_dir()?;
         let port = node.lab_ports()?.dns;
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/dns-blocker.pid; i=0; while ss -H -lnu | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ! ss -H -lnu | grep -Eq ':{port} '; nc_exe=$(realpath \"$(command -v nc)\"); printf '%s' \"$nc_exe\" > {run_dir}/dns-blocker.exe; setsid -f sh -c 'echo $$ > {run_dir}/dns-blocker.pid; exec nc -u -lk 0.0.0.0 {port} >>{run_dir}/dns-blocker.log 2>&1'; i=0; while ! ss -H -lnu | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ss -H -lnu | grep -Eq ':{port} '",
-            run_id.as_str(),
-            run_id.as_str()
+            "set -eu; guard() {{ echo \"koi-lab dns-blocker guard failed on {node_id}: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {run_id_str} || guard \"lab lock held by '$lock_owner', expected {run_id_str}\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {run_id_str} || guard \"run dir owned by '$run_owner', expected {run_id_str}\"; test ! -e {run_dir}/dns-blocker.pid || guard \"stale dns-blocker.pid under {run_dir}\"; i=0; while ss -H -lnu | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; if ss -H -lnu | grep -Eq ':{port} '; then guard \"dns port {port} still held after grace\"; fi; nc_exe=$(realpath \"$(command -v nc)\"); printf '%s' \"$nc_exe\" > {run_dir}/dns-blocker.exe; setsid -f sh -c 'echo $$ > {run_dir}/dns-blocker.pid; exec nc -u -lk 0.0.0.0 {port} >>{run_dir}/dns-blocker.log 2>&1'; i=0; while ! ss -H -lnu | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ss -H -lnu | grep -Eq ':{port} '",
+            node_id = node.id(),
+            run_id_str = run_id.as_str(),
         );
         self.transport.run_checked(node, &command)?;
         Ok(())
@@ -1430,12 +1428,10 @@ impl Lab {
 
     pub(crate) fn stop_story_dns_blocker(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
         let run_dir = node.run_dir(run_id)?;
-        let lock_dir = node.lock_dir()?;
         let port = node.lab_ports()?.dns;
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test -f {run_dir}/dns-blocker.pid; test -f {run_dir}/dns-blocker.exe; pid=$(cat {run_dir}/dns-blocker.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; expected=$(cat {run_dir}/dns-blocker.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ! kill -0 \"$pid\" 2>/dev/null; i=0; while ss -H -lnu | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ! ss -H -lnu | grep -Eq ':{port} '; rm -f {run_dir}/dns-blocker.pid",
-            run_id.as_str(),
-            run_id.as_str()
+            "set -eu; guard() {{ echo \"koi-lab dns-blocker stop guard failed on {node_id}: $1\" >&2; exit 71; }}; test -f {run_dir}/dns-blocker.pid || guard \"no dns-blocker.pid under {run_dir}\"; pid=$(cat {run_dir}/dns-blocker.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; expected=$(cat {run_dir}/dns-blocker.exe); test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$expected\" || guard \"dns-blocker pid $pid is not the run-owned executable\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ! kill -0 \"$pid\" 2>/dev/null || guard \"dns-blocker pid $pid survived SIGTERM\"; i=0; while ss -H -lnu | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; rm -f {run_dir}/dns-blocker.pid",
+            node_id = node.id(),
         );
         self.transport.run_checked(node, &command)?;
         Ok(())
@@ -1896,10 +1892,9 @@ impl Lab {
 
             let lock_dir = node.lock_dir()?;
             let command = format!(
-                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {remote_run_dir}/owner)\" = {}; test -f {remote_archive}; test ! -e {remote_run_dir}/image.ref; test ! -e {remote_run_dir}/image.id; ! docker image inspect {image_ref} >/dev/null 2>&1; printf '%s' {image_ref} > {remote_run_dir}/image.ref; docker image load --input {remote_archive} >/dev/null; test \"$(docker image inspect {image_ref} | jq -r '.[0].Config.Labels[\"org.sylin.koi.lab.run\"]')\" = {}; docker image inspect {image_ref} | jq -r '.[0].Id' > {remote_run_dir}/image.id; rm -f {remote_archive}",
-                run_id.as_str(),
-                run_id.as_str(),
-                run_id.as_str()
+                "set -eu; guard() {{ echo \"koi-lab story-image load guard failed on {node_id}: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {run_id} || guard \"lab lock held by '$lock_owner', expected {run_id}\"; run_owner=$(cat {remote_run_dir}/owner 2>/dev/null) || guard \"run owner file {remote_run_dir}/owner is missing\"; test \"$run_owner\" = {run_id} || guard \"run dir owned by '$run_owner', expected {run_id}\"; test -f {remote_archive} || guard \"story archive {remote_archive} is missing\"; test ! -e {remote_run_dir}/image.ref || guard \"stale image.ref under {remote_run_dir}\"; test ! -e {remote_run_dir}/image.id || guard \"stale image.id under {remote_run_dir}\"; if docker image inspect {image_ref} >/dev/null 2>&1; then guard \"story image {image_ref} already loaded\"; fi; printf '%s' {image_ref} > {remote_run_dir}/image.ref; docker image load --input {remote_archive} >/dev/null; test \"$(docker image inspect {image_ref} | jq -r '.[0].Config.Labels[\"org.sylin.koi.lab.run\"]')\" = {run_id} || guard \"loaded image lacks the run label\"; docker image inspect {image_ref} | jq -r '.[0].Id' > {remote_run_dir}/image.id; rm -f {remote_archive}",
+                node_id = node.id(),
+                run_id = run_id.as_str(),
             );
             self.transport.run_checked(node, &command)?;
             Ok(())
