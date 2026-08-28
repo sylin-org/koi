@@ -504,10 +504,10 @@ pub(crate) fn stable_baseline_matches(before: &PreflightReport, after: &Prefligh
         && stable_nodes_by_id(&before.remotes) == stable_nodes_by_id(&after.remotes)
 }
 
-fn stable_nodes_by_id(nodes: &[NodeSnapshot]) -> BTreeMap<&str, StableNode<'_>> {
+fn stable_nodes_by_id(nodes: &[NodeSnapshot]) -> BTreeMap<String, StableNode> {
     nodes
         .iter()
-        .map(|node| (node.id.as_str(), StableNode::from(node)))
+        .map(|node| (node.id.clone(), StableNode::from(node)))
         .collect()
 }
 
@@ -516,28 +516,71 @@ fn stable_node_matches(before: &NodeSnapshot, after: &NodeSnapshot) -> bool {
 }
 
 #[derive(Eq, PartialEq)]
-struct StableNode<'a> {
-    expected_hostname: &'a str,
-    observed_hostname: &'a str,
-    services: &'a BTreeMap<String, crate::model::ServiceSnapshot>,
-    listening_sockets: BTreeSet<&'a str>,
+struct StableNode {
+    expected_hostname: String,
+    observed_hostname: String,
+    services: BTreeMap<String, StableService>,
+    listening_sockets: BTreeSet<String>,
     remote_root_present: bool,
-    existing_artifact_sha256: Option<&'a str>,
-    existing_artifact_version: Option<&'a str>,
+    existing_artifact_sha256: Option<String>,
+    existing_artifact_version: Option<String>,
     deploy_ready: bool,
     scenario_ready: bool,
 }
 
-impl<'a> From<&'a NodeSnapshot> for StableNode<'a> {
-    fn from(node: &'a NodeSnapshot) -> Self {
+#[derive(Eq, PartialEq)]
+struct StableService {
+    active: String,
+    enabled: String,
+    /// The systemd unit definition (path + argv) with the volatile runtime
+    /// facts (MainPID, start/stop times, last exit code) stripped: a lane
+    /// that legitimately restarts a node's service produces a NEW pid, and
+    /// a baseline must compare the definition, not the process identity.
+    exec_definition: String,
+}
+
+fn normalize_exec_start(exec_start: &str) -> String {
+    exec_start
+        .trim_start_matches("{ ")
+        .trim_end_matches(" }")
+        .split(';')
+        .map(str::trim)
+        .filter(|part| {
+            !part.starts_with("pid=")
+                && !part.starts_with("start_time=")
+                && !part.starts_with("stop_time=")
+                && !part.starts_with("code=")
+                && !part.starts_with("status=")
+        })
+        .collect::<Vec<&str>>()
+        .join("; ")
+}
+
+impl From<&NodeSnapshot> for StableNode {
+    fn from(node: &NodeSnapshot) -> Self {
         Self {
-            expected_hostname: &node.expected_hostname,
-            observed_hostname: &node.observed_hostname,
-            services: &node.services,
-            listening_sockets: node.listening_sockets.iter().map(String::as_str).collect(),
+            expected_hostname: node.expected_hostname.clone(),
+            observed_hostname: node.observed_hostname.clone(),
+            services: node
+                .services
+                .iter()
+                .map(|(name, service)| {
+                    (
+                        name.clone(),
+                        StableService {
+                            active: service.active.clone(),
+                            enabled: service.enabled.clone(),
+                            exec_definition: normalize_exec_start(
+                                service.exec_start.as_deref().unwrap_or(" "),
+                            ),
+                        },
+                    )
+                })
+                .collect(),
+            listening_sockets: node.listening_sockets.iter().cloned().collect(),
             remote_root_present: node.remote_root_present,
-            existing_artifact_sha256: node.existing_artifact_sha256.as_deref(),
-            existing_artifact_version: node.existing_artifact_version.as_deref(),
+            existing_artifact_sha256: node.existing_artifact_sha256.clone(),
+            existing_artifact_version: node.existing_artifact_version.clone(),
             deploy_ready: node.deploy_ready,
             scenario_ready: node.scenario_ready,
         }
@@ -632,6 +675,38 @@ mod tests {
             profile_cases(LabProfile::Soak),
             vec![ProfileCase::BoundedSoak]
         );
+    }
+
+    #[test]
+    fn baseline_ignores_volatile_service_restart_facts() {
+        // A lane legitimately restarts a node's service: new pid, new start
+        // time, new last-exit code — the definition is unchanged. The baseline
+        // must not redden a healthy restart (ADR-035: settlement vs identity).
+        let mut before = preflight();
+        before.remotes[0]
+            .services
+            .get_mut("koi")
+            .unwrap()
+            .exec_start =
+            Some("{ path=/usr/local/bin/koi ; argv[]=/usr/local/bin/koi --daemon }".to_string());
+        let mut after = preflight();
+        after.remotes[0]
+            .services
+            .get_mut("koi")
+            .unwrap()
+            .exec_start = Some("{ path=/usr/local/bin/koi ; argv[]=/usr/local/bin/koi --daemon ; start_time=[Fri 2026-08-28 16:34:14 UTC] ; pid=493425 ; code=(null) ; status=0/0 }".to_string());
+        assert!(stable_baseline_matches(&before, &after));
+
+        // A definition change (binary path) is still a baseline change.
+        let mut definition_changed = after.clone();
+        definition_changed.remotes[0]
+            .services
+            .get_mut("koi")
+            .unwrap()
+            .exec_start = Some(
+            "{ path=/usr/local/bin/other ; argv[]=/usr/local/bin/other --daemon }".to_string(),
+        );
+        assert!(!stable_baseline_matches(&before, &definition_changed));
     }
 
     #[test]
