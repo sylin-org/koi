@@ -46,11 +46,16 @@ impl PuttyTransport {
         let output = self.run(node, remote_command)?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            // The command prefix rides the refusal: scripts whose guards are
+            // not (yet) loud still self-identify (D15). Truncated well before
+            // any credential-bearing tail; run ids and ports are not secret.
+            let command_head: String = remote_command.chars().take(160).collect();
             bail!(
-                "remote command failed on {} (exit {}): {}",
+                "remote command failed on {} (exit {}): {}\ncommand: {}",
                 node.id(),
                 output.status.code().unwrap_or(-1),
-                stderr
+                stderr,
+                command_head
             );
         }
         String::from_utf8(output.stdout)
