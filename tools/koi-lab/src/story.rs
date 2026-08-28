@@ -118,7 +118,7 @@ impl Lab {
             self.run_remote_checked(
                 node,
                 &format!(
-                    "set -eu; test \"$(cat {run_dir}/owner)\" = {}; test -d {run_dir}/data; test -d {run_dir}/runtime; test \"$(stat -c %a {run_dir}/runtime/koi.endpoint)\" = 600; test -S {run_dir}/runtime/koi.sock",
+                    "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test -d {run_dir}/data; test -d {run_dir}/runtime; test \"$(stat -c %a {run_dir}/runtime/koi.endpoint)\" = 600; test -S {run_dir}/runtime/koi.sock",
                     run_id.as_str()
                 ),
             )?;

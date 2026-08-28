@@ -400,7 +400,7 @@ impl Lab {
         )?;
 
         let join_command = format!(
-            "set -eu; test \"$(cat {member_run_dir}/owner)\" = {}; env KOI_DATA_DIR={member_run_dir}/data XDG_RUNTIME_DIR={member_run_dir}/runtime KOI_NO_CREDENTIAL_STORE=1 {member_run_dir}/koi certmesh join {ca_url} --invite {invite_token} --ca-mtls-port {} --json",
+            "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; run_owner=$(cat {member_run_dir}/owner 2>/dev/null) || guard \"run owner file {member_run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; env KOI_DATA_DIR={member_run_dir}/data XDG_RUNTIME_DIR={member_run_dir}/runtime KOI_NO_CREDENTIAL_STORE=1 {member_run_dir}/koi certmesh join {ca_url} --invite {invite_token} --ca-mtls-port {} --json",
             run_id.as_str(),
             ca.lab_ports()?.mtls
         );
@@ -760,7 +760,7 @@ impl Lab {
         self.require_tls_with_run_ca(ca, member, run_id)?;
 
         let renew_command = format!(
-            "set -eu; test \"$(cat {member_run_dir}/owner)\" = {}; env KOI_DATA_DIR={member_run_dir}/data XDG_RUNTIME_DIR={member_run_dir}/runtime KOI_NO_CREDENTIAL_STORE=1 {member_run_dir}/koi certmesh renew --json",
+            "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; run_owner=$(cat {member_run_dir}/owner 2>/dev/null) || guard \"run owner file {member_run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; env KOI_DATA_DIR={member_run_dir}/data XDG_RUNTIME_DIR={member_run_dir}/runtime KOI_NO_CREDENTIAL_STORE=1 {member_run_dir}/koi certmesh renew --json",
             run_id.as_str()
         );
         let renew_output = self.transport.run_checked(member, &renew_command)?;
@@ -1062,7 +1062,7 @@ impl Lab {
         self.transport.run_checked(
             ca,
             &format!(
-                "set -eu; test \"$(cat {ca_run_dir}/owner)\" = {}; grep -q ' | backup_restored' {ca_run_dir}/data/logs/certmesh-audit.log",
+                "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; run_owner=$(cat {ca_run_dir}/owner 2>/dev/null) || guard \"run owner file {ca_run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; grep -q ' | backup_restored' {ca_run_dir}/data/logs/certmesh-audit.log",
                 run_id.as_str()
             ),
         )?;
@@ -1367,7 +1367,7 @@ impl Lab {
         let run_dir = node.run_dir(run_id)?;
         let lock_dir = node.lock_dir()?;
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test -f {run_dir}/daemon.pid; pid=$(cat {run_dir}/daemon.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; kill -0 \"$pid\"; exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = {run_dir}/koi; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; ! kill -0 \"$pid\" 2>/dev/null; rm -f {run_dir}/daemon.pid",
+            "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test -f {run_dir}/daemon.pid; pid=$(cat {run_dir}/daemon.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; kill -0 \"$pid\"; exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = {run_dir}/koi; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; ! kill -0 \"$pid\" 2>/dev/null; rm -f {run_dir}/daemon.pid",
             run_id.as_str(),
             run_id.as_str()
         );
@@ -1447,7 +1447,7 @@ impl Lab {
         self.transport.run_checked(
             node,
             &format!(
-                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {remote_script}; test ! -e {run_dir}/docker-proxy.exe",
+                "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test ! -e {remote_script}; test ! -e {run_dir}/docker-proxy.exe",
                 run_id.as_str(),
                 run_id.as_str()
             ),
@@ -1457,7 +1457,7 @@ impl Lab {
         self.transport.run_checked(
             node,
             &format!(
-                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; chmod 700 {remote_script}; python=$(realpath \"$(command -v python3)\"); test -x \"$python\"; printf '%s' \"$python\" > {run_dir}/docker-proxy.exe",
+                "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; chmod 700 {remote_script}; python=$(realpath \"$(command -v python3)\"); test -x \"$python\"; printf '%s' \"$python\" > {run_dir}/docker-proxy.exe",
                 run_id.as_str(),
                 run_id.as_str()
             ),
@@ -1469,7 +1469,7 @@ impl Lab {
         let run_dir = node.run_dir(run_id)?;
         let lock_dir = node.lock_dir()?;
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test -x {run_dir}/docker_socket_proxy.py; test -f {run_dir}/docker-proxy.exe; test ! -e {run_dir}/docker-proxy.pid; test ! -e {run_dir}/docker-proxy.sock; setsid -f sh -c 'echo $$ > {run_dir}/docker-proxy.pid; exec \"$(cat {run_dir}/docker-proxy.exe)\" {run_dir}/docker_socket_proxy.py --listen {run_dir}/docker-proxy.sock --upstream /var/run/docker.sock >>{run_dir}/docker-proxy.log 2>&1'; i=0; while ! test -S {run_dir}/docker-proxy.sock && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; test -S {run_dir}/docker-proxy.sock; test \"$(stat -c %a {run_dir}/docker-proxy.sock)\" = 600; pid=$(cat {run_dir}/docker-proxy.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$(cat {run_dir}/docker-proxy.exe)\"; tr '\\000' ' ' </proc/\"$pid\"/cmdline | grep -F -- '{run_dir}/docker_socket_proxy.py --listen {run_dir}/docker-proxy.sock --upstream /var/run/docker.sock' >/dev/null",
+            "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test -x {run_dir}/docker_socket_proxy.py; test -f {run_dir}/docker-proxy.exe; test ! -e {run_dir}/docker-proxy.pid; test ! -e {run_dir}/docker-proxy.sock; setsid -f sh -c 'echo $$ > {run_dir}/docker-proxy.pid; exec \"$(cat {run_dir}/docker-proxy.exe)\" {run_dir}/docker_socket_proxy.py --listen {run_dir}/docker-proxy.sock --upstream /var/run/docker.sock >>{run_dir}/docker-proxy.log 2>&1'; i=0; while ! test -S {run_dir}/docker-proxy.sock && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; test -S {run_dir}/docker-proxy.sock; test \"$(stat -c %a {run_dir}/docker-proxy.sock)\" = 600; pid=$(cat {run_dir}/docker-proxy.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$(cat {run_dir}/docker-proxy.exe)\"; tr '\\000' ' ' </proc/\"$pid\"/cmdline | grep -F -- '{run_dir}/docker_socket_proxy.py --listen {run_dir}/docker-proxy.sock --upstream /var/run/docker.sock' >/dev/null",
             run_id.as_str(),
             run_id.as_str()
         );
@@ -1507,7 +1507,7 @@ impl Lab {
         self.transport.run_checked(
             node,
             &format!(
-                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/webhooks.json",
+                "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test ! -e {run_dir}/webhooks.json",
                 run_id.as_str(),
                 run_id.as_str()
             ),
@@ -1528,7 +1528,7 @@ impl Lab {
         self.transport.run_checked(
             node,
             &format!(
-                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {remote_script}; test ! -e {run_dir}/sink.exe",
+                "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test ! -e {remote_script}; test ! -e {run_dir}/sink.exe",
                 run_id.as_str(),
                 run_id.as_str()
             ),
@@ -1538,7 +1538,7 @@ impl Lab {
         self.transport.run_checked(
             node,
             &format!(
-                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; chmod 700 {remote_script}; python=$(realpath \"$(command -v python3)\"); test -x \"$python\"; printf '%s' \"$python\" > {run_dir}/sink.exe",
+                "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; chmod 700 {remote_script}; python=$(realpath \"$(command -v python3)\"); test -x \"$python\"; printf '%s' \"$python\" > {run_dir}/sink.exe",
                 run_id.as_str(),
                 run_id.as_str()
             ),
@@ -1559,7 +1559,7 @@ impl Lab {
         let lock_dir = node.lock_dir()?;
         let port = node.lab_ports()?.fixture;
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test -x {run_dir}/webhook_sink.py; test -f {run_dir}/sink.exe; test ! -e {run_dir}/sink.pid; ! ss -H -lnt | grep -Eq ':{port} '; setsid -f sh -c 'echo $$ > {run_dir}/sink.pid; exec env KOI_SINK_SECRET={} \"$(cat {run_dir}/sink.exe)\" {run_dir}/webhook_sink.py --port {port} --out {run_dir}/deliveries.jsonl >>{run_dir}/sink.log 2>&1'; i=0; while ! ss -H -lnt | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ss -H -lnt | grep -Eq ':{port} '; pid=$(cat {run_dir}/sink.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$(cat {run_dir}/sink.exe)\"",
+            "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test -x {run_dir}/webhook_sink.py; test -f {run_dir}/sink.exe; test ! -e {run_dir}/sink.pid; ! ss -H -lnt | grep -Eq ':{port} '; setsid -f sh -c 'echo $$ > {run_dir}/sink.pid; exec env KOI_SINK_SECRET={} \"$(cat {run_dir}/sink.exe)\" {run_dir}/webhook_sink.py --port {port} --out {run_dir}/deliveries.jsonl >>{run_dir}/sink.log 2>&1'; i=0; while ! ss -H -lnt | grep -Eq ':{port} ' && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ss -H -lnt | grep -Eq ':{port} '; pid=$(cat {run_dir}/sink.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$(cat {run_dir}/sink.exe)\"",
             run_id.as_str(),
             run_id.as_str(),
             secret
@@ -1574,7 +1574,7 @@ impl Lab {
         let run_dir = node.run_dir(run_id)?;
         let lock_dir = node.lock_dir()?;
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; if test ! -f {run_dir}/daemon.pid; then exit 0; fi; pid=$(cat {run_dir}/daemon.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; if kill -0 \"$pid\" 2>/dev/null; then exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = {run_dir}/koi; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; fi; rm -f {run_dir}/daemon.pid",
+            "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; if test ! -f {run_dir}/daemon.pid; then exit 0; fi; pid=$(cat {run_dir}/daemon.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; if kill -0 \"$pid\" 2>/dev/null; then exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = {run_dir}/koi; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; fi; rm -f {run_dir}/daemon.pid",
             run_id.as_str(),
             run_id.as_str()
         );
@@ -1586,7 +1586,7 @@ impl Lab {
         let run_dir = node.run_dir(run_id)?;
         let lock_dir = node.lock_dir()?;
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; if test ! -f {run_dir}/sink.pid; then exit 0; fi; pid=$(cat {run_dir}/sink.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = \"$(cat {run_dir}/sink.exe)\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; rm -f {run_dir}/sink.pid",
+            "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; if test ! -f {run_dir}/sink.pid; then exit 0; fi; pid=$(cat {run_dir}/sink.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; exe=$(readlink -f /proc/\"$pid\"/exe); test \"$exe\" = \"$(cat {run_dir}/sink.exe)\"; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; rm -f {run_dir}/sink.pid",
             run_id.as_str(),
             run_id.as_str()
         );
@@ -1600,7 +1600,7 @@ impl Lab {
         self.transport.run_checked(
             node,
             &format!(
-                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/sink.pid; rm -f {run_dir}/sink.log {run_dir}/sink.exe {run_dir}/webhook_sink.py {run_dir}/deliveries.jsonl {run_dir}/webhooks.json",
+                "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test ! -e {run_dir}/sink.pid; rm -f {run_dir}/sink.log {run_dir}/sink.exe {run_dir}/webhook_sink.py {run_dir}/deliveries.jsonl {run_dir}/webhooks.json",
                 run_id.as_str(),
                 run_id.as_str()
             ),
@@ -1640,7 +1640,7 @@ impl Lab {
         self.transport.run_checked(
             node,
             &format!(
-                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; chmod 600 {run_dir}/principal-key.pem {run_dir}/principal-leaf.pem {run_dir}/principal-ca.pem",
+                "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; chmod 600 {run_dir}/principal-key.pem {run_dir}/principal-leaf.pem {run_dir}/principal-ca.pem",
                 run_id.as_str(),
                 run_id.as_str()
             ),
@@ -1659,7 +1659,7 @@ impl Lab {
         self.transport.run_checked(
             node,
             &format!(
-                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; rm -f {run_dir}/principal-leaf.pem {run_dir}/principal-key.pem {run_dir}/principal-ca.pem {run_dir}/principal-probe.json",
+                "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; rm -f {run_dir}/principal-leaf.pem {run_dir}/principal-key.pem {run_dir}/principal-ca.pem {run_dir}/principal-probe.json",
                 run_id.as_str(),
                 run_id.as_str()
             ),
@@ -1696,7 +1696,7 @@ impl Lab {
         self.transport.run_checked(
             node,
             &format!(
-                "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/docker-proxy.pid; test ! -e {run_dir}/docker-proxy.sock; rm -f {run_dir}/docker-proxy.log {run_dir}/docker-proxy.exe {run_dir}/docker_socket_proxy.py",
+                "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test ! -e {run_dir}/docker-proxy.pid; test ! -e {run_dir}/docker-proxy.sock; rm -f {run_dir}/docker-proxy.log {run_dir}/docker-proxy.exe {run_dir}/docker_socket_proxy.py",
                 run_id.as_str(),
                 run_id.as_str()
             ),
@@ -1747,7 +1747,7 @@ impl Lab {
                 .to_owned()
         };
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test \"$(cat {run_dir}/image.ref)\" = {image_ref}; test ! -e {marker}; ! docker container inspect {container_name} >/dev/null 2>&1; cid=$(docker create --name {container_name} {common_labels} {managed} {image_ref} --daemon --port 5641 --http-bind 0.0.0.0 --no-ipc --no-mdns --no-dns --no-health --no-proxy --no-udp --no-runtime --no-acme --no-mcp-http); case \"$cid\" in ''|*[!0-9a-f]*) exit 76;; esac; printf '%s' \"$cid\" > {marker}; docker start \"$cid\" >/dev/null; {readiness} printf '%s' \"$cid\"",
+            "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test \"$(cat {run_dir}/image.ref)\" = {image_ref}; test ! -e {marker}; ! docker container inspect {container_name} >/dev/null 2>&1; cid=$(docker create --name {container_name} {common_labels} {managed} {image_ref} --daemon --port 5641 --http-bind 0.0.0.0 --no-ipc --no-mdns --no-dns --no-health --no-proxy --no-udp --no-runtime --no-acme --no-mcp-http); case \"$cid\" in ''|*[!0-9a-f]*) exit 76;; esac; printf '%s' \"$cid\" > {marker}; docker start \"$cid\" >/dev/null; {readiness} printf '%s' \"$cid\"",
             run_id.as_str(),
             run_id.as_str()
         );
@@ -1782,7 +1782,7 @@ impl Lab {
         let marker = runtime_fault_container_marker(&run_dir, role);
         let network_name = runtime_fault_network_name(run_id);
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test -f {marker}; test ! -e {run_dir}/runtime-fault-network.id; ! docker network inspect {network_name} >/dev/null 2>&1; nid=$(docker network create --label org.sylin.koi.lab.owner=koi-lab --label org.sylin.koi.lab.run={} {network_name}); case \"$nid\" in ''|*[!0-9a-f]*) exit 76;; esac; printf '%s' \"$nid\" > {run_dir}/runtime-fault-network.id; docker network connect {network_name} \"$(cat {marker})\"; printf '%s' \"$nid\"",
+            "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test -f {marker}; test ! -e {run_dir}/runtime-fault-network.id; ! docker network inspect {network_name} >/dev/null 2>&1; nid=$(docker network create --label org.sylin.koi.lab.owner=koi-lab --label org.sylin.koi.lab.run={} {network_name}); case \"$nid\" in ''|*[!0-9a-f]*) exit 76;; esac; printf '%s' \"$nid\" > {run_dir}/runtime-fault-network.id; docker network connect {network_name} \"$(cat {marker})\"; printf '%s' \"$nid\"",
             run_id.as_str(),
             run_id.as_str(),
             run_id.as_str()
@@ -1950,7 +1950,7 @@ impl Lab {
         let image_ref = story_image_ref(run_id);
         let container_name = story_container_name(run_id);
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test \"$(cat {run_dir}/image.ref)\" = {image_ref}; test ! -e {run_dir}/container.id; ! docker container inspect {container_name} >/dev/null 2>&1; ! ss -H -lnt | grep -Eq ':{} '; cid=$(docker create --name {container_name} --label org.sylin.koi.lab.owner=koi-lab --label org.sylin.koi.lab.run={} --label koi.enable=true --label koi.name={service_name} --label koi.type=_http._tcp --label koi.dns.name={dns_name} --label koi.health.path=/healthz --label koi.health.kind=http --label koi.health.interval=1 --label koi.health.timeout=1 --label koi.proxy.port={} --label koi.proxy.remote=true --label koi.txt.run={} --publish {}:{}:5641 {image_ref} --daemon --port 5641 --http-bind 0.0.0.0 --no-ipc --no-mdns --no-dns --no-health --no-proxy --no-udp --no-runtime --no-acme --no-mcp-http); case \"$cid\" in ''|*[!0-9a-f]*) exit 76;; esac; printf '%s' \"$cid\" > {run_dir}/container.id; docker start \"$cid\" >/dev/null; i=0; while ! curl --silent --fail --max-time 1 http://{}:{}/healthz >/dev/null && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; curl --silent --fail --max-time 2 http://{}:{}/healthz >/dev/null; printf '%s' \"$cid\"",
+            "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test \"$(cat {run_dir}/image.ref)\" = {image_ref}; test ! -e {run_dir}/container.id; ! docker container inspect {container_name} >/dev/null 2>&1; ! ss -H -lnt | grep -Eq ':{} '; cid=$(docker create --name {container_name} --label org.sylin.koi.lab.owner=koi-lab --label org.sylin.koi.lab.run={} --label koi.enable=true --label koi.name={service_name} --label koi.type=_http._tcp --label koi.dns.name={dns_name} --label koi.health.path=/healthz --label koi.health.kind=http --label koi.health.interval=1 --label koi.health.timeout=1 --label koi.proxy.port={} --label koi.proxy.remote=true --label koi.txt.run={} --publish {}:{}:5641 {image_ref} --daemon --port 5641 --http-bind 0.0.0.0 --no-ipc --no-mdns --no-dns --no-health --no-proxy --no-udp --no-runtime --no-acme --no-mcp-http); case \"$cid\" in ''|*[!0-9a-f]*) exit 76;; esac; printf '%s' \"$cid\" > {run_dir}/container.id; docker start \"$cid\" >/dev/null; i=0; while ! curl --silent --fail --max-time 1 http://{}:{}/healthz >/dev/null && test \"$i\" -lt 100; do sleep .1; i=$((i+1)); done; curl --silent --fail --max-time 2 http://{}:{}/healthz >/dev/null; printf '%s' \"$cid\"",
             run_id.as_str(),
             run_id.as_str(),
             ports.container,
@@ -2030,7 +2030,7 @@ impl Lab {
         let data = format!("{run_dir}/data");
         let runtime = format!("{run_dir}/runtime");
         let command = format!(
-            "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test ! -e {run_dir}/daemon.pid; test -d {data}; test -d {runtime}; test \"$(realpath {data})\" = {data}; test \"$(realpath {runtime})\" = {runtime}; rm -rf -- {data} {runtime}; test ! -e {data}; test ! -e {runtime}",
+            "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test ! -e {run_dir}/daemon.pid; test -d {data}; test -d {runtime}; test \"$(realpath {data})\" = {data}; test \"$(realpath {runtime})\" = {runtime}; rm -rf -- {data} {runtime}; test ! -e {data}; test ! -e {runtime}",
             run_id.as_str(),
             run_id.as_str()
         );
@@ -2041,7 +2041,7 @@ impl Lab {
     pub(crate) fn member_renew_command(&self, member: &NodeSpec, run_id: &RunId) -> Result<String> {
         let run_dir = member.run_dir(run_id)?;
         Ok(format!(
-            "set -eu; test \"$(cat {run_dir}/owner)\" = {}; env KOI_DATA_DIR={run_dir}/data XDG_RUNTIME_DIR={run_dir}/runtime KOI_NO_CREDENTIAL_STORE=1 {run_dir}/koi certmesh renew --json",
+            "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; env KOI_DATA_DIR={run_dir}/data XDG_RUNTIME_DIR={run_dir}/runtime KOI_NO_CREDENTIAL_STORE=1 {run_dir}/koi certmesh renew --json",
             run_id.as_str()
         ))
     }
@@ -2078,7 +2078,7 @@ impl Lab {
         self.transport.run_checked(
             ca,
             &format!(
-                "set -eu; test \"$(cat {run_dir}/owner)\" = {}; bind={run_dir}/data/certmesh/ca/machine.bind; test -f \"$bind\"; test \"$(stat -c %a \"$bind\")\" = 600; machine_id=$(tr -d '\\r\\n' </etc/machine-id); expected=$(printf 'koi-machine-bind:%s' \"$machine_id\" | sha256sum | cut -d' ' -f1); test \"$(cat \"$bind\")\" = \"$expected\"",
+                "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; bind={run_dir}/data/certmesh/ca/machine.bind; test -f \"$bind\"; test \"$(stat -c %a \"$bind\")\" = 600; machine_id=$(tr -d '\\r\\n' </etc/machine-id); expected=$(printf 'koi-machine-bind:%s' \"$machine_id\" | sha256sum | cut -d' ' -f1); test \"$(cat \"$bind\")\" = \"$expected\"",
                 run_id.as_str()
             ),
         )?;
@@ -2102,7 +2102,7 @@ impl Lab {
         let metadata = self.remote_line(
             member,
             &format!(
-                "set -eu; test \"$(cat {run_dir}/owner)\" = {}; test \"$(stat -c %a {key})\" = 600; test \"$(stat -c %a {member_state})\" = 600; test \"$(grep -c 'BEGIN CERTIFICATE' {fullchain})\" = 2; key_pub=$(openssl pkey -in {key} -pubout -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1); cert_pub=$(openssl x509 -in {cert} -pubkey -noout | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1); test \"$key_pub\" = \"$cert_pub\"; openssl verify -CAfile {ca} {cert} >/dev/null; key_sha=$(sha256sum {key} | cut -d' ' -f1); cert_sha=$(sha256sum {cert} | cut -d' ' -f1); cert_fp=$(openssl x509 -in {cert} -outform DER | sha256sum | cut -d' ' -f1); printf '%s|%s|%s' \"$key_sha\" \"$cert_sha\" \"$cert_fp\"",
+                "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test \"$(stat -c %a {key})\" = 600; test \"$(stat -c %a {member_state})\" = 600; test \"$(grep -c 'BEGIN CERTIFICATE' {fullchain})\" = 2; key_pub=$(openssl pkey -in {key} -pubout -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1); cert_pub=$(openssl x509 -in {cert} -pubkey -noout | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1); test \"$key_pub\" = \"$cert_pub\"; openssl verify -CAfile {ca} {cert} >/dev/null; key_sha=$(sha256sum {key} | cut -d' ' -f1); cert_sha=$(sha256sum {cert} | cut -d' ' -f1); cert_fp=$(openssl x509 -in {cert} -outform DER | sha256sum | cut -d' ' -f1); printf '%s|%s|%s' \"$key_sha\" \"$cert_sha\" \"$cert_fp\"",
                 run_id.as_str()
             ),
         )?;
@@ -4178,7 +4178,7 @@ fn native_trust_install_command(
         bail!("native trust paths are not the exact run-owned paths");
     }
     Ok(format!(
-        "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; test -f {ca_pem}; test \"$(realpath {ca_pem})\" = {ca_pem}; test ! -e {trust_state}; sudo -n env KOI_DATA_DIR={trust_state} {run_dir}/koi --json trust install {ca_pem}",
+        "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; test -f {ca_pem}; test \"$(realpath {ca_pem})\" = {ca_pem}; test ! -e {trust_state}; sudo -n env KOI_DATA_DIR={trust_state} {run_dir}/koi --json trust install {ca_pem}",
         run_id.as_str(),
         run_id.as_str()
     ))
@@ -4209,7 +4209,7 @@ fn native_trust_remove_command(
     let anchor = format!("/usr/local/share/ca-certificates/{name}-{marker}.crt");
     let leaf = format!("/etc/ssl/certs/{name}-{marker}.pem");
     Ok(format!(
-        "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; sudo -n env KOI_DATA_DIR={trust_state} {run_dir}/koi --json trust remove {name}; if test -L {leaf}; then test ! -e {anchor}; test \"$(readlink {leaf})\" = {anchor}; for link in /etc/ssl/certs/*.[0-9]*; do if test -L \"$link\" && test \"$(readlink \"$link\")\" = {name}-{marker}.pem; then sudo -n rm -f -- \"$link\"; fi; done; sudo -n rm -f -- {leaf}; fi; test ! -e {anchor}; test ! -L {leaf}; resolved=$(sudo -n realpath {trust_state}); test \"$resolved\" = {trust_state}; sudo -n rm -rf -- \"$resolved\"",
+        "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; sudo -n env KOI_DATA_DIR={trust_state} {run_dir}/koi --json trust remove {name}; if test -L {leaf}; then test ! -e {anchor}; test \"$(readlink {leaf})\" = {anchor}; for link in /etc/ssl/certs/*.[0-9]*; do if test -L \"$link\" && test \"$(readlink \"$link\")\" = {name}-{marker}.pem; then sudo -n rm -f -- \"$link\"; fi; done; sudo -n rm -f -- {leaf}; fi; test ! -e {anchor}; test ! -L {leaf}; resolved=$(sudo -n realpath {trust_state}); test \"$resolved\" = {trust_state}; sudo -n rm -rf -- \"$resolved\"",
         run_id.as_str(),
         run_id.as_str()
     ))
@@ -4263,7 +4263,7 @@ fn runtime_fault_container_remove_script(
     let container_name = runtime_fault_container_name(run_id, role);
     let required = if require_present { "true" } else { "false" };
     Ok(format!(
-        "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; required={required}; if test -f {marker}; then cid=$(cat {marker}); case \"$cid\" in ''|*[!0-9a-f]*) exit 76;; esac; if docker container inspect \"$cid\" >/dev/null 2>&1; then actual=$(docker container inspect \"$cid\" | jq -r '.[0].Name + \"|\" + .[0].Config.Labels[\"org.sylin.koi.lab.owner\"] + \"|\" + .[0].Config.Labels[\"org.sylin.koi.lab.run\"] + \"|\" + .[0].Config.Labels[\"org.sylin.koi.lab.role\"]'); test \"$actual\" = \"/{container_name}|koi-lab|{}|{}\"; docker container rm --force \"$cid\" >/dev/null; elif test \"$required\" = true; then exit 76; fi; rm -f {marker}; elif test \"$required\" = true; then exit 76; fi",
+        "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; required={required}; if test -f {marker}; then cid=$(cat {marker}); case \"$cid\" in ''|*[!0-9a-f]*) exit 76;; esac; if docker container inspect \"$cid\" >/dev/null 2>&1; then actual=$(docker container inspect \"$cid\" | jq -r '.[0].Name + \"|\" + .[0].Config.Labels[\"org.sylin.koi.lab.owner\"] + \"|\" + .[0].Config.Labels[\"org.sylin.koi.lab.run\"] + \"|\" + .[0].Config.Labels[\"org.sylin.koi.lab.role\"]'); test \"$actual\" = \"/{container_name}|koi-lab|{}|{}\"; docker container rm --force \"$cid\" >/dev/null; elif test \"$required\" = true; then exit 76; fi; rm -f {marker}; elif test \"$required\" = true; then exit 76; fi",
         run_id.as_str(),
         run_id.as_str(),
         run_id.as_str(),
@@ -4276,7 +4276,7 @@ fn runtime_fault_network_remove_script(node: &NodeSpec, run_id: &RunId) -> Resul
     let run_dir = node.run_dir(run_id)?;
     let network_name = runtime_fault_network_name(run_id);
     Ok(format!(
-        "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; if test -f {run_dir}/runtime-fault-network.id; then expected=$(cat {run_dir}/runtime-fault-network.id); case \"$expected\" in ''|*[!0-9a-f]*) exit 76;; esac; if docker network inspect {network_name} >/dev/null 2>&1; then actual=$(docker network inspect {network_name} | jq -r '.[0].Id + \"|\" + .[0].Labels[\"org.sylin.koi.lab.owner\"] + \"|\" + .[0].Labels[\"org.sylin.koi.lab.run\"]'); test \"$actual\" = \"$expected|koi-lab|{}\"; docker network rm {network_name} >/dev/null; fi; rm -f {run_dir}/runtime-fault-network.id; fi",
+        "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; if test -f {run_dir}/runtime-fault-network.id; then expected=$(cat {run_dir}/runtime-fault-network.id); case \"$expected\" in ''|*[!0-9a-f]*) exit 76;; esac; if docker network inspect {network_name} >/dev/null 2>&1; then actual=$(docker network inspect {network_name} | jq -r '.[0].Id + \"|\" + .[0].Labels[\"org.sylin.koi.lab.owner\"] + \"|\" + .[0].Labels[\"org.sylin.koi.lab.run\"]'); test \"$actual\" = \"$expected|koi-lab|{}\"; docker network rm {network_name} >/dev/null; fi; rm -f {run_dir}/runtime-fault-network.id; fi",
         run_id.as_str(),
         run_id.as_str(),
         run_id.as_str()
@@ -4292,7 +4292,7 @@ fn runtime_proxy_stop_script(
     let run_dir = node.run_dir(run_id)?;
     let required = if require_present { "true" } else { "false" };
     Ok(format!(
-        "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; required={required}; if test -f {run_dir}/docker-proxy.pid; then test -f {run_dir}/docker-proxy.exe; pid=$(cat {run_dir}/docker-proxy.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; if kill -0 \"$pid\" 2>/dev/null; then test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$(cat {run_dir}/docker-proxy.exe)\"; tr '\\000' ' ' </proc/\"$pid\"/cmdline | grep -F -- '{run_dir}/docker_socket_proxy.py --listen {run_dir}/docker-proxy.sock --upstream /var/run/docker.sock' >/dev/null; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ! kill -0 \"$pid\" 2>/dev/null; elif test \"$required\" = true; then exit 76; fi; rm -f {run_dir}/docker-proxy.pid; elif test \"$required\" = true; then exit 76; fi; i=0; while test -e {run_dir}/docker-proxy.sock && test \"$i\" -lt 20; do sleep .1; i=$((i+1)); done; if test -e {run_dir}/docker-proxy.sock; then test -S {run_dir}/docker-proxy.sock; rm -f {run_dir}/docker-proxy.sock; fi",
+        "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; required={required}; if test -f {run_dir}/docker-proxy.pid; then test -f {run_dir}/docker-proxy.exe; pid=$(cat {run_dir}/docker-proxy.pid); case \"$pid\" in ''|*[!0-9]*) exit 76;; esac; if kill -0 \"$pid\" 2>/dev/null; then test \"$(readlink -f /proc/\"$pid\"/exe)\" = \"$(cat {run_dir}/docker-proxy.exe)\"; tr '\\000' ' ' </proc/\"$pid\"/cmdline | grep -F -- '{run_dir}/docker_socket_proxy.py --listen {run_dir}/docker-proxy.sock --upstream /var/run/docker.sock' >/dev/null; kill \"$pid\"; i=0; while kill -0 \"$pid\" 2>/dev/null && test \"$i\" -lt 50; do sleep .1; i=$((i+1)); done; ! kill -0 \"$pid\" 2>/dev/null; elif test \"$required\" = true; then exit 76; fi; rm -f {run_dir}/docker-proxy.pid; elif test \"$required\" = true; then exit 76; fi; i=0; while test -e {run_dir}/docker-proxy.sock && test \"$i\" -lt 20; do sleep .1; i=$((i+1)); done; if test -e {run_dir}/docker-proxy.sock; then test -S {run_dir}/docker-proxy.sock; rm -f {run_dir}/docker-proxy.sock; fi",
         run_id.as_str(),
         run_id.as_str()
     ))
@@ -4308,7 +4308,7 @@ fn story_container_remove_script(
     let container_name = story_container_name(run_id);
     let required = if require_present { "true" } else { "false" };
     Ok(format!(
-        "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; required={required}; if test -f {run_dir}/container.id; then cid=$(cat {run_dir}/container.id); case \"$cid\" in ''|*[!0-9a-f]*) exit 76;; esac; if docker container inspect \"$cid\" >/dev/null 2>&1; then actual=$(docker container inspect \"$cid\" | jq -r '.[0].Name + \"|\" + .[0].Config.Labels[\"org.sylin.koi.lab.owner\"] + \"|\" + .[0].Config.Labels[\"org.sylin.koi.lab.run\"]'); test \"$actual\" = \"/{container_name}|koi-lab|{}\"; docker container rm --force \"$cid\" >/dev/null; elif test \"$required\" = true; then exit 76; fi; rm -f {run_dir}/container.id; elif test \"$required\" = true; then exit 76; fi",
+        "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; required={required}; if test -f {run_dir}/container.id; then cid=$(cat {run_dir}/container.id); case \"$cid\" in ''|*[!0-9a-f]*) exit 76;; esac; if docker container inspect \"$cid\" >/dev/null 2>&1; then actual=$(docker container inspect \"$cid\" | jq -r '.[0].Name + \"|\" + .[0].Config.Labels[\"org.sylin.koi.lab.owner\"] + \"|\" + .[0].Config.Labels[\"org.sylin.koi.lab.run\"]'); test \"$actual\" = \"/{container_name}|koi-lab|{}\"; docker container rm --force \"$cid\" >/dev/null; elif test \"$required\" = true; then exit 76; fi; rm -f {run_dir}/container.id; elif test \"$required\" = true; then exit 76; fi",
         run_id.as_str(),
         run_id.as_str(),
         run_id.as_str()
@@ -4325,7 +4325,7 @@ fn story_image_remove_script(
     let image_ref = story_image_ref(run_id);
     let required = if require_present { "true" } else { "false" };
     Ok(format!(
-        "set -eu; test \"$(cat {lock_dir}/owner)\" = {}; test \"$(cat {run_dir}/owner)\" = {}; required={required}; if test -f {run_dir}/image.ref; then test \"$(cat {run_dir}/image.ref)\" = {image_ref}; if docker image inspect {image_ref} >/dev/null 2>&1; then test -f {run_dir}/image.id; expected=$(cat {run_dir}/image.id); printf '%s' \"$expected\" | grep -Eq '^sha256:[0-9a-f]{{64}}$'; actual=$(docker image inspect {image_ref} | jq -r '.[0].Id'); test \"$actual\" = \"$expected\"; test \"$(docker image inspect {image_ref} | jq -r '.[0].Config.Labels[\"org.sylin.koi.lab.run\"]')\" = {}; docker image rm {image_ref} >/dev/null; elif test \"$required\" = true; then exit 76; fi; rm -f {run_dir}/image.ref {run_dir}/image.id; elif test \"$required\" = true; then exit 76; fi; rm -f {run_dir}/story-image.tar",
+        "set -eu; guard() {{ echo \"koi-lab guard failed: $1\" >&2; exit 71; }}; lock_owner=$(cat {lock_dir}/owner 2>/dev/null) || guard \"lock owner file {lock_dir}/owner is missing\"; test \"$lock_owner\" = {} || guard \"lab lock held by '$lock_owner'\"; run_owner=$(cat {run_dir}/owner 2>/dev/null) || guard \"run owner file {run_dir}/owner is missing\"; test \"$run_owner\" = {} || guard \"run dir owned by '$run_owner'\"; required={required}; if test -f {run_dir}/image.ref; then test \"$(cat {run_dir}/image.ref)\" = {image_ref}; if docker image inspect {image_ref} >/dev/null 2>&1; then test -f {run_dir}/image.id; expected=$(cat {run_dir}/image.id); printf '%s' \"$expected\" | grep -Eq '^sha256:[0-9a-f]{{64}}$'; actual=$(docker image inspect {image_ref} | jq -r '.[0].Id'); test \"$actual\" = \"$expected\"; test \"$(docker image inspect {image_ref} | jq -r '.[0].Config.Labels[\"org.sylin.koi.lab.run\"]')\" = {}; docker image rm {image_ref} >/dev/null; elif test \"$required\" = true; then exit 76; fi; rm -f {run_dir}/image.ref {run_dir}/image.id; elif test \"$required\" = true; then exit 76; fi; rm -f {run_dir}/story-image.tar",
         run_id.as_str(),
         run_id.as_str(),
         run_id.as_str()
