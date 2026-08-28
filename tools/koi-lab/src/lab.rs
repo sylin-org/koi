@@ -1331,13 +1331,20 @@ impl Lab {
                 "--dns-port {dns_port} --dns-public --announce-http --webhooks {run_dir}/webhooks.json"
             ),
         };
-        let guarded_ports = match profile {
-            DaemonProfile::Certmesh => {
+        // A preserve-state restart keeps the lane's CONTAINERs and fixture
+        // alive across the daemon restart — their published/fixture ports are
+        // legitimately held by those processes, so only the daemon's own
+        // listeners are guarded. Fresh starts guard the full port set.
+        let guarded_ports = match (profile, preserve_state) {
+            (DaemonProfile::Certmesh, _) => {
                 format!("{http_port}|{mtls_port}|{acme_port}|{proxy_port}")
             }
-            DaemonProfile::CapabilityStory
-            | DaemonProfile::RuntimeReconnect
-            | DaemonProfile::WebhookFanout => format!(
+            (_, true) => {
+                format!("{http_port}|{mtls_port}|{acme_port}|{proxy_port}|{dns_port}")
+            }
+            (DaemonProfile::CapabilityStory, false)
+            | (DaemonProfile::RuntimeReconnect, false)
+            | (DaemonProfile::WebhookFanout, false) => format!(
                 "{http_port}|{mtls_port}|{acme_port}|{proxy_port}|{dns_port}|{fixture_port}|{}",
                 ports.container
             ),
