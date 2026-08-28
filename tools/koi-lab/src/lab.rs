@@ -3543,9 +3543,28 @@ impl Lab {
     }
 
     fn cleanup_node(&self, node: &NodeSpec, run_id: &RunId) -> Result<()> {
-        self.transport
-            .run_checked(node, &cleanup_script(node, run_id)?)?;
-        Ok(())
+        // Workstation nodes on the LAN blip (wifi, suspend, driver resets);
+        // the cleanup script is idempotent, so a transport-class failure is
+        // retried with backoff before it is allowed to redden a run.
+        let script = cleanup_script(node, run_id)?;
+        let mut last: Option<anyhow::Error> = None;
+        for attempt in 0..3 {
+            match self.transport.run_checked(node, &script) {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    let text = format!("{e:#}");
+                    let transport_blip = text.contains("FATAL ERROR")
+                        || text.contains("Network error")
+                        || text.contains("Server unexpectedly closed");
+                    if !transport_blip || attempt == 2 {
+                        return Err(e);
+                    }
+                    last = Some(e);
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+            }
+        }
+        Err(last.unwrap_or_else(|| anyhow::anyhow!("cleanup did not run")))
     }
 
     fn rollback_partial(&self, nodes: &[&NodeSpec], run_id: &RunId) {
