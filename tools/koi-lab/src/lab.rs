@@ -1264,6 +1264,35 @@ impl Lab {
         self.launch_run_daemon(node, run_id, false, DaemonProfile::CapabilityStory)
     }
 
+    /// Stop the node's standing koi service for lanes that need exclusive
+    /// runtime watching: a root standing daemon shares the Docker socket with
+    /// the run daemon and derives the same labeled services, racing it for
+    /// derived proxy ports. Requires the node to grant systemd mutations;
+    /// paired with `start_standing_service` in the lane's cleanup.
+    pub(crate) fn stop_standing_service(&self, node: &NodeSpec) -> Result<()> {
+        if !node.allows_mutation("systemd") {
+            bail!(
+                "{} does not grant systemd mutations; cannot isolate the run from the standing service",
+                node.id()
+            );
+        }
+        self.transport
+            .run_checked(node, "sudo -n systemctl stop koi")?;
+        Ok(())
+    }
+
+    pub(crate) fn start_standing_service(&self, node: &NodeSpec) -> Result<()> {
+        if !node.allows_mutation("systemd") {
+            bail!(
+                "{} does not grant systemd mutations; cannot restore the standing service",
+                node.id()
+            );
+        }
+        self.transport
+            .run_checked(node, "sudo -n systemctl start koi")?;
+        Ok(())
+    }
+
     pub(crate) fn start_runtime_reconnect_daemon(
         &self,
         node: &NodeSpec,

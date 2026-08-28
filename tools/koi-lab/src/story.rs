@@ -21,6 +21,7 @@ const CONTAINER_SERVICE_TYPE: &str = "_http._tcp.local.";
 
 #[derive(Default)]
 struct StoryResources {
+    standing_isolated: bool,
     dns_names: Vec<String>,
     mdns_id: Option<String>,
     health_name: Option<String>,
@@ -87,6 +88,12 @@ impl Lab {
         rotation: TrustRotation,
         resources: &mut StoryResources,
     ) -> Result<CapabilityStoryReport> {
+        // Exclusive runtime watching, same as the reconnect lane: the standing
+        // root daemons share the Docker socket and would derive the same
+        // labeled services, racing the run daemon for derived ports.
+        self.stop_standing_service(primary)?;
+        self.stop_standing_service(observer)?;
+        resources.standing_isolated = true;
         self.start_story_daemon(primary, run_id)?;
         self.start_story_daemon(observer, run_id)?;
         let primary_url = self.node_url(primary)?;
@@ -932,11 +939,19 @@ impl Lab {
         observer: &NodeSpec,
         resources: &mut StoryResources,
     ) -> Result<()> {
+        let mut failures = Vec::new();
+        if resources.standing_isolated {
+            for node in [primary, observer] {
+                if let Err(e) = self.start_standing_service(node) {
+                    failures.push(format!("standing service restore: {e:#}"));
+                }
+            }
+            resources.standing_isolated = false;
+        }
         let primary_url = self.node_url(primary)?;
         let token = self.daemon_token(primary, run_id).ok();
         let observer_url = self.node_url(observer)?;
         let observer_token = self.daemon_token(observer, run_id).ok();
-        let mut failures = Vec::new();
         let needs_http_cleanup = resources.udp_id.is_some()
             || resources.mdns_id.is_some()
             || resources.health_name.is_some()

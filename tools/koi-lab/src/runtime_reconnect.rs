@@ -15,6 +15,7 @@ use crate::probe::SseCapture;
 
 #[derive(Default)]
 struct RuntimeReconnectResources {
+    standing_isolated: bool,
     proxy_staged: bool,
     proxy_active: bool,
     primary_daemon: bool,
@@ -78,6 +79,12 @@ impl Lab {
         rotation: TrustRotation,
         resources: &mut RuntimeReconnectResources,
     ) -> Result<RuntimeReconnectReport> {
+        // Exclusive runtime watching: the standing root daemons on these
+        // nodes share the Docker socket and would derive the same labeled
+        // services, racing the run daemon for derived proxy ports.
+        self.stop_standing_service(primary)?;
+        self.stop_standing_service(observer)?;
+        resources.standing_isolated = true;
         self.stage_runtime_proxy(primary, run_id)?;
         resources.proxy_staged = true;
         self.start_runtime_proxy(primary, run_id)?;
@@ -274,6 +281,14 @@ impl Lab {
         observer: &NodeSpec,
         resources: &mut RuntimeReconnectResources,
     ) -> Result<()> {
+        if resources.standing_isolated {
+            for node in [primary, observer] {
+                if let Err(e) = self.start_standing_service(node) {
+                    eprintln!("standing service restore failed on {}: {e:#}", node.id());
+                }
+            }
+            resources.standing_isolated = false;
+        }
         let mut failures = Vec::new();
         for role in RuntimeFaultRole::ALL {
             if resources.containers.remove(role.as_str()).is_some() {
