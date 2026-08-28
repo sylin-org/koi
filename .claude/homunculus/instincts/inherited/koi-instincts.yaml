@@ -1,0 +1,320 @@
+# Instincts generated from https://github.com/sylin-org/koi
+# Generated: 2026-06-14T07:23:52.508Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: koi-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: ci, fix
+
+## Evidence
+
+- 2 commits analyzed
+- Detected conventional commit pattern
+- Examples: ci(release): cut deploy cycle time (parallelize test/build, drop redundant publish test), fix(release): publish koi-dashboard (was omitted from the publish list)
+
+---
+id: koi-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Commit Length
+
+## Action
+
+Write moderate-length commit messages (~80 characters)
+
+## Evidence
+
+- Average commit message length: 80 chars
+- Based on 2 commits
+
+---
+id: koi-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: koi-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: koi-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: koi-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/sylin-org/koi
+---
+
+# Koi Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: koi-instinct-filename-camelCase
+trigger: "When creating a new file in the repository"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Filename CamelCase
+
+## Action
+
+Name the file using camelCase
+
+## Evidence
+
+- Pattern in namingConventions.files
+
+---
+id: koi-instinct-function-camelCase
+trigger: "When defining a new function"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Function CamelCase
+
+## Action
+
+Name the function using camelCase
+
+## Evidence
+
+- Pattern in namingConventions.functions
+
+---
+id: koi-instinct-class-PascalCase
+trigger: "When defining a new class"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Class PascalCase
+
+## Action
+
+Name the class using PascalCase
+
+## Evidence
+
+- Pattern in namingConventions.classes
+
+---
+id: koi-instinct-constant-SCREAMING_SNAKE_CASE
+trigger: "When declaring a constant"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Constant SCREAMING_SNAKE_CASE
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE
+
+## Evidence
+
+- Pattern in namingConventions.constants
+
+---
+id: koi-instinct-import-relative
+trigger: "When importing modules within the codebase"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Import Relative
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in importStyle
+
+---
+id: koi-instinct-export-named
+trigger: "When exporting functions, classes, or constants"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Export Named
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in exportStyle
+
+---
+id: koi-instinct-test-separate-folder
+trigger: "When adding or organizing tests"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Test Separate Folder
+
+## Action
+
+Place test files in a separate folder from source files
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation
+
+---
+id: koi-instinct-commit-conventional
+trigger: "When writing a commit message"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Commit Conventional
+
+## Action
+
+Use the conventional commit format with a type prefix (e.g., 'ci', 'fix')
+
+## Evidence
+
+- Seen in commit: ci(release): cut deploy cycle time (parallelize test/build, drop redundant publish test)
+- Seen in commit: fix(release): publish koi-dashboard (was omitted from the publish list)
+- Pattern in commits.prefixes
+
+---
+id: koi-instinct-commit-length
+trigger: "When composing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Commit Length
+
+## Action
+
+Keep the commit message around 80 characters in length
+
+## Evidence
+
+- Pattern in commits.averageLength
+
+---
+id: koi-instinct-ci-workflow-location
+trigger: "When editing or adding CI/CD workflows"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: sylin-org/koi
+---
+
+# Koi Instinct Ci Workflow Location
+
+## Action
+
+Place workflow configuration files in the .github/workflows directory
+
+## Evidence
+
+- Pattern in architecture.configFiles
+- Pattern in architecture.commonFolders
+
