@@ -315,12 +315,24 @@ impl Lab {
         );
 
         // ── Verify C: Schannel from Windows (system store) ──
-        let schannel = self
+        // The machine trust store settles asynchronously after a root import
+        // (RL-19: the first handshake can race lsass propagation); the positive
+        // assertion retries briefly before it is allowed to go red.
+        let mut schannel = self
             .native_tls_curl(windows, windows, &tls_name)
             .context("Schannel curl against the Windows proxy")?;
+        let mut attempts = 1;
+        while !schannel.status.success() && attempts < 5 {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            schannel = self
+                .native_tls_curl(windows, windows, &tls_name)
+                .context("Schannel curl against the Windows proxy")?;
+            attempts += 1;
+        }
         if !schannel.status.success() {
             bail!(
-                "W7 Schannel did not verify the Windows proxy: {} {}",
+                "W7 Schannel did not verify the Windows proxy ({} attempts): {} {}",
+                attempts,
                 String::from_utf8_lossy(&schannel.stdout),
                 String::from_utf8_lossy(&schannel.stderr)
             );
