@@ -172,8 +172,10 @@ pub fn install() -> anyhow::Result<()> {
         Err(e) => println!("  Warning: could not create log directory: {e}"),
     }
 
-    // Firewall rules (best-effort, never abort)
-    let config = crate::cli::Config::from_env();
+    // Firewall rules (best-effort, never abort). The launch-line config
+    // (CLI > env > file) keeps the rules honest with the port the daemon
+    // will actually bind — including a config-file port.
+    let config = crate::cli::Config::from_service_launch();
     let ports = firewall_ports_for_config(&config);
     let mut ok = Vec::new();
     let mut failed = Vec::new();
@@ -322,8 +324,8 @@ pub fn uninstall() -> anyhow::Result<()> {
         Err(e) => return Err(e.into()),
     }
 
-    // Firewall rules (best-effort)
-    let config = crate::cli::Config::from_env();
+    // Firewall rules (best-effort). Same resolution the installer used.
+    let config = crate::cli::Config::from_service_launch();
     let ports = firewall_ports_for_config(&config);
     let mut removed = Vec::new();
     for port in &ports {
@@ -387,7 +389,11 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
     let _log_guards =
         crate::infra::init_logging(env_filter, Some(&log_path)).unwrap_or_else(|_| vec![]); // Fall back to no logging rather than crashing
 
-    let config = crate::cli::Config::from_env();
+    // Service mode resolves the SAME precedence as the foreground daemon
+    // (CLI > env > file > default) by parsing the SCM launch line through the
+    // normal Cli. from_env alone ignored config.toml entirely — a configured
+    // http_bind silently bound loopback while the file said otherwise.
+    let config = crate::cli::Config::from_service_launch();
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let shutdown_tx = std::sync::Mutex::new(Some(shutdown_tx));

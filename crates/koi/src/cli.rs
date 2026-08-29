@@ -1,4 +1,4 @@
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::{ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use std::path::PathBuf;
 
 /// Default HTTP API port - "KOI" on a phone keypad (K=5, O=6, I=4).
@@ -1004,6 +1004,57 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// Build the config from the process launch line + config file — the
+    /// path the Windows service takes, where no operator CLI session exists.
+    ///
+    /// SCM launches the installed binary with its binPath arguments (typically
+    /// `koi.exe --daemon`), so parsing the process's own argv through the same
+    /// `Cli` keeps one precedence — CLI > env > file > default — across the
+    /// foreground daemon and the service. Without this, a config.toml key was
+    /// silently ignored in service mode (measured 2026-08-28: `http_bind =
+    /// "0.0.0.0"` for LAN access bound loopback-only). A parse/config failure
+    /// falls back to [`Config::from_env`] with a loud warning: service startup
+    /// must proceed, but the fallback is observable.
+    #[cfg(windows)]
+    pub fn from_service_launch() -> Self {
+        match Self::from_launch_args(std::env::args_os()) {
+            Ok(config) => config,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "service launch line or config file unusable; \
+                     environment-only configuration in effect"
+                );
+                Config::from_env()
+            }
+        }
+    }
+
+    /// Resolve the full precedence chain (CLI > env > file > default) from an
+    /// explicit argv. Shared by [`Config::from_service_launch`]; exposed for
+    /// tests, which pin an isolated config file via `--config`.
+    #[cfg(windows)]
+    pub fn from_launch_args<I, T>(argv: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let matches = Cli::command()
+            .try_get_matches_from(argv)
+            .map_err(|e| e.to_string())?;
+        let cli = Cli::from_arg_matches(&matches).map_err(|e| e.to_string())?;
+        let path = crate::config_file::discover(cli.config.as_deref())?;
+        let mut config = Config::from_cli(&cli);
+        if let Some(path) = &path {
+            if let Some(file) = crate::config_file::load(path)? {
+                crate::config_file::apply(&file, &matches, &mut config);
+            }
+        }
+        Ok(config)
+    }
+}
+
 // ── Default paths ────────────────────────────────────────────────────
 
 fn default_pipe_path() -> PathBuf {
@@ -1886,6 +1937,64 @@ mod tests {
         assert!(parse_bool_flag("banana").is_err());
         assert!(parse_bool_flag("2").is_err());
         assert!(parse_bool_flag("truthy").is_err());
+    }
+
+    // ── Service launch config (from_launch_args) ─────────────────────
+    //
+    // The Windows service used to build env-only config, so a config.toml
+    // key (http_bind = "0.0.0.0" for LAN access) was silently ignored in
+    // service mode while the foreground daemon honored it. These tests pin
+    // the precedence the service path now shares with the daemon. The
+    // config file is pinned via `--config` so machine state never leaks in;
+    // env precedence is covered by clap's own source tracking (tests must
+    // not mutate process-global env vars).
+
+    #[cfg(windows)]
+    fn write_launch_config(name: &str, body: &str) -> std::path::PathBuf {
+        let dir = koi_common::test::ensure_data_dir("koi-service-launch-tests");
+        let path = dir.join(name);
+        std::fs::write(&path, body).expect("write config fixture");
+        path
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn service_launch_applies_config_file() {
+        let path = write_launch_config("bind.toml", "version = 1\nhttp_bind = \"0.0.0.0\"\n");
+        let config = Config::from_launch_args([
+            "koi".to_string(),
+            "--daemon".to_string(),
+            "--config".to_string(),
+            path.display().to_string(),
+        ])
+        .expect("launch args parse");
+        assert_eq!(config.http_bind, "0.0.0.0");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn service_launch_cli_flag_beats_file() {
+        let path = write_launch_config("port.toml", "version = 1\nport = 6001\n");
+        let config = Config::from_launch_args([
+            "koi".to_string(),
+            "--daemon".to_string(),
+            "--config".to_string(),
+            path.display().to_string(),
+            "--port".to_string(),
+            "5649".to_string(),
+        ])
+        .expect("launch args parse");
+        assert_eq!(config.http_port, 5649, "CLI flag outranks the file");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn service_launch_refuses_bad_argv() {
+        let err = Config::from_launch_args(["koi".to_string(), "--no-such-flag".to_string()]);
+        assert!(
+            err.is_err(),
+            "bad argv must be refused, not silently defaulted"
+        );
     }
 
     #[test]
