@@ -522,6 +522,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 dat_token: dat_token.clone(),
                 webhooks: config.webhook_sinks(),
                 no_mgmt_mcp: config.no_mgmt_mcp,
+                ui_dir: Some(config.data_dir.join("ui")),
             },
             &cancel,
             &mut tasks,

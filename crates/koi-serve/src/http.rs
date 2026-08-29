@@ -11,7 +11,7 @@ use axum::extract::{ConnectInfo, Extension};
 use axum::http::{header, HeaderName, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::Router;
 use serde::Serialize;
 use subtle::ConstantTimeEq;
@@ -77,6 +77,9 @@ struct AppState {
     webhook_sinks: usize,
     /// `/v1/status` `daemon` field - a full daemon (`true`) vs an embedded instance.
     daemon: bool,
+    /// Published pond UI directory (ADR-035 mobile access). `Some` mounts
+    /// `GET /` + assets and the DAT-gated `PUT /v1/ui` publish door.
+    ui_dir: Option<std::path::PathBuf>,
 }
 
 // ── Entrypoint ──────────────────────────────────────────────────────
@@ -110,6 +113,9 @@ pub struct HttpConfig {
     pub api_docs: bool,
     /// `/v1/status` `daemon` field — a full daemon (`true`) vs an embedded instance.
     pub daemon: bool,
+    /// Directory holding the published pond UI (index.html + assets). `Some` mounts
+    /// `GET /` + assets (LAN read-only view) and `PUT /v1/ui` (DAT-gated publish).
+    pub ui_dir: Option<std::path::PathBuf>,
     /// One-shot to report the actually-bound `SocketAddr` once the listener is up.
     /// Lets an embedded host that passed `port: 0` learn the OS-assigned port. The
     /// daemon leaves this `None` — it already knows its fixed port.
@@ -137,6 +143,7 @@ pub async fn start(
         admin_shutdown,
         api_docs,
         daemon,
+        ui_dir,
         ready,
     } = cfg;
     let webhook_sinks = webhooks.len();
@@ -157,6 +164,7 @@ pub async fn start(
         mcp_http_enabled,
         webhook_sinks,
         daemon,
+        ui_dir: ui_dir.clone(),
     };
 
     // ── System endpoints (always mounted) ──
@@ -173,18 +181,30 @@ pub async fn start(
         app = app.route(paths::SHUTDOWN, post(shutdown_handler));
     }
 
-    // ── Dashboard (mounted when a DashboardState is supplied) ──
-    if dashboard_state.is_some() {
+    // ── Dashboard + pond UI root. The root serves ONE interface: the published
+    // pond UI when mobile access is configured (ADR-035), otherwise the
+    // dashboard page. The dashboard data routes stay mounted either way. ──
+    if ui_dir.is_some() {
         app = app
-            .route("/", get(koi_dashboard::dashboard::get_dashboard))
-            .route(
-                "/v1/dashboard/snapshot",
-                get(koi_dashboard::dashboard::get_snapshot),
-            )
-            .route(
-                "/v1/dashboard/events",
-                get(koi_dashboard::dashboard::get_events),
-            );
+            .route("/", get(ui_index_handler))
+            .route("/app.js", get(ui_asset_app))
+            .route("/styles.css", get(ui_asset_styles))
+            .route("/sentences.js", get(ui_asset_sentences))
+            .route("/koi.png", get(ui_asset_png))
+            .route("/v1/ui", put(ui_publish_handler));
+    }
+    if dashboard_state.is_some() {
+        app = app.route(
+            "/v1/dashboard/snapshot",
+            get(koi_dashboard::dashboard::get_snapshot),
+        );
+        if ui_dir.is_none() {
+            app = app.route("/", get(koi_dashboard::dashboard::get_dashboard));
+        }
+        app = app.route(
+            "/v1/dashboard/events",
+            get(koi_dashboard::dashboard::get_events),
+        );
     }
 
     // ── Unified event stream (wishlist 1.1/1.2 — always mounted, 503 when no dashboard) ──
@@ -637,6 +657,134 @@ fn is_loopback_origin(origin: &str) -> bool {
 /// `/v1/udp/` surface, and the protected zone/posture reads
 /// (`/v1/certmesh/diagnose`, `/v1/dns/{list,zone}`) which stay exempt only for a
 /// loopback peer and require the token from a remote one. All other methods
+/// The five file names a pond UI publish may write — fixed, so the door can
+/// never become an arbitrary file write even with a valid DAT.
+const POND_UI_FILES: [&str; 5] = [
+    "index.html",
+    "app.js",
+    "styles.css",
+    "sentences.js",
+    "koi.png",
+];
+
+fn ui_file_response(state: &AppState, name: &str, content_type: &str) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let Some(dir) = &state.ui_dir else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({
+                "error": "capability_disabled",
+                "message": "no pond UI published — open koi-desktop and enable mobile access"
+            })),
+        )
+            .into_response();
+    };
+    match std::fs::read(dir.join(name)) {
+        Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response(),
+        Err(_) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({
+                "error": "capability_disabled",
+                "message": "pond UI not published yet"
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn ui_index_handler(Extension(state): Extension<AppState>) -> axum::response::Response {
+    ui_file_response(&state, "index.html", "text/html; charset=utf-8")
+}
+
+async fn ui_asset_app(Extension(state): Extension<AppState>) -> axum::response::Response {
+    ui_file_response(&state, "app.js", "text/javascript; charset=utf-8")
+}
+
+async fn ui_asset_styles(Extension(state): Extension<AppState>) -> axum::response::Response {
+    ui_file_response(&state, "styles.css", "text/css; charset=utf-8")
+}
+
+async fn ui_asset_sentences(Extension(state): Extension<AppState>) -> axum::response::Response {
+    ui_file_response(&state, "sentences.js", "text/javascript; charset=utf-8")
+}
+
+async fn ui_asset_png(Extension(state): Extension<AppState>) -> axum::response::Response {
+    ui_file_response(&state, "koi.png", "image/png")
+}
+
+#[derive(serde::Deserialize)]
+pub struct PondUiFile {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct PondUiPublish {
+    pub files: Vec<PondUiFile>,
+}
+
+/// `PUT /v1/ui` — publish the pond UI (workbench-owned; DAT-gated by the
+/// mutation middleware). Fixed filename set: the door is not an arbitrary
+/// file write even with a valid DAT.
+async fn ui_publish_handler(
+    Extension(state): Extension<AppState>,
+    axum::Json(publish): axum::Json<PondUiPublish>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let Some(dir) = &state.ui_dir else {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({
+                "error": "capability_disabled",
+                "message": "pond UI serving is not configured on this daemon"
+            })),
+        )
+            .into_response();
+    };
+    if std::fs::create_dir_all(dir).is_err() {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": "could not create ui dir"})),
+        )
+            .into_response();
+    }
+    let mut published = 0usize;
+    for file in &publish.files {
+        if !POND_UI_FILES.contains(&file.path.as_str()) {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({
+                    "error": format!("unknown pond UI file: {}", file.path)
+                })),
+            )
+                .into_response();
+        }
+    }
+    for file in &publish.files {
+        let outcome = if file.path.ends_with(".png") {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(file.content.as_bytes())
+                .map_err(|e| format!("koi.png: {e}"))
+                .and_then(|bytes| {
+                    std::fs::write(dir.join(&file.path), bytes).map_err(|e| format!("koi.png: {e}"))
+                })
+        } else {
+            std::fs::write(dir.join(&file.path), file.content.as_bytes())
+                .map_err(|e| format!("{}: {e}", file.path))
+        };
+        if let Err(e) = outcome {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+        published += 1;
+    }
+    axum::Json(serde_json::json!({ "published": published, "ok": true })).into_response()
+}
+
 /// require a valid `x-koi-token` header. Uses constant-time comparison to
 /// prevent timing attacks.
 pub(crate) async fn dat_auth_middleware(
@@ -1564,6 +1712,7 @@ mod tests {
             mcp_http_enabled: false,
             webhook_sinks: 0,
             daemon: true,
+            ui_dir: None,
         }
     }
 

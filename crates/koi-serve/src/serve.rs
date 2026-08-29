@@ -58,6 +58,9 @@ pub struct ServeConfig {
     /// switch owns the loopback tool surface; this one owns the mutually
     /// authenticated remote surface the trust plane mounts.
     pub no_mgmt_mcp: bool,
+    /// Published pond UI directory (ADR-035 mobile access). `Some` mounts
+    /// `GET /` + assets and `PUT /v1/ui` on the HTTP adapter.
+    pub ui_dir: Option<PathBuf>,
 }
 
 /// Spawn the full serving stack for `cores` into `(cancel, tasks)`. The caller owns the
@@ -129,6 +132,7 @@ pub fn serve(
             admin_shutdown: true,
             api_docs: true,
             daemon: true,
+            ui_dir: cfg.ui_dir.clone(),
             ready: None,
         };
         tasks.push(tokio::spawn(async move {

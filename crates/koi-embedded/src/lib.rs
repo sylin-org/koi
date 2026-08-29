@@ -562,6 +562,7 @@ impl KoiEmbedded {
             };
             let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
             let http_cfg = koi_serve::http::HttpConfig {
+                ui_dir: None,
                 bind_ip,
                 port: self.config.http_port,
                 started_at: std::time::Instant::now(),

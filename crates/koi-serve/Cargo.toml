@@ -18,6 +18,7 @@ categories = ["network-programming"]
 # for the dashboard/browser routes, every domain it mounts routes for, and koi-mcp for
 # the in-process MCP HTTP transport. Nothing depends on koi-serve except the top-level
 # consumers (the koi binary and koi-embedded), so the kernel and domain closures stay clean.
+base64.workspace = true
 koi-common.workspace = true
 koi-compose.workspace = true
 koi-dashboard.workspace = true
