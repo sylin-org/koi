@@ -51,6 +51,16 @@ pub struct BrowserCache {
 
 struct CacheInner {
     types: HashMap<String, DiscoveredType>,
+    // Deaf-detection counters (ADR-035 D6): bursts the meta-browse sent vs
+    // answers heard. A recent burst with zero answers is the deaf verdict —
+    // "announcing but hearing nothing" is a firewall, not a quiet network.
+    total_bursts: u64,
+    total_answers: u64,
+    /// Answers heard since the most recent burst.
+    current_burst_answers: u64,
+    /// What the PREVIOUS burst heard (finalized when the next one starts).
+    last_burst_answers: u64,
+    last_burst_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +97,11 @@ impl BrowserCache {
         Self {
             inner: Arc::new(RwLock::new(CacheInner {
                 types: HashMap::new(),
+                total_bursts: 0,
+                total_answers: 0,
+                current_burst_answers: 0,
+                last_burst_answers: 0,
+                last_burst_at: None,
             })),
             started_at: Instant::now(),
         }
@@ -106,10 +121,24 @@ impl BrowserCache {
         }
     }
 
+    /// A fresh query burst just went out (worker start or explicit requery).
+    /// Heartbeat touches that find the worker already running are NOT bursts —
+    /// otherwise "last burst" would always be moments ago and the deaf verdict
+    /// would fire on every quiet LAN.
+    pub async fn record_burst(&self) {
+        let mut inner = self.inner.write().await;
+        inner.total_bursts += 1;
+        inner.last_burst_answers = inner.current_burst_answers;
+        inner.current_burst_answers = 0;
+        inner.last_burst_at = Some(Utc::now());
+    }
+
     async fn record_type(&self, type_name: &str) {
         let now = Utc::now().to_rfc3339();
         let normalized = normalize_type(type_name);
         let mut inner = self.inner.write().await;
+        inner.total_answers += 1;
+        inner.current_burst_answers += 1;
         inner
             .types
             .entry(normalized.clone())
@@ -123,6 +152,8 @@ impl BrowserCache {
     async fn record_resolved(&self, record: &ResolvedService) {
         let now = Utc::now().to_rfc3339();
         let mut inner = self.inner.write().await;
+        inner.total_answers += 1;
+        inner.current_burst_answers += 1;
 
         let svc_type = normalize_type(&record.service_type);
 
@@ -227,6 +258,14 @@ impl BrowserCache {
         type_summaries.sort_by_key(|b| std::cmp::Reverse(b.count));
         all_instances.sort_by(|a, b| a.last_seen.cmp(&b.last_seen).reverse());
 
+        let burst = BurstStats {
+            bursts_sent: inner.total_bursts,
+            answers_total: inner.total_answers,
+            last_burst_at: inner.last_burst_at.map(|t| t.to_rfc3339()),
+            last_burst_answers: inner.last_burst_answers,
+            last_burst_age_secs: inner.last_burst_at.map(|t| (Utc::now() - t).num_seconds()),
+        };
+
         BrowserSnapshot {
             total_types: type_summaries.len(),
             total_instances: all_instances
@@ -236,6 +275,7 @@ impl BrowserCache {
             service_types: type_summaries,
             instances: all_instances,
             cache_age_secs: self.started_at.elapsed().as_secs(),
+            burst,
         }
     }
 }
@@ -296,6 +336,24 @@ pub struct BrowserSnapshot {
     service_types: Vec<TypeSummary>,
     instances: Vec<ServiceInstance>,
     cache_age_secs: u64,
+    /// Burst vs answers counters — the raw material for the deaf-detection
+    /// verdict ("announcing but hearing nothing — firewall, not network").
+    burst: BurstStats,
+}
+
+/// Deaf-detection counters as data (the pane decides, the daemon measures).
+#[derive(Debug, Clone, Serialize)]
+pub struct BurstStats {
+    pub bursts_sent: u64,
+    pub answers_total: u64,
+    /// RFC3339 timestamp of the most recent burst, absent before the first.
+    pub last_burst_at: Option<String>,
+    /// Answers the previous burst heard; zero with a fresh burst is the deaf
+    /// verdict's trigger.
+    pub last_burst_answers: u64,
+    /// Seconds since that burst started, so the pane knows if it is fresh
+    /// enough to judge answers against.
+    pub last_burst_age_secs: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -579,6 +637,55 @@ mod tests {
     /// the idle window, because every heartbeat re-touches the controller.
     /// Regression: the worker used to idle-stop 5 minutes after subscribe and
     /// the pond silently drained to a handful of entries.
+    #[tokio::test]
+    async fn burst_counters_judge_answers_per_burst() {
+        // D6 (deaf-detection): bursts are counted, answers land on the burst
+        // that heard them, and the snapshot exposes the previous burst's
+        // answer count — the raw material for "announcing but hearing nothing".
+        let cache = BrowserCache::new();
+        let fresh = cache.snapshot().await;
+        assert_eq!(fresh.burst.bursts_sent, 0);
+        assert_eq!(fresh.burst.answers_total, 0);
+        assert!(fresh.burst.last_burst_at.is_none());
+
+        cache.record_burst().await;
+        let resolved = |name: &str| ResolvedService {
+            name: name.to_string(),
+            service_type: "_ipp._tcp.local.".to_string(),
+            host: "printer.internal.".to_string(),
+            ip: "192.168.1.42".to_string(),
+            port: 631,
+            txt: HashMap::new(),
+        };
+        cache
+            .ingest(&BrowserEvent::Found {
+                name: "_ipp._tcp.local.".to_string(),
+                service_type: "_ipp._tcp.local.".to_string(),
+            })
+            .await;
+        cache
+            .ingest(&BrowserEvent::Resolved(resolved("Brother HL")))
+            .await;
+        cache
+            .ingest(&BrowserEvent::Resolved(resolved("Brother HL")))
+            .await;
+
+        // A second burst finalizes the first one's answer count.
+        cache.record_burst().await;
+        let snap = cache.snapshot().await;
+        assert_eq!(snap.burst.bursts_sent, 2);
+        assert_eq!(
+            snap.burst.answers_total, 3,
+            "one meta answer + two resolutions"
+        );
+        assert_eq!(
+            snap.burst.last_burst_answers, 3,
+            "what the first burst heard"
+        );
+        assert_eq!(snap.burst.last_burst_age_secs, Some(0));
+        assert!(snap.burst.last_burst_at.is_some());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn held_open_event_stream_keeps_meta_browse_alive() {
         let idle = Duration::from_secs(300);

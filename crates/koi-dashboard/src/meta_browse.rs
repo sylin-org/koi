@@ -94,6 +94,13 @@ impl LazyMetaBrowse {
             let child = self.parent_cancel.child_token();
             inner.worker_cancel = Some(child.clone());
             tokio::spawn(worker(self.source.clone(), self.cache.clone(), child));
+            // A worker (re)start is a fresh query burst — record it so the
+            // deaf-detection counters judge answers against a real burst.
+            // Heartbeat touches that find the worker running skip this.
+            let cache = self.cache.clone();
+            tokio::spawn(async move {
+                cache.record_burst().await;
+            });
             tracing::debug!("mDNS meta-browse started (lazy, on first request)");
         }
 
