@@ -34,6 +34,12 @@ Read FIRST, in order — then re-verify every premise against the tree (RL-11):
 
 ## Status: the stable-1.0 gate is CLOSED (2026-08-28)
 
+The active product surface now has its own continuation:
+`sylin-org/koi-desktop/continuation.md` (cycle 1: the joyful instrument - WP0-WP9,
+mobile access + QR, browser raw lens, trust pane). Read it FIRST for UI work.
+
+## Status: the stable-1.0 gate is CLOSED (2026-08-28)
+
 All three ADR-032 requirements are met: matrix complete; extended full profile
 green twice (`v1-20260828T165112Z-f6a23b30` and post-soak
 `v1-20260828T173654Z-770faf21`, 25/25 each); bounded soak clean
