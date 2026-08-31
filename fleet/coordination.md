@@ -41,8 +41,9 @@ The product promise is identical everywhere; the *mechanism* is the OS's own:
    (glibc boxes); the pond UI in the browser everywhere, always (it is the
    same interface, read-only, served by the daemon).
 5. **Truthful everywhere** — capability ladder reflects reality per OS
-   (e.g. mDNS skip under avahi); no surface shows a state the daemon did
-   not declare.
+   (e.g. mDNS names the selected system or fallback backend); no surface shows
+   a state the daemon did not declare. Finding Avahi is not a reason to remove
+   discovery: on an Avahi host, Koi uses Avahi as its mDNS backend.
 
 Each hat's brief turns its row of this table into concrete first tasks.
 
@@ -67,6 +68,80 @@ journal; file a reproducible issue when the acceptable experience requires work
 outside the hat's permitted scope. Platform behavior observed on the real machine
 outranks an assumption in a brief, but the discrepancy must be reported explicitly
 and the brief corrected.
+
+## Windows mDNS control-plane workstream
+
+The Windows workstation (`stone-leaded-sparkle`) is also the reference machine for
+the Windows mDNS opportunity. Modern Windows has an official mDNS/DNS-SD facility;
+the open product space is the missing dependable, observable, language-neutral
+experience around it. Do not describe the mission as "bringing mDNS to Windows."
+The mission is to make Windows mDNS useful enough that applications and operators
+can choose Koi as their standard control plane.
+
+The CachyOS side owns the backend-neutral Koi contract and the Avahi adapter. The
+Windows agent starts with the research and physical-conformance phase below. It
+must not independently redesign that shared contract or edit the same backend-seam
+files while the seam is landing. Once the seam commit is available, synchronize
+first, then implement only the Windows adapter and Windows-specific integration.
+This sequencing lets both machines make progress without manufacturing a merge or
+architecture conflict.
+
+### W0 — establish the Windows truth now
+
+Research locally, in repository and upstream history, and online using authoritative
+Microsoft/IETF sources. Exercise the real machine and record:
+
+1. Exact Windows edition/build, DNS Client state, active network profiles and
+   adapters, UDP 5353 ownership, relevant firewall policy, and the one installed
+   Koi service/process.
+2. The behavior and availability of the official Win32 surfaces in `dnsapi.dll`:
+   `DnsServiceBrowse`, `DnsServiceResolve`, `DnsServiceRegister`/deregister, and
+   `DnsStartMulticastQuery`. A tiny disposable probe program is acceptable evidence;
+   a third-party library alone is not evidence of the Windows provider.
+3. A conformance matrix against real peers for specific-type browse, DNS-SD service
+   type enumeration, resolve (SRV/TXT/address), publish, goodbye/removal, duplicate
+   name handling, IPv4/IPv6, interface identity, TXT changes, sleep/resume, adapter
+   changes, VPN presence, and Private/Public/Domain firewall profiles. Include both
+   ordinary-user and installed-service contexts where behavior differs.
+4. Which failures are protocol/provider defects and which are Koi ergonomics,
+   diagnostics, address selection, lifecycle, or packaging defects. Capture packet
+   evidence when API success and wire behavior disagree.
+5. The existing alternatives actually present or realistically available on this
+   workstation (Windows DNS-SD, Bonjour if installed, and embedded libraries), with
+   their coexistence behavior. Do not disable a healthy system facility merely to
+   make Koi's fallback appear successful.
+
+Put evidence in `fleet/windows/journal.md` and reproducible defects in
+`fleet/windows/issues/`. The result of W0 is an evidence-backed provider/capability
+matrix and adapter acceptance suite, not a speculative rewrite.
+
+### W1 — implement after the backend seam lands
+
+- Prefer a usable official Windows DNS-SD provider; select Koi's native `mdns-sd`
+  adapter only when the system provider is absent, unusable, or fails a capability
+  Koi's contract requires.
+- Exactly one Koi mDNS backend is active in a process. Do not shadow-browse, publish
+  through two providers, or run a second Koi for comparison. Backend transitions are
+  serial and use the real installed service on the standard deployment shape.
+- Preserve Koi's normalized service/event contract, leases, heartbeats, fan-out,
+  cache, HTTP/IPC/MCP/UI surfaces, and truthful health. Provider-specific objects and
+  callbacks stay inside the Windows adapter.
+- Preserve every address and its interface/scope information at the provider
+  boundary even while the current compatibility field exposes one preferred IP.
+- Restore RFC 6762 name probing/conflict safety in the native fallback. Treat stale
+  self-record recovery as a narrow lifecycle problem, not a reason to disable
+  collision protection globally.
+- Surface the selected backend and actionable diagnostics: socket/API failure,
+  participating adapters, packet/event progress, firewall/profile impediments, and
+  provider loss/recovery. Never silently turn an empty browser into "healthy."
+- Validate interoperability against at least one Avahi peer and one Bonjour-class
+  peer, then repeat service restart, sleep/resume, adapter transition, and firewall
+  profile checks with the installed Koi service. Leave exactly one healthy Koi and
+  journal the final state.
+
+Do not spend the first slice on a reflector, wide-area DNS-SD, system resolver hooks,
+or a proprietary discovery protocol. Koi's standard is the control-plane contract
+and experience; RFC-compatible mDNS/DNS-SD remains the wire standard.
 
 ## Mechanics (hardened by the canary — v1's traps are protocol now)
 
