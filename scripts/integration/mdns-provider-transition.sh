@@ -385,7 +385,8 @@ assert_phase() {
 }
 
 remote_start_publisher() {
-  "${SSH[@]}" sh -s -- "$REMOTE_DIR" "$PEER_NAME" "$SERVICE_TYPE" "$RUN_ID" <<'REMOTE'
+  REMOTE_PID="$("${SSH[@]}" sh -s -- \
+    "$REMOTE_DIR" "$PEER_NAME" "$SERVICE_TYPE" "$RUN_ID" <<'REMOTE'
 set -eu
 dir="$1" name="$2" service_type="$3" run_id="$4"
 command -v avahi-publish-service >/dev/null
@@ -398,28 +399,46 @@ pid=$!
 printf '%s\n' "$pid" >"$dir/pid"
 sleep 1
 kill -0 "$pid"
+printf '%s\n' "$pid"
 REMOTE
-  REMOTE_PID="$("${SSH[@]}" awk 'NR == 1 {print; exit}' "$REMOTE_DIR/pid")"
+  )"
   [[ "$REMOTE_PID" =~ ^[1-9][0-9]*$ ]]
 }
 
 remote_stop_publisher() {
-  [[ -z "$REMOTE_PID" ]] && return 0
-  "${SSH[@]}" sh -s -- "$REMOTE_DIR" "$REMOTE_PID" "$RUN_ID" <<'REMOTE' || true
+  local status=0
+  "${SSH[@]}" sh -s -- "$REMOTE_DIR" "$REMOTE_PID" "$RUN_ID" <<'REMOTE' || status=$?
 set -eu
 dir="$1" expected_pid="$2" run_id="$3"
+[ -d "$dir" ] || exit 0
 actual_pid="$(awk 'NR == 1 {print; exit}' "$dir/pid" 2>/dev/null || true)"
-if [ "$actual_pid" = "$expected_pid" ] && [ -r "/proc/$actual_pid/cmdline" ]; then
+if [ -n "$expected_pid" ] && [ "$actual_pid" != "$expected_pid" ]; then
+  echo "refusing remote PID mismatch: expected $expected_pid, found ${actual_pid:-none}" >&2
+  exit 1
+fi
+if [ -n "$actual_pid" ] && [ -r "/proc/$actual_pid/cmdline" ]; then
   cmdline="$(tr '\0' ' ' <"/proc/$actual_pid/cmdline")"
   case "$cmdline" in
-    *avahi-publish-service*"$run_id"*) kill "$actual_pid" 2>/dev/null || true ;;
+    *avahi-publish-service*"$run_id"*)
+      kill "$actual_pid" 2>/dev/null || true
+      i=0
+      while kill -0 "$actual_pid" 2>/dev/null && [ "$i" -lt 50 ]; do
+        sleep 0.1
+        i=$((i + 1))
+      done
+      kill -0 "$actual_pid" 2>/dev/null && {
+        echo "run-owned remote publisher did not stop" >&2
+        exit 1
+      }
+      ;;
     *) echo "refusing to kill remote PID with unexpected identity: $cmdline" >&2; exit 1 ;;
   esac
 fi
 rm -f "$dir/pid" "$dir/publish.log"
-rmdir "$dir" 2>/dev/null || true
+rmdir "$dir"
 REMOTE
   REMOTE_PID=""
+  return "$status"
 }
 
 unregister_subject() {
@@ -441,7 +460,10 @@ cleanup() {
   trap - EXIT INT TERM
   [[ -z "$SUBSCRIBE_PID" ]] || kill "$SUBSCRIBE_PID" 2>/dev/null || true
   unregister_subject
-  remote_stop_publisher
+  if ! remote_stop_publisher; then
+    echo "ERROR: run-owned peer publisher did not clean up" >&2
+    exit_code=1
+  fi
   restore_resolved_baseline || true
   restore_active avahi-daemon.socket "$BASE_AVAHI_SOCKET_ACTIVE" || true
   restore_active avahi-daemon.service "$BASE_AVAHI_SERVICE_ACTIVE" || true
