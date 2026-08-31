@@ -6,8 +6,8 @@ making sure Koi *simply works* on your OS. Your assignment is
 
 ## The loop (every session)
 
-1. `cd` to your repo path (in your brief) → `git pull --ff-only` → record
-   the commit you are testing.
+1. `cd` to your repo path (in your brief) → `git switch dev` →
+   `git pull --ff-only origin dev` → record the commit you are testing.
 2. Build + test natively: `. ~/.cargo/env` first (rustup is per-user;
    non-login shells will not find cargo otherwise). The gates are
    `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
@@ -25,13 +25,18 @@ making sure Koi *simply works* on your OS. Your assignment is
 5. Report: append to `fleet/<hat>/journal.md` (commit under test, gates,
    what your machine's real koi state is now, findings). File defects as
    `fleet/<hat>/issues/NNN-short-slug.md` with reproduction evidence.
-6. Commit locally to `dev` (`git add fleet/<hat> && git commit`). NEVER
-   push — the orchestrator harvests your commits as patches. If pushing
-   is attempted, you have failed the protocol.
+6. Commit to `dev`, synchronize, and publish in the same session:
+   `git add <owned paths> && git commit`, then `git pull --rebase origin dev`
+   and `git push origin HEAD:dev`. Every agent is authorized and expected to
+   push directly. If another agent wins the race, rebase and retry; never
+   force-push and never leave the completed commit local-only.
 
 ## Rules
 
 - Your machine, your namespace (`fleet/<hat>/`), your hat only.
+- One shared branch: work directly on `dev`; do not create per-agent branches.
+  A session with `HEAD` ahead of `origin/dev` is unfinished. Resolve ordinary
+  push races with `git pull --rebase origin dev` and retry the push.
 - Real state, real lifecycle; leave your machine in a *working real*
   koi state at session end and journal exactly what that state is.
 - One koi per machine, including during validation: no parallel test daemon,

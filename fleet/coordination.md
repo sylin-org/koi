@@ -1,11 +1,11 @@
 # fleet/coordination.md — the campaign entry point
 
 **Execute this file.** It is the complete instruction for the orchestrator
-(the Windows workstation, `stone-leaded-sparkle`): run the fleet hats,
-harvest their commits, integrate onto `dev`. Everything needed is here or
-referenced from here. KISS: one branch (`dev`), no deploy keys — agents
-commit locally, the orchestrator harvests patches over the existing SSH
-paths and pushes once.
+(the Windows workstation, `stone-leaded-sparkle`): run the fleet hats and
+watch the shared `dev` branch. Everything needed is here or referenced from
+here. KISS: one branch (`dev`), direct authenticated pushes from every agent,
+no patch harvesting and no orphan branches or local-only commits. A hat's work
+is not complete until its commit is present on `origin/dev`.
 
 ## The hats
 
@@ -150,19 +150,21 @@ and experience; RFC-compatible mDNS/DNS-SD remains the wire standard.
   otherwise rewrites `/run/...` into `C:/Program Files/Git/run/...` and the
   remote command dies on a phantom path (v1 canary, test-01).
 - **Preflight**: for each hat — reachable via plink (host keys in lab.json),
-  repo at path, `~/.cargo/bin/cargo --version`, `codex --version` (agents).
-- **Sync**: fresh clones are DEFAULT-branch clones; pin every box to dev
-  once (idempotent): `git config remote.origin.fetch
-  '+refs/heads/*:refs/remotes/origin/*'` + `git fetch --depth 5 origin` +
-  `git checkout -B dev origin/dev`. Then `git pull --ff-only` per session
-  (public read; no credentials).
+  repo at path, `~/.cargo/bin/cargo --version`, `codex --version` (agents),
+  and authenticated read/write access to `origin/dev`.
+- **Sync**: fresh clones can land on the default branch, so pin them to `dev`
+  once: `git config remote.origin.fetch
+  '+refs/heads/*:refs/remotes/origin/*'`, `git fetch --depth 5 origin`, then
+  `git checkout -B dev origin/dev`. Begin every later session clean on `dev`
+  with `git pull --ff-only origin dev`. Before publishing a completed commit,
+  run `git pull --rebase origin dev`; if another agent wins the push race,
+  repeat the rebase and push. Never force-push.
 - **Launch (agent sessions)**: ship `fleet/briefs/<hat>.md` if changed, then
   start headless in tmux: `tmux new-session -d -s koi-fleet 'codex exec ...'`.
   Always `. ~/.cargo/env` first in any remote shell line.
-- **Harvest**: on each box `git format-patch origin/dev..HEAD -o /tmp/fleet-patches`
-  (or `-N` for the last N commits), `pscp` them back, `git am`, push `dev`
-  once. Authorship preserved; patches apply clean because hats own disjoint
-  namespaces.
+- **Publish**: each agent commits its owned change directly on `dev`, rebases
+  onto the latest `origin/dev`, and pushes `HEAD:dev` itself. A rejected push
+  is a synchronization event, not a reason to leave a local-only commit.
 - **Report**: read `fleet/<hat>/journal.md`; integrate; the board is the
   journals.
 
@@ -173,14 +175,14 @@ Agentless, orchestrator-driven, proves the whole path end-to-end:
 per hat: pull → `cargo check -p koi-net` (toolchain truth per libc) →
 record the desktop stack + the daemon's capability ladder → write
 `fleet/<hat>/journal.md` (entry: commit under test, check result, stack,
-ladder) → commit on the box → format-patch → `git am` at the orchestrator →
-push `dev`.
+ladder) → commit on the box → `git pull --rebase origin dev` → push directly
+to `origin/dev`.
 
 **Canary v2 ran 2026-08-31: 4/4 hats green** — cachyos (glibc, fresh
 checkout, 48s), omarchy (glibc, warm), **alpine (the first full koi-net
-check on musl)**, debian (glibc, warm) — four patches harvested via
-format-patch and applied with `git am` at the orchestrator. v1 taught the
-Windows path-conversion guard and the dev-pinning rule above.
+check on musl)**, and debian (glibc, warm). It taught the Windows
+path-conversion guard and the dev-pinning rule above; its orchestrator-mediated
+publication mechanism is retired in favor of direct agent pushes.
 
 The canary is transport and toolchain proof only. It does **not** establish that
 Koi works as part of a lived-in workstation or server environment.
