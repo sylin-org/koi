@@ -81,6 +81,14 @@ impl CertmeshCore {
         self.has_local_identity()
     }
 
+    /// Whether this node owns the mesh CA and can serve the trust-plane listeners.
+    ///
+    /// An enrolled member has an authenticated identity but no CA private key, so
+    /// it must not enter the CA self-enrollment/listener retry loop.
+    pub fn is_ca_node(&self) -> bool {
+        self.paths().is_ca_initialized()
+    }
+
     /// Load this node's live identity from disk, or `None` if it has none.
     ///
     /// Read-only: loads the on-disk leaf (cert/key) for the local hostname plus

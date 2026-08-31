@@ -66,6 +66,20 @@ fn posture_is_authenticated_with_member_identity() {
     assert_eq!(p.level(), koi_common::posture::PostureLevel::Authenticated);
 }
 
+#[tokio::test]
+async fn capability_status_identifies_an_enrolled_member() {
+    let paths = isolated_posture_paths("member-capability");
+    let hostname = CertmeshCore::local_hostname().expect("local hostname");
+    crate::member::save(&paths.member_state_path(), &posture_member_state(&hostname)).unwrap();
+    write_posture_leaf(&paths, &hostname);
+    let core = CertmeshCore::uninitialized_with_paths(paths);
+
+    let status = core.status().await;
+    assert_eq!(status.summary, "authenticated member");
+    assert!(status.healthy);
+    assert!(!core.is_ca_node());
+}
+
 #[test]
 fn posture_ignores_orphan_leaf_without_anchor() {
     let paths = isolated_posture_paths("orphan");

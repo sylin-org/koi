@@ -10,7 +10,7 @@
 //!
 //! The supervisor keys off
 //! [`CertmeshCore::watch_posture`](koi_certmesh::CertmeshCore::watch_posture) so the
-//! whole trust-plane presence is live whenever the CA exists. A node that boots Open
+//! whole trust-plane presence is live whenever this node owns the CA. A node that boots Open
 //! and later runs `koi certmesh create` brings the trust plane up reactively, and a
 //! node whose CA is **locked at boot** recovers via a bounded retry timer
 //! ([`RETRY_INTERVAL`]) once `koi certmesh unlock` makes the CA usable.
@@ -78,7 +78,10 @@ pub fn spawn(
         let mut live: Option<Live> = None;
 
         loop {
-            let secure = posture_rx.borrow_and_update().signed;
+            // Authenticated members are clients of this plane, not CA servers.
+            // `signed` alone also covers them, so keep listener ownership keyed
+            // to the local CA role as well as usable identity.
+            let secure = posture_rx.borrow_and_update().signed && certmesh.is_ca_node();
             match (secure, live.is_some()) {
                 // CA appeared → bring the trust plane up.
                 (true, false) => {

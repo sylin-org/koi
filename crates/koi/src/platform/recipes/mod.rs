@@ -557,7 +557,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn init_detection_is_capability_keyed() {
-        let dir = koi_common::test::ensure_data_dir("recipes-detect");
+        // `ensure_data_dir` is process-wide: other parallel tests use the same
+        // root. Keep this test's destructive cleanup inside an owned child.
+        let dir = koi_common::test::ensure_data_dir("recipes-tests").join("recipes-detect");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
         // Nothing → manual.
         assert_eq!(detect_in(&dir), InitSystem::None);
         // The canonical systemd marker wins over everything.

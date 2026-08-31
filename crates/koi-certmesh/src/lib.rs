@@ -766,7 +766,9 @@ impl Capability for CertmeshCore {
             .map(|guard| guard.active_count())
             .unwrap_or(0);
 
-        let (summary, healthy) = if !ca_initialized {
+        let (summary, healthy) = if !ca_initialized && self.is_certmesh_member() {
+            ("authenticated member".to_string(), true)
+        } else if !ca_initialized {
             ("ready \u{2014} run certmesh create".to_string(), true)
         } else if ca_locked {
             ("CA locked".to_string(), false)
