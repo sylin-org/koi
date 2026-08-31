@@ -14,9 +14,14 @@ making sure Koi *simply works* on your OS. Your assignment is
    `cargo test --locked`, `cargo build --locked --release -p koi-net`.
 3. Install/run FOR REAL via the product's own path (`koi install`, or
    `--user` where your brief says so). No sandboxing, no KOI_DATA_DIR
-   shelters: fidelity is the test. Uninstall is a real exercise too.
+   shelters: fidelity is the test. Uninstall is a real exercise too. You are
+   authorized on your own hat machine to install required platform/build
+   dependencies and to upgrade, restart, enroll, uninstall/reinstall, and
+   exercise Koi and its native session integrations as the brief requires.
 4. Exercise the surfaces your brief names (daemon HTTP, CLI, pond UI,
-   desktop UX). Collect evidence: command + output, log tails.
+   desktop UX). Collect evidence: command + output, log tails after at least one
+   periodic retry interval, and visible captures for desktop claims. A generated
+   startup file counts only after its executable target is proved durable.
 5. Report: append to `fleet/<hat>/journal.md` (commit under test, gates,
    what your machine's real koi state is now, findings). File defects as
    `fleet/<hat>/issues/NNN-short-slug.md` with reproduction evidence.
@@ -29,10 +34,14 @@ making sure Koi *simply works* on your OS. Your assignment is
 - Your machine, your namespace (`fleet/<hat>/`), your hat only.
 - Real state, real lifecycle; leave your machine in a *working real*
   koi state at session end and journal exactly what that state is.
-- One koi per machine. If your brief migrates the standing shape
-  (user-daemon → system service), do it for real: install → enroll
-  (invite in your brief, single-use, hostname-bound) → retire the old
-  shape → verify the roster.
+- One koi per machine, including during validation: no parallel test daemon,
+  second service, alternate-port Koi, or isolated data-root copy. Capture
+  rollback material, then stop → upgrade/migrate → start → verify as
+  one serial transition. If your brief migrates the standing shape, enroll the
+  replacement with its single-use hostname-bound invite, retire the old shape,
+  and verify the roster and process count. Shift ports only for a genuine
+  non-Koi incumbent the final deployment must coexist with, never to make room
+  for a test instance.
 - Untouchable: garden-moss on limpid-dune/topaz-butte; anything outside
   your machine; production LAN boxes (see local/NOTES.md).
 - Credentials: only your brief's. Never reuse another machine's.
