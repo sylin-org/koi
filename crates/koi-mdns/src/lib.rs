@@ -7,6 +7,7 @@
 //! - **State**: Read-only snapshots (admin_status, admin_registrations)
 //! - **Events**: Broadcast channel for service lifecycle events
 
+pub mod adapter;
 #[cfg(target_os = "linux")]
 pub mod avahi;
 mod daemon;
@@ -17,6 +18,9 @@ pub mod native;
 pub mod protocol;
 pub mod provider;
 mod registry;
+pub mod supervisor;
+#[cfg(target_os = "linux")]
+pub mod systemd_resolved;
 
 pub use self::daemon::BrowseSubscription;
 pub use self::error::{MdnsError, Result};
@@ -45,24 +49,43 @@ use crate::protocol::{
 /// How often the reaper sweeps for expired registrations.
 const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
+fn capability_summary(
+    registration_summary: &str,
+    provider_healthy: bool,
+    activity: crate::daemon::ReceiveActivity,
+) -> (String, bool) {
+    if !provider_healthy {
+        return (
+            format!("{registration_summary}; provider unavailable"),
+            false,
+        );
+    }
+    let receive = match (activity.browse_active_secs, activity.last_event_age_secs) {
+        (Some(active_secs), Some(age)) => format!(
+            "; browse active {active_secs}s, observed {} events (last {age}s ago)",
+            activity.events_seen
+        ),
+        (Some(active_secs), None) => {
+            format!("; browse active {active_secs}s, no records observed yet")
+        }
+        (None, _) => String::new(),
+    };
+    (format!("{registration_summary}{receive}"), true)
+}
+
 /// mDNS UDP port.
 pub const MDNS_PORT: u16 = 5353;
 
-/// Whether a UDP port is **exclusively free** — safe for Koi to start its own
-/// mDNS responder (ADR-030).
+/// Whether a UDP port is **exclusively free**.
 ///
-/// mdns-sd binds 5353 with reuse semantics, so where another responder used
-/// reuse too (avahi, systemd-resolved), Koi's bind would *also* succeed and
-/// two responders would share one socket. This probe attempts a plain bind
-/// with NO reuse flags:
+/// This is a generic diagnostic used by lab tooling to reserve ephemeral ports.
+/// It is deliberately not provider-selection evidence: mDNS participants use
+/// cooperative reuse semantics, which each adapter must inspect for itself.
 ///
 /// - **Unix** (the homelab case): fails with `AddrInUse` when ANY socket holds
 ///   the port, including reuse-holders — exact detection.
 /// - **Windows**: plain binds do not conflict unless the holder asked for
-///   exclusivity, so a reuse-holding stack may go undetected here. Windows
-///   mDNS coexistence conflicts are rare (no avahi equivalent ships by
-///   default); the residual risk is documented rather than pulled in via a
-///   raw-socket dependency.
+///   exclusivity, so this is suitable only for best-effort lab port selection.
 ///
 /// Any non-`AddrInUse` bind error also reports "not free": we could not prove
 /// exclusivity, so we degrade instead of starting into an unknown environment.
@@ -76,34 +99,6 @@ pub fn udp_port_exclusively_free(port: u16) -> bool {
         }
         Err(_) => false,
     }
-}
-
-/// Whether an unmanaged responder makes starting Koi's native stack unwise.
-///
-/// The composition root probes Avahi separately and injects its adapter when
-/// Avahi is live. This compatibility helper therefore treats active Avahi as a
-/// managed provider, not as a reason to disable the mDNS capability.
-///
-/// - Unix: an exclusive holder other than active Avahi blocks native startup.
-/// - Windows: never — stock Windows ships reuse-holders (dnscache/svchost,
-///   sometimes Chrome) that are legal cohabitants under RFC 6762
-///   multi-responder rules.
-pub fn foreign_responder_reason() -> Option<&'static str> {
-    #[cfg(unix)]
-    {
-        let avahi = std::process::Command::new("systemctl")
-            .args(["is-active", "--quiet", "avahi-daemon"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if avahi {
-            return None;
-        }
-        if !udp_port_exclusively_free(MDNS_PORT) {
-            return Some("UDP 5353 is exclusively held");
-        }
-    }
-    None
 }
 
 /// Firewall ports required by the mDNS capability.
@@ -133,8 +128,8 @@ impl MdnsCore {
 
     /// Create a core around an injected platform provider.
     ///
-    /// Production bootstrap selects exactly one provider in the composition
-    /// layer; tests and embedded callers can inject a deterministic adapter.
+    /// Production injects the stable runtime supervisor; tests and embedded
+    /// callers can inject a deterministic provider at this boundary.
     pub fn with_provider(
         provider: Arc<dyn MdnsProvider>,
         cancel: CancellationToken,
@@ -388,56 +383,69 @@ impl Capability for MdnsCore {
             provider.name, provider.detail, counts.total, counts.alive, counts.draining
         );
 
-        // Receive-health (ADR-020 anti-silence): a browse that has been active on a
-        // routable LAN yet whose inbound mDNS has gone stale means inbound multicast is
-        // not reaching this daemon (the mdns-sd interface-index drop, a multicast
-        // -filtering switch, a NIC change). The verdict is driven by how long the BROWSE
-        // has been active (and the age of the last inbound event), never core uptime —
-        // so the lazy meta-browse and the first discover-after-idle are not false
-        // -flagged. It never latches: once-working-then-silent IS caught (a growing
-        // last-event age crosses the stall threshold). Report it loudly instead of a
-        // silently empty browser. `koi mdns discover` standalone confirms (it bypasses
-        // the long-lived daemon's engine). `events_seen` is a display counter only.
-        let health = self.daemon.receive_health();
-        let receive_broken = health.is_broken(crate::daemon::has_live_lan_nic());
+        // Browse APIs emit changes, not keepalives. Surface activity as evidence,
+        // but never turn an ordinarily quiet LAN into a false failure. Provider
+        // health belongs to adapter-owned probes and the runtime supervisor.
+        let activity = self.daemon.receive_activity();
 
-        let (summary, healthy) = if !provider.healthy {
-            (format!("{reg}; provider unavailable"), false)
-        } else if receive_broken {
-            // browse_active_secs is Some here (is_broken returns false otherwise).
-            let active_secs = health.browse_active_secs.unwrap_or(0);
-            let detail = match health.last_event_age_secs {
-                Some(age) => format!(
-                    "browse active {active_secs}s on a live LAN but last mDNS was {age}s ago"
-                ),
-                None => format!("browse active {active_secs}s on a live LAN but received 0 mDNS"),
-            };
-            (
-                format!(
-                    "{reg}; {detail} — inbound multicast is not reaching this daemon \
-                     (confirm with `koi mdns discover`)"
-                ),
-                false,
-            )
-        } else {
-            let recv = match (health.browse_active_secs, health.last_event_age_secs) {
-                (Some(active_secs), Some(age)) => format!(
-                    "; browse active {active_secs}s, receiving ({} events, last {age}s ago)",
-                    health.events_seen
-                ),
-                (Some(active_secs), None) => {
-                    format!("; browse active {active_secs}s, awaiting first record")
-                }
-                (None, _) => String::new(),
-            };
-            (format!("{reg}{recv}"), true)
-        };
+        let (summary, healthy) = capability_summary(&reg, provider.healthy, activity);
 
         CapabilityStatus {
             name: "mdns".to_string(),
             summary,
             healthy,
         }
+    }
+}
+
+#[cfg(test)]
+mod capability_status_tests {
+    use super::*;
+    use crate::daemon::ReceiveActivity;
+
+    #[test]
+    fn quiet_event_stream_is_telemetry_not_failure() {
+        let (summary, healthy) = capability_summary(
+            "provider avahi; 0 registered",
+            true,
+            ReceiveActivity {
+                events_seen: 42,
+                last_event_age_secs: Some(100_000),
+                browse_active_secs: Some(100_001),
+            },
+        );
+        assert!(healthy);
+        assert!(summary.contains("observed 42 events (last 100000s ago)"));
+    }
+
+    #[test]
+    fn empty_event_stream_states_uncertainty_without_failure() {
+        let (summary, healthy) = capability_summary(
+            "provider native; 0 registered",
+            true,
+            ReceiveActivity {
+                events_seen: 0,
+                last_event_age_secs: None,
+                browse_active_secs: Some(100_000),
+            },
+        );
+        assert!(healthy);
+        assert!(summary.contains("no records observed yet"));
+    }
+
+    #[test]
+    fn adapter_failure_remains_authoritative() {
+        let (summary, healthy) = capability_summary(
+            "provider avahi; 0 registered",
+            false,
+            ReceiveActivity {
+                events_seen: 1_000,
+                last_event_age_secs: Some(0),
+                browse_active_secs: Some(10),
+            },
+        );
+        assert!(!healthy);
+        assert!(summary.ends_with("provider unavailable"));
     }
 }
 

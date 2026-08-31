@@ -229,13 +229,13 @@ on Windows, Linux, and macOS.
 
 | Platform | mDNS engine | Service integration |
 | -------- | ----------- | ------------------- |
-| Windows | Built-in native provider; official Windows adapter workstream | Windows Service (SCM) + firewall rules |
-| Linux | Avahi when live and healthy; built-in native fallback | systemd unit |
+| Windows | Built-in native provider; official Windows DNS-SD and installed Bonjour adapters in the Windows workstream | Windows Service (SCM) + firewall rules |
+| Linux | Capability-aware Avahi, systemd-resolved, and built-in native providers | systemd unit |
 | macOS | Built-in native provider | launchd plist |
 
-One binary uses the best available platform resource without requiring Avahi or
-Bonjour to be installed, and — unusual for this space — **Windows is a first-class
-citizen**.
+One binary continuously uses the best live platform capabilities, without requiring
+Avahi or Bonjour to be installed. Native Koi is always catalogued as the lowest-priority
+provider and — unusual for this space — **Windows is a first-class citizen**.
 
 ## Installation
 
@@ -359,9 +359,10 @@ The binary is `koi`. The crates.io package is `koi-net` because `koi` was taken.
 Koi's built-in mDNS provider uses
 [mdns-sd](https://github.com/keepsimple1/mdns-sd), a pure-Rust mDNS/DNS-SD
 implementation by [@keepsimple1](https://github.com/keepsimple1). On Linux, Koi
-uses [Avahi](https://avahi.org/) through its native D-Bus API when Avahi is already
-running. Koi gives either provider the same friendly front door and builds the
-naming and trust layers on top.
+can use [Avahi](https://avahi.org/) and systemd-resolved through their native D-Bus
+APIs. Koi's capability-aware supervisor gives every provider the same friendly
+front door, composes only non-overlapping operations, and builds the naming and
+trust layers on top.
 
 ## Code signing policy
 

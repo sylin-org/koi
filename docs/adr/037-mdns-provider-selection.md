@@ -1,9 +1,15 @@
 # ADR-037: One mDNS Control Plane, Native Platform Providers
 
-**Status:** Accepted and implemented (operator-approved 2026-08-31)
+**Status:** Superseded by ADR-038 (accepted 2026-08-31)
 **Date:** 2026-08-31
 **Builds on:** ADR-020 (truthful status), ADR-030 (coexistence), ADR-035 (gentle participation)
 **Amends:** ADR-030's rule that Koi skips mDNS when Avahi is active
+
+> **2026-08-31:** ADR-038 replaces the boot-only, one-backend decision in this
+> ADR with adapter-owned runtime inspection and capability-aware reconciliation.
+> The provider-neutral port, concrete API isolation, and real-provider-only
+> rules below remain architectural inputs; the “no dynamic switch” clauses are
+> retained only as history.
 
 ## Context
 

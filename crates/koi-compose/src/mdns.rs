@@ -1,53 +1,41 @@
-//! Platform mDNS bootstrap policy.
+//! Platform mDNS composition.
 //!
-//! The composition root probes once and injects exactly one provider into the
-//! domain core. A selected provider owns its own recovery; Koi never switches
-//! engines mid-process or arms native mDNS beside a present-but-broken Avahi.
+//! This root names the adapters compiled for the target and hands them to the
+//! bounded context. Detection, capability evidence, selection, hysteresis,
+//! transition ordering, and fallback all remain inside `koi-mdns`.
 
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use koi_mdns::native::NativeMdnsProvider;
-use koi_mdns::provider::MdnsProvider;
+use koi_mdns::adapter::MdnsAdapter;
+use koi_mdns::supervisor::MdnsSupervisor;
 use koi_mdns::{MdnsCore, Result};
-#[cfg(target_os = "linux")]
-use koi_mdns::{MdnsError, MDNS_PORT};
 
-/// Build an mDNS core with the one provider appropriate for this boot.
+/// Build the stable mDNS control plane around the live provider catalog.
 pub async fn build_core(cancel: CancellationToken) -> Result<MdnsCore> {
-    let provider = select_provider().await?;
-    let selected = provider.status();
+    let supervisor = Arc::new(MdnsSupervisor::start(platform_adapters()).await?);
+    let selected = koi_mdns::provider::MdnsProvider::status(supervisor.as_ref());
     tracing::info!(
-        provider = selected.name,
+        providers = %selected.name,
         detail = %selected.detail,
-        "mDNS provider armed"
+        "mDNS provider plan armed"
     );
-    MdnsCore::with_provider(provider, cancel)
+    MdnsCore::with_provider(supervisor, cancel)
 }
 
-async fn select_provider() -> Result<Arc<dyn MdnsProvider>> {
+fn platform_adapters() -> Vec<Arc<dyn MdnsAdapter>> {
+    #[allow(unused_mut)]
+    let mut adapters: Vec<Arc<dyn MdnsAdapter>> = Vec::new();
+
     #[cfg(target_os = "linux")]
     {
-        use koi_mdns::avahi::{AvahiMdnsProvider, AvahiProbe};
-
-        match AvahiMdnsProvider::probe().await {
-            AvahiProbe::Ready(provider) => return Ok(Arc::new(provider)),
-            AvahiProbe::Unavailable(reason) => {
-                return Err(MdnsError::Daemon(format!(
-                    "Avahi is present but unavailable; refusing to arm a second mDNS responder: {reason}"
-                )));
-            }
-            AvahiProbe::Absent(reason) => {
-                if !koi_mdns::udp_port_exclusively_free(MDNS_PORT) {
-                    return Err(MdnsError::Daemon(format!(
-                        "{reason}, but UDP {MDNS_PORT} is already held; refusing ambiguous native mDNS startup"
-                    )));
-                }
-                tracing::info!(%reason, "Avahi absent; selecting Koi native mDNS");
-            }
-        }
+        adapters.push(Arc::new(koi_mdns::avahi::AvahiAdapter));
+        adapters.push(Arc::new(koi_mdns::systemd_resolved::SystemdResolvedAdapter));
     }
 
-    Ok(Arc::new(NativeMdnsProvider::new()?))
+    // The supervisor appends Koi's native provider at the lowest priority on
+    // every platform. Windows system DNS-SD and Bonjour adapters join this
+    // catalog in their target-specific modules; they do not replace the seam.
+    adapters
 }

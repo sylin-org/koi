@@ -39,9 +39,10 @@ exactly.** Five disciplines follow, each already encoded in the product or lab:
 ### 1. Detect, don't assume
 
 Every OS surface koi touches is probed at runtime, never assumed from documentation,
-version, or last week. The composition root probes the live platform mDNS provider
-and only arms native when Avahi is absent and 5353 is unambiguous; W6 picks a genuinely
-free port before serving DNS. Measured OS facts
+version, or last week. Under ADR-038, each mDNS adapter owns its live evidence and
+the supervisor routes only declared, non-overlapping capabilities; native Koi remains
+the lowest-priority complete provider. W6 picks a genuinely free port before serving
+DNS. Measured OS facts
 (schan­nel quirks, ICS on 53, WSAEACCES coexistence semantics) live in the lessons
 ledger as data, not folklore.
 
@@ -77,8 +78,8 @@ a daemon derives only containers whose `koi.scope` label matches its own scope
 (`KOI_SCOPE`); the base-scope daemon derives unlabeled containers only. Two koi
 daemons can share one Docker socket and never derive the same container, and never
 race for derived surfaces. The lab's reconnect containers carry `koi.scope`; the lab's
-run daemons carry the matching scope. ADR-030 remains the mDNS-specific expression of
-the same principle.
+run daemons carry the matching scope. ADR-038 is the mDNS-specific expression of the
+same principle.
 
 ## Consequences
 

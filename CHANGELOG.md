@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Runtime mDNS provider orchestration (ADR-038).** Platform adapters now own
+  detection, capability evidence, native operations, and shutdown. A stable
+  supervisor assigns non-overlapping publish/browse/resolve routes, reconciles
+  them with hysteresis and generation fencing, and always catalogs native Koi as
+  the lowest-priority complete provider. Linux can use Avahi alone or compose
+  systemd-resolved's real D-Bus publication/direct-resolution operations with
+  native Koi's browse and explicit-address support without restarting Koi.
+
+### Fixed
+- A quiet DNS-SD browse no longer turns the mDNS capability red after 90 seconds.
+  Browse APIs emit changes rather than keepalives, so event age is now truthful
+  activity telemetry; adapter-owned probes determine health, and explicit peer
+  traffic remains the receive-path integration proof.
+- Startup diagnostics no longer claim `mdns-sd` before provider selection; the
+  live provider plan is the authoritative engine report.
+- Expected browse retries during a provider transition no longer emit one warning
+  per active service type; adapter/supervisor health remains authoritative while
+  route-level retry detail stays available at debug level.
+
 ## [1.0.0-rc.2] - 2026-08-24
 
 **The second release candidate: non-human callers become first-class mesh citizens,

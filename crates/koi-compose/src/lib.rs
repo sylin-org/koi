@@ -17,7 +17,8 @@
 /// embedded so the stamp is present by construction on every boot path.
 pub mod announce;
 
-/// Platform mDNS bootstrap: probes once and injects exactly one real provider.
+/// Platform mDNS catalog: the domain supervisor probes real adapters and owns
+/// capability-aware runtime selection and transitions.
 pub mod mdns;
 
 /// The posture-reactive self-announce supervisor: keeps the `_http._tcp` posture stamp current

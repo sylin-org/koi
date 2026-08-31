@@ -1,5 +1,5 @@
 ---
-globs: crates/koi-mdns/src/{provider,native,avahi,daemon}.rs,crates/koi-compose/src/mdns.rs
+globs: crates/koi-mdns/src/{adapter,provider,supervisor,native,avahi,systemd_resolved,daemon}.rs,crates/koi-compose/src/mdns.rs
 alwaysApply: false
 ---
 # mDNS Provider Boundary Rules
@@ -8,16 +8,22 @@ alwaysApply: false
 `crates/koi-mdns/src/native.rs` is the ONLY file that may import from the `mdns-sd` crate.
 This is enforced by `mdns_sd_is_isolated_to_the_native_adapter`, which scans every
 other Rust source file and fails the build if `mdns_sd` appears.
-`crates/koi-mdns/src/avahi.rs` likewise owns all Avahi `zbus`/D-Bus types.
+`crates/koi-mdns/src/avahi.rs` owns Avahi D-Bus types, and
+`crates/koi-mdns/src/systemd_resolved.rs` owns resolve1 D-Bus types.
 
 ### Rules
 - NEVER import `mdns_sd::*` in any other file
 - NEVER expose mdns-sd types (ServiceDaemon, ServiceInfo, ServiceEvent, ResolvedService) in public APIs
 - ALWAYS convert mdns-sd types to provider-neutral values inside `native.rs`
-- `MdnsCore` and `MdnsDaemon` depend only on the `MdnsProvider` port
-- `koi-compose/src/mdns.rs` probes once and injects exactly one provider
-- A present-but-broken Avahi is an error, never permission to arm native beside it
-- Provider recovery stays inside the selected adapter; selection changes only on Koi restart
+- Each adapter owns its read-only detector, capability evidence, native types, and real arming
+- `koi-compose/src/mdns.rs` only assembles the target's adapter catalog
+- The supervisor always appends native Koi as an ordinary, lowest-priority full provider
+- `MdnsCore` and `MdnsDaemon` depend only on the stable `MdnsProvider` facade
+- `MdnsSupervisor` alone selects capability routes and changes them at runtime
+- Exactly one adapter owns each publication/browse route; complementary providers may be
+  armed only for non-overlapping capabilities
+- Transitions are break-before-make and generation-fenced; never leak retired browse events
+- Production adapters and endpoints are real. Fakes belong only in tests
 
 ### Browse Multiplexing (CRITICAL)
 The native mdns-sd provider keeps exactly **one querier per service type**: a second `browse` of a type

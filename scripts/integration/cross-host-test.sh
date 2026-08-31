@@ -147,14 +147,14 @@ if echo "$DISC" | grep -qiE 'posture=|fp='; then ok "member daemon discovers the
 echo "== 11. P6: koi trust diagnose on the member =="
 mssh "KOI_DATA_DIR=/home/stone/koi-test/data KOI_NO_CREDENTIAL_STORE=1 /home/stone/koi-test/koi trust diagnose 2>&1" | sed 's/^/    /'
 
-echo "== 12. A: koi status surfaces mDNS receive-health (anti-silence) =="
-# With a browse active, koi status must report the daemon is actually RECEIVING — not a
-# silently-empty browser. Start a background browse, then read the daemon's status.
+echo "== 12. A: koi status surfaces mDNS receive activity =="
+# With explicit peer traffic and a browse active, status reports observed activity.
+# Event silence alone is not a failure signal because DNS-SD streams are not keepalives.
 mssh "KOI_DATA_DIR=/home/stone/koi-test/data timeout 10 /home/stone/koi-test/koi mdns discover _certmesh._tcp >/dev/null 2>&1 &"
 sleep 5
 ST=$(mssh "curl -s http://localhost:5641/v1/status" 2>/dev/null)
-echo "$ST" | tr ',{}' '\n' | grep -iE 'browse receiving|browse active|mdns_browse' | head -4 | sed 's/^/    /'
-if echo "$ST" | grep -qiE 'browse receiving|browse active'; then ok "koi status surfaces mDNS receive-health"; else bad "status not surfacing receive-health (A)"; fi
+echo "$ST" | tr ',{}' '\n' | grep -iE 'observed [0-9]+ events|browse active|mdns_browse' | head -4 | sed 's/^/    /'
+if echo "$ST" | grep -qiE 'observed [0-9]+ events|browse active'; then ok "koi status surfaces mDNS receive activity"; else bad "status not surfacing receive activity (A)"; fi
 
 echo "== 13. P3: unified HTTP router — rich /v1/status (daemon, seal, mcp_http, mdns_browse_active) =="
 # The koi-serve router unification (P3) must keep the daemon's FULL /v1/status shape — the

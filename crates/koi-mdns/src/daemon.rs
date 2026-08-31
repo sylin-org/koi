@@ -15,14 +15,6 @@ use crate::provider::{
 /// How long to wait for a service to resolve before giving up.
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Receive-health staleness threshold (ADR-020 anti-silence): a browse that has been
-/// active this long with NO inbound mDNS — or whose last inbound is at least this old —
-/// on a routable LAN means inbound multicast is not reaching this daemon (the mdns-sd
-/// interface-index drop, a multicast-filtering switch, a NIC change). The window is
-/// measured against *browse-active* time, never core uptime, so the lazy meta-browse and
-/// the first discover-after-idle are not falsely flagged. Reused by `MdnsCore::status`.
-pub(crate) const RECEIVE_STALL_SECS: u64 = 90;
-
 /// Capacity of each per-type fan-out broadcast channel.
 ///
 /// Sized larger than the core-wide subscriber channel because the *first*
@@ -54,42 +46,21 @@ struct TypeBrowse {
     gen: u64,
 }
 
-// ── Receive-health ────────────────────────────────────────────────
+// ── Receive activity ──────────────────────────────────────────────
 
-/// Receive-health snapshot (ADR-020 anti-silence) for `MdnsCore::status`.
+/// Provider-neutral receive telemetry for `MdnsCore::status`.
 ///
-/// The verdict is driven by *browse-active* time and last-event age — never core
-/// uptime — and never latches: a once-working-then-silent browse (a NIC change, an
-/// interface-index drop, a switch reconfig) is caught because a growing last-event
-/// age crosses [`RECEIVE_STALL_SECS`]. `events_seen` is display-only.
+/// DNS-SD browse APIs emit changes, not keepalives. A quiet network can be
+/// healthy for an unbounded time. These facts are operator evidence; adapter
+/// inspection, not event age, owns the provider-health verdict.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ReceiveHealth {
-    /// Total inbound events translated (display counter only — not a verdict input).
+pub(crate) struct ReceiveActivity {
+    /// Total inbound events translated.
     pub events_seen: u64,
     /// Age in seconds of the most recent inbound event (`None` = nothing ever received).
     pub last_event_age_secs: Option<u64>,
     /// How long a real browse has been active, in seconds (`None` = no active browse).
     pub browse_active_secs: Option<u64>,
-}
-
-impl ReceiveHealth {
-    /// Whether inbound multicast appears broken: a browse has been active on a routable
-    /// LAN, yet either the last event is at least [`RECEIVE_STALL_SECS`] old or — when
-    /// nothing has ever arrived — the browse itself has been active that long. Uptime is
-    /// never consulted, so the lazy meta-browse / first-discover-after-idle never false
-    /// -alarm, and a stall after events DID flow is still detected (no zero-latch).
-    pub fn is_broken(&self, has_live_lan_nic: bool) -> bool {
-        let Some(active) = self.browse_active_secs else {
-            return false; // no active browse → nothing to be broken
-        };
-        if !has_live_lan_nic {
-            return false; // no routable NIC → inbound multicast isn't expected
-        }
-        match self.last_event_age_secs {
-            Some(age) => age >= RECEIVE_STALL_SECS,
-            None => active >= RECEIVE_STALL_SECS,
-        }
-    }
 }
 
 // ── MdnsDaemon ────────────────────────────────────────────────────
@@ -103,19 +74,14 @@ pub(crate) struct MdnsDaemon {
     /// Core-wide event channel (every active pump feeds this).
     event_tx: broadcast::Sender<KoiEvent>,
     next_gen: AtomicU64,
-    /// Monotonic baseline for every receive-health timestamp. A fixed `Instant`
+    /// Monotonic baseline for every receive-activity timestamp. A fixed `Instant`
     /// captured at construction: browse-active and last-event ages are computed as
     /// `elapsed()` deltas against it, so a wall-clock step can never corrupt an age
-    /// (only the verdict matters, and the verdict must be monotonic). All the
-    /// `*_ms` atomics below are "millis since this baseline", with `0` meaning "never".
+    /// All the `*_ms` atomics below are "millis since this baseline", with `0`
+    /// meaning "never".
     baseline: Instant,
-    /// Receive-health signal (ADR-020 anti-silence): every translated INBOUND mDNS
-    /// event bumps these, so `MdnsCore::status` can distinguish a healthy browse from
-    /// "browsing but receiving nothing" (inbound multicast not reaching this daemon —
-    /// e.g. the mdns-sd interface-index drop, or a multicast-filtering switch). A
-    /// silently-empty LAN browser is exactly the failure koi's own thesis forbids.
-    /// `events_seen` is a DISPLAY counter only; the verdict is driven by browse-active
-    /// time and last-event age, so a once-working-then-silent browse is still caught.
+    /// Receive-activity signal: every translated inbound event bumps these so
+    /// status can state what was observed without inventing a keepalive contract.
     events_seen: AtomicU64,
     /// Millis-since-`baseline` of the most recent inbound event (`0` = none yet).
     last_event_ms: AtomicU64,
@@ -212,8 +178,8 @@ impl MdnsDaemon {
             // lazy meta-browse, the first discover-after-idle) gets a fresh window
             // instead of inheriting an old `first_browse_ms`. This `store` subsumes the
             // first-ever start (which is itself an empty→non-empty transition from the
-            // `0` sentinel), so the receive-health verdict always measures browse-active
-            // time, never core uptime.
+            // `0` sentinel), so activity always measures browse-active time,
+            // never core uptime.
             let browse_becoming_active = types.is_empty();
             let entry = types.entry(key.to_string()).or_insert_with(|| {
                 let (tx, _rx0) = broadcast::channel(TYPE_BROADCAST_CAPACITY);
@@ -270,12 +236,35 @@ impl MdnsDaemon {
         let target_name = parts[0];
         let (key, is_meta) = canonical_key(parts[1])?;
 
+        // Prefer an already-resolved hub fact, then use a provider's native
+        // point-resolution surface when the active capability plan has one.
+        // Partial system facilities such as resolve1 are therefore useful
+        // without being asked to impersonate a continuous browser.
+        if let Some(record) = self.cached_record(&key, target_name) {
+            return Ok(record);
+        }
+        if self.provider.capabilities().direct_resolve {
+            match self.provider.resolve(target_name, &key).await {
+                Ok(service) => {
+                    self.note_inbound();
+                    return Ok(provider_service_to_record(service));
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        provider = self.provider.name(),
+                        %error,
+                        "Direct service resolution failed; falling back to the shared browse"
+                    );
+                }
+            }
+        }
+
         // Hold a subscription for the duration so the browse stays warm and we
         // observe live events; it drops (refcount--) when this function returns.
         let sub = self.subscribe_type(&key, is_meta);
 
-        // Immediate cache hit (the common daemon-mode path, where the type is
-        // already being browsed and would otherwise never replay to us).
+        // Recheck after subscribing: a concurrent pump may have resolved the
+        // record while the direct lookup was in flight.
         if let Some(record) = self.cached_record(&key, target_name) {
             return Ok(record);
         }
@@ -317,7 +306,7 @@ impl MdnsDaemon {
         (self.baseline.elapsed().as_millis() as u64).max(1)
     }
 
-    /// Record that an inbound mDNS event arrived (receive-health signal). Stamps the
+    /// Record that an inbound mDNS event arrived. Stamps the
     /// last-event time off the monotonic `baseline` so a wall-clock step can't corrupt
     /// the computed age.
     fn note_inbound(&self) {
@@ -326,19 +315,17 @@ impl MdnsDaemon {
             .store(self.elapsed_ms(), Ordering::Relaxed);
     }
 
-    /// Receive-health snapshot for `MdnsCore::status`:
-    /// `ReceiveHealth { events_seen, last_event_age_secs, browse_active_secs }`.
+    /// Receive-activity snapshot for `MdnsCore::status`.
     ///
     /// - `browse_active_secs` is `Some(d)` while a real browse is active, measuring how
     ///   long *the browse* (not the core) has been up — `None` when no browse is active.
     /// - `last_event_age_secs` is the age of the most recent inbound event, or `None`
     ///   when nothing has ever been received.
-    /// - `events_seen` is a DISPLAY counter only.
+    /// - `events_seen` is a display counter.
     ///
-    /// All ages are derived from the monotonic `baseline`, so a clock step can't corrupt
-    /// them. A live browse whose last event is too old (or that has been up long enough
-    /// with nothing at all) on a routable NIC means inbound multicast isn't reaching us.
-    pub(crate) fn receive_health(&self) -> ReceiveHealth {
+    /// All ages are derived from the monotonic `baseline`, so a clock step can't
+    /// corrupt them. Event age is telemetry only: adapters own liveness decisions.
+    pub(crate) fn receive_activity(&self) -> ReceiveActivity {
         let now = self.elapsed_ms();
         let events_seen = self.events_seen.load(Ordering::Relaxed);
         let last = self.last_event_ms.load(Ordering::Relaxed);
@@ -351,7 +338,7 @@ impl MdnsDaemon {
         let first_browse = self.first_browse_ms.load(Ordering::Relaxed);
         let browse_active_secs =
             (active && first_browse != 0).then(|| now.saturating_sub(first_browse) / 1000);
-        ReceiveHealth {
+        ReceiveActivity {
             events_seen,
             last_event_age_secs,
             browse_active_secs,
@@ -554,11 +541,11 @@ fn spawn_type_pump(
                     if !daemon.browse_generation_is_live(&key, gen) {
                         return;
                     }
-                    tracing::warn!(
+                    tracing::debug!(
                         key = %key,
                         error = %e,
                         retry_ms = retry_delay.as_millis(),
-                        "Failed to start mDNS browse; retrying while subscribers remain"
+                        "mDNS browse waiting for an available provider route"
                     );
                     tokio::time::sleep(retry_delay).await;
                     retry_delay = next_browse_retry(retry_delay);
@@ -579,10 +566,10 @@ fn spawn_type_pump(
                 return;
             }
 
-            tracing::warn!(
+            tracing::debug!(
                 key = %key,
                 retry_ms = retry_delay.as_millis(),
-                "mDNS browse stopped while subscribers remain; restarting"
+                "mDNS browse route closed; restarting while subscribers remain"
             );
             tokio::time::sleep(retry_delay).await;
             retry_delay = next_browse_retry(retry_delay);
@@ -702,13 +689,6 @@ fn provider_service_to_record(service: ProviderService) -> ServiceRecord {
     }
 }
 
-/// Whether this host has a routable (non-loopback, non-link-local IPv4) interface —
-/// i.e. an interface on which inbound mDNS multicast would be expected. Used by the
-/// receive-health check to avoid false alarms on a host with no real LAN NIC.
-pub(crate) fn has_live_lan_nic() -> bool {
-    lan_ip().is_some()
-}
-
 /// Return the first non-loopback, non-link-local IPv4 address on this machine.
 fn lan_ip() -> Option<std::net::IpAddr> {
     if_addrs::get_if_addrs()
@@ -736,6 +716,22 @@ mod tests {
     impl MdnsProvider for TestProvider {
         fn name(&self) -> &'static str {
             "test"
+        }
+
+        fn capabilities(&self) -> crate::adapter::MdnsCapabilities {
+            crate::adapter::MdnsCapabilities::FULL_PROVIDER
+        }
+
+        fn api(&self) -> crate::adapter::AdapterApi {
+            crate::adapter::AdapterApi::Embedded
+        }
+
+        fn status(&self) -> ProviderStatus {
+            ProviderStatus {
+                name: self.name().to_string(),
+                healthy: true,
+                detail: "test provider".to_string(),
+            }
         }
 
         fn register(
@@ -845,11 +841,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn receive_health_tracks_inbound_events() {
+    async fn receive_activity_tracks_inbound_events() {
         let daemon = test_daemon();
 
         // Fresh daemon (no browse): nothing received, no active browse.
-        let h0 = daemon.receive_health();
+        let h0 = daemon.receive_activity();
         assert_eq!(h0.events_seen, 0);
         assert_eq!(h0.last_event_age_secs, None);
         assert_eq!(
@@ -861,16 +857,16 @@ mod tests {
         // measured from when the browse started (NOT core uptime).
         let sub = daemon.subscribe_type(TEST_KEY, false);
         assert!(
-            wait_until(|| daemon.receive_health().browse_active_secs.is_some()).await,
+            wait_until(|| daemon.receive_activity().browse_active_secs.is_some()).await,
             "browse should be active with a subscriber"
         );
 
-        // A received (injected) event bumps the receive-health signal — the counter
+        // A received (injected) event bumps the receive-activity signal — the counter
         // rises and the last-event age becomes set. (Uses `> before`/`is_some` so it
         // is robust to incidental real mDNS traffic on the test host.)
-        let before = daemon.receive_health().events_seen;
+        let before = daemon.receive_activity().events_seen;
         daemon.inject(TEST_KEY, resolved("alpha"));
-        let h = daemon.receive_health();
+        let h = daemon.receive_activity();
         assert!(
             h.events_seen > before,
             "an inbound event must increment the counter"
@@ -881,92 +877,6 @@ mod tests {
         );
         assert!(h.browse_active_secs.is_some());
         drop(sub);
-    }
-
-    // ── Receive-health verdict (staleness, no zero-latch, browse-age window) ──
-    //
-    // The verdict can't be exercised by waiting RECEIVE_STALL_SECS (90s) of real time,
-    // so we construct `ReceiveHealth` values directly (its fields are `pub(crate)`) and
-    // drive `is_broken` across the edge. This is the actual fix: a verdict keyed on
-    // browse-active time + last-event age, not core uptime, and with no zero-latch.
-
-    /// A browse that has been active long enough with NO inbound event on a routable
-    /// NIC is broken; one still inside the window is not (no false alarm on a fresh
-    /// browse / the lazy meta-browse / first discover-after-idle).
-    #[test]
-    fn receive_verdict_silent_browse_flags_only_after_window() {
-        // Fresh browse, still inside the staleness window → NOT broken.
-        let fresh = ReceiveHealth {
-            events_seen: 0,
-            last_event_age_secs: None,
-            browse_active_secs: Some(RECEIVE_STALL_SECS - 1),
-        };
-        assert!(
-            !fresh.is_broken(true),
-            "a browse inside the window must not be falsely flagged"
-        );
-
-        // Active long enough with nothing received → broken.
-        let silent = ReceiveHealth {
-            events_seen: 0,
-            last_event_age_secs: None,
-            browse_active_secs: Some(RECEIVE_STALL_SECS),
-        };
-        assert!(
-            silent.is_broken(true),
-            "a browse active for the full window with 0 inbound is broken"
-        );
-    }
-
-    /// The no-zero-latch property: a browse that DID receive events but has since gone
-    /// silent (a NIC change / interface-index drop / switch reconfig) IS caught once the
-    /// last-event age crosses the window — even though `events_seen > 0`.
-    #[test]
-    fn receive_verdict_once_working_then_silent_is_caught() {
-        // Worked, last event recent → healthy (not broken).
-        let recent = ReceiveHealth {
-            events_seen: 42,
-            last_event_age_secs: Some(RECEIVE_STALL_SECS - 1),
-            browse_active_secs: Some(10_000),
-        };
-        assert!(
-            !recent.is_broken(true),
-            "a browse with a recent inbound event is healthy"
-        );
-
-        // Worked, then went silent past the window → broken (no zero-latch).
-        let stalled = ReceiveHealth {
-            events_seen: 42,
-            last_event_age_secs: Some(RECEIVE_STALL_SECS),
-            browse_active_secs: Some(10_000),
-        };
-        assert!(
-            stalled.is_broken(true),
-            "a once-working-then-silent browse must be caught despite events_seen > 0"
-        );
-    }
-
-    /// No active browse, or no routable LAN NIC, is never broken (the false-alarm guards).
-    #[test]
-    fn receive_verdict_requires_active_browse_and_live_nic() {
-        // No active browse → never broken, regardless of stale ages.
-        let no_browse = ReceiveHealth {
-            events_seen: 0,
-            last_event_age_secs: Some(100_000),
-            browse_active_secs: None,
-        };
-        assert!(!no_browse.is_broken(true), "no active browse → not broken");
-
-        // Active + stale, but no live LAN NIC → not broken (inbound not expected).
-        let stale_no_nic = ReceiveHealth {
-            events_seen: 0,
-            last_event_age_secs: None,
-            browse_active_secs: Some(RECEIVE_STALL_SECS * 10),
-        };
-        assert!(
-            !stale_no_nic.is_broken(false),
-            "no routable NIC → inbound multicast isn't expected, so not broken"
-        );
     }
 
     #[tokio::test]

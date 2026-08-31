@@ -14,10 +14,13 @@ from the domain, shared browse hub, and public transports. The built-in native
 adapter wraps `mdns-sd`; platform adapters can supply the same real DNS-SD
 capabilities without leaking their API types into Koi's domain model.
 
-On Linux, the composition root selects a live, healthy Avahi daemon through its
-real system D-Bus API. When Avahi is absent and UDP 5353 is unambiguous, it arms
-the built-in native adapter instead. Exactly one provider is active per process,
-and the selected provider is named in Koi's capability status.
+At runtime, a supervisor asks every platform adapter for live evidence and routes
+each capability to the best provider that actually implements it. On Linux that
+catalog contains Avahi, systemd-resolved, and native Koi. A complete provider such
+as Avahi owns the whole plan; otherwise complementary providers can own distinct
+routes without duplicate publication or browsing. Native Koi is always catalogued
+as the lowest-priority complete provider. Status names the active routes and the
+evidence behind them, and the plan reconciles when the host changes.
 
 The core manages service lifecycles with session/heartbeat/permanent lease
 modes and exposes both programmatic commands and HTTP routes (via axum) for
@@ -28,7 +31,7 @@ browsing, registering, resolving, and subscribing to service events.
 - Browse and resolve services by type (`_http._tcp`, `_ssh._tcp`, etc.)
 - Register services with session, heartbeat, or permanent leases
 - Subscribe to real-time lifecycle events (found, resolved, removed)
-- Inject exactly one platform mDNS provider at composition time
+- Capability-aware runtime provider selection and non-overlapping composition
 - Built-in HTTP API with SSE streaming
 - Thread-safe registry with automatic lease reaping
 

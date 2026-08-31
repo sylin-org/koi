@@ -178,8 +178,13 @@ pub async fn assemble_capabilities(cores: &Cores) -> Vec<CapabilityReport> {
 mod tests {
     use super::*;
 
+    static NOTES_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[tokio::test]
     async fn all_disabled_ladder_is_the_canonical_eight_rungs() {
+        let _notes_guard = NOTES_TEST_LOCK.lock().await;
+        koi_common::capability::clear_notes();
+
         // Golden contract: with no cores, the ladder is exactly these eight rungs, in this
         // order, each disabled. This is the shape /v1/status, the dashboard, and embedded
         // all serialize — locking the three projections to one source. (The ipc rung joined
@@ -213,6 +218,9 @@ mod tests {
 
     #[tokio::test]
     async fn mdns_skip_note_surfaces_as_the_rung_summary_and_ipc_declares_its_dependency() {
+        let _notes_guard = NOTES_TEST_LOCK.lock().await;
+        koi_common::capability::clear_notes();
+
         // ADR-035 "yield, but declare": an mDNS coexistence skip must be visible
         // in the ladder with its reason, and the IPC rung must name the mDNS
         // dependency it inherited the skip from.

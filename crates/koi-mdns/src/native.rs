@@ -5,21 +5,153 @@
 //! provider-neutral observation model.
 
 use std::collections::HashMap;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use mdns_sd::{
-    ResolvedService, ScopedIp, ServiceDaemon, ServiceEvent as MdnsServiceEvent, ServiceInfo,
+    DaemonStatus, ResolvedService, ScopedIp, ServiceDaemon, ServiceEvent as MdnsServiceEvent,
+    ServiceInfo,
 };
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::adapter::{
+    AdapterApi, AdapterReadiness, AdapterReport, MdnsAdapter, MdnsCapabilities, ProbeFact,
+};
 use crate::error::{MdnsError, Result};
 use crate::provider::{
     MdnsProvider, ProviderAddress, ProviderBrowse, ProviderEvent, ProviderService, ProviderStatus,
 };
 
 const BROWSE_CHANNEL_CAPACITY: usize = 512;
+const NATIVE_PRIORITY: u16 = 100;
+const STARTUP_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// A short-lived proof that the native engine can use the RFC 6762 socket
+/// policy without evicting a system participant already bound to UDP 5353.
+struct CooperativeBind {
+    _ipv4: Option<Socket>,
+    _ipv6: Option<Socket>,
+    detail: String,
+}
+
+impl CooperativeBind {
+    fn mdns() -> Result<Self> {
+        Self::on_port(crate::MDNS_PORT)
+    }
+
+    fn on_port(port: u16) -> Result<Self> {
+        let ipv4_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port));
+        let ipv6_addr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port, 0, 0));
+        let (ipv4, ipv4_error) = cooperative_socket(ipv4_addr);
+        let (ipv6, ipv6_error) = cooperative_socket(ipv6_addr);
+
+        if ipv4.is_none() && ipv6.is_none() {
+            return Err(MdnsError::Daemon(format!(
+                "native mDNS cannot cooperatively bind UDP {port} (IPv4: {}; IPv6: {})",
+                ipv4_error.unwrap_or_else(|| "unavailable".to_string()),
+                ipv6_error.unwrap_or_else(|| "unavailable".to_string())
+            )));
+        }
+
+        let families = match (ipv4.is_some(), ipv6.is_some()) {
+            (true, true) => "IPv4+IPv6",
+            (true, false) => "IPv4 only",
+            (false, true) => "IPv6 only",
+            (false, false) => unreachable!("both unavailable returned above"),
+        };
+        Ok(Self {
+            _ipv4: ipv4,
+            _ipv6: ipv6,
+            detail: format!("cooperative UDP {port} bind verified ({families})"),
+        })
+    }
+}
+
+fn cooperative_socket(address: SocketAddr) -> (Option<Socket>, Option<String>) {
+    let domain = if address.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
+    let result = (|| {
+        let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+        if address.is_ipv6() {
+            socket.set_only_v6(true)?;
+        }
+        socket.set_reuse_address(true)?;
+        #[cfg(unix)]
+        socket.set_reuse_port(true)?;
+        socket.bind(&address.into())?;
+        Ok::<Socket, std::io::Error>(socket)
+    })();
+    match result {
+        Ok(socket) => (Some(socket), None),
+        Err(error) => (None, Some(error.to_string())),
+    }
+}
+
+/// Adapter for Koi's built-in cross-platform mDNS engine.
+#[derive(Debug, Default)]
+pub struct NativeMdnsAdapter;
+
+#[async_trait::async_trait]
+impl MdnsAdapter for NativeMdnsAdapter {
+    fn name(&self) -> &'static str {
+        "native"
+    }
+
+    fn priority(&self) -> u16 {
+        NATIVE_PRIORITY
+    }
+
+    fn api(&self) -> AdapterApi {
+        AdapterApi::Embedded
+    }
+
+    fn capabilities(&self) -> MdnsCapabilities {
+        MdnsCapabilities::FULL_PROVIDER
+    }
+
+    async fn inspect(&self) -> AdapterReport {
+        match CooperativeBind::mdns() {
+            Ok(probe) => AdapterReport {
+                name: self.name(),
+                priority: self.priority(),
+                api: self.api(),
+                readiness: AdapterReadiness::Ready,
+                installed: ProbeFact::Yes,
+                configured: ProbeFact::Yes,
+                running: ProbeFact::NotApplicable,
+                capabilities: self.capabilities(),
+                detail: format!("built-in engine; {}", probe.detail),
+            },
+            Err(error) => AdapterReport {
+                name: self.name(),
+                priority: self.priority(),
+                api: self.api(),
+                readiness: AdapterReadiness::Unavailable,
+                installed: ProbeFact::Yes,
+                configured: ProbeFact::Yes,
+                running: ProbeFact::NotApplicable,
+                capabilities: MdnsCapabilities::default(),
+                detail: error.to_string(),
+            },
+        }
+    }
+
+    async fn arm(&self) -> Result<Arc<dyn MdnsProvider>> {
+        let provider = tokio::task::spawn_blocking(NativeMdnsProvider::new)
+            .await
+            .map_err(|error| {
+                MdnsError::Daemon(format!("native adapter arm task failed: {error}"))
+            })??;
+        Ok(Arc::new(provider))
+    }
+}
 
 enum NativeOp {
     Register(Box<ServiceInfo>),
@@ -38,11 +170,31 @@ enum NativeOp {
 pub struct NativeMdnsProvider {
     op_tx: Mutex<std::sync::mpsc::SyncSender<NativeOp>>,
     healthy: Arc<AtomicBool>,
+    detail: String,
 }
 
 impl NativeMdnsProvider {
     pub fn new() -> Result<Self> {
+        // Hold the reuse-enabled probes until mdns-sd has opened and confirmed
+        // its own sockets. This closes the inspect→arm race as far as the
+        // library boundary allows without taking ownership of its sockets.
+        let cooperative = CooperativeBind::mdns()?;
         let daemon = ServiceDaemon::new().map_err(|e| MdnsError::Daemon(e.to_string()))?;
+        let status = daemon
+            .status()
+            .map_err(|error| MdnsError::Daemon(format!("native status probe failed: {error}")))?
+            .recv_timeout(STARTUP_STATUS_TIMEOUT)
+            .map_err(|error| {
+                MdnsError::Daemon(format!("native engine did not report readiness: {error}"))
+            })?;
+        if status != DaemonStatus::Running {
+            return Err(MdnsError::Daemon(format!(
+                "native engine reported unexpected startup status: {status:?}"
+            )));
+        }
+        let detail = format!("built-in mdns-sd engine; {}", cooperative.detail);
+        drop(cooperative);
+
         let (op_tx, op_rx) = std::sync::mpsc::sync_channel(256);
         let healthy = Arc::new(AtomicBool::new(true));
         let worker_health = Arc::clone(&healthy);
@@ -55,6 +207,7 @@ impl NativeMdnsProvider {
         Ok(Self {
             op_tx: Mutex::new(op_tx),
             healthy,
+            detail,
         })
     }
 
@@ -80,11 +233,19 @@ impl MdnsProvider for NativeMdnsProvider {
         "native"
     }
 
+    fn capabilities(&self) -> MdnsCapabilities {
+        MdnsCapabilities::FULL_PROVIDER
+    }
+
+    fn api(&self) -> AdapterApi {
+        AdapterApi::Embedded
+    }
+
     fn status(&self) -> ProviderStatus {
         ProviderStatus {
-            name: self.name(),
+            name: self.name().to_string(),
             healthy: self.healthy.load(Ordering::Relaxed),
-            detail: "built-in mdns-sd engine".to_string(),
+            detail: self.detail.clone(),
         }
     }
 
@@ -375,5 +536,36 @@ mod tests {
             offenders.is_empty(),
             "mdns_sd must only be referenced in native.rs; offenders: {offenders:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cooperative_probe_accepts_an_existing_reuse_holder() {
+        let first = CooperativeBind::on_port(0).expect("first cooperative bind");
+        let port = first
+            ._ipv4
+            .as_ref()
+            .expect("IPv4 probe")
+            .local_addr()
+            .expect("probe address")
+            .as_socket()
+            .expect("IP socket")
+            .port();
+        let second = CooperativeBind::on_port(port).expect("shared cooperative bind");
+        assert!(second._ipv4.is_some());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the real host mDNS socket environment"]
+    async fn real_native_adapter_inspects_and_arms() {
+        let adapter = NativeMdnsAdapter;
+        let report = adapter.inspect().await;
+        assert!(
+            report.satisfies_full_contract(),
+            "native report: {report:?}"
+        );
+        let provider = adapter.arm().await.expect("arm native provider");
+        assert!(provider.status().healthy);
+        provider.shutdown().await.expect("shutdown native provider");
     }
 }

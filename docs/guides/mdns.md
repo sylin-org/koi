@@ -8,12 +8,14 @@ The problem is that _your_ applications can't easily do the same. The OS-level A
 
 All CLI commands use the `koi mdns` prefix. All HTTP endpoints live under `/v1/mdns/`.
 
-Koi arms exactly one mDNS provider when it starts. On Linux, a live and healthy
-Avahi daemon is used through its system D-Bus API; when Avahi is absent and UDP
-5353 is safely available, Koi uses its built-in provider. The provider does not
-change mid-process, and `koi status` names the selected backend. If a selected
-Avahi daemon restarts, Koi reconnects and republishes through Avahi rather than
-starting a second responder.
+Koi keeps one stable mDNS control plane while its provider plan adapts to the host.
+Each platform adapter reports what is installed, configured, running, healthy, and
+actually implemented. On Linux, complete Avahi normally owns every route; if it is
+unavailable, systemd-resolved can provide its real publication and point-resolution
+operations while native Koi supplies continuous browsing and explicit-address
+publication. Native Koi is always present in the catalog at the lowest priority.
+Routes never overlap, transitions retire the old owner before arming a replacement,
+and `koi status` names the live route owners and evidence.
 
 ---
 

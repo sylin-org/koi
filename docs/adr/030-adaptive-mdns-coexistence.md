@@ -1,15 +1,14 @@
 # ADR-030: Adaptive mDNS — Coexist or Skip, Never Fail
 
-**Status:** Superseded for platform providers by ADR-037 (originally accepted 2026-08-24)
+**Status:** Superseded for platform providers by ADR-038 (originally accepted 2026-08-24)
 **Date:** 2026-08-24
 **Builds on:** ADR-016 §2 (capability ladder), ADR-020 (truthful status), the mDNS boundary rules (.agentic/rules)
 **Amends:** implicit mDNS startup behavior (fail → degraded with an error-level log)
 
-> **2026-08-31:** ADR-037 replaces the “Avahi present → skip mDNS” decision.
-> Koi now uses one injected provider: Avahi when its live D-Bus server is healthy,
-> native only when Avahi is absent and native startup is unambiguous. This ADR's
-> exclusive-port evidence and fail-safe treatment of unknown responders remain
-> historical input to that selector.
+> **2026-08-31:** ADR-038 supersedes both this skip decision and ADR-037's
+> boot-locked selector. Adapters now own live evidence, the supervisor routes
+> non-overlapping capabilities dynamically, and native Koi is always catalogued
+> at the lowest priority. This ADR remains historical evidence, not current policy.
 
 ---
 

@@ -29,6 +29,7 @@ tracing.workspace = true
 tokio-util.workspace = true
 hostname = "0.4"
 if-addrs.workspace = true
+socket2.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 futures-util.workspace = true

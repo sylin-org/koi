@@ -118,7 +118,10 @@ pub(crate) fn startup_diagnostics(config: &Config, http_bind_ip: Option<std::net
     if config.no_mdns {
         tracing::info!("mDNS capability: disabled");
     } else {
-        tracing::info!("mDNS engine: mdns-sd");
+        // The live plan is reported after adapter inspection. Do not name the
+        // embedded library here: Avahi, resolve1, Bonjour, or a composed plan
+        // may own the actual routes for this process.
+        tracing::info!("mDNS capability: runtime provider selection enabled");
     }
 
     if config.no_certmesh {

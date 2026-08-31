@@ -1,8 +1,8 @@
 //! Linux mDNS provider backed by Avahi's system D-Bus API.
 //!
 //! The adapter owns Avahi entry groups and browse objects, translates their
-//! signals into provider-neutral observations, and keeps desired publications
-//! so an Avahi daemon restart can be reconciled without changing providers.
+//! signals into provider-neutral observations, and performs short, local D-Bus
+//! recovery while the runtime supervisor decides whether to change providers.
 
 #![allow(clippy::too_many_arguments)] // Avahi's fixed D-Bus method signatures.
 
@@ -17,6 +17,9 @@ use zbus::names::BusName;
 use zbus::zvariant::OwnedObjectPath;
 use zbus::Connection;
 
+use crate::adapter::{
+    AdapterApi, AdapterReadiness, AdapterReport, MdnsAdapter, MdnsCapabilities, ProbeFact,
+};
 use crate::error::{MdnsError, Result};
 use crate::provider::{
     MdnsProvider, ProviderAddress, ProviderBrowse, ProviderEvent, ProviderService, ProviderStatus,
@@ -35,6 +38,7 @@ const AVAHI_ENTRY_GROUP_FAILURE: i32 = 4;
 const AVAHI_FLAGS_NONE: u32 = 0;
 const COMMAND_CAPACITY: usize = 256;
 const BROWSE_CAPACITY: usize = 512;
+const AVAHI_PRIORITY: u16 = 300;
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
 const ENTRY_GROUP_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_COLLISION_ATTEMPTS: usize = 10;
@@ -219,122 +223,196 @@ mod type_browser {
 
 use type_browser::AvahiServiceTypeBrowserProxy;
 
-/// Result of probing the live Linux Avahi resource.
-pub enum AvahiProbe {
-    /// Avahi owns its D-Bus name and reports a running server.
-    Ready(AvahiMdnsProvider),
-    /// Avahi definitely has no live D-Bus owner.
-    Absent(String),
-    /// Avahi is present but did not become usable; native must not be armed.
-    Unavailable(String),
+/// Linux adapter that owns Avahi detection and arming.
+#[derive(Debug, Default)]
+pub struct AvahiAdapter;
+
+struct ReadyAvahi {
+    connection: Connection,
+    owner: String,
+    version: String,
+}
+
+#[async_trait::async_trait]
+impl MdnsAdapter for AvahiAdapter {
+    fn name(&self) -> &'static str {
+        "avahi"
+    }
+
+    fn priority(&self) -> u16 {
+        AVAHI_PRIORITY
+    }
+
+    fn api(&self) -> AdapterApi {
+        AdapterApi::SystemDbus
+    }
+
+    fn capabilities(&self) -> MdnsCapabilities {
+        MdnsCapabilities::FULL_PROVIDER_WITH_DIRECT_RESOLVE
+    }
+
+    async fn inspect(&self) -> AdapterReport {
+        match inspect_avahi(self).await {
+            Ok(ready) => ready_report(self, &ready.version),
+            Err(report) => report,
+        }
+    }
+
+    async fn arm(&self) -> Result<Arc<dyn MdnsProvider>> {
+        let ready = inspect_avahi(self).await.map_err(|report| {
+            MdnsError::Daemon(format!("Avahi cannot be armed: {}", report.detail))
+        })?;
+        Ok(Arc::new(AvahiMdnsProvider::start(
+            ready.connection,
+            ready.owner,
+            ready.version,
+        )))
+    }
+}
+
+fn ready_report(adapter: &AvahiAdapter, version: &str) -> AdapterReport {
+    AdapterReport {
+        name: adapter.name(),
+        priority: adapter.priority(),
+        api: adapter.api(),
+        readiness: AdapterReadiness::Ready,
+        installed: ProbeFact::Yes,
+        configured: ProbeFact::Yes,
+        running: ProbeFact::Yes,
+        capabilities: adapter.capabilities(),
+        detail: format!("{version} running on the system D-Bus"),
+    }
+}
+
+async fn inspect_avahi(adapter: &AvahiAdapter) -> std::result::Result<ReadyAvahi, AdapterReport> {
+    let failed = |readiness, detail| AdapterReport::failed_inspection(adapter, readiness, detail);
+    let connection = Connection::system().await.map_err(|error| {
+        failed(
+            AdapterReadiness::Unavailable,
+            format!("system D-Bus unavailable: {error}"),
+        )
+    })?;
+
+    let dbus = zbus::fdo::DBusProxy::new(&connection)
+        .await
+        .map_err(|error| {
+            failed(
+                AdapterReadiness::Unavailable,
+                format!("cannot inspect the system D-Bus: {error}"),
+            )
+        })?;
+    let bus_name = BusName::try_from(AVAHI_DESTINATION).map_err(|error| {
+        failed(
+            AdapterReadiness::Unavailable,
+            format!("invalid Avahi D-Bus name: {error}"),
+        )
+    })?;
+    let has_owner = dbus.name_has_owner(bus_name).await.map_err(|error| {
+        failed(
+            AdapterReadiness::Unavailable,
+            format!("cannot determine whether Avahi is running: {error}"),
+        )
+    })?;
+    if !has_owner {
+        let installed = dbus
+            .list_activatable_names()
+            .await
+            .map(|names| {
+                if names.iter().any(|name| name.as_str() == AVAHI_DESTINATION) {
+                    ProbeFact::Yes
+                } else {
+                    ProbeFact::Unknown
+                }
+            })
+            .unwrap_or(ProbeFact::Unknown);
+        return Err(AdapterReport {
+            name: adapter.name(),
+            priority: adapter.priority(),
+            api: adapter.api(),
+            readiness: AdapterReadiness::Absent,
+            installed,
+            configured: ProbeFact::Unknown,
+            running: ProbeFact::No,
+            capabilities: MdnsCapabilities::default(),
+            detail: "no live D-Bus owner; Koi did not activate the stopped service".to_string(),
+        });
+    }
+
+    let server = AvahiServerProxy::new(&connection).await.map_err(|error| {
+        failed(
+            AdapterReadiness::Unavailable,
+            format!("cannot create the Avahi server proxy: {error}"),
+        )
+    })?;
+    let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
+    loop {
+        match server.get_state().await {
+            Ok(AVAHI_SERVER_RUNNING) => break,
+            Ok(AVAHI_SERVER_FAILURE) => {
+                return Err(failed(
+                    AdapterReadiness::Unavailable,
+                    "Avahi reports a fatal server failure".to_string(),
+                ));
+            }
+            Ok(state) if tokio::time::Instant::now() < deadline => {
+                tracing::debug!(state, "Waiting for Avahi to reach running state");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Ok(state) => {
+                return Err(failed(
+                    AdapterReadiness::Unavailable,
+                    format!("Avahi did not reach running state (state {state})"),
+                ));
+            }
+            Err(error) => {
+                return Err(failed(
+                    AdapterReadiness::Unavailable,
+                    format!("Avahi is present but GetState failed: {error}"),
+                ));
+            }
+        }
+    }
+
+    let version = server
+        .get_version_string()
+        .await
+        .unwrap_or_else(|_| "version unavailable".to_string());
+    let owner = current_owner(&connection)
+        .await
+        .map_err(|error| failed(AdapterReadiness::Unavailable, error))?
+        .ok_or_else(|| {
+            failed(
+                AdapterReadiness::Unavailable,
+                "Avahi disappeared during inspection".to_string(),
+            )
+        })?;
+
+    Ok(ReadyAvahi {
+        connection,
+        owner,
+        version,
+    })
 }
 
 /// A real Avahi adapter. All mutating calls are serialized through one actor so
 /// publication and withdrawal ordering is deterministic.
 pub struct AvahiMdnsProvider {
+    connection: Connection,
     command_tx: mpsc::Sender<Command>,
     status: Arc<RwLock<ProviderStatus>>,
 }
 
 impl AvahiMdnsProvider {
-    /// Probe the system bus without activating a stopped Avahi service.
-    ///
-    /// A missing owner is the explicit native-fallback case. Once an owner is
-    /// observed, any D-Bus or server-state failure remains an Avahi failure so
-    /// Koi never starts a second responder beside an unhealthy one.
-    pub async fn probe() -> AvahiProbe {
-        let connection = match Connection::system().await {
-            Ok(connection) => connection,
-            Err(error) => {
-                return AvahiProbe::Absent(format!("system D-Bus unavailable: {error}"));
-            }
-        };
-
-        let dbus = match zbus::fdo::DBusProxy::new(&connection).await {
-            Ok(proxy) => proxy,
-            Err(error) => {
-                return AvahiProbe::Unavailable(format!(
-                    "cannot inspect the system D-Bus: {error}"
-                ));
-            }
-        };
-        let name = match BusName::try_from(AVAHI_DESTINATION) {
-            Ok(name) => name,
-            Err(error) => {
-                return AvahiProbe::Unavailable(format!("invalid Avahi D-Bus name: {error}"));
-            }
-        };
-        match dbus.name_has_owner(name).await {
-            Ok(false) => {
-                return AvahiProbe::Absent("Avahi has no live system D-Bus owner".to_string());
-            }
-            Err(error) => {
-                return AvahiProbe::Unavailable(format!(
-                    "cannot determine whether Avahi is running: {error}"
-                ));
-            }
-            Ok(true) => {}
-        }
-
-        let server = match AvahiServerProxy::new(&connection).await {
-            Ok(server) => server,
-            Err(error) => {
-                return AvahiProbe::Unavailable(format!(
-                    "cannot create the Avahi server proxy: {error}"
-                ));
-            }
-        };
-        let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
-        loop {
-            match server.get_state().await {
-                Ok(AVAHI_SERVER_RUNNING) => break,
-                Ok(AVAHI_SERVER_FAILURE) => {
-                    return AvahiProbe::Unavailable(
-                        "Avahi reports a fatal server failure".to_string(),
-                    );
-                }
-                Ok(state) if tokio::time::Instant::now() < deadline => {
-                    tracing::debug!(state, "Waiting for Avahi to reach running state");
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-                Ok(state) => {
-                    return AvahiProbe::Unavailable(format!(
-                        "Avahi did not reach running state (state {state})"
-                    ));
-                }
-                Err(error) => {
-                    return AvahiProbe::Unavailable(format!(
-                        "Avahi is present but GetState failed: {error}"
-                    ));
-                }
-            }
-        }
-
-        let version = server
-            .get_version_string()
-            .await
-            .unwrap_or_else(|_| "version unavailable".to_string());
-        let owner = match current_owner(&connection).await {
-            Ok(Some(owner)) => owner,
-            Ok(None) => {
-                return AvahiProbe::Unavailable("Avahi disappeared during bootstrap".to_string());
-            }
-            Err(error) => return AvahiProbe::Unavailable(error),
-        };
-
-        AvahiProbe::Ready(Self::start(connection, owner, version))
-    }
-
     fn start(connection: Connection, owner: String, version: String) -> Self {
         let detail = format!("{version} via system D-Bus");
         let status = Arc::new(RwLock::new(ProviderStatus {
-            name: "avahi",
+            name: "avahi".to_string(),
             healthy: true,
             detail,
         }));
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let actor = AvahiActor {
-            connection,
+            connection: connection.clone(),
             command_rx,
             status: Arc::clone(&status),
             version,
@@ -344,7 +422,11 @@ impl AvahiMdnsProvider {
             browsers: HashMap::new(),
         };
         tokio::spawn(actor.run());
-        Self { command_tx, status }
+        Self {
+            connection,
+            command_tx,
+            status,
+        }
     }
 
     fn send(&self, command: Command) -> Result<()> {
@@ -365,6 +447,14 @@ impl AvahiMdnsProvider {
 impl MdnsProvider for AvahiMdnsProvider {
     fn name(&self) -> &'static str {
         "avahi"
+    }
+
+    fn api(&self) -> AdapterApi {
+        AdapterApi::SystemDbus
+    }
+
+    fn capabilities(&self) -> MdnsCapabilities {
+        MdnsCapabilities::FULL_PROVIDER_WITH_DIRECT_RESOLVE
     }
 
     fn status(&self) -> ProviderStatus {
@@ -423,6 +513,20 @@ impl MdnsProvider for AvahiMdnsProvider {
             .await
             .map_err(|_| MdnsError::Daemon("Avahi adapter dropped browse reply".to_string()))?
             .map_err(MdnsError::Daemon)
+    }
+
+    async fn resolve(&self, name: &str, service_type: &str) -> Result<ProviderService> {
+        let (service_type, domain) = split_service_type(service_type)?;
+        resolve_observation(
+            &self.connection,
+            AVAHI_IF_UNSPEC,
+            AVAHI_PROTO_UNSPEC,
+            name,
+            &service_type,
+            &domain,
+        )
+        .await
+        .map_err(MdnsError::Daemon)
     }
 
     fn stop_browse(&self, service_type: &str) -> Result<()> {
@@ -561,7 +665,7 @@ impl AvahiActor {
             set_status(
                 &self.status,
                 false,
-                "Avahi is not running; waiting for the selected provider to return".to_string(),
+                "Avahi has no live D-Bus owner".to_string(),
             );
             return;
         }
@@ -1299,7 +1403,7 @@ mod tests {
     }
 
     #[test]
-    fn zbus_is_isolated_to_the_avahi_adapter() {
+    fn zbus_is_isolated_to_linux_system_adapters() {
         let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut offenders = Vec::new();
         for entry in std::fs::read_dir(&src_dir).expect("read src dir") {
@@ -1307,7 +1411,10 @@ mod tests {
             if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
                 continue;
             }
-            if path.file_name().and_then(|name| name.to_str()) == Some("avahi.rs") {
+            if matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some("avahi.rs" | "systemd_resolved.rs")
+            ) {
                 continue;
             }
             let contents = std::fs::read_to_string(&path).expect("read source file");
@@ -1317,19 +1424,23 @@ mod tests {
         }
         assert!(
             offenders.is_empty(),
-            "zbus must only be referenced in avahi.rs; offenders: {offenders:?}"
+            "zbus must remain inside Linux system adapters; offenders: {offenders:?}"
         );
     }
 
     #[tokio::test]
     #[ignore = "requires a running Avahi daemon on the system bus"]
+    async fn real_avahi_adapter_inspects_as_a_full_provider() {
+        let adapter = AvahiAdapter;
+        let report = adapter.inspect().await;
+        assert!(report.satisfies_full_contract(), "Avahi report: {report:?}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a running Avahi daemon on the system bus"]
     async fn real_avahi_publish_browse_resolve_and_remove() {
-        let provider = match AvahiMdnsProvider::probe().await {
-            AvahiProbe::Ready(provider) => provider,
-            AvahiProbe::Absent(reason) | AvahiProbe::Unavailable(reason) => {
-                panic!("Avahi is required for this test: {reason}")
-            }
-        };
+        let adapter = AvahiAdapter;
+        let provider = adapter.arm().await.expect("arm real Avahi provider");
         let mut browse = provider
             .browse("_koi-test._tcp.local.", false)
             .await

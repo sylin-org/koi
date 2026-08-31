@@ -9,6 +9,8 @@ use std::net::IpAddr;
 
 use tokio::sync::mpsc;
 
+use crate::adapter::{AdapterApi, MdnsCapabilities};
+use crate::error::MdnsError;
 use crate::Result;
 
 /// One address observed for a resolved service, including the interface that
@@ -46,10 +48,10 @@ pub enum ProviderEvent {
 /// One provider-owned browse stream.
 pub type ProviderBrowse = mpsc::Receiver<ProviderEvent>;
 
-/// Operational state of the one provider armed for this core.
+/// Operational state of the armed provider or capability-aware provider plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderStatus {
-    pub name: &'static str,
+    pub name: String,
     pub healthy: bool,
     pub detail: String,
 }
@@ -65,14 +67,18 @@ pub trait MdnsProvider: Send + Sync {
     /// Stable provider name for diagnostics.
     fn name(&self) -> &'static str;
 
+    /// Operations this armed provider actually implements.
+    ///
+    /// This is deliberately mandatory: an incomplete provider must never
+    /// inherit a fictional full-capability declaration.
+    fn capabilities(&self) -> MdnsCapabilities;
+
+    /// Native API surface used by this provider.
+    fn api(&self) -> AdapterApi;
+
     /// Current adapter health for the public capability status surface.
-    fn status(&self) -> ProviderStatus {
-        ProviderStatus {
-            name: self.name(),
-            healthy: true,
-            detail: "ready".to_string(),
-        }
-    }
+    /// Providers must supply real evidence rather than inherit optimistic state.
+    fn status(&self) -> ProviderStatus;
 
     /// Publish a service through this provider.
     fn register(
@@ -89,6 +95,15 @@ pub trait MdnsProvider: Send + Sync {
 
     /// Start a provider browse for one canonical service type.
     async fn browse(&self, service_type: &str, is_meta: bool) -> Result<ProviderBrowse>;
+
+    /// Resolve one service without opening a continuous browse. Providers that
+    /// do not declare `direct_resolve` are never called through this operation.
+    async fn resolve(&self, _name: &str, _service_type: &str) -> Result<ProviderService> {
+        Err(MdnsError::Daemon(format!(
+            "provider {} has no direct resolve operation",
+            self.name()
+        )))
+    }
 
     /// Stop the provider browse for one canonical service type.
     fn stop_browse(&self, service_type: &str) -> Result<()>;
