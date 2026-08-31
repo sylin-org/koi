@@ -21,7 +21,11 @@ pub fn install_bin_path() -> PathBuf {
 }
 
 fn render(bin: &std::path::Path) -> String {
-    INITD_TEMPLATE.replace("{{BIN}}", &bin.display().to_string())
+    // LF regardless of checkout (a CRLF shebang breaks the script and the
+    // shell that sources it — the measured Alpine failure).
+    INITD_TEMPLATE
+        .replace("\r\n", "\n")
+        .replace("{{BIN}}", &bin.display().to_string())
 }
 
 pub fn install_system() -> anyhow::Result<()> {

@@ -451,17 +451,21 @@ static COMMANDS: &[CommandMeta] = &[
     // ── Core ─────────────────────────────────────────────────────────
     CommandMeta {
         name: "install",
-        summary: "Install Koi as a system service",
+        summary: "Install Koi as a service (--user for per-user)",
         long_description: "\
-Registers Koi as a system service so it starts automatically on boot.
+Registers Koi as a service so it starts automatically on boot (ADR-036).
 
-On Windows this creates a Windows Service via the Service Control Manager.
-On Linux this writes a systemd unit file. On macOS a launchd plist is created.
+The init system is detected by capability: Windows uses the Service Control
+Manager; Linux uses systemd where present, OpenRC where rc-update is present,
+and otherwise stages the binary, prints how to run it, and exits non-zero;
+macOS uses a launchd plist. With --user, a per-user systemd service is
+installed instead (no sudo needed; linger is enabled) where one is possible.
 
-The daemon runs in the background and exposes the HTTP API on the configured
-port (default 5641) and the IPC pipe for local CLI communication.
+The standard port trio (5641/5642/5643) is probed first; when occupied, a
+free run is chosen and recorded in the config file the service reads. Port
+decisions already declared in a config file or systemd drop-in are honored.
 
-Requires elevated privileges (Administrator / sudo).",
+Requires elevated privileges (Administrator / sudo) for system installs.",
         category: KoiCategory::Core,
         tags: &[KoiTag::Elevated, KoiTag::Mutating, KoiTag::CliOnly],
         scope: KoiScope::Admin,

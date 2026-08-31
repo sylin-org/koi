@@ -8,3 +8,6 @@
 *.sh        text eol=lf
 Dockerfile  text eol=lf
 *.dockerfile text eol=lf
+
+# Installer service templates MUST stay LF: shell shebangs and unit parsers
+crates/koi/src/platform/recipes/templates/* text eol=lf

@@ -30,7 +30,12 @@ pub fn install_bin_path() -> PathBuf {
 }
 
 fn render(template: &str, bin: &std::path::Path) -> String {
-    template.replace("{{BIN}}", &bin.display().to_string())
+    // LF regardless of how git checked the template out: a CRLF shebang makes
+    // the kernel hunt an interpreter named with a carriage return (measured on
+    // Alpine: "Failed executing /etc/init.d/koi: No such file or directory").
+    template
+        .replace("\r\n", "\n")
+        .replace("{{BIN}}", &bin.display().to_string())
 }
 
 /// Install as a system service (root).

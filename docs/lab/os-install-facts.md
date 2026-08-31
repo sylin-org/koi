@@ -69,6 +69,27 @@ brook = the CA itself; `/v1/certmesh/status` lists all of them).
 - avahi-daemon package present but NOT in the default runlevel — mDNS rung off
   while the package could provide it.
 
+## Status after ADR-036 (2026-08-31)
+
+The gap list below is now the ADR-036 implementation record. Physical
+evidence after the implementation:
+
+- **Alpine (test-03):** `koi install` detects OpenRC, stages the binary,
+  writes `/etc/init.d/koi`, enables the default runlevel, starts, and
+  self-verifies — with the standard trio occupied by the standing user
+  daemon it shifted to 5651/2/3 and wrote `/etc/koi/config.toml`.
+  `koi uninstall` removed exactly the system shape; the user daemon on 5641
+  was untouched throughout. (One real defect found and fixed on the way:
+  the init script template shipped CRLF from a Windows checkout — the
+  shebang's trailing  made the kernel hunt a phantom interpreter;
+  templates now render LF and are pinned `eol=lf` in .gitattributes.)
+- **Debian (stone-silent-cascade):** upgrade from `/tmp` honored the
+  standing drop-in verbatim ("ports stay as declared"), rewrote the unit
+  with the config env, restarted healthy on 23441. The same-file upgrade
+  `sudo /usr/local/bin/koi install` — the exact invocation that used to die
+  with `Text file busy` — now stages as a no-op and restarts healthy.
+  No config was invented while a drop-in governed (no truth drift).
+
 ## Installer gap list (flake source → required behavior)
 
 1. **Init-system detection.** No systemd → currently a hard ENOENT failure.
