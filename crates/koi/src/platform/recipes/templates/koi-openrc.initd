@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+# Koi Network Toolkit daemon — OpenRC recipe (ADR-036).
+# Config resolves at /etc/koi/config.toml (the env prefix below makes that
+# true for the daemon process); port choices live there, not here.
+description="Koi Network Toolkit daemon"
+
+command="/usr/bin/env"
+command_args="XDG_CONFIG_HOME=/etc {{BIN}} --daemon"
+
+command_background="yes"
+pidfile="/run/koi.pid"
+output_log="/var/log/koi/daemon.log"
+error_log="/var/log/koi/daemon.log"
+
+depend() {
+    need net
+    after firewall
+}

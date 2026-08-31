@@ -1,0 +1,17 @@
+[Unit]
+Description=Koi Network Toolkit
+Documentation=https://github.com/sylin-org/koi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+# System services resolve their config at /etc/koi/config.toml (ADR-031/036);
+# port choices made by `koi install` live there, never in unit env.
+Environment=XDG_CONFIG_HOME=/etc
+ExecStart={{BIN}} --daemon
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

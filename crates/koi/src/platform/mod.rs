@@ -4,6 +4,10 @@ pub mod windows;
 #[cfg(unix)]
 pub mod unix;
 
+// Shared installer pipeline (ADR-036); the per-init recipes inside are
+// Linux-gated, the shared pieces serve every platform.
+pub mod recipes;
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 

@@ -15,9 +15,17 @@ pub fn install_bin_path() -> PathBuf {
 
 /// Install Koi as a macOS LaunchDaemon.
 ///
-/// Handles fresh installs and upgrades (unloads existing daemon, copies
-/// new binary, rewrites plist). Mirrors the Windows/Linux install UX.
-pub fn install() -> anyhow::Result<()> {
+/// Handles fresh installs and upgrades (unloads existing daemon, stages
+/// the new binary atomically, rewrites plist). Port planning follows
+/// ADR-036 (config honored; occupied trio shifts and persists in the
+/// config substrate the plist points the daemon at).
+pub fn install(user: bool) -> anyhow::Result<()> {
+    if user {
+        anyhow::bail!(
+            "--user installs aren't supported on macOS yet (a LaunchAgent shape \
+             is known but unverified); use `koi install` for the system daemon"
+        );
+    }
     check_root("install")?;
 
     let exe_path = std::env::current_exe()?;
@@ -27,7 +35,6 @@ pub fn install() -> anyhow::Result<()> {
     println!("Installing Koi service...");
     println!("  Binary: {}", exe_path.display());
 
-    // Check for existing daemon
     let was_loaded = launchctl_is_loaded();
     if was_loaded {
         println!("  Existing daemon found, updating...");
@@ -36,23 +43,30 @@ pub fn install() -> anyhow::Result<()> {
         println!(" done.");
     }
 
-    // Copy binary to install path
-    print!("  Copying to {}...", install_path.display());
-    std::fs::copy(&exe_path, &install_path)?;
-    // Set ownership and permissions: root:wheel, 755
+    // Stage atomically (ADR-036): rename(2) over the old binary — an
+    // upgrade running from the installed path no longer hits ETXTBSY.
+    print!("  Staging {}...", install_path.display());
+    if crate::platform::recipes::stage_binary(&exe_path, &install_path)? {
+        println!(" done.");
+    } else {
+        println!(" already in place.");
+    }
     let _ = Command::new("chown")
         .args(["root:wheel", &install_path.display().to_string()])
         .output();
-    let _ = Command::new("chmod")
-        .args(["755", &install_path.display().to_string()])
-        .output();
-    println!(" done.");
 
-    // Write plist
+    // Port planning per ADR-036; the plist resolves config at /etc/koi.
+    let config_path = std::path::PathBuf::from("/etc/koi/config.toml");
+    let existing = crate::platform::recipes::honor_existing_config(&config_path);
+    let planned = match &existing {
+        crate::platform::recipes::Existing::Declared(plan, _) => *plan,
+        _ => crate::platform::recipes::plan_ports(),
+    };
+    let persisted = crate::platform::recipes::persist_plan(&existing, &planned, &config_path);
+
     let plist_contents = generate_plist(&install_path);
     print!("  Writing {}...", plist_path.display());
     std::fs::write(&plist_path, plist_contents)?;
-    // Plist must be owned by root:wheel with 644
     let _ = Command::new("chown")
         .args(["root:wheel", &plist_path.display().to_string()])
         .output();
@@ -61,7 +75,6 @@ pub fn install() -> anyhow::Result<()> {
         .output();
     println!(" done.");
 
-    // Load the daemon
     match launchctl_bootstrap(&plist_path) {
         true => {
             if was_loaded {
@@ -73,17 +86,20 @@ pub fn install() -> anyhow::Result<()> {
         false => println!("  Warning: could not load daemon"),
     }
 
+    print!("  Verifying (healthz on {})...", planned.http);
+    if crate::platform::recipes::healthz_wait(planned.http, std::time::Duration::from_secs(20)) {
+        println!(" healthy.");
+    } else {
+        println!(" NOT answering yet — check /var/log/koi.err");
+    }
+
     println!();
     println!("Koi service installed.");
-    println!("  \u{b0}\u{2027} \u{1f41f} \u{b7}\u{ff61} the local waters are calm");
-    println!();
-    println!("  Modules enabled:");
-    println!("    mDNS        service discovery (active)");
-    println!("    DNS         static + certmesh entries (ready)");
-    println!("    CertMesh    certificate mesh CA (ready \u{2014} run certmesh create)");
-    println!("    Health      endpoint health checks (ready)");
-    println!("    Proxy       TLS reverse proxy (ready)");
-    println!();
+    println!("  Ports: {}", planned.describe());
+    if !persisted.is_empty() {
+        println!("  {persisted}");
+    }
+    println!("  Config: {} (koi config show)", config_path.display());
     println!("  Logs: /var/log/koi.log");
     println!("  Status: sudo launchctl list | grep {LABEL}");
     println!("  Use `koi status` to see module state.");
@@ -226,6 +242,12 @@ fn generate_plist(bin_path: &std::path::Path) -> String {
     <key>RunAtLoad</key>
     <true/>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>XDG_CONFIG_HOME</key>
+        <string>/etc</string>
+    </dict>
+
     <key>KeepAlive</key>
     <dict>
         <key>SuccessfulExit</key>
@@ -260,5 +282,9 @@ mod tests {
         let plist = generate_plist(&std::path::PathBuf::from("/usr/local/bin/koi"));
         assert!(plist.contains("org.sylin.koi"));
         assert!(plist.contains("/usr/local/bin/koi"));
+        assert!(
+            plist.contains("<string>/etc</string>"),
+            "the daemon resolves its config at /etc/koi/config.toml (ADR-036)"
+        );
     }
 }

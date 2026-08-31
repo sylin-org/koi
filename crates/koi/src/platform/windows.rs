@@ -62,12 +62,31 @@ define_windows_service!(ffi_service_main, service_main);
 ///
 /// Handles fresh installs and upgrades (different exe path, service
 /// already running). Configures recovery policy, description, firewall
-/// rules, and the service log directory.
-pub fn install() -> anyhow::Result<()> {
+/// rules, and the service log directory. Port planning follows ADR-036:
+/// the operator's config wins; an occupied standard trio shifts and the
+/// choice is recorded in the config substrate the service reads.
+pub fn install(user: bool) -> anyhow::Result<()> {
+    if user {
+        anyhow::bail!(
+            "--user installs aren't supported on Windows yet; use `koi install` \
+             (system service) or the workbench's login autostart (ADR-034)"
+        );
+    }
     ensure_elevated("install")?;
     let exe_path = std::env::current_exe()?;
     println!("Installing Koi service...");
     println!("  Binary: {}", exe_path.display());
+
+    // ADR-036 port pre-flight: honor the existing config verbatim; when the
+    // standard trio is occupied, plan a free run and persist it (the service
+    // reads this file since the config-file fix).
+    let config_path = crate::platform::recipes::windows_config_path();
+    let existing = crate::platform::recipes::honor_existing_config(&config_path);
+    let planned = match &existing {
+        crate::platform::recipes::Existing::Declared(plan, _) => *plan,
+        _ => crate::platform::recipes::plan_ports(),
+    };
+    let persisted = crate::platform::recipes::persist_plan(&existing, &planned, &config_path);
 
     let manager = ServiceManager::local_computer(
         None::<&str>,
@@ -229,17 +248,22 @@ pub fn install() -> anyhow::Result<()> {
         }
     }
 
+    // Self-verify with koi's own client (ADR-036: never assume third-party
+    // tools for verification).
+    print!("  Verifying (healthz on {})...", planned.http);
+    if crate::platform::recipes::healthz_wait(planned.http, Duration::from_secs(20)) {
+        println!(" healthy.");
+    } else {
+        println!(" NOT answering yet — check the service log");
+    }
+
     println!();
     println!("Koi service installed.");
-    println!("  \u{b0}\u{2027} \u{1f41f} \u{b7}\u{ff61} the local waters are calm");
-    println!();
-    println!("  Modules enabled:");
-    println!("    mDNS        service discovery (active)");
-    println!("    DNS         static + certmesh entries (ready)");
-    println!("    CertMesh    certificate mesh CA (ready \u{2014} run certmesh create)");
-    println!("    Health      endpoint health checks (ready)");
-    println!("    Proxy       TLS reverse proxy (ready)");
-    println!();
+    println!("  Ports: {}", planned.describe());
+    if !persisted.is_empty() {
+        println!("  {persisted}");
+    }
+    println!("  Config: {} (koi config show)", config_path.display());
     println!("  Use `koi status` to see module state.");
 
     Ok(())

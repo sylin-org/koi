@@ -1,4 +1,4 @@
-use clap::{ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 /// Default HTTP API port - "KOI" on a phone keypad (K=5, O=6, I=4).
@@ -227,9 +227,13 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Install Koi as a system service
-    Install,
-    /// Uninstall the Koi system service
+    /// Install Koi as a system service (or a per-user service with --user)
+    Install {
+        /// Install a per-user service instead of a system service
+        #[arg(long)]
+        user: bool,
+    },
+    /// Uninstall the Koi service (system or user shape, whichever is found)
     Uninstall,
     /// Manage the TOML configuration file (ADR-031)
     Config {
@@ -1040,10 +1044,11 @@ impl Config {
         I: IntoIterator<Item = T>,
         T: Into<std::ffi::OsString> + Clone,
     {
-        let matches = Cli::command()
+        let matches = <Cli as clap::CommandFactory>::command()
             .try_get_matches_from(argv)
             .map_err(|e| e.to_string())?;
-        let cli = Cli::from_arg_matches(&matches).map_err(|e| e.to_string())?;
+        let cli: Cli =
+            clap::FromArgMatches::from_arg_matches(&matches).map_err(|e| e.to_string())?;
         let path = crate::config_file::discover(cli.config.as_deref())?;
         let mut config = Config::from_cli(&cli);
         if let Some(path) = &path {
@@ -1757,7 +1762,16 @@ mod tests {
     #[test]
     fn parse_install_subcommand() {
         let cli = Cli::try_parse_from(["koi", "install"]).unwrap();
-        assert!(matches!(cli.command, Some(Command::Install)));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Install { user: false })
+        ));
+    }
+
+    #[test]
+    fn parse_install_user_flag() {
+        let cli = Cli::try_parse_from(["koi", "install", "--user"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Install { user: true })));
     }
 
     #[test]

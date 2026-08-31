@@ -1,0 +1,15 @@
+[Unit]
+Description=Koi Network Toolkit (user service)
+Documentation=https://github.com/sylin-org/koi
+After=network-online.target
+
+[Service]
+Type=notify
+# A user service resolves its config at the natural ~/.config path; no
+# XDG override is needed (ADR-036).
+ExecStart={{BIN}} --daemon
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

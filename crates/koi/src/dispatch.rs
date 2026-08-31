@@ -340,7 +340,7 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
             },
             Command::Token(token_cmd) => commands::token::run(token_cmd, cli.json),
             // Install, Uninstall, Version, Launch, FactoryReset handled before runtime
-            Command::Install
+            Command::Install { .. }
             | Command::Uninstall
             | Command::Version
             | Command::Launch
