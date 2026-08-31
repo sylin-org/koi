@@ -46,16 +46,26 @@ The product promise is identical everywhere; the *mechanism* is the OS's own:
 
 Each hat's brief turns its row of this table into concrete first tasks.
 
-## Mechanics
+## Mechanics (hardened by the canary — v1's traps are protocol now)
 
+- **Windows-side, always**: prefix every plink/pscp carrying absolute Linux
+  paths with `MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*"` — Git Bash
+  otherwise rewrites `/run/...` into `C:/Program Files/Git/run/...` and the
+  remote command dies on a phantom path (v1 canary, test-01).
 - **Preflight**: for each hat — reachable via plink (host keys in lab.json),
   repo at path, `~/.cargo/bin/cargo --version`, `codex --version` (agents).
-- **Sync**: `git pull --ff-only` on the box (public read; no credentials).
+- **Sync**: fresh clones are DEFAULT-branch clones; pin every box to dev
+  once (idempotent): `git config remote.origin.fetch
+  '+refs/heads/*:refs/remotes/origin/*'` + `git fetch --depth 5 origin` +
+  `git checkout -B dev origin/dev`. Then `git pull --ff-only` per session
+  (public read; no credentials).
 - **Launch (agent sessions)**: ship `fleet/briefs/<hat>.md` if changed, then
   start headless in tmux: `tmux new-session -d -s koi-fleet 'codex exec ...'`.
   Always `. ~/.cargo/env` first in any remote shell line.
-- **Harvest**: on each box `git format-patch origin/dev..HEAD -o /tmp/fleet-patches`,
-  `pscp` them back, `git am`, push `dev` once. Authorship preserved.
+- **Harvest**: on each box `git format-patch origin/dev..HEAD -o /tmp/fleet-patches`
+  (or `-N` for the last N commits), `pscp` them back, `git am`, push `dev`
+  once. Authorship preserved; patches apply clean because hats own disjoint
+  namespaces.
 - **Report**: read `fleet/<hat>/journal.md`; integrate; the board is the
   journals.
 
@@ -68,3 +78,9 @@ record the desktop stack + the daemon's capability ladder → write
 `fleet/<hat>/journal.md` (entry: commit under test, check result, stack,
 ladder) → commit on the box → format-patch → `git am` at the orchestrator →
 push `dev`.
+
+**Canary v2 ran 2026-08-31: 4/4 hats green** — cachyos (glibc, fresh
+checkout, 48s), omarchy (glibc, warm), **alpine (the first full koi-net
+check on musl)**, debian (glibc, warm) — four patches harvested via
+format-patch and applied with `git am` at the orchestrator. v1 taught the
+Windows path-conversion guard and the dev-pinning rule above.
