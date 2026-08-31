@@ -5,6 +5,8 @@
 //! provider-neutral observation model.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use mdns_sd::{
@@ -14,7 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::error::{MdnsError, Result};
 use crate::provider::{
-    MdnsProvider, ProviderAddress, ProviderBrowse, ProviderEvent, ProviderService,
+    MdnsProvider, ProviderAddress, ProviderBrowse, ProviderEvent, ProviderService, ProviderStatus,
 };
 
 const BROWSE_CHANNEL_CAPACITY: usize = 512;
@@ -35,20 +37,24 @@ enum NativeOp {
 /// Koi's built-in mDNS/DNS-SD implementation.
 pub struct NativeMdnsProvider {
     op_tx: Mutex<std::sync::mpsc::SyncSender<NativeOp>>,
+    healthy: Arc<AtomicBool>,
 }
 
 impl NativeMdnsProvider {
     pub fn new() -> Result<Self> {
         let daemon = ServiceDaemon::new().map_err(|e| MdnsError::Daemon(e.to_string()))?;
         let (op_tx, op_rx) = std::sync::mpsc::sync_channel(256);
+        let healthy = Arc::new(AtomicBool::new(true));
+        let worker_health = Arc::clone(&healthy);
 
         std::thread::Builder::new()
             .name("koi-mdns-native".into())
-            .spawn(move || worker_loop(daemon, op_rx))
+            .spawn(move || worker_loop(daemon, op_rx, worker_health))
             .map_err(|e| MdnsError::Daemon(format!("Failed to spawn mDNS worker: {e}")))?;
 
         Ok(Self {
             op_tx: Mutex::new(op_tx),
+            healthy,
         })
     }
 
@@ -72,6 +78,14 @@ impl NativeMdnsProvider {
 impl MdnsProvider for NativeMdnsProvider {
     fn name(&self) -> &'static str {
         "native"
+    }
+
+    fn status(&self) -> ProviderStatus {
+        ProviderStatus {
+            name: self.name(),
+            healthy: self.healthy.load(Ordering::Relaxed),
+            detail: "built-in mdns-sd engine".to_string(),
+        }
     }
 
     fn register(
@@ -100,15 +114,11 @@ impl MdnsProvider for NativeMdnsProvider {
         )
         .map_err(|e| MdnsError::Daemon(e.to_string()))?;
 
-        let mut service_info = if ip.is_none() {
+        let service_info = if ip.is_none() {
             service_info.enable_addr_auto()
         } else {
             service_info
         };
-
-        // Preserve existing behavior in the extraction slice. Collision-safe
-        // probing is normalized across providers in the conformance slice.
-        service_info.set_requires_probe(false);
 
         let fullname = service_info.get_fullname().to_string();
         tracing::debug!(
@@ -281,19 +291,29 @@ fn resolved_to_service(resolved: &ResolvedService) -> ProviderService {
     }
 }
 
-fn worker_loop(daemon: ServiceDaemon, rx: std::sync::mpsc::Receiver<NativeOp>) {
+fn worker_loop(
+    daemon: ServiceDaemon,
+    rx: std::sync::mpsc::Receiver<NativeOp>,
+    healthy: Arc<AtomicBool>,
+) {
     tracing::debug!("Native mDNS worker thread started");
     while let Ok(op) = rx.recv() {
         match op {
             NativeOp::Register(info) => {
                 let fullname = info.get_fullname().to_string();
                 if let Err(error) = daemon.register(*info) {
+                    healthy.store(false, Ordering::Relaxed);
                     tracing::warn!(fullname, %error, "mDNS register failed");
+                } else {
+                    healthy.store(true, Ordering::Relaxed);
                 }
             }
             NativeOp::Unregister(fullname) => {
                 if let Err(error) = daemon.unregister(&fullname) {
+                    healthy.store(false, Ordering::Relaxed);
                     tracing::warn!(fullname, %error, "mDNS unregister failed");
+                } else {
+                    healthy.store(true, Ordering::Relaxed);
                 }
             }
             NativeOp::Browse {
@@ -301,11 +321,15 @@ fn worker_loop(daemon: ServiceDaemon, rx: std::sync::mpsc::Receiver<NativeOp>) {
                 reply,
             } => {
                 let result = daemon.browse(&service_type).map_err(|e| e.to_string());
+                healthy.store(result.is_ok(), Ordering::Relaxed);
                 let _ = reply.send(result);
             }
             NativeOp::StopBrowse(service_type) => {
                 if let Err(error) = daemon.stop_browse(&service_type) {
+                    healthy.store(false, Ordering::Relaxed);
                     tracing::debug!(service_type, %error, "mDNS stop_browse failed");
+                } else {
+                    healthy.store(true, Ordering::Relaxed);
                 }
             }
             NativeOp::Shutdown { reply } => {
@@ -315,6 +339,7 @@ fn worker_loop(daemon: ServiceDaemon, rx: std::sync::mpsc::Receiver<NativeOp>) {
             }
         }
     }
+    healthy.store(false, Ordering::Relaxed);
     tracing::debug!("Native mDNS worker thread stopped");
 }
 

@@ -17,6 +17,9 @@
 /// embedded so the stamp is present by construction on every boot path.
 pub mod announce;
 
+/// Platform mDNS bootstrap: probes once and injects exactly one real provider.
+pub mod mdns;
+
 /// The posture-reactive self-announce supervisor: keeps the `_http._tcp` posture stamp current
 /// across Open↔Authenticated flips and owns the `_mcp._tcp` lifecycle. Spawned identically by
 /// all three boot paths (mirrors the trust-plane's `_certmesh._tcp` reactivity).

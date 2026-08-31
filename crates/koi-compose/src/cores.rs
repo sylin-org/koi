@@ -271,37 +271,20 @@ pub async fn build_cores(
 ) -> Result<Cores, BuildCoresError> {
     // ── mDNS ──
     let mdns_core = if !spec.no_mdns {
-        // Adaptive coexistence (ADR-030, revised): launch unless a known
-        // foreign responder is active. Socket reuse-holders that never answer
-        // mDNS (Chrome, dnscache) are safe to coexist with; avahi is not.
-        if let Some(reason) = koi_mdns::foreign_responder_reason() {
-            tracing::info!(
-                "mDNS capability: skipped — {reason}; coexistence per ADR-030, \
-                 all other capabilities continue"
-            );
-            notes.push(koi_common::capability::CapabilityNote {
-                capability: "mdns".to_string(),
-                state: "skipped".to_string(),
-                reason: reason.to_string(),
-                depends_on: Vec::new(),
-            });
-            None
-        } else {
-            match koi_mdns::MdnsCore::with_cancel(cancel.clone()) {
-                Ok(core) => Some(Arc::new(core)),
-                Err(e) => {
-                    if spec.fail_fast {
-                        return Err(e.into());
-                    }
-                    tracing::error!(error = %e, "Failed to initialize mDNS core");
-                    notes.push(koi_common::capability::CapabilityNote {
-                        capability: "mdns".to_string(),
-                        state: "error".to_string(),
-                        reason: e.to_string(),
-                        depends_on: Vec::new(),
-                    });
-                    None
+        match crate::mdns::build_core(cancel.clone()).await {
+            Ok(core) => Some(Arc::new(core)),
+            Err(e) => {
+                if spec.fail_fast {
+                    return Err(e.into());
                 }
+                tracing::error!(error = %e, "Failed to initialize mDNS core");
+                notes.push(koi_common::capability::CapabilityNote {
+                    capability: "mdns".to_string(),
+                    state: "error".to_string(),
+                    reason: e.to_string(),
+                    depends_on: Vec::new(),
+                });
+                None
             }
         }
     } else {

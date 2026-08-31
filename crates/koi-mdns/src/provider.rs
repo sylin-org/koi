@@ -46,6 +46,14 @@ pub enum ProviderEvent {
 /// One provider-owned browse stream.
 pub type ProviderBrowse = mpsc::Receiver<ProviderEvent>;
 
+/// Operational state of the one provider armed for this core.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderStatus {
+    pub name: &'static str,
+    pub healthy: bool,
+    pub detail: String,
+}
+
 /// Outbound port used by Koi's mDNS domain.
 ///
 /// Implementations own their socket/API handles and concurrency model. Method
@@ -56,6 +64,15 @@ pub type ProviderBrowse = mpsc::Receiver<ProviderEvent>;
 pub trait MdnsProvider: Send + Sync {
     /// Stable provider name for diagnostics.
     fn name(&self) -> &'static str;
+
+    /// Current adapter health for the public capability status surface.
+    fn status(&self) -> ProviderStatus {
+        ProviderStatus {
+            name: self.name(),
+            healthy: true,
+            detail: "ready".to_string(),
+        }
+    }
 
     /// Publish a service through this provider.
     fn register(

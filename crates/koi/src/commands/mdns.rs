@@ -12,6 +12,7 @@ use koi_common::types::{ServiceRecord, META_QUERY};
 use koi_mdns::events::MdnsEvent;
 use koi_mdns::protocol::{self as mdns_protocol, Response};
 use koi_mdns::MdnsCore;
+use tokio_util::sync::CancellationToken;
 
 use crate::cli::AdminSubcommand;
 use crate::client::KoiClient;
@@ -22,6 +23,12 @@ use super::Mode;
 /// Minimum heartbeat interval floor (seconds) to avoid busy-looping
 /// on very short leases. Heartbeat fires at max(lease, this) / 2.
 const MIN_HEARTBEAT_LEASE_FLOOR: u64 = 4;
+
+async fn standalone_core() -> anyhow::Result<Arc<MdnsCore>> {
+    Ok(Arc::new(
+        koi_compose::mdns::build_core(CancellationToken::new()).await?,
+    ))
+}
 
 // ── Admin ───────────────────────────────────────────────────────────
 
@@ -69,7 +76,7 @@ pub async fn discover(
 
     match mode {
         Mode::Standalone => {
-            let core = Arc::new(MdnsCore::new()?);
+            let core = standalone_core().await?;
             let handle = core.subscribe_type(browse_type).await?;
 
             super::run_streaming(timeout, Some(super::DEFAULT_TIMEOUT), || async {
@@ -151,7 +158,7 @@ pub async fn announce(
 
     match mode {
         Mode::Standalone => {
-            let core = Arc::new(MdnsCore::new()?);
+            let core = standalone_core().await?;
             let result = core.register(payload)?;
             print_registration(&result, json);
 
@@ -227,7 +234,7 @@ fn print_registration(result: &koi_mdns::protocol::RegistrationResult, json: boo
 pub async fn unregister(id: &str, json: bool, mode: Mode) -> anyhow::Result<()> {
     match mode {
         Mode::Standalone => {
-            let core = Arc::new(MdnsCore::new()?);
+            let core = standalone_core().await?;
             core.unregister(id)?;
             let _ = core.shutdown().await;
         }
@@ -251,7 +258,7 @@ pub async fn unregister(id: &str, json: bool, mode: Mode) -> anyhow::Result<()> 
 pub async fn resolve(instance: &str, json: bool, mode: Mode) -> anyhow::Result<()> {
     let record = match mode {
         Mode::Standalone => {
-            let core = Arc::new(MdnsCore::new()?);
+            let core = standalone_core().await?;
             let r = core.resolve(instance).await?;
             let _ = core.shutdown().await;
             r
@@ -279,7 +286,7 @@ pub async fn subscribe(
 ) -> anyhow::Result<()> {
     match mode {
         Mode::Standalone => {
-            let core = Arc::new(MdnsCore::new()?);
+            let core = standalone_core().await?;
             let handle = core.subscribe_type(service_type).await?;
 
             super::run_streaming(timeout, Some(super::DEFAULT_TIMEOUT), || async {

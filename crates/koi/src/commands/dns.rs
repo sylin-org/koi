@@ -15,7 +15,9 @@ async fn build_core(
     config: &Config,
 ) -> anyhow::Result<(koi_dns::DnsCore, Option<Arc<koi_mdns::MdnsCore>>)> {
     let mdns = if !config.no_mdns {
-        Some(Arc::new(koi_mdns::MdnsCore::new()?))
+        Some(Arc::new(
+            koi_compose::mdns::build_core(CancellationToken::new()).await?,
+        ))
     } else {
         None
     };

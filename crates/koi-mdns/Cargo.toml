@@ -30,3 +30,6 @@ tokio-util.workspace = true
 hostname = "0.4"
 if-addrs.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+futures-util.workspace = true
+zbus.workspace = true

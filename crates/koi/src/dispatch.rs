@@ -363,7 +363,9 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                  Remove --no-mdns or unset KOI_NO_MDNS to enable it."
             );
         }
-        let core = Arc::new(koi_mdns::MdnsCore::new()?);
+        let core = Arc::new(
+            koi_compose::mdns::build_core(tokio_util::sync::CancellationToken::new()).await?,
+        );
         koi_serve::stdio::start(core.clone()).await?;
         let _ = core.shutdown().await;
         return Ok(());

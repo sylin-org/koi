@@ -1254,7 +1254,8 @@ fn confirm_passphrase(prompt: &str, expected: &str) -> anyhow::Result<()> {
 async fn discover_ca(pinned_fp: Option<&str>) -> anyhow::Result<String> {
     eprintln!("Searching for certmesh CA on the local network...");
 
-    let core = Arc::new(koi_mdns::MdnsCore::new()?);
+    let core =
+        Arc::new(koi_compose::mdns::build_core(tokio_util::sync::CancellationToken::new()).await?);
     let handle = core
         .subscribe_type(koi_certmesh::CERTMESH_SERVICE_TYPE)
         .await?;

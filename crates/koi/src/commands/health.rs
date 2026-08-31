@@ -15,12 +15,15 @@ use crate::client::KoiClient;
 use crate::commands::{print_json, with_mode, Mode};
 
 use koi_health::{HealthCheck, HealthSnapshot, HealthStatus, ServiceCheckKind};
+use tokio_util::sync::CancellationToken;
 
 async fn build_core(
     config: &Config,
 ) -> anyhow::Result<(Arc<koi_health::HealthCore>, Option<Arc<koi_mdns::MdnsCore>>)> {
     let mdns = if !config.no_mdns {
-        Some(Arc::new(koi_mdns::MdnsCore::new()?))
+        Some(Arc::new(
+            koi_compose::mdns::build_core(CancellationToken::new()).await?,
+        ))
     } else {
         None
     };

@@ -82,6 +82,7 @@ hostname = "0.4"
 if-addrs = "0.15"
 image = { version = "0.25", default-features = false, features = ["png"] }
 futures-util = "0.3"
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 hickory-server = "0.26"
 hickory-resolver = { version = "0.26", features = ["tokio", "system-config"] }
 hickory-proto = "0.26"

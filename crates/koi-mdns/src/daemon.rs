@@ -8,7 +8,9 @@ use koi_common::types::{ServiceRecord, ServiceType, META_QUERY};
 
 use crate::error::{MdnsError, Result};
 use crate::events::MdnsEvent as KoiEvent;
-use crate::provider::{MdnsProvider, ProviderBrowse, ProviderEvent, ProviderService};
+use crate::provider::{
+    MdnsProvider, ProviderBrowse, ProviderEvent, ProviderService, ProviderStatus,
+};
 
 /// How long to wait for a service to resolve before giving up.
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -190,6 +192,10 @@ impl MdnsDaemon {
     /// Subscribe to the core-wide event stream (all active types).
     pub fn subscribe_all(&self) -> broadcast::Receiver<KoiEvent> {
         self.event_tx.subscribe()
+    }
+
+    pub fn provider_status(&self) -> ProviderStatus {
+        self.provider.status()
     }
 
     /// Subscribe to a **canonical** service type key. The first subscriber
