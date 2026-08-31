@@ -22,6 +22,7 @@ Optional environment:
   KOI_BREADCRUMB           Endpoint breadcrumb (default follows service scope)
   PEER_PORT                SSH port (default 22)
   PEER_IDENTITY            SSH identity file
+  PEER_KNOWN_HOSTS         Pinned OpenSSH known-hosts file
   EVIDENCE_ROOT            Evidence parent (default target/mdns-provider-transition)
 
 Run on the real subject host, not in a container. The caller needs privilege to
@@ -105,6 +106,7 @@ RESOLVED_LINK_ARMED=0
 RESOLVED_DROPIN_DIR=/run/systemd/resolved.conf.d
 RESOLVED_DROPIN="$RESOLVED_DROPIN_DIR/70-koi-provider-transition.conf"
 RESOLVED_DROPIN_DIR_EXISTED=0
+RESOLVED_RUNTIME_MASKED=0
 RESOLVED_TRIGGER_UNITS=()
 declare -A BASE_RESOLVED_TRIGGER_ACTIVE=()
 declare -A BASE_RESOLVED_TRIGGER_ENABLED=()
@@ -129,7 +131,10 @@ fi
 
 SSH=(ssh -p "$PEER_PORT" -o BatchMode=yes -o ConnectTimeout=8)
 if [[ -n "${PEER_IDENTITY:-}" ]]; then
-  SSH+=(-i "$PEER_IDENTITY")
+  SSH+=(-i "$PEER_IDENTITY" -o IdentitiesOnly=yes)
+fi
+if [[ -n "${PEER_KNOWN_HOSTS:-}" ]]; then
+  SSH+=(-o UserKnownHostsFile="$PEER_KNOWN_HOSTS" -o StrictHostKeyChecking=yes)
 fi
 SSH+=("$PEER")
 
@@ -224,6 +229,7 @@ restore_resolved_triggers() {
 }
 
 start_resolved_for_gate() {
+  unmask_resolved_for_gate
   restore_active systemd-resolved.service "$BASE_RESOLVED_ACTIVE"
   restore_resolved_triggers
   if [[ "$RESOLVED_LINK_ARMED" == 1 ]]; then
@@ -232,10 +238,21 @@ start_resolved_for_gate() {
 }
 
 stop_resolved_for_gate() {
-  "${PRIV[@]}" systemctl stop "${RESOLVED_TRIGGER_UNITS[@]}" systemd-resolved.service
+  RESOLVED_RUNTIME_MASKED=1
+  "${PRIV[@]}" systemctl --runtime mask --now \
+    "${RESOLVED_TRIGGER_UNITS[@]}" systemd-resolved.service
+}
+
+unmask_resolved_for_gate() {
+  if [[ "$RESOLVED_RUNTIME_MASKED" == 1 ]]; then
+    "${PRIV[@]}" systemctl --runtime unmask \
+      "${RESOLVED_TRIGGER_UNITS[@]}" systemd-resolved.service
+    RESOLVED_RUNTIME_MASKED=0
+  fi
 }
 
 restore_resolved_baseline() {
+  unmask_resolved_for_gate
   if [[ "$RESOLVED_GLOBAL_ARMED" == 1 ]]; then
     "${PRIV[@]}" rm -f "$RESOLVED_DROPIN"
     if [[ "$RESOLVED_DROPIN_DIR_EXISTED" == 0 ]]; then
@@ -402,6 +419,7 @@ assert_phase() {
     return 1
   fi
   kill -0 "$SUBSCRIBE_PID"
+  await_plan "$label-final" "$pattern"
   snapshot "$label"
   remote_stop_publisher
   await_subscription "$PEER_NAME" 'removed'
