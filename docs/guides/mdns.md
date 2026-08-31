@@ -8,6 +8,13 @@ The problem is that _your_ applications can't easily do the same. The OS-level A
 
 All CLI commands use the `koi mdns` prefix. All HTTP endpoints live under `/v1/mdns/`.
 
+Koi arms exactly one mDNS provider when it starts. On Linux, a live and healthy
+Avahi daemon is used through its system D-Bus API; when Avahi is absent and UDP
+5353 is safely available, Koi uses its built-in provider. The provider does not
+change mid-process, and `koi status` names the selected backend. If a selected
+Avahi daemon restarts, Koi reconnects and republishes through Avahi rather than
+starting a second responder.
+
 ---
 
 ## Discovering what's on the network
@@ -144,7 +151,7 @@ event: heartbeat
 data: {"total_types":7,"total_instances":23}
 ```
 
-**Browser vs `koi mdns discover`:** discover is for a script or a single answer - one type (or all types), read and done. The browser is for a human watching the whole LAN at once, continuously. Same underlying mDNS engine; different shape. Use discover in automation, the browser when you want to _see_ the network.
+**Browser vs `koi mdns discover`:** discover is for a script or a single answer - one type (or all types), read and done. The browser is for a human watching the whole LAN at once, continuously. Same provider-neutral mDNS core; different shape. Use discover in automation, the browser when you want to _see_ the network.
 
 For per-service details, the [mDNS discovery card](../reference/cards/mdns-discovery.md) summarizes the full surface at a glance.
 

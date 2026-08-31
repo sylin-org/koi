@@ -117,6 +117,15 @@ matrix and adapter acceptance suite, not a speculative rewrite.
 
 ### W1 — implement after the backend seam lands
 
+The shared seam is now on `origin/dev`: provider port/native extraction at
+`4e82a68`, followed by the real Avahi adapter, one-provider bootstrap, status,
+collision safety, and restart reconciliation at `6ab5fc0`. The Windows agent must
+first synchronize to a descendant of `6ab5fc0`; extend `MdnsProvider` from the
+Windows adapter and composition policy instead of recreating the hub or inventing
+a second contract. Test doubles are allowed only inside tests. Every production
+capability and endpoint must be backed by a real OS or native provider—no stubbed
+success, placeholder endpoint, TODO-backed capability, or silent fallback.
+
 - Prefer a usable official Windows DNS-SD provider; select Koi's native `mdns-sd`
   adapter only when the system provider is absent, unusable, or fails a capability
   Koi's contract requires.
@@ -219,6 +228,16 @@ test, or a process that merely started.
   scale, controls, and layout with the project's established reference on that
   desktop. Consult sibling products and upstream toolkit history when behavior
   diverges; a window that merely stays open has not passed.
+- **mDNS provider truth:** status must name the one armed provider. On Linux with
+  a healthy live Avahi owner, Koi must report `avahi` and exercise real publish,
+  browse, resolve (address/SRV/TXT), and removal through Koi's installed-service
+  APIs while Avahi remains the sole responder. To validate native fallback,
+  transition serially: stop Koi, record and stop Avahi, start the same installed
+  Koi and prove `native`; then stop Koi, restore Avahi's original state, and start
+  Koi again to prove `avahi`. Never leave both adapters armed. Separately test an
+  Avahi stop/start while the Avahi-backed Koi stays up: it must report provider
+  loss, retain desired publications, reconnect to Avahi, and must not switch to
+  native mid-process. Capture port owners and process counts at every boundary.
 - **Trust truth:** distinguish local CA ownership from enrolled membership.
   Use certmesh diagnosis/posture and the on-disk member identity together; an
   empty local roster or `ca_initialized: false` is normal on a member and must

@@ -1,5 +1,5 @@
 ---
-globs: crates/koi-mdns/src/{provider,native,daemon}.rs
+globs: crates/koi-mdns/src/{provider,native,avahi,daemon}.rs,crates/koi-compose/src/mdns.rs
 alwaysApply: false
 ---
 # mDNS Provider Boundary Rules
@@ -8,12 +8,16 @@ alwaysApply: false
 `crates/koi-mdns/src/native.rs` is the ONLY file that may import from the `mdns-sd` crate.
 This is enforced by `mdns_sd_is_isolated_to_the_native_adapter`, which scans every
 other Rust source file and fails the build if `mdns_sd` appears.
+`crates/koi-mdns/src/avahi.rs` likewise owns all Avahi `zbus`/D-Bus types.
 
 ### Rules
 - NEVER import `mdns_sd::*` in any other file
 - NEVER expose mdns-sd types (ServiceDaemon, ServiceInfo, ServiceEvent, ResolvedService) in public APIs
 - ALWAYS convert mdns-sd types to provider-neutral values inside `native.rs`
 - `MdnsCore` and `MdnsDaemon` depend only on the `MdnsProvider` port
+- `koi-compose/src/mdns.rs` probes once and injects exactly one provider
+- A present-but-broken Avahi is an error, never permission to arm native beside it
+- Provider recovery stays inside the selected adapter; selection changes only on Koi restart
 
 ### Browse Multiplexing (CRITICAL)
 The native mdns-sd provider keeps exactly **one querier per service type**: a second `browse` of a type

@@ -106,9 +106,10 @@ mDNS itself illustrates why those seams exist. It is the invisible backbone of l
 networking — printers, smart speakers, AirPlay, Chromecast, and IoT devices use it —
 but using it programmatically is surprisingly painful:
 
-- **Windows** has native mDNS since Windows 10, but the Win32 APIs are poorly
-  documented, 64-bit only, and don't expose full DNS-SD. The alternative — Apple's
-  Bonjour — is effectively abandoned, with redistribution-prohibiting licensing.
+- **Windows** has official Win32 mDNS/DNS-SD APIs, but the application and operator
+  experience around them is unevenly documented and lacks a dependable,
+  language-neutral control plane. Apple's Bonjour distribution is not a modern
+  foundation for Windows applications.
 - **Linux** has Avahi: Linux-only, semi-maintained, deeply coupled to D-Bus and
   systemd. systemd-resolved's mDNS is famously flaky.
 - **Containers** can't do mDNS at all — bridge networks don't forward multicast,
@@ -228,12 +229,13 @@ on Windows, Linux, and macOS.
 
 | Platform | mDNS engine | Service integration |
 | -------- | ----------- | ------------------- |
-| Windows | Pure Rust (no Bonjour) | Windows Service (SCM) + firewall rules |
-| Linux | Pure Rust (no Avahi) | systemd unit |
-| macOS | Pure Rust (no Bonjour) | launchd plist |
+| Windows | Built-in native provider; official Windows adapter workstream | Windows Service (SCM) + firewall rules |
+| Linux | Avahi when live and healthy; built-in native fallback | systemd unit |
+| macOS | Built-in native provider | launchd plist |
 
-Zero OS dependencies, single static binary, and — unusual for this space —
-**Windows is a first-class citizen**.
+One binary uses the best available platform resource without requiring Avahi or
+Bonjour to be installed, and — unusual for this space — **Windows is a first-class
+citizen**.
 
 ## Installation
 
@@ -354,12 +356,12 @@ The binary is `koi`. The crates.io package is `koi-net` because `koi` was taken.
 
 ## Acknowledgments
 
-Koi's mDNS heavy lifting happens in
+Koi's built-in mDNS provider uses
 [mdns-sd](https://github.com/keepsimple1/mdns-sd), a pure-Rust mDNS/DNS-SD
-implementation by [@keepsimple1](https://github.com/keepsimple1) — probing,
-conflict resolution, known-answer suppression, goodbye packets, and all the
-multicast plumbing. Koi gives it a friendly front door and builds the naming and
-trust layers on top.
+implementation by [@keepsimple1](https://github.com/keepsimple1). On Linux, Koi
+uses [Avahi](https://avahi.org/) through its native D-Bus API when Avahi is already
+running. Koi gives either provider the same friendly front door and builds the
+naming and trust layers on top.
 
 ## Code signing policy
 

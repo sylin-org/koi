@@ -98,7 +98,7 @@ koi (bin) → koi-serve, koi-compose, koi-common, koi-mcp, koi-dashboard, koi-md
 koi-compose   → koi-common, koi-config, koi-crypto, koi-dashboard, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, hickory-proto, tokio
 koi-serve     → koi-compose, koi-common, koi-config, koi-dashboard, koi-mcp, koi-mdns, koi-certmesh, koi-dns, koi-health, koi-proxy, koi-udp, koi-runtime, axum, utoipa, utoipa-scalar, tokio-rustls, rustls, hyper-util, subtle, tokio  (the serving layer; depends on koi-compose, not the reverse)
 koi-mcp       → koi-common, koi-client, koi-config, rmcp, hickory-proto, if-addrs, tokio  (depends on NO domain crate)
-koi-mdns      → koi-common, mdns-sd, axum, utoipa, tokio
+koi-mdns      → koi-common, mdns-sd, zbus (Linux Avahi), axum, utoipa, tokio
 koi-certmesh  → koi-common, koi-crypto, os-truststore (external), axum, utoipa, tokio
 koi-crypto    → (standalone: ring/rcgen/totp-rs/p256)
 # os-truststore: platform trust-store install — spun out to the os-tools repo (ADR-019);
@@ -130,9 +130,11 @@ dashboard/browser HTML, SSE, and browse cache live in `koi-dashboard`.
 ### 4. mDNS Provider Isolation (CRITICAL)
 
 - `crates/koi-mdns/src/native.rs` is the **only** file that imports `mdns-sd`
+- `crates/koi-mdns/src/avahi.rs` is the **only** file that imports `zbus`
 - `MdnsCore` and its provider-neutral browse hub depend on the `MdnsProvider` port
 - Native mdns-sd operations run on a dedicated worker thread (`koi-mdns-native`)
 - Never use mdns-sd types outside `native.rs`; translate to provider values there
+- Bootstrap selection belongs in `koi-compose/src/mdns.rs` and arms exactly one provider
 
 ### 5. Constants Convention
 

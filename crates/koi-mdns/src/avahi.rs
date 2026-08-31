@@ -1298,6 +1298,29 @@ mod tests {
         assert!(encode_txt(&HashMap::from([("large".to_string(), "x".repeat(256))])).is_err());
     }
 
+    #[test]
+    fn zbus_is_isolated_to_the_avahi_adapter() {
+        let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(&src_dir).expect("read src dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                continue;
+            }
+            if path.file_name().and_then(|name| name.to_str()) == Some("avahi.rs") {
+                continue;
+            }
+            let contents = std::fs::read_to_string(&path).expect("read source file");
+            if contents.contains("zbus") {
+                offenders.push(path.display().to_string());
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "zbus must only be referenced in avahi.rs; offenders: {offenders:?}"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires a running Avahi daemon on the system bus"]
     async fn real_avahi_publish_browse_resolve_and_remove() {

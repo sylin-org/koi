@@ -39,8 +39,9 @@ exactly.** Five disciplines follow, each already encoded in the product or lab:
 ### 1. Detect, don't assume
 
 Every OS surface koi touches is probed at runtime, never assumed from documentation,
-version, or last week. `foreign_responder_reason()` probes 5353 before mounting the
-mDNS responder; W6 picks a genuinely free port before serving DNS. Measured OS facts
+version, or last week. The composition root probes the live platform mDNS provider
+and only arms native when Avahi is absent and 5353 is unambiguous; W6 picks a genuinely
+free port before serving DNS. Measured OS facts
 (schan­nel quirks, ICS on 53, WSAEACCES coexistence semantics) live in the lessons
 ledger as data, not folklore.
 

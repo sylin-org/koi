@@ -4,19 +4,19 @@ domain: mdns
 title: "mDNS discovery — find & announce services"
 audience: [operators, developers, ai-agents]
 status: current
-last_updated: 2026-06-22
+last_updated: 2026-08-31
 koi_version: v1.0.0-rc.2
 validation:
-  date_last_tested: 2026-06-22
+  date_last_tested: 2026-08-31
   status: verified
-  scope: "unit (koi-mdns suite; daemon::new_subscriber_replays_warm_cache + the per-type browse-multiplexing/receive-health tests in daemon.rs) + two-box cross-host (scripts/integration/cross-host-test.sh step 10: a member daemon's `koi mdns discover _certmesh._tcp` resolves the CA's record over real mDNS, plus the `_http._tcp` self-announce check)"
+  scope: "unit (provider boundaries + shared browse hub/cache/receive health), physical Avahi D-Bus adapter (publish/browse/IPv4+IPv6 resolve/TXT/explicit IP/removal), and two-box cross-host (`scripts/integration/cross-host-test.sh`)"
 ---
 
 # mDNS discovery — find & announce services
 
 > One-screen map of zero-config LAN service discovery. Full flow: [mdns.md](../../guides/mdns.md) · wire shapes (NDJSON / service records / SSE): [wire-protocol.md](../wire-protocol.md).
 
-**What it does** — Koi speaks **mDNS / DNS-SD** (the `_name._proto.local.` protocol behind Bonjour/Avahi), so any host on the LAN can **announce** a service and any other host can **discover** it with **no daemon, no config, and no central registry**. `koi mdns discover` browses for live services, `koi mdns announce` publishes one, `koi mdns resolve` looks up a single instance's address/port/TXT, and `koi mdns subscribe` streams found/resolved/removed lifecycle events. It runs three ways transparently: **standalone** (a one-shot local browse, no daemon needed), **client** (the same command talks to a running daemon over HTTP and keeps the registration alive with heartbeats), and **piped** (NDJSON in/out for scripting). The `mdns-sd` engine is isolated behind one worker thread, with a single shared querier per service type fanned out to every subscriber.
+**What it does** — Koi speaks **mDNS / DNS-SD** (the `_name._proto.local.` protocol behind Bonjour/Avahi), so any host on the LAN can **announce** a service and any other host can **discover** it with **no daemon, no config, and no central registry**. `koi mdns discover` browses for live services, `koi mdns announce` publishes one, `koi mdns resolve` looks up a single instance's address/port/TXT, and `koi mdns subscribe` streams found/resolved/removed lifecycle events. It runs three ways transparently: **standalone** (a one-shot local browse, no daemon needed), **client** (the same command talks to a running daemon over HTTP and keeps the registration alive with heartbeats), and **piped** (NDJSON in/out for scripting). Koi injects exactly one provider at bootstrap—Avahi on a healthy Avahi Linux host, its built-in engine when no system provider is available—then fans one shared browse per service type to every subscriber.
 
 ## The one canonical pattern
 
@@ -56,4 +56,10 @@ How long a record lives depends on **who registered it**: the standalone/CLI `an
 
 ## The proof it works
 
-Unit: the `koi-mdns` suite — `daemon::new_subscriber_replays_warm_cache` proves a `discover` joining a long-lived daemon sees already-resolved services (the warm-cache replay that fixed the daemon-browse defect), plus the per-type browse-multiplexing and receive-health verdict tests in `crates/koi-mdns/src/daemon.rs`. Live: the two-box cross-host gate (`scripts/integration/cross-host-test.sh`, step 10) confirms a member daemon's `koi mdns discover _certmesh._tcp` resolves the CA's record over **real mDNS**, and the `_http._tcp` self-announce is observed via `admin ls`. Surface ledger row: `mdns` in [SURFACES.md](../../SURFACES.md).
+Unit: the `koi-mdns` suite guards provider isolation, one-browse-per-type fan-out,
+warm-cache replay, and receive health. Physical: the ignored real-Avahi test has
+been run against CachyOS's live system daemon and proves entry-group publication,
+browse, IPv4/IPv6 resolve, interface identity, TXT, explicit IP, and removal. The
+two-box cross-host gate (`scripts/integration/cross-host-test.sh`) remains the LAN
+interoperability proof. Surface ledger row: `mdns` in
+[SURFACES.md](../../SURFACES.md).
