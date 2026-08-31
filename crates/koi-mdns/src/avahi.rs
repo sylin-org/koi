@@ -635,10 +635,11 @@ impl AvahiActor {
                 self.free_browser(&key).await;
                 let result = self.start_browse(&key, is_meta).await;
                 if let Err(error) = &result {
-                    set_status(
-                        &self.status,
-                        false,
-                        format!("Avahi browse startup failed: {error}"),
+                    tracing::warn!(
+                        provider = "avahi",
+                        service_type = %key,
+                        %error,
+                        "mDNS browse startup failed; Koi will retry"
                     );
                 }
                 let _ = reply.send(result);
@@ -803,14 +804,13 @@ impl AvahiActor {
         let (ready_tx, ready_rx) = oneshot::channel();
         let connection = self.connection.clone();
         let task_path = path.clone();
-        let status = Arc::clone(&self.status);
         let task = if is_meta {
             tokio::spawn(async move {
-                pump_service_types(connection, task_path, tx, status, ready_tx).await;
+                pump_service_types(connection, task_path, tx, ready_tx).await;
             })
         } else {
             tokio::spawn(async move {
-                pump_services(connection, task_path, tx, status, ready_tx).await;
+                pump_services(connection, task_path, tx, ready_tx).await;
             })
         };
         match ready_rx.await {
@@ -1008,7 +1008,6 @@ async fn pump_services(
     connection: Connection,
     path: OwnedObjectPath,
     tx: mpsc::Sender<ProviderEvent>,
-    status: Arc<RwLock<ProviderStatus>>,
     ready: oneshot::Sender<std::result::Result<(), String>>,
 ) {
     let proxy = match AvahiServiceBrowserProxy::builder(&connection).path(path) {
@@ -1153,10 +1152,9 @@ async fn pump_services(
         }
     }
     resolutions.abort_all();
-    set_status(
-        &status,
-        false,
-        "Avahi service browser ended; Koi is retrying".to_string(),
+    tracing::warn!(
+        provider = "avahi",
+        "mDNS service browser ended; Koi will retry"
     );
 }
 
@@ -1164,7 +1162,6 @@ async fn pump_service_types(
     connection: Connection,
     path: OwnedObjectPath,
     tx: mpsc::Sender<ProviderEvent>,
-    status: Arc<RwLock<ProviderStatus>>,
     ready: oneshot::Sender<std::result::Result<(), String>>,
 ) {
     let proxy = match AvahiServiceTypeBrowserProxy::builder(&connection).path(path) {
@@ -1261,10 +1258,9 @@ async fn pump_service_types(
             }
         }
     }
-    set_status(
-        &status,
-        false,
-        "Avahi type browser ended; Koi is retrying".to_string(),
+    tracing::warn!(
+        provider = "avahi",
+        "mDNS type browser ended; Koi will retry"
     );
 }
 
