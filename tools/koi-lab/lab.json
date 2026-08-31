@@ -18,8 +18,16 @@
       "dns_port": 18553,
       "fixture_port": 18554,
       "container_port": 18555,
-      "roles": ["principal", "sdk-caller", "member"],
-      "mutations": ["scm", "firewall", "trust-store"],
+      "roles": [
+        "principal",
+        "sdk-caller",
+        "member"
+      ],
+      "mutations": [
+        "scm",
+        "firewall",
+        "trust-store"
+      ],
       "privilege": "workstation"
     },
     {
@@ -38,8 +46,16 @@
       "dns_port": 16553,
       "fixture_port": 16554,
       "container_port": 16555,
-      "roles": ["ca", "member", "observer", "sink"],
-      "mutations": ["trust-store", "systemd"],
+      "roles": [
+        "ca",
+        "member",
+        "observer",
+        "sink"
+      ],
+      "mutations": [
+        "trust-store",
+        "systemd"
+      ],
       "privilege": "dedicated-box"
     },
     {
@@ -58,8 +74,16 @@
       "dns_port": 17553,
       "fixture_port": 17554,
       "container_port": 17555,
-      "roles": ["ca", "member", "observer", "sink"],
-      "mutations": ["trust-store", "systemd"],
+      "roles": [
+        "ca",
+        "member",
+        "observer",
+        "sink"
+      ],
+      "mutations": [
+        "trust-store",
+        "systemd"
+      ],
       "privilege": "dedicated-box"
     },
     {
@@ -78,10 +102,99 @@
       "dns_port": 19453,
       "fixture_port": 19454,
       "container_port": 19455,
-      "roles": ["ca", "member", "observer", "sink"],
+      "roles": [
+        "ca",
+        "member",
+        "observer",
+        "sink"
+      ],
       "mutations": [],
       "privilege": "workstation",
       "password_env": "KOI_TEST01_PASSWORD"
+    },
+    {
+      "kind": "putty_linux",
+      "id": "test02",
+      "hostname": "test-02",
+      "address": "192.168.1.95",
+      "user": "test",
+      "host_key": "SHA256:hYaztj0GANITCjatrQStLI4LO906z5IFKoLM7DTf1KQ",
+      "architecture": "x86_64",
+      "remote_root": "/home/test/koi-test",
+      "http_port": 22441,
+      "mtls_port": 22442,
+      "acme_port": 22443,
+      "proxy_port": 22444,
+      "dns_port": 22453,
+      "fixture_port": 22454,
+      "container_port": 22455,
+      "roles": [
+        "ca",
+        "member",
+        "observer",
+        "sink"
+      ],
+      "mutations": [],
+      "privilege": "workstation",
+      "password_env": "KOI_TEST02_PASSWORD"
+    },
+    {
+      "kind": "putty_linux",
+      "id": "limpid-dune",
+      "hostname": "stone-limpid-dune",
+      "address": "192.168.1.97",
+      "user": "stone",
+      "host_key": "SHA256:/lod4JpgMMuKe4LR7/yzbTQVGcZ1nPeIe/TSsuOEgzg",
+      "architecture": "x86_64",
+      "remote_root": "/home/stone/koi-test",
+      "http_port": 20441,
+      "mtls_port": 20442,
+      "acme_port": 20443,
+      "proxy_port": 20444,
+      "dns_port": 20453,
+      "fixture_port": 20454,
+      "container_port": 20455,
+      "roles": [
+        "ca",
+        "member",
+        "observer",
+        "sink"
+      ],
+      "mutations": [
+        "trust-store",
+        "systemd"
+      ],
+      "privilege": "dedicated-box",
+      "password_env": "KOI_LIMPID_DUNE_PASSWORD"
+    },
+    {
+      "kind": "putty_linux",
+      "id": "topaz-butte",
+      "hostname": "stone-topaz-butte",
+      "address": "192.168.1.111",
+      "user": "stone",
+      "host_key": "SHA256:DixmFXO4UMuk87Qb3/SaNINoL8SCYRiyogD2APRMncM",
+      "architecture": "x86_64",
+      "remote_root": "/home/stone/koi-test",
+      "http_port": 21441,
+      "mtls_port": 21442,
+      "acme_port": 21443,
+      "proxy_port": 21444,
+      "dns_port": 21453,
+      "fixture_port": 21454,
+      "container_port": 21455,
+      "roles": [
+        "ca",
+        "member",
+        "observer",
+        "sink"
+      ],
+      "mutations": [
+        "trust-store",
+        "systemd"
+      ],
+      "privilege": "dedicated-box",
+      "password_env": "KOI_TOPAZ_BUTTE_PASSWORD"
     }
   ]
 }
