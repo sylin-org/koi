@@ -88,7 +88,7 @@ PEER_PORT="${PEER_PORT:-22}"
 EVIDENCE_ROOT="${EVIDENCE_ROOT:-target/mdns-provider-transition}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 EVIDENCE_DIR="$EVIDENCE_ROOT/$RUN_ID"
-SERVICE_TYPE="_koi-provider-gate._tcp"
+SERVICE_TYPE="_koi-gate._tcp"
 KOI_NAME="koi-subject-$RUN_ID"
 KOI_EXPLICIT_NAME="koi-explicit-$RUN_ID"
 PEER_NAME=""
@@ -549,7 +549,7 @@ LOCAL_IP="$(ip -json route get "${PEER#*@}" | jq -r '.[0].prefsrc // empty' 2>/d
 [[ -n "$LOCAL_IP" ]] || LOCAL_IP="$(hostname -I | awk '{print $1}')"
 
 register_subject() {
-  local name="$1" explicit_ip="${2:-}" payload response
+  local name="$1" explicit_ip="${2:-}" payload response http_code
   payload="$(jq -n \
     --arg name "$name" \
     --arg type "$SERVICE_TYPE" \
@@ -558,9 +558,16 @@ register_subject() {
     '{name:$name, type:$type, port:43191, lease_secs:600,
       txt:{run:$run, side:"subject"}}
       + (if $ip == "" then {} else {ip:$ip} end)')"
-  response="$(curl -fsS --max-time 8 -X POST \
+  response="$(curl -sS --max-time 8 -X POST \
     -H "x-koi-token: $AUTH" -H 'content-type: application/json' \
-    --data "$payload" "$KOI_API/v1/mdns/announce")"
+    --data "$payload" -w $'\n%{http_code}' "$KOI_API/v1/mdns/announce")"
+  http_code="${response##*$'\n'}"
+  response="${response%$'\n'*}"
+  if [[ "$http_code" != 201 ]]; then
+    printf '%s\n' "$response" >"$EVIDENCE_DIR/register-$name-error.json"
+    echo "Koi registration '$name' failed with HTTP $http_code" >&2
+    return 1
+  fi
   jq -er '.registered.id' <<<"$response"
 }
 
