@@ -369,17 +369,25 @@ heartbeat() {
 }
 
 peer_observes_subject() {
-  local label="$1" output
-  output="$("${SSH[@]}" timeout 20 avahi-browse -prt "$SERVICE_TYPE" 2>&1 || true)"
-  printf '%s\n' "$output" >"$EVIDENCE_DIR/$label-peer-browse.txt"
-  grep -Fq "$KOI_NAME" <<<"$output" || {
+  local label="$1" output deadline=$((SECONDS + 25)) regular=0 explicit=0
+  : >"$EVIDENCE_DIR/$label-peer-browse.txt"
+  while ((SECONDS < deadline)); do
+    output="$("${SSH[@]}" timeout 5 avahi-browse -prt "$SERVICE_TYPE" 2>&1 || true)"
+    printf '%s\n' "$output" >>"$EVIDENCE_DIR/$label-peer-browse.txt"
+    grep -Fq "$KOI_NAME" <<<"$output" && regular=1
+    grep -Fq "$KOI_EXPLICIT_NAME" <<<"$output" && explicit=1
+    if [[ "$regular" == 1 && "$explicit" == 1 ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  if [[ "$regular" != 1 ]]; then
     echo "peer did not observe ordinary Koi publication during $label" >&2
-    return 1
-  }
-  grep -Fq "$KOI_EXPLICIT_NAME" <<<"$output" || {
+  fi
+  if [[ "$explicit" != 1 ]]; then
     echo "peer did not observe explicit-address Koi publication during $label" >&2
-    return 1
-  }
+  fi
+  return 1
 }
 
 subject_resolves_peer() {
