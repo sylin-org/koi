@@ -195,6 +195,64 @@
       ],
       "privilege": "dedicated-box",
       "password_env": "KOI_TOPAZ_BUTTE_PASSWORD"
+    },
+    {
+      "kind": "putty_linux",
+      "id": "silent-cascade",
+      "hostname": "stone-silent-cascade",
+      "address": "192.168.1.103",
+      "user": "stone",
+      "host_key": "SHA256:RcA2NMHT2WqVYVDZTWc/vt8qjA8StS4vDd0XOoMy8vs",
+      "architecture": "x86_64",
+      "remote_root": "/home/stone/koi-test",
+      "http_port": 25441,
+      "mtls_port": 25442,
+      "acme_port": 25443,
+      "proxy_port": 25444,
+      "dns_port": 25453,
+      "fixture_port": 25454,
+      "container_port": 25455,
+      "roles": [
+        "ca",
+        "member",
+        "observer",
+        "sink"
+      ],
+      "mutations": [
+        "trust-store",
+        "systemd"
+      ],
+      "privilege": "dedicated-box",
+      "password_env": "KOI_SILENT_CASCADE_PASSWORD"
+    },
+    {
+      "kind": "putty_linux",
+      "id": "halcyon-savanna",
+      "hostname": "stone-halcyon-savanna",
+      "address": "192.168.1.112",
+      "user": "stone",
+      "host_key": "SHA256:clHWjuMiaZ0DZnFHzLKtq/hf07ApLMIfpXFJKWGjC8Y",
+      "architecture": "x86_64",
+      "remote_root": "/home/stone/koi-test",
+      "http_port": 26441,
+      "mtls_port": 26442,
+      "acme_port": 26443,
+      "proxy_port": 26444,
+      "dns_port": 26453,
+      "fixture_port": 26454,
+      "container_port": 26455,
+      "roles": [
+        "ca",
+        "member",
+        "observer",
+        "sink"
+      ],
+      "mutations": [
+        "trust-store",
+        "systemd"
+      ],
+      "privilege": "dedicated-box",
+      "password_env": "KOI_HALCYON_SAVANNA_PASSWORD"
     }
   ]
 }
