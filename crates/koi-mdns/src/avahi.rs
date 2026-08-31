@@ -36,6 +36,7 @@ const AVAHI_ENTRY_GROUP_ESTABLISHED: i32 = 2;
 const AVAHI_ENTRY_GROUP_COLLISION: i32 = 3;
 const AVAHI_ENTRY_GROUP_FAILURE: i32 = 4;
 const AVAHI_FLAGS_NONE: u32 = 0;
+const AVAHI_PUBLISH_NO_REVERSE: u32 = 16;
 const COMMAND_CAPACITY: usize = 256;
 const BROWSE_CAPACITY: usize = 512;
 const AVAHI_PRIORITY: u16 = 300;
@@ -926,7 +927,10 @@ async fn publish(
                 .add_address(
                     AVAHI_IF_UNSPEC,
                     protocol,
-                    AVAHI_FLAGS_NONE,
+                    // The machine's primary hostname already owns the reverse
+                    // PTR for a local interface address. This alias only needs
+                    // the forward A/AAAA record used by its service SRV target.
+                    AVAHI_PUBLISH_NO_REVERSE,
                     host.as_deref().expect("explicit IP has a host alias"),
                     &ip.to_string(),
                 )
