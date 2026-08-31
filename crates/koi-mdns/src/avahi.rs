@@ -58,6 +58,15 @@ type ResolveReply = (
     u32,
 );
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ServiceObservationKey {
+    interface: i32,
+    protocol: i32,
+    name: String,
+    service_type: String,
+    domain: String,
+}
+
 #[zbus::proxy(
     default_service = "org.freedesktop.Avahi",
     default_path = "/",
@@ -69,9 +78,6 @@ trait AvahiServer {
 
     #[zbus(name = "GetState")]
     fn get_state(&self) -> zbus::Result<i32>;
-
-    #[zbus(name = "GetHostNameFqdn")]
-    fn get_host_name_fqdn(&self) -> zbus::Result<String>;
 
     #[zbus(name = "GetAlternativeServiceName")]
     fn get_alternative_service_name(&self, name: &str) -> zbus::Result<String>;
@@ -742,14 +748,10 @@ impl AvahiActor {
                 self.entry_groups.insert(key.to_string(), path);
             }
             Err(error) => {
-                set_status(
-                    &self.status,
-                    false,
-                    format!(
-                        "Avahi could not publish {}.{}: {error}",
-                        registration.name, registration.service_type
-                    ),
-                );
+                // A rejected registration is scoped to that publication. It does
+                // not establish that Avahi's D-Bus owner, server, or existing
+                // browse streams are unhealthy. The adapter's regular health
+                // probe owns that decision and retries every missing entry group.
                 tracing::warn!(
                     provider = "avahi",
                     name = %registration.name,
@@ -881,14 +883,7 @@ async fn publish(
     let server = AvahiServerProxy::new(connection)
         .await
         .map_err(|error| format!("cannot create Avahi server proxy: {error}"))?;
-    let host = if registration.ip.is_some() {
-        server
-            .get_host_name_fqdn()
-            .await
-            .map_err(|error| format!("GetHostNameFqdn failed: {error}"))?
-    } else {
-        String::new()
-    };
+    let mut host = registration.ip.map(|_| explicit_address_host());
 
     let mut candidate = registration.name.clone();
     for _ in 0..MAX_COLLISION_ATTEMPTS {
@@ -911,7 +906,7 @@ async fn publish(
                 &candidate,
                 &registration.service_type,
                 &registration.domain,
-                &host,
+                host.as_deref().unwrap_or_default(),
                 registration.port,
                 &registration.txt,
             )
@@ -932,7 +927,7 @@ async fn publish(
                     AVAHI_IF_UNSPEC,
                     protocol,
                     AVAHI_FLAGS_NONE,
-                    &host,
+                    host.as_deref().expect("explicit IP has a host alias"),
                     &ip.to_string(),
                 )
                 .await
@@ -954,6 +949,9 @@ async fn publish(
                     .get_alternative_service_name(&candidate)
                     .await
                     .map_err(|error| format!("GetAlternativeServiceName failed: {error}"))?;
+                if registration.ip.is_some() {
+                    host = Some(explicit_address_host());
+                }
             }
             Err(EntryGroupOutcome::Failure(error)) => {
                 let _ = group.free().await;
@@ -1049,6 +1047,10 @@ async fn pump_services(
         return;
     }
 
+    let mut resolutions = tokio::task::JoinSet::new();
+    let mut pending = HashMap::new();
+    let mut next_resolution = 0_u64;
+
     loop {
         tokio::select! {
             message = added.next() => {
@@ -1060,21 +1062,35 @@ async fn pump_services(
                         continue;
                     }
                 };
-                match resolve_observation(
-                    &connection,
-                    *args.interface(),
-                    *args.protocol(),
-                    args.name(),
-                    args.service_type(),
-                    args.domain(),
-                ).await {
-                    Ok(service) => {
-                        if tx.send(ProviderEvent::Resolved(service)).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(error) => tracing::debug!(%error, "Avahi service resolve failed"),
+                if resolutions.len() >= BROWSE_CAPACITY {
+                    tracing::warn!(
+                        capacity = BROWSE_CAPACITY,
+                        "Avahi service resolution queue is full"
+                    );
+                    continue;
                 }
+                let key = ServiceObservationKey {
+                    interface: *args.interface(),
+                    protocol: *args.protocol(),
+                    name: args.name().to_string(),
+                    service_type: args.service_type().to_string(),
+                    domain: args.domain().to_string(),
+                };
+                next_resolution = next_resolution.wrapping_add(1);
+                let sequence = next_resolution;
+                pending.insert(key.clone(), sequence);
+                let resolution_connection = connection.clone();
+                resolutions.spawn(async move {
+                    let result = resolve_observation(
+                        &resolution_connection,
+                        key.interface,
+                        key.protocol,
+                        &key.name,
+                        &key.service_type,
+                        &key.domain,
+                    ).await;
+                    (key, sequence, result)
+                });
             }
             message = removed.next() => {
                 let Some(message) = message else { break };
@@ -1085,6 +1101,13 @@ async fn pump_services(
                         continue;
                     }
                 };
+                pending.remove(&ServiceObservationKey {
+                    interface: *args.interface(),
+                    protocol: *args.protocol(),
+                    name: args.name().to_string(),
+                    service_type: args.service_type().to_string(),
+                    domain: args.domain().to_string(),
+                });
                 if tx.send(ProviderEvent::Removed {
                     name: args.name().to_string(),
                     service_type: args.service_type().to_string(),
@@ -1101,8 +1124,31 @@ async fn pump_services(
                 }
                 break;
             }
+            resolution = resolutions.join_next(), if !resolutions.is_empty() => {
+                let Some(resolution) = resolution else { continue };
+                let (key, sequence, result) = match resolution {
+                    Ok(result) => result,
+                    Err(error) => {
+                        tracing::debug!(%error, "Avahi service resolution task stopped");
+                        continue;
+                    }
+                };
+                if pending.get(&key).copied() != Some(sequence) {
+                    continue;
+                }
+                pending.remove(&key);
+                match result {
+                    Ok(service) => {
+                        if tx.send(ProviderEvent::Resolved(service)).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(error) => tracing::debug!(%error, "Avahi service resolve failed"),
+                }
+            }
         }
     }
+    resolutions.abort_all();
     set_status(
         &status,
         false,
@@ -1333,6 +1379,15 @@ fn registration_key(name: &str, service_type: &str, domain: &str) -> String {
     format!("{name}.{service_type}.{domain}.")
 }
 
+fn explicit_address_host() -> String {
+    // An explicit address needs its own host record. Reusing Avahi's machine
+    // hostname attempts to claim a name the daemon already owns, while sharing
+    // one synthetic hostname across registrations makes their entry groups
+    // contend with each other. A per-attempt alias keeps each SRV + A/AAAA set
+    // self-contained and lets Avahi retire it atomically.
+    format!("koi-{}.local", uuid::Uuid::now_v7().simple())
+}
+
 fn validate_instance_name(name: &str) -> Result<()> {
     if name.is_empty() || name.len() > 63 {
         return Err(MdnsError::Daemon(
@@ -1400,6 +1455,19 @@ mod tests {
         let encoded = encode_txt(&txt).unwrap();
         assert_eq!(decode_txt(&encoded), txt);
         assert!(encode_txt(&HashMap::from([("large".to_string(), "x".repeat(256))])).is_err());
+    }
+
+    #[test]
+    fn explicit_address_hosts_are_valid_isolated_local_aliases() {
+        let first = explicit_address_host();
+        let second = explicit_address_host();
+        let label = first.strip_suffix(".local").expect("local host alias");
+
+        assert_ne!(first, second);
+        assert!(label.len() <= 63);
+        assert!(label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'));
     }
 
     #[test]
@@ -1529,6 +1597,7 @@ mod tests {
             .addresses
             .iter()
             .any(|address| address.address == IpAddr::V4(explicit_ip)));
+        assert!(provider.status().healthy, "status: {:?}", provider.status());
         provider
             .unregister(&explicit_name, "_koi-test._tcp.local.")
             .expect("withdraw real explicit-IP Avahi publication");
