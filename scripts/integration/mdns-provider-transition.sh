@@ -411,8 +411,10 @@ subject_resolves_peer() {
 await_subscription() {
   local name="$1" event="${2:-}" deadline=$((SECONDS + 20))
   while ((SECONDS < deadline)); do
-    if grep -F "$name" "$EVIDENCE_DIR/subject-subscription.sse" \
-      | grep -Fq "$event"; then
+    if [[ -z "$event" ]]; then
+      grep -Fq "$name" "$EVIDENCE_DIR/subject-subscription.sse" && return 0
+    elif grep -F "$name" "$EVIDENCE_DIR/subject-subscription.sse" \
+      | grep -F "$event" >/dev/null; then
       return 0
     fi
     sleep 1
