@@ -46,6 +46,30 @@ carriers first, then the entry. 7/7 node tests green; YAML validated.
 P-B operator console actions — npm trusted publishers (per package) + `NPM_PUBLISH_ENABLED`;
 P-D taps/submissions one by one; P-E optional Apple $99/yr later.
 
+**FLEET GROWS TO 10 + ADR-036 RECIPE INSTALLER (2026-08-31, operator-directed).**
+Operator provided new machines; discovery rule after the near-miss: fleet work ONLY on
+catalog-listed or operator-named machines (some LAN boxes run production live content —
+recorded in local/NOTES.md). Onboarded and mesh-enrolled (brook CA, roster 9/9 active):
+test-02 (.95 Omarchy, user-level), stone-limpid-dune (.97) / stone-topaz-butte (.111) /
+stone-silent-cascade (.103) / stone-halcyon-savanna (.112) — Debian 13 dedicated boxes,
+real installs coexisting with the operator's garden-moss on 5641 via port drop-ins — and
+test-03 (.221, **Alpine 3.24**, user-level nohup shape; busybox setsid lacks -f, no curl).
+Fleet OS facts captured in `docs/lab/os-install-facts.md` (4 OS families) and drove
+**ADR-036: recipe-based installer** (`eba64a1`+`53c40cf`): one pipeline, per-init recipes
+keyed on CAPABILITY not distro (systemd / OpenRC / manual-honest-failure; SCM; launchd);
+atomic same-file staging kills the ETXTBSY upgrade failure; the standard port trio is
+probed and an occupied run shifts by tens with the choice persisted in the config
+substrate the service reads (/etc/koi/config.toml via unit XDG env) while existing
+drop-ins/configs are honored verbatim; `koi install --user` (systemd --user + linger,
+honest refusal elsewhere); self-verification via koi's own loopback healthz (no curl).
+PHYSICAL: Alpine install→shift 5651 + config write→healthy→uninstall exact-restore with
+the user daemon untouched; Debian drop-in-honoring upgrade + the same-file upgrade that
+used to ETXTBSY now a no-op-stage success. One real defect found+fixed on the way: the
+init script template shipped CRLF from a Windows checkout (phantom-interpreter shebang)
+— templates render LF + .gitattributes eol=lf. Linux-gated recipes are cross-checked to
+x86_64-unknown-linux-musl in CI-reachable form (that check caught 3 native-invisible
+errors). Gates green: fmt, clippy -D, 50/50 locked suites, audit.
+
 **STABLE-1.0 GATE CLOSED (2026-08-28). All three ADR-032 requirements are met: matrix complete, extended full profile green (twice), soak clean. The next steps are operator-gated release mechanics, not engineering: version bump rc.2 → 1.0.0 across the workspace, tags, registry publication (RL-2: immutable, one-shot), SignPath/landing-page operator actions (ADR-034). Do NOT start these without the operator.**
 Soak evidence: bounded soak `v1-20260828T173214Z-403b0fdd` — 20/20 iterations, 4 supervised daemon restarts, `iteration_limit` termination, exact cleanup, on brook+granite with lane-level standing-service isolation. Post-soak Windows participation: the full extended profile re-ran green on the same candidate — `v1-20260828T173654Z-770faf21` (git ec919ed), 25/25 cases, all Windows-workstation lanes, baseline restored. The soak lane itself gained ADR-035 lane-level isolation (`ec919ed`) — its labeled containers would otherwise be derived by the standing daemons too.
 
