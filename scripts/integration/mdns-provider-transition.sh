@@ -23,6 +23,7 @@ Optional environment:
   PEER_PORT                SSH port (default 22)
   PEER_IDENTITY            SSH identity file
   PEER_KNOWN_HOSTS         Pinned OpenSSH known-hosts file
+  SUDO_ASKPASS             Standard non-interactive sudo credential helper
   EVIDENCE_ROOT            Evidence parent (default target/mdns-provider-transition)
 
 Run on the real subject host, not in a container. The caller needs privilege to
@@ -125,8 +126,16 @@ else
     echo "run as root or install sudo for local service control" >&2
     exit 2
   }
-  sudo -v
-  PRIV=(sudo)
+  if [[ -n "${SUDO_ASKPASS:-}" ]]; then
+    [[ -x "$SUDO_ASKPASS" ]] || {
+      echo "SUDO_ASKPASS is not executable: $SUDO_ASKPASS" >&2
+      exit 2
+    }
+    PRIV=(sudo -A)
+  else
+    PRIV=(sudo)
+  fi
+  "${PRIV[@]}" -v
 fi
 
 SSH=(ssh -p "$PEER_PORT" -o BatchMode=yes -o ConnectTimeout=8)

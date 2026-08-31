@@ -17,6 +17,9 @@ authentication. The subject needs the installed `koi.service`, its normal API an
 breadcrumb, Avahi, systemd-resolved, `curl`, `jq`, `ss`, and service-control
 privilege. Optional environment settings are documented by `--help`.
 
+For unattended lab execution, the gate honors the standard `SUDO_ASKPASS`
+mechanism and applies it to every privileged operation, including cleanup.
+
 For a real per-user installation, run the gate as the unit-owning user and select
 the user service manager explicitly:
 
