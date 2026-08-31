@@ -30,10 +30,13 @@ The system scope uses `/run/koi.endpoint`; the user scope uses
 `$XDG_RUNTIME_DIR/koi.endpoint` by default. Provider mutations remain system-level
 in both modes and therefore still require local service-control privilege.
 
-The gate captures the service/socket enablement and activity baseline before any
-mutation and installs cleanup before it starts. It never launches Koi. It asserts
-that the installed Koi unit scope, activity, enablement, PID, and executable hash
-remain unchanged while it proves:
+The gate captures the service/socket enablement, activity, and resolved mDNS
+configuration baseline before any mutation and installs cleanup before it starts.
+If resolved is running with mDNS disabled, the gate uses a run-owned volatile
+drop-in under `/run/systemd/resolved.conf.d/` and enables mDNS only on the LAN link
+used for the peer. Both settings are restored exactly, including on failure. It
+never launches Koi. It asserts that the installed Koi unit scope, activity,
+enablement, PID, and executable hash remain unchanged while it proves:
 
 1. healthy Avahi collapses every route to `avahi`;
 2. stopping Avahi dynamically selects `systemd-resolved+native`;

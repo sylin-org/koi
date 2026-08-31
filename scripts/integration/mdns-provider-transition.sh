@@ -12,8 +12,8 @@ usage() {
 Usage: mdns-provider-transition.sh --allow-system-mutation --peer USER@HOST
 
 Required:
-  --allow-system-mutation  Acknowledge stop/start of this host's Avahi and
-                           systemd-resolved services with exact restoration.
+  --allow-system-mutation  Acknowledge temporary provider configuration and
+                           service changes with exact restoration.
   --peer USER@HOST         Independent LAN peer reachable through OpenSSH.
 
 Optional environment:
@@ -56,7 +56,7 @@ if [[ "$ALLOW_MUTATION" != 1 || -z "$PEER" ]]; then
   exit 2
 fi
 
-for command in curl jq ssh sha256sum systemctl pgrep flock ss ip readlink; do
+for command in curl jq ssh sha256sum systemctl pgrep flock ss ip readlink resolvectl; do
   command -v "$command" >/dev/null || {
     echo "missing required command: $command" >&2
     exit 2
@@ -100,6 +100,11 @@ SUBSCRIBE_PID=""
 INITIAL_PID=""
 INITIAL_HASH=""
 CLEANING=0
+RESOLVED_GLOBAL_ARMED=0
+RESOLVED_LINK_ARMED=0
+RESOLVED_DROPIN_DIR=/run/systemd/resolved.conf.d
+RESOLVED_DROPIN="$RESOLVED_DROPIN_DIR/70-koi-provider-transition.conf"
+RESOLVED_DROPIN_DIR_EXISTED=0
 
 mkdir -p "$EVIDENCE_DIR"
 exec 9>"$EVIDENCE_ROOT/.lock"
@@ -125,6 +130,13 @@ if [[ -n "${PEER_IDENTITY:-}" ]]; then
 fi
 SSH+=("$PEER")
 
+PEER_HOST="${PEER#*@}"
+LAN_LINK="$(ip -json route get "$PEER_HOST" | jq -r '.[0].dev // empty' 2>/dev/null || true)"
+if [[ -z "$LAN_LINK" ]]; then
+  echo "cannot determine the LAN interface used to reach $PEER_HOST" >&2
+  exit 2
+fi
+
 unit_active() {
   systemctl is-active "$1" 2>/dev/null || true
 }
@@ -147,6 +159,79 @@ restore_active() {
     "${PRIV[@]}" systemctl start "$unit"
   else
     "${PRIV[@]}" systemctl stop "$unit"
+  fi
+}
+
+resolved_global_mdns() {
+  resolvectl mdns 2>/dev/null | awk '$1 == "Global:" {print $2; exit}' || true
+}
+
+resolved_link_mdns() {
+  local link="$1"
+  resolvectl mdns 2>/dev/null \
+    | awk -v target="($link):" '$3 == target {print $4; exit}' || true
+}
+
+arm_resolved_for_gate() {
+  case "$BASE_RESOLVED_GLOBAL_MDNS" in
+    yes|resolve) ;;
+    no)
+      if "${PRIV[@]}" test -e "$RESOLVED_DROPIN"; then
+        echo "refusing to replace existing resolved gate drop-in: $RESOLVED_DROPIN" >&2
+        return 1
+      fi
+      if "${PRIV[@]}" test -d "$RESOLVED_DROPIN_DIR"; then
+        RESOLVED_DROPIN_DIR_EXISTED=1
+      fi
+      RESOLVED_GLOBAL_ARMED=1
+      "${PRIV[@]}" install -d -m 0755 "$RESOLVED_DROPIN_DIR"
+      printf '[Resolve]\nMulticastDNS=yes\n' \
+        | "${PRIV[@]}" tee "$RESOLVED_DROPIN" >/dev/null
+      "${PRIV[@]}" systemctl restart systemd-resolved.service
+      ;;
+    *)
+      echo "cannot safely arm unknown resolved global mDNS mode: ${BASE_RESOLVED_GLOBAL_MDNS:-empty}" >&2
+      return 1
+      ;;
+  esac
+
+  case "$BASE_RESOLVED_LINK_MDNS" in
+    yes|resolve) ;;
+    no)
+      RESOLVED_LINK_ARMED=1
+      "${PRIV[@]}" resolvectl mdns "$LAN_LINK" yes
+      ;;
+    *)
+      echo "cannot safely arm unknown resolved mDNS mode for $LAN_LINK: ${BASE_RESOLVED_LINK_MDNS:-empty}" >&2
+      return 1
+      ;;
+  esac
+}
+
+start_resolved_for_gate() {
+  restore_active systemd-resolved.service "$BASE_RESOLVED_ACTIVE"
+  if [[ "$RESOLVED_LINK_ARMED" == 1 ]]; then
+    "${PRIV[@]}" resolvectl mdns "$LAN_LINK" yes
+  fi
+}
+
+restore_resolved_baseline() {
+  if [[ "$RESOLVED_GLOBAL_ARMED" == 1 ]]; then
+    "${PRIV[@]}" rm -f "$RESOLVED_DROPIN"
+    if [[ "$RESOLVED_DROPIN_DIR_EXISTED" == 0 ]]; then
+      "${PRIV[@]}" rmdir "$RESOLVED_DROPIN_DIR" 2>/dev/null || true
+    fi
+    if [[ "$BASE_RESOLVED_ACTIVE" == active || "$BASE_RESOLVED_ACTIVE" == activating ]]; then
+      "${PRIV[@]}" systemctl restart systemd-resolved.service
+    else
+      "${PRIV[@]}" systemctl stop systemd-resolved.service
+    fi
+  else
+    restore_active systemd-resolved.service "$BASE_RESOLVED_ACTIVE"
+  fi
+  if [[ "$RESOLVED_LINK_ARMED" == 1 \
+     && ( "$BASE_RESOLVED_ACTIVE" == active || "$BASE_RESOLVED_ACTIVE" == activating ) ]]; then
+    "${PRIV[@]}" resolvectl mdns "$LAN_LINK" "$BASE_RESOLVED_LINK_MDNS"
   fi
 }
 
@@ -201,6 +286,8 @@ snapshot() {
     echo "avahi_service_active=$(unit_active avahi-daemon.service)"
     echo "avahi_socket_active=$(unit_active avahi-daemon.socket)"
     echo "resolved_active=$(unit_active systemd-resolved.service)"
+    echo "resolved_global_mdns=$(resolved_global_mdns)"
+    echo "resolved_${LAN_LINK}_mdns=$(resolved_link_mdns "$LAN_LINK")"
     echo "mdns=$(mdns_status)"
     echo "udp_5353:"
     "${PRIV[@]}" ss -H -lunp 'sport = :5353' || true
@@ -355,7 +442,7 @@ cleanup() {
   [[ -z "$SUBSCRIBE_PID" ]] || kill "$SUBSCRIBE_PID" 2>/dev/null || true
   unregister_subject
   remote_stop_publisher
-  restore_active systemd-resolved.service "$BASE_RESOLVED_ACTIVE" || true
+  restore_resolved_baseline || true
   restore_active avahi-daemon.socket "$BASE_AVAHI_SOCKET_ACTIVE" || true
   restore_active avahi-daemon.service "$BASE_AVAHI_SERVICE_ACTIVE" || true
   sleep 2
@@ -367,6 +454,8 @@ cleanup() {
     echo "avahi_service_active=$(unit_active avahi-daemon.service)"
     echo "avahi_socket_active=$(unit_active avahi-daemon.socket)"
     echo "resolved_active=$(unit_active systemd-resolved.service)"
+    echo "resolved_global_mdns=$(resolved_global_mdns)"
+    echo "resolved_${LAN_LINK}_mdns=$(resolved_link_mdns "$LAN_LINK")"
     echo "avahi_service_enabled=$(unit_enabled avahi-daemon.service)"
     echo "avahi_socket_enabled=$(unit_enabled avahi-daemon.socket)"
     echo "resolved_enabled=$(unit_enabled systemd-resolved.service)"
@@ -381,6 +470,11 @@ cleanup() {
      || "$(unit_enabled avahi-daemon.socket)" != "$BASE_AVAHI_SOCKET_ENABLED" \
      || "$(unit_enabled systemd-resolved.service)" != "$BASE_RESOLVED_ENABLED" ]]; then
     echo "ERROR: provider enablement changed; inspect $EVIDENCE_DIR" >&2
+    exit_code=1
+  fi
+  if [[ "$(resolved_global_mdns)" != "$BASE_RESOLVED_GLOBAL_MDNS" \
+     || "$(resolved_link_mdns "$LAN_LINK")" != "$BASE_RESOLVED_LINK_MDNS" ]]; then
+    echo "ERROR: resolved mDNS configuration did not restore to baseline; inspect $EVIDENCE_DIR" >&2
     exit_code=1
   fi
   if [[ "$(koi_unit_active)" != "$BASE_KOI_ACTIVE" \
@@ -399,6 +493,8 @@ BASE_RESOLVED_ACTIVE="$(unit_active systemd-resolved.service)"
 BASE_AVAHI_SERVICE_ENABLED="$(unit_enabled avahi-daemon.service)"
 BASE_AVAHI_SOCKET_ENABLED="$(unit_enabled avahi-daemon.socket)"
 BASE_RESOLVED_ENABLED="$(unit_enabled systemd-resolved.service)"
+BASE_RESOLVED_GLOBAL_MDNS="$(resolved_global_mdns)"
+BASE_RESOLVED_LINK_MDNS="$(resolved_link_mdns "$LAN_LINK")"
 BASE_KOI_ACTIVE="$(koi_unit_active)"
 BASE_KOI_ENABLED="$(koi_unit_enabled)"
 trap cleanup EXIT INT TERM
@@ -437,8 +533,12 @@ assert_single_koi
   echo "avahi_socket_enabled=$BASE_AVAHI_SOCKET_ENABLED"
   echo "resolved_active=$BASE_RESOLVED_ACTIVE"
   echo "resolved_enabled=$BASE_RESOLVED_ENABLED"
+  echo "resolved_global_mdns=$BASE_RESOLVED_GLOBAL_MDNS"
+  echo "resolved_${LAN_LINK}_mdns=$BASE_RESOLVED_LINK_MDNS"
 } >"$EVIDENCE_DIR/baseline.txt"
 snapshot baseline
+
+arm_resolved_for_gate
 
 AUTH="$(token)"
 [[ -n "$AUTH" ]] || {
@@ -479,7 +579,7 @@ assert_phase resolved-native 'provider systemd-resolved\+native \('
 "${PRIV[@]}" systemctl stop systemd-resolved.service
 assert_phase native-only 'provider native \('
 
-restore_active systemd-resolved.service "$BASE_RESOLVED_ACTIVE"
+start_resolved_for_gate
 assert_phase resolved-restored 'provider systemd-resolved\+native \('
 
 restore_active avahi-daemon.socket "$BASE_AVAHI_SOCKET_ACTIVE"
