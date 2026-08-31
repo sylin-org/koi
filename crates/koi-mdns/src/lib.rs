@@ -11,7 +11,9 @@ mod daemon;
 pub mod error;
 pub mod events;
 pub mod http;
+pub mod native;
 pub mod protocol;
+pub mod provider;
 mod registry;
 
 pub use self::daemon::BrowseSubscription;
@@ -23,6 +25,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use self::daemon::MdnsDaemon;
+use self::native::NativeMdnsProvider;
+use self::provider::MdnsProvider;
 use self::registry::{InsertOutcome, Registry};
 
 use koi_common::capability::{Capability, CapabilityStatus};
@@ -126,8 +130,19 @@ impl MdnsCore {
     /// Create a new core with a shared cancellation token.
     /// Used by daemon mode for ordered shutdown.
     pub fn with_cancel(cancel: CancellationToken) -> Result<Self> {
+        Self::with_provider(Arc::new(NativeMdnsProvider::new()?), cancel)
+    }
+
+    /// Create a core around an injected platform provider.
+    ///
+    /// Production bootstrap selects exactly one provider in the composition
+    /// layer; tests and embedded callers can inject a deterministic adapter.
+    pub fn with_provider(
+        provider: Arc<dyn MdnsProvider>,
+        cancel: CancellationToken,
+    ) -> Result<Self> {
         let (event_tx, _) = koi_common::events::event_channel();
-        let daemon = Arc::new(MdnsDaemon::new(event_tx)?);
+        let daemon = Arc::new(MdnsDaemon::new(provider, event_tx));
         let registry = Arc::new(Registry::new());
         let started_at = Instant::now();
 

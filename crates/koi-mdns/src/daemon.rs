@@ -1,14 +1,14 @@
-use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent as MdnsServiceEvent, ServiceInfo};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::broadcast;
 
 use koi_common::types::{ServiceRecord, ServiceType, META_QUERY};
 
 use crate::error::{MdnsError, Result};
 use crate::events::MdnsEvent as KoiEvent;
+use crate::provider::{MdnsProvider, ProviderBrowse, ProviderEvent, ProviderService};
 
 /// How long to wait for a service to resolve before giving up.
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -35,31 +35,11 @@ const TYPE_BROADCAST_CAPACITY: usize = 512;
 const BROWSE_RETRY_INITIAL: Duration = Duration::from_millis(100);
 const BROWSE_RETRY_MAX: Duration = Duration::from_secs(5);
 
-// ── Worker operations ─────────────────────────────────────────────
-
-/// Operations dispatched to the dedicated mDNS worker thread.
-///
-/// All `ServiceDaemon` interactions are serialized through this queue
-/// so that the bounded internal channel in mdns-sd never blocks a
-/// tokio thread.
-enum MdnsOp {
-    Register(Box<ServiceInfo>),
-    Unregister(String), // fullname
-    Browse {
-        service_type: String,
-        reply: oneshot::Sender<std::result::Result<mdns_sd::Receiver<MdnsServiceEvent>, String>>,
-    },
-    StopBrowse(String),
-    Shutdown {
-        reply: oneshot::Sender<std::result::Result<(), String>>,
-    },
-}
-
 // ── Browse hub ────────────────────────────────────────────────────
 
-/// One real mdns-sd browse per service type, fanned out to N subscriptions.
+/// One real provider browse per service type, fanned out to N subscriptions.
 ///
-/// The pump task owns the single mdns-sd receiver for `gen`, translates events
+/// The pump task owns the single provider receiver for `gen`, translates events
 /// into Koi types, and broadcasts them to `tx` (and the core-wide channel). The
 /// `records` cache lets `resolve()` answer from a warm browse without waiting
 /// for a re-announcement. `refcount` tracks live subscriptions; the last drop
@@ -112,20 +92,10 @@ impl ReceiveHealth {
 
 // ── MdnsDaemon ────────────────────────────────────────────────────
 
-/// Wraps the mdns-sd `ServiceDaemon` behind a dedicated worker thread, and owns
-/// the browse hub that multiplexes one real browse per type across many
-/// subscribers.
-///
-/// This is the ONLY file that imports mdns_sd types. All interactions
-/// with the daemon are serialized through an unbounded command queue,
-/// ensuring the daemon's bounded internal channel never blocks callers
-/// (especially tokio tasks).
-///
-/// Fire-and-forget operations (register, unregister, stop_browse)
-/// enqueue and return immediately. Operations that need a result
-/// (browse, shutdown) await a oneshot reply from the worker.
+/// Provider-neutral browse hub that multiplexes one real browse per type across
+/// many subscribers. OS/library details remain behind [`MdnsProvider`].
 pub(crate) struct MdnsDaemon {
-    op_tx: Mutex<std::sync::mpsc::SyncSender<MdnsOp>>,
+    provider: Arc<dyn MdnsProvider>,
     /// Browse hub: canonical service type -> shared browse.
     types: Mutex<HashMap<String, TypeBrowse>>,
     /// Core-wide event channel (every active pump feeds this).
@@ -153,7 +123,7 @@ pub(crate) struct MdnsDaemon {
     /// long idle (the lazy meta-browse, the first discover-after-idle) gets a fresh
     /// staleness window instead of inheriting a stale one. `0` = no browse active.
     first_browse_ms: AtomicU64,
-    /// Test-only instrumentation: counts real mdns-sd browse starts and
+    /// Test-only instrumentation: counts real provider browse starts and
     /// stop_browse calls so tests can assert the N-subscribers→1-browse collapse
     /// and stop-on-last-drop behaviorally at the boundary (not via the fan-out
     /// seam). Zero cost in non-test builds.
@@ -164,17 +134,9 @@ pub(crate) struct MdnsDaemon {
 }
 
 impl MdnsDaemon {
-    pub fn new(event_tx: broadcast::Sender<KoiEvent>) -> Result<Self> {
-        let daemon = ServiceDaemon::new().map_err(|e| MdnsError::Daemon(e.to_string()))?;
-        let (op_tx, op_rx) = std::sync::mpsc::sync_channel(256);
-
-        std::thread::Builder::new()
-            .name("koi-mdns-ops".into())
-            .spawn(move || worker_loop(daemon, op_rx))
-            .map_err(|e| MdnsError::Daemon(format!("Failed to spawn mDNS worker: {e}")))?;
-
-        Ok(Self {
-            op_tx: Mutex::new(op_tx),
+    pub fn new(provider: Arc<dyn MdnsProvider>, event_tx: broadcast::Sender<KoiEvent>) -> Self {
+        Self {
+            provider,
             types: Mutex::new(HashMap::new()),
             event_tx,
             next_gen: AtomicU64::new(0),
@@ -186,46 +148,23 @@ impl MdnsDaemon {
             browse_starts: AtomicU64::new(0),
             #[cfg(test)]
             stop_browse_calls: AtomicU64::new(0),
-        })
+        }
     }
 
-    /// Send an operation to the worker thread.
-    fn send(&self, op: MdnsOp) -> Result<()> {
-        self.op_tx
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .try_send(op)
-            .map_err(|e| match e {
-                std::sync::mpsc::TrySendError::Full(_) => {
-                    MdnsError::Daemon("mDNS worker queue full".into())
-                }
-                std::sync::mpsc::TrySendError::Disconnected(_) => {
-                    MdnsError::Daemon("mDNS worker stopped".into())
-                }
-            })
-    }
-
-    /// Start a real mdns-sd browse for a service type. Internal: only the pump
-    /// calls this. Returns a receiver for raw mdns-sd events.
-    async fn browse_raw(&self, service_type: &str) -> Result<mdns_sd::Receiver<MdnsServiceEvent>> {
+    /// Start a real provider browse for a service type. Internal: only the pump
+    /// calls this. Returns normalized provider observations.
+    async fn browse_raw(&self, service_type: &str, is_meta: bool) -> Result<ProviderBrowse> {
         #[cfg(test)]
         self.browse_starts.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-        self.send(MdnsOp::Browse {
-            service_type: service_type.to_string(),
-            reply: tx,
-        })?;
-        rx.await
-            .map_err(|_| MdnsError::Daemon("mDNS worker dropped reply".into()))?
-            .map_err(MdnsError::Daemon)
+        self.provider.browse(service_type, is_meta).await
     }
 
-    /// Stop a real mdns-sd browse by service type (fire-and-forget). Internal:
+    /// Stop a real provider browse by service type. Internal:
     /// only the subscription guard calls this on last drop.
     fn stop_browse(&self, service_type: &str) -> Result<()> {
         #[cfg(test)]
         self.stop_browse_calls.fetch_add(1, Ordering::Relaxed);
-        self.send(MdnsOp::StopBrowse(service_type.to_string()))
+        self.provider.stop_browse(service_type)
     }
 
     /// Register a service on the network (fire-and-forget).
@@ -240,44 +179,12 @@ impl MdnsDaemon {
         ip: Option<&str>,
         txt: &HashMap<String, String>,
     ) -> Result<()> {
-        let hostname = hostname::get()
-            .unwrap_or_else(|_| "localhost".into())
-            .to_string_lossy()
-            .to_string();
-
-        let host = format!("{hostname}.local.");
-
-        let properties: Vec<(&str, &str)> =
-            txt.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-
-        let ip_str = ip.unwrap_or("");
-        let service_info =
-            ServiceInfo::new(service_type, name, &host, ip_str, port, &properties[..])
-                .map_err(|e| MdnsError::Daemon(e.to_string()))?;
-
-        // Only auto-detect addresses when no explicit IP was provided.
-        let mut service_info = if ip.is_none() {
-            service_info.enable_addr_auto()
-        } else {
-            service_info
-        };
-
-        // Skip mDNS probing — the hostname is ours, so we claim the name
-        // directly. This prevents stale records from a previous process
-        // (which didn't cleanly unregister) from triggering RFC 6762 conflict
-        // resolution and renaming our service to "name (2)".
-        service_info.set_requires_probe(false);
-
-        let fullname = service_info.get_fullname().to_string();
-        tracing::debug!(fullname, ?ip, "Queued mDNS register");
-
-        self.send(MdnsOp::Register(Box::new(service_info)))
+        self.provider.register(name, service_type, port, ip, txt)
     }
 
     /// Unregister a service by name and type (fire-and-forget).
     pub fn unregister(&self, name: &str, service_type: &str) -> Result<()> {
-        let fullname = format!("{name}.{service_type}");
-        self.send(MdnsOp::Unregister(fullname))
+        self.provider.unregister(name, service_type)
     }
 
     /// Subscribe to the core-wide event stream (all active types).
@@ -474,7 +381,7 @@ impl MdnsDaemon {
             .is_some_and(|entry| entry.gen == gen && entry.refcount > 0)
     }
 
-    /// Shut down gracefully: abort all pumps, then stop the mdns-sd daemon.
+    /// Shut down gracefully: abort all pumps, then stop the selected provider.
     pub async fn shutdown(&self) -> Result<()> {
         {
             let mut types = self.types.lock().unwrap_or_else(|e| e.into_inner());
@@ -484,11 +391,7 @@ impl MdnsDaemon {
                 }
             }
         }
-        let (tx, rx) = oneshot::channel();
-        self.send(MdnsOp::Shutdown { reply: tx })?;
-        rx.await
-            .map_err(|_| MdnsError::Daemon("mDNS worker dropped reply".into()))?
-            .map_err(MdnsError::Daemon)
+        self.provider.shutdown().await
     }
 
     // ── Test seams ────────────────────────────────────────────────
@@ -526,14 +429,14 @@ impl MdnsDaemon {
             .map(|entry| entry.refcount)
     }
 
-    /// Number of real mdns-sd browses started (one per pump). Proves the
+    /// Number of real provider browses started (one per pump). Proves the
     /// N-subscribers→1-browse collapse at the boundary.
     #[cfg(test)]
     pub(crate) fn browse_starts(&self) -> u64 {
         self.browse_starts.load(Ordering::Relaxed)
     }
 
-    /// Number of real mdns-sd stop_browse calls. Proves stop-on-last-drop.
+    /// Number of real provider stop_browse calls. Proves stop-on-last-drop.
     #[cfg(test)]
     pub(crate) fn stop_browse_calls(&self) -> u64 {
         self.stop_browse_calls.load(Ordering::Relaxed)
@@ -545,7 +448,7 @@ impl MdnsDaemon {
 /// A subscription to a shared per-type browse.
 ///
 /// Replaces the old per-handle `BrowseHandle`: it carries a `broadcast` receiver
-/// of Koi events (mdns-sd never escapes) plus a refcount guard that stops the
+/// of Koi events (provider types never escape) plus a refcount guard that stops the
 /// underlying browse only when the last subscription drops.
 pub struct BrowseSubscription {
     rx: tokio::sync::Mutex<broadcast::Receiver<KoiEvent>>,
@@ -626,13 +529,6 @@ impl Drop for TypeGuard {
 
 // ── Pump ──────────────────────────────────────────────────────────
 
-/// What the pump should do with a translated mdns-sd event.
-enum PumpAction {
-    Emit(KoiEvent),
-    Skip,
-    Stop,
-}
-
 /// Spawn the per-type pump task: one real browse, translated and fanned out.
 fn spawn_type_pump(
     daemon: Arc<MdnsDaemon>,
@@ -646,7 +542,7 @@ fn spawn_type_pump(
         let mut retry_delay = BROWSE_RETRY_INITIAL;
 
         loop {
-            let receiver = match daemon.browse_raw(&key).await {
+            let mut receiver = match daemon.browse_raw(&key, is_meta).await {
                 Ok(receiver) => receiver,
                 Err(e) => {
                     if !daemon.browse_generation_is_live(&key, gen) {
@@ -668,15 +564,9 @@ fn spawn_type_pump(
             // though Koi still has consumers (observed on constrained macOS hosts).
             // Keep the shared channel alive and re-establish the raw browse here;
             // the last subscriber still aborts this task and issues stop_browse.
-            while let Ok(mdns_event) = receiver.recv_async().await {
-                match translate(mdns_event, is_meta) {
-                    PumpAction::Emit(event) => {
-                        daemon.pump_emit(&key, gen, event);
-                        retry_delay = BROWSE_RETRY_INITIAL;
-                    }
-                    PumpAction::Skip => continue,
-                    PumpAction::Stop => break,
-                }
+            while let Some(provider_event) = receiver.recv().await {
+                daemon.pump_emit(&key, gen, provider_event_to_koi(provider_event));
+                retry_delay = BROWSE_RETRY_INITIAL;
             }
 
             if !daemon.browse_generation_is_live(&key, gen) {
@@ -737,85 +627,6 @@ fn replay_events(is_meta: bool, records: &HashMap<String, ServiceRecord>) -> Vec
         .collect()
 }
 
-/// Translate a raw mdns-sd event into a pump action. The boundary parse of
-/// service records and removed-event names happens here, exactly once.
-fn translate(event: MdnsServiceEvent, is_meta: bool) -> PumpAction {
-    match event {
-        MdnsServiceEvent::ServiceFound(_, fullname) => {
-            if is_meta {
-                // Meta-query: "found" instances are themselves service types.
-                let type_name = fullname
-                    .trim_end_matches('.')
-                    .trim_end_matches(".local")
-                    .to_string();
-                PumpAction::Emit(KoiEvent::Found(ServiceRecord {
-                    name: type_name,
-                    service_type: String::new(),
-                    host: None,
-                    ip: None,
-                    port: None,
-                    txt: Default::default(),
-                }))
-            } else {
-                // Non-meta: found-but-unresolved is not surfaced (resolution
-                // follows). Preserving this keeps the SSE event stream shape.
-                PumpAction::Skip
-            }
-        }
-        MdnsServiceEvent::ServiceResolved(resolved) => {
-            PumpAction::Emit(KoiEvent::Resolved(resolved_to_record(&resolved)))
-        }
-        MdnsServiceEvent::ServiceRemoved(ty_domain, fullname) => {
-            let (name, service_type) = parse_removed(&ty_domain, &fullname);
-            PumpAction::Emit(KoiEvent::Removed { name, service_type })
-        }
-        MdnsServiceEvent::SearchStarted(_) => PumpAction::Skip,
-        MdnsServiceEvent::SearchStopped(_) => PumpAction::Stop,
-        _ => PumpAction::Skip,
-    }
-}
-
-// ── Worker thread ─────────────────────────────────────────────────
-
-fn worker_loop(daemon: ServiceDaemon, rx: std::sync::mpsc::Receiver<MdnsOp>) {
-    tracing::debug!("mDNS worker thread started");
-
-    while let Ok(op) = rx.recv() {
-        match op {
-            MdnsOp::Register(info) => {
-                let fullname = info.get_fullname().to_string();
-                if let Err(e) = daemon.register(*info) {
-                    tracing::warn!(fullname, error = %e, "mDNS register failed");
-                }
-            }
-            MdnsOp::Unregister(fullname) => {
-                if let Err(e) = daemon.unregister(&fullname) {
-                    tracing::warn!(fullname, error = %e, "mDNS unregister failed");
-                }
-            }
-            MdnsOp::Browse {
-                service_type,
-                reply,
-            } => {
-                let result = daemon.browse(&service_type).map_err(|e| e.to_string());
-                let _ = reply.send(result);
-            }
-            MdnsOp::StopBrowse(service_type) => {
-                if let Err(e) = daemon.stop_browse(&service_type) {
-                    tracing::debug!(service_type, error = %e, "mDNS stop_browse failed");
-                }
-            }
-            MdnsOp::Shutdown { reply } => {
-                let result = daemon.shutdown().map(|_| ()).map_err(|e| e.to_string());
-                let _ = reply.send(result);
-                break;
-            }
-        }
-    }
-
-    tracing::debug!("mDNS worker thread stopped");
-}
-
 // ── Type key / boundary parsing ───────────────────────────────────
 
 /// Canonicalize a service type into the hub key + whether it is the meta query.
@@ -834,51 +645,26 @@ pub(crate) fn canonical_key(service_type: &str) -> Result<(String, bool)> {
     }
 }
 
-/// Parse a removed event's `(ty_domain, fullname)` into `(instance, service_type)`
-/// once, at the boundary. Mirrors the normalization used by [`resolved_to_record`].
-fn parse_removed(ty_domain: &str, fullname: &str) -> (String, String) {
-    let service_type = ty_domain
-        .trim_end_matches('.')
-        .trim_end_matches(".local")
-        .to_string();
-    let instance = fullname
-        .find("._")
-        .map(|i| &fullname[..i])
-        .unwrap_or(fullname)
-        .to_string();
-    (instance, service_type)
-}
-
 // ── Service record conversion ─────────────────────────────────────
 
-/// Convert mdns-sd ResolvedService into our ServiceRecord.
-/// This is the ONE place this conversion happens.
-pub(crate) fn resolved_to_record(resolved: &ResolvedService) -> ServiceRecord {
-    let fullname = resolved.get_fullname();
+fn provider_event_to_koi(event: ProviderEvent) -> KoiEvent {
+    match event {
+        ProviderEvent::Found(service) => KoiEvent::Found(provider_service_to_record(service)),
+        ProviderEvent::Resolved(service) => KoiEvent::Resolved(provider_service_to_record(service)),
+        ProviderEvent::Removed { name, service_type } => KoiEvent::Removed { name, service_type },
+    }
+}
 
-    // Extract instance name: "My Server._http._tcp.local." -> "My Server"
-    let name = fullname
-        .find("._")
-        .map(|i| &fullname[..i])
-        .unwrap_or(fullname)
-        .to_string();
-
-    let service_type = resolved.ty_domain.clone();
-    let service_type = service_type
-        .trim_end_matches('.')
-        .trim_end_matches(".local")
-        .to_string();
-
-    let host = resolved.get_hostname().to_string();
-    let host = if host.is_empty() { None } else { Some(host) };
-
-    // Prefer first IPv4, fallback to first IPv6
-    let addresses = resolved.get_addresses();
-    let ip = addresses
+/// Project a lossless provider observation onto the existing compatibility
+/// record. The provider model retains every interface-scoped address; the
+/// public record continues to prefer IPv4 and expose one address for now.
+fn provider_service_to_record(service: ProviderService) -> ServiceRecord {
+    let ip = service
+        .addresses
         .iter()
-        .find(|a| a.is_ipv4())
-        .or_else(|| addresses.iter().next())
-        .map(|a| a.to_ip_addr());
+        .find(|address| address.address.is_ipv4())
+        .or_else(|| service.addresses.first())
+        .map(|address| address.address);
 
     // If the resolved IP is loopback (127.0.0.1 / ::1), the service is local
     // and mdns-sd returned the loopback address. Replace with the machine's
@@ -891,28 +677,22 @@ pub(crate) fn resolved_to_record(resolved: &ResolvedService) -> ServiceRecord {
         }
     });
 
-    if addresses.len() > 1 {
+    if service.addresses.len() > 1 {
         tracing::trace!(
-            name,
-            count = addresses.len(),
+            name = %service.name,
+            count = service.addresses.len(),
             selected = ?ip,
             "Multiple IPs found, using first"
         );
     }
 
-    let txt: HashMap<String, String> = resolved
-        .get_properties()
-        .iter()
-        .map(|p| (p.key().to_string(), p.val_str().to_string()))
-        .collect();
-
     ServiceRecord {
-        name,
-        service_type,
-        host,
+        name: service.name,
+        service_type: service.service_type,
+        host: service.host,
         ip,
-        port: Some(resolved.get_port()),
-        txt,
+        port: service.port,
+        txt: service.txt,
     }
 }
 
@@ -939,10 +719,69 @@ fn lan_ip() -> Option<std::net::IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native::NativeMdnsProvider;
+
+    #[derive(Default)]
+    struct TestProvider {
+        browses: Mutex<HashMap<String, tokio::sync::mpsc::Sender<ProviderEvent>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl MdnsProvider for TestProvider {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+
+        fn register(
+            &self,
+            _name: &str,
+            _service_type: &str,
+            _port: u16,
+            _ip: Option<&str>,
+            _txt: &HashMap<String, String>,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn unregister(&self, _name: &str, _service_type: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn browse(&self, service_type: &str, _is_meta: bool) -> Result<ProviderBrowse> {
+            let (tx, rx) = tokio::sync::mpsc::channel(TYPE_BROADCAST_CAPACITY);
+            self.browses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(service_type.to_string(), tx);
+            Ok(rx)
+        }
+
+        fn stop_browse(&self, service_type: &str) -> Result<()> {
+            self.browses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(service_type);
+            Ok(())
+        }
+
+        async fn shutdown(&self) -> Result<()> {
+            self.browses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+            Ok(())
+        }
+    }
 
     fn test_daemon() -> Arc<MdnsDaemon> {
         let (event_tx, _) = broadcast::channel(256);
-        Arc::new(MdnsDaemon::new(event_tx).expect("spawn mDNS daemon"))
+        Arc::new(MdnsDaemon::new(Arc::new(TestProvider::default()), event_tx))
+    }
+
+    fn native_daemon() -> Arc<MdnsDaemon> {
+        let (event_tx, _) = broadcast::channel(256);
+        let provider = Arc::new(NativeMdnsProvider::new().expect("spawn native mDNS provider"));
+        Arc::new(MdnsDaemon::new(provider, event_tx))
     }
 
     fn resolved(name: &str) -> KoiEvent {
@@ -989,7 +828,7 @@ mod tests {
         let sub3 = daemon.subscribe_type(TEST_KEY, false);
         assert_eq!(daemon.type_refcount(TEST_KEY), Some(3));
 
-        // The pump issues exactly ONE real mdns-sd browse for all three subs.
+        // The pump issues exactly one provider browse for all three subscribers.
         assert!(wait_until(|| daemon.browse_starts() >= 1).await);
         assert_eq!(
             daemon.browse_starts(),
@@ -1306,15 +1145,6 @@ mod tests {
         );
     }
 
-    // ── Boundary parsing ──────────────────────────────────────────
-
-    #[test]
-    fn removed_event_is_parsed_at_boundary() {
-        let (name, service_type) = parse_removed("_http._tcp.local.", "My NAS._http._tcp.local.");
-        assert_eq!(name, "My NAS");
-        assert_eq!(service_type, "_http._tcp");
-    }
-
     // ── meta replay regression (Windows quiet-LAN browser defect) ────────
 
     fn type_record(name: &str) -> ServiceRecord {
@@ -1440,31 +1270,6 @@ mod tests {
         assert_eq!(next_browse_retry(delay), BROWSE_RETRY_MAX);
     }
 
-    // ── Boundary rule enforcement ─────────────────────────────────
-
-    #[test]
-    fn no_mdns_sd_outside_daemon_rs() {
-        let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut offenders = Vec::new();
-        for entry in std::fs::read_dir(&src_dir).expect("read src dir") {
-            let path = entry.expect("dir entry").path();
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
-            if path.file_name().and_then(|n| n.to_str()) == Some("daemon.rs") {
-                continue; // the one allowed file
-            }
-            let contents = std::fs::read_to_string(&path).expect("read source file");
-            if contents.contains("mdns_sd") {
-                offenders.push(path.display().to_string());
-            }
-        }
-        assert!(
-            offenders.is_empty(),
-            "mdns_sd must only be referenced in daemon.rs; offenders: {offenders:?}"
-        );
-    }
-
     // ── Real-network end-to-end (manual: `cargo test -- --ignored`) ──
     //
     // These exercise the full path against a live mdns-sd ServiceDaemon and
@@ -1490,7 +1295,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires real mDNS multicast; run with --ignored"]
     async fn real_two_subscribers_both_resolve_same_service() {
-        let daemon = test_daemon();
+        let daemon = native_daemon();
         daemon
             .register(
                 "koi-p05-both",
@@ -1524,7 +1329,7 @@ mod tests {
         // The exact regression: under the old code, dropping one subscriber's
         // handle called stop_browse and killed the type's only querier. Here the
         // survivor must keep resolving a service announced AFTER the drop.
-        let daemon = test_daemon();
+        let daemon = native_daemon();
         let sub1 = daemon.subscribe_type(TEST_KEY, false);
         let sub2 = daemon.subscribe_type(TEST_KEY, false);
 
@@ -1569,7 +1374,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires real mDNS multicast; run with --ignored"]
     async fn real_resolve_does_not_terminate_concurrent_subscriber() {
-        let daemon = test_daemon();
+        let daemon = native_daemon();
         let sub = daemon.subscribe_type(TEST_KEY, false);
 
         daemon

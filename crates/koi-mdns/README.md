@@ -9,16 +9,21 @@ mDNS/DNS-SD service discovery and registration for the local network.
 ## Overview
 
 `koi-mdns` provides a high-level domain facade (`MdnsCore`) for multicast DNS
-service discovery and registration. It wraps the `mdns-sd` crate behind an
-opaque boundary, manages service lifecycles with session/heartbeat/permanent
-lease modes, and exposes both programmatic commands and HTTP routes (via axum)
-for browsing, registering, resolving, and subscribing to service events.
+service discovery and registration. A provider port isolates platform engines
+from the domain, shared browse hub, and public transports. The built-in native
+adapter wraps `mdns-sd`; platform adapters can supply the same real DNS-SD
+capabilities without leaking their API types into Koi's domain model.
+
+The core manages service lifecycles with session/heartbeat/permanent lease
+modes and exposes both programmatic commands and HTTP routes (via axum) for
+browsing, registering, resolving, and subscribing to service events.
 
 ## Features
 
 - Browse and resolve services by type (`_http._tcp`, `_ssh._tcp`, etc.)
 - Register services with session, heartbeat, or permanent leases
 - Subscribe to real-time lifecycle events (found, resolved, removed)
+- Inject exactly one platform mDNS provider at composition time
 - Built-in HTTP API with SSE streaming
 - Thread-safe registry with automatic lease reaping
 

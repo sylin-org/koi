@@ -127,12 +127,12 @@ no presentation deps (`tokio-stream`/`async-stream`/`hostname` left with the das
 P06); its small lifecycle/event layer intentionally uses `tokio`/`tokio-util`. The
 dashboard/browser HTML, SSE, and browse cache live in `koi-dashboard`.
 
-### 4. mdns-sd Isolation (CRITICAL)
+### 4. mDNS Provider Isolation (CRITICAL)
 
-- `crates/koi-mdns/src/daemon.rs` is the **only** file that imports `mdns-sd`
-- `MdnsDaemon` wraps all mdns-sd operations behind a clean Rust API
-- mdns-sd runs on a dedicated worker thread (`koi-mdns-ops`)
-- Never use mdns-sd types outside `daemon.rs`
+- `crates/koi-mdns/src/native.rs` is the **only** file that imports `mdns-sd`
+- `MdnsCore` and its provider-neutral browse hub depend on the `MdnsProvider` port
+- Native mdns-sd operations run on a dedicated worker thread (`koi-mdns-native`)
+- Never use mdns-sd types outside `native.rs`; translate to provider values there
 
 ### 5. Constants Convention
 
@@ -299,7 +299,7 @@ koi version                      # Show version
 
 ## Never Do
 
-- Import `mdns-sd` outside of `crates/koi-mdns/src/daemon.rs`
+- Import `mdns-sd` outside of `crates/koi-mdns/src/native.rs`
 - Create a centralized constants module
 - Have domain crates import each other
 - Use `unwrap()` in production code (use `?`, `unwrap_or_else`, or graceful fallbacks)
@@ -318,7 +318,7 @@ koi version                      # Show version
 - Check reference/utilities.md before creating constants
 - Propagate errors with `thiserror` or `.context()`
 - Use `tracing::*` for logging (never `eprintln!` for diagnostic output)
-- Keep mdns-sd isolated behind `MdnsDaemon`
+- Keep platform mDNS APIs isolated behind `MdnsProvider` adapters
 - Test serde round-trips for new protocol types
 - Check `config.require_capability()` before dispatching domain commands
 - Use `commands::print_json()` for CLI JSON output (handles serialization errors gracefully)
