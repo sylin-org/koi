@@ -17,9 +17,23 @@ authentication. The subject needs the installed `koi.service`, its normal API an
 breadcrumb, Avahi, systemd-resolved, `curl`, `jq`, `ss`, and service-control
 privilege. Optional environment settings are documented by `--help`.
 
+For a real per-user installation, run the gate as the unit-owning user and select
+the user service manager explicitly:
+
+```bash
+KOI_SERVICE_SCOPE=user scripts/integration/mdns-provider-transition.sh \
+  --allow-system-mutation \
+  --peer user@independent-lan-host
+```
+
+The system scope uses `/run/koi.endpoint`; the user scope uses
+`$XDG_RUNTIME_DIR/koi.endpoint` by default. Provider mutations remain system-level
+in both modes and therefore still require local service-control privilege.
+
 The gate captures the service/socket enablement and activity baseline before any
 mutation and installs cleanup before it starts. It never launches Koi. It asserts
-that the installed Koi PID and executable hash remain unchanged while it proves:
+that the installed Koi unit scope, activity, enablement, PID, and executable hash
+remain unchanged while it proves:
 
 1. healthy Avahi collapses every route to `avahi`;
 2. stopping Avahi dynamically selects `systemd-resolved+native`;

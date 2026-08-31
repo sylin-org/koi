@@ -18,7 +18,8 @@ Required:
 
 Optional environment:
   KOI_API                  Installed Koi API (default http://127.0.0.1:5641)
-  KOI_BREADCRUMB           Root-readable endpoint breadcrumb (default /run/koi.endpoint)
+  KOI_SERVICE_SCOPE        Installed unit scope: system or user (default system)
+  KOI_BREADCRUMB           Endpoint breadcrumb (default follows service scope)
   PEER_PORT                SSH port (default 22)
   PEER_IDENTITY            SSH identity file
   EVIDENCE_ROOT            Evidence parent (default target/mdns-provider-transition)
@@ -63,7 +64,26 @@ for command in curl jq ssh sha256sum systemctl pgrep flock ss ip readlink; do
 done
 
 KOI_API="${KOI_API:-http://127.0.0.1:5641}"
-KOI_BREADCRUMB="${KOI_BREADCRUMB:-/run/koi.endpoint}"
+KOI_SERVICE_SCOPE="${KOI_SERVICE_SCOPE:-system}"
+case "$KOI_SERVICE_SCOPE" in
+  system)
+    KOI_SYSTEMCTL=(systemctl)
+    DEFAULT_KOI_BREADCRUMB=/run/koi.endpoint
+    ;;
+  user)
+    if ((EUID == 0)); then
+      echo "KOI_SERVICE_SCOPE=user must run as the user who owns koi.service" >&2
+      exit 2
+    fi
+    KOI_SYSTEMCTL=(systemctl --user)
+    DEFAULT_KOI_BREADCRUMB="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/koi.endpoint"
+    ;;
+  *)
+    echo "KOI_SERVICE_SCOPE must be 'system' or 'user'" >&2
+    exit 2
+    ;;
+esac
+KOI_BREADCRUMB="${KOI_BREADCRUMB:-$DEFAULT_KOI_BREADCRUMB}"
 PEER_PORT="${PEER_PORT:-22}"
 EVIDENCE_ROOT="${EVIDENCE_ROOT:-target/mdns-provider-transition}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -113,6 +133,14 @@ unit_enabled() {
   systemctl is-enabled "$1" 2>/dev/null || true
 }
 
+koi_unit_active() {
+  "${KOI_SYSTEMCTL[@]}" is-active koi.service 2>/dev/null || true
+}
+
+koi_unit_enabled() {
+  "${KOI_SYSTEMCTL[@]}" is-enabled koi.service 2>/dev/null || true
+}
+
 restore_active() {
   local unit="$1" baseline="$2"
   if [[ "$baseline" == active || "$baseline" == activating ]]; then
@@ -135,14 +163,14 @@ token() {
 }
 
 koi_pid() {
-  systemctl show koi.service --property MainPID --value
+  "${KOI_SYSTEMCTL[@]}" show koi.service --property MainPID --value
 }
 
 assert_single_koi() {
   local pid hash
   pid="$(koi_pid)"
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || {
-    echo "installed koi.service has no live MainPID" >&2
+    echo "installed $KOI_SERVICE_SCOPE koi.service has no live MainPID" >&2
     return 1
   }
   mapfile -t koi_pids < <(pgrep -x koi || true)
@@ -168,7 +196,8 @@ snapshot() {
     echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "koi_pid=$(koi_pid)"
     echo "koi_hash=$INITIAL_HASH"
-    echo "koi_active=$(unit_active koi.service)"
+    echo "koi_scope=$KOI_SERVICE_SCOPE"
+    echo "koi_active=$(koi_unit_active)"
     echo "avahi_service_active=$(unit_active avahi-daemon.service)"
     echo "avahi_socket_active=$(unit_active avahi-daemon.socket)"
     echo "resolved_active=$(unit_active systemd-resolved.service)"
@@ -332,7 +361,9 @@ cleanup() {
   sleep 2
   {
     echo "exit_code=$exit_code"
-    echo "koi_active=$(unit_active koi.service)"
+    echo "koi_scope=$KOI_SERVICE_SCOPE"
+    echo "koi_active=$(koi_unit_active)"
+    echo "koi_enabled=$(koi_unit_enabled)"
     echo "avahi_service_active=$(unit_active avahi-daemon.service)"
     echo "avahi_socket_active=$(unit_active avahi-daemon.socket)"
     echo "resolved_active=$(unit_active systemd-resolved.service)"
@@ -352,6 +383,11 @@ cleanup() {
     echo "ERROR: provider enablement changed; inspect $EVIDENCE_DIR" >&2
     exit_code=1
   fi
+  if [[ "$(koi_unit_active)" != "$BASE_KOI_ACTIVE" \
+     || "$(koi_unit_enabled)" != "$BASE_KOI_ENABLED" ]]; then
+    echo "ERROR: installed Koi unit state did not match baseline; inspect $EVIDENCE_DIR" >&2
+    exit_code=1
+  fi
   assert_single_koi || exit_code=1
   echo "Evidence: $EVIDENCE_DIR"
   exit "$exit_code"
@@ -363,7 +399,14 @@ BASE_RESOLVED_ACTIVE="$(unit_active systemd-resolved.service)"
 BASE_AVAHI_SERVICE_ENABLED="$(unit_enabled avahi-daemon.service)"
 BASE_AVAHI_SOCKET_ENABLED="$(unit_enabled avahi-daemon.socket)"
 BASE_RESOLVED_ENABLED="$(unit_enabled systemd-resolved.service)"
+BASE_KOI_ACTIVE="$(koi_unit_active)"
+BASE_KOI_ENABLED="$(koi_unit_enabled)"
 trap cleanup EXIT INT TERM
+
+if [[ "$BASE_KOI_ACTIVE" != active ]]; then
+  echo "installed $KOI_SERVICE_SCOPE koi.service must be active at baseline" >&2
+  exit 2
+fi
 
 if [[ "$BASE_AVAHI_SERVICE_ACTIVE" != active \
    || "$BASE_AVAHI_SOCKET_ACTIVE" != active \
@@ -382,11 +425,12 @@ assert_single_koi
   echo "run_id=$RUN_ID"
   echo "subject=$(hostname)"
   echo "peer=$PEER"
+  echo "koi_scope=$KOI_SERVICE_SCOPE"
   echo "koi_pid=$INITIAL_PID"
   echo "koi_hash=$INITIAL_HASH"
   echo "koi_executable=$("${PRIV[@]}" readlink -f "/proc/$INITIAL_PID/exe")"
-  echo "koi_active=$(unit_active koi.service)"
-  echo "koi_enabled=$(unit_enabled koi.service)"
+  echo "koi_active=$BASE_KOI_ACTIVE"
+  echo "koi_enabled=$BASE_KOI_ENABLED"
   echo "avahi_service_active=$BASE_AVAHI_SERVICE_ACTIVE"
   echo "avahi_service_enabled=$BASE_AVAHI_SERVICE_ENABLED"
   echo "avahi_socket_active=$BASE_AVAHI_SOCKET_ACTIVE"
