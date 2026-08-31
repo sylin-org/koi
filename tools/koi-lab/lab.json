@@ -253,6 +253,32 @@
       ],
       "privilege": "dedicated-box",
       "password_env": "KOI_HALCYON_SAVANNA_PASSWORD"
+    },
+    {
+      "kind": "putty_linux",
+      "id": "test03",
+      "hostname": "test-03",
+      "address": "192.168.1.221",
+      "user": "test",
+      "host_key": "SHA256:EkP3FF4oi37CdVptTodYNx9NBJwDcfbHXwAI3Jy2yoQ",
+      "architecture": "x86_64",
+      "remote_root": "/home/test/koi-test",
+      "http_port": 27441,
+      "mtls_port": 27442,
+      "acme_port": 27443,
+      "proxy_port": 27444,
+      "dns_port": 27453,
+      "fixture_port": 27454,
+      "container_port": 27455,
+      "roles": [
+        "ca",
+        "member",
+        "observer",
+        "sink"
+      ],
+      "mutations": [],
+      "privilege": "workstation",
+      "password_env": "KOI_TEST03_PASSWORD"
     }
   ]
 }
