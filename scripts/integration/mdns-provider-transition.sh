@@ -105,6 +105,9 @@ RESOLVED_LINK_ARMED=0
 RESOLVED_DROPIN_DIR=/run/systemd/resolved.conf.d
 RESOLVED_DROPIN="$RESOLVED_DROPIN_DIR/70-koi-provider-transition.conf"
 RESOLVED_DROPIN_DIR_EXISTED=0
+RESOLVED_TRIGGER_UNITS=()
+declare -A BASE_RESOLVED_TRIGGER_ACTIVE=()
+declare -A BASE_RESOLVED_TRIGGER_ENABLED=()
 
 mkdir -p "$EVIDENCE_DIR"
 exec 9>"$EVIDENCE_ROOT/.lock"
@@ -136,6 +139,11 @@ if [[ -z "$LAN_LINK" ]]; then
   echo "cannot determine the LAN interface used to reach $PEER_HOST" >&2
   exit 2
 fi
+for unit in systemd-resolved-varlink.socket systemd-resolved-monitor.socket; do
+  if [[ "$(systemctl show "$unit" -p LoadState --value 2>/dev/null || true)" == loaded ]]; then
+    RESOLVED_TRIGGER_UNITS+=("$unit")
+  fi
+done
 
 unit_active() {
   systemctl is-active "$1" 2>/dev/null || true
@@ -208,11 +216,23 @@ arm_resolved_for_gate() {
   esac
 }
 
+restore_resolved_triggers() {
+  local unit
+  for unit in "${RESOLVED_TRIGGER_UNITS[@]}"; do
+    restore_active "$unit" "${BASE_RESOLVED_TRIGGER_ACTIVE[$unit]}"
+  done
+}
+
 start_resolved_for_gate() {
   restore_active systemd-resolved.service "$BASE_RESOLVED_ACTIVE"
+  restore_resolved_triggers
   if [[ "$RESOLVED_LINK_ARMED" == 1 ]]; then
     "${PRIV[@]}" resolvectl mdns "$LAN_LINK" yes
   fi
+}
+
+stop_resolved_for_gate() {
+  "${PRIV[@]}" systemctl stop "${RESOLVED_TRIGGER_UNITS[@]}" systemd-resolved.service
 }
 
 restore_resolved_baseline() {
@@ -229,6 +249,7 @@ restore_resolved_baseline() {
   else
     restore_active systemd-resolved.service "$BASE_RESOLVED_ACTIVE"
   fi
+  restore_resolved_triggers
   if [[ "$RESOLVED_LINK_ARMED" == 1 \
      && ( "$BASE_RESOLVED_ACTIVE" == active || "$BASE_RESOLVED_ACTIVE" == activating ) ]]; then
     "${PRIV[@]}" resolvectl mdns "$LAN_LINK" "$BASE_RESOLVED_LINK_MDNS"
@@ -288,6 +309,9 @@ snapshot() {
     echo "resolved_active=$(unit_active systemd-resolved.service)"
     echo "resolved_global_mdns=$(resolved_global_mdns)"
     echo "resolved_${LAN_LINK}_mdns=$(resolved_link_mdns "$LAN_LINK")"
+    for unit in "${RESOLVED_TRIGGER_UNITS[@]}"; do
+      echo "${unit}_active=$(unit_active "$unit")"
+    done
     echo "mdns=$(mdns_status)"
     echo "udp_5353:"
     "${PRIV[@]}" ss -H -lunp 'sport = :5353' || true
@@ -406,10 +430,11 @@ REMOTE
 }
 
 remote_stop_publisher() {
-  local status=0
-  "${SSH[@]}" sh -s -- "$REMOTE_DIR" "$REMOTE_PID" "$RUN_ID" <<'REMOTE' || status=$?
+  local status=0 expected_pid="${REMOTE_PID:--}"
+  "${SSH[@]}" sh -s -- "$REMOTE_DIR" "$expected_pid" "$RUN_ID" <<'REMOTE' || status=$?
 set -eu
 dir="$1" expected_pid="$2" run_id="$3"
+[ "$expected_pid" = - ] && expected_pid=""
 [ -d "$dir" ] || exit 0
 actual_pid="$(awk 'NR == 1 {print; exit}' "$dir/pid" 2>/dev/null || true)"
 if [ -n "$expected_pid" ] && [ "$actual_pid" != "$expected_pid" ]; then
@@ -481,6 +506,10 @@ cleanup() {
     echo "avahi_service_enabled=$(unit_enabled avahi-daemon.service)"
     echo "avahi_socket_enabled=$(unit_enabled avahi-daemon.socket)"
     echo "resolved_enabled=$(unit_enabled systemd-resolved.service)"
+    for unit in "${RESOLVED_TRIGGER_UNITS[@]}"; do
+      echo "${unit}_active=$(unit_active "$unit")"
+      echo "${unit}_enabled=$(unit_enabled "$unit")"
+    done
   } >"$EVIDENCE_DIR/final-restoration.txt"
   if [[ "$(unit_active avahi-daemon.service)" != "$BASE_AVAHI_SERVICE_ACTIVE" \
      || "$(unit_active avahi-daemon.socket)" != "$BASE_AVAHI_SOCKET_ACTIVE" \
@@ -499,6 +528,13 @@ cleanup() {
     echo "ERROR: resolved mDNS configuration did not restore to baseline; inspect $EVIDENCE_DIR" >&2
     exit_code=1
   fi
+  for unit in "${RESOLVED_TRIGGER_UNITS[@]}"; do
+    if [[ "$(unit_active "$unit")" != "${BASE_RESOLVED_TRIGGER_ACTIVE[$unit]}" \
+       || "$(unit_enabled "$unit")" != "${BASE_RESOLVED_TRIGGER_ENABLED[$unit]}" ]]; then
+      echo "ERROR: resolved trigger $unit did not restore to baseline" >&2
+      exit_code=1
+    fi
+  done
   if [[ "$(koi_unit_active)" != "$BASE_KOI_ACTIVE" \
      || "$(koi_unit_enabled)" != "$BASE_KOI_ENABLED" ]]; then
     echo "ERROR: installed Koi unit state did not match baseline; inspect $EVIDENCE_DIR" >&2
@@ -519,6 +555,10 @@ BASE_RESOLVED_GLOBAL_MDNS="$(resolved_global_mdns)"
 BASE_RESOLVED_LINK_MDNS="$(resolved_link_mdns "$LAN_LINK")"
 BASE_KOI_ACTIVE="$(koi_unit_active)"
 BASE_KOI_ENABLED="$(koi_unit_enabled)"
+for unit in "${RESOLVED_TRIGGER_UNITS[@]}"; do
+  BASE_RESOLVED_TRIGGER_ACTIVE[$unit]="$(unit_active "$unit")"
+  BASE_RESOLVED_TRIGGER_ENABLED[$unit]="$(unit_enabled "$unit")"
+done
 trap cleanup EXIT INT TERM
 
 if [[ "$BASE_KOI_ACTIVE" != active ]]; then
@@ -557,6 +597,10 @@ assert_single_koi
   echo "resolved_enabled=$BASE_RESOLVED_ENABLED"
   echo "resolved_global_mdns=$BASE_RESOLVED_GLOBAL_MDNS"
   echo "resolved_${LAN_LINK}_mdns=$BASE_RESOLVED_LINK_MDNS"
+  for unit in "${RESOLVED_TRIGGER_UNITS[@]}"; do
+    echo "${unit}_active=${BASE_RESOLVED_TRIGGER_ACTIVE[$unit]}"
+    echo "${unit}_enabled=${BASE_RESOLVED_TRIGGER_ENABLED[$unit]}"
+  done
 } >"$EVIDENCE_DIR/baseline.txt"
 snapshot baseline
 
@@ -605,7 +649,7 @@ assert_phase avahi 'provider avahi \('
 "${PRIV[@]}" systemctl stop avahi-daemon.service avahi-daemon.socket
 assert_phase resolved-native 'provider systemd-resolved\+native \('
 
-"${PRIV[@]}" systemctl stop systemd-resolved.service
+stop_resolved_for_gate
 assert_phase native-only 'provider native \('
 
 start_resolved_for_gate
