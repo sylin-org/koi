@@ -10,7 +10,7 @@
 //!   └─ certificate id (set at finalize)
 //! ```
 //!
-//! The **security boundary** lives here and in [`finalize`]:
+//! The **security boundary** lives here and in the router's `finalize` handler:
 //! - identifiers are validated to be in-zone at order creation (out-of-zone →
 //!   `rejectedIdentifier`); the wildcard `*.<zone>` is allowed;
 //! - at finalize, every CSR SAN MUST be one of the order's authorized

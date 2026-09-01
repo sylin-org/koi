@@ -51,6 +51,10 @@ struct LookupResponse {
 #[derive(Debug, Serialize, ToSchema)]
 struct StatusResponse {
     running: bool,
+    desired: bool,
+    state: crate::DnsRuntimeState,
+    endpoints: Vec<String>,
+    reason: Option<String>,
     zone: String,
     port: u16,
     records: RecordSummary,
@@ -133,6 +137,10 @@ async fn status_handler(Extension(runtime): Extension<Arc<DnsRuntime>>) -> impl 
     let snapshot = core.snapshot();
     Json(StatusResponse {
         running: runtime_status.running,
+        desired: runtime_status.desired,
+        state: runtime_status.state,
+        endpoints: runtime_status.endpoints,
+        reason: runtime_status.reason,
         zone: core.config().zone.clone(),
         port: core.config().port,
         records: RecordSummary {

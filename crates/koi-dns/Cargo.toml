@@ -27,3 +27,4 @@ axum.workspace = true
 hickory-server.workspace = true
 hickory-resolver.workspace = true
 hickory-proto.workspace = true
+if-addrs.workspace = true

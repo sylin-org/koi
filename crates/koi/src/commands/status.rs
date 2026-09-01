@@ -58,12 +58,10 @@ pub fn try_daemon_status(cli: &Cli) -> Option<serde_json::Value> {
         return None;
     }
 
-    let endpoint = cli
-        .endpoint
-        .clone()
-        .or_else(koi_config::breadcrumb::read_breadcrumb_endpoint)?;
-
-    let client = KoiClient::new(&endpoint);
+    let client = match &cli.endpoint {
+        Some(endpoint) => KoiClient::with_token(endpoint, super::cli_token(cli).unwrap_or("")),
+        None => KoiClient::from_local().ok()?,
+    };
     if client.health().is_err() {
         return None;
     }

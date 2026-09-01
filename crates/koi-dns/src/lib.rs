@@ -2,6 +2,7 @@
 
 mod aliases;
 pub mod http;
+mod listener;
 mod records;
 mod resolver;
 mod runtime;
@@ -12,7 +13,7 @@ use koi_common::firewall::{FirewallPort, FirewallProtocol};
 
 pub use koi_config::state::DnsEntry;
 pub use resolver::{DnsConfig, DnsCore, DnsError, DnsEvent, DnsLookupResult};
-pub use runtime::{DnsRuntime, DnsRuntimeStatus};
+pub use runtime::{DnsRuntime, DnsRuntimeState, DnsRuntimeStatus};
 pub use zone::DnsZone;
 
 /// Product-wide default for Koi's authoritative local DNS zone.

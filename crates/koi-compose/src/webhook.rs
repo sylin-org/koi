@@ -3,7 +3,8 @@
 //!
 //! This is a **composition-layer adapter**, not a domain: like the dashboard
 //! forwarder it owns no state machine and emits no domain events of its own. It
-//! consumes only the published integration envelope ([`DashboardSseEvent`] — the
+//! consumes only the published integration envelope
+//! ([`koi_dashboard::dashboard::DashboardSseEvent`] — the
 //! same shape the SSE feed carries, ADR-006 identity included) so a domain-event
 //! shape change lands once. Sinks are outbound-only; nothing about them is ever
 //! advertised.

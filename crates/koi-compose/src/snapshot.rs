@@ -1,7 +1,7 @@
 //! The rich dashboard snapshot — the one detail projection of the live domain cores.
 //!
 //! Both the daemon's dashboard adapter and `koi-embedded` serve their dashboard JSON through
-//! an injected `SnapshotFn`; both now call [`build_dashboard_snapshot`] so the embedded
+//! an injected `SnapshotFn`; both now call [`crate::snapshot::build_dashboard_snapshot`] so the embedded
 //! snapshot is no longer a `{capabilities}`-only stub but carries the same health / DNS /
 //! certmesh / proxy / UDP detail the daemon dashboard renders. The capability ladder itself
 //! comes from [`crate::status::assemble_capabilities`] (shared with `/v1/status`), projected

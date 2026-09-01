@@ -28,12 +28,12 @@ pub fn run(cmd: &TokenCommand, json: bool) -> anyhow::Result<()> {
 /// Reads the current daemon token from the breadcrumb, or returns a friendly
 /// error if the daemon is not running.
 fn load_token() -> anyhow::Result<String> {
-    koi_config::breadcrumb::read_breadcrumb()
-        .map(|b| b.token)
-        .ok_or_else(|| {
+    koi_client::local_daemon_access()
+        .map(|access| access.token)
+        .map_err(|_| {
             anyhow::anyhow!(
                 "no daemon token found — is the Koi daemon running? The token is \
-                 written to the breadcrumb file when the daemon starts."
+                 available from the trusted local daemon while it is running."
             )
         })
 }

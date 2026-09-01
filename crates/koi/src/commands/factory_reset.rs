@@ -73,12 +73,12 @@ pub fn run(json: bool, yes: bool) -> anyhow::Result<()> {
 /// Attempt to shut down a running daemon via the breadcrumb endpoint.
 /// Returns `true` if a daemon was detected and shutdown was attempted.
 fn try_shutdown_daemon() -> bool {
-    let breadcrumb = match koi_config::breadcrumb::read_breadcrumb() {
-        Some(bc) => bc,
-        None => return false,
+    let access = match koi_client::local_daemon_access() {
+        Ok(access) => access,
+        Err(_) => return false,
     };
 
-    let client = KoiClient::with_token(&breadcrumb.endpoint, &breadcrumb.token);
+    let client = KoiClient::with_token(&access.endpoint, &access.token);
 
     match client.shutdown() {
         Ok(()) => {

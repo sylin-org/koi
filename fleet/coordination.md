@@ -9,9 +9,13 @@ is not complete until its commit is present on `origin/dev`.
 
 ## The hats
 
-One machine, one hat, one specialty. A hat owns `fleet/<hat>/` and nothing
-else. Facts live in `tools/koi-lab/lab.json` (addresses, users, host keys)
-and `local/NOTES.md` (credentials, repo paths); this table is the index.
+One machine, one hat, one specialty. A hat has exclusive ownership of its own
+`fleet/<hat>/` evidence namespace and must not edit another hat's namespace. It
+is authorized to change the shared implementation, tests, ADRs, and user-facing
+documentation needed to make its platform work; those changes go directly to
+`dev` under the synchronization rules below. Facts live in
+`tools/koi-lab/lab.json` (addresses, users, host keys) and `local/NOTES.md`
+(credentials, repo paths); this table is the index.
 
 | hat | machine | desktop (measured 2026-08-31) | repo path | UX modus operandi |
 |---|---|---|---|---|
@@ -72,8 +76,8 @@ and the brief corrected.
 ## Windows mDNS control-plane workstream
 
 The Windows workstation (`stone-leaded-sparkle`) makes Koi's provider architecture
-native to Windows; it does not build a second architecture. Pull ADR-039 from
-`origin/dev`. The shared shape is adapter → stateful provider session →
+native to Windows; it does not build a second architecture. Pull ADR-039, ADR-040,
+and ADR-041 from `origin/dev`. The shared shape is adapter → stateful provider session →
 `MdnsControlPlane`, with registration intent in `RegistrationRegistry` and browse
 demand in `DiscoveryHub`.
 
@@ -203,6 +207,14 @@ test, or a process that merely started.
   test-01/test-02 PIDs `280122`/`89908`, artifact SHA-256
   `05f15f4fcd80ff720c044698f7d2eff545823e7803ca59e0e1e4170e15c8e369`, and
   generations 1–5; use its structured evidence shape as the minimum Windows gate.
+- **Windows local control:** the workbench gate also uses the one installed service.
+  Reinstall/upgrade it through `koi install` so ADR-040 records the interactive SID,
+  then prove the owner-private breadcrumb is not the workbench's dependency: shifted
+  endpoint discovery, `/v1/events`, mutations, tray posture, and pond publishing must
+  all work through the authenticated named pipe. Record its explicit DACL, prove a
+  different unelevated account is denied, and prove a broken mDNS client connection
+  drains session registrations. Do not loosen the breadcrumb ACL, add a loopback DAT
+  exemption, or launch a parallel daemon to make the UI green.
 - **Trust truth:** distinguish local CA ownership from enrolled membership.
   Use certmesh diagnosis/posture and the on-disk member identity together; an
   empty local roster or `ca_initialized: false` is normal on a member and must

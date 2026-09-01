@@ -4,6 +4,9 @@
 [ADR-033](033-koi-desktop-workbench.md): L1's tray-icon MVP and the L2
 non-decision are superseded — the desktop surface is the Tauri workbench in
 `sylin-org/koi-desktop`. Config substrate (below) stands unchanged.
+Amended 2026-09-01 by [ADR-040](040-local-operator-control-plane.md): the workbench
+uses authenticated local control when it cannot read the service owner's breadcrumb;
+the named pipe/Unix socket is proven and is not mDNS-dependent.
 **Date:** 2026-08-24
 **Builds on:** ADR-020 (truthful capability ladder), ADR-026 (posture vocabulary), ADR-029 (host classes), the D3 deferral (no config subsystem) which this ADR partially reverses
 **Constrained by:** zero-telemetry / no-background-services-beyond-the-daemon doctrine; binary-size discipline
@@ -40,8 +43,8 @@ a grand UI plan.
 - Tray icon whose color encodes **posture** (Open / Authenticated / Confidential — the
   existing ADR-020 vocabulary; no new states invented).
 - Menu: hostname + level line; Open Dashboard; Renew Now; Copy LAN name; Pause/Resume;
-  Quit. Every action maps to an existing daemon surface (loopback HTTP + DAT from the
-  breadcrumb, named-pipe IPC once proven) — **the tray introduces zero new daemon API**
+  Quit. Every action maps to an existing daemon surface (loopback HTTP + DAT acquired
+  from the private breadcrumb or ADR-040 local control) — **the tray introduces zero new daemon API**
   beyond what L0 exposes.
 - Implementation: `tray-icon`-family crates (Windows + appindicator on Linux); the
   dashboard remains browser-served by the daemon.

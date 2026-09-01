@@ -12,7 +12,7 @@ const SESSION_GRACE: Duration = Duration::from_secs(5);
 
 /// Run the CLI adapter: read NDJSON from stdin, write responses to stdout.
 pub async fn start(core: Arc<MdnsCore>) -> anyhow::Result<()> {
-    let session_id = dispatch::new_session_id();
+    let session = core.open_registration_session();
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let reader = tokio::io::BufReader::new(stdin);
@@ -23,9 +23,8 @@ pub async fn start(core: Arc<MdnsCore>) -> anyhow::Result<()> {
         if line.is_empty() {
             continue;
         }
-        dispatch::handle_line(&core, &session_id, &line, SESSION_GRACE, &mut stdout).await?;
+        dispatch::handle_line(&core, session.id(), &line, SESSION_GRACE, &mut stdout).await?;
     }
 
-    core.session_disconnected(&session_id);
     Ok(())
 }

@@ -11,14 +11,14 @@ use koi_client::{ClientError, KoiClient};
 /// Build a [`KoiClient`] for the running daemon.
 ///
 /// Resolution order:
-/// 1. The breadcrumb file the daemon writes on startup (endpoint + token).
+/// 1. Authenticated local discovery (private breadcrumb, then local control).
 /// 2. The `KOI_ENDPOINT` env var, paired with `KOI_TOKEN` if present.
 ///
-/// Returns `None` only when neither a breadcrumb nor `KOI_ENDPOINT` is available.
+/// Returns `None` only when neither local discovery nor `KOI_ENDPOINT` is available.
 /// A returned client does **not** imply a reachable daemon — probe with
 /// [`KoiClient::health`] (the tools do this and surface an actionable error).
 pub fn build_client() -> Option<KoiClient> {
-    if let Some(client) = KoiClient::from_breadcrumb() {
+    if let Ok(client) = KoiClient::from_local() {
         return Some(client);
     }
     let endpoint = std::env::var("KOI_ENDPOINT")

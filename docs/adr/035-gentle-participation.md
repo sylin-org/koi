@@ -5,6 +5,11 @@
 **Builds on:** ADR-030 (mDNS coexistence), ADR-032 (Windows parity / extended full profile), ADR-026-era trust machinery
 **Constrained by:** catalog mutation grants; workstation safety rules; exact-restoration doctrine
 
+**Amended 2026-09-01:** ADR-040 makes IPC an independent trusted local-control plane;
+it no longer skips with mDNS. ADR-041 replaces W6's one-time free-port/listener assumption
+with cooperative UDP+TCP acquisition and visible desired-state retry. The observations
+below remain historical evidence, not the current dependency model.
+
 ---
 
 ## Context
@@ -54,7 +59,7 @@ capabilities that are not mounted — with a skip reason and the dependency that
 the skip. Silent degradation is the anti-pattern: a log line is not a declaration.
 **Implemented this session:** assembly notes (`CapabilityNote`) recorded by
 `build_cores`/serve and merged into the ladder; the `ipc` rung joined as the eighth
-rung, reporting `skipped: <reason> (depends on mdns)` when its dependency yielded.
+rung. ADR-040 subsequently removed its mDNS dependency and gives it its own live state.
 
 ### 3. Change only what is granted — and exactly
 

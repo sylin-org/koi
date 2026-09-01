@@ -1,5 +1,10 @@
 # ADR-011: Security & Architecture Overhaul
 
+> **Amendment (2026-09-01):** ADR-040 preserves the owner-private DAT breadcrumb and
+> adds authenticated UID/SID local hand-off for a machine service. ADR-041 replaces
+> one-shot DNS binding with a cooperative desired-state listener. Those later decisions
+> supersede ADR-011 only where its single-owner and listener assumptions differ.
+
 **Status:** Accepted
 **Date:** 2026-03-18
 **Supersedes:** Partially supersedes ADR-003 (envelope encryption slot details)

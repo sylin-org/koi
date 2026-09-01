@@ -58,8 +58,8 @@ pub(crate) fn cli_token(cli: &Cli) -> Option<&str> {
 /// - **Explicit endpoint** present → use the `--token`/`KOI_TOKEN` value if set,
 ///   otherwise **tokenless** (empty). NEVER the breadcrumb token: pairing the
 ///   local daemon's token with a remote URL would leak it to that host.
-/// - **No explicit endpoint** → caller falls back to the breadcrumb (endpoint +
-///   its matching token), which is the local daemon and trusted.
+/// - **No explicit endpoint** → caller uses authenticated local discovery
+///   (private breadcrumb or local control), which returns one matching endpoint/token pair.
 pub(crate) fn token_for_explicit_endpoint(explicit_token: Option<&str>) -> String {
     explicit_token.unwrap_or("").to_string()
 }
@@ -78,13 +78,13 @@ pub(crate) fn detect_mode(cli: &Cli) -> Mode {
             token: token_for_explicit_endpoint(cli_token(cli)),
         };
     }
-    // Check breadcrumb - if a daemon is advertising its endpoint, use client mode
-    if let Some(bc) = koi_config::breadcrumb::read_breadcrumb() {
-        let c = KoiClient::new(&bc.endpoint);
+    // Resolve the authenticated real local daemon (breadcrumb or local control).
+    if let Ok(access) = koi_client::local_daemon_access() {
+        let c = KoiClient::new(&access.endpoint);
         if c.health().is_ok() {
             return Mode::Client {
-                endpoint: bc.endpoint,
-                token: bc.token,
+                endpoint: access.endpoint,
+                token: access.token,
             };
         }
     }
@@ -92,17 +92,17 @@ pub(crate) fn detect_mode(cli: &Cli) -> Mode {
 }
 
 /// Build a [`KoiClient`] for a command that always needs a running daemon (mDNS admin and
-/// every certmesh command), folding the token-leak rule and the breadcrumb health-probe
+/// every certmesh command), folding the token-leak rule and local health-probe
 /// into one place.
 ///
 /// - **Explicit `endpoint`** → use the explicit `--token`/`KOI_TOKEN` value if set, else
 ///   **tokenless** (never the local breadcrumb token — pairing it with a remote URL would
 ///   leak the local daemon's token to that host). No health-probe: the operator named the
 ///   target deliberately.
-/// - **No explicit endpoint** → use the breadcrumb (endpoint + its matching token) only
-///   after a health-probe confirms a daemon is actually answering there; otherwise bail
-///   with an actionable message. The probe matches the breadcrumb path in [`detect_mode`]
-///   so a stale breadcrumb never routes a command at a dead endpoint.
+/// - **No explicit endpoint** → use authenticated local discovery only after a
+///   health-probe confirms a daemon is answering; otherwise bail with an actionable
+///   message. The probe matches [`detect_mode`] so stale discovery material never routes
+///   a command at a dead endpoint.
 pub(crate) fn require_client(
     endpoint: Option<&str>,
     explicit_token: Option<&str>,
@@ -111,9 +111,9 @@ pub(crate) fn require_client(
         let token = token_for_explicit_endpoint(explicit_token);
         return Ok(KoiClient::with_token(ep, &token));
     }
-    if let Some(bc) = koi_config::breadcrumb::read_breadcrumb() {
-        if KoiClient::new(&bc.endpoint).health().is_ok() {
-            return Ok(KoiClient::with_token(&bc.endpoint, &bc.token));
+    if let Ok(access) = koi_client::local_daemon_access() {
+        if KoiClient::new(&access.endpoint).health().is_ok() {
+            return Ok(KoiClient::with_token(&access.endpoint, &access.token));
         }
     }
     anyhow::bail!(

@@ -39,7 +39,7 @@ impl ProviderDescriptor {
     }
 }
 
-/// Platform adapter consumed by [`crate::control_plane::MdnsControlPlane`].
+/// Platform adapter consumed by Koi's internal mDNS control plane.
 ///
 /// `assess` is read-only and must not activate or reconfigure an external
 /// service. `open` returns only a real provider session backed by the described

@@ -55,6 +55,12 @@ hyper-util.workspace = true
 # on disk (same crate koi-proxy uses for its data-plane cert hot-reload).
 notify.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 rcgen.workspace = true

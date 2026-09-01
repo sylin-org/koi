@@ -2,7 +2,7 @@
 //!
 //! A server that **requires** client certificates signed by the certmesh CA,
 //! extracts the peer certificate's Common Name (CN), and injects it as
-//! `Extension(`[`ClientCn`](crate::http::ClientCn)`(cn))` into the per-connection
+//! `Extension(`[`ClientCn`]`(cn))` into the per-connection
 //! router so handlers can authorize on the caller's identity.
 //!
 //! The TLS + CA-verification wiring lives here, in the crate that owns the CA, so
@@ -243,7 +243,7 @@ pub fn build_server_auth_config_with_resolver(
 ///
 /// Each accepted connection completes the TLS handshake (rejecting any client
 /// without a CA-signed certificate, per `config`), has its peer-certificate CN
-/// extracted and injected as `Extension(`[`ClientCn`](crate::http::ClientCn)`(cn))`,
+/// extracted and injected as `Extension(`[`ClientCn`]`(cn))`,
 /// and is then served by a clone of `router`. A connection whose client certificate
 /// yields no usable CN is dropped. Returns `Ok(())` on cancellation; transient
 /// per-connection errors are logged, not propagated.
@@ -396,7 +396,7 @@ fn first_dns_san(cert_der: &[u8]) -> Option<String> {
 /// Build a rustls [`ClientConfig`](rustls::ClientConfig) that presents
 /// `(client_cert_pem, client_key_pem)` and verifies the server against the pinned
 /// `ca_cert_pem` (chain + signature + validity), tolerating any SAN name (see
-/// [`PinnedCaServerVerifier`]).
+/// the internal `PinnedCaServerVerifier`).
 pub fn build_client_config(
     client_cert_pem: &str,
     client_key_pem: &str,

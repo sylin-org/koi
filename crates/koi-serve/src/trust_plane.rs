@@ -13,7 +13,7 @@
 //! whole trust-plane presence is live whenever this node owns the CA. A node that boots Open
 //! and later runs `koi certmesh create` brings the trust plane up reactively, and a
 //! node whose CA is **locked at boot** recovers via a bounded retry timer
-//! ([`RETRY_INTERVAL`]) once `koi certmesh unlock` makes the CA usable.
+//! (`RETRY_INTERVAL`) once `koi certmesh unlock` makes the CA usable.
 
 use std::path::Path;
 use std::sync::Arc;

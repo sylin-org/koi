@@ -7,7 +7,7 @@
 //! in-flight one — the Istio-PERMISSIVE property the ADR demands without its
 //! footguns.
 //!
-//! These are the single-connection counterparts of [`mtls::serve`](crate::mtls::serve)
+//! These are the single-connection counterparts of [`mtls::serve`]
 //! (which owns its own accept loop for the daemon's fixed mTLS port). The TLS
 //! handshake + CN-injection path is intentionally the same shape; it is kept
 //! separate so the proven daemon listener is untouched by the same-port dial.

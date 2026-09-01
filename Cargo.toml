@@ -105,6 +105,13 @@ open = "5"
 ipnet = "2"
 libc = "0.2"
 socket2 = { version = "0.6", features = ["all"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
 
 # Crypto dependencies (Phase 2)
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }

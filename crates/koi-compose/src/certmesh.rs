@@ -8,7 +8,8 @@
 //!
 //! Relocating them here (out of the binary's `main.rs`) is what makes Windows-service and
 //! embedded daemons reach parity with the foreground daemon by construction — all three
-//! call [`spawn_certmesh_background_tasks`] and [`spawn_enrollment_approval`].
+//! call [`crate::certmesh::spawn_certmesh_background_tasks`] and
+//! [`crate::certmesh::spawn_enrollment_approval`].
 
 use std::sync::Arc;
 use std::time::Duration;

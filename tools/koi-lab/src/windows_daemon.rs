@@ -9,7 +9,7 @@
 //! owns everything downstream of staging.
 //!
 //! Doctrine: on failure, [`WindowsLabDaemon::evidence`] is captured BEFORE
-//! [`Self::teardown`] deletes the run directory.
+//! [`WindowsLabDaemon::teardown`] deletes the run directory.
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};

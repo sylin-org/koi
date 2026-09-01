@@ -3,10 +3,13 @@
 //! Uses blocking `ureq` - no async runtime dependency on the client path.
 //! All paths use `/v1/mdns/` prefix for mDNS domain routes.
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::time::Duration;
 
 use hickory_proto::rr::RecordType;
+use koi_common::local_control::{
+    LocalControlRequest, LocalControlResponse, LocalDaemonAccess, LOCAL_CONTROL_VERSION,
+};
 use koi_common::mdns_protocol::{
     AdminRegistration, DaemonStatus, RegisterPayload, RegistrationResult, RenewalResult,
 };
@@ -94,6 +97,13 @@ impl KoiClient {
     pub fn from_breadcrumb() -> Option<Self> {
         let bc = koi_config::breadcrumb::read_breadcrumb()?;
         Some(Self::with_token(&bc.endpoint, &bc.token))
+    }
+
+    /// Create a client for the real local daemon, using the private breadcrumb
+    /// when readable and the authenticated local-control transport otherwise.
+    pub fn from_local() -> Result<Self> {
+        let access = local_daemon_access()?;
+        Ok(Self::with_token(&access.endpoint, &access.token))
     }
 
     /// Attach the DAT header to a request if a token is present.
@@ -492,6 +502,95 @@ impl KoiClient {
         ureq::AgentBuilder::new()
             .timeout_connect(CONNECT_TIMEOUT)
             .build()
+    }
+}
+
+/// Resolve credentials for the real local daemon without ever pairing its DAT
+/// with a caller-supplied or remote endpoint.
+pub fn local_daemon_access() -> Result<LocalDaemonAccess> {
+    if let Some(breadcrumb) = koi_config::breadcrumb::read_breadcrumb() {
+        return Ok(LocalDaemonAccess {
+            version: LOCAL_CONTROL_VERSION,
+            endpoint: breadcrumb.endpoint,
+            token: breadcrumb.token,
+        });
+    }
+    request_local_access()
+}
+
+fn request_local_access() -> Result<LocalDaemonAccess> {
+    let request = serde_json::to_string(&LocalControlRequest::access())
+        .map_err(|error| ClientError::Decode(error.to_string()))?;
+
+    let mut last_error = None;
+    for path in koi_config::breadcrumb::local_control_candidates() {
+        match request_local_access_at(&path, &request) {
+            Ok(access) => return Ok(access),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        ClientError::Unreachable("no local-control transport path is available".to_string())
+    }))
+}
+
+fn request_local_access_at(path: &std::path::Path, request: &str) -> Result<LocalDaemonAccess> {
+    #[cfg(unix)]
+    let stream = {
+        let stream = std::os::unix::net::UnixStream::connect(path)
+            .map_err(|error| ClientError::Unreachable(error.to_string()))?;
+        let timeout = Some(Duration::from_secs(2));
+        stream
+            .set_read_timeout(timeout)
+            .map_err(|error| ClientError::Transport(error.to_string()))?;
+        stream
+            .set_write_timeout(timeout)
+            .map_err(|error| ClientError::Transport(error.to_string()))?;
+        stream
+    };
+
+    #[cfg(windows)]
+    let stream = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| ClientError::Unreachable(error.to_string()))?;
+
+    #[cfg(not(any(unix, windows)))]
+    return Err(ClientError::Unreachable(
+        "local control is unsupported on this platform".to_string(),
+    ));
+
+    #[cfg(any(unix, windows))]
+    {
+        let mut stream = stream;
+        stream
+            .write_all(request.as_bytes())
+            .and_then(|()| stream.write_all(b"\n"))
+            .and_then(|()| stream.flush())
+            .map_err(|error| ClientError::Transport(error.to_string()))?;
+        let mut line = String::new();
+        BufReader::new(stream)
+            .read_line(&mut line)
+            .map_err(|error| ClientError::Transport(error.to_string()))?;
+        match serde_json::from_str::<LocalControlResponse>(line.trim())
+            .map_err(|error| ClientError::Decode(error.to_string()))?
+        {
+            LocalControlResponse::Access(access)
+                if access.version == LOCAL_CONTROL_VERSION
+                    && !access.endpoint.is_empty()
+                    && !access.token.is_empty() =>
+            {
+                Ok(access)
+            }
+            LocalControlResponse::Access(_) => Err(ClientError::Decode(
+                "invalid local daemon access response".to_string(),
+            )),
+            LocalControlResponse::Error { code, message } => Err(ClientError::Api {
+                error: code,
+                message,
+            }),
+        }
     }
 }
 

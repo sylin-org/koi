@@ -85,7 +85,7 @@ struct AppState {
 // ── Entrypoint ──────────────────────────────────────────────────────
 
 /// Declarative description of the HTTP surface to serve. One router builder backs both
-/// the daemon (full surface: DAT auth, MCP, admin-shutdown, OpenAPI) via [`crate::serve`]
+/// the daemon (full surface: DAT auth, MCP, admin-shutdown, OpenAPI) via [`crate::serve()`]
 /// and an embedded host (loopback bind, optional auth, no MCP) — one implementation, so
 /// their `/v1/status` shapes and route sets cannot drift.
 pub struct HttpConfig {
@@ -105,7 +105,7 @@ pub struct HttpConfig {
     /// Mount the in-process MCP HTTP transport at `/v1/mcp`.
     pub mcp_http: bool,
     /// Outbound webhook sinks (ADR-028). Reported on `/v1/status`; the fan-out
-    /// itself is spawned by [`crate::serve`], not this adapter.
+    /// itself is spawned by [`crate::serve()`], not this adapter.
     pub webhooks: Vec<koi_compose::webhook::WebhookSink>,
     /// Mount `POST /v1/admin/shutdown` (cancels the serving token).
     pub admin_shutdown: bool,
@@ -124,7 +124,7 @@ pub struct HttpConfig {
 
 /// Build the router for `cores` per `cfg`, bind `bind_ip:port`, and serve until `cancel`
 /// fires. The single HTTP entry point shared by the daemon and the Windows service (both
-/// via [`crate::serve`]) and by koi-embedded.
+/// via [`crate::serve()`]) and by koi-embedded.
 pub async fn start(
     cores: DaemonCores,
     cfg: HttpConfig,

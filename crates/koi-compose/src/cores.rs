@@ -4,7 +4,7 @@
 //!
 //! Before P07 this graph was hand-written twice — in the binary's `daemon_mode` and again
 //! in the Windows service's `run_service` — and the two had already drifted into a verified
-//! `koi install` defect. [`build_cores`] is now the one copy both call, so the daemon they
+//! `koi install` defect. [`crate::cores::build_cores`] is now the one copy both call, so the daemon they
 //! construct is identical by construction.
 //!
 //! The enrollment-approval pump is intentionally *not* spawned here: its decider differs by
@@ -40,7 +40,7 @@ pub struct Cores {
     pub mdns_snapshot: Option<Arc<dyn MdnsSnapshot>>,
 }
 
-/// Error from [`build_cores`] when `fail_fast` is set (koi-embedded's library contract).
+/// Error from [`crate::cores::build_cores`] when `fail_fast` is set (koi-embedded's library contract).
 /// With `fail_fast = false` (the daemon/service default) `build_cores` never returns this —
 /// a capability that fails to initialize is logged and dropped and the daemon keeps running.
 #[derive(Debug, thiserror::Error)]
@@ -60,7 +60,7 @@ pub enum BuildCoresError {
 /// Capability flags + inputs needed to build the cores. A daemon-`Config` subset, kept here
 /// (rather than depending on the binary's `Config`) so koi-compose stays standalone.
 ///
-/// The daemon and the Windows service fill it via [`CoreSpec::daemon`]; `koi-embedded` sets
+/// The daemon and the Windows service fill it via [`CoreSpec::daemon_defaults`]; `koi-embedded` sets
 /// the embedded-only forks (data-dir-scoped proxy, pinned DNS state path, the auto-start +
 /// background-loop opt-ins) directly. Every field has a daemon default so the two boot paths
 /// build the identical graph.
@@ -370,6 +370,20 @@ pub async fn build_cores(
                             return Err(e.into());
                         }
                         tracing::error!(error = %e, "Failed to start DNS server");
+                    } else {
+                        let status = runtime.status().await;
+                        match status.state {
+                            koi_dns::DnsRuntimeState::Running => tracing::info!(
+                                endpoints = ?status.endpoints,
+                                reason = ?status.reason,
+                                "DNS listener reconciled"
+                            ),
+                            koi_dns::DnsRuntimeState::Waiting => tracing::info!(
+                                reason = ?status.reason,
+                                "DNS listener waiting; retry remains armed"
+                            ),
+                            _ => {}
+                        }
                     }
                 }
                 Some(runtime)

@@ -387,11 +387,11 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
     }
 
     // Always show available commands/help for discoverability
-    let api_endpoint = cli
-        .endpoint
-        .clone()
-        .or_else(koi_config::breadcrumb::read_breadcrumb_endpoint)
-        .unwrap_or_else(|| "http://localhost:5641".to_string());
+    let api_endpoint = cli.endpoint.clone().unwrap_or_else(|| {
+        koi_client::local_daemon_access()
+            .map(|access| access.endpoint)
+            .unwrap_or_else(|_| "http://localhost:5641".to_string())
+    });
     print_top_level_help(&api_endpoint);
     Ok(())
 }

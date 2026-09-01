@@ -79,7 +79,7 @@ pub struct Cli {
     #[arg(long, env = "KOI_PORT", default_value = "5641")]
     pub port: u16,
 
-    /// HTTP API bind address: loopback (default), bridge, <ip>, or 0.0.0.0.
+    /// HTTP API bind address: loopback (default), bridge, `<ip>`, or 0.0.0.0.
     /// Non-loopback exposes the daemon to other hosts/containers; mutations
     /// still require the daemon token. See `docs/reference/security-model.md`.
     #[arg(long, env = "KOI_HTTP_BIND", default_value = "loopback")]
@@ -232,6 +232,10 @@ pub enum Command {
         /// Install a per-user service instead of a system service
         #[arg(long)]
         user: bool,
+        /// Interactive operator allowed to control the installed local daemon.
+        /// Defaults to the sudo/pkexec caller (Unix) or elevated user (Windows).
+        #[arg(long, value_name = "USER_OR_SID")]
+        operator: Option<String>,
     },
     /// Uninstall the Koi service (system or user shape, whichever is found)
     Uninstall,
@@ -776,7 +780,7 @@ pub struct Config {
     pub dns_zone: String,
     pub dns_public: bool,
     pub dns_qps: u32,
-    /// HTTP bind mode: loopback (default), bridge, <ip>, or 0.0.0.0.
+    /// HTTP bind mode: loopback (default), bridge, `<ip>`, or 0.0.0.0.
     pub http_bind: String,
     /// Machine-scoped data root, resolved once at the daemon composition root
     /// and injected into the domain cores (no ambient re-resolution).
@@ -1764,14 +1768,35 @@ mod tests {
         let cli = Cli::try_parse_from(["koi", "install"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Command::Install { user: false })
+            Some(Command::Install {
+                user: false,
+                operator: None
+            })
         ));
     }
 
     #[test]
     fn parse_install_user_flag() {
         let cli = Cli::try_parse_from(["koi", "install", "--user"]).unwrap();
-        assert!(matches!(cli.command, Some(Command::Install { user: true })));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Install {
+                user: true,
+                operator: None
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_install_operator() {
+        let cli = Cli::try_parse_from(["koi", "install", "--operator", "1000"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Install {
+                user: false,
+                operator: Some(ref value)
+            }) if value == "1000"
+        ));
     }
 
     #[test]

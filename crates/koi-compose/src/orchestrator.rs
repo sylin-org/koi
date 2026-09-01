@@ -1,6 +1,6 @@
 //! Runtime lifecycle orchestrator.
 //!
-//! Subscribes to [`RuntimeEvent`] from `koi-runtime` and translates
+//! Subscribes to [`koi_runtime::RuntimeEvent`] and translates
 //! container/service lifecycle events into Koi domain operations:
 //! mDNS announce, DNS entry, health check, proxy entry — and their
 //! reverses on stop.

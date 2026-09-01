@@ -196,20 +196,22 @@ single line — and re-arm any subset à la carte:
 | Cargo feature | Default | Pulls in | Off → fallback |
 | --- | --- | --- | --- |
 | `docker` | on | `bollard` Docker/Podman client (`=`-pinned stubs) | runtime backend → `BackendUnavailable` |
-| `keyring` | on | OS keychain / Secret Service / D-Bus | vault uses its passphrase backend |
+| `keyring` | on | OS keychain / Linux Secret Service | vault uses its passphrase backend |
 | `qr` | on | `qrcode` + `image` PNG codec | enrollment prints the `otpauth://` URI |
 
 ```toml
 # everything (default) — unchanged
 koi-embedded = "1.0.0-rc.2"
-# lean: no bollard, no OS-keychain/D-Bus, no image codec
+# lean: no bollard, no OS-keychain/Secret Service, no image codec
 koi-embedded = { version = "1.0.0-rc.2", default-features = false }
 # à la carte
 koi-embedded = { version = "1.0.0-rc.2", default-features = false, features = ["docker"] }
 ```
 
-See [ADR-014](docs/adr/014-optional-backend-features.md). The `koi` binary always ships
-all backends.
+Linux mDNS provider adapters and their small `zbus` client remain in lean builds; they
+are required platform integration, not part of the optional keyring closure. See
+[ADR-014](docs/adr/014-optional-backend-features.md). The `koi` binary always ships all
+backends.
 
 ## Containers
 

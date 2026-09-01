@@ -16,7 +16,6 @@ use koi_common::integration::{
 };
 use koi_common::persist;
 use koi_config::state::{DnsEntry, DnsState};
-use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -132,6 +131,9 @@ pub struct DnsCore {
 /// synchronous start contract without leaking Hickory implementation details.
 pub(crate) struct BoundDnsServer {
     server: Server<DnsHandler>,
+    pub(crate) endpoints: Vec<SocketAddr>,
+    pub(crate) observation: crate::listener::BindingObservation,
+    pub(crate) reason: Option<String>,
 }
 
 /// Normalize a name for the ephemeral TXT store and for matching incoming TXT
@@ -422,25 +424,22 @@ impl DnsCore {
     }
 
     pub(crate) async fn bind_server(&self) -> Result<BoundDnsServer, DnsError> {
-        let addr = SocketAddr::new(self.config.bind_addr, self.config.port);
-        // Exclusive UDP bind, deliberately: on Windows a SO_REUSEADDR open
-        // against a non-reuse holder fails with WSAEACCES (10013, measured
-        // 2026-08-26) — cooperative binding cannot rescue a squatter collision
-        // there. The DNS runtime's stopped-and-retryable state plus the lab
-        // lanes' free-port selection handle contention instead.
-        let udp = UdpSocket::bind(addr)
-            .await
-            .map_err(|e| DnsError::Bind(e.to_string()))?;
-        let tcp = TcpListener::bind(addr)
-            .await
-            .map_err(|e| DnsError::Bind(e.to_string()))?;
-
+        let listeners = crate::listener::bind(self.config.bind_addr, self.config.port).await?;
         let handler = DnsHandler::new(self.clone());
         let mut server = Server::new(handler);
-        server.register_socket(udp);
-        server.register_listener(tcp, TCP_TIMEOUT, TCP_RESPONSE_BUFFER);
+        for udp in listeners.udp {
+            server.register_socket(udp);
+        }
+        for tcp in listeners.tcp {
+            server.register_listener(tcp, TCP_TIMEOUT, TCP_RESPONSE_BUFFER);
+        }
 
-        Ok(BoundDnsServer { server })
+        Ok(BoundDnsServer {
+            server,
+            endpoints: listeners.endpoints,
+            observation: listeners.observation,
+            reason: listeners.reason,
+        })
     }
 
     pub async fn serve(&self, cancel: CancellationToken) -> Result<(), DnsError> {

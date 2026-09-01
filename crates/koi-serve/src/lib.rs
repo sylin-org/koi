@@ -18,9 +18,9 @@
 //! ## Modules
 //! - [`http`] — the axum router (domain routes, system endpoints, dashboard, MCP, OpenAPI,
 //!   DAT auth, CORS) + `build_openapi`.
-//! - [`pipe`] — IPC adapter (Windows Named Pipe / Unix domain socket), NDJSON.
+//! - [`local_ipc`] — authenticated local control + mDNS NDJSON transport.
 //! - [`stdio`] — piped stdin/stdout NDJSON adapter (standalone piped mode).
-//! - [`dispatch`] — shared NDJSON request dispatch for [`pipe`] and [`stdio`].
+//! - [`dispatch`] — shared NDJSON request dispatch for [`local_ipc`] and [`stdio`].
 //! - [`mcp_http`] — `CoreSource`, the live-cores backing for the in-process MCP transport.
 //! - [`mtls`] — inter-node certmesh mTLS listener.
 //! - [`acme`] — RFC 8555 server-auth TLS listener.
@@ -33,9 +33,9 @@ pub mod acme;
 pub mod dashboard;
 pub mod dispatch;
 pub mod http;
+pub mod local_ipc;
 pub mod mcp_http;
 pub mod mtls;
-pub mod pipe;
 pub mod prometheus_sd;
 pub mod serve;
 pub mod stdio;

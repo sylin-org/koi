@@ -288,7 +288,8 @@ impl CertmeshCore {
         sealed::open_sealed(sealed, ca_cert_pem.as_deref(), &revoked, now)
     }
 
-    /// Run the trust-doctor (ADR-020 §13) → a structured [`TrustDiagnosis`].
+    /// Run the trust-doctor (ADR-020 §13) → a structured
+    /// [`koi_common::diagnosis::TrustDiagnosis`].
     ///
     /// Aggregates this node's real trust state — posture, identity + renewal health
     /// (reusing [`local_identity`](Self::local_identity)), on-disk-leaf integrity

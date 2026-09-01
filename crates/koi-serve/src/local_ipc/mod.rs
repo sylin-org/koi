@@ -1,0 +1,134 @@
+//! Trusted machine-local control and mDNS session transport.
+//!
+//! Authentication belongs to the platform adapter; request dispatch and
+//! connection lifetime are shared. This keeps the DAT owner-private while
+//! allowing the recorded workstation operator to use the real system daemon.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use koi_common::local_control::{
+    LocalControlRequest, LocalControlResponse, LocalDaemonAccess, LOCAL_CONTROL_VERSION,
+};
+use koi_config::local_access::LocalOperator;
+use koi_mdns::MdnsCore;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio_util::sync::CancellationToken;
+
+use crate::dispatch;
+
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
+mod windows;
+
+/// IPC session grace period.
+const SESSION_GRACE: Duration = Duration::from_secs(30);
+
+/// Authorization and hand-off material for the local transport.
+///
+/// Deliberately has no `Debug` implementation because `access` contains the DAT.
+#[derive(Clone)]
+pub struct LocalControlConfig {
+    pub path: PathBuf,
+    pub operator: LocalOperator,
+    pub access: Option<LocalDaemonAccess>,
+}
+
+pub async fn start(
+    mdns: Option<Arc<MdnsCore>>,
+    config: LocalControlConfig,
+    cancel: CancellationToken,
+) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        unix::start(mdns, config, cancel).await
+    }
+    #[cfg(windows)]
+    {
+        windows::start(mdns, config, cancel).await
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (mdns, config, cancel);
+        anyhow::bail!("local IPC is unsupported on this platform")
+    }
+}
+
+async fn handle_connection<R, W>(
+    mdns: Option<Arc<MdnsCore>>,
+    reader: R,
+    mut writer: W,
+    access: Option<LocalDaemonAccess>,
+) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    // The guard is created by the domain and therefore survives every return
+    // path through this transport, including writer failures.
+    let session = mdns.as_ref().map(|core| core.open_registration_session());
+    let mut lines = reader.lines();
+
+    while let Some(line) = lines.next_line().await? {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Ok(request) = serde_json::from_str::<LocalControlRequest>(line) {
+            let response = match request {
+                LocalControlRequest::Access { version } if version != LOCAL_CONTROL_VERSION => {
+                    LocalControlResponse::unsupported_version(version)
+                }
+                LocalControlRequest::Access { .. } => match &access {
+                    Some(access) => LocalControlResponse::Access(access.clone()),
+                    None => LocalControlResponse::Error {
+                        code: "http_disabled".to_string(),
+                        message: "the local daemon is not serving HTTP".to_string(),
+                    },
+                },
+            };
+            write_json_line(&mut writer, &response).await?;
+            continue;
+        }
+
+        match (&mdns, &session) {
+            (Some(core), Some(session)) => {
+                dispatch::handle_line(core, session.id(), line, SESSION_GRACE, &mut writer).await?;
+            }
+            _ => {
+                write_json_line(
+                    &mut writer,
+                    &serde_json::json!({
+                        "error": "capability_disabled",
+                        "message": "mDNS is disabled for this daemon"
+                    }),
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn write_json_line<W, T>(writer: &mut W, value: &T) -> anyhow::Result<()>
+where
+    W: AsyncWrite + Unpin,
+    T: serde::Serialize,
+{
+    let encoded = serde_json::to_vec(value)?;
+    writer.write_all(&encoded).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+fn split_stream<S>(stream: S) -> (BufReader<tokio::io::ReadHalf<S>>, tokio::io::WriteHalf<S>)
+where
+    S: tokio::io::AsyncRead + AsyncWrite,
+{
+    let (reader, writer) = tokio::io::split(stream);
+    (BufReader::new(reader), writer)
+}

@@ -44,7 +44,7 @@ pub struct MgmtMcp {
 /// renewed, so this listener presents the fresh cert without a restart.
 ///
 /// With `mgmt_mcp`, the listener additionally serves `/v1/mcp` behind
-/// [`principal_guard`] (ADR-026 §5): every request must present an active,
+/// the internal `principal_guard` (ADR-026 §5): every request must present an active,
 /// unexpired, unrevoked roster CN.
 pub async fn start(
     port: u16,

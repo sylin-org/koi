@@ -61,7 +61,11 @@ pub fn detect() -> InitSystem {
 /// Install for the detected init system. `--user` selects the user shape
 /// where one exists; everywhere else the manual recipe says so and fails.
 #[cfg(target_os = "linux")]
-pub fn install(user: bool) -> anyhow::Result<()> {
+pub fn install(user: bool, operator: Option<&str>, data_dir: &Path) -> anyhow::Result<()> {
+    if !user {
+        super::check_root("install")?;
+    }
+    super::record_unix_operator(user, operator, data_dir)?;
     match (detect(), user) {
         (InitSystem::Systemd, false) => systemd::install_system(),
         (InitSystem::Systemd, true) => systemd::install_user(),

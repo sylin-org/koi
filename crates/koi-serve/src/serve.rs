@@ -27,6 +27,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use koi_compose::cores::Cores;
+use koi_config::local_access::LocalOperator;
 
 /// Declarative description of which transports + presence to serve, plus the ports,
 /// zone, and DAT the stack needs. Neutral (no `clap`/binary types) so any host — the
@@ -39,6 +40,10 @@ pub struct ServeConfig {
     pub no_ipc: bool,
     pub no_mcp_http: bool,
     pub pipe_path: PathBuf,
+    /// Principal authorized to connect to the trusted local-control transport.
+    pub local_operator: LocalOperator,
+    /// Endpoint handed to the authorized local operator. `None` when HTTP is off.
+    pub local_endpoint: Option<String>,
     pub mtls_port: u16,
     pub acme_port: u16,
     pub no_acme: bool,
@@ -159,41 +164,46 @@ pub fn serve(
         tasks,
     );
 
-    // ── IPC adapter (only if mDNS is enabled - IPC speaks the mDNS NDJSON protocol) ──
+    // ── Trusted local control + mDNS session transport ──
     if cfg.no_ipc {
         koi_common::capability::record_notes(vec![koi_common::capability::CapabilityNote {
             capability: "ipc".to_string(),
             state: "disabled".to_string(),
             reason: "--no-ipc".to_string(),
-            depends_on: vec!["mdns".to_string()],
+            depends_on: vec![],
         }]);
     }
     if !cfg.no_ipc {
-        if cores.mdns.is_none() {
-            let mdns_reason = koi_common::capability::notes_snapshot()
-                .iter()
-                .find(|note| note.capability == "mdns")
-                .map(|note| note.reason.clone())
-                .unwrap_or_else(|| "unavailable".to_string());
-            koi_common::capability::record_notes(vec![koi_common::capability::CapabilityNote {
-                capability: "ipc".to_string(),
-                state: "skipped".to_string(),
-                reason: mdns_reason,
-                depends_on: vec!["mdns".to_string()],
-            }]);
-        }
-        if let Some(ref mdns) = cores.mdns {
-            let c = mdns.clone();
-            let path = cfg.pipe_path.clone();
-            let token = cancel.clone();
-            tasks.push(tokio::spawn(async move {
-                if let Err(e) = crate::pipe::start(c, path, token).await {
-                    tracing::error!(error = %e, "IPC adapter failed");
+        koi_common::capability::set_note(koi_common::capability::CapabilityNote {
+            capability: "ipc".to_string(),
+            state: "mounted".to_string(),
+            reason: "trusted local-control transport".to_string(),
+            depends_on: vec![],
+        });
+        let mdns = cores.mdns.clone();
+        let local_cfg = crate::local_ipc::LocalControlConfig {
+            path: cfg.pipe_path.clone(),
+            operator: cfg.local_operator,
+            access: cfg.local_endpoint.map(|endpoint| {
+                koi_common::local_control::LocalDaemonAccess {
+                    version: koi_common::local_control::LOCAL_CONTROL_VERSION,
+                    endpoint,
+                    token: cfg.dat_token.clone(),
                 }
-            }));
-        } else {
-            tracing::info!("IPC adapter: skipped (mDNS disabled)");
-        }
+            }),
+        };
+        let token = cancel.clone();
+        tasks.push(tokio::spawn(async move {
+            if let Err(e) = crate::local_ipc::start(mdns, local_cfg, token).await {
+                tracing::error!(error = %e, "Local-control adapter failed");
+                koi_common::capability::set_note(koi_common::capability::CapabilityNote {
+                    capability: "ipc".to_string(),
+                    state: "error".to_string(),
+                    reason: e.to_string(),
+                    depends_on: vec![],
+                });
+            }
+        }));
     }
 
     // ── Self-announce supervisor: _http._tcp (+ _mcp._tcp), posture-reactive ──

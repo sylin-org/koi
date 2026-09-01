@@ -95,19 +95,19 @@ fn main() -> anyhow::Result<()> {
             Command::Config { action } => {
                 return config_file::run_action(action, cli.config.as_deref());
             }
-            Command::Install { user } => {
+            Command::Install { user, operator } => {
                 return {
                     #[cfg(windows)]
                     {
-                        platform::windows::install(*user)
+                        platform::windows::install(*user, operator.as_deref(), &config.data_dir)
                     }
                     #[cfg(target_os = "linux")]
                     {
-                        platform::unix::install(*user)
+                        platform::unix::install(*user, operator.as_deref(), &config.data_dir)
                     }
                     #[cfg(target_os = "macos")]
                     {
-                        platform::macos::install(*user)
+                        platform::macos::install(*user, operator.as_deref(), &config.data_dir)
                     }
                     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
                     {

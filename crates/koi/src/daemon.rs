@@ -31,10 +31,13 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
 
     // Write breadcrumb so clients can discover the daemon. Clients connect over a
     // routable address, so an unspecified bind (0.0.0.0) is advertised as loopback.
-    if !config.no_http {
-        let endpoint = breadcrumb_endpoint(http_bind_ip, config.http_port);
-        koi_config::breadcrumb::write_breadcrumb(&endpoint, &dat_token);
+    let local_endpoint =
+        (!config.no_http).then(|| breadcrumb_endpoint(http_bind_ip, config.http_port));
+    if let Some(endpoint) = &local_endpoint {
+        koi_config::breadcrumb::write_breadcrumb(endpoint, &dat_token);
     }
+
+    let local_operator = platform::daemon_local_operator(&config.data_dir)?;
 
     let cancel = CancellationToken::new();
     let mut tasks = Vec::new();
@@ -85,6 +88,8 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             no_ipc: config.no_ipc,
             no_mcp_http: config.no_mcp_http,
             pipe_path: config.pipe_path.clone(),
+            local_operator,
+            local_endpoint,
             mtls_port: config.mtls_port,
             acme_port: config.acme_port,
             no_acme: config.no_acme,

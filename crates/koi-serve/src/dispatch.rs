@@ -17,11 +17,6 @@ use koi_mdns::protocol::{
 };
 use koi_mdns::{LeasePolicy, MdnsCore};
 
-/// Create a new session ID using the shared short-ID generator.
-pub fn new_session_id() -> SessionId {
-    SessionId::new(koi_common::id::generate_short_id())
-}
-
 /// Dispatch a single NDJSON request line and write responses to the writer.
 pub async fn handle_line<W: AsyncWriteExt + Unpin>(
     core: &MdnsCore,
@@ -137,29 +132,6 @@ mod tests {
     use std::collections::HashMap;
 
     // ── new_session_id ──────────────────────────────────────────────
-
-    #[test]
-    fn new_session_id_has_correct_length() {
-        let sid = new_session_id();
-        assert_eq!(sid.as_str().len(), 8); // SHORT_ID_LEN
-    }
-
-    #[test]
-    fn new_session_id_is_unique() {
-        let a = new_session_id();
-        let b = new_session_id();
-        assert_ne!(a.as_str(), b.as_str());
-    }
-
-    #[test]
-    fn new_session_id_is_hex() {
-        let sid = new_session_id();
-        assert!(
-            sid.as_str().chars().all(|c| c.is_ascii_hexdigit()),
-            "session ID should be hex: {}",
-            sid.as_str()
-        );
-    }
 
     // ── write_response ──────────────────────────────────────────────
 

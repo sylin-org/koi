@@ -14,8 +14,9 @@ including a lean mDNS-only embedder that never touches them:
   pins with an exact `=` version, so a consumer who also uses bollard is locked to koi's
   exact version. The runtime adapter is already disabled by default at runtime
   (`runtime_enabled = false`).
-- **`keyring`** (OS credential store, `koi-crypto/src/tpm.rs`). Drags in Secret
-  Service / **D-Bus** / zbus on Linux — absent in a minimal container image.
+- **`keyring`** (OS credential store, `koi-crypto/src/tpm.rs`). Drags in the Linux
+  Secret Service closure — absent in a minimal container image. This is distinct
+  from the small, required `zbus` client used by Linux mDNS provider adapters.
 - **`qrcode` + `image`** (TOTP enrollment QR rendering, `koi-crypto/src/totp.rs`). The
   `image` PNG codec is large and used only to draw a one-time enrollment QR.
 
@@ -54,12 +55,15 @@ propagate the choice through the workspace:
 5. **Guard it.** `scripts/check-lean-embedded.sh` (CI `lean` job) builds the leaves +
    `koi-embedded` with `--no-default-features` and asserts, from an **external probe**
    (robust to workspace feature unification), that a lean consumer's tree contains none
-   of bollard / keyring / image / qrcode.
+   of bollard / keyring / Secret Service / image / qrcode. It intentionally permits
+   `zbus`: Avahi and systemd-resolved are real platform mDNS collaborators (ADR-039),
+   not optional credential-store baggage.
 
 ## Consequences
 
 - A lean `koi-embedded` consumer (e.g. zen-garden's `lantern`) sheds bollard, the
-  OS-keychain/D-Bus stack, and the image codec with one line. zen-garden's `moss`, which
+  OS-keychain/Secret Service stack, and the image codec with one line. It retains the
+  platform mDNS adapters and their D-Bus client. zen-garden's `moss`, which
   pins its own `bollard` to match koi's, can decouple via `default-features = false`.
 - **Behavioral edge:** with `keyring` off, TOTP credential-store **unlock slots** are
   unavailable (passphrase unlock remains); with `qr` off, QR renderers return the

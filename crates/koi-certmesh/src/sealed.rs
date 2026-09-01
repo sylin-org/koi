@@ -3,7 +3,7 @@
 //! The wire types live in `koi_common::sealed`; this is the logic. It is built
 //! **on top of** the `sign`/`verify` machinery (ADR-020 §3) rather than
 //! re-implementing any of it: a v0 passthrough `Sealed` is exactly a signed
-//! [`Envelope`] wrapped with a confidentiality version tag, so `seal` = sign +
+//! [`koi_common::envelope::Envelope`] wrapped with a confidentiality version tag, so `seal` = sign +
 //! wrap and `open` = version-dispatch + verify + decode. When the group-key rung
 //! (v1) lands it adds an encryption step around the same envelope; the consumer
 //! API does not change.

@@ -73,6 +73,30 @@ pub struct MdnsCore {
     started_at: Instant,
 }
 
+/// A transport connection's registration lifetime.
+///
+/// The mDNS domain owns this guard so every transport gets identical fail-safe
+/// cleanup. Dropping it after EOF, cancellation, a parse failure, or a write
+/// failure moves all session-scoped registrations into their grace period.
+pub struct RegistrationSession {
+    registry: Arc<RegistrationRegistry>,
+    id: SessionId,
+}
+
+impl RegistrationSession {
+    pub fn id(&self) -> &SessionId {
+        &self.id
+    }
+}
+
+impl Drop for RegistrationSession {
+    fn drop(&mut self) {
+        for id in self.registry.drain_session(&self.id) {
+            tracing::info!(id, session = %self.id.as_str(), "Registration draining");
+        }
+    }
+}
+
 impl MdnsCore {
     /// Start with platform-independent native Koi mDNS only.
     pub async fn new() -> Result<Self> {
@@ -174,9 +198,12 @@ impl MdnsCore {
         self.registry.heartbeat(id)
     }
 
-    pub fn session_disconnected(&self, session_id: &SessionId) {
-        for id in self.registry.drain_session(session_id) {
-            tracing::info!(id, session = %session_id.as_str(), "Registration draining");
+    /// Open a transport-owned registration session. Its `Drop` implementation
+    /// is the authoritative disconnect signal for session leases.
+    pub fn open_registration_session(&self) -> RegistrationSession {
+        RegistrationSession {
+            registry: Arc::clone(&self.registry),
+            id: SessionId::new(generate_short_id()),
         }
     }
 
@@ -480,6 +507,7 @@ impl Capability for MdnsCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn free_port_reports_free_and_held_port_reports_taken() {
@@ -488,6 +516,37 @@ mod tests {
         assert!(!udp_port_exclusively_free(port));
         drop(socket);
         assert!(udp_port_exclusively_free(port));
+    }
+
+    #[test]
+    fn dropping_registration_session_drains_its_leases() {
+        let registry = Arc::new(RegistrationRegistry::new());
+        let session = RegistrationSession {
+            registry: Arc::clone(&registry),
+            id: SessionId::new("transport-session".to_string()),
+        };
+        let attempt = registry.begin_registration(
+            "registration".to_string(),
+            RegisterPayload {
+                name: "Session service".to_string(),
+                service_type: "_http._tcp".to_string(),
+                port: 8080,
+                ip: None,
+                lease_secs: None,
+                txt: HashMap::new(),
+            },
+            LeasePolicy::Session {
+                grace: Duration::from_secs(30),
+            },
+            Some(session.id().clone()),
+        );
+        registry.confirm_publication(attempt.outcome.id()).unwrap();
+        assert_eq!(registry.counts().alive, 1);
+
+        drop(session);
+
+        assert_eq!(registry.counts().alive, 0);
+        assert_eq!(registry.counts().draining, 1);
     }
 
     #[test]

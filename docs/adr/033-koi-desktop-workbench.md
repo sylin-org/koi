@@ -2,7 +2,7 @@
 
 **Status:** Accepted (operator-directed 2026-08-24)
 **Date:** 2026-08-24
-**Builds on:** ADR-020 (truthful states), ADR-031 (desktop control plane), ADR-024 (product identity)
+**Builds on:** ADR-020 (truthful states), ADR-031 (desktop control plane), ADR-024 (product identity), ADR-040 (local operator control)
 **Resides:** `sylin-org/koi-desktop` (separate repository, Ghostlight precedent)
 **Constrained by:** headless daemon doctrine; binary-size discipline of `koi` itself; zero telemetry
 
@@ -55,6 +55,10 @@ holds no state the daemon doesn't serve and never invents states (an unreachable
 daemon reads "offline"). Long-term, the daemon's internal layering should treat
 these uniformly as intake adapters over an application core (DDD hygiene noted
 in the ledger, not mandated by this ADR).
+
+The shell discovers that loopback surface through ADR-040's single local-daemon
+resolver. It does not assume port 5641 and does not require access to a root/SYSTEM-owned
+breadcrumb.
 
 ### 5. Scope: the whole capability surface, in value order
 

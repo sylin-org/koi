@@ -5,7 +5,7 @@
 //! used to hand-build the TXT map, and the Windows path had silently dropped the ADR-020
 //! posture stamp (`posture=`/`fp=`/`expires=`), so a Windows node advertised itself as
 //! Open even when it held a CA leaf — exactly the parity-defect class `koi-compose` exists
-//! to prevent. [`http_record`] is the one body all three now call, so the stamp is present
+//! to prevent. [`crate::announce::http_record`] is the one body all three now call, so the stamp is present
 //! by construction.
 
 use crate::cores::Cores;
@@ -85,7 +85,7 @@ pub async fn http_record(
 /// registration id, or `None` when it was not published.
 ///
 /// Publishes EXACTLY ONE `_mcp._tcp` record per host (never one per service, which would
-/// flood the link). Unlike [`http_record`] it carries **no posture stamp** — the MCP endpoint
+/// flood the link). Unlike [`crate::announce::http_record`] it carries **no posture stamp** — the MCP endpoint
 /// is transport-discovery, not trust-gated — so it does not need re-announcing on posture
 /// flips. `enabled` folds the caller's gate (MCP transport mounted + HTTP on). Pair with
 /// [`withdraw_mcp`] for a clean shutdown (the prior one-shot announce leaked the record).

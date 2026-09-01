@@ -19,7 +19,11 @@ pub fn install_bin_path() -> PathBuf {
 /// the new binary atomically, rewrites plist). Port planning follows
 /// ADR-036 (config honored; occupied trio shifts and persists in the
 /// config substrate the plist points the daemon at).
-pub fn install(user: bool) -> anyhow::Result<()> {
+pub fn install(
+    user: bool,
+    operator: Option<&str>,
+    data_dir: &std::path::Path,
+) -> anyhow::Result<()> {
     if user {
         anyhow::bail!(
             "--user installs aren't supported on macOS yet (a LaunchAgent shape \
@@ -27,6 +31,7 @@ pub fn install(user: bool) -> anyhow::Result<()> {
         );
     }
     check_root("install")?;
+    super::record_unix_operator(false, operator, data_dir)?;
 
     let exe_path = std::env::current_exe()?;
     let install_path = install_bin_path();

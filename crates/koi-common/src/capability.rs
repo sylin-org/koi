@@ -30,7 +30,7 @@ pub struct CapabilityNote {
     /// "error" (initialization failed and the daemon continued without it).
     pub state: String,
     pub reason: String,
-    /// Capabilities this surface was waiting on (e.g. `["mdns"]` for IPC).
+    /// Capabilities this surface was waiting on, when any.
     #[serde(default)]
     pub depends_on: Vec<String>,
 }
@@ -50,6 +50,14 @@ fn notes_cell() -> &'static std::sync::RwLock<Vec<CapabilityNote>> {
 pub fn record_notes(notes: Vec<CapabilityNote>) {
     let mut cell = notes_cell().write().expect("capability note lock");
     cell.extend(notes);
+}
+
+/// Replace one capability's live assembly note. Used by transport adapters
+/// whose state can change after domain composition.
+pub fn set_note(note: CapabilityNote) {
+    let mut cell = notes_cell().write().expect("capability note lock");
+    cell.retain(|existing| existing.capability != note.capability);
+    cell.push(note);
 }
 
 /// Snapshot the recorded notes.

@@ -3,7 +3,8 @@
 //!
 //! Before P07 this 7-rung ladder (mdns, certmesh, dns, health, proxy, udp, runtime — each
 //! with present / stopped / disabled branches) was hand-written three times and could
-//! silently drift between the HTTP API, the dashboard, and embedded. [`assemble_capabilities`]
+//! silently drift between the HTTP API, the dashboard, and embedded.
+//! [`crate::status::assemble_capabilities`]
 //! is now the one source; each consumer projects the result into its own output shape.
 
 use koi_common::capability::{Capability, CapabilityStatus};
@@ -86,10 +87,37 @@ pub async fn assemble_capabilities(cores: &Cores) -> Vec<CapabilityReport> {
 
     // DNS
     caps.push(match &cores.dns {
-        Some(rt) if rt.status().await.running => {
-            CapabilityReport::present(rt.core().status().await)
+        Some(rt) => {
+            let runtime = rt.status().await;
+            if runtime.running {
+                let mut status = rt.core().status().await;
+                status.summary = format!(
+                    "{}; listening on {}{}",
+                    status.summary,
+                    runtime.endpoints.join(", "),
+                    runtime
+                        .reason
+                        .as_deref()
+                        .map(|reason| format!(" ({reason})"))
+                        .unwrap_or_default()
+                );
+                CapabilityReport::present(status)
+            } else if runtime.desired {
+                CapabilityReport::present(CapabilityStatus {
+                    name: "dns".to_string(),
+                    summary: format!(
+                        "waiting: {}",
+                        runtime
+                            .reason
+                            .as_deref()
+                            .unwrap_or("listener reconciliation")
+                    ),
+                    healthy: false,
+                })
+            } else {
+                CapabilityReport::stopped("dns")
+            }
         }
-        Some(_) => CapabilityReport::stopped("dns"),
         None => CapabilityReport::disabled("dns"),
     });
 
@@ -132,31 +160,28 @@ pub async fn assemble_capabilities(cores: &Cores) -> Vec<CapabilityReport> {
         None => CapabilityReport::disabled("runtime"),
     });
 
-    // IPC (bridges the mDNS core — W2). Mounted exactly when mDNS is mounted
-    // and the adapter was requested; its skip reasons are declared, never
-    // silent (ADR-035 "yield, but declare").
+    // IPC is the independent trusted local-control plane. It also carries mDNS
+    // session requests when that domain is present, but never depends on it.
     let notes = koi_common::capability::notes_snapshot();
-    let ipc_note = notes
-        .iter()
-        .find(|note| note.capability == "ipc" && note.state != "mounted");
-    let ipc = match (&cores.mdns, ipc_note) {
-        (Some(_), None) => CapabilityReport {
+    let ipc_note = notes.iter().rev().find(|note| note.capability == "ipc");
+    let ipc = match ipc_note {
+        Some(note) if note.state == "mounted" => CapabilityReport {
             status: CapabilityStatus {
                 name: "ipc".to_string(),
-                summary: "unix IPC socket mounted".to_string(),
+                summary: note.reason.clone(),
                 healthy: true,
             },
             enabled: true,
         },
-        (_, Some(note)) => CapabilityReport {
+        Some(note) => CapabilityReport {
             status: CapabilityStatus {
                 name: "ipc".to_string(),
-                summary: format!("skipped: {} (depends on mdns)", note.reason),
+                summary: format!("{}: {}", note.state, note.reason),
                 healthy: false,
             },
-            enabled: true,
+            enabled: note.state != "disabled",
         },
-        (None, None) => CapabilityReport::disabled("ipc"),
+        None => CapabilityReport::disabled("ipc"),
     };
     caps.push(ipc);
 
@@ -217,7 +242,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mdns_skip_note_surfaces_as_the_rung_summary_and_ipc_declares_its_dependency() {
+    async fn mdns_skip_does_not_disable_the_independent_local_control_plane() {
         let _notes_guard = NOTES_TEST_LOCK.lock().await;
         koi_common::capability::clear_notes();
 
@@ -233,9 +258,9 @@ mod tests {
             },
             koi_common::capability::CapabilityNote {
                 capability: "ipc".to_string(),
-                state: "skipped".to_string(),
-                reason: "depends on mdns: UDP 5353 held by systemd-resolved".to_string(),
-                depends_on: vec!["mdns".to_string()],
+                state: "mounted".to_string(),
+                reason: "trusted local-control transport".to_string(),
+                depends_on: vec![],
             },
         ]);
         let caps = assemble_capabilities(&Cores::default()).await;
@@ -253,8 +278,8 @@ mod tests {
             .iter()
             .find(|c| c.status.name == "ipc")
             .expect("ipc rung");
-        assert!(!ipc.status.healthy);
-        assert!(ipc.status.summary.contains("depends on mdns"));
+        assert!(ipc.status.healthy);
+        assert!(ipc.status.summary.contains("trusted local-control"));
     }
 
     #[tokio::test]

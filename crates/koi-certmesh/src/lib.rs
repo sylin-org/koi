@@ -561,7 +561,7 @@ pub fn leaf_not_after_utc(cert_pem: &str) -> Option<chrono::DateTime<chrono::Utc
 /// The Common Name (CN) of a leaf certificate PEM, or `None` if it cannot be
 /// parsed. A **stateless** reader for an *arbitrary* leaf — no trust validation,
 /// just the subject CN (ADR-022 N3). Complements the DER-taking
-/// [`mtls::extract_cn`](crate::mtls::extract_cn) with a PEM entry point.
+/// [`mtls::extract_cn`] with a PEM entry point.
 pub fn leaf_cn(cert_pem: &str) -> Option<String> {
     let der = pem::parse(cert_pem).ok()?;
     crate::mtls::extract_cn(der.contents())

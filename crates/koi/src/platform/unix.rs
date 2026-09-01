@@ -18,8 +18,12 @@ pub fn notify_ready() -> anyhow::Result<()> {
 /// Install koi for the detected init system. `user` selects the per-user
 /// service shape where one exists (ADR-036).
 #[cfg(target_os = "linux")]
-pub fn install(user: bool) -> anyhow::Result<()> {
-    super::recipes::install(user)
+pub fn install(
+    user: bool,
+    operator: Option<&str>,
+    data_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    super::recipes::install(user, operator, data_dir)
 }
 
 /// Uninstall every koi service shape found (system unit, user unit, OpenRC).

@@ -3,6 +3,14 @@ use std::path::PathBuf;
 /// Breadcrumb filename written by the daemon for client discovery.
 const BREADCRUMB_FILENAME: &str = "koi.endpoint";
 
+/// Unix socket filename for trusted local control.
+#[cfg(unix)]
+const LOCAL_CONTROL_FILENAME: &str = "koi.sock";
+
+/// Windows named pipe for trusted local control.
+#[cfg(windows)]
+const WINDOWS_LOCAL_CONTROL_PATH: &str = r"\\.\pipe\koi";
+
 /// Application directory name used for breadcrumb storage.
 #[cfg(windows)]
 const APP_DIR_NAME: &str = "koi";
@@ -44,6 +52,46 @@ pub fn breadcrumb_path() -> PathBuf {
     #[cfg(not(any(unix, windows)))]
     {
         PathBuf::from(BREADCRUMB_FILENAME)
+    }
+}
+
+/// Canonical machine-local control transport path.
+pub fn local_control_path() -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(WINDOWS_LOCAL_CONTROL_PATH)
+    }
+    #[cfg(unix)]
+    {
+        if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            PathBuf::from(runtime_dir).join(LOCAL_CONTROL_FILENAME)
+        } else {
+            PathBuf::from(UNIX_FALLBACK_RUNTIME_DIR).join(LOCAL_CONTROL_FILENAME)
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        PathBuf::from("koi.sock")
+    }
+}
+
+/// Candidate paths for discovering a local daemon. A desktop process may have
+/// `XDG_RUNTIME_DIR` while the machine service intentionally does not, so both
+/// the user-runtime and machine-runtime sockets are meaningful candidates.
+pub fn local_control_candidates() -> Vec<PathBuf> {
+    let primary = local_control_path();
+    #[cfg(unix)]
+    {
+        let machine = PathBuf::from(UNIX_FALLBACK_RUNTIME_DIR).join(LOCAL_CONTROL_FILENAME);
+        if primary == machine {
+            vec![primary]
+        } else {
+            vec![primary, machine]
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        vec![primary]
     }
 }
 
@@ -204,6 +252,12 @@ mod tests {
             path.parent().is_some(),
             "breadcrumb path should have a parent directory"
         );
+    }
+
+    #[test]
+    fn local_control_path_is_not_empty() {
+        assert!(local_control_path().components().next().is_some());
+        assert!(!local_control_candidates().is_empty());
     }
 
     #[test]

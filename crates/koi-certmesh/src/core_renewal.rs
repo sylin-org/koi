@@ -91,7 +91,7 @@ impl CertmeshCore {
     /// CA-side counterpart of [`renew_self_if_due`](Self::renew_self_if_due): keep the
     /// CA's **own** self leaf fresh on the renewal timer.
     ///
-    /// The member-pull loop is a no-op on the CA ([`renew_self_if_due`] →
+    /// The member-pull loop is a no-op on the CA ([`Self::renew_self_if_due`] →
     /// [`RenewOutcome::NotApplicable`]) — a CA cannot pull-renew from itself; its self
     /// leaf comes from the local [`self_enroll`](Self::self_enroll) path instead.
     /// Historically that path ran only at daemon start, so a continuously-up CA (a

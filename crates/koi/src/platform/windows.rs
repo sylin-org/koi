@@ -65,7 +65,11 @@ define_windows_service!(ffi_service_main, service_main);
 /// rules, and the service log directory. Port planning follows ADR-036:
 /// the operator's config wins; an occupied standard trio shifts and the
 /// choice is recorded in the config substrate the service reads.
-pub fn install(user: bool) -> anyhow::Result<()> {
+pub fn install(
+    user: bool,
+    operator: Option<&str>,
+    data_dir: &std::path::Path,
+) -> anyhow::Result<()> {
     if user {
         anyhow::bail!(
             "--user installs aren't supported on Windows yet; use `koi install` \
@@ -73,6 +77,7 @@ pub fn install(user: bool) -> anyhow::Result<()> {
         );
     }
     ensure_elevated("install")?;
+    record_windows_operator(operator, data_dir)?;
     let exe_path = std::env::current_exe()?;
     println!("Installing Koi service...");
     println!("  Binary: {}", exe_path.display());
@@ -269,6 +274,47 @@ pub fn install(user: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn record_windows_operator(
+    requested: Option<&str>,
+    data_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    let sid = match requested {
+        Some(value) if value.starts_with("S-") => value.to_string(),
+        Some(value) => {
+            anyhow::bail!("Windows --operator currently requires a SID (S-1-...); got '{value}'")
+        }
+        None => current_user_sid()?,
+    };
+    let policy = koi_config::local_access::LocalAccessPolicy::new(
+        koi_config::local_access::LocalOperator::WindowsSid { sid: sid.clone() },
+    );
+    koi_config::local_access::save(data_dir, &policy)?;
+    println!("  Local operator SID: {sid}");
+    Ok(())
+}
+
+pub fn current_user_sid() -> anyhow::Result<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let output = std::process::Command::new("whoami.exe")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!("whoami could not determine the current Windows SID")
+    }
+    let line = String::from_utf8(output.stdout)?;
+    let sid = line
+        .trim()
+        .trim_matches('"')
+        .split("\",\"")
+        .nth(1)
+        .map(|value| value.trim_matches('"').trim().to_string())
+        .filter(|value| value.starts_with("S-"))
+        .ok_or_else(|| anyhow::anyhow!("whoami returned an invalid SID record"))?;
+    Ok(sid)
+}
+
 fn build_service_info(exe_path: &std::path::Path) -> ServiceInfo {
     ServiceInfo {
         name: OsString::from(SERVICE_NAME),
@@ -418,6 +464,10 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
     // normal Cli. from_env alone ignored config.toml entirely — a configured
     // http_bind silently bound loopback while the file said otherwise.
     let config = crate::cli::Config::from_service_launch();
+    // Resolve the install-time authorization policy while `run_service` can
+    // still report startup failure to the SCM. A malformed policy must not
+    // silently broaden local-control access inside the async serving loop.
+    let local_operator = crate::platform::daemon_local_operator(&config.data_dir)?;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let shutdown_tx = std::sync::Mutex::new(Some(shutdown_tx));
@@ -542,6 +592,9 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 no_ipc: config.no_ipc,
                 no_mcp_http: config.no_mcp_http,
                 pipe_path: config.pipe_path.clone(),
+                local_operator: local_operator.clone(),
+                local_endpoint: (!config.no_http)
+                    .then(|| crate::infra::breadcrumb_endpoint(http_bind_ip, config.http_port)),
                 mtls_port: config.mtls_port,
                 acme_port: config.acme_port,
                 no_acme: config.no_acme,

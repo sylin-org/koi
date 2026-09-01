@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tripwire: a lean `koi-embedded` consumer (default-features = false) must pull NONE of
 # the optional, heavy, version-locked backends — bollard (Docker), the OS-keychain /
-# Secret-Service / D-Bus stack (keyring), or the image PNG codec (qr).
+# Secret-Service stack (keyring), or the image PNG codec (qr). The required
+# Linux mDNS provider adapters legitimately retain their small zbus D-Bus client.
 #
 # This is checked from an EXTERNAL probe crate, NOT from within the workspace: a
 # `cargo tree -p koi-embedded --no-default-features` run inside the repo is poisoned by
@@ -34,7 +35,7 @@ cd "$PROBE"
 tree="$(cargo tree -e normal)"
 
 fail=0
-for dep in bollard bollard-stubs keyring secret-service zbus image qrcode; do
+for dep in bollard bollard-stubs keyring secret-service image qrcode; do
   n="$(printf '%s\n' "$tree" | grep -c " ${dep} " || true)"
   if [ "$n" -ne 0 ]; then
     echo "LEAK: lean koi-embedded pulls '${dep}' (${n} occurrence(s))"
@@ -47,4 +48,4 @@ if [ "$fail" -ne 0 ]; then
   echo "      Check the default-features=false edges + feature pass-throughs (see ADR-014)."
   exit 1
 fi
-echo "OK: lean koi-embedded sheds bollard / keyring (Secret Service/D-Bus) / image / qrcode."
+echo "OK: lean koi-embedded sheds bollard / keyring (Secret Service) / image / qrcode; platform mDNS zbus remains."
