@@ -595,6 +595,7 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
                 local_operator: local_operator.clone(),
                 local_endpoint: (!config.no_http)
                     .then(|| crate::infra::breadcrumb_endpoint(http_bind_ip, config.http_port)),
+                data_root: config.data_dir.clone(),
                 mtls_port: config.mtls_port,
                 acme_port: config.acme_port,
                 no_acme: config.no_acme,

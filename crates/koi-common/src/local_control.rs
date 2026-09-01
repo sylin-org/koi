@@ -33,6 +33,9 @@ pub struct LocalDaemonAccess {
     pub version: u16,
     pub endpoint: String,
     pub token: String,
+    /// Resolved daemon storage root, disclosed only to the authenticated local operator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_root: Option<String>,
 }
 
 /// One newline-delimited response from the local daemon.
@@ -76,8 +79,21 @@ mod tests {
             version: LOCAL_CONTROL_VERSION,
             endpoint: "http://127.0.0.1:5641".to_string(),
             token: "secret".to_string(),
+            data_root: Some("/var/lib/koi".to_string()),
         });
         let json = serde_json::to_string(&response).unwrap();
         assert!(serde_json::from_str::<LocalControlResponse>(&json).unwrap() == response);
+    }
+
+    #[test]
+    fn access_response_accepts_legacy_peer_without_data_root() {
+        let response = serde_json::from_str::<LocalControlResponse>(
+            r#"{"response":"access","version":1,"endpoint":"http://127.0.0.1:5641","token":"secret"}"#,
+        )
+        .unwrap();
+        let LocalControlResponse::Access(access) = response else {
+            panic!("expected access response");
+        };
+        assert_eq!(access.data_root, None);
     }
 }

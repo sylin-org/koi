@@ -513,6 +513,7 @@ pub fn local_daemon_access() -> Result<LocalDaemonAccess> {
             version: LOCAL_CONTROL_VERSION,
             endpoint: breadcrumb.endpoint,
             token: breadcrumb.token,
+            data_root: None,
         });
     }
     request_local_access()

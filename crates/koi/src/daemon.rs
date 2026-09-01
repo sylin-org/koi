@@ -90,6 +90,7 @@ pub(crate) async fn daemon_mode(config: Config) -> anyhow::Result<()> {
             pipe_path: config.pipe_path.clone(),
             local_operator,
             local_endpoint,
+            data_root: config.data_dir.clone(),
             mtls_port: config.mtls_port,
             acme_port: config.acme_port,
             no_acme: config.no_acme,
