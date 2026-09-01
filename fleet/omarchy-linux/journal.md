@@ -14,3 +14,14 @@ findings:
 1. The existing user service was stopped, replaced in place, and restarted; no parallel daemon or alternate port was used.
 2. Its Koi API created and withdrew a unique real publication during every test-01 provider phase. test-01 resolved each peer record and TXT, while this host resolved test-01's ordinary and explicit-address publications.
 3. PID/hash and Avahi service/socket plus resolved service activity/enablement were byte-for-byte equal before and after the gate. This host's providers were not mutated.
+
+## 2026-08-31 22:43 EDT — native workbench parity on Omarchy
+commit: koi `8975f43` (`dev`) | koi-desktop `a209bae` + local Hyprland autostart adapter
+koi state now: the standing user daemon remains enabled/active on 5641; one debug workbench is running as the UWSM transient service `app-koi-desktop-validation.service` from the sibling checkout.
+stack: Omarchy 4.0.1-1; Hyprland/Wayland; Omarchy Quickshell owns `org.freedesktop.Notifications`, `org.kde.StatusNotifierWatcher`, and the configured right-side `omarchy.tray`.
+gates: `node --test ui/app.test.mjs` pass; `cargo test --locked` 6 pass / 1 live ignored; `cargo clippy --locked --all-targets -- -D warnings` pass.
+findings:
+1. The Tauri/WebKitGTK workbench renders as a native Wayland window (`class=koi-desktop`, not XWayland), reads the live daemon, and answers its loopback poke health endpoint.
+2. Its SNI registers with Quickshell as `/org/ayatana/NotificationItem/tray_icon_tray_app_koi`; Omarchy therefore has both a visible window and a tray interaction route.
+3. Generic Linux XDG autostart is not a truthful login-start mechanism here. The workbench now detects Hyprland and makes its toggle preserve all operator content while managing a marked `o.launch_on_start(...)` block in `~/.config/hypr/autostart.lua`; Omarchy wraps that command with `uwsm-app`.
+4. Autostart was not enabled during source-checkout validation: a durable installed workbench path is still required before the fresh-login acceptance pass.
