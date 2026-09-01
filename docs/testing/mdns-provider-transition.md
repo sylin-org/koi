@@ -16,9 +16,10 @@ scripts/integration/mdns-provider-transition.sh \
 Both hosts need exactly one installed `koi.service`, its normal loopback API and
 breadcrumb, plus preconfigured SSH authentication. The subject also needs Avahi,
 systemd-resolved, `curl`, `jq`, `ss`, and service-control privilege. The peer login
-must read its breadcrumb directly, through passwordless sudo, or through a
-peer-local `PEER_SUDO_ASKPASS` helper. The DAT is consumed on the peer and never
-crosses SSH. Optional environment settings are documented by `--help`.
+must read its breadcrumb and hash its running service executable directly, through
+passwordless sudo, or through a peer-local `PEER_SUDO_ASKPASS` helper. The DAT and
+sudo credential are consumed on the peer and never cross SSH. Optional environment
+settings are documented by `--help`.
 
 For unattended lab execution, the gate honors the standard `SUDO_ASKPASS`
 mechanism and applies it to every privileged operation, including cleanup.

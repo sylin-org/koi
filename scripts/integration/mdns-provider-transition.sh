@@ -270,9 +270,31 @@ peer_resolve() {
 }
 
 peer_control_facts() {
-  "${SSH[@]}" sh -s -- "$PEER_KOI_SERVICE_SCOPE" <<'REMOTE'
+  local askpass_arg="${PEER_SUDO_ASKPASS:--}"
+  "${SSH[@]}" sh -s -- "$PEER_KOI_SERVICE_SCOPE" "$askpass_arg" <<'REMOTE'
 set -eu
 scope="$1"
+askpass="$2"
+if [ "$askpass" = - ]; then
+  askpass=""
+fi
+
+sha256_process_executable() {
+  process_path="$1"
+  if sha256sum "$process_path" 2>/dev/null; then
+    return
+  fi
+  if [ -n "$askpass" ]; then
+    [ -x "$askpass" ] || {
+      echo "peer askpass helper is not executable: $askpass" >&2
+      return 1
+    }
+    SUDO_ASKPASS="$askpass" sudo -A sha256sum "$process_path"
+  else
+    sudo -n sha256sum "$process_path"
+  fi
+}
+
 if [ "$scope" = user ]; then
   ctl() { systemctl --user "$@"; }
 else
@@ -288,7 +310,7 @@ set -- $(pgrep -x koi || true)
   exit 1
 }
 printf 'koi_pid=%s\n' "$pid"
-printf 'koi_hash=%s\n' "$(sha256sum "/proc/$pid/exe" | awk '{print $1}')"
+printf 'koi_hash=%s\n' "$(sha256_process_executable "/proc/$pid/exe" | awk '{print $1}')"
 printf 'koi_active=%s\n' "$(ctl is-active koi.service 2>/dev/null || true)"
 printf 'koi_enabled=%s\n' "$(ctl is-enabled koi.service 2>/dev/null || true)"
 for unit in avahi-daemon.service avahi-daemon.socket systemd-resolved.service; do
