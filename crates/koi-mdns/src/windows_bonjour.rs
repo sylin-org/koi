@@ -215,6 +215,36 @@ fn reclaim_runtime_ptr(ptr: RuntimePtr) {
     unsafe { drop(Box::from_raw(ptr.0)) };
 }
 
+/// Deallocate a dnssd connection with a bounded wait.
+///
+/// A daemon that dies between registration and withdrawal can block the real
+/// `DNSServiceRefDeallocate` indefinitely, which would freeze the control
+/// plane actor mid-transition. The record dies with the daemon, so a timed-out
+/// deallocate leaves one helper thread behind instead of hanging Koi.
+fn deallocate_within(api: &DnssdApi, reference: SdRef, wait: Duration) -> bool {
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    // The whole payload moves through one Send struct so the thread closure
+    // never captures the raw pointer as a bare (not-Send) field.
+    let payload = DeallocPayload(api.ref_deallocate, reference, done_tx);
+    std::thread::spawn(move || run_dealloc(payload));
+    done_rx.recv_timeout(wait).is_ok()
+}
+
+/// Everything the dealloc helper thread needs, in one Send bundle.
+struct DeallocPayload(
+    unsafe extern "system" fn(SdRef),
+    SdRef,
+    mpsc::Sender<()>,
+);
+unsafe impl Send for DeallocPayload {}
+
+fn run_dealloc(payload: DeallocPayload) {
+    // SAFETY: the reference is owned by this call and abandoned on timeout
+    // together with the helper thread.
+    unsafe { (payload.0)(payload.1) };
+    let _ = payload.2.send(());
+}
+
 type RegisterReply = unsafe extern "system" fn(
     sd_ref: SdRef,
     flags: u32,
@@ -559,7 +589,7 @@ fn register_native(request: &RegisterRequest) -> Result<RegisteredNative> {
     };
     if error != K_DNSSERVICE_ERR_NO_ERROR || reference.is_null() {
         if !reference.is_null() {
-            unsafe { (api.ref_deallocate)(reference) };
+            deallocate_within(api, reference, CALL_WAIT);
         }
         unsafe { drop(Box::from_raw(runtime_ptr)) };
         return Err(dnssd_error(
@@ -581,7 +611,7 @@ fn register_native(request: &RegisterRequest) -> Result<RegisteredNative> {
     let (error_code, final_name) = match outcome {
         Some(reply) => reply,
         None => {
-            unsafe { (api.ref_deallocate)(reference) };
+            deallocate_within(api, reference, CALL_WAIT);
             return Err(provider_error(
                 DESCRIPTOR.name,
                 ProviderOperation::Publish,
@@ -591,7 +621,7 @@ fn register_native(request: &RegisterRequest) -> Result<RegisteredNative> {
         }
     };
     if error_code != K_DNSSERVICE_ERR_NO_ERROR {
-        unsafe { (api.ref_deallocate)(reference) };
+        deallocate_within(api, reference, CALL_WAIT);
         return Err(dnssd_error(
             ProviderOperation::Publish,
             error_code,
@@ -632,8 +662,13 @@ impl PublicationLease for BonjourPublicationLease {
             .take()
         {
             // Deallocating a registered connection terminates the publication.
+            // A daemon that died mid-registration is not a withdrawal failure:
+            // the record is gone with it, so the bounded deallocate only needs
+            // to reclaim what can still be reclaimed.
             match dnssd() {
-                Ok(api) => unsafe { (api.ref_deallocate)(reference.0) },
+                Ok(api) => {
+                    deallocate_within(api, reference.0, CALL_WAIT);
+                }
                 Err(missing) => return Err(dnssd_missing(ProviderOperation::Withdraw, &missing)),
             }
             tracing::debug!(
@@ -656,7 +691,7 @@ impl Drop for BonjourPublicationLease {
             .take()
         {
             if let Ok(api) = dnssd() {
-                unsafe { (api.ref_deallocate)(reference.0) };
+                deallocate_within(api, reference.0, CALL_WAIT);
             }
         }
     }
@@ -736,7 +771,7 @@ async fn open_bonjour_browse(
     };
     if error != K_DNSSERVICE_ERR_NO_ERROR || reference.is_null() {
         if !reference.is_null() {
-            unsafe { (api.ref_deallocate)(reference) };
+            deallocate_within(api, reference, CALL_WAIT);
         }
         unsafe { drop(Box::from_raw(runtime_ptr.0)) };
         return Err(dnssd_error(
@@ -828,7 +863,7 @@ async fn open_bonjour_browse(
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
         {
-            unsafe { (api.ref_deallocate)(reference.0) };
+            deallocate_within(api, reference.0, CALL_WAIT);
         }
         reclaim_runtime_ptr(runtime_ptr);
     });
@@ -866,7 +901,7 @@ impl BrowseLease for BonjourBrowseLease {
             // Deallocating the connection ends the record stream and unblocks
             // the pump thread; the worker exits when the channel drains.
             if let Ok(api) = dnssd() {
-                unsafe { (api.ref_deallocate)(reference.0) };
+                deallocate_within(api, reference.0, CALL_WAIT);
             }
         }
         Ok(())
@@ -950,7 +985,7 @@ fn resolve_native(name: &str, regtype: &str, domain: &str) -> Result<ProviderSer
     };
     if error != K_DNSSERVICE_ERR_NO_ERROR || reference.is_null() {
         if !reference.is_null() {
-            unsafe { (api.ref_deallocate)(reference) };
+            deallocate_within(api, reference, CALL_WAIT);
         }
         unsafe { drop(Box::from_raw(runtime_ptr)) };
         return Err(dnssd_error(
@@ -968,7 +1003,7 @@ fn resolve_native(name: &str, regtype: &str, domain: &str) -> Result<ProviderSer
         RESOLVE_WAIT,
     );
     // A resolve connection is one-shot: always release it.
-    unsafe { (api.ref_deallocate)(reference) };
+    deallocate_within(api, reference, CALL_WAIT);
     unsafe { drop(Box::from_raw(runtime_ptr)) };
 
     let outcome = match outcome {
