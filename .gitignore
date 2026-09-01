@@ -1,5 +1,6 @@
 # Build artifacts
 /target/
+/target-gate/
 /dist/
 /.lab-runs/
 

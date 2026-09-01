@@ -2279,6 +2279,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "windows-sys 0.61.2",
  "x509-parser 0.16.0",
 ]
 
@@ -2323,6 +2324,7 @@ dependencies = [
  "tracing",
  "utoipa",
  "uuid",
+ "windows-sys 0.61.2",
  "zbus",
 ]
 

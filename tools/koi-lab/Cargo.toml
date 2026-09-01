@@ -25,3 +25,10 @@ serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 x509-parser.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Win32 DNS-SD probe surface for the mDNS provider workstream (examples only).
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_Dns",
+] }

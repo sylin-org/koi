@@ -20,6 +20,10 @@ pub mod provider;
 mod registry;
 #[cfg(target_os = "linux")]
 pub mod systemd_resolved;
+#[cfg(target_os = "windows")]
+pub mod windows_bonjour;
+#[cfg(target_os = "windows")]
+pub mod windows_dnsapi;
 
 pub use self::discovery::BrowseSubscription;
 pub use self::error::{MdnsError, Result};

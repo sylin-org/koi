@@ -34,3 +34,15 @@ socket2.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 futures-util.workspace = true
 zbus.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Official Win32 DNS-SD (dnsapi.dll) and Bonjour (dnssd.dll) provider surfaces.
+# Types stay inside their adapter modules; nothing escapes the session boundary.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_Dns",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+] }

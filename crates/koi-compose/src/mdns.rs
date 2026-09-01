@@ -35,7 +35,13 @@ fn platform_adapters() -> Vec<Arc<dyn MdnsAdapter>> {
     }
 
     // The control plane appends Koi's native provider at the lowest priority on
-    // every platform. Windows system DNS-SD and Bonjour adapters join this
-    // catalog in their target-specific modules; they do not replace the seam.
+    // every platform. The Windows adapters join this catalog ahead of it; each
+    // one's assessment decides what it actually contributes.
+    #[cfg(target_os = "windows")]
+    {
+        adapters.push(Arc::new(koi_mdns::windows_dnsapi::WindowsDnsSdAdapter));
+        adapters.push(Arc::new(koi_mdns::windows_bonjour::WindowsBonjourAdapter));
+    }
+
     adapters
 }
