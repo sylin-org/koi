@@ -66,6 +66,22 @@ A browse returns an owned browse lease whose close is awaited. Shutdown complete
 only after the session has released its entry groups, registered objects,
 browsers, sockets, worker threads, and native daemon state.
 
+Callback-driven native APIs add one strict ownership rule: the same adapter-owned
+actor or thread creates a connection, waits on its documented readiness primitive,
+dispatches callbacks, and retires it. Raw provider handles never cross that owner
+boundary, and a lease signals cancellation instead of invoking native teardown
+from a second thread. Operation deadlines bound the readiness wait itself; a
+deadline checked only around a blocking callback pump is not a deadline.
+
+A callback context is reclaimed only after the provider's terminal callback or
+same-owner teardown has completed. If a vanished native daemon has a defective
+teardown that can no longer acknowledge release, the owner and context are
+quarantined together; the dead daemon's externally visible resource is already
+gone, and failover must not be held hostage or race that context. Negative dynamic
+library probes are never process-lifetime cached, so installing a provider while
+Koi runs is visible to a later assessment. A successfully bound library may remain
+resident for the process.
+
 Provider errors are typed by operation and failure kind. Human detail remains
 diagnostic text; orchestration never parses it.
 
@@ -154,3 +170,7 @@ remain inside their adapter modules. `mdns-sd` remains isolated to `native.rs`.
    restored Avahi phases.
 5. Capture and restore both hosts' original provider state on every exit path;
    leave exactly one healthy Koi per host.
+6. On Windows, deploy the exact candidate through the installed-service path and
+   exercise status and mutations through that one service. A second `MdnsCore`, a
+   standalone Koi, or an example that leaves the installed daemon untouched is a
+   diagnostic only and cannot satisfy this gate.

@@ -8,18 +8,20 @@
 //! Bonjour is absent, `assess` reports `Absent` with the exact missing facts
 //! and the control plane never opens a session.
 //!
-//! Threading: every dnssd connection delivers its callbacks from
-//! `DNSServiceProcessResult`, so each live connection owns a pump thread.
-//! Closing a connection (`DNSServiceRefDeallocate`) unblocks the pump, which
-//! is how browse leases shut down without leaked threads.
+//! Threading: every dnssd connection is born, processed, and retired on one
+//! owner thread. Leases only signal that owner. This is required by Bonjour's
+//! no-internal-locking contract and keeps callback contexts alive until their
+//! connection is either deallocated or deliberately quarantined after the
+//! responder has disappeared.
 //!
 //! All dnssd types stay inside this module; provider-neutral values cross the
 //! session boundary.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc as tokio_mpsc, watch};
 
@@ -37,6 +39,7 @@ use crate::Result;
 const BONJOUR_PRIORITY: u16 = 150;
 const CALL_WAIT: Duration = Duration::from_secs(7);
 const RESOLVE_WAIT: Duration = Duration::from_secs(6);
+const SOCKET_POLL_SLICE: Duration = Duration::from_millis(100);
 const BROWSE_CHANNEL_CAPACITY: usize = 512;
 
 const DESCRIPTOR: ProviderDescriptor = ProviderDescriptor::new(
@@ -53,21 +56,12 @@ const DESCRIPTOR: ProviderDescriptor = ProviderDescriptor::new(
     },
 );
 
-/// Windows install paths `dnssd.dll` is known to occupy; the standard DLL
-/// search order is tried first.
+/// Product install paths `dnssd.dll` is known to occupy. System32 is probed
+/// separately with a restricted loader search so Koi never binds a DLL from
+/// its current directory.
 const DNSSD_CANDIDATE_PATHS: &[&str] = &[
-    "dnssd.dll",
     r"C:\Program Files\Bonjour\dnssd.dll",
     r"C:\Program Files (x86)\Bonjour\dnssd.dll",
-];
-
-/// The dnssd entry points this provider needs.
-const REQUIRED_EXPORTS: &[&str] = &[
-    "DNSServiceRegister",
-    "DNSServiceBrowse",
-    "DNSServiceResolve",
-    "DNSServiceProcessResult",
-    "DNSServiceRefDeallocate",
 ];
 
 const K_DNSSERVICE_ERR_NO_ERROR: i32 = 0;
@@ -111,7 +105,7 @@ struct BonjourInspection {
 fn inspect() -> std::result::Result<BonjourInspection, MdnsProviderReport> {
     let failed = |availability, detail| failed_assessment(DESCRIPTOR, availability, detail);
 
-    if let Err(missing) = export_probe() {
+    if let Err(missing) = dnssd() {
         return Err(failed(
             ProviderAvailability::Absent,
             format!("Bonjour DNS-SD is unavailable: {missing}"),
@@ -155,95 +149,12 @@ fn inspect() -> std::result::Result<BonjourInspection, MdnsProviderReport> {
     })
 }
 
-/// Load `dnssd.dll` and resolve every entry point this provider needs.
-/// Returns the human-readable failure on the first missing piece.
-fn export_probe() -> std::result::Result<(), String> {
-    static PROBE: Mutex<Option<std::result::Result<(), String>>> = Mutex::new(None);
-    let mut guard = PROBE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(cached) = guard.as_ref() {
-        return cached.clone();
-    }
-    let probe = (|| {
-        let mut library = std::ptr::null_mut();
-        for path in DNSSD_CANDIDATE_PATHS {
-            let handle = unsafe { LoadLibraryW(wide(path).as_ptr()) };
-            if !handle.is_null() {
-                library = handle;
-                break;
-            }
-        }
-        if library.is_null() {
-            return Err(
-                "dnssd.dll not found in the DLL search path or the Bonjour install \
-                        directories"
-                    .to_string(),
-            );
-        }
-        for name in REQUIRED_EXPORTS {
-            let symbol: Vec<u8> = name.bytes().chain(std::iter::once(0)).collect();
-            let proc = unsafe { GetProcAddress(library, symbol.as_ptr()) };
-            if proc.is_none() {
-                return Err(format!("dnssd.dll is missing {name}"));
-            }
-        }
-        Ok(())
-    })();
-    *guard = Some(probe.clone());
-    probe
-}
+// `dnssd()` below is both the detector and the runtime binding. It retries
+// failed loads so a live install can promote without restarting Koi.
 
 // ── dnssd FFI (runtime-loaded from dnssd.dll; absent from windows-sys) ─
 
 type SdRef = *mut core::ffi::c_void;
-
-/// Owned dnssd connection reference. Send is sound because dnssd connections
-/// are thread-agnostic: every use is serialized through our own threads.
-struct SdRefHandle(SdRef);
-unsafe impl Send for SdRefHandle {}
-
-/// Owned raw browse-runtime pointer moved into the worker thread. Send is
-/// sound because only our code dereferences it.
-struct RuntimePtr(*mut BrowseRuntime);
-unsafe impl Send for RuntimePtr {}
-
-/// Reclaim the browse runtime after the connection is deallocated.
-fn reclaim_runtime_ptr(ptr: RuntimePtr) {
-    // SAFETY: the pointer came from Box::into_raw and no callback can run
-    // after the connection's deallocation.
-    unsafe { drop(Box::from_raw(ptr.0)) };
-}
-
-/// Deallocate a dnssd connection with a bounded wait.
-///
-/// A daemon that dies between registration and withdrawal can block the real
-/// `DNSServiceRefDeallocate` indefinitely, which would freeze the control
-/// plane actor mid-transition. The record dies with the daemon, so a timed-out
-/// deallocate leaves one helper thread behind instead of hanging Koi.
-fn deallocate_within(api: &DnssdApi, reference: SdRef, wait: Duration) -> bool {
-    let (done_tx, done_rx) = mpsc::channel::<()>();
-    // The whole payload moves through one Send struct so the thread closure
-    // never captures the raw pointer as a bare (not-Send) field.
-    let payload = DeallocPayload(api.ref_deallocate, reference, done_tx);
-    std::thread::spawn(move || run_dealloc(payload));
-    done_rx.recv_timeout(wait).is_ok()
-}
-
-/// Everything the dealloc helper thread needs, in one Send bundle.
-struct DeallocPayload(
-    unsafe extern "system" fn(SdRef),
-    SdRef,
-    mpsc::Sender<()>,
-);
-unsafe impl Send for DeallocPayload {}
-
-fn run_dealloc(payload: DeallocPayload) {
-    // SAFETY: the reference is owned by this call and abandoned on timeout
-    // together with the helper thread.
-    unsafe { (payload.0)(payload.1) };
-    let _ = payload.2.send(());
-}
 
 type RegisterReply = unsafe extern "system" fn(
     sd_ref: SdRef,
@@ -283,6 +194,9 @@ type ResolveReply = unsafe extern "system" fn(
 /// library here, and a missing Bonjour install must be an assessment fact,
 /// not a load failure of Koi itself.
 struct DnssdApi {
+    /// Keep the successful module load resident for every bound function
+    /// pointer. Failed loads are freed and deliberately not cached.
+    _library: usize,
     register: unsafe extern "system" fn(
         sdref: *mut SdRef,
         interfaceindex: u32,
@@ -316,42 +230,34 @@ struct DnssdApi {
         callback: ResolveReply,
         context: *mut core::ffi::c_void,
     ) -> i32,
+    ref_sock_fd: unsafe extern "system" fn(sdref: SdRef) -> SOCKET,
     process_result: unsafe extern "system" fn(sdref: SdRef) -> i32,
     ref_deallocate: unsafe extern "system" fn(sdref: SdRef),
 }
 
-/// The loaded entry points, cached for the process. Sound to share across
-/// threads because `DnssdApi` holds only immutable function pointers.
+/// Cache only a successful load. Installing Bonjour while Koi is running must
+/// become visible to a later assessment without restarting the process.
 fn dnssd() -> std::result::Result<&'static DnssdApi, String> {
-    static API: Mutex<Option<std::result::Result<DnssdApi, String>>> = Mutex::new(None);
-    let mut guard = API.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if guard.is_none() {
-        *guard = Some(load_dnssd());
+    static API: OnceLock<DnssdApi> = OnceLock::new();
+    static LOAD: Mutex<()> = Mutex::new(());
+    if let Some(api) = API.get() {
+        return Ok(api);
     }
-    match guard.as_ref().expect("api just initialized") {
-        Ok(api) => Ok(unsafe { &*(api as *const DnssdApi) }),
-        Err(missing) => Err(missing.clone()),
+    let _load = LOAD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(api) = API.get() {
+        return Ok(api);
     }
+    let loaded = load_dnssd()?;
+    let _ = API.set(loaded);
+    Ok(API.get().expect("successful dnssd load was cached"))
 }
 
-/// SAFETY: `DnssdApi` is shared across threads through the cache above.
+/// SAFETY: the module remains loaded and this value contains immutable
+/// function pointers plus the retained module handle.
 unsafe impl Sync for DnssdApi {}
+unsafe impl Send for DnssdApi {}
 
 fn load_dnssd() -> std::result::Result<DnssdApi, String> {
-    let mut library = std::ptr::null_mut();
-    for path in DNSSD_CANDIDATE_PATHS {
-        let handle = unsafe { LoadLibraryW(wide(path).as_ptr()) };
-        if !handle.is_null() {
-            library = handle;
-            break;
-        }
-    }
-    if library.is_null() {
-        return Err(
-            "dnssd.dll not found in the DLL search path or the Bonjour install directories"
-                .to_string(),
-        );
-    }
     /// Bind one exported symbol to its typed function pointer.
     fn symbol<T>(library: *mut core::ffi::c_void, name: &str) -> std::result::Result<T, String> {
         let bytes: Vec<u8> = name.bytes().chain(std::iter::once(0)).collect();
@@ -361,21 +267,314 @@ fn load_dnssd() -> std::result::Result<DnssdApi, String> {
             None => Err(format!("dnssd.dll is missing {name}")),
         }
     }
-    Ok(DnssdApi {
-        register: symbol(library, "DNSServiceRegister")?,
-        browse: symbol(library, "DNSServiceBrowse")?,
-        resolve: symbol(library, "DNSServiceResolve")?,
-        process_result: symbol(library, "DNSServiceProcessResult")?,
-        ref_deallocate: symbol(library, "DNSServiceRefDeallocate")?,
-    })
+    fn bind(library: *mut core::ffi::c_void) -> std::result::Result<DnssdApi, String> {
+        Ok(DnssdApi {
+            _library: library as usize,
+            register: symbol(library, "DNSServiceRegister")?,
+            browse: symbol(library, "DNSServiceBrowse")?,
+            resolve: symbol(library, "DNSServiceResolve")?,
+            ref_sock_fd: symbol(library, "DNSServiceRefSockFD")?,
+            process_result: symbol(library, "DNSServiceProcessResult")?,
+            ref_deallocate: symbol(library, "DNSServiceRefDeallocate")?,
+        })
+    }
+
+    let mut binding_errors = Vec::new();
+    let system_library = unsafe {
+        LoadLibraryExW(
+            wide("dnssd.dll").as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_LIBRARY_SEARCH_SYSTEM32,
+        )
+    };
+    if !system_library.is_null() {
+        match bind(system_library) {
+            Ok(api) => return Ok(api),
+            Err(error) => {
+                binding_errors.push(format!("System32: {error}"));
+                unsafe { FreeLibrary(system_library) };
+            }
+        }
+    }
+    for path in DNSSD_CANDIDATE_PATHS {
+        let library = unsafe { LoadLibraryW(wide(path).as_ptr()) };
+        if library.is_null() {
+            continue;
+        }
+        match bind(library) {
+            Ok(api) => return Ok(api),
+            Err(error) => {
+                binding_errors.push(format!("{path}: {error}"));
+                unsafe { FreeLibrary(library) };
+            }
+        }
+    }
+    if binding_errors.is_empty() {
+        Err("dnssd.dll not found in System32 or the Bonjour install directories".to_string())
+    } else {
+        Err(binding_errors.join("; "))
+    }
 }
 
 // ── session ───────────────────────────────────────────────────────────
+
+// Every raw DNSServiceRef is confined to one owner thread. These provider-
+// neutral controls carry only cancellation and completion signals.
+#[derive(Clone)]
+struct ConnectionControl {
+    inner: Arc<ConnectionSignal>,
+}
+
+struct ConnectionSignal {
+    close_requested: AtomicBool,
+    finished: Mutex<bool>,
+    finished_cv: Condvar,
+}
+
+impl ConnectionControl {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(ConnectionSignal {
+                close_requested: AtomicBool::new(false),
+                finished: Mutex::new(false),
+                finished_cv: Condvar::new(),
+            }),
+        }
+    }
+
+    fn request_close(&self) {
+        self.inner.close_requested.store(true, Ordering::Release);
+    }
+
+    fn close_requested(&self) -> bool {
+        self.inner.close_requested.load(Ordering::Acquire)
+    }
+
+    fn finish(&self) {
+        let mut finished = self
+            .inner
+            .finished
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *finished = true;
+        self.inner.finished_cv.notify_all();
+    }
+
+    fn is_finished(&self) -> bool {
+        *self
+            .inner
+            .finished
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn wait_finished(&self, wait: Duration) -> bool {
+        let finished = self
+            .inner
+            .finished
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *finished {
+            return true;
+        }
+        match self
+            .inner
+            .finished_cv
+            .wait_timeout_while(finished, wait, |finished| !*finished)
+        {
+            Ok((finished, _)) => *finished,
+            Err(poisoned) => *poisoned.into_inner().0,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct ConnectionRegistry {
+    inner: Arc<Mutex<ConnectionRegistryState>>,
+}
+
+#[derive(Default)]
+struct ConnectionRegistryState {
+    shutting_down: bool,
+    connections: Vec<ConnectionControl>,
+}
+
+impl ConnectionRegistry {
+    fn track(&self, control: ConnectionControl) {
+        let request_close = {
+            let mut state = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state
+                .connections
+                .retain(|connection| !connection.is_finished());
+            let request_close = state.shutting_down;
+            state.connections.push(control.clone());
+            request_close
+        };
+        if request_close {
+            control.request_close();
+        }
+    }
+
+    fn begin_shutdown(&self) -> Vec<ConnectionControl> {
+        let connections = {
+            let mut state = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.shutting_down = true;
+            state
+                .connections
+                .retain(|connection| !connection.is_finished());
+            state.connections.clone()
+        };
+        for connection in &connections {
+            connection.request_close();
+        }
+        connections
+    }
+}
+
+#[derive(Debug)]
+enum DriveFailure {
+    InvalidSocket,
+    Winsock(i32),
+    SocketEvent(i16),
+    Dnssd(i32),
+}
+
+impl std::fmt::Display for DriveFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidSocket => write!(formatter, "DNSServiceRefSockFD returned no socket"),
+            Self::Winsock(status) => write!(formatter, "WSAPoll failed (Winsock {status})"),
+            Self::SocketEvent(events) => {
+                write!(formatter, "Bonjour socket closed (poll flags {events:#x})")
+            }
+            Self::Dnssd(status) => {
+                write!(formatter, "DNSServiceProcessResult failed (dnssd {status})")
+            }
+        }
+    }
+}
+
+/// Process at most one ready callback batch. The finite socket poll makes
+/// cancellation and operation deadlines real; `DNSServiceProcessResult` is
+/// never used as a blocking wait primitive.
+fn drive_once(
+    api: &DnssdApi,
+    reference: SdRef,
+    wait: Duration,
+) -> std::result::Result<bool, DriveFailure> {
+    let socket = unsafe { (api.ref_sock_fd)(reference) };
+    if socket == INVALID_SOCKET {
+        return Err(DriveFailure::InvalidSocket);
+    }
+    let timeout = i32::try_from(wait.as_millis()).unwrap_or(i32::MAX);
+    let mut descriptor = WSAPOLLFD {
+        fd: socket,
+        events: POLLRDNORM,
+        revents: 0,
+    };
+    let ready = unsafe { WSAPoll(&mut descriptor, 1, timeout) };
+    if ready == SOCKET_ERROR {
+        return Err(DriveFailure::Winsock(unsafe { WSAGetLastError() } as i32));
+    }
+    if ready == 0 {
+        return Ok(false);
+    }
+    if descriptor.revents & POLLRDNORM != 0 {
+        let status = unsafe { (api.process_result)(reference) };
+        return if status == K_DNSSERVICE_ERR_NO_ERROR {
+            Ok(true)
+        } else {
+            Err(DriveFailure::Dnssd(status))
+        };
+    }
+    let terminal = descriptor.revents & (POLLERR | POLLHUP | POLLNVAL);
+    if terminal != 0 {
+        return Err(DriveFailure::SocketEvent(terminal));
+    }
+    Ok(false)
+}
+
+fn remaining_slice(deadline: Instant) -> Option<Duration> {
+    let remaining = deadline.checked_duration_since(Instant::now())?;
+    Some(std::cmp::min(remaining, SOCKET_POLL_SLICE))
+}
+
+fn mark_publication_lost(
+    state: &watch::Sender<ProviderSessionState>,
+    operation: ProviderOperation,
+    error: &DriveFailure,
+) {
+    tracing::info!(
+        provider = DESCRIPTOR.name,
+        operation = %operation,
+        %error,
+        "Bonjour owned connection failed; session must be replaced"
+    );
+    state.send_replace(ProviderSessionState::Lost);
+}
+
+/// Retire on the same thread that created and processed the connection. If
+/// the responder is gone, calling its teardown path is both unnecessary and
+/// known to hang on some Bonjour builds; the tiny callback context is then
+/// deliberately quarantined instead of being freed under native code.
+fn retire_owned<T>(api: &DnssdApi, reference: SdRef, runtime: Box<T>, control: &ConnectionControl) {
+    if reference.is_null() {
+        drop(runtime);
+    } else if crate::windows_dnsapi::service_running("Bonjour Service") {
+        unsafe { (api.ref_deallocate)(reference) };
+        drop(runtime);
+    } else {
+        tracing::debug!(
+            provider = DESCRIPTOR.name,
+            "Bonjour responder is gone; callback context quarantined"
+        );
+        std::mem::forget(runtime);
+    }
+    control.finish();
+}
+
+async fn retire_connection(
+    control: &ConnectionControl,
+    state: &watch::Sender<ProviderSessionState>,
+    operation: ProviderOperation,
+) -> Result<()> {
+    control.request_close();
+    let waiter = control.clone();
+    let finished = tokio::task::spawn_blocking(move || waiter.wait_finished(CALL_WAIT))
+        .await
+        .unwrap_or(false);
+    if finished {
+        return Ok(());
+    }
+    if !crate::windows_dnsapi::service_running("Bonjour Service") {
+        // A daemon-loss race may strand the owner inside vendor teardown. It
+        // still owns the ref and context, so detach that safe quarantine from
+        // the new provider generation instead of blocking failover.
+        control.finish();
+        return Ok(());
+    }
+    if *state.borrow() != ProviderSessionState::Lost {
+        state.send_replace(ProviderSessionState::Recovering);
+    }
+    Err(provider_error(
+        DESCRIPTOR.name,
+        operation,
+        ProviderFailure::Timeout,
+        format!("Bonjour connection retirement exceeded {CALL_WAIT:?}"),
+    ))
+}
 
 struct BonjourSession {
     state_tx: watch::Sender<ProviderSessionState>,
     state_rx: watch::Receiver<ProviderSessionState>,
     capabilities: MdnsCapabilities,
+    connections: ConnectionRegistry,
     workers: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
@@ -386,18 +585,9 @@ impl BonjourSession {
             state_tx,
             state_rx,
             capabilities,
+            connections: ConnectionRegistry::default(),
             workers: Mutex::new(Vec::new()),
         }
-    }
-
-    fn mark_degraded(&self, operation: ProviderOperation, error: &MdnsError) {
-        tracing::info!(
-            provider = DESCRIPTOR.name,
-            operation = %operation,
-            %error,
-            "Bonjour operation failed; session is recovering"
-        );
-        self.state_tx.send_replace(ProviderSessionState::Recovering);
     }
 }
 
@@ -423,27 +613,29 @@ impl ProviderSession for BonjourSession {
             port: announcement.port,
             txt: build_txt(&announcement.txt),
         };
-        let outcome = tokio::task::spawn_blocking(move || register_native(&request))
-            .await
-            .map_err(|error| {
-                provider_error(
-                    DESCRIPTOR.name,
-                    ProviderOperation::Publish,
-                    ProviderFailure::Lost,
-                    format!("register task failed: {error}"),
-                )
-            })?;
+        let connections = self.connections.clone();
+        let state_tx = self.state_tx.clone();
+        let outcome =
+            tokio::task::spawn_blocking(move || register_native(request, connections, state_tx))
+                .await
+                .map_err(|error| {
+                    provider_error(
+                        DESCRIPTOR.name,
+                        ProviderOperation::Publish,
+                        ProviderFailure::Lost,
+                        format!("register task failed: {error}"),
+                    )
+                })?;
         let registered = match outcome {
             Ok(registered) => registered,
-            Err(error) => {
-                self.mark_degraded(ProviderOperation::Publish, &error);
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         };
         Ok(Box::new(BonjourPublicationLease {
             id: announcement.id.clone(),
-            reference: Mutex::new(Some(registered.reference)),
+            control: registered.control,
+            state_tx: self.state_tx.clone(),
             final_name: registered.final_name,
+            active: true,
         }))
     }
 
@@ -457,12 +649,16 @@ impl ProviderSession for BonjourSession {
             ));
         }
         let regtype = regtype_from(service_type)?;
-        let (browse, worker) = match open_bonjour_browse(&regtype, is_meta).await {
+        let (browse, worker) = match open_bonjour_browse(
+            &regtype,
+            is_meta,
+            self.connections.clone(),
+            self.state_tx.clone(),
+        )
+        .await
+        {
             Ok(pair) => pair,
-            Err(error) => {
-                self.mark_degraded(ProviderOperation::Browse, &error);
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         };
         self.workers
             .lock()
@@ -483,7 +679,8 @@ impl ProviderSession for BonjourSession {
         let regtype = regtype_from(service_type)?;
         let domain = domain_of(&regtype);
         let name = name.to_string();
-        let outcome = tokio::task::spawn_blocking(move || resolve_native(&name, &regtype, &domain))
+        let connections = self.connections.clone();
+        tokio::task::spawn_blocking(move || resolve_native(&name, &regtype, &domain, connections))
             .await
             .map_err(|error| {
                 provider_error(
@@ -492,17 +689,12 @@ impl ProviderSession for BonjourSession {
                     ProviderFailure::Lost,
                     format!("resolve task failed: {error}"),
                 )
-            })?;
-        match outcome {
-            Ok(service) => Ok(service),
-            Err(error) => {
-                self.mark_degraded(ProviderOperation::Resolve, &error);
-                Err(error)
-            }
-        }
+            })?
     }
 
     async fn shutdown(&self) -> Result<()> {
+        self.state_tx.send_replace(ProviderSessionState::Lost);
+        let _ = self.connections.begin_shutdown();
         let workers = self
             .workers
             .lock()
@@ -512,8 +704,37 @@ impl ProviderSession for BonjourSession {
         for worker in workers {
             let _ = worker.await;
         }
-        self.state_tx.send_replace(ProviderSessionState::Lost);
-        Ok(())
+        let connections = self.connections.begin_shutdown();
+        let waiting = connections.clone();
+        let retired = tokio::task::spawn_blocking(move || {
+            let deadline = Instant::now() + CALL_WAIT;
+            waiting.into_iter().all(|connection| {
+                let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                    return connection.is_finished();
+                };
+                connection.wait_finished(remaining)
+            })
+        })
+        .await
+        .unwrap_or(false);
+        if retired {
+            return Ok(());
+        }
+        if !crate::windows_dnsapi::service_running("Bonjour Service") {
+            // Any owner stranded inside vendor teardown still owns its native
+            // callback context; acknowledge that quarantine so failover can
+            // continue with the newly selected provider generation.
+            for connection in connections {
+                connection.finish();
+            }
+            return Ok(());
+        }
+        Err(provider_error(
+            DESCRIPTOR.name,
+            ProviderOperation::Shutdown,
+            ProviderFailure::Timeout,
+            format!("Bonjour session retirement exceeded {CALL_WAIT:?}"),
+        ))
     }
 }
 
@@ -527,20 +748,22 @@ struct RegisterRequest {
 }
 
 struct RegisteredNative {
-    /// The connection whose deallocation withdraws the record.
-    reference: SdRefHandle,
+    control: ConnectionControl,
     final_name: String,
 }
 
 /// Register through `DNSServiceRegister` and wait for the completion reply.
 /// The reply may rename the instance on conflict; the final name is reported.
-/// The returned connection must stay alive for the publication's lifetime.
-fn register_native(request: &RegisterRequest) -> Result<RegisteredNative> {
+/// The owner keeps processing after the acknowledgement so later daemon or
+/// registration failures can invalidate the provider session truthfully.
+fn register_native(
+    request: RegisterRequest,
+    connections: ConnectionRegistry,
+    state_tx: watch::Sender<ProviderSessionState>,
+) -> Result<RegisteredNative> {
     struct RegisterRuntime {
         reply: mpsc::Sender<(i32, String)>,
     }
-    let (reply_tx, reply_rx) = mpsc::channel::<(i32, String)>();
-    let runtime_ptr = Box::into_raw(Box::new(RegisterRuntime { reply: reply_tx }));
 
     unsafe extern "system" fn register_reply(
         _sd_ref: SdRef,
@@ -564,74 +787,142 @@ fn register_native(request: &RegisterRequest) -> Result<RegisteredNative> {
         Ok(api) => api,
         Err(missing) => return Err(dnssd_missing(ProviderOperation::Publish, &missing)),
     };
-    let name_c = cstr(&request.name);
-    let regtype_c = cstr(&request.service_type);
-    let mut reference: SdRef = std::ptr::null_mut();
-    let error = unsafe {
-        (api.register)(
-            &mut reference,
-            0, // all interfaces
-            0, // no flags: the daemon may auto-rename on conflict
-            name_c.as_ptr(),
-            regtype_c.as_ptr(),
-            std::ptr::null(), // default domain: local
-            std::ptr::null(), // default host: this machine
-            request.port.to_be(),
-            request.txt.len() as u16,
-            if request.txt.len() == 1 && request.txt[0] == 0 {
-                std::ptr::null()
-            } else {
-                request.txt.as_ptr()
-            },
-            register_reply,
-            runtime_ptr as *mut core::ffi::c_void,
-        )
-    };
-    if error != K_DNSSERVICE_ERR_NO_ERROR || reference.is_null() {
-        if !reference.is_null() {
-            deallocate_within(api, reference, CALL_WAIT);
-        }
-        unsafe { drop(Box::from_raw(runtime_ptr)) };
-        return Err(dnssd_error(
+    let fallback_name = request.name.clone();
+    let control = ConnectionControl::new();
+    connections.track(control.clone());
+    let owner = control.clone();
+    let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<String>>(1);
+    let thread = std::thread::Builder::new()
+        .name("koi-mdns-bonjour-publish".to_string())
+        .spawn(move || {
+            let (reply_tx, reply_rx) = mpsc::channel::<(i32, String)>();
+            let mut runtime = Box::new(RegisterRuntime { reply: reply_tx });
+            let name_c = cstr(&request.name);
+            let regtype_c = cstr(&request.service_type);
+            let mut reference: SdRef = std::ptr::null_mut();
+            let error = unsafe {
+                (api.register)(
+                    &mut reference,
+                    0,
+                    0,
+                    name_c.as_ptr(),
+                    regtype_c.as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    request.port.to_be(),
+                    request.txt.len() as u16,
+                    if request.txt.len() == 1 && request.txt[0] == 0 {
+                        std::ptr::null()
+                    } else {
+                        request.txt.as_ptr()
+                    },
+                    register_reply,
+                    (&mut *runtime as *mut RegisterRuntime).cast(),
+                )
+            };
+            if error != K_DNSSERVICE_ERR_NO_ERROR || reference.is_null() {
+                let _ = ready_tx.send(Err(dnssd_error(
+                    ProviderOperation::Publish,
+                    error,
+                    "DNSServiceRegister",
+                )));
+                retire_owned(api, reference, runtime, &owner);
+                return;
+            }
+
+            let deadline = Instant::now() + CALL_WAIT;
+            let mut acknowledged = false;
+            loop {
+                if owner.close_requested() {
+                    if !acknowledged {
+                        let _ = ready_tx.send(Err(provider_error(
+                            DESCRIPTOR.name,
+                            ProviderOperation::Publish,
+                            ProviderFailure::Lost,
+                            "publication was cancelled before Bonjour acknowledged it",
+                        )));
+                    }
+                    break;
+                }
+                while let Ok((status, final_name)) = reply_rx.try_recv() {
+                    if !acknowledged {
+                        if status == K_DNSSERVICE_ERR_NO_ERROR {
+                            acknowledged = true;
+                            let _ = ready_tx.send(Ok(final_name));
+                        } else {
+                            let _ = ready_tx.send(Err(dnssd_error(
+                                ProviderOperation::Publish,
+                                status,
+                                "DNSServiceRegister reply",
+                            )));
+                            owner.request_close();
+                        }
+                    } else if status != K_DNSSERVICE_ERR_NO_ERROR {
+                        mark_publication_lost(
+                            &state_tx,
+                            ProviderOperation::Publish,
+                            &DriveFailure::Dnssd(status),
+                        );
+                        owner.request_close();
+                    }
+                }
+                if owner.close_requested() {
+                    continue;
+                }
+                let wait = if acknowledged {
+                    SOCKET_POLL_SLICE
+                } else if let Some(remaining) = remaining_slice(deadline) {
+                    remaining
+                } else {
+                    let _ = ready_tx.send(Err(provider_error(
+                        DESCRIPTOR.name,
+                        ProviderOperation::Publish,
+                        ProviderFailure::Timeout,
+                        format!("DNSServiceRegister reply exceeded {CALL_WAIT:?}"),
+                    )));
+                    break;
+                };
+                if let Err(error) = drive_once(api, reference, wait) {
+                    if !acknowledged {
+                        let _ = ready_tx.send(Err(provider_error(
+                            DESCRIPTOR.name,
+                            ProviderOperation::Publish,
+                            ProviderFailure::Lost,
+                            error.to_string(),
+                        )));
+                    } else {
+                        mark_publication_lost(&state_tx, ProviderOperation::Publish, &error);
+                    }
+                    break;
+                }
+            }
+            retire_owned(api, reference, runtime, &owner);
+        });
+    if let Err(error) = thread {
+        control.finish();
+        return Err(provider_error(
+            DESCRIPTOR.name,
             ProviderOperation::Publish,
-            error,
-            "DNSServiceRegister",
+            ProviderFailure::Lost,
+            format!("could not start Bonjour connection owner: {error}"),
         ));
     }
-
-    // Pump the connection on this thread until the completion reply arrives.
-    let outcome = pump_until(
-        api.process_result,
-        runtime_ptr as *mut core::ffi::c_void,
-        reference,
-        &reply_rx,
-        CALL_WAIT,
-    );
-    unsafe { drop(Box::from_raw(runtime_ptr)) };
-    let (error_code, final_name) = match outcome {
-        Some(reply) => reply,
-        None => {
-            deallocate_within(api, reference, CALL_WAIT);
+    let final_name = match ready_rx.recv_timeout(CALL_WAIT + SOCKET_POLL_SLICE) {
+        Ok(result) => result?,
+        Err(_) => {
+            control.request_close();
             return Err(provider_error(
                 DESCRIPTOR.name,
                 ProviderOperation::Publish,
                 ProviderFailure::Timeout,
-                format!("DNSServiceRegister reply exceeded {CALL_WAIT:?}"),
+                format!("Bonjour publication owner exceeded {CALL_WAIT:?}"),
             ));
         }
     };
-    if error_code != K_DNSSERVICE_ERR_NO_ERROR {
-        deallocate_within(api, reference, CALL_WAIT);
-        return Err(dnssd_error(
-            ProviderOperation::Publish,
-            error_code,
-            "DNSServiceRegister reply",
-        ));
-    }
     Ok(RegisteredNative {
-        reference: SdRefHandle(reference),
+        control,
         final_name: if final_name.is_empty() {
-            request.name.clone()
+            fallback_name
         } else {
             final_name
         },
@@ -640,8 +931,10 @@ fn register_native(request: &RegisterRequest) -> Result<RegisteredNative> {
 
 struct BonjourPublicationLease {
     id: String,
-    reference: Mutex<Option<SdRefHandle>>,
+    control: ConnectionControl,
+    state_tx: watch::Sender<ProviderSessionState>,
     final_name: String,
+    active: bool,
 }
 
 #[async_trait::async_trait]
@@ -655,22 +948,9 @@ impl PublicationLease for BonjourPublicationLease {
     }
 
     async fn withdraw(&mut self) -> Result<()> {
-        if let Some(reference) = self
-            .reference
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        {
-            // Deallocating a registered connection terminates the publication.
-            // A daemon that died mid-registration is not a withdrawal failure:
-            // the record is gone with it, so the bounded deallocate only needs
-            // to reclaim what can still be reclaimed.
-            match dnssd() {
-                Ok(api) => {
-                    deallocate_within(api, reference.0, CALL_WAIT);
-                }
-                Err(missing) => return Err(dnssd_missing(ProviderOperation::Withdraw, &missing)),
-            }
+        if self.active {
+            retire_connection(&self.control, &self.state_tx, ProviderOperation::Withdraw).await?;
+            self.active = false;
             tracing::debug!(
                 provider = DESCRIPTOR.name,
                 publication = %self.id,
@@ -684,15 +964,8 @@ impl PublicationLease for BonjourPublicationLease {
 
 impl Drop for BonjourPublicationLease {
     fn drop(&mut self) {
-        if let Some(reference) = self
-            .reference
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        {
-            if let Ok(api) = dnssd() {
-                deallocate_within(api, reference.0, CALL_WAIT);
-            }
+        if self.active {
+            self.control.request_close();
         }
     }
 }
@@ -701,6 +974,7 @@ impl Drop for BonjourPublicationLease {
 
 struct BrowseRuntime {
     events: mpsc::Sender<BrowseObservation>,
+    failure: AtomicI32,
 }
 
 enum BrowseObservation {
@@ -712,6 +986,8 @@ enum BrowseObservation {
 async fn open_bonjour_browse(
     regtype: &str,
     is_meta: bool,
+    connections: ConnectionRegistry,
+    state_tx: watch::Sender<ProviderSessionState>,
 ) -> Result<(ProviderBrowse, tokio::task::JoinHandle<()>)> {
     let (event_tx, event_rx) = tokio_mpsc::channel(BROWSE_CHANNEL_CAPACITY);
     let (observation_tx, observation_rx) = mpsc::channel::<BrowseObservation>();
@@ -728,6 +1004,7 @@ async fn open_bonjour_browse(
     ) {
         let runtime = unsafe { &*(context as *const BrowseRuntime) };
         let observation = if error_code != K_DNSSERVICE_ERR_NO_ERROR {
+            runtime.failure.store(error_code, Ordering::Release);
             BrowseObservation::Failed(error_code)
         } else {
             let name = if service_name.is_null() {
@@ -753,83 +1030,128 @@ async fn open_bonjour_browse(
         Ok(api) => api,
         Err(missing) => return Err(dnssd_missing(ProviderOperation::Browse, &missing)),
     };
-    let runtime_ptr = RuntimePtr(Box::into_raw(Box::new(BrowseRuntime {
-        events: observation_tx,
-    })));
-    let mut reference: SdRef = std::ptr::null_mut();
-    let regtype_c = cstr(regtype);
-    let error = unsafe {
-        (api.browse)(
-            &mut reference,
-            0,
-            0,
-            regtype_c.as_ptr(),
-            std::ptr::null(), // default domain
-            browse_reply,
-            runtime_ptr.0 as *mut core::ffi::c_void,
-        )
-    };
-    if error != K_DNSSERVICE_ERR_NO_ERROR || reference.is_null() {
-        if !reference.is_null() {
-            deallocate_within(api, reference, CALL_WAIT);
-        }
-        unsafe { drop(Box::from_raw(runtime_ptr.0)) };
-        return Err(dnssd_error(
-            ProviderOperation::Browse,
-            error,
-            "DNSServiceBrowse",
-        ));
-    }
-
-    // The pump thread drives dnssd callbacks until the connection is
-    // deallocated; the worker thread translates observations into Koi events,
-    // resolving every added instance the way mdns-sd resolves in-process.
-    let pump_reference: Arc<Mutex<Option<SdRefHandle>>> =
-        Arc::new(Mutex::new(Some(SdRefHandle(reference))));
-    let callback_reference = Arc::clone(&pump_reference);
-    let lease_reference = Arc::clone(&pump_reference);
-    let process_result = api.process_result;
+    let control = ConnectionControl::new();
+    connections.track(control.clone());
+    let owner = control.clone();
+    let owner_regtype = regtype.to_string();
+    let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<()>>(1);
     let callback_thread = std::thread::Builder::new()
         .name(format!("koi-mdns-bonjour-browse-{regtype}"))
         .spawn(move || {
-            // SAFETY: the reference stays alive until the worker deallocates it;
-            // this loop then returns one error later and exits.
-            loop {
-                let current = callback_reference
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let Some(active) = current.as_ref().map(|handle| handle.0) else {
+            let mut runtime = Box::new(BrowseRuntime {
+                events: observation_tx,
+                failure: AtomicI32::new(K_DNSSERVICE_ERR_NO_ERROR),
+            });
+            let regtype_c = cstr(&owner_regtype);
+            let mut reference: SdRef = std::ptr::null_mut();
+            let error = unsafe {
+                (api.browse)(
+                    &mut reference,
+                    0,
+                    0,
+                    regtype_c.as_ptr(),
+                    std::ptr::null(),
+                    browse_reply,
+                    (&mut *runtime as *mut BrowseRuntime).cast(),
+                )
+            };
+            if error != K_DNSSERVICE_ERR_NO_ERROR || reference.is_null() {
+                let _ = ready_tx.send(Err(dnssd_error(
+                    ProviderOperation::Browse,
+                    error,
+                    "DNSServiceBrowse",
+                )));
+                retire_owned(api, reference, runtime, &owner);
+                return;
+            }
+            if ready_tx.send(Ok(())).is_err() {
+                owner.request_close();
+            }
+            while !owner.close_requested() {
+                if let Err(error) = drive_once(api, reference, SOCKET_POLL_SLICE) {
+                    tracing::debug!(
+                        provider = DESCRIPTOR.name,
+                        operation = %ProviderOperation::Browse,
+                        %error,
+                        "Bonjour browse connection ended"
+                    );
                     break;
-                };
-                drop(current);
-                let result = unsafe { process_result(active) };
-                if result != K_DNSSERVICE_ERR_NO_ERROR {
+                }
+                let callback_error = runtime.failure.load(Ordering::Acquire);
+                if callback_error != K_DNSSERVICE_ERR_NO_ERROR {
+                    tracing::debug!(
+                        provider = DESCRIPTOR.name,
+                        operation = %ProviderOperation::Browse,
+                        error = callback_error,
+                        "Bonjour browse callback ended the connection"
+                    );
                     break;
                 }
             }
+            retire_owned(api, reference, runtime, &owner);
         });
+    if let Err(error) = callback_thread {
+        control.finish();
+        return Err(provider_error(
+            DESCRIPTOR.name,
+            ProviderOperation::Browse,
+            ProviderFailure::Lost,
+            format!("could not start Bonjour connection owner: {error}"),
+        ));
+    }
+    let startup =
+        tokio::task::spawn_blocking(move || ready_rx.recv_timeout(CALL_WAIT + SOCKET_POLL_SLICE))
+            .await
+            .map_err(|error| {
+                provider_error(
+                    DESCRIPTOR.name,
+                    ProviderOperation::Browse,
+                    ProviderFailure::Lost,
+                    format!("browse startup wait failed: {error}"),
+                )
+            })?;
+    match startup {
+        Ok(result) => result?,
+        Err(_) => {
+            control.request_close();
+            return Err(provider_error(
+                DESCRIPTOR.name,
+                ProviderOperation::Browse,
+                ProviderFailure::Timeout,
+                format!("Bonjour browse startup exceeded {CALL_WAIT:?}"),
+            ));
+        }
+    }
 
+    let worker_control = control.clone();
+    let worker_connections = connections.clone();
     let worker = tokio::task::spawn_blocking(move || {
-        while let Ok(observation) = observation_rx.recv() {
-            match observation {
+        loop {
+            if worker_control.close_requested() || worker_control.is_finished() {
+                break;
+            }
+            let observation = match observation_rx.recv_timeout(SOCKET_POLL_SLICE) {
+                Ok(observation) => observation,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            };
+            let emitted = match observation {
                 BrowseObservation::Add { name, regtype } => {
                     if is_meta {
                         // Meta observations enumerate service types; the type
                         // name itself is the record Koi surfaces.
-                        let _ = event_tx.blocking_send(ProviderEvent::Found(ProviderService {
+                        event_tx.blocking_send(ProviderEvent::Found(ProviderService {
                             name: trim_local(&name),
                             service_type: String::new(),
                             host: None,
                             addresses: Vec::new(),
                             port: None,
                             txt: HashMap::new(),
-                        }));
+                        }))
                     } else {
                         let domain = domain_of(&regtype);
-                        match resolve_native(&name, &regtype, &domain) {
-                            Ok(service) => {
-                                let _ = event_tx.blocking_send(ProviderEvent::Resolved(service));
-                            }
+                        match resolve_native(&name, &regtype, &domain, worker_connections.clone()) {
+                            Ok(service) => event_tx.blocking_send(ProviderEvent::Resolved(service)),
                             Err(error) => {
                                 tracing::debug!(
                                     provider = DESCRIPTOR.name,
@@ -837,15 +1159,16 @@ async fn open_bonjour_browse(
                                     %error,
                                     "browse resolve failed; instance stays unresolved"
                                 );
+                                continue;
                             }
                         }
                     }
                 }
                 BrowseObservation::Remove { name, regtype } => {
-                    let _ = event_tx.blocking_send(ProviderEvent::Removed {
+                    event_tx.blocking_send(ProviderEvent::Removed {
                         name,
                         service_type: trim_local(&regtype),
-                    });
+                    })
                 }
                 BrowseObservation::Failed(error) => {
                     tracing::debug!(
@@ -855,26 +1178,21 @@ async fn open_bonjour_browse(
                     );
                     break;
                 }
+            };
+            if emitted.is_err() {
+                break;
             }
         }
-        // Stop the daemon connection; this also unblocks the pump thread.
-        if let Some(reference) = pump_reference
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        {
-            deallocate_within(api, reference.0, CALL_WAIT);
-        }
-        reclaim_runtime_ptr(runtime_ptr);
+        worker_control.request_close();
     });
 
-    // Detach the callback thread: the worker's deallocation is what ends it.
-    std::mem::forget(callback_thread);
     Ok((
         ProviderBrowse::new(
             event_rx,
             Box::new(BonjourBrowseLease {
-                reference: Arc::clone(&lease_reference),
+                control: control.clone(),
+                state_tx: state_tx.clone(),
+                active: true,
             }),
         ),
         worker,
@@ -882,7 +1200,9 @@ async fn open_bonjour_browse(
 }
 
 struct BonjourBrowseLease {
-    reference: Arc<Mutex<Option<SdRefHandle>>>,
+    control: ConnectionControl,
+    state_tx: watch::Sender<ProviderSessionState>,
+    active: bool,
 }
 
 #[async_trait::async_trait]
@@ -892,19 +1212,19 @@ impl BrowseLease for BonjourBrowseLease {
     }
 
     async fn close(&mut self) -> Result<()> {
-        if let Some(reference) = self
-            .reference
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        {
-            // Deallocating the connection ends the record stream and unblocks
-            // the pump thread; the worker exits when the channel drains.
-            if let Ok(api) = dnssd() {
-                deallocate_within(api, reference.0, CALL_WAIT);
-            }
+        if self.active {
+            retire_connection(&self.control, &self.state_tx, ProviderOperation::Browse).await?;
+            self.active = false;
         }
         Ok(())
+    }
+}
+
+impl Drop for BonjourBrowseLease {
+    fn drop(&mut self) {
+        if self.active {
+            self.control.request_close();
+        }
     }
 }
 
@@ -921,12 +1241,15 @@ struct ResolveOutcome {
 
 /// Resolve one instance with `DNSServiceResolve` on a dedicated connection,
 /// returning full service data only after the completion reply.
-fn resolve_native(name: &str, regtype: &str, domain: &str) -> Result<ProviderService> {
+fn resolve_native(
+    name: &str,
+    regtype: &str,
+    domain: &str,
+    connections: ConnectionRegistry,
+) -> Result<ProviderService> {
     struct ResolveRuntime {
         reply: mpsc::Sender<ResolveOutcome>,
     }
-    let (reply_tx, reply_rx) = mpsc::channel::<ResolveOutcome>();
-    let runtime_ptr = Box::into_raw(Box::new(ResolveRuntime { reply: reply_tx }));
 
     unsafe extern "system" fn resolve_reply(
         _sd_ref: SdRef,
@@ -967,63 +1290,104 @@ fn resolve_native(name: &str, regtype: &str, domain: &str) -> Result<ProviderSer
         Ok(api) => api,
         Err(missing) => return Err(dnssd_missing(ProviderOperation::Resolve, &missing)),
     };
-    let name_c = cstr(name);
-    let regtype_c = cstr(regtype);
-    let domain_c = cstr(domain);
-    let mut reference: SdRef = std::ptr::null_mut();
-    let error = unsafe {
-        (api.resolve)(
-            &mut reference,
-            0,
-            0,
-            name_c.as_ptr(),
-            regtype_c.as_ptr(),
-            domain_c.as_ptr(),
-            resolve_reply,
-            runtime_ptr as *mut core::ffi::c_void,
-        )
-    };
-    if error != K_DNSSERVICE_ERR_NO_ERROR || reference.is_null() {
-        if !reference.is_null() {
-            deallocate_within(api, reference, CALL_WAIT);
-        }
-        unsafe { drop(Box::from_raw(runtime_ptr)) };
-        return Err(dnssd_error(
+    let owner_name = name.to_string();
+    let owner_regtype = regtype.to_string();
+    let owner_domain = domain.to_string();
+    let control = ConnectionControl::new();
+    connections.track(control.clone());
+    let owner = control.clone();
+    let (result_tx, result_rx) = mpsc::sync_channel::<Result<ResolveOutcome>>(1);
+    let thread = std::thread::Builder::new()
+        .name("koi-mdns-bonjour-resolve".to_string())
+        .spawn(move || {
+            let (reply_tx, reply_rx) = mpsc::channel::<ResolveOutcome>();
+            let mut runtime = Box::new(ResolveRuntime { reply: reply_tx });
+            let name_c = cstr(&owner_name);
+            let regtype_c = cstr(&owner_regtype);
+            let domain_c = cstr(&owner_domain);
+            let mut reference: SdRef = std::ptr::null_mut();
+            let error = unsafe {
+                (api.resolve)(
+                    &mut reference,
+                    0,
+                    0,
+                    name_c.as_ptr(),
+                    regtype_c.as_ptr(),
+                    domain_c.as_ptr(),
+                    resolve_reply,
+                    (&mut *runtime as *mut ResolveRuntime).cast(),
+                )
+            };
+            if error != K_DNSSERVICE_ERR_NO_ERROR || reference.is_null() {
+                let _ = result_tx.send(Err(dnssd_error(
+                    ProviderOperation::Resolve,
+                    error,
+                    "DNSServiceResolve",
+                )));
+                retire_owned(api, reference, runtime, &owner);
+                return;
+            }
+
+            let deadline = Instant::now() + RESOLVE_WAIT;
+            loop {
+                if let Ok(outcome) = reply_rx.try_recv() {
+                    let result = if outcome.error_code == K_DNSSERVICE_ERR_NO_ERROR {
+                        Ok(outcome)
+                    } else {
+                        Err(dnssd_error(
+                            ProviderOperation::Resolve,
+                            outcome.error_code,
+                            "DNSServiceResolve reply",
+                        ))
+                    };
+                    let _ = result_tx.send(result);
+                    break;
+                }
+                if owner.close_requested() {
+                    break;
+                }
+                let Some(wait) = remaining_slice(deadline) else {
+                    let _ = result_tx.send(Err(provider_error(
+                        DESCRIPTOR.name,
+                        ProviderOperation::Resolve,
+                        ProviderFailure::Timeout,
+                        format!("DNSServiceResolve reply exceeded {RESOLVE_WAIT:?}"),
+                    )));
+                    break;
+                };
+                if let Err(error) = drive_once(api, reference, wait) {
+                    let _ = result_tx.send(Err(provider_error(
+                        DESCRIPTOR.name,
+                        ProviderOperation::Resolve,
+                        ProviderFailure::Lost,
+                        error.to_string(),
+                    )));
+                    break;
+                }
+            }
+            retire_owned(api, reference, runtime, &owner);
+        });
+    if let Err(error) = thread {
+        control.finish();
+        return Err(provider_error(
+            DESCRIPTOR.name,
             ProviderOperation::Resolve,
-            error,
-            "DNSServiceResolve",
+            ProviderFailure::Lost,
+            format!("could not start Bonjour connection owner: {error}"),
         ));
     }
-
-    let outcome = pump_until(
-        api.process_result,
-        runtime_ptr as *mut core::ffi::c_void,
-        reference,
-        &reply_rx,
-        RESOLVE_WAIT,
-    );
-    // A resolve connection is one-shot: always release it.
-    deallocate_within(api, reference, CALL_WAIT);
-    unsafe { drop(Box::from_raw(runtime_ptr)) };
-
-    let outcome = match outcome {
-        Some(outcome) => outcome,
-        None => {
+    let outcome = match result_rx.recv_timeout(RESOLVE_WAIT + SOCKET_POLL_SLICE) {
+        Ok(result) => result?,
+        Err(_) => {
+            control.request_close();
             return Err(provider_error(
                 DESCRIPTOR.name,
                 ProviderOperation::Resolve,
                 ProviderFailure::Timeout,
-                format!("DNSServiceResolve reply exceeded {RESOLVE_WAIT:?}"),
-            ))
+                format!("Bonjour resolve owner exceeded {RESOLVE_WAIT:?}"),
+            ));
         }
     };
-    if outcome.error_code != K_DNSSERVICE_ERR_NO_ERROR {
-        return Err(dnssd_error(
-            ProviderOperation::Resolve,
-            outcome.error_code,
-            "DNSServiceResolve reply",
-        ));
-    }
     let instance = instance_label(&outcome.fullname).unwrap_or_else(|| name.to_string());
     Ok(ProviderService {
         name: instance,
@@ -1036,36 +1400,6 @@ fn resolve_native(name: &str, regtype: &str, domain: &str) -> Result<ProviderSer
 }
 
 // ── shared helpers ────────────────────────────────────────────────────
-
-/// Pump one connection until a message arrives on `reply` or the wait expires.
-/// Runs on the calling (blocking) thread; the connection's callbacks fire from
-/// inside `DNSServiceProcessResult`.
-fn pump_until<T: std::fmt::Debug>(
-    process_result: unsafe extern "system" fn(SdRef) -> i32,
-    context: *mut core::ffi::c_void,
-    reference: SdRef,
-    reply: &mpsc::Receiver<T>,
-    wait: Duration,
-) -> Option<T> {
-    let deadline = std::time::Instant::now() + wait;
-    loop {
-        if let Ok(message) = reply.try_recv() {
-            return Some(message);
-        }
-        if std::time::Instant::now() >= deadline {
-            return None;
-        }
-        // SAFETY: the reference stays alive for this whole call; the caller
-        // deallocates it only after this function returns.
-        let result = unsafe { process_result(reference) };
-        if result != K_DNSSERVICE_ERR_NO_ERROR {
-            // The daemon may deliver the final reply while reporting the wake
-            // error; drain once more before giving up.
-            return reply.try_recv().ok();
-        }
-        let _ = context;
-    }
-}
 
 /// Canonical service type (`_http._tcp.local.`) to dnssd regtype (`_http._tcp`).
 fn regtype_from(service_type: &str) -> Result<String> {
@@ -1196,7 +1530,14 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows_sys::Win32::Foundation::FreeLibrary;
+use windows_sys::Win32::Networking::WinSock::{
+    WSAGetLastError, WSAPoll, INVALID_SOCKET, POLLERR, POLLHUP, POLLNVAL, POLLRDNORM, SOCKET,
+    SOCKET_ERROR, WSAPOLLFD,
+};
+use windows_sys::Win32::System::LibraryLoader::{
+    GetProcAddress, LoadLibraryExW, LoadLibraryW, LOAD_LIBRARY_SEARCH_SYSTEM32,
+};
 
 #[cfg(test)]
 mod tests {
@@ -1256,6 +1597,47 @@ mod tests {
             Some("Koi MCP (test-01)".to_string())
         );
         assert_eq!(instance_label("plainname"), None);
+    }
+
+    #[test]
+    fn lease_signals_owner_and_waits_for_owner_acknowledgement() {
+        let control = ConnectionControl::new();
+        let owner = control.clone();
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let owner_thread = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            while !owner.close_requested() {
+                std::thread::park_timeout(Duration::from_millis(5));
+            }
+            owner.finish();
+        });
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(!control.is_finished());
+        control.request_close();
+        assert!(control.wait_finished(Duration::from_secs(1)));
+        owner_thread.join().unwrap();
+    }
+
+    #[test]
+    fn registry_cancels_connections_that_arrive_during_shutdown() {
+        let registry = ConnectionRegistry::default();
+        assert!(registry.begin_shutdown().is_empty());
+
+        let late = ConnectionControl::new();
+        registry.track(late.clone());
+
+        assert!(late.close_requested());
+        late.finish();
+        assert!(registry.begin_shutdown().is_empty());
+    }
+
+    #[test]
+    fn readiness_wait_is_always_finite() {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let wait = remaining_slice(deadline).unwrap();
+        assert!(wait <= SOCKET_POLL_SLICE);
+        assert!(remaining_slice(Instant::now() - Duration::from_millis(1)).is_none());
     }
 
     #[tokio::test]

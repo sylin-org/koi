@@ -87,3 +87,6 @@ On Windows, preserve the same story and invariants while substituting its catalo
 official Windows DNS-SD, installed Apple Bonjour/mDNSResponder, then native Koi.
 Provider-specific mutations must be baseline-captured and restored by the Windows
 agent; there is still one installed Koi service and one owner per capability route.
+The exact candidate must first be deployed through the product install/upgrade path.
+A standalone core or control-plane example beside an untouched installed service is
+useful only for diagnosis and is not acceptance evidence.

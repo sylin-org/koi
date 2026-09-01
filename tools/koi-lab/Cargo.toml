@@ -24,9 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
 x509-parser.workspace = true
-koi-compose = { path = "../../crates/koi-compose" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Win32 DNS-SD probe surface for the mDNS provider workstream (examples only).

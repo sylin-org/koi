@@ -94,6 +94,14 @@ demand in `DiscoveryHub`.
    the one installed Koi service. Use at least one Avahi peer and one Bonjour-class
    peer, restore the baseline, leave exactly one healthy Koi, then push to `dev`.
 
+The candidate under test must replace the installed service artifact before this
+workstream claims runtime evidence. Do not start a second `MdnsCore`, standalone
+Koi, alternate-port daemon, or control-plane example beside an untouched installed
+service. Direct Win32/Bonjour API probes that do not instantiate Koi may localize a
+platform defect, but they are diagnostic evidence only. Final acceptance exercises
+the exact candidate through the installed service's authenticated API, with its PID,
+binary hash, provider generations, peer observations, and restored baseline recorded.
+
 Capability claims must come from real operations—never a file-presence guess, stub,
 placeholder, or TODO. Publication returns only after a native registration exists;
 withdrawal, browse close, and shutdown are acknowledged. Provider-native types stay

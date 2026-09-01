@@ -116,7 +116,9 @@ pub trait ProviderSession: Send + Sync {
         ))
     }
 
-    /// Return only after every native resource has been released.
+    /// Return only after every native resource is released or, following
+    /// confirmed provider death, its owner and callback context are safely
+    /// quarantined from the next provider generation.
     async fn shutdown(&self) -> Result<()>;
 }
 
