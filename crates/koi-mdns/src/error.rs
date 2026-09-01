@@ -1,6 +1,44 @@
 use koi_common::error::ErrorCode;
 use thiserror::Error;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ProviderOperation {
+    #[error("inspect")]
+    Inspect,
+    #[error("open")]
+    Open,
+    #[error("publish")]
+    Publish,
+    #[error("withdraw")]
+    Withdraw,
+    #[error("browse")]
+    Browse,
+    #[error("resolve")]
+    Resolve,
+    #[error("shutdown")]
+    Shutdown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ProviderFailure {
+    #[error("unavailable")]
+    Unavailable,
+    #[error("recovering")]
+    Recovering,
+    #[error("lost")]
+    Lost,
+    #[error("rejected")]
+    Rejected,
+    #[error("conflict")]
+    Conflict,
+    #[error("timeout")]
+    Timeout,
+    #[error("protocol")]
+    Protocol,
+    #[error("resource busy")]
+    ResourceBusy,
+}
+
 /// Domain-specific errors for the mDNS capability.
 #[derive(Debug, Error)]
 pub enum MdnsError {
@@ -15,6 +53,14 @@ pub enum MdnsError {
 
     #[error("mDNS daemon error: {0}")]
     Daemon(String),
+
+    #[error("mDNS provider {provider} could not {operation} ({failure}): {detail}")]
+    Provider {
+        provider: String,
+        operation: ProviderOperation,
+        failure: ProviderFailure,
+        detail: String,
+    },
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -47,6 +93,15 @@ impl From<&MdnsError> for ErrorCode {
             MdnsError::RegistrationNotFound(_) => Self::NotFound,
             MdnsError::ResolveTimeout(_) => Self::ResolveTimeout,
             MdnsError::Daemon(_) => Self::DaemonError,
+            MdnsError::Provider { failure, .. } => match failure {
+                ProviderFailure::Conflict => Self::Conflict,
+                ProviderFailure::Unavailable
+                | ProviderFailure::Recovering
+                | ProviderFailure::Lost
+                | ProviderFailure::Timeout
+                | ProviderFailure::ResourceBusy => Self::ProviderUnavailable,
+                ProviderFailure::Rejected | ProviderFailure::Protocol => Self::DaemonError,
+            },
             MdnsError::Io(_) => Self::IoError,
             MdnsError::AlreadyDraining(_) => Self::AlreadyDraining,
             MdnsError::NotDraining(_) => Self::NotDraining,
@@ -85,6 +140,16 @@ mod tests {
                 MdnsError::Daemon("engine crash".into()),
                 ErrorCode::DaemonError,
                 500,
+            ),
+            (
+                MdnsError::Provider {
+                    provider: "avahi".into(),
+                    operation: ProviderOperation::Publish,
+                    failure: ProviderFailure::Recovering,
+                    detail: "server restarting".into(),
+                },
+                ErrorCode::ProviderUnavailable,
+                503,
             ),
             (
                 MdnsError::Io(std::io::Error::other("test")),

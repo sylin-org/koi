@@ -560,17 +560,30 @@ impl MdnsHandle {
         }
     }
 
-    pub fn register(&self, payload: RegisterPayload) -> Result<RegistrationResult, KoiError> {
+    pub async fn register(&self, payload: RegisterPayload) -> Result<RegistrationResult, KoiError> {
         match &self.backend {
-            MdnsBackend::Embedded { core } => Ok(core.register(payload)?),
-            MdnsBackend::Remote { client } => Ok(client.register(&payload)?),
+            MdnsBackend::Embedded { core } => Ok(core.register(payload).await?),
+            MdnsBackend::Remote { client } => {
+                let client = Arc::clone(client);
+                Ok(
+                    tokio::task::spawn_blocking(move || client.register(&payload))
+                        .await
+                        .map_err(map_join_error)??,
+                )
+            }
         }
     }
 
-    pub fn unregister(&self, id: &str) -> Result<(), KoiError> {
+    pub async fn unregister(&self, id: &str) -> Result<(), KoiError> {
         match &self.backend {
-            MdnsBackend::Embedded { core } => Ok(core.unregister(id)?),
-            MdnsBackend::Remote { client } => Ok(client.unregister(id)?),
+            MdnsBackend::Embedded { core } => Ok(core.unregister(id).await?),
+            MdnsBackend::Remote { client } => {
+                let id = id.to_string();
+                let client = Arc::clone(client);
+                Ok(tokio::task::spawn_blocking(move || client.unregister(&id))
+                    .await
+                    .map_err(map_join_error)??)
+            }
         }
     }
 
@@ -1069,7 +1082,7 @@ async fn announce_once(
         lease_secs: None,
         txt,
     };
-    match mdns.register(payload) {
+    match mdns.register(payload).await {
         Ok(result) => Some(result.id),
         Err(e) => {
             tracing::warn!(error = %e, "participate: mDNS announce failed");
@@ -1105,7 +1118,7 @@ fn spawn_participate_announce(
                     }
                     // Posture flipped → re-announce so the advertised posture is current.
                     if let Some(old) = current_id.take() {
-                        let _ = mdns.unregister(&old);
+                        let _ = mdns.unregister(&old).await;
                     }
                     current_id =
                         announce_once(&mdns, &certmesh, &hostname, &service_type, port).await;
@@ -1113,7 +1126,7 @@ fn spawn_participate_announce(
             }
         }
         if let Some(id) = current_id {
-            let _ = mdns.unregister(&id);
+            let _ = mdns.unregister(&id).await;
         }
     });
 }

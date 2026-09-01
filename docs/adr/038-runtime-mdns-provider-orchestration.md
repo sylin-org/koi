@@ -1,9 +1,14 @@
 # ADR-038: Runtime mDNS Provider Orchestration
 
-**Status:** Accepted and implemented (operator mandate 2026-08-31)
+**Status:** Superseded in implementation shape by ADR-039 (2026-08-31)
 **Date:** 2026-08-31
 **Supersedes:** ADR-037's boot-only selection and process-lifetime provider lock
 **Builds on:** ADR-020 (truthful status), ADR-035 (gentle participation), ADR-037 (provider port)
+
+> **2026-08-31:** ADR-039 retains capability-aware runtime selection but replaces
+> the provider facade, duplicated publication projection, and whole-plan
+> transition with registry-owned intent, provider sessions and leases, and
+> route-local reconciliation. This ADR remains the product-direction record.
 
 ## Context
 

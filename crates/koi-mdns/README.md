@@ -14,13 +14,17 @@ from the domain, shared browse hub, and public transports. The built-in native
 adapter wraps `mdns-sd`; platform adapters can supply the same real DNS-SD
 capabilities without leaking their API types into Koi's domain model.
 
-At runtime, a supervisor asks every platform adapter for live evidence and routes
-each capability to the best provider that actually implements it. On Linux that
-catalog contains Avahi, systemd-resolved, and native Koi. A complete provider such
-as Avahi owns the whole plan; otherwise complementary providers can own distinct
-routes without duplicate publication or browsing. Native Koi is always catalogued
-as the lowest-priority complete provider. Status names the active routes and the
-evidence behind them, and the plan reconciles when the host changes.
+At runtime, `MdnsControlPlane` asks every platform adapter for live evidence and
+routes each capability to the best provider that actually implements it. On Linux
+that catalog contains Avahi, systemd-resolved, and native Koi. A complete provider
+such as Avahi can own every route; otherwise complementary providers can own
+distinct routes without duplicate publication or browsing. Native Koi is always
+catalogued as the lowest-priority complete provider. Stateful provider sessions
+own their native resources and recovery, while structured status names the active
+routes, provider evidence, session state, and publication synchronization.
+Provider evidence includes the calling service's real non-interactive authority:
+on Linux, a user-scoped Koi can therefore use resolve1 for resolution while
+native Koi supplies publication when polkit does not grant `RegisterService`.
 
 The core manages service lifecycles with session/heartbeat/permanent lease
 modes and exposes both programmatic commands and HTTP routes (via axum) for

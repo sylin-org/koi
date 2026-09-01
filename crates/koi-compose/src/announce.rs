@@ -64,7 +64,7 @@ pub async fn http_record(
         lease_secs: None,
         txt,
     };
-    match mdns.register(payload) {
+    match mdns.register(payload).await {
         Ok(result) => {
             tracing::info!(
                 id = %result.id,
@@ -124,7 +124,7 @@ pub async fn mcp_record(
         lease_secs: None,
         txt,
     };
-    match mdns.register(payload) {
+    match mdns.register(payload).await {
         Ok(result) => {
             tracing::info!(id = %result.id, port = http_port, "MCP endpoint announced via mDNS (_mcp._tcp)");
             Some(result.id)
@@ -140,9 +140,9 @@ pub async fn mcp_record(
 /// `_mcp.<host>.<zone>` DNS TXT. `hostname` must be the one used at registration (the caller
 /// captures it once) so the removed name matches even if the OS hostname changed mid-run.
 /// Best-effort; safe to call when nothing was published.
-pub fn withdraw_mcp(cores: &Cores, hostname: &str, dns_zone: &str, mcp_id: Option<&str>) {
+pub async fn withdraw_mcp(cores: &Cores, hostname: &str, dns_zone: &str, mcp_id: Option<&str>) {
     if let (Some(id), Some(mdns)) = (mcp_id, cores.mdns.as_ref()) {
-        if let Err(e) = mdns.unregister(id) {
+        if let Err(e) = mdns.unregister(id).await {
             tracing::debug!(error = %e, "failed to withdraw _mcp._tcp announce");
         }
     }

@@ -2,12 +2,14 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
+use koi_common::types::ServiceType;
 use koi_common::types::SessionId;
 
 use crate::error::{MdnsError, Result};
 use crate::protocol::{
     AdminRegistration, LeaseMode, LeaseState, RegisterPayload, RegistrationCounts,
 };
+use crate::provider::Announcement;
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -29,33 +31,54 @@ pub enum RegistrationState {
     Draining { since: Instant },
 }
 
+/// Synchronization state between domain intent and provider-owned resources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublicationState {
+    Pending,
+    Established,
+    Withdrawing,
+}
+
 /// A tracked registration with full lifecycle metadata.
+#[derive(Clone)]
 pub struct Registration {
     pub payload: RegisterPayload,
     pub state: RegistrationState,
     pub policy: LeasePolicy,
     pub last_seen: Instant,
     pub session_id: Option<SessionId>,
+    pub(crate) publication: PublicationState,
     registered_at_wall: SystemTime,
     last_seen_wall: SystemTime,
 }
 
 /// Outcome of `insert_or_reconnect`.
+#[derive(Clone)]
 pub enum InsertOutcome {
     /// Fresh registration. Used the provided new_id.
     New { id: String },
     /// Revived a DRAINING entry. Returns the old entry's ID and payload
-    /// so the caller can update the daemon if the payload changed.
-    Reconnected {
-        id: String,
-        old_payload: RegisterPayload,
-    },
+    /// while the rollback token privately retains the prior aggregate.
+    Reconnected { id: String },
+}
+
+/// Rollback token for a registration mutation that is awaiting publication.
+pub(crate) struct RegistrationAttempt {
+    pub outcome: InsertOutcome,
+    previous: Option<Registration>,
+}
+
+/// Rollback token for a withdrawal that is awaiting provider release.
+pub(crate) struct WithdrawalAttempt {
+    pub id: String,
+    pub announcement: Announcement,
+    previous: PublicationState,
 }
 
 impl InsertOutcome {
     pub fn id(&self) -> &str {
         match self {
-            InsertOutcome::New { id } | InsertOutcome::Reconnected { id, .. } => id,
+            InsertOutcome::New { id } | InsertOutcome::Reconnected { id } => id,
         }
     }
 }
@@ -66,21 +89,224 @@ impl InsertOutcome {
 ///
 /// Tracks all registered services with lease state, session ownership,
 /// and temporal metadata. All methods are thread-safe via internal Mutex.
-pub(crate) struct Registry {
+pub(crate) struct RegistrationRegistry {
     registrations: Mutex<HashMap<String, Registration>>,
 }
 
-impl Registry {
+impl RegistrationRegistry {
     pub fn new() -> Self {
         Self {
             registrations: Mutex::new(HashMap::new()),
         }
     }
 
+    /// Record desired registration intent before crossing the provider boundary.
+    /// The returned token restores the exact previous aggregate on failure.
+    pub(crate) fn begin_registration(
+        &self,
+        new_id: String,
+        payload: RegisterPayload,
+        policy: LeasePolicy,
+        session_id: Option<SessionId>,
+    ) -> RegistrationAttempt {
+        let now = Instant::now();
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
+        let reconnect_id = regs
+            .iter()
+            .find(|(_, registration)| {
+                matches!(registration.state, RegistrationState::Draining { .. })
+                    && registration.payload.name == payload.name
+                    && registration.payload.service_type == payload.service_type
+            })
+            .map(|(id, _)| id.clone());
+
+        if let Some(id) = reconnect_id {
+            if let Some(previous) = regs.get(&id).cloned() {
+                if let Some(registration) = regs.get_mut(&id) {
+                    registration.payload = payload;
+                    registration.state = RegistrationState::Alive;
+                    registration.policy = policy;
+                    registration.last_seen = now;
+                    registration.last_seen_wall = SystemTime::now();
+                    registration.session_id = session_id;
+                    registration.publication = PublicationState::Pending;
+                    return RegistrationAttempt {
+                        outcome: InsertOutcome::Reconnected { id },
+                        previous: Some(previous),
+                    };
+                }
+            }
+        }
+
+        let wall = SystemTime::now();
+        regs.insert(
+            new_id.clone(),
+            Registration {
+                payload,
+                state: RegistrationState::Alive,
+                policy,
+                last_seen: now,
+                session_id,
+                publication: PublicationState::Pending,
+                registered_at_wall: wall,
+                last_seen_wall: wall,
+            },
+        );
+        RegistrationAttempt {
+            outcome: InsertOutcome::New { id: new_id },
+            previous: None,
+        }
+    }
+
+    pub(crate) fn confirm_publication(&self, id: &str) -> Result<()> {
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
+        let registration = regs
+            .get_mut(id)
+            .ok_or_else(|| MdnsError::RegistrationNotFound(id.to_string()))?;
+        registration.publication = PublicationState::Established;
+        Ok(())
+    }
+
+    pub(crate) fn rollback_registration(&self, attempt: RegistrationAttempt) {
+        let id = attempt.outcome.id().to_string();
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(previous) = attempt.previous {
+            regs.insert(id, previous);
+        } else {
+            regs.remove(&id);
+        }
+    }
+
+    /// Mark an exact registration as no longer desired before provider release.
+    pub(crate) fn begin_withdrawal(&self, id: &str) -> Result<WithdrawalAttempt> {
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
+        let registration = regs
+            .get_mut(id)
+            .ok_or_else(|| MdnsError::RegistrationNotFound(id.to_string()))?;
+        let announcement = announcement_from(id, &registration.payload)?;
+        let previous = registration.publication;
+        registration.publication = PublicationState::Withdrawing;
+        Ok(WithdrawalAttempt {
+            id: id.to_string(),
+            announcement,
+            previous,
+        })
+    }
+
+    pub(crate) fn commit_withdrawal(&self, attempt: WithdrawalAttempt) {
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
+        if regs
+            .get(&attempt.id)
+            .is_some_and(|registration| registration.publication == PublicationState::Withdrawing)
+        {
+            regs.remove(&attempt.id);
+        }
+    }
+
+    pub(crate) fn rollback_withdrawal(&self, attempt: WithdrawalAttempt) {
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(registration) = regs.get_mut(&attempt.id) {
+            registration.publication = attempt.previous;
+        }
+    }
+
+    /// Authoritative desired publication snapshot used by control-plane sync.
+    pub(crate) fn desired_announcements(&self) -> Result<Vec<Announcement>> {
+        let regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
+        regs.iter()
+            .filter(|(_, registration)| registration.publication != PublicationState::Withdrawing)
+            .map(|(id, registration)| announcement_from(id, &registration.payload))
+            .collect()
+    }
+
+    /// Build the provider-neutral announcement for one desired registration.
+    pub(crate) fn desired_announcement(&self, id: &str) -> Result<Announcement> {
+        let regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
+        let registration = regs
+            .get(id)
+            .ok_or_else(|| MdnsError::RegistrationNotFound(id.to_string()))?;
+        if registration.publication == PublicationState::Withdrawing {
+            return Err(MdnsError::RegistrationNotFound(id.to_string()));
+        }
+        announcement_from(id, &registration.payload)
+    }
+
+    pub(crate) fn publication_intent_counts(&self) -> (usize, usize) {
+        let regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
+        let desired = regs
+            .values()
+            .filter(|registration| registration.publication != PublicationState::Withdrawing)
+            .count();
+        let pending = regs
+            .values()
+            .filter(|registration| registration.publication == PublicationState::Pending)
+            .count();
+        (desired, pending)
+    }
+
+    /// Advance lease timers and reserve every grace-expired registration for
+    /// acknowledged withdrawal. Reserved entries are excluded from desired
+    /// snapshots until the withdrawal is committed or rolled back.
+    pub(crate) fn begin_reap(&self) -> Result<Vec<WithdrawalAttempt>> {
+        let now = Instant::now();
+        let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
+        let mut expired_ids = Vec::new();
+
+        for (id, registration) in regs.iter_mut() {
+            if registration.publication == PublicationState::Withdrawing {
+                continue;
+            }
+            let grace_elapsed = match (&registration.state, &registration.policy) {
+                (_, LeasePolicy::Permanent) => false,
+                (RegistrationState::Alive, LeasePolicy::Session { .. }) => false,
+                (
+                    RegistrationState::Draining { since },
+                    LeasePolicy::Session { grace } | LeasePolicy::Heartbeat { grace, .. },
+                ) => now.duration_since(*since) >= *grace,
+                (RegistrationState::Alive, LeasePolicy::Heartbeat { lease, .. }) => {
+                    if now.duration_since(registration.last_seen) >= *lease {
+                        registration.state = RegistrationState::Draining { since: now };
+                    }
+                    false
+                }
+            };
+            if grace_elapsed {
+                expired_ids.push(id.clone());
+            }
+        }
+
+        // Prepare every fallible projection before reserving any aggregate. A
+        // malformed record can therefore never strand its healthy siblings in
+        // `Withdrawing` merely because iteration reached it later.
+        let prepared = expired_ids
+            .iter()
+            .map(|id| {
+                let registration = regs
+                    .get(id)
+                    .ok_or_else(|| MdnsError::RegistrationNotFound(id.clone()))?;
+                Ok((id.clone(), announcement_from(id, &registration.payload)?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(prepared
+            .into_iter()
+            .filter_map(|(id, announcement)| {
+                let registration = regs.get_mut(&id)?;
+                let previous = registration.publication;
+                registration.publication = PublicationState::Withdrawing;
+                Some(WithdrawalAttempt {
+                    id,
+                    announcement,
+                    previous,
+                })
+            })
+            .collect())
+    }
+
     // ── Public API ────────────────────────────────────────────────────
 
     /// Insert a new registration, or reconnect to a DRAINING entry
     /// that matches by name + service type. Atomic under the lock.
+    #[cfg(test)]
     pub fn insert_or_reconnect(
         &self,
         new_id: String,
@@ -93,6 +319,7 @@ impl Registry {
 
     /// Remove a registration (explicit unregister). Returns its payload
     /// so the caller can send goodbye packets.
+    #[cfg(test)]
     pub fn remove(&self, id: &str) -> Result<RegisterPayload> {
         let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
         regs.remove(id)
@@ -131,14 +358,6 @@ impl Registry {
             }
             RegistrationState::Alive => Err(MdnsError::NotDraining(id.to_string())),
         }
-    }
-
-    /// Sweep for expired registrations. Single-pass retain().
-    /// Transitions missed heartbeats Alive → Draining.
-    /// Collects grace-expired entries and removes them.
-    /// Returns (id, payload) pairs that need goodbye packets.
-    pub fn reap(&self) -> Vec<(String, RegisterPayload)> {
-        self.reap_at(Instant::now())
     }
 
     /// Resolve a partial ID to a full ID. Errors if ambiguous or not found.
@@ -201,6 +420,7 @@ impl Registry {
 
     // ── Testable _at variants ─────────────────────────────────────────
 
+    #[cfg(test)]
     pub(crate) fn insert_or_reconnect_at(
         &self,
         new_id: String,
@@ -223,17 +443,14 @@ impl Registry {
 
         if let Some(existing_id) = reconnect_id {
             if let Some(reg) = regs.get_mut(&existing_id) {
-                let old_payload = reg.payload.clone();
                 reg.payload = payload;
                 reg.state = RegistrationState::Alive;
                 reg.policy = policy;
                 reg.last_seen = now;
                 reg.last_seen_wall = SystemTime::now();
                 reg.session_id = session_id;
-                return InsertOutcome::Reconnected {
-                    id: existing_id,
-                    old_payload,
-                };
+                reg.publication = PublicationState::Established;
+                return InsertOutcome::Reconnected { id: existing_id };
             }
             // Should never happen: id was just found in this locked map
             tracing::warn!(id = %existing_id, "registration vanished during reconnect");
@@ -249,6 +466,7 @@ impl Registry {
                 policy,
                 last_seen: now,
                 session_id,
+                publication: PublicationState::Established,
                 registered_at_wall: wall,
                 last_seen_wall: wall,
             },
@@ -302,6 +520,7 @@ impl Registry {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn reap_at(&self, now: Instant) -> Vec<(String, RegisterPayload)> {
         let mut expired = Vec::new();
         let mut regs = self.registrations.lock().unwrap_or_else(|e| e.into_inner());
@@ -339,6 +558,9 @@ impl Registry {
         expired
     }
 }
+
+#[cfg(test)]
+pub(crate) type Registry = RegistrationRegistry;
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -392,6 +614,26 @@ fn format_epoch(t: SystemTime) -> String {
     t.duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())
         .unwrap_or_else(|_| "0".to_string())
+}
+
+fn announcement_from(id: &str, payload: &RegisterPayload) -> Result<Announcement> {
+    let service_type = ServiceType::parse(&payload.service_type)?
+        .as_str()
+        .to_string();
+    let address = payload
+        .ip
+        .as_deref()
+        .map(str::parse)
+        .transpose()
+        .map_err(|error| MdnsError::InvalidPayload(format!("invalid service IP: {error}")))?;
+    Ok(Announcement {
+        id: id.to_string(),
+        name: payload.name.clone(),
+        service_type,
+        port: payload.port,
+        address,
+        txt: payload.txt.clone(),
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -497,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_returns_old_payload() {
+    fn failed_reconnect_restores_the_exact_prior_aggregate() {
         let reg = Registry::new();
         let now = Instant::now();
 
@@ -508,15 +750,14 @@ mod tests {
 
         let mut new = payload("Svc", "_http._tcp");
         new.port = 9090;
-        let outcome =
-            reg.insert_or_reconnect_at("new".into(), new, session_policy(1000), session("s2"), now);
+        let attempt =
+            reg.begin_registration("new".into(), new, session_policy(1000), session("s2"));
+        assert!(matches!(attempt.outcome, InsertOutcome::Reconnected { .. }));
+        reg.rollback_registration(attempt);
 
-        match outcome {
-            InsertOutcome::Reconnected { old_payload, .. } => {
-                assert_eq!(old_payload.port, 8080);
-            }
-            _ => panic!("Expected Reconnected"),
-        }
+        let restored = reg.snapshot_one("abc").expect("restored registration");
+        assert_eq!(restored.port, 8080);
+        assert_eq!(restored.state, LeaseState::Draining);
     }
 
     // ── remove ────────────────────────────────────────────────────────

@@ -166,7 +166,7 @@ async fn register_handler(
         Ok(p) => p,
         Err(e) => return error_json(e).into_response(),
     };
-    match core.register_with_policy(payload, policy, None) {
+    match core.register_with_policy(payload, policy, None).await {
         Ok(result) => {
             let resp = PipelineResponse::clean(Response::Registered(result));
             (axum::http::StatusCode::CREATED, Json(resp)).into_response()
@@ -183,7 +183,7 @@ async fn unregister_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match core.unregister(&id) {
+    match core.unregister(&id).await {
         Ok(()) => {
             let resp = PipelineResponse::clean(Response::Unregistered(id));
             Json(resp).into_response()
@@ -316,7 +316,7 @@ async fn admin_unregister_handler(
     Extension(core): Extension<Arc<MdnsCore>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match core.admin_force_unregister(&id) {
+    match core.admin_force_unregister(&id).await {
         Ok(()) => {
             let resp = PipelineResponse::clean(Response::Unregistered(id));
             Json(resp).into_response()

@@ -154,7 +154,7 @@ struct Live {
 async fn stop_listeners(live: Option<Live>, mdns: &Option<Arc<koi_mdns::MdnsCore>>) {
     if let Some(live) = live {
         if let (Some(id), Some(mdns)) = (live.announce_id.as_deref(), mdns) {
-            if let Err(e) = mdns.unregister(id) {
+            if let Err(e) = mdns.unregister(id).await {
                 tracing::debug!(error = %e, "failed to withdraw _certmesh._tcp announce");
             }
         }
@@ -411,7 +411,7 @@ async fn register_certmesh_record(
         lease_secs: None,
         txt,
     };
-    match mdns.register(payload) {
+    match mdns.register(payload).await {
         Ok(result) => {
             tracing::info!(id = %result.id, port = http_port, fp = %fingerprint, "Certmesh CA announced via mDNS (_certmesh._tcp)");
             Some(result.id)

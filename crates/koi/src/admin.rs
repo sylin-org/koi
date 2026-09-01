@@ -20,6 +20,50 @@ pub fn status(client: &KoiClient, json: bool) -> anyhow::Result<()> {
             "  Services: {} total ({} alive, {} draining, {} permanent)",
             r.total, r.alive, r.draining, r.permanent,
         );
+        let control = &status.control_plane;
+        println!(
+            "  mDNS:     {} (generation {})",
+            control.state, control.generation
+        );
+        println!(
+            "    Routes: publish={}, explicit={}, browse={}, resolve={}",
+            control.routes.publish.as_deref().unwrap_or("none"),
+            control.routes.explicit_publish.as_deref().unwrap_or("none"),
+            control.routes.browse.as_deref().unwrap_or("none"),
+            control
+                .routes
+                .resolve
+                .as_deref()
+                .unwrap_or("browse fallback"),
+        );
+        println!(
+            "    Publications: {} desired, {} established, {} pending, {} failed",
+            control.publications.desired,
+            control.publications.established,
+            control.publications.pending,
+            control.publications.failed,
+        );
+        for provider in &control.providers {
+            let session = provider
+                .session
+                .map(|state| state.to_string())
+                .unwrap_or_else(|| "closed".to_string());
+            println!(
+                "    {}: {} via {}; session={}; installed={}, configured={}, running={}; {}",
+                provider.name,
+                provider.availability,
+                provider.api,
+                session,
+                provider.installed,
+                provider.configured,
+                provider.running,
+                provider.capabilities.summary(),
+            );
+            println!("      {}", provider.detail);
+        }
+        if let Some(transition) = &control.transition {
+            println!("    Transition: {transition}");
+        }
     }
     Ok(())
 }

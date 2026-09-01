@@ -1,16 +1,16 @@
-//! Koi mDNS - mDNS/DNS-SD service discovery domain.
+//! Koi mDNS — a provider-agnostic DNS-SD bounded context.
 //!
-//! This crate implements the mDNS capability for Koi. It exposes a domain
-//! boundary via [`MdnsCore`] with three faces:
-//!
-//! - **Commands**: Methods that drive domain actions (register, browse, etc.)
-//! - **State**: Read-only snapshots (admin_status, admin_registrations)
-//! - **Events**: Broadcast channel for service lifecycle events
+//! [`MdnsCore`] is the application boundary. Registration intent belongs to
+//! the registry, browse demand belongs to the discovery hub, provider routing
+//! belongs to the control plane, and native resources belong to provider
+//! sessions. Public mutation methods are asynchronous because success means a
+//! real provider operation has completed.
 
 pub mod adapter;
 #[cfg(target_os = "linux")]
 pub mod avahi;
-mod daemon;
+mod control_plane;
+mod discovery;
 pub mod error;
 pub mod events;
 pub mod http;
@@ -18,355 +18,436 @@ pub mod native;
 pub mod protocol;
 pub mod provider;
 mod registry;
-pub mod supervisor;
 #[cfg(target_os = "linux")]
 pub mod systemd_resolved;
 
-pub use self::daemon::BrowseSubscription;
+pub use self::discovery::BrowseSubscription;
 pub use self::error::{MdnsError, Result};
 pub use self::events::MdnsEvent;
 pub use self::registry::LeasePolicy;
 
 use std::sync::Arc;
-use std::time::Instant;
-
-use self::daemon::MdnsDaemon;
-use self::native::NativeMdnsProvider;
-use self::provider::MdnsProvider;
-use self::registry::{InsertOutcome, Registry};
+use std::time::{Duration, Instant};
 
 use koi_common::capability::{Capability, CapabilityStatus};
 use koi_common::firewall::{FirewallPort, FirewallProtocol};
 use koi_common::id::generate_short_id;
+use koi_common::mdns_protocol::{ControlPlaneState, MdnsControlPlaneStatus};
 use koi_common::types::{ServiceRecord, ServiceType, SessionId};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 use tokio_util::sync::CancellationToken;
 
+use self::adapter::MdnsAdapter;
+use self::control_plane::MdnsControlPlane;
+use self::discovery::{canonical_key, DiscoveryHub, ReceiveActivity};
+use self::registry::{RegistrationAttempt, RegistrationRegistry, WithdrawalAttempt};
 use crate::protocol::{
     AdminRegistration, DaemonStatus, LeaseMode, RegisterPayload, RegistrationResult,
 };
 
-/// How often the reaper sweeps for expired registrations.
-const REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-
-fn capability_summary(
-    registration_summary: &str,
-    provider_healthy: bool,
-    activity: crate::daemon::ReceiveActivity,
-) -> (String, bool) {
-    if !provider_healthy {
-        return (
-            format!("{registration_summary}; provider unavailable"),
-            false,
-        );
-    }
-    let receive = match (activity.browse_active_secs, activity.last_event_age_secs) {
-        (Some(active_secs), Some(age)) => format!(
-            "; browse active {active_secs}s, observed {} events (last {age}s ago)",
-            activity.events_seen
-        ),
-        (Some(active_secs), None) => {
-            format!("; browse active {active_secs}s, no records observed yet")
-        }
-        (None, _) => String::new(),
-    };
-    (format!("{registration_summary}{receive}"), true)
-}
+const REAPER_INTERVAL: Duration = Duration::from_secs(5);
 
 /// mDNS UDP port.
 pub const MDNS_PORT: u16 = 5353;
 
-/// Whether a UDP port is **exclusively free**.
-///
-/// This is a generic diagnostic used by lab tooling to reserve ephemeral ports.
-/// It is deliberately not provider-selection evidence: mDNS participants use
-/// cooperative reuse semantics, which each adapter must inspect for itself.
-///
-/// - **Unix** (the homelab case): fails with `AddrInUse` when ANY socket holds
-///   the port, including reuse-holders — exact detection.
-/// - **Windows**: plain binds do not conflict unless the holder asked for
-///   exclusivity, so this is suitable only for best-effort lab port selection.
-///
-/// Any non-`AddrInUse` bind error also reports "not free": we could not prove
-/// exclusivity, so we degrade instead of starting into an unknown environment.
+/// Whether a UDP port is exclusively free. This is a lab diagnostic, not
+/// provider-selection evidence; adapters probe cooperative mDNS semantics.
 pub fn udp_port_exclusively_free(port: u16) -> bool {
-    match std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port)) {
-        // Drop closes and releases the hold; the subsequent mdns-sd bind
-        // re-acquires with its own reuse semantics.
-        Ok(s) => {
-            drop(s);
-            true
-        }
-        Err(_) => false,
-    }
+    std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port)).is_ok()
 }
 
-/// Firewall ports required by the mDNS capability.
 pub fn firewall_ports() -> Vec<FirewallPort> {
     vec![FirewallPort::new("mDNS", FirewallProtocol::Udp, MDNS_PORT)]
 }
 
-/// The core mDNS facade. All adapters interact through this.
+/// Application façade for registration, discovery, lifecycle, and status.
 pub struct MdnsCore {
-    daemon: Arc<MdnsDaemon>,
-    registry: Arc<Registry>,
+    discovery: Arc<DiscoveryHub>,
+    control_plane: Arc<MdnsControlPlane>,
+    registry: Arc<RegistrationRegistry>,
+    operation_lock: Arc<Mutex<()>>,
     started_at: Instant,
 }
 
 impl MdnsCore {
-    /// Create a new core with a default (never-cancelled) token.
-    /// Used by standalone commands where the runtime drops on exit.
-    pub fn new() -> Result<Self> {
-        Self::with_cancel(CancellationToken::new())
+    /// Start with platform-independent native Koi mDNS only.
+    pub async fn new() -> Result<Self> {
+        Self::with_cancel(CancellationToken::new()).await
     }
 
-    /// Create a new core with a shared cancellation token.
-    /// Used by daemon mode for ordered shutdown.
-    pub fn with_cancel(cancel: CancellationToken) -> Result<Self> {
-        Self::with_provider(Arc::new(NativeMdnsProvider::new()?), cancel)
+    /// Start with native Koi mDNS and a shared shutdown token.
+    pub async fn with_cancel(cancel: CancellationToken) -> Result<Self> {
+        Self::with_adapters(Vec::new(), cancel).await
     }
 
-    /// Create a core around an injected platform provider.
-    ///
-    /// Production injects the stable runtime supervisor; tests and embedded
-    /// callers can inject a deterministic provider at this boundary.
-    pub fn with_provider(
-        provider: Arc<dyn MdnsProvider>,
+    /// Start with the platform adapter catalog. Native Koi is appended by the
+    /// control plane as the reserved, always-available fallback.
+    pub async fn with_adapters(
+        adapters: Vec<Arc<dyn MdnsAdapter>>,
         cancel: CancellationToken,
     ) -> Result<Self> {
+        let registry = Arc::new(RegistrationRegistry::new());
+        let control_plane = MdnsControlPlane::start(adapters, Arc::clone(&registry)).await?;
         let (event_tx, _) = koi_common::events::event_channel();
-        let daemon = Arc::new(MdnsDaemon::new(provider, event_tx));
-        let registry = Arc::new(Registry::new());
-        let started_at = Instant::now();
+        let discovery = Arc::new(DiscoveryHub::new(Arc::clone(&control_plane), event_tx));
+        let operation_lock = Arc::new(Mutex::new(()));
 
-        // Spawn reaper task - sweeps expired registrations every 5 seconds
-        let reaper_registry = registry.clone();
-        let reaper_daemon = daemon.clone();
-        let reaper_cancel = cancel.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(REAPER_INTERVAL);
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let expired = reaper_registry.reap();
-                        for (id, payload) in &expired {
-                            tracing::info!(
-                                name = %payload.name, id,
-                                reason = "expired",
-                                "Service unregistered"
-                            );
-                            if let Ok(st) = ServiceType::parse(&payload.service_type) {
-                                let _ = reaper_daemon.unregister(&payload.name, st.as_str());
-                            }
-                        }
-                    }
-                    _ = reaper_cancel.cancelled() => {
-                        tracing::debug!("Reaper task stopped");
-                        break;
-                    }
-                }
-            }
-        });
+        spawn_reaper(
+            Arc::clone(&registry),
+            Arc::clone(&control_plane),
+            Arc::clone(&operation_lock),
+            cancel,
+        );
 
         Ok(Self {
-            daemon,
+            discovery,
+            control_plane,
             registry,
-            started_at,
+            operation_lock,
+            started_at: Instant::now(),
         })
     }
 
-    // ── Commands ──────────────────────────────────────────────────────
-
-    /// Subscribe to services of the given type.
-    /// Pass `META_QUERY` to discover all service types on the network.
-    ///
-    /// Concurrent subscriptions to one type share a single real browse with
-    /// reference-counted fan-out: dropping one subscription never disturbs the
-    /// others, and the underlying browse stops only when the last drops.
     pub async fn subscribe_type(&self, service_type: &str) -> Result<BrowseSubscription> {
-        let (key, is_meta) = daemon::canonical_key(service_type)?;
-        Ok(self.daemon.subscribe_type(&key, is_meta))
+        let (key, is_meta) = canonical_key(service_type)?;
+        Ok(self.discovery.clone().subscribe_type(&key, is_meta))
     }
 
-    /// Register a service with a default permanent policy.
-    pub fn register(&self, payload: RegisterPayload) -> Result<RegistrationResult> {
+    pub async fn register(&self, payload: RegisterPayload) -> Result<RegistrationResult> {
         self.register_with_policy(payload, LeasePolicy::Permanent, None)
+            .await
     }
 
-    /// The single registration entry point. Every adapter explicitly chooses a policy.
-    pub fn register_with_policy(
+    /// Transactional registration entry point used by every transport.
+    pub async fn register_with_policy(
         &self,
-        payload: RegisterPayload,
+        mut payload: RegisterPayload,
         policy: LeasePolicy,
         session_id: Option<SessionId>,
     ) -> Result<RegistrationResult> {
-        let st = ServiceType::parse(&payload.service_type)?;
-        let new_id = generate_short_id();
+        let service_type = ServiceType::parse(&payload.service_type)?;
+        payload.service_type = service_type.as_str().to_string();
+        let _operation = self.operation_lock.lock().await;
+        let mut transaction = RegistrationTransaction::new(
+            Arc::clone(&self.registry),
+            self.registry.begin_registration(
+                generate_short_id(),
+                payload.clone(),
+                policy.clone(),
+                session_id,
+            ),
+        );
+        let id = transaction.id().to_string();
+        let announcement = self.registry.desired_announcement(&id)?;
 
-        let outcome =
-            self.registry
-                .insert_or_reconnect(new_id, payload.clone(), policy.clone(), session_id);
-
-        match &outcome {
-            InsertOutcome::New { id } => {
-                if let Err(e) = self.daemon.register(
-                    &payload.name,
-                    st.as_str(),
-                    payload.port,
-                    payload.ip.as_deref(),
-                    &payload.txt,
-                ) {
-                    let _ = self.registry.remove(id);
-                    return Err(e);
-                }
-            }
-            InsertOutcome::Reconnected { old_payload, .. } => {
-                if old_payload.port != payload.port || old_payload.txt != payload.txt {
-                    let _ = self.daemon.unregister(&old_payload.name, st.as_str());
-                    if let Err(e) = self.daemon.register(
-                        &payload.name,
-                        st.as_str(),
-                        payload.port,
-                        payload.ip.as_deref(),
-                        &payload.txt,
-                    ) {
-                        tracing::warn!(
-                            name = %payload.name,
-                            error = %e,
-                            "Failed to re-register with updated payload during reconnection"
-                        );
-                    }
-                }
-            }
+        self.control_plane.publish(announcement).await?;
+        if let Err(error) = self.registry.confirm_publication(&id) {
+            let _ = self.control_plane.withdraw(&id).await;
+            return Err(error);
         }
+        transaction.commit();
 
-        let id = outcome.id().to_string();
-        let (mode, lease_secs) = match &policy {
-            LeasePolicy::Session { .. } => (LeaseMode::Session, None),
-            LeasePolicy::Heartbeat { lease, .. } => (LeaseMode::Heartbeat, Some(lease.as_secs())),
-            LeasePolicy::Permanent => (LeaseMode::Permanent, None),
-        };
-
+        let (mode, lease_secs) = lease_projection(&policy);
         let result = RegistrationResult {
             id,
-            name: payload.name.clone(),
-            service_type: st.short().to_string(),
+            name: payload.name,
+            service_type: service_type.short().to_string(),
             port: payload.port,
             mode,
             lease_secs,
         };
-
         tracing::info!(
             name = %result.name,
             service_type = %result.service_type,
             port = result.port,
             id = %result.id,
-            "Service registered"
+            "Service publication established"
         );
-
         Ok(result)
     }
 
-    /// Record a heartbeat for a registration. Resets last_seen; revives if draining.
-    /// Returns the lease duration in seconds (0 for non-heartbeat policies).
     pub fn heartbeat(&self, id: &str) -> Result<u64> {
         self.registry.heartbeat(id)
     }
 
-    /// Notify the core that a session has disconnected.
-    /// All non-permanent registrations for this session begin draining.
     pub fn session_disconnected(&self, session_id: &SessionId) {
-        let drained = self.registry.drain_session(session_id);
-        for id in &drained {
-            tracing::info!(
-                id,
-                session = %session_id.as_str(),
-                "Session disconnected, registration draining"
-            );
+        for id in self.registry.drain_session(session_id) {
+            tracing::info!(id, session = %session_id.as_str(), "Registration draining");
         }
     }
 
-    /// Unregister a previously registered service.
-    pub fn unregister(&self, id: &str) -> Result<()> {
-        let payload = self.registry.remove(id)?;
-        let st = ServiceType::parse(&payload.service_type)?;
-        self.daemon.unregister(&payload.name, st.as_str())?;
-        tracing::info!(name = %payload.name, id, reason = "explicit", "Service unregistered");
+    /// Withdraw one registration, acknowledging native resource release before
+    /// removing the aggregate from the registry.
+    pub async fn unregister(&self, id: &str) -> Result<()> {
+        let _operation = self.operation_lock.lock().await;
+        self.withdraw_locked(id, "explicit").await
+    }
+
+    async fn withdraw_locked(&self, id: &str, reason: &'static str) -> Result<()> {
+        let transaction = WithdrawalTransaction::new(
+            Arc::clone(&self.registry),
+            self.registry.begin_withdrawal(id)?,
+        );
+        let name = transaction.name().to_string();
+        self.control_plane.withdraw(id).await?;
+        transaction.commit();
+        tracing::info!(%name, id, reason, "Service publication withdrawn");
         Ok(())
     }
 
-    /// Resolve a specific service instance by its full name.
     pub async fn resolve(&self, instance: &str) -> Result<ServiceRecord> {
-        self.daemon.resolve(instance).await
+        self.discovery.clone().resolve(instance).await
     }
 
-    /// Subscribe to all service events. Returns a broadcast receiver.
     pub fn subscribe(&self) -> broadcast::Receiver<MdnsEvent> {
-        self.daemon.subscribe_all()
+        self.discovery.subscribe_all()
     }
 
-    /// Shut down gracefully: unregister all services, then stop the daemon.
+    /// Close browses, withdraw every publication, and release every provider
+    /// session. A successful return proves the resources are gone.
     pub async fn shutdown(&self) -> Result<()> {
-        let ids: Vec<String> = self.registry.all_ids();
-        for id in &ids {
-            if let Err(e) = self.unregister(id) {
-                tracing::warn!(id, error = %e, "Failed to unregister service during shutdown");
+        let _operation = self.operation_lock.lock().await;
+        self.discovery.shutdown_browses().await;
+
+        for id in self.registry.all_ids() {
+            if let Err(error) = self.withdraw_locked_without_lock(&id, "shutdown").await {
+                tracing::warn!(%id, %error, "Individual shutdown withdrawal will be retried by session shutdown");
             }
         }
-        self.daemon.shutdown().await?;
+        self.control_plane.shutdown().await?;
+
+        // Session shutdown is authoritative release proof. Clear any aggregate
+        // whose individual withdrawal failed before the provider epoch closed.
+        for id in self.registry.all_ids() {
+            if let Ok(attempt) = self.registry.begin_withdrawal(&id) {
+                self.registry.commit_withdrawal(attempt);
+            }
+        }
         tracing::info!("mDNS core shut down");
         Ok(())
     }
 
-    // ── State (read-only snapshots) ──────────────────────────────────
+    async fn withdraw_locked_without_lock(&self, id: &str, reason: &'static str) -> Result<()> {
+        let transaction = WithdrawalTransaction::new(
+            Arc::clone(&self.registry),
+            self.registry.begin_withdrawal(id)?,
+        );
+        let name = transaction.name().to_string();
+        self.control_plane.withdraw(id).await?;
+        transaction.commit();
+        tracing::info!(%name, id, reason, "Service publication withdrawn");
+        Ok(())
+    }
 
-    /// Daemon status overview.
     pub fn admin_status(&self) -> DaemonStatus {
         DaemonStatus {
             version: env!("CARGO_PKG_VERSION").to_string(),
             uptime_secs: self.started_at.elapsed().as_secs(),
             platform: std::env::consts::OS.to_string(),
             registrations: self.registry.counts(),
+            control_plane: self.control_plane.status(),
         }
     }
 
-    /// Snapshot all registrations for admin display.
+    pub fn control_plane_status(&self) -> MdnsControlPlaneStatus {
+        self.control_plane.status()
+    }
+
     pub fn admin_registrations(&self) -> Vec<(String, AdminRegistration)> {
         self.registry.snapshot()
     }
 
-    /// Snapshot one registration by ID or prefix.
     pub fn admin_inspect(&self, id_or_prefix: &str) -> Result<AdminRegistration> {
         let full_id = self.registry.resolve_prefix(id_or_prefix)?;
         self.registry.snapshot_one(&full_id)
     }
 
-    /// Admin: force-unregister a registration by ID or prefix.
-    pub fn admin_force_unregister(&self, id_or_prefix: &str) -> Result<()> {
+    pub async fn admin_force_unregister(&self, id_or_prefix: &str) -> Result<()> {
         let full_id = self.registry.resolve_prefix(id_or_prefix)?;
-        let payload = self.registry.remove(&full_id)?;
-        let st = ServiceType::parse(&payload.service_type)?;
-        let _ = self.daemon.unregister(&payload.name, st.as_str());
-        tracing::info!(
-            name = %payload.name,
-            id = %full_id,
-            reason = "admin_force",
-            "Service unregistered"
-        );
-        Ok(())
+        let _operation = self.operation_lock.lock().await;
+        self.withdraw_locked(&full_id, "admin_force").await
     }
 
-    /// Admin: force-drain a registration by ID or prefix.
     pub fn admin_drain(&self, id_or_prefix: &str) -> Result<()> {
         let full_id = self.registry.resolve_prefix(id_or_prefix)?;
         self.registry.force_drain(&full_id)
     }
 
-    /// Admin: force-revive a draining registration by ID or prefix.
     pub fn admin_revive(&self, id_or_prefix: &str) -> Result<()> {
         let full_id = self.registry.resolve_prefix(id_or_prefix)?;
         self.registry.force_revive(&full_id)
     }
+}
+
+fn spawn_reaper(
+    registry: Arc<RegistrationRegistry>,
+    control_plane: Arc<MdnsControlPlane>,
+    operation_lock: Arc<Mutex<()>>,
+    cancel: CancellationToken,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(REAPER_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let _operation = operation_lock.lock().await;
+                    let attempts = match registry.begin_reap() {
+                        Ok(attempts) => attempts,
+                        Err(error) => {
+                            tracing::warn!(%error, "Registration reaper could not build withdrawal intent");
+                            continue;
+                        }
+                    };
+                    for attempt in attempts {
+                        reap_one(&registry, &control_plane, attempt).await;
+                    }
+                }
+                _ = cancel.cancelled() => break,
+            }
+        }
+        tracing::debug!("mDNS registration reaper stopped");
+    });
+}
+
+async fn reap_one(
+    registry: &Arc<RegistrationRegistry>,
+    control_plane: &MdnsControlPlane,
+    attempt: WithdrawalAttempt,
+) {
+    let transaction = WithdrawalTransaction::new(Arc::clone(registry), attempt);
+    let id = transaction.id().to_string();
+    let name = transaction.name().to_string();
+    match control_plane.withdraw(&id).await {
+        Ok(()) => {
+            transaction.commit();
+            tracing::info!(%name, %id, reason = "expired", "Service publication withdrawn");
+        }
+        Err(error) => {
+            tracing::warn!(%name, %id, %error, "Expired publication withdrawal will retry");
+        }
+    }
+}
+
+/// Cancellation-safe registry mutation. Until `commit`, dropping the future
+/// restores the exact aggregate that preceded publication.
+struct RegistrationTransaction {
+    registry: Arc<RegistrationRegistry>,
+    attempt: Option<RegistrationAttempt>,
+    id: String,
+}
+
+impl RegistrationTransaction {
+    fn new(registry: Arc<RegistrationRegistry>, attempt: RegistrationAttempt) -> Self {
+        let id = attempt.outcome.id().to_string();
+        Self {
+            registry,
+            attempt: Some(attempt),
+            id,
+        }
+    }
+
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn commit(&mut self) {
+        self.attempt.take();
+    }
+}
+
+impl Drop for RegistrationTransaction {
+    fn drop(&mut self) {
+        if let Some(attempt) = self.attempt.take() {
+            self.registry.rollback_registration(attempt);
+        }
+    }
+}
+
+/// Cancellation-safe withdrawal intent. A dropped operation becomes desired
+/// again and control-plane reconciliation restores any already-released lease.
+struct WithdrawalTransaction {
+    registry: Arc<RegistrationRegistry>,
+    attempt: Option<WithdrawalAttempt>,
+    id: String,
+    name: String,
+}
+
+impl WithdrawalTransaction {
+    fn new(registry: Arc<RegistrationRegistry>, attempt: WithdrawalAttempt) -> Self {
+        let id = attempt.id.clone();
+        let name = attempt.announcement.name.clone();
+        Self {
+            registry,
+            attempt: Some(attempt),
+            id,
+            name,
+        }
+    }
+
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn commit(mut self) {
+        if let Some(attempt) = self.attempt.take() {
+            self.registry.commit_withdrawal(attempt);
+        }
+    }
+}
+
+impl Drop for WithdrawalTransaction {
+    fn drop(&mut self) {
+        if let Some(attempt) = self.attempt.take() {
+            self.registry.rollback_withdrawal(attempt);
+        }
+    }
+}
+
+fn lease_projection(policy: &LeasePolicy) -> (LeaseMode, Option<u64>) {
+    match policy {
+        LeasePolicy::Session { .. } => (LeaseMode::Session, None),
+        LeasePolicy::Heartbeat { lease, .. } => (LeaseMode::Heartbeat, Some(lease.as_secs())),
+        LeasePolicy::Permanent => (LeaseMode::Permanent, None),
+    }
+}
+
+fn capability_summary(
+    status: &MdnsControlPlaneStatus,
+    registrations: &str,
+    activity: ReceiveActivity,
+) -> (String, bool) {
+    let routes = &status.routes;
+    let route_summary = format!(
+        "publish {}, browse {}, resolve {}",
+        routes.publish.as_deref().unwrap_or("none"),
+        routes.browse.as_deref().unwrap_or("none"),
+        routes.resolve.as_deref().unwrap_or("browse fallback")
+    );
+    let receive = match (activity.browse_active_secs, activity.last_event_age_secs) {
+        (Some(active), Some(age)) => format!(
+            "; browse active {active}s, observed {} events (last {age}s ago)",
+            activity.events_seen
+        ),
+        (Some(active), None) => format!("; browse active {active}s, no records observed yet"),
+        (None, _) => String::new(),
+    };
+    let healthy = matches!(
+        status.state,
+        ControlPlaneState::Ready | ControlPlaneState::Reconciling
+    ) && routes.publish.is_some()
+        && routes.browse.is_some()
+        && status.publications.failed == 0;
+    (
+        format!(
+            "control plane {:?}; {route_summary}; {registrations}{receive}",
+            status.state
+        ),
+        healthy,
+    )
 }
 
 #[async_trait::async_trait]
@@ -377,19 +458,13 @@ impl Capability for MdnsCore {
 
     async fn status(&self) -> CapabilityStatus {
         let counts = self.registry.counts();
-        let provider = self.daemon.provider_status();
-        let reg = format!(
-            "provider {} ({}); {} registered ({} alive, {} draining)",
-            provider.name, provider.detail, counts.total, counts.alive, counts.draining
+        let registrations = format!(
+            "{} registered ({} alive, {} draining)",
+            counts.total, counts.alive, counts.draining
         );
-
-        // Browse APIs emit changes, not keepalives. Surface activity as evidence,
-        // but never turn an ordinarily quiet LAN into a false failure. Provider
-        // health belongs to adapter-owned probes and the runtime supervisor.
-        let activity = self.daemon.receive_activity();
-
-        let (summary, healthy) = capability_summary(&reg, provider.healthy, activity);
-
+        let status = self.control_plane.status();
+        let (summary, healthy) =
+            capability_summary(&status, &registrations, self.discovery.receive_activity());
         CapabilityStatus {
             name: "mdns".to_string(),
             summary,
@@ -399,94 +474,39 @@ impl Capability for MdnsCore {
 }
 
 #[cfg(test)]
-mod capability_status_tests {
+mod tests {
     use super::*;
-    use crate::daemon::ReceiveActivity;
 
     #[test]
-    fn quiet_event_stream_is_telemetry_not_failure() {
-        let (summary, healthy) = capability_summary(
-            "provider avahi; 0 registered",
-            true,
-            ReceiveActivity {
-                events_seen: 42,
-                last_event_age_secs: Some(100_000),
-                browse_active_secs: Some(100_001),
-            },
-        );
-        assert!(healthy);
-        assert!(summary.contains("observed 42 events (last 100000s ago)"));
+    fn free_port_reports_free_and_held_port_reports_taken() {
+        let socket = std::net::UdpSocket::bind(("0.0.0.0", 0)).expect("bind");
+        let port = socket.local_addr().expect("local address").port();
+        assert!(!udp_port_exclusively_free(port));
+        drop(socket);
+        assert!(udp_port_exclusively_free(port));
     }
 
     #[test]
-    fn empty_event_stream_states_uncertainty_without_failure() {
+    fn quiet_browse_is_telemetry_not_failure() {
+        let status = MdnsControlPlaneStatus {
+            state: ControlPlaneState::Ready,
+            routes: koi_common::mdns_protocol::MdnsRoutes {
+                publish: Some("avahi".to_string()),
+                browse: Some("avahi".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let (summary, healthy) = capability_summary(
-            "provider native; 0 registered",
-            true,
+            &status,
+            "0 registered",
             ReceiveActivity {
                 events_seen: 0,
                 last_event_age_secs: None,
-                browse_active_secs: Some(100_000),
+                browse_active_secs: Some(10_000),
             },
         );
         assert!(healthy);
         assert!(summary.contains("no records observed yet"));
     }
-
-    #[test]
-    fn adapter_failure_remains_authoritative() {
-        let (summary, healthy) = capability_summary(
-            "provider avahi; 0 registered",
-            false,
-            ReceiveActivity {
-                events_seen: 1_000,
-                last_event_age_secs: Some(0),
-                browse_active_secs: Some(10),
-            },
-        );
-        assert!(!healthy);
-        assert!(summary.ends_with("provider unavailable"));
-    }
-}
-
-#[cfg(test)]
-mod port_probe_tests {
-    use super::*;
-
-    #[test]
-    fn free_port_reports_free() {
-        // OS assigns an unbound ephemeral port: the probe must succeed and
-        // release the hold (binding the same port again right after works).
-        let probe_ok = {
-            let s = std::net::UdpSocket::bind(("127.0.0.1", 0)).expect("bind");
-            let port = s.local_addr().unwrap().port();
-            drop(s);
-            udp_port_exclusively_free(port)
-        };
-        assert!(
-            probe_ok,
-            "an unbound ephemeral port must report exclusively free"
-        );
-    }
-
-    #[test]
-    fn plain_held_port_reports_taken() {
-        // Cross-platform deterministic case: a PLAIN holder (no reuse flags)
-        // always conflicts with the probe's plain bind.
-        let holder = std::net::UdpSocket::bind(("0.0.0.0", 0)).expect("bind");
-        let port = holder.local_addr().unwrap().port();
-        assert!(
-            !udp_port_exclusively_free(port),
-            "a plainly held port must not report exclusively free"
-        );
-        drop(holder);
-        assert!(udp_port_exclusively_free(port), "released reports free");
-    }
-
-    // NOTE (ADR-030, measured on Ubuntu 24 runner kernel): a SO_REUSEADDR
-    // holder does NOT reliably make a no-reuse probe fail — modern kernels
-    // permitted the mixed bind in CI. Detecting reuse-holders by bind
-    // semantics is therefore not portable; final coexistence behavior is
-    // decided by physical validation (test-01 + avahi) and recorded in the
-    // ledger. The probe remains as a guard against exclusive holders.
 }

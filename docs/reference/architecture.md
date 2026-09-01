@@ -36,7 +36,7 @@ Koi is a single binary with a layered architecture. Three adapter layers sit on 
 | `crates/koi-compose/`     | `koi-compose`     | Composition root - `build_cores`, `Cores`/`DaemonCores`, `ordered_shutdown`, orchestrator, capability ladder, certmesh background loops, self-announce, integration bridges | ~1,900 |
 | `crates/koi-serve/`       | `koi-serve`       | Serving layer - the one HTTP/OpenAPI router (`HttpConfig` + `start`), `serve()`, IPC pipe + piped stdio (NDJSON), in-process MCP HTTP, inter-node mTLS + ACME listeners, Prometheus SD, dashboard wiring, posture-reactive trust plane | ~3,600 |
 | `crates/koi-dashboard/`   | `koi-dashboard`   | Presentation - dashboard + mDNS browser (HTML, SSE, forwarder, lazy meta-browse) | ~1,345 |
-| `crates/koi-mdns/`        | `koi-mdns`        | mDNS domain - daemon, registry, protocol, HTTP routes              | ~3,662 |
+| `crates/koi-mdns/`        | `koi-mdns`        | mDNS domain - registry, discovery hub, provider control plane, HTTP routes | ~5,500 |
 | `crates/koi-certmesh/`    | `koi-certmesh`    | Certificate mesh - CA, enrollment, roster, failover                | ~12,162|
 | `crates/koi-crypto/`      | `koi-crypto`      | Crypto primitives - keys, TOTP, auth adapters, unlock slots        | ~3,162 |
 | `crates/koi-config/`      | `koi-config`      | Config, state, breadcrumb discovery                                | ~574   |
@@ -66,7 +66,7 @@ koi-embedded     → koi-serve, koi-compose, koi-common, koi-client (+ axum, req
         │            (the composition root: build_cores, Cores/DaemonCores, ordered_shutdown,
         │             orchestrator, capability ladder, certmesh loops, self-announce, bridges)
         ├── koi-common
-        ├── koi-mdns        → koi-common, mdns-sd, axum, tokio
+        ├── koi-mdns        → koi-common, mdns-sd, zbus, axum, tokio
         ├── koi-certmesh    → koi-common, koi-crypto, os-truststore (external, crates.io), axum, tokio
         ├── koi-crypto      → ring, rcgen, totp-rs, p256
         ├── koi-config      → koi-common
@@ -114,11 +114,17 @@ the kernel and domain closures stay clean.
 
 **Adapters are pure translation.** An adapter maps a transport to core API calls. Each adapter is roughly 150 lines. They don't contain domain logic, validation, or state management.
 
-**Core owns the registry.** All registered services, the per-type browse hub (one real mDNS browse per type, reference-counted broadcast fan-out to N subscriptions), and subscription fan-out live in the core. If an adapter disconnects, the core cleans up.
+**Domain ownership is singular.** `RegistrationRegistry` owns desired service
+intent and leases. `DiscoveryHub` owns per-type browse demand, cache, and fan-out.
+`MdnsControlPlane` owns route policy and synchronization. Provider sessions own
+their native handles, recovery, and acknowledged teardown. `MdnsCore` coordinates
+transactions across those owners without duplicating their state.
 
 **Rust visibility enforces boundaries.** Domain internals are `pub(crate)` - invisible to adapters. Adapters receive `Arc<DomainCore>` and nothing else.
 
-**The mdns-sd boundary.** `crates/koi-mdns/src/daemon.rs` is the only file that imports `mdns_sd`. Nowhere else. The conversion from `mdns_sd::ServiceInfo` to `ServiceRecord` lives in one place.
+**The provider boundary.** `crates/koi-mdns/src/native.rs` is the only file that
+imports `mdns_sd`; Avahi and systemd-resolved own their respective D-Bus types in
+their adapter modules. Provider-native values never cross the session port.
 
 ---
 

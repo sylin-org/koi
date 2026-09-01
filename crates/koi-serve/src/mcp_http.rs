@@ -125,12 +125,15 @@ impl KoiSource for CoreSource {
             },
         };
         mdns.register_with_policy(payload, policy, None)
+            .await
             .map_err(|e| SourceError(e.to_string()))
     }
 
     async fn unregister(&self, id: String) -> Result<(), SourceError> {
         let mdns = self.cores.mdns.as_ref().ok_or_else(|| disabled("mdns"))?;
-        mdns.unregister(&id).map_err(|e| SourceError(e.to_string()))
+        mdns.unregister(&id)
+            .await
+            .map_err(|e| SourceError(e.to_string()))
     }
 
     async fn heartbeat(&self, id: String) -> Result<(), SourceError> {

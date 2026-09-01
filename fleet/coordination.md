@@ -72,28 +72,41 @@ and the brief corrected.
 ## Windows mDNS control-plane workstream
 
 The Windows workstation (`stone-leaded-sparkle`) makes Koi's provider architecture
-native to Windows; it does not build a second architecture. Pull ADR-038 from
-`origin/dev`. The shared shape is simply adapter → supervisor → `MdnsCore`.
+native to Windows; it does not build a second architecture. Pull ADR-039 from
+`origin/dev`. The shared shape is adapter → stateful provider session →
+`MdnsControlPlane`, with registration intent in `RegistrationRegistry` and browse
+demand in `DiscoveryHub`.
 
 1. Record the real Windows/DNS Client/firewall/UDP 5353 baseline and exercise the
    official `dnsapi.dll` DNS-SD calls against independent LAN peers. Check Bonjour
    too when it is genuinely installed. Put evidence in `fleet/windows/journal.md`.
 2. Add one real adapter for the official Win32 DNS-SD facility and one for Bonjour
-   when present. Each owns inspection, capability flags, native callbacks, arming,
-   and shutdown. Composition only lists them; the supervisor already appends native
-   Koi as the reserved lowest-priority provider. Avahi is not Bonjour.
+   when present. Each owns read-only assessment, capability flags, a stateful
+   session, native callbacks and resource handles, owner/config recovery, and
+   acknowledged shutdown. Composition only lists them; the control plane already
+   appends native Koi as the reserved lowest-priority provider. Avahi is not Bonjour.
 3. Validate publish, browse, resolve, TXT/address/interface data, removal, provider
    loss/recovery, sleep/resume, adapter changes, and relevant firewall profiles using
    the one installed Koi service. Use at least one Avahi peer and one Bonjour-class
    peer, restore the baseline, leave exactly one healthy Koi, then push to `dev`.
 
 Capability claims must come from real operations—never a file-presence guess, stub,
-placeholder, or TODO. Provider-native types stay inside adapters; normalized Koi
-events, leases, cache, transports, and runtime route policy stay shared. Providers
-may collaborate only on non-overlapping routes, and a quiet DNS-SD stream is
-telemetry rather than a health failure. Fix a shared-contract defect in the shared
-contract instead of forking it. Reflectors, wide-area DNS-SD, and proprietary wire
-protocols are outside this workstream.
+placeholder, or TODO. Publication returns only after a native registration exists;
+withdrawal, browse close, and shutdown are acknowledged. Provider-native types stay
+inside adapters; normalized Koi events, leases, cache, transports, and runtime route
+policy stay shared. Providers may collaborate only on non-overlapping routes, and a
+quiet DNS-SD stream is telemetry rather than a health failure. Session-local recovery
+must preserve desired publications and browse demand across service restart,
+sleep/resume, interface churn, and callback loss without asking the control plane to
+reopen the same healthy adapter. Fix a shared-contract defect in the shared contract
+instead of forking it. Reflectors, wide-area DNS-SD, and proprietary wire protocols
+are outside this workstream.
+
+Assess operations under the installed Windows service identity, including API ACL,
+firewall profile, and non-interactive authorization—not merely DLL/method presence.
+Keep independently usable capabilities when another operation is denied. Linux
+resolve1 is the reference: a user service denied `RegisterService` still contributes
+point resolution while native Koi supplies publication.
 
 ## Mechanics (hardened by the canary — v1's traps are protocol now)
 
@@ -174,14 +187,22 @@ test, or a process that merely started.
   scale, controls, and layout with the project's established reference on that
   desktop. Consult sibling products and upstream toolkit history when behavior
   diverges; a window that merely stays open has not passed.
-- **mDNS provider transition:** use the one installed Koi and an independent LAN
-  peer to prove publish/browse/resolve/TXT/removal across Avahi → best fallback →
-  native-only → restoration, without a Koi restart or overlapping route. Agents may
+- **mDNS provider transition:** use exactly one installed Koi on each of two
+  independent LAN hosts to prove bidirectional publish/browse/resolve/TXT/removal
+  across Avahi → best fallback → native-only → restoration, without a Koi restart
+  or overlapping route. The peer must exercise its Koi API, not stand in as an
+  Avahi command-line fixture. Agents may
   stop/restart mDNS facilities on their own machine after recording exact state and
-  installing fail-safe restoration. PID/hash, route generation, peer evidence, and
-  final restored state are required; loopback is not the peer gate. Linux runs
+  installing fail-safe restoration. PID/hash on both hosts, structured route and
+  provider/session evidence, route generation, publication synchronization, peer
+  evidence, and final restored state are required; prose summaries and loopback are
+  not gates. Linux runs
   `scripts/integration/mdns-provider-transition.sh`; the precise contract and
   Windows adaptation are in `docs/testing/mdns-provider-transition.md`.
+  Reference Linux pass `20260901T004947Z-280219` used the unchanged installed
+  test-01/test-02 PIDs `280122`/`89908`, artifact SHA-256
+  `05f15f4fcd80ff720c044698f7d2eff545823e7803ca59e0e1e4170e15c8e369`, and
+  generations 1–5; use its structured evidence shape as the minimum Windows gate.
 - **Trust truth:** distinguish local CA ownership from enrolled membership.
   Use certmesh diagnosis/posture and the on-disk member identity together; an
   empty local roster or `ca_initialized: false` is normal on a member and must

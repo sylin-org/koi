@@ -101,7 +101,7 @@ pub fn spawn(
                         // Posture flipped → re-announce `_http` so its stamp is current
                         // (re-reads posture/fp/expires fresh — never the cached boot TXT).
                         if let (Some(old), Some(mdns)) = (http_id.take(), cores.mdns.as_ref()) {
-                            let _ = mdns.unregister(&old);
+                            let _ = mdns.unregister(&old).await;
                         }
                         http_id = crate::announce::http_record(
                             &cores,
@@ -120,8 +120,8 @@ pub fn spawn(
 
         // Withdraw both records (and the in-zone `_mcp` DNS TXT) on shutdown.
         if let (Some(id), Some(mdns)) = (http_id, cores.mdns.as_ref()) {
-            let _ = mdns.unregister(&id);
+            let _ = mdns.unregister(&id).await;
         }
-        crate::announce::withdraw_mcp(&cores, &hostname, &cfg.dns_zone, mcp_id.as_deref());
+        crate::announce::withdraw_mcp(&cores, &hostname, &cfg.dns_zone, mcp_id.as_deref()).await;
     }));
 }

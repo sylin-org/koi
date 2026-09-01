@@ -159,7 +159,7 @@ pub async fn announce(
     match mode {
         Mode::Standalone => {
             let core = standalone_core().await?;
-            let result = core.register(payload)?;
+            let result = core.register(payload).await?;
             print_registration(&result, json);
 
             let dur = super::effective_timeout(timeout, None);
@@ -235,7 +235,7 @@ pub async fn unregister(id: &str, json: bool, mode: Mode) -> anyhow::Result<()> 
     match mode {
         Mode::Standalone => {
             let core = standalone_core().await?;
-            core.unregister(id)?;
+            core.unregister(id).await?;
             let _ = core.shutdown().await;
         }
         Mode::Client { endpoint, token } => {

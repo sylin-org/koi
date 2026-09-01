@@ -133,12 +133,15 @@ dashboard/browser HTML, SSE, and browse cache live in `koi-dashboard`.
 - `avahi.rs` and `systemd_resolved.rs` independently own their native D-Bus contracts
 - Every adapter owns its detector, capability evidence, and real native operations
 - `koi-compose/src/mdns.rs` only assembles the platform adapter catalog
-- `MdnsSupervisor` selects non-overlapping capability routes and reconciles them at runtime
+- `MdnsControlPlane` selects non-overlapping capability routes and reconciles them at runtime
 - Native Koi is always catalogued as the lowest-priority full provider
-- `MdnsCore` and its provider-neutral browse hub depend on the `MdnsProvider` port
+- `RegistrationRegistry` alone owns desired publication intent; `DiscoveryHub` alone owns browse demand
+- Stateful `ProviderSession`s own native resources, recovery, and acknowledged teardown
+- `MdnsCore` coordinates transactions; it is not a provider facade or resource owner
 - Native mdns-sd operations run on a dedicated worker thread (`koi-mdns-native`)
 - Never use mdns-sd types outside `native.rs`; translate to provider values there
-- Provider transitions are break-before-make and generation-fenced
+- Write-route transitions are break-before-make; read events are generation-fenced
+- Tests and workbooks assert structured control-plane state, never human summaries
 
 ### 5. Constants Convention
 

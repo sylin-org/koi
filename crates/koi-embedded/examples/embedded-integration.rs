@@ -584,7 +584,7 @@ async fn run_ipc_tests(
                                     let policy = koi_mdns::LeasePolicy::Session {
                                         grace: Duration::from_secs(30),
                                     };
-                                    match core.register_with_policy(payload, policy, None) {
+                                    match core.register_with_policy(payload, policy, None).await {
                                         Ok(result) => koi_mdns::protocol::MdnsPipelineResponse::clean(
                                             koi_mdns::protocol::Response::Registered(result),
                                         ),
@@ -605,7 +605,7 @@ async fn run_ipc_tests(
                                     ),
                                     Err(err) => koi_mdns::protocol::error_to_pipeline(&err),
                                 },
-                                Ok(MdnsRequest::Unregister(id)) => match core.unregister(&id) {
+                                Ok(MdnsRequest::Unregister(id)) => match core.unregister(&id).await {
                                     Ok(()) => koi_mdns::protocol::MdnsPipelineResponse::clean(
                                         koi_mdns::protocol::Response::Unregistered(id),
                                     ),
@@ -979,7 +979,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             lease_secs: Some(30),
             txt,
         };
-        let reg = mdns.register(payload);
+        let reg = mdns.register(payload).await;
         if let Ok(reg) = reg {
             let found = tokio::time::timeout(Duration::from_secs(5), browse.recv()).await;
             match found {
@@ -996,7 +996,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(err) => harness.fail("mdns: resolve registered service", &format!("{err}")),
             }
 
-            match mdns.unregister(&reg.id) {
+            match mdns.unregister(&reg.id).await {
                 Ok(()) => harness.pass("mdns: unregister"),
                 Err(err) => harness.fail("mdns: unregister", &format!("{err}")),
             }

@@ -61,7 +61,10 @@ pub async fn handle_line<W: AsyncWriteExt + Unpin>(
             let policy = LeasePolicy::Session {
                 grace: session_grace,
             };
-            let resp = match core.register_with_policy(payload, policy, Some(session_id.clone())) {
+            let resp = match core
+                .register_with_policy(payload, policy, Some(session_id.clone()))
+                .await
+            {
                 Ok(result) => PipelineResponse::clean(Response::Registered(result)),
                 Err(e) => mdns_protocol::error_to_pipeline(&e),
             };
@@ -69,7 +72,7 @@ pub async fn handle_line<W: AsyncWriteExt + Unpin>(
         }
 
         Request::Unregister(id) => {
-            let resp = match core.unregister(&id) {
+            let resp = match core.unregister(&id).await {
                 Ok(()) => PipelineResponse::clean(Response::Unregistered(id)),
                 Err(e) => mdns_protocol::error_to_pipeline(&e),
             };

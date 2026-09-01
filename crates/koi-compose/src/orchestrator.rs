@@ -181,7 +181,7 @@ async fn handle_start(
                 txt: instance.metadata.txt.clone(),
             };
 
-            match mdns.register(payload) {
+            match mdns.register(payload).await {
                 Ok(result) => {
                     tracing::info!(
                         name = %service_name,
@@ -289,7 +289,7 @@ async fn handle_stop(
     // ── mDNS unregister ─────────────────────────────────────────
     if let Some(ref mdns) = targets.mdns {
         for mdns_id in &res.mdns_ids {
-            if let Err(e) = mdns.unregister(mdns_id) {
+            if let Err(e) = mdns.unregister(mdns_id).await {
                 tracing::warn!(id = mdns_id, error = %e, "Orchestrator: mDNS unregister failed");
             } else {
                 tracing::info!(id = mdns_id, name, "Orchestrator: mDNS unregistered");
@@ -343,7 +343,7 @@ async fn cleanup_all(
 
         if let Some(ref mdns) = targets.mdns {
             for mdns_id in &res.mdns_ids {
-                let _ = mdns.unregister(mdns_id);
+                let _ = mdns.unregister(mdns_id).await;
             }
         }
         if let Some(ref dns) = targets.dns {
@@ -610,7 +610,11 @@ mod tests {
 
         let cancel = CancellationToken::new();
         let runtime = Arc::new(RuntimeCore::new(koi_runtime::RuntimeConfig::default()));
-        let mdns = Arc::new(koi_mdns::MdnsCore::with_cancel(cancel.clone()).expect("mDNS core"));
+        let mdns = Arc::new(
+            koi_mdns::MdnsCore::with_cancel(cancel.clone())
+                .await
+                .expect("mDNS core"),
+        );
         let dns = Arc::new(koi_dns::DnsRuntime::new(
             koi_dns::DnsCore::new(
                 koi_dns::DnsConfig {

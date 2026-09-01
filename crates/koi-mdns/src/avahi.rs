@@ -2,27 +2,29 @@
 //!
 //! The adapter owns Avahi entry groups and browse objects, translates their
 //! signals into provider-neutral observations, and performs short, local D-Bus
-//! recovery while the runtime supervisor decides whether to change providers.
+//! recovery while the control plane decides whether to change capability routes.
 
 #![allow(clippy::too_many_arguments)] // Avahi's fixed D-Bus method signatures.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use zbus::names::BusName;
 use zbus::zvariant::OwnedObjectPath;
 use zbus::Connection;
 
 use crate::adapter::{
-    AdapterApi, AdapterReadiness, AdapterReport, MdnsAdapter, MdnsCapabilities, ProbeFact,
+    failed_assessment, MdnsAdapter, MdnsCapabilities, MdnsProviderReport, ProbeFact, ProviderApi,
+    ProviderAvailability, ProviderDescriptor, ProviderSessionState,
 };
-use crate::error::{MdnsError, Result};
+use crate::error::{MdnsError, ProviderFailure, ProviderOperation, Result};
 use crate::provider::{
-    MdnsProvider, ProviderAddress, ProviderBrowse, ProviderEvent, ProviderService, ProviderStatus,
+    provider_error, Announcement, BrowseLease, ProviderAddress, ProviderBrowse, ProviderEvent,
+    ProviderService, ProviderSession, PublicationLease,
 };
 
 const AVAHI_DESTINATION: &str = "org.freedesktop.Avahi";
@@ -44,6 +46,13 @@ const READY_TIMEOUT: Duration = Duration::from_secs(5);
 const ENTRY_GROUP_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_COLLISION_ATTEMPTS: usize = 10;
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(2);
+
+const DESCRIPTOR: ProviderDescriptor = ProviderDescriptor::new(
+    "avahi",
+    AVAHI_PRIORITY,
+    ProviderApi::SystemDbus,
+    MdnsCapabilities::FULL_PROVIDER_WITH_DIRECT_RESOLVE,
+);
 
 type ResolveReply = (
     i32,
@@ -242,34 +251,27 @@ struct ReadyAvahi {
 
 #[async_trait::async_trait]
 impl MdnsAdapter for AvahiAdapter {
-    fn name(&self) -> &'static str {
-        "avahi"
+    fn descriptor(&self) -> ProviderDescriptor {
+        DESCRIPTOR
     }
 
-    fn priority(&self) -> u16 {
-        AVAHI_PRIORITY
-    }
-
-    fn api(&self) -> AdapterApi {
-        AdapterApi::SystemDbus
-    }
-
-    fn capabilities(&self) -> MdnsCapabilities {
-        MdnsCapabilities::FULL_PROVIDER_WITH_DIRECT_RESOLVE
-    }
-
-    async fn inspect(&self) -> AdapterReport {
+    async fn assess(&self) -> MdnsProviderReport {
         match inspect_avahi(self).await {
             Ok(ready) => ready_report(self, &ready.version),
             Err(report) => report,
         }
     }
 
-    async fn arm(&self) -> Result<Arc<dyn MdnsProvider>> {
+    async fn open(&self) -> Result<Arc<dyn ProviderSession>> {
         let ready = inspect_avahi(self).await.map_err(|report| {
-            MdnsError::Daemon(format!("Avahi cannot be armed: {}", report.detail))
+            provider_error(
+                DESCRIPTOR.name,
+                ProviderOperation::Open,
+                ProviderFailure::Unavailable,
+                report.detail,
+            )
         })?;
-        Ok(Arc::new(AvahiMdnsProvider::start(
+        Ok(Arc::new(AvahiSession::start(
             ready.connection,
             ready.owner,
             ready.version,
@@ -277,25 +279,28 @@ impl MdnsAdapter for AvahiAdapter {
     }
 }
 
-fn ready_report(adapter: &AvahiAdapter, version: &str) -> AdapterReport {
-    AdapterReport {
-        name: adapter.name(),
-        priority: adapter.priority(),
-        api: adapter.api(),
-        readiness: AdapterReadiness::Ready,
+fn ready_report(_adapter: &AvahiAdapter, version: &str) -> MdnsProviderReport {
+    MdnsProviderReport {
+        name: DESCRIPTOR.name.to_string(),
+        priority: DESCRIPTOR.priority,
+        api: DESCRIPTOR.api,
+        availability: ProviderAvailability::Ready,
         installed: ProbeFact::Yes,
         configured: ProbeFact::Yes,
         running: ProbeFact::Yes,
-        capabilities: adapter.capabilities(),
+        capabilities: DESCRIPTOR.capabilities,
+        session: None,
         detail: format!("{version} running on the system D-Bus"),
     }
 }
 
-async fn inspect_avahi(adapter: &AvahiAdapter) -> std::result::Result<ReadyAvahi, AdapterReport> {
-    let failed = |readiness, detail| AdapterReport::failed_inspection(adapter, readiness, detail);
+async fn inspect_avahi(
+    _adapter: &AvahiAdapter,
+) -> std::result::Result<ReadyAvahi, MdnsProviderReport> {
+    let failed = |availability, detail| failed_assessment(DESCRIPTOR, availability, detail);
     let connection = Connection::system().await.map_err(|error| {
         failed(
-            AdapterReadiness::Unavailable,
+            ProviderAvailability::Unavailable,
             format!("system D-Bus unavailable: {error}"),
         )
     })?;
@@ -304,19 +309,19 @@ async fn inspect_avahi(adapter: &AvahiAdapter) -> std::result::Result<ReadyAvahi
         .await
         .map_err(|error| {
             failed(
-                AdapterReadiness::Unavailable,
+                ProviderAvailability::Unavailable,
                 format!("cannot inspect the system D-Bus: {error}"),
             )
         })?;
     let bus_name = BusName::try_from(AVAHI_DESTINATION).map_err(|error| {
         failed(
-            AdapterReadiness::Unavailable,
+            ProviderAvailability::Unavailable,
             format!("invalid Avahi D-Bus name: {error}"),
         )
     })?;
     let has_owner = dbus.name_has_owner(bus_name).await.map_err(|error| {
         failed(
-            AdapterReadiness::Unavailable,
+            ProviderAvailability::Unavailable,
             format!("cannot determine whether Avahi is running: {error}"),
         )
     })?;
@@ -332,22 +337,23 @@ async fn inspect_avahi(adapter: &AvahiAdapter) -> std::result::Result<ReadyAvahi
                 }
             })
             .unwrap_or(ProbeFact::Unknown);
-        return Err(AdapterReport {
-            name: adapter.name(),
-            priority: adapter.priority(),
-            api: adapter.api(),
-            readiness: AdapterReadiness::Absent,
+        return Err(MdnsProviderReport {
+            name: DESCRIPTOR.name.to_string(),
+            priority: DESCRIPTOR.priority,
+            api: DESCRIPTOR.api,
+            availability: ProviderAvailability::Absent,
             installed,
             configured: ProbeFact::Unknown,
             running: ProbeFact::No,
             capabilities: MdnsCapabilities::default(),
+            session: None,
             detail: "no live D-Bus owner; Koi did not activate the stopped service".to_string(),
         });
     }
 
     let server = AvahiServerProxy::new(&connection).await.map_err(|error| {
         failed(
-            AdapterReadiness::Unavailable,
+            ProviderAvailability::Unavailable,
             format!("cannot create the Avahi server proxy: {error}"),
         )
     })?;
@@ -357,7 +363,7 @@ async fn inspect_avahi(adapter: &AvahiAdapter) -> std::result::Result<ReadyAvahi
             Ok(AVAHI_SERVER_RUNNING) => break,
             Ok(AVAHI_SERVER_FAILURE) => {
                 return Err(failed(
-                    AdapterReadiness::Unavailable,
+                    ProviderAvailability::Unavailable,
                     "Avahi reports a fatal server failure".to_string(),
                 ));
             }
@@ -367,13 +373,13 @@ async fn inspect_avahi(adapter: &AvahiAdapter) -> std::result::Result<ReadyAvahi
             }
             Ok(state) => {
                 return Err(failed(
-                    AdapterReadiness::Unavailable,
+                    ProviderAvailability::Unavailable,
                     format!("Avahi did not reach running state (state {state})"),
                 ));
             }
             Err(error) => {
                 return Err(failed(
-                    AdapterReadiness::Unavailable,
+                    ProviderAvailability::Unavailable,
                     format!("Avahi is present but GetState failed: {error}"),
                 ));
             }
@@ -386,10 +392,10 @@ async fn inspect_avahi(adapter: &AvahiAdapter) -> std::result::Result<ReadyAvahi
         .unwrap_or_else(|_| "version unavailable".to_string());
     let owner = current_owner(&connection)
         .await
-        .map_err(|error| failed(AdapterReadiness::Unavailable, error))?
+        .map_err(|error| failed(ProviderAvailability::Unavailable, error))?
         .ok_or_else(|| {
             failed(
-                AdapterReadiness::Unavailable,
+                ProviderAvailability::Unavailable,
                 "Avahi disappeared during inspection".to_string(),
             )
         })?;
@@ -401,27 +407,21 @@ async fn inspect_avahi(adapter: &AvahiAdapter) -> std::result::Result<ReadyAvahi
     })
 }
 
-/// A real Avahi adapter. All mutating calls are serialized through one actor so
-/// publication and withdrawal ordering is deterministic.
-pub struct AvahiMdnsProvider {
+/// One opened Avahi provider epoch.
+pub struct AvahiSession {
     connection: Connection,
     command_tx: mpsc::Sender<Command>,
-    status: Arc<RwLock<ProviderStatus>>,
+    state_rx: watch::Receiver<ProviderSessionState>,
 }
 
-impl AvahiMdnsProvider {
+impl AvahiSession {
     fn start(connection: Connection, owner: String, version: String) -> Self {
-        let detail = format!("{version} via system D-Bus");
-        let status = Arc::new(RwLock::new(ProviderStatus {
-            name: "avahi".to_string(),
-            healthy: true,
-            detail,
-        }));
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+        let (state_tx, state_rx) = watch::channel(ProviderSessionState::Ready);
         let actor = AvahiActor {
             connection: connection.clone(),
             command_rx,
-            status: Arc::clone(&status),
+            state_tx,
             version,
             owner: Some(owner),
             registrations: HashMap::new(),
@@ -432,78 +432,65 @@ impl AvahiMdnsProvider {
         Self {
             connection,
             command_tx,
-            status,
+            state_rx,
         }
     }
 
-    fn send(&self, command: Command) -> Result<()> {
-        self.command_tx
-            .try_send(command)
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => {
-                    MdnsError::Daemon("Avahi command queue full".to_string())
-                }
-                mpsc::error::TrySendError::Closed(_) => {
-                    MdnsError::Daemon("Avahi adapter stopped".to_string())
-                }
-            })
+    async fn send(&self, command: Command, operation: ProviderOperation) -> Result<()> {
+        self.command_tx.send(command).await.map_err(|_| {
+            provider_error(
+                DESCRIPTOR.name,
+                operation,
+                ProviderFailure::Lost,
+                "Avahi session stopped",
+            )
+        })
     }
 }
 
 #[async_trait::async_trait]
-impl MdnsProvider for AvahiMdnsProvider {
-    fn name(&self) -> &'static str {
-        "avahi"
-    }
-
-    fn api(&self) -> AdapterApi {
-        AdapterApi::SystemDbus
+impl ProviderSession for AvahiSession {
+    fn descriptor(&self) -> ProviderDescriptor {
+        DESCRIPTOR
     }
 
     fn capabilities(&self) -> MdnsCapabilities {
-        MdnsCapabilities::FULL_PROVIDER_WITH_DIRECT_RESOLVE
+        DESCRIPTOR.capabilities
     }
 
-    fn status(&self) -> ProviderStatus {
-        self.status
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+    fn state(&self) -> watch::Receiver<ProviderSessionState> {
+        self.state_rx.clone()
     }
 
-    fn register(
-        &self,
-        name: &str,
-        service_type: &str,
-        port: u16,
-        ip: Option<&str>,
-        txt: &HashMap<String, String>,
-    ) -> Result<()> {
-        validate_instance_name(name)?;
-        let ip = ip
-            .map(str::parse::<IpAddr>)
-            .transpose()
-            .map_err(|error| MdnsError::Daemon(format!("invalid service IP: {error}")))?;
-        let txt = encode_txt(txt)?;
-        let (service_type, domain) = split_service_type(service_type)?;
-        self.send(Command::Register(Registration {
-            key: registration_key(name, &service_type, &domain),
-            name: name.to_string(),
-            service_type,
-            domain,
-            port,
-            ip,
-            txt,
+    async fn publish(&self, announcement: &Announcement) -> Result<Box<dyn PublicationLease>> {
+        validate_instance_name(&announcement.name)?;
+        let txt = encode_txt(&announcement.txt)?;
+        let (service_type, domain) = split_service_type(&announcement.service_type)?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.send(
+            Command::Publish {
+                registration: Registration {
+                    key: announcement.id.clone(),
+                    name: announcement.name.clone(),
+                    service_type,
+                    domain,
+                    port: announcement.port,
+                    ip: announcement.address,
+                    txt,
+                },
+                reply: reply_tx,
+            },
+            ProviderOperation::Publish,
+        )
+        .await?;
+        reply_rx
+            .await
+            .map_err(|_| avahi_lost(ProviderOperation::Publish, "actor dropped reply"))??;
+        Ok(Box::new(AvahiPublicationLease {
+            id: announcement.id.clone(),
+            command_tx: self.command_tx.clone(),
+            withdrawn: false,
         }))
-    }
-
-    fn unregister(&self, name: &str, service_type: &str) -> Result<()> {
-        let (service_type, domain) = split_service_type(service_type)?;
-        self.send(Command::Unregister(registration_key(
-            name,
-            &service_type,
-            &domain,
-        )))
     }
 
     async fn browse(&self, service_type: &str, is_meta: bool) -> Result<ProviderBrowse> {
@@ -515,11 +502,18 @@ impl MdnsProvider for AvahiMdnsProvider {
                 reply: reply_tx,
             })
             .await
-            .map_err(|_| MdnsError::Daemon("Avahi adapter stopped".to_string()))?;
-        reply_rx
+            .map_err(|_| avahi_lost(ProviderOperation::Browse, "actor stopped"))?;
+        let events = reply_rx
             .await
-            .map_err(|_| MdnsError::Daemon("Avahi adapter dropped browse reply".to_string()))?
-            .map_err(MdnsError::Daemon)
+            .map_err(|_| avahi_lost(ProviderOperation::Browse, "actor dropped reply"))??;
+        Ok(ProviderBrowse::new(
+            events,
+            Box::new(AvahiBrowseLease {
+                key: service_type.to_string(),
+                command_tx: self.command_tx.clone(),
+                closed: false,
+            }),
+        ))
     }
 
     async fn resolve(&self, name: &str, service_type: &str) -> Result<ProviderService> {
@@ -533,11 +527,7 @@ impl MdnsProvider for AvahiMdnsProvider {
             &domain,
         )
         .await
-        .map_err(MdnsError::Daemon)
-    }
-
-    fn stop_browse(&self, service_type: &str) -> Result<()> {
-        self.send(Command::StopBrowse(service_type.to_string()))
+        .map_err(|error| avahi_protocol(ProviderOperation::Resolve, error))
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -545,23 +535,110 @@ impl MdnsProvider for AvahiMdnsProvider {
         self.command_tx
             .send(Command::Shutdown(reply_tx))
             .await
-            .map_err(|_| MdnsError::Daemon("Avahi adapter stopped".to_string()))?;
+            .map_err(|_| avahi_lost(ProviderOperation::Shutdown, "actor stopped"))?;
         reply_rx
             .await
-            .map_err(|_| MdnsError::Daemon("Avahi adapter dropped shutdown reply".to_string()))
+            .map_err(|_| avahi_lost(ProviderOperation::Shutdown, "actor dropped reply"))?
+    }
+}
+
+struct AvahiPublicationLease {
+    id: String,
+    command_tx: mpsc::Sender<Command>,
+    withdrawn: bool,
+}
+
+#[async_trait::async_trait]
+impl PublicationLease for AvahiPublicationLease {
+    fn announcement_id(&self) -> &str {
+        &self.id
+    }
+
+    fn provider_name(&self) -> &'static str {
+        DESCRIPTOR.name
+    }
+
+    async fn withdraw(&mut self) -> Result<()> {
+        if self.withdrawn {
+            return Ok(());
+        }
+        let (reply_tx, reply_rx) = oneshot::channel();
+        match self
+            .command_tx
+            .send(Command::Withdraw {
+                key: self.id.clone(),
+                reply: reply_tx,
+            })
+            .await
+        {
+            Ok(()) => {
+                reply_rx.await.map_err(|_| {
+                    avahi_lost(ProviderOperation::Withdraw, "actor dropped reply")
+                })??;
+            }
+            Err(_) => {
+                // A stopped session has already released all D-Bus-owned objects.
+            }
+        }
+        self.withdrawn = true;
+        Ok(())
+    }
+}
+
+struct AvahiBrowseLease {
+    key: String,
+    command_tx: mpsc::Sender<Command>,
+    closed: bool,
+}
+
+#[async_trait::async_trait]
+impl BrowseLease for AvahiBrowseLease {
+    fn provider_name(&self) -> &'static str {
+        DESCRIPTOR.name
+    }
+
+    async fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .command_tx
+            .send(Command::CloseBrowse {
+                key: self.key.clone(),
+                reply: reply_tx,
+            })
+            .await
+            .is_ok()
+        {
+            reply_rx.await.map_err(|_| {
+                avahi_lost(ProviderOperation::Browse, "actor dropped close reply")
+            })??;
+        }
+        self.closed = true;
+        Ok(())
     }
 }
 
 enum Command {
-    Register(Registration),
-    Unregister(String),
+    Publish {
+        registration: Registration,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    Withdraw {
+        key: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
     Browse {
         key: String,
         is_meta: bool,
-        reply: oneshot::Sender<std::result::Result<ProviderBrowse, String>>,
+        reply: oneshot::Sender<Result<mpsc::Receiver<ProviderEvent>>>,
     },
-    StopBrowse(String),
-    Shutdown(oneshot::Sender<()>),
+    CloseBrowse {
+        key: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    Shutdown(oneshot::Sender<Result<()>>),
 }
 
 #[derive(Clone)]
@@ -575,16 +652,21 @@ struct Registration {
     txt: Vec<Vec<u8>>,
 }
 
-struct Browser {
+struct BrowserRuntime {
     path: OwnedObjectPath,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+struct Browser {
     is_meta: bool,
-    task: tokio::task::JoinHandle<()>,
+    event_tx: mpsc::Sender<ProviderEvent>,
+    runtime: Option<BrowserRuntime>,
 }
 
 struct AvahiActor {
     connection: Connection,
     command_rx: mpsc::Receiver<Command>,
-    status: Arc<RwLock<ProviderStatus>>,
+    state_tx: watch::Sender<ProviderSessionState>,
     version: String,
     owner: Option<String>,
     registrations: HashMap<String, Registration>,
@@ -600,7 +682,7 @@ impl AvahiActor {
             tokio::select! {
                 command = self.command_rx.recv() => {
                     let Some(command) = command else {
-                        self.release_all().await;
+                        let _ = self.release_all().await;
                         break;
                     };
                     if !self.handle(command).await {
@@ -610,45 +692,93 @@ impl AvahiActor {
                 _ = reconcile.tick() => self.reconcile().await,
             }
         }
-        set_status(&self.status, false, "adapter stopped".to_string());
+        self.state_tx.send_replace(ProviderSessionState::Lost);
     }
 
     async fn handle(&mut self, command: Command) -> bool {
         match command {
-            Command::Register(registration) => {
+            Command::Publish {
+                registration,
+                reply,
+            } => {
                 let key = registration.key.clone();
-                self.registrations.insert(key.clone(), registration);
-                self.free_entry_group(&key).await;
-                if self.owner.is_some() {
-                    self.publish(&key).await;
-                }
+                let result = if *self.state_tx.borrow() != ProviderSessionState::Ready {
+                    Err(provider_error(
+                        DESCRIPTOR.name,
+                        ProviderOperation::Publish,
+                        ProviderFailure::Recovering,
+                        "Avahi is recovering its D-Bus resources",
+                    ))
+                } else if self.registrations.contains_key(&key) {
+                    Err(provider_error(
+                        DESCRIPTOR.name,
+                        ProviderOperation::Publish,
+                        ProviderFailure::Conflict,
+                        format!("publication {key} already exists"),
+                    ))
+                } else {
+                    self.registrations.insert(key.clone(), registration);
+                    match self.establish_publication(&key).await {
+                        Ok(()) => Ok(()),
+                        Err(error) => {
+                            self.registrations.remove(&key);
+                            Err(error)
+                        }
+                    }
+                };
+                let _ = reply.send(result);
             }
-            Command::Unregister(key) => {
-                self.registrations.remove(&key);
-                self.free_entry_group(&key).await;
+            Command::Withdraw { key, reply } => {
+                let result = self.free_entry_group(&key).await;
+                if result.is_ok() {
+                    self.registrations.remove(&key);
+                }
+                let _ = reply.send(result);
             }
             Command::Browse {
                 key,
                 is_meta,
                 reply,
             } => {
-                self.free_browser(&key).await;
-                let result = self.start_browse(&key, is_meta).await;
-                if let Err(error) = &result {
-                    tracing::warn!(
-                        provider = "avahi",
-                        service_type = %key,
-                        %error,
-                        "mDNS browse startup failed; Koi will retry"
-                    );
+                if self.browsers.contains_key(&key) {
+                    let _ = reply.send(Err(provider_error(
+                        DESCRIPTOR.name,
+                        ProviderOperation::Browse,
+                        ProviderFailure::Conflict,
+                        format!("browse already exists for {key}"),
+                    )));
+                    return true;
                 }
+                let (event_tx, event_rx) = mpsc::channel(BROWSE_CAPACITY);
+                self.browsers.insert(
+                    key.clone(),
+                    Browser {
+                        is_meta,
+                        event_tx,
+                        runtime: None,
+                    },
+                );
+                let result = self.start_browser_resource(&key).await;
+                if let Err(error) = result {
+                    let cleanup = self.remove_browser(&key, true).await;
+                    let _ = reply.send(cleanup.and(Err(error)));
+                } else {
+                    if let Err(Ok(_events)) = reply.send(Ok(event_rx)) {
+                        let _ = self.remove_browser(&key, true).await;
+                    }
+                }
+            }
+            Command::CloseBrowse { key, reply } => {
+                let result = self.remove_browser(&key, true).await;
                 let _ = reply.send(result);
             }
-            Command::StopBrowse(key) => self.free_browser(&key).await,
             Command::Shutdown(reply) => {
-                self.release_all().await;
-                let _ = reply.send(());
-                return false;
+                let result = self.release_all().await;
+                let complete = result.is_ok();
+                let _ = reply.send(result);
+                if complete {
+                    return false;
+                }
             }
         }
         true
@@ -658,124 +788,144 @@ impl AvahiActor {
         let owner = match current_owner(&self.connection).await {
             Ok(owner) => owner,
             Err(error) => {
-                self.deactivate();
-                set_status(&self.status, false, error);
+                self.deactivate(false).await;
+                self.state_tx.send_replace(ProviderSessionState::Recovering);
+                tracing::debug!(provider = DESCRIPTOR.name, %error, "D-Bus owner check failed");
                 return;
             }
         };
-
         if owner != self.owner {
-            tracing::info!(old = ?self.owner, new = ?owner, "Avahi D-Bus owner changed");
-            self.deactivate();
+            tracing::info!(provider = DESCRIPTOR.name, old = ?self.owner, new = ?owner, "D-Bus owner epoch changed");
+            self.deactivate(false).await;
             self.owner = owner;
         }
         if self.owner.is_none() {
-            set_status(
-                &self.status,
-                false,
-                "Avahi has no live D-Bus owner".to_string(),
-            );
+            self.state_tx.send_replace(ProviderSessionState::Recovering);
             return;
         }
 
         let server = match AvahiServerProxy::new(&self.connection).await {
             Ok(server) => server,
             Err(error) => {
-                self.deactivate();
-                set_status(&self.status, false, format!("Avahi proxy failed: {error}"));
+                self.deactivate(true).await;
+                self.state_tx.send_replace(ProviderSessionState::Recovering);
+                tracing::debug!(provider = DESCRIPTOR.name, %error, "server proxy unavailable");
                 return;
             }
         };
         match server.get_state().await {
             Ok(AVAHI_SERVER_RUNNING) => {}
+            Ok(AVAHI_SERVER_FAILURE) => {
+                self.deactivate(true).await;
+                self.state_tx.send_replace(ProviderSessionState::Lost);
+                return;
+            }
             Ok(state) => {
-                self.deactivate();
-                set_status(
-                    &self.status,
-                    false,
-                    format!("Avahi server state is {state}; waiting for running"),
-                );
+                self.deactivate(true).await;
+                self.state_tx.send_replace(ProviderSessionState::Recovering);
+                tracing::debug!(provider = DESCRIPTOR.name, state, "server not running");
                 return;
             }
             Err(error) => {
-                self.deactivate();
-                set_status(
-                    &self.status,
-                    false,
-                    format!("Avahi health check failed: {error}"),
-                );
+                self.deactivate(true).await;
+                self.state_tx.send_replace(ProviderSessionState::Recovering);
+                tracing::debug!(provider = DESCRIPTOR.name, %error, "server state unavailable");
                 return;
             }
         }
 
-        set_status(
-            &self.status,
-            true,
-            format!("{} via system D-Bus", self.version),
-        );
-        let missing: Vec<String> = self
+        self.state_tx.send_replace(ProviderSessionState::Recovering);
+        let missing_publications = self
             .registrations
             .keys()
             .filter(|key| !self.entry_groups.contains_key(*key))
             .cloned()
-            .collect();
-        for key in missing {
-            self.publish(&key).await;
+            .collect::<Vec<_>>();
+        for key in missing_publications {
+            if let Err(error) = self.establish_publication(&key).await {
+                tracing::warn!(provider = DESCRIPTOR.name, publication = %key, %error, "publication recovery failed");
+            }
+        }
+
+        let browser_keys = self.browsers.keys().cloned().collect::<Vec<_>>();
+        for key in browser_keys {
+            let restart = self.browsers.get(&key).is_some_and(|browser| {
+                browser.runtime.as_ref().is_none_or(|runtime| {
+                    runtime
+                        .task
+                        .as_ref()
+                        .is_none_or(tokio::task::JoinHandle::is_finished)
+                })
+            });
+            if restart {
+                if let Err(error) = self.free_browser_runtime(&key, true).await {
+                    tracing::warn!(provider = DESCRIPTOR.name, service_type = %key, %error, "stale browse release failed");
+                    continue;
+                }
+                if let Err(error) = self.start_browser_resource(&key).await {
+                    tracing::warn!(provider = DESCRIPTOR.name, service_type = %key, %error, "browse recovery failed");
+                }
+            }
+        }
+
+        let synchronized = self.entry_groups.len() == self.registrations.len()
+            && self
+                .browsers
+                .values()
+                .all(|browser| browser.runtime.is_some());
+        if synchronized {
+            self.state_tx.send_replace(ProviderSessionState::Ready);
+            tracing::trace!(provider = DESCRIPTOR.name, version = %self.version, "provider session ready");
         }
     }
 
-    async fn publish(&mut self, key: &str) {
-        let Some(registration) = self.registrations.get(key).cloned() else {
-            return;
-        };
+    async fn establish_publication(&mut self, key: &str) -> Result<()> {
+        let registration = self.registrations.get(key).cloned().ok_or_else(|| {
+            provider_error(
+                DESCRIPTOR.name,
+                ProviderOperation::Publish,
+                ProviderFailure::Rejected,
+                format!("unknown publication {key}"),
+            )
+        })?;
         match publish(&self.connection, &registration).await {
             Ok((path, effective_name)) => {
                 if effective_name != registration.name {
                     tracing::warn!(
+                        provider = DESCRIPTOR.name,
                         requested = %registration.name,
                         effective = %effective_name,
                         service_type = %registration.service_type,
-                        "mDNS name collision resolved"
+                        "service-name collision resolved"
                     );
                     if let Some(stored) = self.registrations.get_mut(key) {
-                        stored.name.clone_from(&effective_name);
+                        stored.name = effective_name;
                     }
                 }
-                tracing::debug!(
-                    provider = "avahi",
-                    name = %effective_name,
-                    service_type = %registration.service_type,
-                    "Published mDNS service"
-                );
                 self.entry_groups.insert(key.to_string(), path);
+                Ok(())
             }
-            Err(error) => {
-                // A rejected registration is scoped to that publication. It does
-                // not establish that Avahi's D-Bus owner, server, or existing
-                // browse streams are unhealthy. The adapter's regular health
-                // probe owns that decision and retries every missing entry group.
-                tracing::warn!(
-                    provider = "avahi",
-                    name = %registration.name,
-                    service_type = %registration.service_type,
-                    %error,
-                    "mDNS publish failed"
-                );
-            }
+            Err(error) => Err(avahi_protocol(ProviderOperation::Publish, error)),
         }
     }
 
-    async fn start_browse(
-        &mut self,
-        key: &str,
-        is_meta: bool,
-    ) -> std::result::Result<ProviderBrowse, String> {
+    async fn start_browser_resource(&mut self, key: &str) -> Result<()> {
         if self.owner.is_none() {
-            return Err("Avahi is not running".to_string());
+            return Err(provider_error(
+                DESCRIPTOR.name,
+                ProviderOperation::Browse,
+                ProviderFailure::Recovering,
+                "Avahi has no live D-Bus owner",
+            ));
         }
+        let (is_meta, event_tx) = self
+            .browsers
+            .get(key)
+            .map(|browser| (browser.is_meta, browser.event_tx.clone()))
+            .ok_or_else(|| avahi_lost(ProviderOperation::Browse, "browse demand vanished"))?;
         let server = AvahiServerProxy::new(&self.connection)
             .await
-            .map_err(|error| format!("cannot create Avahi server proxy: {error}"))?;
+            .map_err(|error| avahi_protocol(ProviderOperation::Browse, error))?;
         let path = if is_meta {
             server
                 .service_type_browser_new(
@@ -785,9 +935,9 @@ impl AvahiActor {
                     AVAHI_FLAGS_NONE,
                 )
                 .await
-                .map_err(|error| format!("cannot start Avahi type browser: {error}"))?
+                .map_err(|error| avahi_protocol(ProviderOperation::Browse, error))?
         } else {
-            let (service_type, domain) = split_service_type(key).map_err(|e| e.to_string())?;
+            let (service_type, domain) = split_service_type(key)?;
             server
                 .service_browser_new(
                     AVAHI_IF_UNSPEC,
@@ -797,82 +947,179 @@ impl AvahiActor {
                     AVAHI_FLAGS_NONE,
                 )
                 .await
-                .map_err(|error| format!("cannot start Avahi service browser: {error}"))?
+                .map_err(|error| avahi_protocol(ProviderOperation::Browse, error))?
         };
-
-        let (tx, rx) = mpsc::channel(BROWSE_CAPACITY);
         let (ready_tx, ready_rx) = oneshot::channel();
         let connection = self.connection.clone();
         let task_path = path.clone();
         let task = if is_meta {
             tokio::spawn(async move {
-                pump_service_types(connection, task_path, tx, ready_tx).await;
+                pump_service_types(connection, task_path, event_tx, ready_tx).await;
             })
         } else {
             tokio::spawn(async move {
-                pump_services(connection, task_path, tx, ready_tx).await;
+                pump_services(connection, task_path, event_tx, ready_tx).await;
             })
         };
+        let Some(browser) = self.browsers.get_mut(key) else {
+            task.abort();
+            free_browser_object(&self.connection, &path, is_meta).await?;
+            return Err(avahi_lost(
+                ProviderOperation::Browse,
+                "browse demand vanished",
+            ));
+        };
+        browser.runtime = Some(BrowserRuntime {
+            path,
+            task: Some(task),
+        });
         match ready_rx.await {
-            Ok(Ok(())) => {
-                self.browsers.insert(
-                    key.to_string(),
-                    Browser {
-                        path,
-                        is_meta,
-                        task,
-                    },
-                );
-                Ok(rx)
-            }
+            Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => {
-                task.abort();
-                free_browser_object(&self.connection, &path, is_meta).await;
-                Err(error)
+                self.free_browser_runtime(key, true).await?;
+                Err(avahi_protocol(ProviderOperation::Browse, error))
             }
             Err(_) => {
-                task.abort();
-                free_browser_object(&self.connection, &path, is_meta).await;
-                Err("Avahi browse pump stopped during startup".to_string())
+                self.free_browser_runtime(key, true).await?;
+                Err(avahi_lost(
+                    ProviderOperation::Browse,
+                    "browse pump stopped during establishment",
+                ))
             }
         }
     }
 
-    async fn free_entry_group(&mut self, key: &str) {
-        if let Some(path) = self.entry_groups.remove(key) {
-            if let Ok(builder) = AvahiEntryGroupProxy::builder(&self.connection).path(path) {
-                match builder.build().await {
-                    Ok(proxy) => {
-                        let _ = proxy.free().await;
-                    }
-                    Err(error) => tracing::debug!(%error, "Failed to open Avahi entry group"),
+    async fn free_entry_group(&mut self, key: &str) -> Result<()> {
+        let Some(path) = self.entry_groups.get(key).cloned() else {
+            return Ok(());
+        };
+        let result = async {
+            let proxy = AvahiEntryGroupProxy::builder(&self.connection)
+                .path(path)
+                .map_err(|error| avahi_protocol(ProviderOperation::Withdraw, error))?
+                .build()
+                .await
+                .map_err(|error| avahi_protocol(ProviderOperation::Withdraw, error))?;
+            proxy
+                .free()
+                .await
+                .map_err(|error| avahi_protocol(ProviderOperation::Withdraw, error))
+        }
+        .await;
+        self.finish_release(key, result).await
+    }
+
+    async fn free_browser_runtime(&mut self, key: &str, free_object: bool) -> Result<()> {
+        let Some((is_meta, mut runtime)) = self.browsers.get_mut(key).and_then(|browser| {
+            browser
+                .runtime
+                .take()
+                .map(|runtime| (browser.is_meta, runtime))
+        }) else {
+            return Ok(());
+        };
+        if let Some(task) = runtime.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        if free_object {
+            if let Err(error) = free_browser_object(&self.connection, &runtime.path, is_meta).await
+            {
+                if self.owner_advanced().await {
+                    return Ok(());
+                }
+                if let Some(browser) = self.browsers.get_mut(key) {
+                    browser.runtime = Some(runtime);
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    async fn remove_browser(&mut self, key: &str, free_object: bool) -> Result<()> {
+        self.free_browser_runtime(key, free_object).await?;
+        self.browsers.remove(key);
+        Ok(())
+    }
+
+    async fn deactivate(&mut self, free_objects: bool) {
+        let group_keys = self.entry_groups.keys().cloned().collect::<Vec<_>>();
+        if free_objects {
+            for key in group_keys {
+                if let Err(error) = self.free_entry_group(&key).await {
+                    tracing::debug!(provider = DESCRIPTOR.name, %error, "entry-group release deferred");
+                }
+            }
+        } else {
+            self.entry_groups.clear();
+        }
+        let browser_keys = self.browsers.keys().cloned().collect::<Vec<_>>();
+        for key in browser_keys {
+            if let Err(error) = self.free_browser_runtime(&key, free_objects).await {
+                tracing::debug!(provider = DESCRIPTOR.name, %error, "browser release deferred");
+            }
+        }
+    }
+
+    async fn release_all(&mut self) -> Result<()> {
+        let mut first_error = None;
+        let browser_keys = self.browsers.keys().cloned().collect::<Vec<_>>();
+        for key in browser_keys {
+            if let Err(error) = self.remove_browser(&key, true).await {
+                first_error.get_or_insert(error);
+            }
+        }
+        let group_keys = self.entry_groups.keys().cloned().collect::<Vec<_>>();
+        for key in group_keys {
+            if let Err(error) = self.free_entry_group(&key).await {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            self.registrations.clear();
+            Ok(())
+        }
+    }
+
+    async fn finish_release(&mut self, key: &str, result: Result<()>) -> Result<()> {
+        match result {
+            Ok(()) => {
+                self.entry_groups.remove(key);
+                Ok(())
+            }
+            Err(error) => {
+                if self.owner_advanced().await {
+                    Ok(())
+                } else {
+                    Err(error)
                 }
             }
         }
     }
 
-    async fn free_browser(&mut self, key: &str) {
-        if let Some(browser) = self.browsers.remove(key) {
-            browser.task.abort();
-            free_browser_object(&self.connection, &browser.path, browser.is_meta).await;
-        }
-    }
-
-    fn deactivate(&mut self) {
-        self.entry_groups.clear();
-        for (_, browser) in self.browsers.drain() {
-            browser.task.abort();
-        }
-    }
-
-    async fn release_all(&mut self) {
-        let browser_keys: Vec<String> = self.browsers.keys().cloned().collect();
-        for key in browser_keys {
-            self.free_browser(&key).await;
-        }
-        let group_keys: Vec<String> = self.entry_groups.keys().cloned().collect();
-        for key in group_keys {
-            self.free_entry_group(&key).await;
+    async fn owner_advanced(&mut self) -> bool {
+        match current_owner(&self.connection).await {
+            Ok(owner) if owner != self.owner => {
+                self.owner = owner;
+                self.entry_groups.clear();
+                let mut tasks = Vec::new();
+                for browser in self.browsers.values_mut() {
+                    if let Some(runtime) = browser.runtime.take() {
+                        if let Some(task) = runtime.task {
+                            task.abort();
+                            tasks.push(task);
+                        }
+                    }
+                }
+                for task in tasks {
+                    let _ = task.await;
+                }
+                true
+            }
+            _ => false,
         }
     }
 }
@@ -884,7 +1131,9 @@ async fn publish(
     let server = AvahiServerProxy::new(connection)
         .await
         .map_err(|error| format!("cannot create Avahi server proxy: {error}"))?;
-    let mut host = registration.ip.map(|_| explicit_address_host());
+    let host = registration
+        .ip
+        .map(|_| explicit_address_host(&registration.key));
 
     let mut candidate = registration.name.clone();
     for _ in 0..MAX_COLLISION_ATTEMPTS {
@@ -918,6 +1167,10 @@ async fn publish(
         }
 
         if let Some(ip) = registration.ip {
+            let Some(host) = host.as_deref() else {
+                let _ = group.free().await;
+                return Err("explicit address publication has no host alias".to_string());
+            };
             let protocol = if ip.is_ipv4() {
                 AVAHI_PROTO_INET
             } else {
@@ -931,7 +1184,7 @@ async fn publish(
                     // PTR for a local interface address. This alias only needs
                     // the forward A/AAAA record used by its service SRV target.
                     AVAHI_PUBLISH_NO_REVERSE,
-                    host.as_deref().expect("explicit IP has a host alias"),
+                    host,
                     &ip.to_string(),
                 )
                 .await
@@ -953,9 +1206,6 @@ async fn publish(
                     .get_alternative_service_name(&candidate)
                     .await
                     .map_err(|error| format!("GetAlternativeServiceName failed: {error}"))?;
-                if registration.ip.is_some() {
-                    host = Some(explicit_address_host());
-                }
             }
             Err(EntryGroupOutcome::Failure(error)) => {
                 let _ = group.free().await;
@@ -1348,18 +1598,35 @@ async fn current_owner(connection: &Connection) -> std::result::Result<Option<St
     }
 }
 
-async fn free_browser_object(connection: &Connection, path: &OwnedObjectPath, is_meta: bool) {
+async fn free_browser_object(
+    connection: &Connection,
+    path: &OwnedObjectPath,
+    is_meta: bool,
+) -> Result<()> {
     if is_meta {
-        if let Ok(builder) = AvahiServiceTypeBrowserProxy::builder(connection).path(path.clone()) {
-            if let Ok(proxy) = builder.build().await {
-                let _ = proxy.free().await;
-            }
-        }
-    } else if let Ok(builder) = AvahiServiceBrowserProxy::builder(connection).path(path.clone()) {
-        if let Ok(proxy) = builder.build().await {
-            let _ = proxy.free().await;
-        }
+        let proxy = AvahiServiceTypeBrowserProxy::builder(connection)
+            .path(path.clone())
+            .map_err(|error| avahi_protocol(ProviderOperation::Browse, error))?
+            .build()
+            .await
+            .map_err(|error| avahi_protocol(ProviderOperation::Browse, error))?;
+        proxy
+            .free()
+            .await
+            .map_err(|error| avahi_protocol(ProviderOperation::Browse, error))?;
+    } else {
+        let proxy = AvahiServiceBrowserProxy::builder(connection)
+            .path(path.clone())
+            .map_err(|error| avahi_protocol(ProviderOperation::Browse, error))?
+            .build()
+            .await
+            .map_err(|error| avahi_protocol(ProviderOperation::Browse, error))?;
+        proxy
+            .free()
+            .await
+            .map_err(|error| avahi_protocol(ProviderOperation::Browse, error))?;
     }
+    Ok(())
 }
 
 fn split_service_type(service_type: &str) -> Result<(String, String)> {
@@ -1375,17 +1642,18 @@ fn split_service_type(service_type: &str) -> Result<(String, String)> {
     Ok((short.to_string(), "local".to_string()))
 }
 
-fn registration_key(name: &str, service_type: &str, domain: &str) -> String {
-    format!("{name}.{service_type}.{domain}.")
-}
-
-fn explicit_address_host() -> String {
+fn explicit_address_host(registration_id: &str) -> String {
     // An explicit address needs its own host record. Reusing Avahi's machine
     // hostname attempts to claim a name the daemon already owns, while sharing
     // one synthetic hostname across registrations makes their entry groups
-    // contend with each other. A per-attempt alias keeps each SRV + A/AAAA set
-    // self-contained and lets Avahi retire it atomically.
-    format!("koi-{}.local", uuid::Uuid::now_v7().simple())
+    // contend with each other. A stable per-registration alias keeps each SRV
+    // + A/AAAA set self-contained and survives an Avahi owner-epoch rebuild.
+    let hash = registration_id
+        .bytes()
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            hash.wrapping_mul(0x100000001b3) ^ u64::from(byte)
+        });
+    format!("koi-{hash:016x}.local")
 }
 
 fn validate_instance_name(name: &str) -> Result<()> {
@@ -1425,12 +1693,17 @@ fn decode_txt(items: &[Vec<u8>]) -> HashMap<String, String> {
         .collect()
 }
 
-fn set_status(status: &RwLock<ProviderStatus>, healthy: bool, detail: String) {
-    let mut status = status
-        .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    status.healthy = healthy;
-    status.detail = detail;
+fn avahi_lost(operation: ProviderOperation, detail: impl Into<String>) -> MdnsError {
+    provider_error(DESCRIPTOR.name, operation, ProviderFailure::Lost, detail)
+}
+
+fn avahi_protocol(operation: ProviderOperation, error: impl std::fmt::Display) -> MdnsError {
+    provider_error(
+        DESCRIPTOR.name,
+        operation,
+        ProviderFailure::Protocol,
+        error.to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -1459,8 +1732,9 @@ mod tests {
 
     #[test]
     fn explicit_address_hosts_are_valid_isolated_local_aliases() {
-        let first = explicit_address_host();
-        let second = explicit_address_host();
+        let first = explicit_address_host("first");
+        let second = explicit_address_host("second");
+        assert_eq!(first, explicit_address_host("first"));
         let label = first.strip_suffix(".local").expect("local host alias");
 
         assert_ne!(first, second);
@@ -1500,29 +1774,40 @@ mod tests {
     #[ignore = "requires a running Avahi daemon on the system bus"]
     async fn real_avahi_adapter_inspects_as_a_full_provider() {
         let adapter = AvahiAdapter;
-        let report = adapter.inspect().await;
-        assert!(report.satisfies_full_contract(), "Avahi report: {report:?}");
+        let report = adapter.assess().await;
+        assert_eq!(
+            report.availability,
+            ProviderAvailability::Ready,
+            "{report:?}"
+        );
+        assert!(
+            report.capabilities.satisfies_provider_contract(),
+            "Avahi report: {report:?}"
+        );
     }
 
     #[tokio::test]
     #[ignore = "requires a running Avahi daemon on the system bus"]
     async fn real_avahi_publish_browse_resolve_and_remove() {
         let adapter = AvahiAdapter;
-        let provider = adapter.arm().await.expect("arm real Avahi provider");
-        let mut browse = provider
+        let session = adapter.open().await.expect("open real Avahi session");
+        let mut browse = session
             .browse("_koi-test._tcp.local.", false)
             .await
             .expect("start real Avahi browse");
         let name = format!("koi-avahi-{}", std::process::id());
-        provider
-            .register(
-                &name,
-                "_koi-test._tcp.local.",
-                43123,
-                None,
-                &HashMap::from([("source".to_string(), "koi".to_string())]),
-            )
-            .expect("queue real Avahi publication");
+        let announcement = Announcement {
+            id: format!("avahi-{}", std::process::id()),
+            name: name.clone(),
+            service_type: "_koi-test._tcp.local.".to_string(),
+            port: 43123,
+            address: None,
+            txt: HashMap::from([("source".to_string(), "koi".to_string())]),
+        };
+        let mut lease = session
+            .publish(&announcement)
+            .await
+            .expect("establish real Avahi publication");
 
         let resolved = tokio::time::timeout(Duration::from_secs(8), async {
             loop {
@@ -1541,9 +1826,10 @@ mod tests {
         assert_eq!(resolved.txt.get("source"), Some(&"koi".to_string()));
         assert!(!resolved.addresses.is_empty());
 
-        provider
-            .unregister(&name, "_koi-test._tcp.local.")
-            .expect("queue real Avahi withdrawal");
+        lease
+            .withdraw()
+            .await
+            .expect("withdraw real Avahi publication");
         tokio::time::timeout(Duration::from_secs(8), async {
             loop {
                 match browse.recv().await {
@@ -1565,15 +1851,18 @@ mod tests {
             })
             .expect("a live IPv4 interface");
         let explicit_name = format!("koi-avahi-explicit-{}", std::process::id());
-        provider
-            .register(
-                &explicit_name,
-                "_koi-test._tcp.local.",
-                43124,
-                Some(&explicit_ip.to_string()),
-                &HashMap::new(),
-            )
-            .expect("queue real Avahi publication with an explicit address");
+        let explicit_announcement = Announcement {
+            id: format!("avahi-explicit-{}", std::process::id()),
+            name: explicit_name.clone(),
+            service_type: "_koi-test._tcp.local.".to_string(),
+            port: 43124,
+            address: Some(IpAddr::V4(explicit_ip)),
+            txt: HashMap::new(),
+        };
+        let mut explicit_lease = session
+            .publish(&explicit_announcement)
+            .await
+            .expect("establish real Avahi publication with an explicit address");
         let explicit = tokio::time::timeout(Duration::from_secs(8), async {
             loop {
                 match browse.recv().await {
@@ -1597,10 +1886,12 @@ mod tests {
             .addresses
             .iter()
             .any(|address| address.address == IpAddr::V4(explicit_ip)));
-        assert!(provider.status().healthy, "status: {:?}", provider.status());
-        provider
-            .unregister(&explicit_name, "_koi-test._tcp.local.")
+        assert_eq!(*session.state().borrow(), ProviderSessionState::Ready);
+        explicit_lease
+            .withdraw()
+            .await
             .expect("withdraw real explicit-IP Avahi publication");
-        provider.shutdown().await.expect("shut down Avahi adapter");
+        browse.close().await.expect("close real Avahi browse");
+        session.shutdown().await.expect("shut down Avahi session");
     }
 }

@@ -20,6 +20,7 @@ pub enum ErrorCode {
     AmbiguousId,
     ParseError,
     ShuttingDown,
+    ProviderUnavailable,
     Internal,
     // Certmesh (Phase 2)
     CaNotInitialized,
@@ -57,6 +58,7 @@ impl ErrorCode {
             Self::Conflict | Self::AlreadyDraining | Self::NotDraining => 409,
             Self::ResolveTimeout => 504,
             Self::ShuttingDown
+            | Self::ProviderUnavailable
             | Self::CaNotInitialized
             | Self::CaLocked
             | Self::CapabilityDisabled => 503,
@@ -140,6 +142,7 @@ mod tests {
             (ErrorCode::RenewalFailed, 500),
             // 503 Service Unavailable
             (ErrorCode::ShuttingDown, 503),
+            (ErrorCode::ProviderUnavailable, 503),
             (ErrorCode::CaNotInitialized, 503),
             (ErrorCode::CaLocked, 503),
             (ErrorCode::CapabilityDisabled, 503),
@@ -175,6 +178,7 @@ mod tests {
             (ErrorCode::AmbiguousId, "ambiguous_id"),
             (ErrorCode::ParseError, "parse_error"),
             (ErrorCode::ShuttingDown, "shutting_down"),
+            (ErrorCode::ProviderUnavailable, "provider_unavailable"),
             (ErrorCode::Internal, "internal"),
             (ErrorCode::CaNotInitialized, "ca_not_initialized"),
             (ErrorCode::CaLocked, "ca_locked"),

@@ -1,77 +1,71 @@
 ---
-globs: crates/koi-mdns/src/{adapter,provider,supervisor,native,avahi,systemd_resolved,daemon}.rs,crates/koi-compose/src/mdns.rs
+globs: crates/koi-mdns/src/{adapter,provider,control_plane,native,avahi,systemd_resolved,discovery}.rs,crates/koi-compose/src/mdns.rs
 alwaysApply: false
 ---
 # mDNS Provider Boundary Rules
 
-## The Single Import Rule (CRITICAL)
-`crates/koi-mdns/src/native.rs` is the ONLY file that may import from the `mdns-sd` crate.
-This is enforced by `mdns_sd_is_isolated_to_the_native_adapter`, which scans every
-other Rust source file and fails the build if `mdns_sd` appears.
-`crates/koi-mdns/src/avahi.rs` owns Avahi D-Bus types, and
-`crates/koi-mdns/src/systemd_resolved.rs` owns resolve1 D-Bus types.
+## Ownership
 
-### Rules
-- NEVER import `mdns_sd::*` in any other file
-- NEVER expose mdns-sd types (ServiceDaemon, ServiceInfo, ServiceEvent, ResolvedService) in public APIs
-- ALWAYS convert mdns-sd types to provider-neutral values inside `native.rs`
-- Each adapter owns its read-only detector, capability evidence, native types, and real arming
-- `koi-compose/src/mdns.rs` only assembles the target's adapter catalog
-- The supervisor always appends native Koi as an ordinary, lowest-priority full provider
-- `MdnsCore` and `MdnsDaemon` depend only on the stable `MdnsProvider` facade
-- `MdnsSupervisor` alone selects capability routes and changes them at runtime
-- Exactly one adapter owns each publication/browse route; complementary providers may be
-  armed only for non-overlapping capabilities
-- Transitions are break-before-make and generation-fenced; never leak retired browse events
-- Production adapters and endpoints are real. Fakes belong only in tests
+- `RegistrationRegistry` is the only owner of registration identity, desired
+  publication intent, and lease policy.
+- `DiscoveryHub` is the only owner of browse demand, per-type multiplexing,
+  cache, fan-out, and subscriber continuity.
+- `MdnsControlPlane` is the only owner of adapter assessment, capability-route
+  policy, provider sessions, route transitions, and materialized publication
+  leases. It never owns a second desired-publication map.
+- Each provider session owns its detector, native connection, callbacks/tasks,
+  resource handles, recovery, and acknowledged shutdown.
 
-### Browse Multiplexing (CRITICAL)
-The native mdns-sd provider keeps exactly **one querier per service type**: a second `browse` of a type
-overwrites the first's listener, and `stop_browse` removes the querier *and clears its
-cache*. So Koi must never open two raw browses for the same type. The hub inside
-`MdnsDaemon` enforces this:
+Composition lists platform adapters only. The control plane appends native Koi
+as the reserved, lowest-priority provider. Complementary providers may be open
+only for the routes they actually own.
 
-- `subscribe_type(key, is_meta) -> BrowseSubscription` shares **one** real browse per
-  canonical type key across N subscribers via a per-type `tokio::sync::broadcast`. The
-  first subscriber starts the browse (a pump task owns the single provider receiver and
-  translates observations to Koi types); the last drop stops it (refcount + `TypeGuard`).
-- Always derive the key with `daemon::canonical_key` (`ServiceType::parse(..).as_str()`,
-  or `META_QUERY` for the meta query) so `discover` and `resolve` map to the same browse.
-- `resolve()` is a temporary subscription (cache-checked) — it never calls `stop_browse`
-  and so can never terminate concurrent subscribers.
-- `BrowseSubscription` carries Koi `MdnsEvent`s only; provider-library types never escape.
+## Real operation contract
 
-### Native Worker Thread Pattern
-`NativeMdnsProvider` serializes all mdns-sd operations through a dedicated thread:
+- `MdnsAdapter::assess` is read-only. It must not start, stop, enable, disable,
+  or reconfigure an external responder.
+- Capability evidence includes non-interactive authorization for the installed
+  Koi service identity. API presence alone must not claim an operation. Preserve
+  independently usable routes when one operation is unauthorized.
+- `MdnsAdapter::open` returns a real stateful `ProviderSession`; production
+  placeholders, fakes, TODO endpoints, and capability guesses are forbidden.
+- `publish` returns a `PublicationLease` only after the native resource exists.
+- `withdraw`, browse-lease `close`, and session `shutdown` return only after the
+  owned native resource has been released. A failed release stays retryable.
+- Provider errors are typed by operation and failure scope. Orchestration never
+  parses human diagnostic text.
+- Operation rejection is local to that operation. Sessions report
+  `recovering` during native owner/config churn and `lost` only when their epoch
+  cannot continue.
+- Async command cancellation must not orphan a resource. Provider actors clean
+  up undeliverable replies; registry transaction guards restore intent.
 
-```rust
-// All operations go through NativeOp enum → worker thread
-enum NativeOp {
-    Register(Box<ServiceInfo>),
-    Unregister(String),
-    Browse { service_type, reply },
-    StopBrowse(String),
-    Shutdown { reply },
-}
-```
+## Route transitions
 
-- Fire-and-forget ops (register, unregister, stop_browse): enqueue and return
-- Reply ops (browse, shutdown): use oneshot channel for response
-- The worker runs on `std::thread` (named `koi-mdns-native`), not tokio
+- Publication, explicit-address publication, continuous browse, and direct
+  resolution are independent routes.
+- Changed write routes are break-before-make and await withdrawal first.
+- Changed browse routes advance an epoch; stale events are discarded and live
+  demand reconnects through `DiscoveryHub`.
+- Unchanged routes, sessions, publications, and browses are not disturbed.
+- Publication replay is part of the route transaction. A failed replay restores
+  the prior working route and materializations.
+- A quiet DNS-SD stream is telemetry, not a health failure.
 
-### Type Conversion
-```rust
-// mdns-sd → provider-neutral observation (happens ONLY in native.rs)
-fn resolved_to_service(resolved: &ResolvedService) -> ProviderService {
-    // Retain every address plus its interface identity.
-}
-```
+## Native library isolation
 
-The provider-neutral hub in `daemon.rs` makes the compatibility projection to
-`ServiceRecord` (currently one preferred IPv4/IPv6 address).
+`crates/koi-mdns/src/native.rs` is the only file allowed to import `mdns-sd`.
+It converts every library type to provider-neutral values before crossing the
+session boundary. `avahi.rs` and `systemd_resolved.rs` likewise contain their
+own D-Bus types.
 
-### Key mdns-sd API Notes
-- `ServiceEvent::ServiceResolved` contains `Box<ResolvedService>`, NOT `ServiceInfo`
-- `ResolvedService::get_addresses()` returns `HashSet<ScopedIp>`
-- `ServiceDaemon::browse()` returns `Receiver<ServiceEvent>` (flume)
-- `ServiceDaemon::shutdown()` returns `Result<Receiver<DaemonStatus>>`
+The native engine keeps one querier per canonical service type. `DiscoveryHub`
+therefore opens one real browse for N subscribers and closes it only after the
+last subscriber leaves. Keys always come from `discovery::canonical_key`.
+
+## Validation
+
+Fakes belong only in tests. Unit tests cover registry and routing state
+machines; ignored real-adapter tests exercise native APIs; fleet acceptance uses
+one installed Koi per host and an independent LAN peer. Fleet scripts assert
+the structured `control_plane` status fields and never parse prose summaries.

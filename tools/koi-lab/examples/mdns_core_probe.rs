@@ -4,7 +4,7 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
-    let core = koi_mdns::MdnsCore::new().expect("mdns core");
+    let core = koi_mdns::MdnsCore::new().await.expect("mdns core");
     let sub = core
         .subscribe_type("_services._dns-sd._udp.local.")
         .await

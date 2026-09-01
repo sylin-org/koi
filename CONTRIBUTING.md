@@ -129,7 +129,9 @@ and `.agentic/CONTEXT.md`.
    machinery.
 3. **Adapters contain zero domain logic.** Deserialize → call core → serialize.
 4. **One canonical model per concept.** No per-adapter DTOs.
-5. **`mdns-sd` is imported in exactly one file** (`crates/koi-mdns/src/daemon.rs`).
+5. **`mdns-sd` is imported in exactly one file** (`crates/koi-mdns/src/native.rs`);
+   desired publications stay in `RegistrationRegistry`, browse demand stays in
+   `DiscoveryHub`, and native resources stay inside provider sessions.
 6. **No `#[cfg(feature = "...")]` for capabilities** — runtime tunables only.
 7. **The DX is the product.** CLI changes preserve the moniker shape, the
    discoverability triad (catalog / domain examples / `command?`), `--json`

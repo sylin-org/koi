@@ -27,7 +27,7 @@ const. The per-crate copies in mdns/certmesh/dns/health/proxy/runtime were remov
 | ---------------------------- | ----- | ----------------------------- |
 | `REAPER_INTERVAL`            | 5s    | Lease expiry sweep frequency  |
 
-### koi-mdns -- Daemon (`crates/koi-mdns/src/daemon.rs`)
+### koi-mdns -- Discovery (`crates/koi-mdns/src/discovery.rs`)
 
 | Constant                  | Value | Purpose                                 |
 | ------------------------- | ----- | --------------------------------------- |
@@ -220,11 +220,12 @@ No other module should contain `println!`-based presentation functions.
 
 ### Internal (not re-exported)
 
-| Type           | Location      | Purpose                                  |
-| -------------- | ------------- | ---------------------------------------- |
-| `MdnsDaemon`   | `daemon.rs`   | mdns-sd wrapper (worker thread)          |
-| `Registry`     | `registry.rs` | Thread-safe registration store           |
-| `Registration` | `registry.rs` | Single registration (payload + metadata) |
+| Type                   | Location           | Purpose                                            |
+| ---------------------- | ------------------ | -------------------------------------------------- |
+| `MdnsControlPlane`     | `control_plane.rs` | Capability routing and materialized lease sync     |
+| `DiscoveryHub`         | `discovery.rs`     | Shared browse demand, cache, fan-out, and epochs    |
+| `RegistrationRegistry` | `registry.rs`      | Transactional desired registration state            |
+| `ProviderSession`      | `provider.rs`      | Provider-neutral native resource ownership contract |
 
 ---
 

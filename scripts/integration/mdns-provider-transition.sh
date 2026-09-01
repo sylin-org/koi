@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# ADR-038 installed-service, two-host provider transition gate.
+# ADR-039 installed-service, two-host provider transition gate.
 #
 # The subject is the machine running this script. It keeps the one installed Koi
 # service alive while Avahi and systemd-resolved are removed/restored underneath
-# it. The peer is an independent LAN host with avahi-browse/publish tools. This
-# script never starts a Koi process and never mutates the peer's system services.
+# it. The peer contributes its one installed Koi service, so every publication,
+# browse, resolve, and withdrawal crosses both the LAN and a real Koi boundary.
+# This script never starts a Koi process and never mutates the peer's providers.
 set -Eeuo pipefail
 
 usage() {
@@ -14,20 +15,27 @@ Usage: mdns-provider-transition.sh --allow-system-mutation --peer USER@HOST
 Required:
   --allow-system-mutation  Acknowledge temporary provider configuration and
                            service changes with exact restoration.
-  --peer USER@HOST         Independent LAN peer reachable through OpenSSH.
+  --peer USER@HOST         Independent LAN host with one installed Koi service.
 
 Optional environment:
   KOI_API                  Installed Koi API (default http://127.0.0.1:5641)
   KOI_SERVICE_SCOPE        Installed unit scope: system or user (default system)
   KOI_BREADCRUMB           Endpoint breadcrumb (default follows service scope)
+  PEER_KOI_API             Peer-local Koi API (default http://127.0.0.1:5641)
+  PEER_KOI_SERVICE_SCOPE   Peer unit scope: system or user (default system)
+  PEER_KOI_BREADCRUMB      Peer breadcrumb (default follows peer service scope)
+  PEER_SUDO_ASKPASS        Executable askpass helper already present on the peer
   PEER_PORT                SSH port (default 22)
   PEER_IDENTITY            SSH identity file
   PEER_KNOWN_HOSTS         Pinned OpenSSH known-hosts file
+  PEER_SSH_ASKPASS         Executable SSH askpass helper (otherwise key-only)
   SUDO_ASKPASS             Standard non-interactive sudo credential helper
   EVIDENCE_ROOT            Evidence parent (default target/mdns-provider-transition)
 
 Run on the real subject host, not in a container. The caller needs privilege to
 control local system services and preconfigured SSH authentication to the peer.
+The peer login must be able to read its breadcrumb directly, through passwordless
+sudo, or through PEER_SUDO_ASKPASS. Secrets never leave the peer.
 EOF
 }
 
@@ -86,6 +94,18 @@ case "$KOI_SERVICE_SCOPE" in
     ;;
 esac
 KOI_BREADCRUMB="${KOI_BREADCRUMB:-$DEFAULT_KOI_BREADCRUMB}"
+PEER_KOI_API="${PEER_KOI_API:-http://127.0.0.1:5641}"
+PEER_KOI_SERVICE_SCOPE="${PEER_KOI_SERVICE_SCOPE:-system}"
+case "$PEER_KOI_SERVICE_SCOPE" in
+  system) DEFAULT_PEER_KOI_BREADCRUMB=/run/koi.endpoint ;;
+  user) DEFAULT_PEER_KOI_BREADCRUMB=auto-user ;;
+  *)
+    echo "PEER_KOI_SERVICE_SCOPE must be 'system' or 'user'" >&2
+    exit 2
+    ;;
+esac
+PEER_KOI_BREADCRUMB="${PEER_KOI_BREADCRUMB:-$DEFAULT_PEER_KOI_BREADCRUMB}"
+PEER_SUDO_ASKPASS="${PEER_SUDO_ASKPASS:-}"
 PEER_PORT="${PEER_PORT:-22}"
 EVIDENCE_ROOT="${EVIDENCE_ROOT:-target/mdns-provider-transition}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -94,13 +114,14 @@ SERVICE_TYPE="_koi-gate._tcp"
 KOI_NAME="koi-subject-$RUN_ID"
 KOI_EXPLICIT_NAME="koi-explicit-$RUN_ID"
 PEER_NAME=""
-REMOTE_DIR="/tmp/koi-mdns-provider-$RUN_ID"
-REMOTE_PID=""
+PEER_REGISTRATION_ID=""
 REGULAR_ID=""
 EXPLICIT_ID=""
 SUBSCRIBE_PID=""
 INITIAL_PID=""
 INITIAL_HASH=""
+LAST_GENERATION=-1
+PEER_BASELINE=""
 CLEANING=0
 RESOLVED_GLOBAL_ARMED=0
 RESOLVED_LINK_ARMED=0
@@ -138,7 +159,21 @@ else
   "${PRIV[@]}" -v
 fi
 
-SSH=(ssh -p "$PEER_PORT" -o BatchMode=yes -o ConnectTimeout=8)
+SSH=(ssh -p "$PEER_PORT" -o ConnectTimeout=8)
+if [[ -n "${PEER_SSH_ASKPASS:-}" ]]; then
+  command -v setsid >/dev/null || {
+    echo "PEER_SSH_ASKPASS requires setsid" >&2
+    exit 2
+  }
+  [[ -x "$PEER_SSH_ASKPASS" ]] || {
+    echo "PEER_SSH_ASKPASS is not executable: $PEER_SSH_ASKPASS" >&2
+    exit 2
+  }
+  SSH=(env SSH_ASKPASS_REQUIRE=force SSH_ASKPASS="$PEER_SSH_ASKPASS" DISPLAY=koi-lab \
+    setsid -w "${SSH[@]}" -o BatchMode=no -o NumberOfPasswordPrompts=1)
+else
+  SSH+=(-o BatchMode=yes)
+fi
 if [[ -n "${PEER_IDENTITY:-}" ]]; then
   SSH+=(-i "$PEER_IDENTITY" -o IdentitiesOnly=yes)
 fi
@@ -146,6 +181,132 @@ if [[ -n "${PEER_KNOWN_HOSTS:-}" ]]; then
   SSH+=(-o UserKnownHostsFile="$PEER_KNOWN_HOSTS" -o StrictHostKeyChecking=yes)
 fi
 SSH+=("$PEER")
+
+peer_mutation() {
+  local operation="$1"
+  local askpass_arg="${PEER_SUDO_ASKPASS:--}"
+  shift
+  "${SSH[@]}" sh -s -- \
+    "$operation" "$PEER_KOI_API" "$PEER_KOI_BREADCRUMB" \
+    "$askpass_arg" "$@" <<'REMOTE'
+set -eu
+operation="$1"
+api="$2"
+breadcrumb="$3"
+askpass="$4"
+shift 4
+if [ "$askpass" = - ]; then
+  askpass=""
+fi
+
+if [ "$breadcrumb" = auto-user ]; then
+  breadcrumb="/run/user/$(id -u)/koi.endpoint"
+fi
+
+read_token() {
+  if [ -r "$breadcrumb" ]; then
+    awk -F: '$1 == "dat" {sub(/^dat:/, ""); print; exit}' "$breadcrumb"
+  elif [ -n "$askpass" ]; then
+    [ -x "$askpass" ] || {
+      echo "peer askpass helper is not executable: $askpass" >&2
+      return 1
+    }
+    SUDO_ASKPASS="$askpass" sudo -A awk -F: \
+      '$1 == "dat" {sub(/^dat:/, ""); print; exit}' "$breadcrumb"
+  else
+    sudo -n awk -F: '$1 == "dat" {sub(/^dat:/, ""); print; exit}' "$breadcrumb"
+  fi
+}
+
+case "$operation" in
+  probe)
+    for command in curl jq sha256sum systemctl pgrep awk; do
+      command -v "$command" >/dev/null || {
+        echo "peer is missing required command: $command" >&2
+        exit 2
+      }
+    done
+    token="$(read_token)"
+    [ -n "$token" ]
+    curl -fsS --max-time 5 "$api/healthz" >/dev/null
+    curl -fsS --max-time 5 "$api/v1/mdns/admin/status" >/dev/null
+    ;;
+  register)
+    name="$1"
+    service_type="$2"
+    run_id="$3"
+    token="$(read_token)"
+    payload="$(jq -n \
+      --arg name "$name" --arg type "$service_type" --arg run "$run_id" \
+      '{name:$name, type:$type, port:43192, lease_secs:600,
+        txt:{run:$run, side:"peer-koi"}}')"
+    curl -fsS --max-time 8 -X POST \
+      -H "x-koi-token: $token" -H 'content-type: application/json' \
+      --data "$payload" "$api/v1/mdns/announce"
+    ;;
+  unregister)
+    id="$1"
+    token="$(read_token)"
+    curl -fsS --max-time 8 -X DELETE \
+      -H "x-koi-token: $token" "$api/v1/mdns/unregister/$id" >/dev/null
+    ;;
+  *)
+    echo "unknown peer mutation: $operation" >&2
+    exit 2
+    ;;
+esac
+REMOTE
+}
+
+peer_status() {
+  "${SSH[@]}" curl -fsS --max-time 5 \
+    "$PEER_KOI_API/v1/mdns/admin/status"
+}
+
+peer_resolve() {
+  local instance="$1"
+  "${SSH[@]}" curl -GsS --max-time 8 \
+    "$PEER_KOI_API/v1/mdns/resolve" --data-urlencode "name=$instance"
+}
+
+peer_control_facts() {
+  "${SSH[@]}" sh -s -- "$PEER_KOI_SERVICE_SCOPE" <<'REMOTE'
+set -eu
+scope="$1"
+if [ "$scope" = user ]; then
+  ctl() { systemctl --user "$@"; }
+else
+  ctl() { systemctl "$@"; }
+fi
+pid="$(ctl show koi.service --property MainPID --value)"
+case "$pid" in
+  ''|0|*[!0-9]*) echo "peer koi.service has no live MainPID" >&2; exit 1 ;;
+esac
+set -- $(pgrep -x koi || true)
+[ "$#" -eq 1 ] && [ "$1" = "$pid" ] || {
+  echo "expected exactly one peer Koi process (service PID $pid), saw: $*" >&2
+  exit 1
+}
+printf 'koi_pid=%s\n' "$pid"
+printf 'koi_hash=%s\n' "$(sha256sum "/proc/$pid/exe" | awk '{print $1}')"
+printf 'koi_active=%s\n' "$(ctl is-active koi.service 2>/dev/null || true)"
+printf 'koi_enabled=%s\n' "$(ctl is-enabled koi.service 2>/dev/null || true)"
+for unit in avahi-daemon.service avahi-daemon.socket systemd-resolved.service; do
+  printf '%s_active=%s\n' "$unit" "$(systemctl is-active "$unit" 2>/dev/null || true)"
+  printf '%s_enabled=%s\n' "$unit" "$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+done
+REMOTE
+}
+
+assert_peer_koi_unchanged() {
+  local facts
+  facts="$(peer_control_facts)"
+  if [[ -n "$PEER_BASELINE" && "$facts" != "$PEER_BASELINE" ]]; then
+    printf '%s\n' "$facts" >"$EVIDENCE_DIR/peer-current.txt"
+    echo "peer Koi or provider service state changed; compare peer-baseline.txt" >&2
+    return 1
+  fi
+}
 
 PEER_HOST="${PEER#*@}"
 LAN_LINK="$(ip -json route get "$PEER_HOST" | jq -r '.[0].dev // empty' 2>/dev/null || true)"
@@ -282,12 +443,9 @@ restore_resolved_baseline() {
   fi
 }
 
-status_json() {
-  curl -fsS --max-time 5 "$KOI_API/v1/status"
-}
-
 mdns_status() {
-  status_json | jq -c '.capabilities[] | select(.name == "mdns")'
+  curl -fsS --max-time 5 "$KOI_API/v1/mdns/admin/status" \
+    | jq -c '.control_plane'
 }
 
 token() {
@@ -323,6 +481,8 @@ assert_single_koi() {
 
 snapshot() {
   local label="$1"
+  mdns_status | jq . >"$EVIDENCE_DIR/$label-control-plane.json"
+  peer_status | jq . >"$EVIDENCE_DIR/$label-peer-status.json"
   {
     echo "label=$label"
     echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -338,24 +498,61 @@ snapshot() {
     for unit in "${RESOLVED_TRIGGER_UNITS[@]}"; do
       echo "${unit}_active=$(unit_active "$unit")"
     done
-    echo "mdns=$(mdns_status)"
+    echo "mdns_control_plane=$label-control-plane.json"
+    echo "peer_mdns_status=$label-peer-status.json"
     echo "udp_5353:"
     "${PRIV[@]}" ss -H -lunp 'sport = :5353' || true
   } >"$EVIDENCE_DIR/$label.txt"
 }
 
-await_plan() {
-  local label="$1" pattern="$2" deadline=$((SECONDS + 30)) status
+status_matches_routes() {
+  local status="$1" publish="$2" explicit="$3" browse="$4" resolve="$5"
+  jq -e \
+    --arg publish "$publish" \
+    --arg explicit "$explicit" \
+    --arg browse "$browse" \
+    --arg resolve "$resolve" '
+      . as $root
+      | ([.routes.publish, .routes.explicit_publish, .routes.browse,
+           .routes.resolve] | map(select(. != null)) | unique) as $selected
+      | .state == "ready"
+        and .routes.publish == $publish
+        and .routes.explicit_publish == $explicit
+        and .routes.browse == $browse
+        and (if $resolve == "none"
+             then .routes.resolve == null
+             else .routes.resolve == $resolve end)
+        and .publications.desired == .publications.established
+        and .publications.pending == 0
+        and .publications.failed == 0
+        and all($selected[]; . as $name
+          | any($root.providers[];
+              .name == $name
+              and .availability == "ready"
+              and .session == "ready"))
+    ' <<<"$status" >/dev/null
+}
+
+await_routes() {
+  local label="$1" publish="$2" explicit="$3" browse="$4" resolve="$5"
+  local require_advance="${6:-1}" deadline=$((SECONDS + 60)) status generation
   while ((SECONDS < deadline)); do
     status="$(mdns_status 2>/dev/null || true)"
-    if jq -r '.summary' <<<"$status" | grep -Eq "$pattern"; then
-      printf '%s\n' "$status" >"$EVIDENCE_DIR/$label-status.json"
-      return 0
+    if status_matches_routes "$status" "$publish" "$explicit" "$browse" "$resolve"; then
+      generation="$(jq -r '.generation' <<<"$status")"
+      if [[ "$require_advance" == 0 || "$generation" -gt "$LAST_GENERATION" ]]; then
+        printf '%s\n' "$status" | jq . >"$EVIDENCE_DIR/$label-status.json"
+        if [[ "$require_advance" == 1 ]]; then
+          LAST_GENERATION="$generation"
+        fi
+        return 0
+      fi
     fi
     sleep 1
   done
-  printf '%s\n' "${status:-unavailable}" >"$EVIDENCE_DIR/$label-status.json"
-  echo "timed out waiting for provider plan /$pattern/: ${status:-unavailable}" >&2
+  printf '%s\n' "${status:-null}" | jq . >"$EVIDENCE_DIR/$label-status.json" 2>/dev/null \
+    || printf '%s\n' "${status:-unavailable}" >"$EVIDENCE_DIR/$label-status.json"
+  echo "timed out waiting for structured routes publish=$publish explicit=$explicit browse=$browse resolve=$resolve after generation $LAST_GENERATION" >&2
   return 1
 }
 
@@ -369,23 +566,27 @@ heartbeat() {
 }
 
 peer_observes_subject() {
-  local label="$1" output deadline=$((SECONDS + 25)) regular=0 explicit=0
-  : >"$EVIDENCE_DIR/$label-peer-browse.txt"
+  local label="$1" response deadline=$((SECONDS + 30)) regular=0 explicit=0
+  : >"$EVIDENCE_DIR/$label-peer-resolve.ndjson"
   while ((SECONDS < deadline)); do
-    output="$("${SSH[@]}" timeout 5 avahi-browse -prt "$SERVICE_TYPE" 2>&1 || true)"
-    printf '%s\n' "$output" >>"$EVIDENCE_DIR/$label-peer-browse.txt"
-    grep -Fq "$KOI_NAME" <<<"$output" && regular=1
-    grep -Fq "$KOI_EXPLICIT_NAME" <<<"$output" && explicit=1
+    response="$(peer_resolve "$KOI_NAME.$SERVICE_TYPE.local." 2>&1 || true)"
+    printf '%s\n' "$response" >>"$EVIDENCE_DIR/$label-peer-resolve.ndjson"
+    jq -e --arg name "$KOI_NAME" '.resolved.name == $name' \
+      <<<"$response" >/dev/null 2>&1 && regular=1
+    response="$(peer_resolve "$KOI_EXPLICIT_NAME.$SERVICE_TYPE.local." 2>&1 || true)"
+    printf '%s\n' "$response" >>"$EVIDENCE_DIR/$label-peer-resolve.ndjson"
+    jq -e --arg name "$KOI_EXPLICIT_NAME" '.resolved.name == $name' \
+      <<<"$response" >/dev/null 2>&1 && explicit=1
     if [[ "$regular" == 1 && "$explicit" == 1 ]]; then
       return 0
     fi
     sleep 1
   done
   if [[ "$regular" != 1 ]]; then
-    echo "peer did not observe ordinary Koi publication during $label" >&2
+    echo "peer Koi did not resolve the subject publication during $label" >&2
   fi
   if [[ "$explicit" != 1 ]]; then
-    echo "peer did not observe explicit-address Koi publication during $label" >&2
+    echo "peer Koi did not resolve the explicit-address publication during $label" >&2
   fi
   return 1
 }
@@ -424,21 +625,21 @@ await_subscription() {
 }
 
 assert_phase() {
-  local label="$1" pattern="$2"
-  await_plan "$label" "$pattern"
+  local label="$1" publish="$2" explicit="$3" browse="$4" resolve="$5"
+  await_routes "$label" "$publish" "$explicit" "$browse" "$resolve"
   assert_single_koi
+  assert_peer_koi_unchanged
   heartbeat
   PEER_NAME="koi-peer-$label-$RUN_ID"
   remote_start_publisher
   peer_observes_subject "$label"
   subject_resolves_peer "$label"
   await_subscription "$PEER_NAME"
-  if ! mdns_status | jq -e '.healthy == true' >/dev/null; then
-    echo "mDNS did not become healthy after explicit peer traffic during $label" >&2
+  if ! await_peer_synced "$label"; then
     return 1
   fi
   kill -0 "$SUBSCRIBE_PID"
-  await_plan "$label-final" "$pattern"
+  await_routes "$label-final" "$publish" "$explicit" "$browse" "$resolve" 0
   snapshot "$label"
   remote_stop_publisher
   await_subscription "$PEER_NAME" 'removed'
@@ -446,61 +647,61 @@ assert_phase() {
 }
 
 remote_start_publisher() {
-  REMOTE_PID="$("${SSH[@]}" sh -s -- \
-    "$REMOTE_DIR" "$PEER_NAME" "$SERVICE_TYPE" "$RUN_ID" <<'REMOTE'
-set -eu
-dir="$1" name="$2" service_type="$3" run_id="$4"
-command -v avahi-publish-service >/dev/null
-command -v avahi-browse >/dev/null
-umask 077
-mkdir "$dir"
-nohup avahi-publish-service "$name" "$service_type" 43192 "run=$run_id" "side=peer" \
-  >"$dir/publish.log" 2>&1 </dev/null &
-pid=$!
-printf '%s\n' "$pid" >"$dir/pid"
-sleep 1
-kill -0 "$pid"
-printf '%s\n' "$pid"
-REMOTE
-  )"
-  [[ "$REMOTE_PID" =~ ^[1-9][0-9]*$ ]]
+  local response
+  response="$(peer_mutation register "$PEER_NAME" "$SERVICE_TYPE" "$RUN_ID")"
+  printf '%s\n' "$response" >"$EVIDENCE_DIR/peer-register-$PEER_NAME.json"
+  PEER_REGISTRATION_ID="$(jq -er '.registered.id' <<<"$response")"
 }
 
 remote_stop_publisher() {
-  local status=0 expected_pid="${REMOTE_PID:--}"
-  "${SSH[@]}" sh -s -- "$REMOTE_DIR" "$expected_pid" "$RUN_ID" <<'REMOTE' || status=$?
-set -eu
-dir="$1" expected_pid="$2" run_id="$3"
-[ "$expected_pid" = - ] && expected_pid=""
-[ -d "$dir" ] || exit 0
-actual_pid="$(awk 'NR == 1 {print; exit}' "$dir/pid" 2>/dev/null || true)"
-if [ -n "$expected_pid" ] && [ "$actual_pid" != "$expected_pid" ]; then
-  echo "refusing remote PID mismatch: expected $expected_pid, found ${actual_pid:-none}" >&2
-  exit 1
-fi
-if [ -n "$actual_pid" ] && [ -r "/proc/$actual_pid/cmdline" ]; then
-  cmdline="$(tr '\0' ' ' <"/proc/$actual_pid/cmdline")"
-  case "$cmdline" in
-    *avahi-publish-service*"$run_id"*)
-      kill "$actual_pid" 2>/dev/null || true
-      i=0
-      while kill -0 "$actual_pid" 2>/dev/null && [ "$i" -lt 50 ]; do
-        sleep 0.1
-        i=$((i + 1))
-      done
-      kill -0 "$actual_pid" 2>/dev/null && {
-        echo "run-owned remote publisher did not stop" >&2
-        exit 1
-      }
-      ;;
-    *) echo "refusing to kill remote PID with unexpected identity: $cmdline" >&2; exit 1 ;;
-  esac
-fi
-rm -f "$dir/pid" "$dir/publish.log"
-rmdir "$dir"
-REMOTE
-  REMOTE_PID=""
-  return "$status"
+  [[ -z "$PEER_REGISTRATION_ID" ]] && return 0
+  if ! peer_mutation unregister "$PEER_REGISTRATION_ID"; then
+    return 1
+  fi
+  PEER_REGISTRATION_ID=""
+}
+
+await_peer_synced() {
+  local label="${1:-cleanup}" deadline=$((SECONDS + 30)) status
+  while ((SECONDS < deadline)); do
+    status="$(peer_status 2>/dev/null || true)"
+    if jq -e '
+        .control_plane.state == "ready"
+        and .control_plane.publications.desired == .control_plane.publications.established
+        and .control_plane.publications.pending == 0
+        and .control_plane.publications.failed == 0
+      ' <<<"$status" >/dev/null 2>&1; then
+      printf '%s\n' "$status" | jq . \
+        >"$EVIDENCE_DIR/$label-peer-synced-status.json"
+      return 0
+    fi
+    sleep 1
+  done
+  printf '%s\n' "${status:-unavailable}" \
+    >"$EVIDENCE_DIR/$label-peer-synced-status.json"
+  echo "peer Koi did not return to a ready, synchronized control plane" >&2
+  return 1
+}
+
+peer_rejects_withdrawn_subject() {
+  local deadline=$((SECONDS + 30)) regular explicit
+  while ((SECONDS < deadline)); do
+    regular="$(peer_resolve "$KOI_NAME.$SERVICE_TYPE.local." 2>&1 || true)"
+    explicit="$(peer_resolve "$KOI_EXPLICIT_NAME.$SERVICE_TYPE.local." 2>&1 || true)"
+    if ! jq -e --arg name "$KOI_NAME" '.resolved.name == $name' \
+        <<<"$regular" >/dev/null 2>&1 \
+       && ! jq -e --arg name "$KOI_EXPLICIT_NAME" '.resolved.name == $name' \
+        <<<"$explicit" >/dev/null 2>&1; then
+      printf '%s\n%s\n' "$regular" "$explicit" \
+        >"$EVIDENCE_DIR/peer-withdrawal.ndjson"
+      return 0
+    fi
+    sleep 1
+  done
+  printf '%s\n%s\n' "$regular" "$explicit" \
+    >"$EVIDENCE_DIR/peer-withdrawal.ndjson"
+  echo "peer Koi retained a withdrawn subject publication" >&2
+  return 1
 }
 
 unregister_subject() {
@@ -523,7 +724,7 @@ cleanup() {
   [[ -z "$SUBSCRIBE_PID" ]] || kill "$SUBSCRIBE_PID" 2>/dev/null || true
   unregister_subject
   if ! remote_stop_publisher; then
-    echo "ERROR: run-owned peer publisher did not clean up" >&2
+    echo "ERROR: run-owned peer Koi registration did not clean up" >&2
     exit_code=1
   fi
   restore_resolved_baseline || true
@@ -578,6 +779,9 @@ cleanup() {
     exit_code=1
   fi
   assert_single_koi || exit_code=1
+  await_peer_synced || exit_code=1
+  peer_control_facts >"$EVIDENCE_DIR/peer-final.txt" || exit_code=1
+  assert_peer_koi_unchanged || exit_code=1
   echo "Evidence: $EVIDENCE_DIR"
   exit "$exit_code"
 }
@@ -611,11 +815,14 @@ if [[ "$BASE_AVAHI_SERVICE_ACTIVE" != active \
 fi
 
 curl -fsS --max-time 5 "$KOI_API/healthz" >/dev/null
-"${SSH[@]}" 'command -v avahi-publish-service >/dev/null && command -v avahi-browse >/dev/null'
+peer_mutation probe
 INITIAL_PID="$(koi_pid)"
 [[ "$INITIAL_PID" =~ ^[1-9][0-9]*$ ]]
 INITIAL_HASH="$("${PRIV[@]}" sha256sum "/proc/$INITIAL_PID/exe" | awk '{print $1}')"
 assert_single_koi
+PEER_BASELINE="$(peer_control_facts)"
+printf '%s\n' "$PEER_BASELINE" >"$EVIDENCE_DIR/peer-baseline.txt"
+assert_peer_koi_unchanged
 {
   echo "run_id=$RUN_ID"
   echo "subject=$(hostname)"
@@ -681,28 +888,23 @@ curl -GsSN "$KOI_API/v1/mdns/subscribe" \
   >"$EVIDENCE_DIR/subject-subscription.sse" 2>"$EVIDENCE_DIR/subject-subscription.err" &
 SUBSCRIBE_PID=$!
 
-assert_phase avahi 'provider avahi \('
+assert_phase avahi avahi avahi avahi avahi
 
 "${PRIV[@]}" systemctl stop avahi-daemon.service avahi-daemon.socket
-assert_phase resolved-native 'provider systemd-resolved\+native \('
+assert_phase resolved-native systemd-resolved native native systemd-resolved
 
 stop_resolved_for_gate
-assert_phase native-only 'provider native \('
+assert_phase native-only native native native none
 
 start_resolved_for_gate
-assert_phase resolved-restored 'provider systemd-resolved\+native \('
+assert_phase resolved-restored systemd-resolved native native systemd-resolved
 
 restore_active avahi-daemon.socket "$BASE_AVAHI_SOCKET_ACTIVE"
 restore_active avahi-daemon.service "$BASE_AVAHI_SERVICE_ACTIVE"
-assert_phase avahi-restored 'provider avahi \('
+assert_phase avahi-restored avahi avahi avahi avahi
 
 unregister_subject
 remote_stop_publisher
-sleep 3
-if "${SSH[@]}" timeout 8 avahi-browse -prt "$SERVICE_TYPE" 2>&1 \
-  | grep -Fq "$KOI_NAME"; then
-  echo "peer retained the withdrawn Koi publication" >&2
-  exit 1
-fi
+peer_rejects_withdrawn_subject
 snapshot completed
 echo "PASS installed-service provider transition gate"
