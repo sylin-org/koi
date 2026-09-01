@@ -1,5 +1,10 @@
 # Hat: omarchy-linux (test-02, Hyprland/uwsm · Wayland)
 
+> **Retired 2026-09-01:** test-02 was reimaged as Bluefin. This brief and
+> `fleet/omarchy-linux/journal.md` preserve the measured former-host evidence;
+> do not execute it on the replacement. The active assignment is
+> `fleet/briefs/bluefin-linux.md`.
+
 Repo: ~/repos/github/sylin-org/koi (+ koi-desktop beside it).
 You are the tiling-Wayland UX story — the hardest "simply works" case.
 

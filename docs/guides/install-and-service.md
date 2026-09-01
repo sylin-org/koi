@@ -188,7 +188,9 @@ On Windows, `koi install` manages inbound firewall rules with `netsh advfirewall
 
 ## Changing the port or bind
 
-`koi install` has no flags of its own — the service inherits the daemon's configuration the same way the foreground daemon does, via global flags and environment variables read at startup.
+`koi install` records its interactive local operator with `--operator`; daemon
+configuration still comes from the global flags and environment variables read at
+startup.
 
 ### At install time, with global flags
 
@@ -202,6 +204,13 @@ koi --port 5642 install
 ```sh
 # Linux/macOS: expose the HTTP API to the LAN, custom port
 sudo koi --port 5642 --http-bind 0.0.0.0 install
+```
+
+For a direct-root/package installation, name the desktop/CLI user explicitly so
+the machine service can authenticate it on local control:
+
+```sh
+sudo koi install --operator alice
 ```
 
 The relevant knobs:

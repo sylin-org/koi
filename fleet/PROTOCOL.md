@@ -50,9 +50,13 @@ making sure Koi *simply works* on your OS. Your assignment is
 - Untouchable: garden-moss on limpid-dune/topaz-butte; anything outside
   your machine; production LAN boxes (see local/NOTES.md).
 - Credentials: only your brief's. Never reuse another machine's.
-- Install latitude: rustup/git/node into your home, and the distro
-  packages your toolchain needs. Anything else system-level: file an
-  issue, don't act.
+- Test latitude: on your own hat machine, install the platform/build
+  dependencies and exercise the system services, responder/provider lifecycle,
+  immutable deployment, firewall, trust store, and graphical-session surfaces
+  necessary for the brief's real acceptance gates. Capture exact baseline and
+  rollback material first, mutate only the named surface, settle-check it, and
+  restore anything not intended as the final Koi deployment. This authority does
+  not extend to another fleet or production machine.
 - Truthful or silent: never report a state you did not observe.
 
 ## Journal format (append-only)

@@ -28,8 +28,10 @@ not a helper process or second service.
    direct-root installs can state it with `--operator`. The machine-owned policy is stored as
    `state/local-access.json`; it contains no secret.
 2. The daemon keeps the DAT breadcrumb owner-only. A versioned `access` request returns the
-   running HTTP endpoint and DAT only over the authenticated local transport. A disabled HTTP
-   adapter returns a real typed error.
+   running HTTP endpoint, DAT, and resolved data root only over the authenticated local
+   transport. The data root is additive and optional on the wire: older clients ignore it,
+   while newer clients talking to an older daemon report it as unknown and never infer an OS
+   default. A disabled HTTP adapter returns a real typed error.
 3. The Unix socket is `0600`, owned by the recorded UID, and every accepted connection's peer
    UID is verified. The Windows pipe has an explicit protected DACL for SYSTEM,
    Administrators, and the recorded SID; remote clients are rejected and the connected
@@ -55,6 +57,9 @@ desktop's single `local_daemon` module. No HTTP endpoint bypasses DAT authentica
 - The real root/SYSTEM service and ordinary workbench user share one secure deployment.
 - Shifted HTTP ports propagate automatically to the CLI, MCP server, desktop streams,
   mutations, tray posture, and pond QR target.
+- The workbench can show a custom or platform-default data root exactly as the running daemon
+  resolved it. Public `/v1/status` and the LAN Pond bundle do not disclose that machine-local
+  path; browser mode hides the tile.
 - Service upgrades should run through `koi install` once to capture the desired operator.
   A pre-policy foreground daemon safely falls back to its own identity and logs that fact.
 - Another local account cannot use the socket merely because it knows the path. Root and
@@ -63,3 +68,14 @@ desktop's single `local_daemon` module. No HTTP endpoint bypasses DAT authentica
 - The local protocol is deliberately small. Future operator-only operations extend the
   versioned contract rather than adding shared files, loopback auth exemptions, or helpers.
 
+## Validation
+
+- Wire tests pin the versioned request, current access response, and deserialization of a
+  legacy response without `data_root`.
+- Client and serving-stack suites exercise both breadcrumb and authenticated transport paths;
+  strict clippy covers the shared implementation and a Windows GNU target check covers the
+  Windows service composition root.
+- On Bluefin, one root-owned installed daemon exposed its owner-private socket to the recorded
+  UID. The native 0.1.1 workbench consumed that handoff after a real reboot and its live
+  Wayland accessibility text contained `/var/lib/koi`. Public `/v1/status` lacked the field,
+  the published Pond bundle contained no local path, and exactly one daemon/UI remained.

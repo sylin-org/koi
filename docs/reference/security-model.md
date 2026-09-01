@@ -86,6 +86,14 @@ http://localhost:5641
 dat:8a31…base64url…
 ```
 
+An installed machine service normally owns that breadcrumb as root/SYSTEM. Koi does
+not make it world-readable. `koi install` records one interactive operator
+(`--operator` when elevation provenance is unavailable), and the CLI/workbench can
+request the endpoint and DAT over Koi's authenticated local-control Unix socket or
+Windows named pipe. The transport verifies the peer UID/SID before returning bytes;
+it also carries the optional resolved data root for local UI truth. That path is not
+part of public HTTP status and is not available to LAN clients.
+
 ### Worked example
 
 ```bash
@@ -110,8 +118,9 @@ Invoke-RestMethod -Method Post -Uri http://localhost:5641/v1/mdns/announce `
   -Body '{"name":"My App","type":"_http._tcp","port":8080}'
 ```
 
-The `koi` CLI handles all of this automatically: it reads the breadcrumb, attaches
-the token, and falls back to standalone mode when no daemon is running.
+The `koi` CLI handles all of this automatically: it tries its readable private
+breadcrumb, then the authenticated local-control transport, and attaches the token.
+An explicit remote `--endpoint` never inherits the local token.
 
 To hand the token to another process or container, use `koi token` instead of
 parsing the breadcrumb by hand:

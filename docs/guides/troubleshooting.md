@@ -213,15 +213,19 @@ automatically — you only need the token when calling the raw HTTP API yourself
 `No daemon endpoint found. Is the daemon running? Use --endpoint to specify.` — or a
 command silently runs in standalone mode when you expected it to talk to the daemon.
 
-**Cause.** The CLI finds the daemon through the **breadcrumb file** the daemon writes on
-startup. It contains the endpoint URL and the token. The breadcrumb is missing or stale
-when:
+**Cause.** The CLI first checks the private **breadcrumb file** the daemon writes on
+startup, then asks the authenticated local-control socket/pipe. The breadcrumb contains
+the endpoint URL and token; an installed machine service may own it as root/SYSTEM, in
+which case the recorded operator is expected to use local control instead. Discovery
+fails when both paths are unavailable, stale, or deny this principal—for example:
 
 - the daemon isn't actually running;
 - it was killed ungracefully (power loss, `kill -9`, `taskkill /F`) and the breadcrumb
-  points at a dead endpoint; or
-- the daemon runs in a different context whose breadcrumb your shell can't read — most
-  often a daemon under a different `XDG_RUNTIME_DIR`, or one bound to a custom `--port`.
+  points at a dead endpoint;
+- the daemon runs in a different context and no local operator policy/socket was installed;
+- this account is not the operator recorded by `koi install --operator`; or
+- the daemon is bound to a custom port but neither its breadcrumb nor control transport is
+  current.
 
 Breadcrumb locations:
 
@@ -229,6 +233,10 @@ Breadcrumb locations:
 | -------- | --------------- |
 | Windows | `%ProgramData%\koi\koi.endpoint` |
 | Linux/macOS | `$XDG_RUNTIME_DIR/koi.endpoint`, fallback `/var/run/koi.endpoint` |
+
+Machine local-control paths are `\\.\pipe\koi` on Windows and the user-runtime
+`koi.sock` followed by `/var/run/koi.sock` on Unix. Do not loosen their ACL/mode or
+copy the DAT into a shared file; reinstall with the intended operator instead.
 
 **Fix.** Confirm the daemon is up and reachable:
 

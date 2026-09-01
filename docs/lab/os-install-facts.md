@@ -1,7 +1,8 @@
 # OS install facts — what the physical fleet taught us
 
 **Purpose:** every fact below was measured on a real machine while onboarding
-the 2026-08-31 fleet (rc.2 musl artifact, git 2ebb868). This is the input for
+the 2026-08-31 fleet (rc.2 musl artifact, git 2ebb868), then amended when
+test-02 was reimaged as Bluefin on 2026-09-01. This is the input for
 making `koi install` non-flaky across OSes. Fleet: 10 machines, 4 OS families,
 all enrolled into brook's mesh — roster 10/10 active (wait: 9 remote members +
 brook = the CA itself; `/v1/certmesh/status` lists all of them).
@@ -12,7 +13,7 @@ brook = the CA itself; `/v1/certmesh/status` lists all of them).
 | brook (stone-platinum-brook) | .44 | Debian 13 | systemd | dedicated | system service, 5641, LAN HTTP via drop-in |
 | granite (stone-granite-spring) | .55 | Debian 13 | systemd | dedicated | system service, 5641 |
 | test-01 | .109 | CachyOS (Arch) | systemd | workstation | user-level cyclical, 5641 |
-| test-02 | .95 | Omarchy (Arch) | systemd | workstation | user-level cyclical, 5641 |
+| bluefin / test-02 | .95 | Bluefin 44 (immutable Fedora) | systemd | workstation | system service + native desktop RPM, 5641 |
 | stone-limpid-dune | .97 | Debian 13 | systemd | dedicated | system service, **21441/2/3** (drop-in; Moss owns 5641) |
 | stone-topaz-butte | .111 | Debian 13 | systemd | dedicated | system service, **22441/2/3** (drop-in; Moss owns 5641) |
 | stone-silent-cascade | .103 | Debian 13 | systemd | dedicated | system service, **23441/2/3** |
@@ -39,7 +40,7 @@ brook = the CA itself; `/v1/certmesh/status` lists all of them).
   any pre-existing `/usr/local/bin/koi` (brook/granite doctrine: copy aside,
   never delete).
 
-### Arch family — CachyOS (test-01) and Omarchy (test-02)
+### Arch family — CachyOS (test-01) and former Omarchy (historical test-02)
 
 - systemd present; `curl` present; GNU setsid (supports `-f`).
 - Workstation class: the **user-level cyclical daemon** pattern
@@ -48,6 +49,34 @@ brook = the CA itself; `/v1/certmesh/status` lists all of them).
 - test-02 note: the join CLI must be pointed at the daemon's breadcrumb via
   `XDG_RUNTIME_DIR` — a fresh shell defaults elsewhere and reports
   "No running Koi service found" even though healthz answers.
+
+The Omarchy facts above are retained as historical platform evidence. The
+physical test-02 machine no longer runs Omarchy.
+
+### Bluefin 44.20260714 (bluefin / test-02)
+
+- The host is `bluefin-nvidia-open`, Fedora/OSTree based, with GNOME Shell 50.3
+  on Wayland. Build dependencies belong in a toolbox. Layering compiler/header
+  packages onto the host created needless immutable deployments and was fully
+  reverted; the dedicated Fedora 44 `koi-dev` toolbox is the proven build shape.
+- The core installs normally through `sudo koi install --operator test` into
+  `/usr/local/bin/koi` plus one enabled system unit. The real upgrade stopped the
+  old PID, atomically staged the candidate, started one replacement, and passed
+  its own health verification on the standard trio.
+- Tauri's native RPM is a durable workstation artifact. `rpm-ostree install
+  --uninstall=koi Koi-0.1.1-1.x86_64.rpm` produced one 0.1.0→0.1.1 deployment;
+  after reboot `/usr/bin/koi-desktop`, its desktop entry, and icon were present.
+  XDG autostart launched exactly one minimized process and GNOME hosted its SNI.
+- AppImage packaging is not currently viable from Fedora 44: Tauri's bundled
+  linuxdeploy strip cannot read the modern ELF RELR sections. The release binary
+  itself and RPM are healthy; do not mistake this bundler incompatibility for a
+  runtime failure.
+- The workbench's Linux window measured 1100×720 content with a 37-pixel native
+  titlebar. Its authenticated local-control handoff reported the real data root
+  `/var/lib/koi`; neither the public status document nor Pond bundle exposes it.
+- The base image entered both measured boots with `systemd-remount-fs` failing to
+  reconfigure its overlay root and the NVIDIA CDI generator reporting driver not
+  loaded. These are pre-existing Bluefin/image-hardware facts; Koi remained healthy.
 
 ### Alpine 3.24 (test-03) — the flaky one
 

@@ -115,10 +115,10 @@
     {
       "kind": "putty_linux",
       "id": "test02",
-      "hostname": "test-02",
+      "hostname": "bluefin",
       "address": "192.168.1.95",
       "user": "test",
-      "host_key": "SHA256:hYaztj0GANITCjatrQStLI4LO906z5IFKoLM7DTf1KQ",
+      "host_key": "SHA256:vufej1zicCd5n7UGFwiOVz766b9Y4S2F7RSnbWLh8/E",
       "architecture": "x86_64",
       "remote_root": "/home/test/koi-test",
       "http_port": 22441,

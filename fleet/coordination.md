@@ -17,10 +17,10 @@ documentation needed to make its platform work; those changes go directly to
 `tools/koi-lab/lab.json` (addresses, users, host keys) and `local/NOTES.md`
 (credentials, repo paths); this table is the index.
 
-| hat | machine | desktop (measured 2026-08-31) | repo path | UX modus operandi |
+| hat | machine | desktop (last measured) | repo path | UX modus operandi |
 |---|---|---|---|---|
 | `cachyos-linux` | test-01 (.109) | KDE Plasma 6, Wayland | `/run/media/test/WORKBENCH/repos/github/sylin-org/koi` | Plasma systemtray hosts SNI natively → Koi tray lamp belongs there; XDG autostart honored; Plasma notifications |
-| `omarchy-linux` | test-02 (.95) | Hyprland (uwsm), Wayland | `~/repos/github/sylin-org/koi` | tiling compositor: XDG autostart **NOT honored** (exec-once/uwsm is the path); tray = the session bar via SNI (verify which bar); notifications = the session daemon |
+| `bluefin-linux` | bluefin / test-02 (.95) | Bluefin 44, GNOME 50.3, Wayland (2026-09-01) | `~/repos/github/sylin-org/koi` | immutable Fedora image: system Koi in `/usr/local`, native RPM layered with rpm-ostree, XDG autostart, SNI through GNOME's watcher, GNOME notifications |
 | `alpine-linux` | test-03 (.221) | KDE Plasma, Wayland, **musl** | `~/repos/github/sylin-org/koi` | Plasma tray + XDG autostart as on cachyos; the open question is webkit2gtk on musl for the native workbench — the pond UI in a browser is the honest fallback until proven |
 | `debian-linux` | halcyon-savanna (.112) | headless | `~/repos/github/sylin-org/koi` | no desktop by design: the surface is the daemon + HTTP API + pond UI; UX = everything reachable and truthful without a GUI |
 
@@ -43,7 +43,9 @@ The product promise is identical everywhere; the *mechanism* is the OS's own:
    minimal WMs), never through a bespoke channel.
 4. **The surface** — the native workbench where webview support is real
    (glibc boxes); the pond UI in the browser everywhere, always (it is the
-   same interface, read-only, served by the daemon).
+   same interface, read-only, served by the daemon). A Phone/Pond claim passes
+   only when a second LAN host opens the advertised URL; publishing files behind
+   a loopback-only listener is not mobile access.
 5. **Truthful everywhere** — capability ladder reflects reality per OS
    (e.g. mDNS names every active capability route and its provider evidence);
    no surface shows a state the daemon did not declare. Finding Avahi is not a
@@ -193,6 +195,10 @@ test, or a process that merely started.
   launch and truthful parity, and ordinary session transitions such as app
   close/reopen and lock/unlock. Check for duplicate processes, stale tray items,
   startup races, missing runtime environment, and terminal-only success.
+  Exercise Phone/Pond from a second physical host. Preserve loopback as the
+  default for the full operator API; if Pond cannot be reached without exposing
+  that API, file the missing read-only listener as an architecture defect rather
+  than silently broadening the bind.
 - **Desktop provenance and visual proof:** before enabling login startup, prove
   the executable is installed at a durable product-owned path rather than inside
   a source checkout. Capture the visible workbench and compare its window frame,
@@ -211,10 +217,13 @@ test, or a process that merely started.
   not gates. Linux runs
   `scripts/integration/mdns-provider-transition.sh`; the precise contract and
   Windows adaptation are in `docs/testing/mdns-provider-transition.md`.
-  Reference Linux pass `20260901T004947Z-280219` used the unchanged installed
-  test-01/test-02 PIDs `280122`/`89908`, artifact SHA-256
-  `05f15f4fcd80ff720c044698f7d2eff545823e7803ca59e0e1e4170e15c8e369`, and
-  generations 1–5; use its structured evidence shape as the minimum Windows gate.
+  Current Linux reference pass `20260901T205042Z-45196` used the unchanged
+  installed Bluefin subject PID `37751` (SHA-256
+  `8a0a14dda27b49dbd72f0bfeb79efc3e73cb3392c144c74924f2443f73bb6b27`)
+  and test-01 peer PID `404624` (SHA-256
+  `1a994a78b8b40218bd27abf76f992db60b9fc42124187a43cf782c8ca887581c`),
+  with generations 9–13; use its structured evidence shape as the minimum
+  Windows gate.
 - **Windows local control:** the workbench gate also uses the one installed service.
   Reinstall/upgrade it through `koi install` so ADR-040 records the interactive SID,
   then prove the owner-private breadcrumb is not the workbench's dependency: shifted
