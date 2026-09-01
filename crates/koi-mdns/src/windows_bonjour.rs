@@ -137,7 +137,11 @@ fn inspect() -> std::result::Result<BonjourInspection, MdnsProviderReport> {
         availability,
         installed: ProbeFact::Yes,
         configured: ProbeFact::NotApplicable,
-        running: if running { ProbeFact::Yes } else { ProbeFact::No },
+        running: if running {
+            ProbeFact::Yes
+        } else {
+            ProbeFact::No
+        },
         capabilities,
         session: None,
         detail: format!(
@@ -155,7 +159,9 @@ fn inspect() -> std::result::Result<BonjourInspection, MdnsProviderReport> {
 /// Returns the human-readable failure on the first missing piece.
 fn export_probe() -> std::result::Result<(), String> {
     static PROBE: Mutex<Option<std::result::Result<(), String>>> = Mutex::new(None);
-    let mut guard = PROBE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = PROBE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(cached) = guard.as_ref() {
         return cached.clone();
     }
@@ -169,9 +175,11 @@ fn export_probe() -> std::result::Result<(), String> {
             }
         }
         if library.is_null() {
-            return Err("dnssd.dll not found in the DLL search path or the Bonjour install \
+            return Err(
+                "dnssd.dll not found in the DLL search path or the Bonjour install \
                         directories"
-                .to_string());
+                    .to_string(),
+            );
         }
         for name in REQUIRED_EXPORTS {
             let symbol: Vec<u8> = name.bytes().chain(std::iter::once(0)).collect();
@@ -554,11 +562,21 @@ fn register_native(request: &RegisterRequest) -> Result<RegisteredNative> {
             unsafe { (api.ref_deallocate)(reference) };
         }
         unsafe { drop(Box::from_raw(runtime_ptr)) };
-        return Err(dnssd_error(ProviderOperation::Publish, error, "DNSServiceRegister"));
+        return Err(dnssd_error(
+            ProviderOperation::Publish,
+            error,
+            "DNSServiceRegister",
+        ));
     }
 
     // Pump the connection on this thread until the completion reply arrives.
-    let outcome = pump_until(api.process_result, runtime_ptr as *mut core::ffi::c_void, reference, &reply_rx, CALL_WAIT);
+    let outcome = pump_until(
+        api.process_result,
+        runtime_ptr as *mut core::ffi::c_void,
+        reference,
+        &reply_rx,
+        CALL_WAIT,
+    );
     unsafe { drop(Box::from_raw(runtime_ptr)) };
     let (error_code, final_name) = match outcome {
         Some(reply) => reply,
@@ -688,15 +706,9 @@ async fn open_bonjour_browse(
                 unsafe { read_cstr(regtype) }
             };
             if flags & K_DNSSERVICE_FLAGS_ADD != 0 {
-                BrowseObservation::Add {
-                    name,
-                    regtype: typ,
-                }
+                BrowseObservation::Add { name, regtype: typ }
             } else {
-                BrowseObservation::Remove {
-                    name,
-                    regtype: typ,
-                }
+                BrowseObservation::Remove { name, regtype: typ }
             }
         };
         let _ = runtime.events.send(observation);
@@ -727,7 +739,11 @@ async fn open_bonjour_browse(
             unsafe { (api.ref_deallocate)(reference) };
         }
         unsafe { drop(Box::from_raw(runtime_ptr.0)) };
-        return Err(dnssd_error(ProviderOperation::Browse, error, "DNSServiceBrowse"));
+        return Err(dnssd_error(
+            ProviderOperation::Browse,
+            error,
+            "DNSServiceBrowse",
+        ));
     }
 
     // The pump thread drives dnssd callbacks until the connection is
@@ -937,7 +953,11 @@ fn resolve_native(name: &str, regtype: &str, domain: &str) -> Result<ProviderSer
             unsafe { (api.ref_deallocate)(reference) };
         }
         unsafe { drop(Box::from_raw(runtime_ptr)) };
-        return Err(dnssd_error(ProviderOperation::Resolve, error, "DNSServiceResolve"));
+        return Err(dnssd_error(
+            ProviderOperation::Resolve,
+            error,
+            "DNSServiceResolve",
+        ));
     }
 
     let outcome = pump_until(
@@ -1182,7 +1202,10 @@ mod tests {
             ("path".to_string(), "/v1/mcp".to_string()),
         ]));
         assert_eq!(parse_txt(&bytes).len(), 2);
-        assert_eq!(parse_txt(&bytes).get("source").map(String::as_str), Some("bonjour"));
+        assert_eq!(
+            parse_txt(&bytes).get("source").map(String::as_str),
+            Some("bonjour")
+        );
     }
 
     #[test]

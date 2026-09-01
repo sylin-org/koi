@@ -158,7 +158,11 @@ fn inspect() -> std::result::Result<DnsApiInspection, MdnsProviderReport> {
         availability,
         installed: ProbeFact::Yes,
         configured: enabled,
-        running: if running { ProbeFact::Yes } else { ProbeFact::No },
+        running: if running {
+            ProbeFact::Yes
+        } else {
+            ProbeFact::No
+        },
         capabilities,
         session: None,
         detail: format!(
@@ -434,7 +438,10 @@ struct BrowseContext {
 
 enum BrowseObservation {
     /// One PTR observation: (target name, owning query name).
-    Ptr { target: String, query_name: String },
+    Ptr {
+        target: String,
+        query_name: String,
+    },
     Terminal(u32),
 }
 
@@ -611,10 +618,7 @@ async fn open_dnsapi_browse(
             terminal_rx: Mutex::new(Some(terminal_rx)),
         }),
     );
-    Ok((
-        browse,
-        BridgeRegistration { cancel, reaper },
-    ))
+    Ok((browse, BridgeRegistration { cancel, reaper }))
 }
 
 fn trim_local(value: &str) -> String {
@@ -659,11 +663,10 @@ impl BrowseLease for DnsApiBrowseLease {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
         if let Some(terminal_rx) = terminal_rx {
-            let observed = tokio::task::spawn_blocking(move || {
-                terminal_rx.recv_timeout(CALL_WAIT).is_ok()
-            })
-            .await
-            .unwrap_or(false);
+            let observed =
+                tokio::task::spawn_blocking(move || terminal_rx.recv_timeout(CALL_WAIT).is_ok())
+                    .await
+                    .unwrap_or(false);
             if observed {
                 if let Some(context_ptr) = self.context_ptr.take() {
                     unsafe { reclaim_context(context_ptr.0) };
@@ -717,8 +720,7 @@ fn blocking_resolve(instance_full_name: &str, service_type: &str) -> Result<Prov
     };
     // SAFETY: runtime_ptr stays valid for the whole operation; the cancel
     // field's address is stable from here until DnsServiceResolveCancel.
-    let call_status =
-        unsafe { DnsServiceResolve(&request, &raw mut (*runtime_ptr).cancel) };
+    let call_status = unsafe { DnsServiceResolve(&request, &raw mut (*runtime_ptr).cancel) };
 
     if call_status != DNS_CALL_SUCCESS && call_status != DNS_CALL_PENDING {
         unsafe { drop(Box::from_raw(runtime_ptr)) };
