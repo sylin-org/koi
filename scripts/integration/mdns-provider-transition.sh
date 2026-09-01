@@ -34,8 +34,9 @@ Optional environment:
 
 Run on the real subject host, not in a container. The caller needs privilege to
 control local system services and preconfigured SSH authentication to the peer.
-The peer login must be able to read its breadcrumb directly, through passwordless
-sudo, or through PEER_SUDO_ASKPASS. Secrets never leave the peer.
+The peer login must be able to read its breadcrumb and hash its running service
+executable directly, through passwordless sudo, or through PEER_SUDO_ASKPASS.
+Secrets never leave the peer.
 EOF
 }
 
@@ -125,6 +126,7 @@ PEER_BASELINE=""
 CLEANING=0
 RESOLVED_GLOBAL_ARMED=0
 RESOLVED_LINK_ARMED=0
+RESOLVED_BASELINE_RESTORED=0
 RESOLVED_DROPIN_DIR=/run/systemd/resolved.conf.d
 RESOLVED_DROPIN="$RESOLVED_DROPIN_DIR/70-koi-provider-transition.conf"
 RESOLVED_DROPIN_DIR_EXISTED=0
@@ -378,6 +380,7 @@ resolved_link_mdns() {
 }
 
 arm_resolved_for_gate() {
+  RESOLVED_BASELINE_RESTORED=0
   case "$BASE_RESOLVED_GLOBAL_MDNS" in
     yes|resolve) ;;
     no)
@@ -444,6 +447,9 @@ unmask_resolved_for_gate() {
 }
 
 restore_resolved_baseline() {
+  if [[ "$RESOLVED_BASELINE_RESTORED" == 1 ]]; then
+    return 0
+  fi
   unmask_resolved_for_gate
   if [[ "$RESOLVED_GLOBAL_ARMED" == 1 ]]; then
     "${PRIV[@]}" rm -f "$RESOLVED_DROPIN"
@@ -463,6 +469,76 @@ restore_resolved_baseline() {
      && ( "$BASE_RESOLVED_ACTIVE" == active || "$BASE_RESOLVED_ACTIVE" == activating ) ]]; then
     "${PRIV[@]}" resolvectl mdns "$LAN_LINK" "$BASE_RESOLVED_LINK_MDNS"
   fi
+  RESOLVED_GLOBAL_ARMED=0
+  RESOLVED_LINK_ARMED=0
+  RESOLVED_BASELINE_RESTORED=1
+}
+
+require_unit_activity() {
+  local unit="$1" expected="$2" actual
+  actual="$(unit_active "$unit")"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "provider lifecycle expected $unit to be $expected, got $actual" >&2
+    return 1
+  fi
+}
+
+require_resolved_baseline() {
+  local global link
+  global="$(resolved_global_mdns)"
+  link="$(resolved_link_mdns "$LAN_LINK")"
+  if [[ "$global" != "$BASE_RESOLVED_GLOBAL_MDNS" \
+     || "$link" != "$BASE_RESOLVED_LINK_MDNS" ]]; then
+    echo "resolved mDNS must match baseline before Avahi starts (global=$global, $LAN_LINK=$link)" >&2
+    return 1
+  fi
+}
+
+# Own external provider mutation as a break-before-make lifecycle. Avahi and
+# resolved are host responders, not inert route flags: enabling both can put
+# either daemon into hostname-conflict recovery before Koi makes a route choice.
+# Route assertions intentionally remain in assert_phase() below.
+enter_provider_phase() {
+  local phase="$1"
+  case "$phase" in
+    avahi)
+      require_unit_activity avahi-daemon.service active
+      require_unit_activity avahi-daemon.socket active
+      ;;
+    resolved)
+      "${PRIV[@]}" systemctl stop avahi-daemon.service avahi-daemon.socket
+      require_unit_activity avahi-daemon.service inactive
+      require_unit_activity avahi-daemon.socket inactive
+      arm_resolved_for_gate
+      require_unit_activity systemd-resolved.service active
+      ;;
+    native)
+      require_unit_activity avahi-daemon.service inactive
+      require_unit_activity avahi-daemon.socket inactive
+      stop_resolved_for_gate
+      require_unit_activity systemd-resolved.service inactive
+      ;;
+    resolved-restored)
+      require_unit_activity avahi-daemon.service inactive
+      require_unit_activity avahi-daemon.socket inactive
+      start_resolved_for_gate
+      require_unit_activity systemd-resolved.service active
+      ;;
+    avahi-restored)
+      # Remove every gate-owned resolved announcement before Avahi rejoins the
+      # network. A baseline that already enabled both is preserved verbatim.
+      restore_resolved_baseline
+      require_resolved_baseline
+      restore_active avahi-daemon.socket "$BASE_AVAHI_SOCKET_ACTIVE"
+      restore_active avahi-daemon.service "$BASE_AVAHI_SERVICE_ACTIVE"
+      require_unit_activity avahi-daemon.socket "$BASE_AVAHI_SOCKET_ACTIVE"
+      require_unit_activity avahi-daemon.service "$BASE_AVAHI_SERVICE_ACTIVE"
+      ;;
+    *)
+      echo "unknown provider lifecycle phase: $phase" >&2
+      return 2
+      ;;
+  esac
 }
 
 mdns_status() {
@@ -870,8 +946,6 @@ assert_peer_koi_unchanged
 } >"$EVIDENCE_DIR/baseline.txt"
 snapshot baseline
 
-arm_resolved_for_gate
-
 AUTH="$(token)"
 [[ -n "$AUTH" ]] || {
   echo "no DAT found in $KOI_BREADCRUMB" >&2
@@ -910,19 +984,19 @@ curl -GsSN "$KOI_API/v1/mdns/subscribe" \
   >"$EVIDENCE_DIR/subject-subscription.sse" 2>"$EVIDENCE_DIR/subject-subscription.err" &
 SUBSCRIBE_PID=$!
 
+enter_provider_phase avahi
 assert_phase avahi avahi avahi avahi avahi
 
-"${PRIV[@]}" systemctl stop avahi-daemon.service avahi-daemon.socket
+enter_provider_phase resolved
 assert_phase resolved-native systemd-resolved native native systemd-resolved
 
-stop_resolved_for_gate
+enter_provider_phase native
 assert_phase native-only native native native none
 
-start_resolved_for_gate
+enter_provider_phase resolved-restored
 assert_phase resolved-restored systemd-resolved native native systemd-resolved
 
-restore_active avahi-daemon.socket "$BASE_AVAHI_SOCKET_ACTIVE"
-restore_active avahi-daemon.service "$BASE_AVAHI_SERVICE_ACTIVE"
+enter_provider_phase avahi-restored
 assert_phase avahi-restored avahi avahi avahi avahi
 
 unregister_subject
