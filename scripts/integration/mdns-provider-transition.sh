@@ -124,6 +124,7 @@ INITIAL_HASH=""
 LAST_GENERATION=-1
 PEER_BASELINE=""
 CLEANING=0
+AVAHI_RUNTIME_MASKED=0
 RESOLVED_GLOBAL_ARMED=0
 RESOLVED_LINK_ARMED=0
 RESOLVED_BASELINE_RESTORED=0
@@ -369,6 +370,26 @@ restore_active() {
   fi
 }
 
+stop_avahi_for_gate() {
+  # The service requires the socket, and the socket can activate the service.
+  # Mask both activation paths first, then stop them in dependency order.
+  AVAHI_RUNTIME_MASKED=1
+  "${PRIV[@]}" systemctl --runtime mask \
+    avahi-daemon.service avahi-daemon.socket
+  "${PRIV[@]}" systemctl stop avahi-daemon.service
+  "${PRIV[@]}" systemctl stop avahi-daemon.socket
+}
+
+restore_avahi_baseline() {
+  if [[ "$AVAHI_RUNTIME_MASKED" == 1 ]]; then
+    "${PRIV[@]}" systemctl --runtime unmask \
+      avahi-daemon.service avahi-daemon.socket
+    AVAHI_RUNTIME_MASKED=0
+  fi
+  restore_active avahi-daemon.socket "$BASE_AVAHI_SOCKET_ACTIVE"
+  restore_active avahi-daemon.service "$BASE_AVAHI_SERVICE_ACTIVE"
+}
+
 resolved_global_mdns() {
   resolvectl mdns 2>/dev/null | awk '$1 == "Global:" {print $2; exit}' || true
 }
@@ -506,7 +527,7 @@ enter_provider_phase() {
       require_unit_activity avahi-daemon.socket active
       ;;
     resolved)
-      "${PRIV[@]}" systemctl stop avahi-daemon.service avahi-daemon.socket
+      stop_avahi_for_gate
       require_unit_activity avahi-daemon.service inactive
       require_unit_activity avahi-daemon.socket inactive
       arm_resolved_for_gate
@@ -529,8 +550,7 @@ enter_provider_phase() {
       # network. A baseline that already enabled both is preserved verbatim.
       restore_resolved_baseline
       require_resolved_baseline
-      restore_active avahi-daemon.socket "$BASE_AVAHI_SOCKET_ACTIVE"
-      restore_active avahi-daemon.service "$BASE_AVAHI_SERVICE_ACTIVE"
+      restore_avahi_baseline
       require_unit_activity avahi-daemon.socket "$BASE_AVAHI_SOCKET_ACTIVE"
       require_unit_activity avahi-daemon.service "$BASE_AVAHI_SERVICE_ACTIVE"
       ;;
@@ -826,8 +846,7 @@ cleanup() {
     exit_code=1
   fi
   restore_resolved_baseline || true
-  restore_active avahi-daemon.socket "$BASE_AVAHI_SOCKET_ACTIVE" || true
-  restore_active avahi-daemon.service "$BASE_AVAHI_SERVICE_ACTIVE" || true
+  restore_avahi_baseline || true
   sleep 2
   {
     echo "exit_code=$exit_code"

@@ -49,10 +49,12 @@ used for the peer. External responder mutation is break-before-make: the initial
 Avahi plan is proved before resolved is armed; Avahi is fully stopped before the
 gate enables resolved mDNS; and resolved returns to its captured mDNS configuration
 before Avahi is restarted. This avoids manufacturing a host-name conflict between
-two system responders while still exercising every Koi route plan. Resolved
-socket-activation units, when present, are stopped for the native-only phase; a
-runtime-only mask prevents D-Bus or socket activation from quietly restarting
-resolved during peer traffic. Configuration, service, trigger-socket, and
+two system responders while still exercising every Koi route plan. Avahi's service
+requires its activation socket, so the gate runtime-masks both activation paths,
+stops the service before the socket, and unmasks both only when restoration is safe.
+Resolved socket-activation units, when present, are stopped for the native-only
+phase; its own runtime-only mask prevents D-Bus or socket activation from quietly
+restarting it during peer traffic. Configuration, service, trigger-socket, and
 runtime-mask baselines are all restored exactly, including on failure. Restoration
 is idempotent so cleanup cannot re-arm a provider after the final phase. It never
 launches Koi. It asserts that both installed Koi unit scopes,
