@@ -114,9 +114,18 @@ protocols are outside this workstream.
 - **Launch (agent sessions)**: ship `fleet/briefs/<hat>.md` if changed, then
   start headless in tmux: `tmux new-session -d -s koi-fleet 'codex exec ...'`.
   Always `. ~/.cargo/env` first in any remote shell line.
+<<<<<<< HEAD
 - **Publish**: each agent commits its owned change directly on `dev`, rebases
   onto the latest `origin/dev`, and pushes `HEAD:dev` itself. A rejected push
   is a synchronization event, not a reason to leave a local-only commit.
+=======
+- **Push (updated 2026-08-31, operator direction)**: the agent boxes now
+  hold GitHub credentials (`~/.git-credentials`, credential.helper store)
+  and push `dev` DIRECTLY. Discipline: `git pull --rebase origin dev` before
+  every push, never force-push, never push another hat's namespace. The
+  orchestrator no longer harvests patches (the model was retired by the
+  operator; format-patch remains the fallback if a box's creds break).
+>>>>>>> 81fa742 (docs(fleet): coordination updated - agent boxes push directly (operator retired the harvest-only model); pull --rebase before push, never force, own namespace only; format-patch stays the fallback)
 - **Report**: read `fleet/<hat>/journal.md`; integrate; the board is the
   journals.
 
