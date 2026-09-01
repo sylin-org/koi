@@ -1,5 +1,32 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-01 (3) — candidate deployed through the installed service; first installed-service acceptance evidence
+
+commit: this commit, on top of 007cee4 (single-owner Bonjour connections) | gates: candidate built from the exact `dev` tree (`cargo build --release -p koi-net`), deployed through the product service path, and exercised only through the installed daemon's authenticated API; peer observations from test-01 (Avahi); clippy 0 / 114 tests on the pulled tree before deploy
+koi state now: **the installed service runs the ADR-039 candidate** — `koi.service` Running, PID `30148`, binary SHA-256 `8239719A40A963F9281623ECBF767229A1103640F528AF667EB14544B0EC0EB2` (the deployed file equals the tree build), API `127.0.0.1:5641` healthy, control plane `ready` at generation 3, `publish=native explicit_publish=native browse=windows-dns-sd resolve=windows-dns-sd`, one desired/established permanent `_mcp._tcp` self-publication, zero pending/failed. Apple Bonjour uninstalled (baseline). Dnscache untouched (protected).
+
+### Deploy path
+
+- Baseline captured first: old artifact PID `5360`, SHA-256 `3154238B25916F8EBC8D61F4896D22D7F3027033F6BC469DCD7FF612991D8525`, pre-ADR-039 (no `control_plane` field in status).
+- The running exe locks its own path, so the swap used the documented NTFS allowance for renaming a running image: rename `target\release\koi.exe` → `koi.exe.pre-adr039` (rollback material, retained), rebuild the candidate in place, then one elevated script (`Stop-Service koi` → `Start-Service`) restarted the unit onto the new binary. Elevated mutations remain single UAC-batched scripts with captured output.
+
+### Acceptance through the one installed service (per the tightened gate)
+
+- `GET /healthz` OK; `GET /v1/mdns/admin/status` returned the structured control plane: generation 1 `ready`, the designed composite `publish=native explicit_publish=native browse=windows-dns-sd resolve=windows-dns-sd`, windows-dns-sd `ready/session ready` with its read-routes-only detail, bonjour `absent`, native ready.
+- Peer observation: test-01 Avahi fully resolved the deployed service's `_mcp._tcp` self-announcement (`stone-leaded-sparkle.local / 192.168.1.137 / 5641` + transport/version/path TXT).
+- Mutation cycle through the service API: `POST /v1/mdns/announce` (`Koi Service Gate`, id `9082fd66`, heartbeat 90s) → test-01 resolved it fully including `txt pid=30148` → `DELETE /v1/mdns/unregister/9082fd66` acknowledged → test-01 browse returned empty. One operational note: the breadcrumb DAT line carries CRLF on Windows; shell extraction must strip `\r` or every authenticated call 401s.
+- **Provider loss / adapter change, live, through the service** (three generations, no Koi restart):
+  - gen 1 `publish=native` (Bonjour absent at boot);
+  - installing official Apple Bonjour (same verified MSI set) was visible to the running daemon's assessments — **gen 2 promoted publication to `bonjour`**, all three sessions `ready`, and test-01 observed the self-announcement move to the mDNSResponder host identity `stone-leaded-sparkle-2.local`;
+  - uninstalling Bonjour (the MSI stops mDNSResponder underneath the service) → **gen 3 failed publication back to `native`**, `desired=1 established=1 pending=0 failed=0`, bonjour `unavailable` with no session, and test-01 observed the record return under `stone-leaded-sparkle.local`. Nothing stranded; no failed count.
+- This also exercised the incoming single-owner rework's negative-probe fix in the field: the daemon started with Bonjour absent and still promoted when it appeared, which the old process-lifetime cache would have blocked.
+
+### Platform facts
+
+- **Dnscache is protected**: even an elevated `Stop-Service Dnscache` is refused (`Cannot open Dnscache service`). The dnsapi route's provider-loss path therefore cannot be exercised by stopping the DNS Client on this build; the Bonjour install/uninstall cycle stands in as the adapter-change/loss proof. Brief DNS blips from that path are not a concern.
+- test-02 stayed off the LAN (desktop sleep); test-01 carried the Avahi peer role for all observations.
+- Remaining toward the full Windows gate: the two-host transition run (needs a second service-deployed Koi or the peer pair used by the Linux run) and the sleep/resume + firewall-profile matrix; both are driver-level exercises for a session with the operator present.
+
 ## 2026-09-01 (2) — Bonjour install → validate → provider-loss → uninstall cycle
 
 commit: this commit, on top of 747ad45 | gates: clippy 0 warnings; koi-mdns 110 passed; live cycle exercised with the structured control-plane status probe (`tools/koi-lab/examples/win32_control_plane_probe.rs`); installed koi service (PID 5360) untouched throughout; end state byte-equal to the pre-install baseline
