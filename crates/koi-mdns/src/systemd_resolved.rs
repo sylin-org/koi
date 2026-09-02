@@ -13,6 +13,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch};
 use zbus::names::BusName;
 use zbus::zvariant::{OwnedObjectPath, Value};
@@ -37,6 +38,9 @@ const REGISTER_SERVICE_ACTION: &str = "org.freedesktop.resolve1.register-service
 const RESOLVED_PRIORITY: u16 = 200;
 const COMMAND_CAPACITY: usize = 256;
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(2);
+/// resolve1 accepts `RegisterService` before mDNS conflict probing completes.
+/// Its object emits `Conflicted` and is withdrawn if that later probe loses.
+const PUBLICATION_SETTLE_INTERVAL: Duration = Duration::from_secs(5);
 
 const DESCRIPTOR: ProviderDescriptor = ProviderDescriptor::new(
     "systemd-resolved",
@@ -95,6 +99,15 @@ trait ResolveManager {
         family: i32,
         flags: u64,
     ) -> zbus::Result<ResolveServiceReply>;
+}
+
+#[zbus::proxy(
+    default_service = "org.freedesktop.resolve1",
+    interface = "org.freedesktop.resolve1.DnssdService"
+)]
+trait ResolveDnssdService {
+    #[zbus(signal, name = "Conflicted")]
+    fn conflicted(&self) -> zbus::Result<()>;
 }
 
 #[zbus::proxy(
@@ -696,6 +709,30 @@ impl ResolvedActor {
             )
             .await
             .map_err(|error| resolved_protocol(ProviderOperation::Publish, error))?;
+        let service = ResolveDnssdServiceProxy::builder(&self.connection)
+            .path(path.clone())
+            .map_err(|error| resolved_protocol(ProviderOperation::Publish, error))?
+            .build()
+            .await
+            .map_err(|error| resolved_protocol(ProviderOperation::Publish, error))?;
+        let mut conflicts = service
+            .receive_conflicted()
+            .await
+            .map_err(|error| resolved_protocol(ProviderOperation::Publish, error))?;
+        if publication_conflicted(&mut conflicts, PUBLICATION_SETTLE_INTERVAL).await {
+            // resolve1 has already withdrawn the conflicted record. Explicitly
+            // unregister its object as well so retry starts from one clean owner.
+            let _ = manager.unregister_service(&path).await;
+            return Err(provider_error(
+                DESCRIPTOR.name,
+                ProviderOperation::Publish,
+                ProviderFailure::Conflict,
+                format!(
+                    "resolve1 withdrew {}.{} after mDNS conflict probing",
+                    definition.name, definition.service_type
+                ),
+            ));
+        }
         self.paths.insert(key.to_string(), path);
         Ok(())
     }
@@ -739,6 +776,16 @@ impl ResolvedActor {
             self.definitions.clear();
             Ok(())
         }
+    }
+}
+
+async fn publication_conflicted<S, T>(conflicts: &mut S, settle: Duration) -> bool
+where
+    S: Stream<Item = T> + Unpin,
+{
+    tokio::select! {
+        conflict = conflicts.next() => conflict.is_some(),
+        _ = tokio::time::sleep(settle) => false,
     }
 }
 
@@ -892,6 +939,7 @@ fn resolved_protocol(operation: ProviderOperation, error: impl std::fmt::Display
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::stream;
 
     #[test]
     fn live_api_shape_remains_a_partial_collaborator() {
@@ -942,6 +990,18 @@ mod tests {
         assert!(!capabilities.publish);
         assert!(!capabilities.withdraw);
         assert!(capabilities.direct_resolve);
+    }
+
+    #[tokio::test]
+    async fn publication_settlement_reports_an_async_conflict() {
+        let mut conflicts = stream::iter([()]);
+        assert!(publication_conflicted(&mut conflicts, Duration::from_secs(1)).await);
+    }
+
+    #[tokio::test]
+    async fn publication_settlement_accepts_a_quiet_probe_window() {
+        let mut conflicts = stream::pending::<()>();
+        assert!(!publication_conflicted(&mut conflicts, Duration::from_millis(1)).await);
     }
 
     #[tokio::test]

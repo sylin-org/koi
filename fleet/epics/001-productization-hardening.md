@@ -144,6 +144,11 @@ These are observed defects, not speculative framework work.
   recovery, and act as the stable peer for workstation absence/recovery.
 - Host the long mixed-OS soak evidence collector without replacing installed Koi with
   an isolated lab daemon.
+- Local PH-2/PH-3 workbook green on 2026-09-02: the one installed service survived
+  Avahi/resolved/native loss and return, pre-armed primary-link/address churn, real
+  independent-peer Pond allowlist and negative-route checks, and bounded hostile
+  DNS/mDNS/HTTP input with stable process/resource bounds. Debian correctly reported
+  that neither UFW nor firewalld was active and made no acceptance-only firewall change.
 
 ## PH-3 adversarial minimum
 
