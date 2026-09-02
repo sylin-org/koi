@@ -9,6 +9,7 @@ use std::process::Command;
 
 use super::{
     healthz_wait, honor_existing_config, honor_existing_linux, persist_plan, plan_ports, Existing,
+    FileSnapshot,
 };
 
 const SERVICE_NAME: &str = "koi";
@@ -50,11 +51,44 @@ pub fn install_system() -> anyhow::Result<()> {
 
     let was_active = systemctl(&["is-active", SERVICE_NAME]);
     let was_enabled = systemctl(&["is-enabled", SERVICE_NAME]);
+    let snapshots = [
+        FileSnapshot::capture(&bin)?,
+        FileSnapshot::capture(&unit)?,
+        FileSnapshot::capture(std::path::Path::new("/etc/koi/config.toml"))?,
+    ];
+    let install_result = install_system_inner(&exe, &bin, &unit, was_active, was_enabled);
+    if let Err(error) = install_result {
+        eprintln!("  Installation failed; restoring the prior service...");
+        let _ = systemctl_output(&["stop", SERVICE_NAME]);
+        for snapshot in &snapshots {
+            snapshot.restore()?;
+        }
+        let _ = systemctl_output(&["daemon-reload"]);
+        if was_enabled {
+            command_success(&["enable", SERVICE_NAME])?;
+        } else {
+            let _ = systemctl_output(&["disable", SERVICE_NAME]);
+        }
+        if was_active {
+            command_success(&["start", SERVICE_NAME])?;
+        }
+        anyhow::bail!("{error}; prior service state restored");
+    }
+    Ok(())
+}
+
+fn install_system_inner(
+    exe: &std::path::Path,
+    bin: &std::path::Path,
+    unit: &std::path::Path,
+    was_active: bool,
+    was_enabled: bool,
+) -> anyhow::Result<()> {
     if was_active || was_enabled {
         println!("  Existing service found, updating...");
         if was_active {
             print!("  Stopping service...");
-            let _ = systemctl_output(&["stop", SERVICE_NAME]);
+            command_success(&["stop", SERVICE_NAME])?;
             println!(" done.");
         }
     }
@@ -62,7 +96,7 @@ pub fn install_system() -> anyhow::Result<()> {
     // Stage after the stop: upgrading from the installed path must work
     // (ETXTBSY fix — same-file staging is a no-op, rename is atomic).
     print!("  Staging {}...", bin.display());
-    if super::stage_binary(&exe, &bin)? {
+    if super::stage_binary(exe, bin)? {
         println!(" done.");
     } else {
         println!(" already in place.");
@@ -77,35 +111,26 @@ pub fn install_system() -> anyhow::Result<()> {
     let persisted = persist_plan(&existing, &planned, &PathBuf::from("/etc/koi/config.toml"));
 
     print!("  Writing {}...", unit.display());
-    std::fs::write(&unit, render(UNIT_TEMPLATE, &bin))?;
+    std::fs::write(unit, render(UNIT_TEMPLATE, bin))?;
     println!(" done.");
 
-    let _ = systemctl_output(&["daemon-reload"]);
-    match systemctl_output(&["enable", SERVICE_NAME]) {
-        Ok(o) if o.status.success() => println!("  Service enabled (start on boot)"),
-        Ok(o) => println!(
-            "  Warning: could not enable: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        ),
-        Err(e) => println!("  Warning: could not enable: {e}"),
-    }
-    match systemctl_output(&["start", SERVICE_NAME]) {
-        Ok(o) if o.status.success() => println!(
-            "  Service {}",
-            if was_active { "restarted" } else { "started" }
-        ),
-        Ok(o) => println!(
-            "  Warning: could not start: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        ),
-        Err(e) => println!("  Warning: could not start: {e}"),
-    }
+    command_success(&["daemon-reload"])?;
+    command_success(&["enable", SERVICE_NAME])?;
+    println!("  Service enabled (start on boot)");
+    command_success(&["start", SERVICE_NAME])?;
+    println!(
+        "  Service {}",
+        if was_active { "restarted" } else { "started" }
+    );
 
     print!("  Verifying (healthz on {})...", planned.http);
     if healthz_wait(planned.http, std::time::Duration::from_secs(20)) {
         println!(" healthy.");
     } else {
-        println!(" NOT answering yet — check journalctl -u {SERVICE_NAME}");
+        anyhow::bail!(
+            "service did not answer healthz on {} within 20s",
+            planned.http
+        );
     }
 
     println!();
@@ -290,6 +315,18 @@ fn systemctl(args: &[&str]) -> bool {
 
 fn systemctl_output(args: &[&str]) -> std::io::Result<std::process::Output> {
     Command::new("systemctl").args(args).output()
+}
+
+fn command_success(args: &[&str]) -> anyhow::Result<()> {
+    let output = systemctl_output(args)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "systemctl {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr).trim()
+    )
 }
 
 fn systemctl_user(args: &[&str]) -> std::io::Result<std::process::Output> {

@@ -65,8 +65,9 @@ pub fn install(user: bool, operator: Option<&str>, data_dir: &Path) -> anyhow::R
     if !user {
         super::check_root("install")?;
     }
+    let policy = FileSnapshot::capture(&koi_config::local_access::policy_path(data_dir))?;
     super::record_unix_operator(user, operator, data_dir)?;
-    match (detect(), user) {
+    let result = match (detect(), user) {
         (InitSystem::Systemd, false) => systemd::install_system(),
         (InitSystem::Systemd, true) => systemd::install_user(),
         (InitSystem::Openrc, false) => openrc::install_system(),
@@ -77,6 +78,61 @@ pub fn install(user: bool, operator: Option<&str>, data_dir: &Path) -> anyhow::R
             } else {
                 manual::install_system()
             }
+        }
+    };
+    if let Err(error) = result {
+        policy.restore()?;
+        return Err(error.context("installation failed; prior local-operator policy restored"));
+    }
+    Ok(())
+}
+
+/// Byte-and-mode snapshot for the small set of product-owned files changed by
+/// an installer transaction. An absent file is a state too: rollback removes
+/// a file that the failed attempt introduced.
+#[cfg(any(unix, test))]
+#[derive(Debug)]
+pub(crate) struct FileSnapshot {
+    path: PathBuf,
+    body: Option<Vec<u8>>,
+    permissions: Option<std::fs::Permissions>,
+}
+
+#[cfg(any(unix, test))]
+impl FileSnapshot {
+    pub(crate) fn capture(path: &Path) -> std::io::Result<Self> {
+        match std::fs::read(path) {
+            Ok(body) => Ok(Self {
+                path: path.to_path_buf(),
+                body: Some(body),
+                permissions: Some(std::fs::metadata(path)?.permissions()),
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self {
+                path: path.to_path_buf(),
+                body: None,
+                permissions: None,
+            }),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn restore(&self) -> std::io::Result<()> {
+        match &self.body {
+            Some(body) => {
+                if let Some(parent) = self.path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&self.path, body)?;
+                if let Some(permissions) = &self.permissions {
+                    std::fs::set_permissions(&self.path, permissions.clone())?;
+                }
+                Ok(())
+            }
+            None => match std::fs::remove_file(&self.path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            },
         }
     }
 }
@@ -462,6 +518,42 @@ fn healthz_once(port: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn file_snapshot_restores_contents_and_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = koi_common::test::ensure_data_dir("installer-snapshot");
+        let path = root.join("installed");
+        std::fs::write(&path, b"before").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let snapshot = FileSnapshot::capture(&path).unwrap();
+        std::fs::write(&path, b"after").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        snapshot.restore().unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"before");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn absent_file_snapshot_removes_failed_install_output() {
+        let root = koi_common::test::ensure_data_dir("installer-snapshot");
+        let path = root.join("introduced");
+        let _ = std::fs::remove_file(&path);
+        let snapshot = FileSnapshot::capture(&path).unwrap();
+        std::fs::write(&path, b"failed attempt").unwrap();
+
+        snapshot.restore().unwrap();
+
+        assert!(!path.exists());
+    }
 
     #[test]
     fn port_run_shifts_by_tens() {
