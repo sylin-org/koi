@@ -25,5 +25,5 @@ headless UX: everything reachable and truthful without a GUI.
    path (the ETXTBSY case) → uninstall → verify re-install — journal each
    pass; this is the installer's soak lane.
 3. Headless UX: daemon HTTP API + pond UI in a text browser (curl/lynx
-   class), `koi status`/`config`/`certmesh diagnose` truthfulness, and
+   class), `koi status`/`config`/`trust diagnose` truthfulness, and
    the ladder's honest skips on this box.

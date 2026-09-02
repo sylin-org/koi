@@ -57,6 +57,15 @@ That's the whole command on every platform. It requires elevation — Koi refuse
 
 `koi install` is idempotent and upgrade-aware. If a service is already registered it stops the old one, replaces the binary/registration, and restarts — so re-running it after a `koi` upgrade is the supported way to update the installed service.
 
+On systemd Linux, replacement is transactional. Koi checkpoints the installed
+binary, unit, durable port configuration, local-operator policy, and prior
+active/enabled state before stopping the service. Enable, start, and `/healthz`
+verification failures return non-zero and restore the previous healthy service.
+If the installer itself is interrupted after that checkpoint is armed, the next
+`koi install` recovers it before beginning another change. Do not delete the
+reported recovery manifest or backup files by hand; a corrupt or incomplete
+checkpoint fails closed with its exact path.
+
 On success you'll see the modules-enabled summary and `the local waters are calm`. All capabilities are enabled by default; disable any with `--no-<name>` at install time (see [Changing the port or bind](#changing-the-port-or-bind) — the same mechanism applies to capability flags).
 
 ### What `koi install` does, per OS
@@ -280,6 +289,10 @@ Uninstall is intentionally **conservative**:
    - macOS: `bootout` the LaunchDaemon → removes the plist; deletes the log files only if they're empty.
 3. Removes the discovery breadcrumb.
 4. **Preserves all your data.** CA keys, certificates, DNS records, health/proxy config, and audit logs stay in the data directory. The installed binary at `/usr/local/bin/koi` is preserved on Linux/macOS.
+
+   Linux also preserves `/etc/koi/config.toml`, including a port run migrated
+   from older `koi.service.d` drop-ins, so uninstall followed by reinstall keeps
+   the same operator endpoints even though obsolete drop-ins are removed.
 
 So reinstalling later picks up exactly where you left off. Removing the service does **not** remove what the service managed.
 

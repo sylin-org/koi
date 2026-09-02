@@ -65,21 +65,44 @@ fn install_cert(cert: &os_truststore::Cert, name: &str, source: &str) -> anyhow:
 
 /// Run the trust-doctor (`koi trust diagnose`) — ADR-020 §13.
 ///
-/// Builds a local certmesh core (reads on-disk identity/roster — no daemon needed,
-/// mirroring `export`), runs the single `CertmeshCore::diagnose` logic, prints a
-/// loud report, and **exits non-zero when anything is RED**. `--fix` installs the
-/// mesh CA into the OS trust store (the one auto-fixable remedy).
-pub async fn diagnose(fix: bool, json: bool, dns_zone: &str) -> anyhow::Result<()> {
-    let dns_zone = dns_zone.to_string();
-    let core = tokio::task::spawn_blocking(move || {
-        koi_compose::cores::init_certmesh_core(None, &dns_zone)
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("certmesh init task: {e}"))??;
+/// With an authenticated local daemon, reads the canonical live diagnosis over
+/// its HTTP adapter. Otherwise builds a local core from the resolved data root.
+/// `--fix` is deliberately local because it mutates this machine's OS trust
+/// store and needs the on-disk CA certificate.
+pub async fn diagnose(
+    fix: bool,
+    json: bool,
+    dns_zone: &str,
+    data_dir: &Path,
+) -> anyhow::Result<()> {
+    let local_client = if fix {
+        None
+    } else {
+        koi_client::KoiClient::from_local()
+            .ok()
+            .filter(|client| client.health().is_ok())
+    };
+
+    let core = if local_client.is_none() {
+        let dns_zone = dns_zone.to_string();
+        let data_dir = data_dir.to_path_buf();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                koi_compose::cores::init_certmesh_core(Some(&data_dir), &dns_zone)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("certmesh init task: {e}"))??,
+        )
+    } else {
+        None
+    };
 
     // --fix: install the mesh CA so local apps trust mesh certs (the actionable
     // remedy for the ca_trust_install check). Best-effort; reported, never fatal.
     if fix {
+        let core = core
+            .as_ref()
+            .expect("local core is always initialized for --fix");
         match core.local_identity().await {
             Some(id) => match os_truststore::Cert::from_pem(&id.ca_cert_pem) {
                 Ok(cert) => match install_cert(&cert, "koi-certmesh-ca", "certmesh") {
@@ -94,7 +117,15 @@ pub async fn diagnose(fix: bool, json: bool, dns_zone: &str) -> anyhow::Result<(
         }
     }
 
-    let diagnosis = core.diagnose().await;
+    let diagnosis = if let Some(client) = local_client {
+        let value = client.get_json("/v1/certmesh/diagnose")?;
+        serde_json::from_value::<koi_common::diagnosis::TrustDiagnosis>(value)
+            .context("decoding the local daemon trust diagnosis")?
+    } else {
+        core.expect("local core exists when no daemon client is available")
+            .diagnose()
+            .await
+    };
 
     if json {
         print_json(&diagnosis);

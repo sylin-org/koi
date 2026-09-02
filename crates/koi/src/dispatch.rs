@@ -327,7 +327,13 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                     }
                     Some(TrustSubcommand::Export { ca }) => commands::trust::export(*ca, cli.json),
                     Some(TrustSubcommand::Diagnose { fix }) => {
-                        commands::trust::diagnose(*fix, cli.json, &config.dns_zone).await
+                        commands::trust::diagnose(
+                            *fix,
+                            cli.json,
+                            &config.dns_zone,
+                            &config.data_dir,
+                        )
+                        .await
                     }
                 }
             }

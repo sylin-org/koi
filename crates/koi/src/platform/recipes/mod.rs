@@ -65,10 +65,20 @@ pub fn install(user: bool, operator: Option<&str>, data_dir: &Path) -> anyhow::R
     if !user {
         super::check_root("install")?;
     }
+
+    let init = detect();
+    if init == InitSystem::Systemd && !user {
+        // The systemd recipe owns a durable transaction which must include
+        // operator policy alongside the binary, unit, and service config.
+        return systemd::install_system(operator, data_dir);
+    }
+
+    // Other recipes retain the in-process operator rollback introduced by
+    // the cross-fleet installer hardening. They do not mutate systemd state.
     let policy = FileSnapshot::capture(&koi_config::local_access::policy_path(data_dir))?;
     super::record_unix_operator(user, operator, data_dir)?;
-    let result = match (detect(), user) {
-        (InitSystem::Systemd, false) => systemd::install_system(),
+    let result = match (init, user) {
+        (InitSystem::Systemd, false) => unreachable!("handled by the durable system transaction"),
         (InitSystem::Systemd, true) => systemd::install_user(),
         (InitSystem::Openrc, false) => openrc::install_system(),
         (InitSystem::Openrc, true) => manual::install_user(),
@@ -412,21 +422,41 @@ pub fn append_config_ports(path: &Path, plan: &PortPlan) -> anyhow::Result<()> {
 /// Persist a shifted plan per ADR-036: honor what exists, write only when
 /// shifted. Returns a human line for the summary (empty when nothing needed).
 pub fn persist_plan(existing: &Existing, planned: &PortPlan, fresh_path: &Path) -> String {
+    persist_plan_checked(existing, planned, fresh_path).unwrap_or_else(|error| match existing {
+        Existing::ConfigWithoutPorts(path) => {
+            format!(
+                "warning: could not record ports in {}: {error}",
+                path.display()
+            )
+        }
+        Existing::Nothing => format!("warning: could not write {}: {error}", fresh_path.display()),
+        Existing::Declared(_, _) => {
+            format!("warning: could not preserve declared ports: {error}")
+        }
+    })
+}
+
+/// Persist a shifted plan and surface any write failure to transactional
+/// installers. Older platform recipes retain [`persist_plan`]'s diagnostic
+/// string until their own rollback boundaries are implemented.
+pub fn persist_plan_checked(
+    existing: &Existing,
+    planned: &PortPlan,
+    fresh_path: &Path,
+) -> anyhow::Result<String> {
     if !planned.shifted {
-        return String::new();
+        return Ok(String::new());
     }
     match existing {
-        Existing::Declared(_, source) => {
-            format!("ports stay as declared by {source}")
+        Existing::Declared(_, source) => Ok(format!("ports stay as declared by {source}")),
+        Existing::ConfigWithoutPorts(path) => {
+            append_config_ports(path, planned)?;
+            Ok(format!("port run appended to {}", path.display()))
         }
-        Existing::ConfigWithoutPorts(path) => match append_config_ports(path, planned) {
-            Ok(()) => format!("port run appended to {}", path.display()),
-            Err(e) => format!("warning: could not record ports in {}: {e}", path.display()),
-        },
-        Existing::Nothing => match write_config_new(fresh_path, planned) {
-            Ok(()) => format!("port run written to {}", fresh_path.display()),
-            Err(e) => format!("warning: could not write {}: {e}", fresh_path.display()),
-        },
+        Existing::Nothing => {
+            write_config_new(fresh_path, planned)?;
+            Ok(format!("port run written to {}", fresh_path.display()))
+        }
     }
 }
 
