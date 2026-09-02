@@ -1,7 +1,7 @@
-# Issue 002 — koi-crypto slot tests leak platform credentials until the Windows store quota is exhausted
+# Issue 002 — TOTP slot ownership and tests leak platform credentials until the store quota is exhausted
 
 **Opened:** 2026-09-02 (PH-001 dispatch 2, Windows gate)
-**Status:** open — residue cleaned on this machine; test hygiene fix belongs to the shared crate
+**Status:** open — residue cleaned on this machine; product and test lifecycle fix belongs to the shared crate
 
 ## Observed
 
@@ -14,24 +14,36 @@ repeated suite runs — the per-user store quota was exhausted, so every new sea
 failed. The same suite was green earlier the same day; nothing but repeated test
 runs touched the store. Deleting the leaked labels restored 89/89 immediately.
 
-## Why it leaks
+## Ownership gap
 
 The slot-table tests seal credentials with per-slot hashed labels
 (`koi-certmesh-unlock-totp-<hash>`, `koi-certmesh-totp-fallback-key-<hash>`) into
-the real platform store, and `keyring` has **no enumeration API**, so any path that
-skips `delete_key_material` (assert failures, panics between seal and delete, or a
-label family with no cleanup at all) strands entries that product code can never
-find again. `KOI_NO_CREDENTIAL_STORE=1` exists for tests that want to skip the
-store, but the slot tests deliberately exercise the real one.
+the real platform store. The tests never delete them, so normal successful runs leak;
+assert failures and panics merely make that worse. `KOI_NO_CREDENTIAL_STORE=1` exists
+for tests that deliberately do not exercise the store, but these tests need the real
+adapter and therefore need scoped ownership rather than a global skip.
 
-## Candidate fixes (shared crate)
+This is also a product lifecycle defect. `SlotTable::add_totp_slot` removes an existing
+TOTP slot from the aggregate before creating its replacement but never deletes the old
+slot's derived credential labels. Certmesh destroy deletes the legacy CA label and then
+removes the slot table without first retiring the TOTP labels it identifies. A failure
+after sealing new material but before durably saving its slot can orphan the new label as
+well. Platform enumeration is unavailable and should not be required: the aggregate
+already has enough information to derive every label it owns before discarding the slot.
 
-1. A test fixture that derives labels from a per-run prefix and sweeps that prefix
-   before/after (still needs enumeration → a platform helper, e.g. `cmdkey` /
-   `security find-generic-password` wrappers behind `#[cfg(test)]`).
-2. Make the leaked-label families deterministic per test-binary PID so reruns
-   overwrite instead of accumulate, and delete by exact label in a `Drop` guard.
-3. Document and enforce a store budget in `is_available()` probing.
+## Required resolution (shared crate)
+
+1. Make credential ownership explicit in the TOTP slot lifecycle. Replacement, removal,
+   failed persistence, and certmesh destroy retire the exact old/new labels in a safe
+   transaction order without deleting foreign credentials or losing the still-active
+   slot's material.
+2. Give real-store tests a scoped guard that records the exact labels they create and
+   deletes them on ordinary return and unwinding. Do not depend on global enumeration,
+   per-machine cleanup scripts, or a process ID that merely limits accumulation.
+3. Add deterministic failure-path tests around seal, slot-table persistence, replacement,
+   and destroy. Then run repeated real-store suites plus every currently exposed physical
+   slot lifecycle on Windows and attest the credential count returns to its captured
+   baseline. Do not invent an endpoint solely for this gate.
 
 ## Remediation performed (stone-leaded-sparkle)
 
