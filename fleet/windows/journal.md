@@ -1,5 +1,35 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-02 (4) — PH-001 dispatch 1: SCM lifecycle hardened; wedge reproduction attempted; destructive transaction re-proven
+
+commit: this commit, on top of 27b3d03 | gates: fmt/clippy `-D warnings` clean, koi-net platform suite 7/7 (incl. new `launch_command_lines_split_into_semantic_parts`), full build deployed through the product path; every physical claim below ran on the one installed service
+
+koi state now: installed service RUNNING, PID `7444`, `C:\Program Files\Koi\koi.exe --daemon`, binary SHA-256 `d135a9fbddd713f0de12e8adf1a7836910ba66844486ff1be3ae47eb1d5e9df5` (the hardened tree build), API `127.0.0.1:5641` healthy on standard ports, baseline mDNS composite, one permanent `_mcp._tcp` self-publication peer-resolved by test-01 during the session, exactly one koi.exe, no manifest/backups/firewall residue.
+
+### Wedge reproduction (issues/001) — not reproducible on demand
+
+Six controlled experiments with raw SCM operations (no installer in the loop): plain stop/start; raced stop/start (surfaced rc 1056 already-running — the exact case `start_with_retry` tolerates); crash-loop exhaustion of an instant-exit binary with byte swap-back; good-byte swap during the SCM's 5 s restart delay; rename-replace staging (`Move-Item -Force`, the installer's `MoveFileEx` shape) with a broken binary; failure-actions-set + rename-replace. **None wedged.** Every staged variable from the original incident was exercised; the wedge remains a transient SCM-internal launch denial (sticky per service object). Verdict and matrix recorded in the issue. Consequence per the dispatch: the delete/recreate fallback keys on the physically observed *signature* (restored registration + verified bytes + persistent raw `ERROR_ACCESS_DENIED` at start), never on a mechanism guess, and never with a partial descriptor.
+
+### Architecture hardening landed (dispatch items, in order)
+
+1. **Durable recovery arms before the first service stop**: the manifest (with the fail-closed service snapshot and file backups) is written before the service is touched. The port decision reads the config substrate pre-stop (decisions need no probe); the probe runs only after the replaced daemon has stopped, and the manifest's health-check port is updated durably (`set_http_port`) when the plan shifts. The stop itself moved inside the mutation closure.
+2. **Service inspection fails closed**: a transient SCM error during snapshot capture aborts the install; only a decisive "service does not exist" records `existed: false` (a guessed false would have made rollback *delete* a healthy registration).
+3. **Semantic SCM configuration**: the snapshot stores binary and arguments separately (`split_launch_command`, quoted-path aware); restore rebuilds a proper descriptor (`restored_service_info`) instead of treating the whole command line as a path. Unit-tested; empty snapshot descriptors refuse to act.
+4. **Manifest/backups retained until proven**: restore now restarts the registration and requires `/healthz` *before* removing the manifest and backups — an incomplete restoration stays recoverable by the next `koi install`.
+5. **Gated delete/recreate fallback** in restore: on the wedge signature with a complete descriptor, the service object is recreated and held to the same start+health gate (see issue for the evidence basis).
+
+### Physical proof
+
+Hardened installer upgrade: clean (PID 24356 → final 7444 after the destructive leg). **Destructive failed-candidate transaction re-run** (fresh broken build `7e7bf2f7` carrying the same hardened installer): health gate failed → rollback completed fully for the first time — byte-exact restore (`d135a9fb` back), restart, healthz pass, *then* manifest removal; exit non-zero with "installation failed and the previous Koi installation was restored"; zero residue. A plain `koi install` on top re-verified healthy. This closes dispatch item 3's first half.
+
+### Residue / next
+
+1. Dispatch item 2: firewall snapshot/applicability independent of localized `netsh` labels (the parser is English-locale fail-closed today); Pond + cooperative DNS through the one installed service.
+2. Dispatch item 3 remainder: shifted-port ADR-040 pipe path and the installed workbench's tray/notification/Phone/Pond gates (operator-present).
+3. Dispatch item 4: cross-host mDNS/NIC/profile/lock/sleep coordination with CachyOS/Alpine peers.
+4. issues/001 stays open for the wedge *mechanism* (signature-keyed recovery is armed; a future occurrence should now self-heal and be visible in the service log).
+
+
 ## 2026-09-02 (3) — PH-001 brief 3: authenticated local control physically closed under the installed service
 
 commit: this commit, on top of 9a4e0ee | gates: fmt/clippy green on the changed example; every assertion below ran against the one installed service through its real named pipe; no product code changed — the ADR-040 implementation on `dev` was complete, this session closed its physical gates

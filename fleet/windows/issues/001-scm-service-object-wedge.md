@@ -1,8 +1,9 @@
 # Issue 001 — SCM can wedge a service object against all starts after a failed replacement cycle; config restoration cannot repair it
 
 **Opened:** 2026-09-02 (PH-001, brief assignment 2 exercise)
-**Status:** open — remedy proven, automatic recovery not yet designed
+**Status:** open — recovery fallback armed against the observed signature; mechanism not reproducible on demand
 **Machine:** stone-leaded-sparkle
+**Updated:** 2026-09-02 (repro matrix + hardened recovery, see below)
 
 ## Observed
 
@@ -69,3 +70,39 @@ operator had to delete it manually first. Candidate designs (need the repro):
   (session-local, hashes in the 2026-09-02 (2) journal entry)
 - System event log: SCM 7000 storm 12:43:46–12:46:50, crash-loop 7031/7034 at
   12:39:43–12:39:58 from the first broken run.
+
+## Reproduction matrix (2026-09-02, controlled, raw SCM operations — no installer in the loop)
+
+Six experiments against the live service, each with waited stops and event-log capture
+(`.tmp/ph001-wedge-repro.log`, `.tmp/ph001-wedge2.log`, `.tmp/ph001-wedge3.log`):
+
+| # | sequence | outcome |
+|---|---|---|
+| E1 | stop; start (raced stop) | start rc 1056 (already running) — validated the installer's `start_with_retry` tolerance; no wedge |
+| E2 | waited stop; start | RUNNING |
+| E3 | waited stop; broken bytes (`Copy-Item`); start; crash loop to exhaustion (7031×2+7034×3 in log); good bytes; start | RUNNING — **no wedge** |
+| E4 | waited stop; broken bytes; start; good bytes swapped during the 5 s restart delay; start | RUNNING — no wedge |
+| E5 | waited stop; broken bytes via **rename-replace** (`Move-Item -Force`, the installer's `MoveFileEx` shape); start | launched, crashed normally (7034) — no wedge |
+| E6 | waited stop; `sc failure` actions set; rename-replace good bytes; start | RUNNING — no wedge |
+
+**Verdict: not reproducible on demand.** Every staged variable (copy vs rename-replace
+staging, crash exhaustion, mid-restart-delay swap, failure-action state, repeated
+stop/start) was exercised without forming the wedge. The original incident remains a
+transient SCM-internal failure (first launch denial of a just-replaced binary at
+12:43:46) that was sticky for that one service object until deletion.
+
+## Recovery fallback (armed 2026-09-02)
+
+`koi install`'s restore path now handles the signature rather than a mechanism theory:
+when a fully restored registration (byte-verified snapshots, complete semantic
+descriptor) persistently refuses to start with raw `ERROR_ACCESS_DENIED` — the observed
+wedge signature, and the state under which a fresh service object ran the same binary
+during the original incident — recovery deletes and recreates the service object from
+the manifest descriptor, then requires the same start + health gate. A partial
+descriptor never backs a delete. The manifest and backups are retained until the
+restored start, identity, and health all pass, so an incomplete restoration is
+retried by the next `koi install` instead of being orphaned.
+
+The destructive failed-candidate transaction re-run after this hardening rolls back
+cleanly (byte-exact restore, restart, healthz, then commit) without touching the
+fallback — see journal 2026-09-02 (4).
