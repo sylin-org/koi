@@ -49,6 +49,31 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 | PH-4 | Installed whole-story matrix | waits on PH-1/2/3 | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
 | PH-5 | Onboarding, diagnostics, and soak | waits on PH-4 | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
 
+### 2026-09-02 convergence checkpoint
+
+Windows, Bluefin, and Debian have closed their current local PH-2/PH-3 physical
+gates. Alpine has closed package ownership, transactional OpenRC supervision, and
+the native musl foundation, but still owes its installed Plasma/session,
+provider/interface, and local security gates. CachyOS remains the integration driver
+and owns the two shared corrections that block a responsible candidate freeze:
+
+1. Linux install planning must distinguish the Koi deployment being replaced from a
+   genuinely foreign port owner. Systemd and OpenRC must preserve an existing
+   explicit or effective port run without manufacturing a shifted configuration,
+   while a fresh install must still coexist with a real incumbent.
+2. A `systemd-resolved` publication must own conflict observation for its complete
+   lease. The initial quiet-settlement window may acknowledge establishment, but a
+   later `Conflicted` signal or lost signal channel must invalidate the materialized
+   publication and drive ordinary provider reconciliation rather than leave Koi
+   reporting a withdrawn record as established.
+
+While those shared changes land, Alpine executes its remaining local gates, Debian
+prepares the reusable PH-5 collector without starting the soak, and Windows/Bluefin
+reconcile their advertised platform contracts and remain unchanged physical peers.
+After the correction lands, CachyOS, Alpine, Bluefin, and Debian each exercise the
+relevant installer path on their one real deployment. Then PH-0 through PH-3 are
+reconciled once, one exact `dev` revision is frozen, and PH-4 begins.
+
 ## Immediate correctness work
 
 These are observed defects, not speculative framework work.

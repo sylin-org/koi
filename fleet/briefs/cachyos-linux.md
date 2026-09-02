@@ -19,7 +19,30 @@ that service is still listening, so deploying that candidate can mistake Koi for
 foreign collision and manufacture a shifted config. Do not install it before the shared
 ownership-aware planning correction lands.
 
-## PH-001 next dispatch (after `3a5a6d1`)
+## 2026-09-02 convergence dispatch (after `911c590`)
+
+1. Correct endpoint planning once at the shared Linux installer boundary. Model the
+   deployment being replaced as owned state: preserve its explicit or effective port
+   run even while its listener is live, but continue to shift a fresh install around a
+   genuinely foreign owner. Systemd and OpenRC consume that one decision. Cover
+   no-config legacy installs, explicit config/drop-ins, real foreign listeners,
+   failed replacement, and interrupted re-entry without another platform facade.
+2. Complete `systemd-resolved` publication ownership in `koi-mdns`. Quiet initial
+   settlement may acknowledge a lease, but conflict observation lives until withdrawal;
+   a later `Conflicted` signal or dead signal stream invalidates the publication and
+   reaches the existing session/control-plane reconciliation path. Avoid polling,
+   provider-specific orchestration, and a second recovery owner. Exercise the real
+   resolved/Avahi/native transition with an unchanged physical peer after focused tests.
+3. Deploy the exact merged candidate through this host's one installed system service.
+   Prove standard `5641:5644` survives upgrade without creating `/etc/koi/config.toml`,
+   a broken candidate restores the exact deployment, and provider conflict/loss/return
+   preserves truthful desired/established counts. Then close fresh Plasma login,
+   lock/unlock, suspend/resume, primary-interface churn, and wrong-UID local control.
+4. Reconcile this hat's PH-0 claims and leave the accepted artifact ready for the
+   frozen PH-4 matrix. Do not begin the soak or repeat already-green package,
+   decoration, notification, Pond, or Avahi gates unless relevant bytes changed.
+
+## Prior PH-001 dispatch (after `3a5a6d1`)
 
 1. Start now by correcting endpoint planning once at the shared installer boundary.
    An existing Koi being upgraded is not a foreign port collision: preserve its explicit

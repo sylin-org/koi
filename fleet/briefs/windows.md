@@ -17,7 +17,24 @@ adapter; `0026951` closed the shared slot-lifecycle leak; `97a0817` made startup
 consume the same batched verdict and canonicalized connection categories. Do not repeat
 those destructive workbooks unless later implementation changes their behavior.
 
-## 2026-09-02 next dispatch (after `97a0817`)
+## 2026-09-02 convergence dispatch (after `911c590`)
+
+The dated Windows correction, workbench, provider, link/profile, lock, and S3
+dispatches are complete through journal run `20260902T223728Z-windows-provider`.
+
+1. Reconcile Windows's PH-0 contract now: compare public install, provider,
+   local-control, workbench, notification, Pond, firewall, and lifecycle claims with
+   the installed evidence. Correct stale claims or real defects at their owning
+   boundary. Record shifted ADR-040 as physically unverified while no legitimate
+   non-Koi incumbent exists; do not manufacture one or weaken the gate.
+2. Keep the installed service/workbench available as an unchanged physical peer while
+   Linux hats converge. Peer work is run-owned Koi API traffic and observation only;
+   another hat never mutates Windows provider, profile, NIC, or service state.
+3. When one exact revision is frozen, install it through the product paths and execute
+   the Windows PH-4 whole-story share. Only then begin its coordinated PH-5 soak slice.
+   Do not repeat the green local dispatch against unchanged artifacts.
+
+## Prior 2026-09-02 dispatch (after `97a0817`)
 
 1. Finish effective Windows Firewall truth. The assessment path currently calls
    `Get-NetFirewallProfile` and `Get-NetFirewallRule` without `-PolicyStore ActiveStore`,

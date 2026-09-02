@@ -11,7 +11,25 @@ green: installed-service Avahi/resolved/native loss and return, pre-armed primar
 recovery, honest no-backend firewall reporting, independent-peer Pond policy, and
 bounded hostile DNS/mDNS/HTTP input. Do not repeat these gates on an unchanged artifact.
 
-## PH-001 next dispatch (after `8f3d50b`)
+## 2026-09-02 convergence dispatch (after `911c590`)
+
+1. Own the small reusable PH-5 installed-service collector now, following the existing
+   `koi-lab` evidence/profile boundaries. It must sample artifact/service identity,
+   health, RSS, descriptors, threads/tasks, cache size, provider generation and routes,
+   retry/publication counts, and cross-host traffic over a bounded duration, emit one
+   redaction-attested verdict, and restore run-owned traffic. Prove a short dry run on
+   the one installed service; do not start or claim the six-to-24-hour soak.
+2. Remain the unchanged physical peer for Alpine and CachyOS provider/security gates.
+   Supply only run-owned Koi API traffic and observations under their run ID; do not
+   mutate this host's provider/network/service state for another hat.
+3. After the ownership-aware installer correction lands, independently validate the
+   existing shifted config/drop-in migration plus interrupted and corrupt transaction
+   recovery. The standing `24441:24444` run must survive; replacing Koi must not create
+   a new decision. Exercise the resolved lifetime correction during the frozen matrix
+   or earlier only if relevant provider bytes change.
+4. Keep the accepted service ready as the PH-4 peer and later PH-5 soak anchor.
+
+## Prior PH-001 dispatch (after `8f3d50b`)
 
 1. Keep this host available as the stable peer for the remaining workstation recovery
    gates. Re-run the Debian provider, link, Pond, or hostile-input workbooks only when

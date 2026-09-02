@@ -16,7 +16,27 @@ primary-interface churn, Avahi/resolved/native recovery, wrong-UID local control
 Pond/firewalld gate are already physically green. Do not repeat those gates against an
 unchanged artifact.
 
-## PH-001 next dispatch (after `3a5a6d1`)
+## 2026-09-02 convergence dispatch (after `911c590`)
+
+The hostile-input/resource gate named by the prior dispatch is physically green in
+journal run `20260902T055318Z-19596`; do not repeat it on unchanged bytes.
+
+1. Reconcile Bluefin's PH-0 contract now: compare advertised immutable install,
+   workbench, provider, firewall, local-control, Pond, and lifecycle claims with the
+   installed evidence. Correct stale public claims or a real defect at its owning
+   boundary; do not create a framework or rerun a destructive green gate for prose.
+2. Keep this installation available as an unchanged Avahi/systemd-resolved peer while
+   CachyOS lands the shared corrections. Do not mutate another hat's provider or
+   network state.
+3. Once the ownership-aware installer correction reaches `dev`, independently prove
+   rpm-ostree/systemd upgrade does not shift around Bluefin's own live Koi, a genuinely
+   foreign listener still receives a safe plan, failure restores the exact prior
+   deployment, and reboot activates the intended artifact. Recheck the resolved
+   lifetime correction only if this host's selected route exercises it.
+4. Leave the exact accepted deployment ready for PH-4. Do not start the long soak
+   before one revision is frozen across every hat.
+
+## Prior PH-001 dispatch (after `3a5a6d1`)
 
 1. Start now with the remaining PH-3 hostile-input/resource-bound gate on the one
    installed immutable-workstation Koi. Use an independent physical peer to exercise
