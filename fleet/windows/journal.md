@@ -1,5 +1,20 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-02 (11) — PH-001 parallel two-daemon port race removed
+
+commit: this commit, on top of `8f3d50b` | gates: fmt clean; full-workspace strict all-target clippy clean; exact `two_daemon_certmesh` binary green once during implementation plus five consecutive default-parallel repetitions; two complete `cargo test --locked` workspace runs green with default parallelism, including the exact binary each time (32/32 aggregate exact-binary tests across eight runs); locked release build green, rebuilt PE SHA-256 `7dfb0630454c7042471a3c7e4544dac175aed6567a48262240b9f8b10f08df09`; run `20260902T195109Z-two-daemon-reservation` PASS
+
+koi state now: unchanged installed product-path firewall candidate at `C:\Program Files\Koi\koi.exe`, SHA-256 `452f3ae7ed16fb1adea3c548af6b78a5ec2e50e4bc70ba7d7d05995d79cae0ee`, SCM service RUNNING as sole PID `26680`, health 200, Pond disabled, and zero `koi-tier2-*` temporary roots. This session changed integration-test code only, so the installed product was intentionally not replaced.
+
+### Lifetime-owned listener handoff
+
+- `free_port()` is gone from `two_daemon_certmesh`. Each HTTP/mTLS selection is now a `PortReservation`: the OS-bound listener protects allocation, a process-local registry keeps the number owned after that listener is released for the child, and `Drop` releases the registry entry on normal return, failure, or panic. Every daemon owns two distinct reservations for its entire lifetime.
+- Only the unavoidable allocation/listener-release/`Command::spawn` handoff is mutex-serialized. The three real-process stories, readiness probes, HTTP work, mTLS work, and teardown remain default-parallel; there is no suite mutex, collision retry, or added sleep.
+- Child stderr is retained in each daemon's already-owned temporary data root. Both HTTP readiness and post-create mTLS readiness call `Child::try_wait()` during the unchanged five-second polling contract; an early exit now reports PID, exit status, and the last 40 stderr lines, while a live timeout reports the same retained tail instead of mislabeling every failure as an absent listener.
+- A deterministic regression pins ownership across listener release and exact release on reservation drop. Repeated exact-binary and full-workspace runs proved concurrent cleanup: all child processes were reaped, all run-owned data roots were removed, and the standing installed PID was the only remaining `koi.exe`.
+
+Next dependency-ready assignment: dispatch item 3, close the shifted-port ADR-040 named-pipe path and installed workbench fresh-login/tray/notification/Phone/Pond/lock-resume/upgrade/uninstall-reinstall gates.
+
 ## 2026-09-02 (10) — PH-001 effective Windows Firewall policy truth closed
 
 commit: this commit, on top of `a8b91ff` | gates: fmt clean; full-workspace strict all-target clippy clean; focused Windows firewall adapter 16/16 green (one unrelated live snapshot test ignored); ordinary parallel `cargo test --locked` green, including all three `two_daemon_certmesh` cases; locked release build green; release SHA-256 `452f3ae7ed16fb1adea3c548af6b78a5ec2e50e4bc70ba7d7d05995d79cae0ee`; elevated serial workbook `20260902T192334Z-active-store` product verdict PASS

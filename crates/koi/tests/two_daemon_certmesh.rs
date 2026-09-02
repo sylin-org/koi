@@ -35,9 +35,13 @@
 //! snapshot, public MCP discovery, DAT refusal, and an authenticated MCP resource
 //! session on both concurrently running instances.
 
+use std::collections::HashSet;
+use std::fs::File;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use koi_certmesh::invite;
@@ -51,17 +55,134 @@ const MEMBER: &str = "tier2-web-01";
 
 // ── Child-daemon harness ────────────────────────────────────────────
 
+fn reserved_ports() -> &'static Mutex<HashSet<u16>> {
+    static RESERVED: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
+    RESERVED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn spawn_handoff() -> &'static Mutex<()> {
+    static HANDOFF: OnceLock<Mutex<()>> = OnceLock::new();
+    HANDOFF.get_or_init(|| Mutex::new(()))
+}
+
+/// A loopback port selected by the OS and owned by this test process until drop.
+///
+/// The listener protects allocation. It is released only inside the serialized child
+/// spawn handoff; the registry then keeps concurrent tests from selecting the same port
+/// before the child binds it.
+struct PortReservation {
+    port: u16,
+    listener: Option<TcpListener>,
+}
+
+impl PortReservation {
+    fn reserve() -> Self {
+        loop {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral");
+            let port = listener.local_addr().expect("ephemeral local_addr").port();
+            let mut reserved = reserved_ports()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if reserved.insert(port) {
+                return Self {
+                    port,
+                    listener: Some(listener),
+                };
+            }
+        }
+    }
+
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    fn release_listener_for_spawn(&mut self) {
+        drop(self.listener.take());
+    }
+}
+
+impl Drop for PortReservation {
+    fn drop(&mut self) {
+        let removed = reserved_ports()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.port);
+        debug_assert!(removed, "port reservation was not registered");
+    }
+}
+
+#[test]
+fn port_reservation_remains_owned_through_spawn_handoff_until_drop() {
+    let handoff = spawn_handoff()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut reservation = PortReservation::reserve();
+    let port = reservation.port();
+    reservation.release_listener_for_spawn();
+
+    assert!(
+        reserved_ports()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&port),
+        "releasing the listener must not release process-local port ownership"
+    );
+
+    drop(reservation);
+    assert!(
+        !reserved_ports()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&port),
+        "dropping the reservation must release process-local port ownership"
+    );
+    drop(handoff);
+}
+
 /// A spawned `koi` daemon child, killed + cleaned up on drop (even on a test panic).
 struct Daemon {
     child: Child,
     data_dir: PathBuf,
+    stderr_path: PathBuf,
     http_port: u16,
     mtls_port: u16,
+    _http_reservation: PortReservation,
+    _mtls_reservation: PortReservation,
 }
 
 impl Daemon {
     fn base(&self) -> String {
         format!("http://127.0.0.1:{}", self.http_port)
+    }
+
+    fn stderr_tail(&self) -> String {
+        let contents = match std::fs::read_to_string(&self.stderr_path) {
+            Ok(contents) => contents,
+            Err(error) => return format!("<could not read child stderr: {error}>"),
+        };
+        let mut lines = contents.lines().rev().take(40).collect::<Vec<_>>();
+        lines.reverse();
+        if lines.is_empty() {
+            "<child stderr was empty>".to_string()
+        } else {
+            lines.join("\n")
+        }
+    }
+
+    fn assert_running(&mut self, context: &str) {
+        match self.child.try_wait() {
+            Ok(None) => {}
+            Ok(Some(status)) => panic!(
+                "{context}: koi child PID {} exited early with {status}; stderr tail:\n{}",
+                self.child.id(),
+                self.stderr_tail()
+            ),
+            Err(error) => panic!(
+                "{context}: could not inspect koi child PID {}: {error}; stderr tail:\n{}",
+                self.child.id(),
+                self.stderr_tail()
+            ),
+        }
     }
 
     /// The daemon's DAT token, read from its (isolated) breadcrumb. Re-read each call —
@@ -109,19 +230,19 @@ fn temp_data_dir() -> PathBuf {
     dir
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("bind ephemeral")
-        .local_addr()
-        .expect("local_addr")
-        .port()
-}
-
 /// Spawn a lean certmesh+HTTP daemon with an isolated data dir + breadcrumb.
 fn spawn_daemon(mcp_http: bool) -> Daemon {
     let data_dir = temp_data_dir();
-    let http_port = free_port();
-    let mtls_port = free_port();
+    let handoff = spawn_handoff()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut http_reservation = PortReservation::reserve();
+    let mut mtls_reservation = PortReservation::reserve();
+    let http_port = http_reservation.port();
+    let mtls_port = mtls_reservation.port();
+    assert_ne!(http_port, mtls_port, "daemon ports must be distinct");
+    let stderr_path = data_dir.join("daemon.stderr.log");
+    let stderr = File::create(&stderr_path).expect("create daemon stderr log");
     let mut command = Command::new(env!("CARGO_BIN_EXE_koi"));
     command
         .arg("--daemon")
@@ -147,16 +268,22 @@ fn spawn_daemon(mcp_http: bool) -> Daemon {
         .env("KOI_LOG", "warn")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::from(stderr));
     if !mcp_http {
         command.arg("--no-mcp-http");
     }
+    http_reservation.release_listener_for_spawn();
+    mtls_reservation.release_listener_for_spawn();
     let child = command.spawn().expect("spawn koi daemon");
+    drop(handoff);
     Daemon {
         child,
         data_dir,
+        stderr_path,
         http_port,
         mtls_port,
+        _http_reservation: http_reservation,
+        _mtls_reservation: mtls_reservation,
     }
 }
 
@@ -168,26 +295,38 @@ async fn tcp_up(port: u16) -> bool {
 }
 
 /// Poll until `127.0.0.1:port` accepts, panicking after ~5s.
-async fn wait_tcp_up(port: u16, label: &str) {
+async fn wait_tcp_up(daemon: &mut Daemon, label: &str) {
+    let port = daemon.mtls_port;
     for _ in 0..50 {
         if tcp_up(port).await {
             return;
         }
+        daemon.assert_running(label);
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("{label} (port {port}) did not come up");
+    panic!(
+        "{label} (port {port}) did not come up; child PID {} still running; stderr tail:\n{}",
+        daemon.child.id(),
+        daemon.stderr_tail()
+    );
 }
 
-async fn wait_ready(client: &reqwest::Client, base: &str) {
-    for _ in 0..150 {
+async fn wait_ready(client: &reqwest::Client, daemon: &mut Daemon) {
+    let base = daemon.base();
+    for _ in 0..50 {
         if let Ok(r) = client.get(format!("{base}/healthz")).send().await {
             if r.status().is_success() {
                 return;
             }
         }
+        daemon.assert_running(&format!("daemon at {base} did not become ready"));
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("daemon at {base} did not become ready");
+    panic!(
+        "daemon at {base} did not become ready within five seconds; child PID {} still running; stderr tail:\n{}",
+        daemon.child.id(),
+        daemon.stderr_tail()
+    );
 }
 
 // ── The test ────────────────────────────────────────────────────────
@@ -197,12 +336,12 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
     let sans = vec![MEMBER.to_string()];
     let client = reqwest::Client::new();
 
-    let a = spawn_daemon(false);
-    let b = spawn_daemon(false);
+    let mut a = spawn_daemon(false);
+    let mut b = spawn_daemon(false);
     let a_base = a.base();
     let b_base = b.base();
-    wait_ready(&client, &a_base).await;
-    wait_ready(&client, &b_base).await;
+    wait_ready(&client, &mut a).await;
+    wait_ready(&client, &mut b).await;
     let a_tok = a.token();
     let b_tok = b.token();
 
@@ -265,7 +404,7 @@ async fn two_daemon_join_and_revoke_over_real_binary() {
     // …and once the CA exists (post-boot, via HTTP), the listener comes up with NO
     // restart — proving the posture-reactive trust plane (ADR-020 P4c). Before this
     // fix the listener stayed down until a daemon restart (ADR-016 §2).
-    wait_tcp_up(a.mtls_port, "A's mTLS listener after post-boot CA create").await;
+    wait_tcp_up(&mut a, "A's mTLS listener after post-boot CA create").await;
 
     // ── invite is also DAT-gated; mint one for an explicit member hostname ──
     let invite_unauth = client
@@ -646,12 +785,12 @@ async fn assert_aggregation_surface(http: &reqwest::Client, daemon: &Daemon) {
 #[tokio::test]
 async fn two_daemon_http_dashboard_and_mcp_surfaces_are_isolated_and_complete() {
     let http = reqwest::Client::new();
-    let a = spawn_daemon(true);
-    let b = spawn_daemon(true);
+    let mut a = spawn_daemon(true);
+    let mut b = spawn_daemon(true);
     assert_ne!(a.http_port, b.http_port);
     assert_ne!(a.data_dir, b.data_dir);
-    wait_ready(&http, &a.base()).await;
-    wait_ready(&http, &b.base()).await;
+    wait_ready(&http, &mut a).await;
+    wait_ready(&http, &mut b).await;
 
     assert_aggregation_surface(&http, &a).await;
     assert_aggregation_surface(&http, &b).await;
@@ -728,9 +867,9 @@ async fn mtls_dial(
 async fn client_principal_enrolls_reaches_mgmt_plane_and_revocation_closes_it() {
     const PRINCIPAL: &str = "tier2-agent-7";
     let client = reqwest::Client::new();
-    let a = spawn_daemon(true); // MCP enabled → the mgmt plane mounts on mTLS
+    let mut a = spawn_daemon(true); // MCP enabled → the mgmt plane mounts on mTLS
     let a_base = a.base();
-    wait_ready(&client, &a_base).await;
+    wait_ready(&client, &mut a).await;
     let a_tok = a.token();
 
     let created = client
@@ -749,7 +888,7 @@ async fn client_principal_enrolls_reaches_mgmt_plane_and_revocation_closes_it() 
         .await
         .expect("create");
     assert!(created.status().is_success(), "create must succeed");
-    wait_tcp_up(a.mtls_port, "mTLS listener after create").await;
+    wait_tcp_up(&mut a, "mTLS listener after create").await;
 
     // The operator binds the invite to a client principal.
     let invite_resp: InviteResponse = client
