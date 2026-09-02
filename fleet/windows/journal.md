@@ -2,7 +2,7 @@
 
 ## 2026-09-02 (15) — PH-0 advertised Windows contract reconciled
 
-commit: this commit, rebased on `8d6d3d6`; Koi Desktop `cbe5519` | gates: Koi fmt clean, strict full-workspace all-target clippy clean, focused help regressions green, full locked workspace tests green; desktop UI 38/38 and Rust 15 pass/1 environment-gated | installed artifacts intentionally unchanged
+commit: `eae2ea6`, synchronized with `dev` after `8d6d3d6`; Koi Desktop `cbe5519` | gates: Koi fmt clean, strict full-workspace all-target clippy clean, focused help regressions green, full locked workspace tests green; desktop UI 38/38 and Rust 15 pass/1 environment-gated | installed artifacts intentionally unchanged
 
 koi state now: the installed SCM service remains RUNNING as the sole Koi daemon, PID `29016`, from `C:\Program Files\Koi\koi.exe --daemon`, SHA-256 `7dfb0630454c7042471a3c7e4544dac175aed6567a48262240b9f8b10f08df09`, with health 200 on `127.0.0.1:5641`. Its control plane remains Ready at generation 5 with `publish=native explicit_publish=native browse=windows-dns-sd resolve=windows-dns-sd`, one desired/established permanent publication, runtime disabled, and Pond disabled. The installed workbench remains PID `16604`, SHA-256 `bb07bb2c232f1ea7398348b1cb4a215dc7d2de04c9c21461bc6fe092de05e245`, at `C:\Users\onose\AppData\Local\Koi\koi-desktop.exe`, owning only `127.0.0.1:5640` with the same durable `--minimized` Run entry.
 
