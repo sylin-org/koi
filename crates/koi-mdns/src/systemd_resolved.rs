@@ -15,9 +15,10 @@ use std::time::Duration;
 
 use futures_util::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot, watch};
+use zbus::message::{Message, Type as MessageType};
 use zbus::names::BusName;
 use zbus::zvariant::{OwnedObjectPath, Value};
-use zbus::Connection;
+use zbus::{Connection, MatchRule, MessageStream};
 
 use crate::adapter::{
     failed_assessment, MdnsAdapter, MdnsCapabilities, MdnsProviderReport, ProbeFact, ProviderApi,
@@ -35,6 +36,8 @@ const POLKIT_DESTINATION: &str = "org.freedesktop.PolicyKit1";
 const POLKIT_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
 const POLKIT_INTERFACE: &str = "org.freedesktop.PolicyKit1.Authority";
 const REGISTER_SERVICE_ACTION: &str = "org.freedesktop.resolve1.register-service";
+const DNSSD_SERVICE_INTERFACE: &str = "org.freedesktop.resolve1.DnssdService";
+const CONFLICT_MEMBER: &str = "Conflicted";
 const RESOLVED_PRIORITY: u16 = 200;
 const COMMAND_CAPACITY: usize = 256;
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(2);
@@ -103,15 +106,6 @@ trait ResolveManager {
 
 #[zbus::proxy(
     default_service = "org.freedesktop.resolve1",
-    interface = "org.freedesktop.resolve1.DnssdService"
-)]
-trait ResolveDnssdService {
-    #[zbus(signal, name = "Conflicted")]
-    fn conflicted(&self) -> zbus::Result<()>;
-}
-
-#[zbus::proxy(
-    default_service = "org.freedesktop.resolve1",
     default_path = "/org/freedesktop/resolve1",
     interface = "org.freedesktop.DBus.Introspectable"
 )]
@@ -145,11 +139,9 @@ impl MdnsAdapter for SystemdResolvedAdapter {
                 report.detail,
             )
         })?;
-        Ok(Arc::new(ResolvedSession::start(
-            ready.connection,
-            ready.owner,
-            ready.capabilities,
-        )))
+        Ok(Arc::new(
+            ResolvedSession::start(ready.connection, ready.owner, ready.capabilities).await?,
+        ))
     }
 }
 
@@ -383,7 +375,19 @@ struct ResolvedSession {
 }
 
 impl ResolvedSession {
-    fn start(connection: Connection, owner: String, capabilities: MdnsCapabilities) -> Self {
+    async fn start(
+        connection: Connection,
+        owner: String,
+        capabilities: MdnsCapabilities,
+    ) -> Result<Self> {
+        // Arm one owner-epoch signal stream before any registration can be
+        // accepted. Per-object subscriptions after RegisterService leave a
+        // race in which resolve1 can withdraw an object unseen.
+        let conflicts = if capabilities.publish && capabilities.withdraw {
+            Some(open_conflict_stream(&connection, &owner, ProviderOperation::Open).await?)
+        } else {
+            None
+        };
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (state_tx, state_rx) = watch::channel(ProviderSessionState::Ready);
         tokio::spawn(
@@ -395,15 +399,16 @@ impl ResolvedSession {
                 owner: Some(owner),
                 definitions: HashMap::new(),
                 paths: HashMap::new(),
+                conflicts,
             }
             .run(),
         );
-        Self {
+        Ok(Self {
             connection,
             command_tx,
             state_rx,
             capabilities,
-        }
+        })
     }
 }
 
@@ -557,6 +562,21 @@ struct ResolvedRegistration {
     txt: HashMap<String, Vec<u8>>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ConflictScope {
+    Establishing,
+    Established(String),
+    Unknown,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SettlementEvent<T, E> {
+    Signal(T),
+    Failed(E),
+    Ended,
+    Quiet,
+}
+
 struct ResolvedActor {
     connection: Connection,
     command_rx: mpsc::Receiver<ResolvedCommand>,
@@ -565,6 +585,7 @@ struct ResolvedActor {
     owner: Option<String>,
     definitions: HashMap<String, ResolvedRegistration>,
     paths: HashMap<String, OwnedObjectPath>,
+    conflicts: Option<MessageStream>,
 }
 
 impl ResolvedActor {
@@ -581,6 +602,9 @@ impl ResolvedActor {
                     if !self.handle(command).await {
                         break;
                     }
+                }
+                signal = next_conflict_signal(&mut self.conflicts) => {
+                    self.handle_conflict_signal(signal).await;
                 }
                 _ = reconcile.tick() => self.reconcile().await,
             }
@@ -647,8 +671,11 @@ impl ResolvedActor {
         {
             Ok(live) => live,
             Err(error) => {
-                if current_owner(&self.connection).await.ok().flatten() != self.owner {
+                let observed_owner = current_owner(&self.connection).await.ok().flatten();
+                if observed_owner != self.owner {
                     self.paths.clear();
+                    self.conflicts = None;
+                    self.owner = observed_owner;
                 }
                 self.state_tx.send_replace(ProviderSessionState::Recovering);
                 tracing::debug!(provider = DESCRIPTOR.name, %error, "resolve1 recovery probe failed");
@@ -658,7 +685,8 @@ impl ResolvedActor {
         if self.owner.as_deref() != Some(owner.as_str()) {
             tracing::info!(provider = DESCRIPTOR.name, old = ?self.owner, new = %owner, "D-Bus owner epoch changed");
             self.paths.clear();
-            self.owner = Some(owner);
+            self.conflicts = None;
+            self.owner = Some(owner.clone());
         }
         if !live_capabilities.supports(self.capabilities) {
             self.state_tx.send_replace(ProviderSessionState::Lost);
@@ -666,6 +694,16 @@ impl ResolvedActor {
         }
 
         self.state_tx.send_replace(ProviderSessionState::Recovering);
+        let observes_publications = self.capabilities.publish && self.capabilities.withdraw;
+        if observes_publications && self.conflicts.is_none() {
+            match open_conflict_stream(&self.connection, &owner, ProviderOperation::Publish).await {
+                Ok(conflicts) => self.conflicts = Some(conflicts),
+                Err(error) => {
+                    tracing::warn!(provider = DESCRIPTOR.name, %error, "conflict observation recovery failed");
+                    return;
+                }
+            }
+        }
         let missing = self
             .definitions
             .keys()
@@ -677,7 +715,8 @@ impl ResolvedActor {
                 tracing::warn!(provider = DESCRIPTOR.name, publication = %key, %error, "publication recovery failed");
             }
         }
-        if self.paths.len() == self.definitions.len() {
+        let observation_ready = !observes_publications || self.conflicts.is_some();
+        if observation_ready && self.paths.len() == self.definitions.len() {
             self.state_tx.send_replace(ProviderSessionState::Ready);
         }
     }
@@ -705,36 +744,170 @@ impl ResolvedActor {
                 definition.port,
                 0,
                 0,
-                vec![definition.txt],
+                vec![definition.txt.clone()],
             )
             .await
             .map_err(|error| resolved_protocol(ProviderOperation::Publish, error))?;
-        let service = ResolveDnssdServiceProxy::builder(&self.connection)
-            .path(path.clone())
-            .map_err(|error| resolved_protocol(ProviderOperation::Publish, error))?
-            .build()
-            .await
-            .map_err(|error| resolved_protocol(ProviderOperation::Publish, error))?;
-        let mut conflicts = service
-            .receive_conflicted()
-            .await
-            .map_err(|error| resolved_protocol(ProviderOperation::Publish, error))?;
-        if publication_conflicted(&mut conflicts, PUBLICATION_SETTLE_INTERVAL).await {
-            // resolve1 has already withdrawn the conflicted record. Explicitly
-            // unregister its object as well so retry starts from one clean owner.
-            let _ = manager.unregister_service(&path).await;
-            return Err(provider_error(
-                DESCRIPTOR.name,
-                ProviderOperation::Publish,
-                ProviderFailure::Conflict,
-                format!(
-                    "resolve1 withdrew {}.{} after mDNS conflict probing",
-                    definition.name, definition.service_type
-                ),
-            ));
-        }
+        self.await_publication_settlement(&manager, &path, &definition)
+            .await?;
         self.paths.insert(key.to_string(), path);
         Ok(())
+    }
+
+    async fn await_publication_settlement(
+        &mut self,
+        manager: &ResolveManagerProxy<'_>,
+        path: &OwnedObjectPath,
+        definition: &ResolvedRegistration,
+    ) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + PUBLICATION_SETTLE_INTERVAL;
+        loop {
+            let event = {
+                let conflicts = self.conflicts.as_mut().ok_or_else(|| {
+                    resolved_recovering(
+                        ProviderOperation::Publish,
+                        "resolve1 conflict observation is not armed",
+                    )
+                })?;
+                next_settlement_event(conflicts, deadline).await
+            };
+            match event {
+                SettlementEvent::Signal(message) => {
+                    let Some(conflicted_path) = conflict_signal_path(&message) else {
+                        continue;
+                    };
+                    match classify_conflict(&self.paths, Some(path), &conflicted_path) {
+                        ConflictScope::Establishing => {
+                            // resolve1 has already withdrawn the conflicted
+                            // record. Explicit cleanup makes a later retry
+                            // start from one unambiguous owner.
+                            let _ = manager.unregister_service(path).await;
+                            return Err(provider_error(
+                                DESCRIPTOR.name,
+                                ProviderOperation::Publish,
+                                ProviderFailure::Conflict,
+                                format!(
+                                    "resolve1 withdrew {}.{} after mDNS conflict probing",
+                                    definition.name, definition.service_type
+                                ),
+                            ));
+                        }
+                        ConflictScope::Established(key) => {
+                            self.invalidate_conflicted_publication(&key).await;
+                        }
+                        ConflictScope::Unknown => {
+                            tracing::trace!(
+                                provider = DESCRIPTOR.name,
+                                path = %conflicted_path,
+                                "ignoring conflict for an unowned resolve1 object"
+                            );
+                        }
+                    }
+                }
+                SettlementEvent::Failed(error) => {
+                    let _ = manager.unregister_service(path).await;
+                    self.lose_conflict_observation(format!(
+                        "resolve1 conflict signal stream failed: {error}"
+                    ))
+                    .await;
+                    return Err(resolved_recovering(
+                        ProviderOperation::Publish,
+                        "resolve1 conflict observation failed during publication",
+                    ));
+                }
+                SettlementEvent::Ended => {
+                    let _ = manager.unregister_service(path).await;
+                    self.lose_conflict_observation(
+                        "resolve1 conflict signal stream ended".to_string(),
+                    )
+                    .await;
+                    return Err(resolved_recovering(
+                        ProviderOperation::Publish,
+                        "resolve1 conflict observation ended during publication",
+                    ));
+                }
+                SettlementEvent::Quiet => return Ok(()),
+            }
+        }
+    }
+
+    async fn handle_conflict_signal(&mut self, signal: Option<zbus::Result<Message>>) {
+        match signal {
+            Some(Ok(message)) => {
+                let Some(path) = conflict_signal_path(&message) else {
+                    return;
+                };
+                match classify_conflict(&self.paths, None, &path) {
+                    ConflictScope::Established(key) => {
+                        tracing::warn!(
+                            provider = DESCRIPTOR.name,
+                            publication = %key,
+                            path = %path,
+                            "resolve1 withdrew a publication after a late mDNS conflict"
+                        );
+                        self.invalidate_conflicted_publication(&key).await;
+                    }
+                    ConflictScope::Establishing | ConflictScope::Unknown => {
+                        tracing::trace!(
+                            provider = DESCRIPTOR.name,
+                            path = %path,
+                            "ignoring conflict for an unowned resolve1 object"
+                        );
+                    }
+                }
+            }
+            Some(Err(error)) => {
+                self.lose_conflict_observation(format!(
+                    "resolve1 conflict signal stream failed: {error}"
+                ))
+                .await;
+            }
+            None => {
+                self.lose_conflict_observation("resolve1 conflict signal stream ended".to_string())
+                    .await;
+            }
+        }
+    }
+
+    async fn invalidate_conflicted_publication(&mut self, key: &str) {
+        let Some(path) = self.paths.remove(key) else {
+            return;
+        };
+        self.state_tx.send_replace(ProviderSessionState::Recovering);
+        if let Ok(manager) = ResolveManagerProxy::new(&self.connection).await {
+            if let Err(error) = manager.unregister_service(&path).await {
+                tracing::debug!(
+                    provider = DESCRIPTOR.name,
+                    publication = %key,
+                    %error,
+                    "conflicted resolve1 object cleanup deferred to recovery"
+                );
+            }
+        }
+    }
+
+    async fn lose_conflict_observation(&mut self, detail: String) {
+        self.conflicts = None;
+        self.state_tx.send_replace(ProviderSessionState::Recovering);
+        tracing::warn!(provider = DESCRIPTOR.name, %detail, "publication ownership observation lost");
+
+        // Without the signal stream, an object may have been withdrawn without
+        // our seeing it. Retire every materialization best-effort and let the
+        // adapter's existing desired-definition reconciliation rebuild them
+        // only after observation is armed again.
+        let paths = std::mem::take(&mut self.paths);
+        if let Ok(manager) = ResolveManagerProxy::new(&self.connection).await {
+            for (key, path) in paths {
+                if let Err(error) = manager.unregister_service(&path).await {
+                    tracing::debug!(
+                        provider = DESCRIPTOR.name,
+                        publication = %key,
+                        %error,
+                        "resolve1 object cleanup after observer loss was not acknowledged"
+                    );
+                }
+            }
+        }
     }
 
     async fn release(&mut self, key: &str) -> Result<()> {
@@ -753,6 +926,7 @@ impl ResolvedActor {
                 let owner = current_owner(&self.connection).await.ok().flatten();
                 if owner != self.owner {
                     self.paths.clear();
+                    self.conflicts = None;
                     self.owner = owner;
                     Ok(())
                 } else {
@@ -779,14 +953,70 @@ impl ResolvedActor {
     }
 }
 
-async fn publication_conflicted<S, T>(conflicts: &mut S, settle: Duration) -> bool
-where
-    S: Stream<Item = T> + Unpin,
-{
-    tokio::select! {
-        conflict = conflicts.next() => conflict.is_some(),
-        _ = tokio::time::sleep(settle) => false,
+async fn open_conflict_stream(
+    connection: &Connection,
+    owner: &str,
+    operation: ProviderOperation,
+) -> Result<MessageStream> {
+    let rule = MatchRule::builder()
+        .msg_type(MessageType::Signal)
+        .sender(owner)
+        .map_err(|error| resolved_protocol(operation, error))?
+        .interface(DNSSD_SERVICE_INTERFACE)
+        .map_err(|error| resolved_protocol(operation, error))?
+        .member(CONFLICT_MEMBER)
+        .map_err(|error| resolved_protocol(operation, error))?
+        .build();
+    MessageStream::for_match_rule(rule, connection, Some(COMMAND_CAPACITY))
+        .await
+        .map_err(|error| resolved_protocol(operation, error))
+}
+
+async fn next_conflict_signal(
+    conflicts: &mut Option<MessageStream>,
+) -> Option<zbus::Result<Message>> {
+    match conflicts {
+        Some(conflicts) => conflicts.next().await,
+        None => std::future::pending().await,
     }
+}
+
+async fn next_settlement_event<S, T, E>(
+    signals: &mut S,
+    deadline: tokio::time::Instant,
+) -> SettlementEvent<T, E>
+where
+    S: Stream<Item = std::result::Result<T, E>> + Unpin,
+{
+    match tokio::time::timeout_at(deadline, signals.next()).await {
+        Ok(Some(Ok(signal))) => SettlementEvent::Signal(signal),
+        Ok(Some(Err(error))) => SettlementEvent::Failed(error),
+        Ok(None) => SettlementEvent::Ended,
+        Err(_) => SettlementEvent::Quiet,
+    }
+}
+
+fn conflict_signal_path(message: &Message) -> Option<String> {
+    message
+        .header()
+        .path()
+        .map(|path| path.as_str().to_string())
+}
+
+fn classify_conflict(
+    established: &HashMap<String, OwnedObjectPath>,
+    establishing: Option<&OwnedObjectPath>,
+    conflicted_path: &str,
+) -> ConflictScope {
+    if establishing.is_some_and(|path| path.as_str() == conflicted_path) {
+        return ConflictScope::Establishing;
+    }
+    established
+        .iter()
+        .find_map(|(key, path)| {
+            (path.as_str() == conflicted_path).then(|| ConflictScope::Established(key.clone()))
+        })
+        .unwrap_or(ConflictScope::Unknown)
 }
 
 async fn resolve_service(
@@ -923,6 +1153,15 @@ fn resolved_unavailable(operation: ProviderOperation, detail: impl Into<String>)
     )
 }
 
+fn resolved_recovering(operation: ProviderOperation, detail: impl Into<String>) -> MdnsError {
+    provider_error(
+        DESCRIPTOR.name,
+        operation,
+        ProviderFailure::Recovering,
+        detail,
+    )
+}
+
 fn resolved_lost(operation: ProviderOperation, detail: impl Into<String>) -> MdnsError {
     provider_error(DESCRIPTOR.name, operation, ProviderFailure::Lost, detail)
 }
@@ -992,16 +1231,62 @@ mod tests {
         assert!(capabilities.direct_resolve);
     }
 
-    #[tokio::test]
-    async fn publication_settlement_reports_an_async_conflict() {
-        let mut conflicts = stream::iter([()]);
-        assert!(publication_conflicted(&mut conflicts, Duration::from_secs(1)).await);
+    #[test]
+    fn conflict_scope_distinguishes_establishing_owned_and_foreign_objects() {
+        let first = OwnedObjectPath::try_from("/org/freedesktop/resolve1/dnssd/first").unwrap();
+        let second = OwnedObjectPath::try_from("/org/freedesktop/resolve1/dnssd/second").unwrap();
+        let pending = OwnedObjectPath::try_from("/org/freedesktop/resolve1/dnssd/pending").unwrap();
+        let established =
+            HashMap::from([("first".to_string(), first), ("second".to_string(), second)]);
+
+        assert_eq!(
+            classify_conflict(&established, Some(&pending), pending.as_str()),
+            ConflictScope::Establishing
+        );
+        assert_eq!(
+            classify_conflict(
+                &established,
+                Some(&pending),
+                "/org/freedesktop/resolve1/dnssd/second"
+            ),
+            ConflictScope::Established("second".to_string())
+        );
+        assert_eq!(
+            classify_conflict(
+                &established,
+                Some(&pending),
+                "/org/freedesktop/resolve1/dnssd/foreign"
+            ),
+            ConflictScope::Unknown
+        );
     }
 
     #[tokio::test]
-    async fn publication_settlement_accepts_a_quiet_probe_window() {
-        let mut conflicts = stream::pending::<()>();
-        assert!(!publication_conflicted(&mut conflicts, Duration::from_millis(1)).await);
+    async fn publication_settlement_distinguishes_quiet_end_error_and_signal() {
+        let soon = || tokio::time::Instant::now() + Duration::from_millis(5);
+        let mut quiet = stream::pending::<std::result::Result<(), &'static str>>();
+        assert_eq!(
+            next_settlement_event(&mut quiet, soon()).await,
+            SettlementEvent::Quiet
+        );
+
+        let mut ended = stream::empty::<std::result::Result<(), &'static str>>();
+        assert_eq!(
+            next_settlement_event(&mut ended, soon()).await,
+            SettlementEvent::Ended
+        );
+
+        let mut failed = stream::iter([Err::<(), _>("observer failed")]);
+        assert_eq!(
+            next_settlement_event(&mut failed, soon()).await,
+            SettlementEvent::Failed("observer failed")
+        );
+
+        let mut signaled = stream::iter([Ok::<_, &'static str>(())]);
+        assert_eq!(
+            next_settlement_event(&mut signaled, soon()).await,
+            SettlementEvent::Signal(())
+        );
     }
 
     #[tokio::test]

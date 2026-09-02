@@ -147,6 +147,16 @@ Single source of truth for ALL human-readable CLI output.
 
 No other module should contain `println!`-based presentation functions.
 
+### Installer recipes (`crates/koi/src/platform/recipes/mod.rs`)
+
+| Type / function | Purpose |
+| --------------- | ------- |
+| `PortPlan` | Complete configured HTTP/mTLS/ACME run; Pond remains derived from HTTP. |
+| `Existing` | Existing declared/config-without-ports/no-config machine decision. |
+| `InstallDisposition` | Platform recipe evidence: fresh deployment or replacement of its durable Koi registration. |
+| `plan_install_ports()` | One ownership-aware endpoint decision shared by systemd, OpenRC, SCM, and launchd. |
+| `plan_install_ports_with()` | Pure probe-injected form used for policy tests. |
+
 ---
 
 ## Shared Types (`koi-common`)

@@ -37,6 +37,10 @@ only for the routes they actually own.
 - Operation rejection is local to that operation. Sessions report
   `recovering` during native owner/config churn and `lost` only when their epoch
   cannot continue.
+- Provider-native withdrawal/conflict signals are session-owned resources. Arm
+  observation before creating the corresponding native resource, poll it for
+  the complete resource lifetime, and treat observer EOF/error as lost
+  ownership evidence rather than successful quiet.
 - Async command cancellation must not orphan a resource. Provider actors clean
   up undeliverable replies; registry transaction guards restore intent.
 

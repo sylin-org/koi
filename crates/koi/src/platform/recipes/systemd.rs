@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::transaction::{staged_restore_path, FileSnapshot};
 use super::{
     append_config_ports, healthz_wait, honor_existing_config, honor_existing_linux, persist_plan,
-    persist_plan_checked, plan_ports, write_config_new, Existing,
+    persist_plan_checked, plan_install_ports, write_config_new, Existing, InstallDisposition,
 };
 
 const SERVICE_NAME: &str = "koi";
@@ -151,12 +151,15 @@ pub fn install_system(operator: Option<&str>, data_dir: &Path) -> anyhow::Result
     let was_active = systemctl(&["is-active", SERVICE_NAME]);
     let was_enabled = systemctl(&["is-enabled", SERVICE_NAME]);
 
-    // Ports: existing decisions win; plan only when nothing is declared.
-    let existing = honor_existing_linux();
-    let planned = match &existing {
-        Existing::Declared(plan, _) => *plan,
-        _ => plan_ports(),
+    // The platform recipe identifies its own durable service registration;
+    // shared planning decides whether a live listener is Koi or foreign.
+    let disposition = if unit.is_file() {
+        InstallDisposition::ReplacingOwned
+    } else {
+        InstallDisposition::Fresh
     };
+    let existing = honor_existing_linux();
+    let planned = plan_install_ports(&existing, disposition);
     let config = PathBuf::from("/etc/koi/config.toml");
     let policy = koi_config::local_access::policy_path(data_dir);
     let transaction = InstallTransaction::begin(
@@ -511,10 +514,12 @@ pub fn install_user() -> anyhow::Result<()> {
 
     let config = user_config_path()?;
     let existing = honor_existing_config(&config);
-    let planned = match &existing {
-        Existing::Declared(plan, _) => *plan,
-        _ => plan_ports(),
+    let disposition = if unit.is_file() {
+        InstallDisposition::ReplacingOwned
+    } else {
+        InstallDisposition::Fresh
     };
+    let planned = plan_install_ports(&existing, disposition);
     let persisted = persist_plan(&existing, &planned, &config);
 
     if let Some(parent) = unit.parent() {

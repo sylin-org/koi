@@ -99,6 +99,16 @@ lost. A session is `recovering` while its native facility is expected to return;
 the control plane changes routes only after repeated independent assessment or a
 genuinely lost session.
 
+For resolve1 publication specifically, the adapter arms one D-Bus `Conflicted`
+stream scoped to the current unique owner before it accepts any registration and
+keeps that stream continuously polled for the owner epoch. Initial settlement
+and later conflict observation consume that same stream. A late conflict removes
+the affected materialization while retaining its desired definition for adapter-
+owned reconstruction. Stream error or EOF is loss of ownership evidence, not a
+quiet success: all resolve1 materializations become unestablished and are rebuilt
+only after observation is armed again. An owner change replaces the stream before
+publication replay.
+
 Production Koi never starts, stops, enables, disables, or reconfigures an
 external responder. Such changes belong only to explicitly coordinated tests.
 
@@ -140,6 +150,10 @@ The admin status contract exposes control-plane state, generation, each route,
 adapter evidence, session state, and desired/established/pending/failed
 publication counts. The unified human summary is derived from that structure.
 Tests and fleet workbooks assert structured fields and never parse prose.
+
+An owned lease contributes to `established` only while its provider session is
+`ready`. During adapter-owned reconstruction it remains desired and pending;
+the control plane never reports a native resource it can no longer prove.
 
 The wire/domain status types live once in `koi-common`; provider-native types
 remain inside their adapter modules. `mdns-sd` remains isolated to `native.rs`.

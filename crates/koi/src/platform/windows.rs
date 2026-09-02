@@ -110,26 +110,25 @@ pub fn install(
     // service snapshot, and the file backups must be on disk before the
     // service is stopped, so a crash at any later point recovers.
     //
-    // The port decision is read from the config substrate first (no probing,
-    // no stop needed). When nothing is declared, a provisional standard plan
-    // arms the manifest and the real probe runs only after the replaced
-    // service has stopped — the plan must not see the daemon this install is
-    // replacing as a port squatter (the 2026-09-02 run shifted a healthy
-    // 5641 machine to 5651 exactly that way).
+    // The platform snapshot establishes whether this is a fresh deployment or
+    // a verified Koi-owned replacement. Shared planning can therefore choose
+    // the final port run before mutation without probing Koi's own listener.
     let service_snapshot = ServiceSnapshot::capture()?;
     let config_path = crate::platform::recipes::windows_config_path();
     let existing = crate::platform::recipes::honor_existing_config(&config_path);
-    let declared_port = match &existing {
-        crate::platform::recipes::Existing::Declared(plan, _) => Some(plan.http),
-        _ => None,
+    let disposition = if service_snapshot.existed {
+        crate::platform::recipes::InstallDisposition::ReplacingOwned
+    } else {
+        crate::platform::recipes::InstallDisposition::Fresh
     };
+    let planned = crate::platform::recipes::plan_install_ports(&existing, disposition);
     let policy_path = koi_config::local_access::policy_path(data_dir);
     let mut transaction = ScmInstallTransaction::begin(
         data_dir,
         &bin_path,
         &config_path,
         &policy_path,
-        declared_port.unwrap_or_else(|| crate::platform::recipes::plan_ports().http),
+        planned.http,
         service_snapshot,
     )?;
 
@@ -162,18 +161,6 @@ pub fn install(
                 needs_restart = true;
             }
         }
-
-        // ADR-036 port pre-flight with the replaced daemon now stopped:
-        // existing decisions win; plan a free run only when nothing is
-        // declared, and keep the manifest's health-check port truthful.
-        let planned = match &existing {
-            crate::platform::recipes::Existing::Declared(plan, _) => *plan,
-            _ => {
-                let plan = crate::platform::recipes::plan_ports();
-                transaction.set_http_port(plan.http)?;
-                plan
-            }
-        };
 
         record_windows_operator(operator, data_dir)?;
 
@@ -744,8 +731,6 @@ impl ScmInstallTransaction {
         Ok(Self { path, manifest })
     }
 
-    /// Keep the durable health-check port truthful when the plan is only
-    /// known after the replaced service has stopped.
     fn persist_transition(
         &mut self,
         update: impl FnOnce(&mut InstallManifest),
@@ -754,13 +739,6 @@ impl ScmInstallTransaction {
         update(&mut next);
         write_manifest(&self.path, &next)?;
         self.manifest = next;
-        Ok(())
-    }
-
-    fn set_http_port(&mut self, http_port: u16) -> anyhow::Result<()> {
-        if self.manifest.http_port != http_port {
-            self.persist_transition(|manifest| manifest.http_port = http_port)?;
-        }
         Ok(())
     }
 
@@ -2080,11 +2058,6 @@ mod tests {
         write_manifest(&path, &manifest).unwrap();
         let mut transaction = ScmInstallTransaction { path, manifest };
 
-        transaction.set_http_port(5651).unwrap();
-        let persisted: InstallManifest = koi_common::persist::read_json(&transaction.path).unwrap();
-        assert_eq!(persisted.http_port, 5651);
-        assert_eq!(transaction.manifest.http_port, 5651);
-
         transaction
             .mark_rule_created("Koi Pond (TCP 5654)")
             .unwrap();
@@ -2112,8 +2085,6 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
         let mut transaction = ScmInstallTransaction { path, manifest };
 
-        assert!(transaction.set_http_port(5651).is_err());
-        assert_eq!(transaction.manifest.http_port, 5641);
         assert!(transaction.mark_rule_created("Koi test rule").is_err());
         assert!(transaction.manifest.added_rules.is_empty());
         assert!(transaction.mark_service_created().is_err());

@@ -52,13 +52,18 @@ Distro names drift; capabilities don't.
    rename and the installer says exactly what to do instead of a raw OS error.
 2. **Detect the init system** → pick a recipe. Unknown is a recipe too (below),
    never an ENOENT stack trace.
-3. **Port pre-flight.** Probe the standard configured trio plus Pond's derived
-   fourth port (`http + 3`) by binding all four. All free → standard plan.
-   Occupied → shift the whole run by tens (5641/2/3/4 → 5651/2/3/4 → …)
-   until a free run is found. Only the existing three configurable ports are
-   persisted; Pond remains derived. Existing machine
-   decisions win: a systemd drop-in or a `config.toml` that already declares
-   ports is honored verbatim and printed, never re-planned.
+3. **Ownership-aware port pre-flight.** Each recipe first reports whether it is
+   creating a deployment or replacing its own durable Koi registration (SCM
+   service, systemd unit, OpenRC script, or launchd plist). A declared machine
+   decision always wins. A replaced legacy Koi with no declaration keeps its
+   effective standard 5641/2/3/4 run without probing its own live listener.
+   Only a fresh deployment probes the standard configured trio plus Pond's
+   derived fourth port (`http + 3`) by binding all four. All free → standard
+   plan. Occupied → shift the whole run by tens
+   (5641/2/3/4 → 5651/2/3/4 → …) until a free run is found. Only the
+   existing three configurable ports are persisted; Pond remains derived. The
+   final decision is checkpointed in the install transaction before the first
+   service mutation; there is no provisional health-check port.
 4. **Persist a shifted plan in the config substrate**, not in ad-hoc env
    (ADR-031 precedence applies). System services resolve their config at
    `/etc/koi/config.toml` (the unit/init script sets `XDG_CONFIG_HOME=/etc`);
@@ -114,6 +119,9 @@ and refuses to claim installation when either facility is unavailable.
   box.
 - Verification never assumes third-party tools; the installer's HTTP check is
   the same loopback surface the daemon serves.
+- Reinstalling a live, no-config Koi no longer manufactures a shifted config
+  by classifying Koi's own sockets as foreign. Fresh machines still yield to a
+  real incumbent, and every platform recipe consumes the same pure decision.
 
 ## Deferred
 

@@ -12,7 +12,10 @@ use std::process::{Command, Output};
 use serde::{Deserialize, Serialize};
 
 use super::transaction::{staged_restore_path, FileSnapshot};
-use super::{healthz_wait, honor_existing_config, persist_plan_checked, plan_ports, Existing};
+use super::{
+    healthz_wait, honor_existing_config, persist_plan_checked, plan_install_ports,
+    InstallDisposition,
+};
 
 const SERVICE_NAME: &str = "koi";
 const TRANSACTION_VERSION: u16 = 1;
@@ -163,10 +166,12 @@ pub fn install_system(operator: Option<&str>, data_dir: &Path) -> anyhow::Result
 
     let config = PathBuf::from("/etc/koi/config.toml");
     let existing = honor_existing_config(&config);
-    let planned = match &existing {
-        Existing::Declared(plan, _) => *plan,
-        _ => plan_ports(),
+    let disposition = if initd.is_file() {
+        InstallDisposition::ReplacingOwned
+    } else {
+        InstallDisposition::Fresh
     };
+    let planned = plan_install_ports(&existing, disposition);
     let policy = koi_config::local_access::policy_path(data_dir);
     let transaction = InstallTransaction::begin(
         data_dir,

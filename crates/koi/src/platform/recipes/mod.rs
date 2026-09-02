@@ -261,9 +261,41 @@ pub fn plan_ports_with(is_free: impl Fn(u16) -> bool) -> PortPlan {
     PortPlan::standard()
 }
 
-/// Plan against this machine right now.
-pub fn plan_ports() -> PortPlan {
-    plan_ports_with(port_free)
+/// Whether this install is creating a deployment or replacing the recipe's
+/// existing Koi service registration. The recipe owns that platform fact;
+/// shared planning owns what it means for endpoint selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallDisposition {
+    Fresh,
+    ReplacingOwned,
+}
+
+/// Select the effective port run for an install without mistaking the Koi
+/// deployment being replaced for a foreign listener.
+///
+/// A declared machine decision always wins. An older Koi deployment with no
+/// declaration is, by definition, using the standard run and keeps it even
+/// while its process is still listening. Only a fresh deployment probes the
+/// machine and shifts around genuine incumbents.
+pub fn plan_install_ports_with(
+    existing: &Existing,
+    disposition: InstallDisposition,
+    is_free: impl Fn(u16) -> bool,
+) -> PortPlan {
+    match existing {
+        Existing::Declared(plan, _) => *plan,
+        Existing::ConfigWithoutPorts(_) | Existing::Nothing
+            if disposition == InstallDisposition::ReplacingOwned =>
+        {
+            PortPlan::standard()
+        }
+        Existing::ConfigWithoutPorts(_) | Existing::Nothing => plan_ports_with(is_free),
+    }
+}
+
+/// Select the effective install plan against this machine right now.
+pub fn plan_install_ports(existing: &Existing, disposition: InstallDisposition) -> PortPlan {
+    plan_install_ports_with(existing, disposition, port_free)
 }
 
 // ── Existing machine decisions are honored, never re-planned ────────
@@ -631,6 +663,54 @@ mod tests {
         assert_eq!(plan, PortPlan::standard());
         assert!(plan.describe().contains("standard"));
         assert!(PortPlan::shift(1).unwrap().describe().contains("shifted"));
+    }
+
+    #[test]
+    fn install_plan_preserves_declared_ports_without_probing() {
+        let declared = PortPlan::shift(3).unwrap();
+        let existing = Existing::Declared(declared, "operator config".to_string());
+        let probes = std::cell::Cell::new(0);
+
+        let plan = plan_install_ports_with(&existing, InstallDisposition::Fresh, |_| {
+            probes.set(probes.get() + 1);
+            false
+        });
+
+        assert_eq!(plan, declared);
+        assert_eq!(probes.get(), 0);
+    }
+
+    #[test]
+    fn install_plan_preserves_an_owned_legacy_standard_run() {
+        for existing in [
+            Existing::Nothing,
+            Existing::ConfigWithoutPorts(PathBuf::from("legacy-config.toml")),
+        ] {
+            let probes = std::cell::Cell::new(0);
+            let plan =
+                plan_install_ports_with(&existing, InstallDisposition::ReplacingOwned, |_| {
+                    probes.set(probes.get() + 1);
+                    false
+                });
+
+            assert_eq!(plan, PortPlan::standard());
+            assert_eq!(probes.get(), 0, "the replaced Koi listener is not probed");
+        }
+    }
+
+    #[test]
+    fn fresh_install_shifts_around_a_foreign_listener() {
+        let plan = plan_install_ports_with(&Existing::Nothing, InstallDisposition::Fresh, |port| {
+            ![
+                STD_HTTP,
+                STD_MTLS,
+                STD_ACME,
+                koi_serve::pond::DEFAULT_POND_PORT,
+            ]
+            .contains(&port)
+        });
+
+        assert_eq!(plan, PortPlan::shift(1).unwrap());
     }
 
     #[cfg(target_os = "linux")]

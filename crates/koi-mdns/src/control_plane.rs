@@ -1111,7 +1111,15 @@ impl ControlPlaneActor {
 
     fn refresh_status(&self) {
         let (desired, registry_pending) = self.registry.publication_intent_counts();
-        let established = self.publications.len();
+        let established = self
+            .publications
+            .values()
+            .filter(|publication| {
+                self.sessions
+                    .get(&publication.provider)
+                    .is_some_and(|session| session_state(session) == ProviderSessionState::Ready)
+            })
+            .count();
         let mut providers = self
             .latest_reports
             .iter()
@@ -2137,10 +2145,31 @@ mod tests {
         );
         let registry = Arc::new(RegistrationRegistry::new());
         let adapters: Vec<Arc<dyn MdnsAdapter>> = vec![adapter.clone()];
-        let control_plane = MdnsControlPlane::start_catalog(adapters, registry, fast_config())
-            .await
-            .expect("start control plane");
+        let control_plane =
+            MdnsControlPlane::start_catalog(adapters, Arc::clone(&registry), fast_config())
+                .await
+                .expect("start control plane");
         assert_eq!(adapter.opens.load(Ordering::Acquire), 1);
+
+        let attempt = registry.begin_registration(
+            "recovering-publication".to_string(),
+            test_payload(),
+            LeasePolicy::Permanent,
+            None,
+        );
+        control_plane
+            .publish(
+                registry
+                    .desired_announcement(attempt.outcome.id())
+                    .expect("announcement"),
+            )
+            .await
+            .expect("initial publication");
+        registry
+            .confirm_publication(attempt.outcome.id())
+            .expect("confirm publication");
+        assert_eq!(control_plane.status().publications.established, 1);
+
         adapter
             .session
             .state_tx
@@ -2151,10 +2180,14 @@ mod tests {
             control_plane.status().routes.publish.as_deref(),
             Some("recovering")
         );
+        assert_eq!(control_plane.status().publications.established, 0);
+        assert_eq!(control_plane.status().publications.pending, 1);
         adapter
             .session
             .state_tx
             .send_replace(ProviderSessionState::Ready);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(control_plane.status().publications.established, 1);
         control_plane.shutdown().await.expect("shutdown");
     }
 }

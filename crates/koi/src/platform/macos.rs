@@ -40,6 +40,11 @@ pub fn install(
     println!("Installing Koi service...");
     println!("  Binary: {}", exe_path.display());
 
+    let disposition = if plist_path.is_file() {
+        crate::platform::recipes::InstallDisposition::ReplacingOwned
+    } else {
+        crate::platform::recipes::InstallDisposition::Fresh
+    };
     let was_loaded = launchctl_is_loaded();
     if was_loaded {
         println!("  Existing daemon found, updating...");
@@ -63,10 +68,7 @@ pub fn install(
     // Port planning per ADR-036; the plist resolves config at /etc/koi.
     let config_path = std::path::PathBuf::from("/etc/koi/config.toml");
     let existing = crate::platform::recipes::honor_existing_config(&config_path);
-    let planned = match &existing {
-        crate::platform::recipes::Existing::Declared(plan, _) => *plan,
-        _ => crate::platform::recipes::plan_ports(),
-    };
+    let planned = crate::platform::recipes::plan_install_ports(&existing, disposition);
     let persisted = crate::platform::recipes::persist_plan(&existing, &planned, &config_path);
 
     let plist_contents = generate_plist(&install_path);
