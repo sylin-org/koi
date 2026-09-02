@@ -4,23 +4,37 @@ Repo: the Windows checkout containing this file. You are both the fleet orchestr
 and the Windows product reference. Those roles do not grant permission to mutate
 another hat's system state.
 
-Measured evidence (2026-09-02 through this commit): the installed product-path SCM service
+Measured evidence (2026-09-02 through `8042821`): the installed product-path SCM service
 has physically closed provider truth, Bonjour read fidelity, the base standard-port
 ADR-040 boundary, wrong-user rejection, breadcrumb independence, dead-session drain,
 ordinary failed-candidate rollback, interruption recovery through expected-missing SCM
 recreation, complete descriptor/lifecycle restoration, pre-config recovery, profile-exact
 firewall rollback, Pond routes/stop/restart, executable/profile-aware firewall
-applicability, and cooperative DNS.
+applicability, and cooperative DNS. The exercised v2 path is sound evidence; it does not
+prove deserialization of a real v1 manifest or rollback behavior when firewall deletion
+itself fails.
 
-## PH-001 next dispatch (after this commit)
+## PH-001 next dispatch (after `8042821`)
 
-1. Start now by consolidating firewall assessment, snapshot, restoration, and ownership
-   into one typed Windows adapter shared by the installer and Pond. NetSecurity already
-   fails closed and the installed rollback physically preserved enabled/direction/action/
-   protocol/ports/program/profile over a Private-only rule with semantic equality and no
-   residue; retain those facts while removing the remaining duplicate assessment seam.
-   Do not repeat the already-green Pond/DNS or destructive rollback journeys unless the
-   consolidation changes their artifact.
+1. Start now by finishing one typed Windows firewall adapter shared by installer,
+   rollback, uninstall, and Pond assessment. Preserve the green v2/private-profile proof,
+   then close both unexercised transaction edges:
+
+   - deserialize fixtures containing the actual v1 wire shape, not a v2 structure whose
+     version field was changed in memory. A v1 firewall snapshot never stored `profile`;
+     recover only when prior semantics are provable. Otherwise retain manifest/backups,
+     stop before further mutation, and report the precise recovery boundary—never default
+     the missing profile to `Any` or claim all v1 manifests are recoverable;
+   - replace boolean/best-effort rule deletion with a typed `removed | absent | error`
+     result. Propagate errors before replacement and throughout rollback/uninstall so a
+     failed delete cannot leave duplicates, widen access, or be followed by a false
+     successful restoration.
+
+   Keep each rule's application/port/profile filters correlated, keep NetSecurity errors
+   fail-closed, and remove the duplicated Pond assessment seam. Add raw legacy-JSON and
+   command-failure regressions, then physically rerun only the firewall rollback slice on
+   the installed service and prove semantic equality plus zero residue. The already-green
+   Pond/DNS journey need not be repeated unless this consolidation changes its behavior.
 2. Resolve `issues/002-credential-store-test-leak.md` as a shared product ownership bug,
    not a Windows-only cleanup script. A TOTP slot owns every platform credential label it
    creates; replace, remove, failed persistence, and certmesh destroy must retire exactly
