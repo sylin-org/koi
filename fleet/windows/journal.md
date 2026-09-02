@@ -1,5 +1,29 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-02 (13) — PH-001 installed workbench notification and session-transition gates closed
+
+commit: koi `944bf21`; koi-desktop `dbd5033` | run: `20260902T220738Z-windows-workbench` PASS | gates: desktop UI 38/38; Rust 15 pass/1 environment-gated; fmt clean; strict all-target clippy; release + NSIS bundle; exact installed-artifact notification, tray/singleton, lock/unlock, and two genuine fresh-login passes
+
+koi state now: the unchanged product-path SCM service is RUNNING as sole PID `28460`, `C:\Program Files\Koi\koi.exe --daemon`, SHA-256 `452f3ae7ed16fb1adea3c548af6b78a5ec2e50e4bc70ba7d7d05995d79cae0ee`, health 200 on standard operator port 5641, Pond disabled with 5644 closed, and the runtime capability truthfully disabled after Docker Desktop was restored stopped. The final packaged workbench is installed at `C:\Users\onose\AppData\Local\Koi\koi-desktop.exe`, version 0.1.2, SHA-256 `bb07bb2c232f1ea7398348b1cb4a215dc7d2de04c9c21461bc6fe092de05e245`; its final NSIS is SHA-256 `4fff29f3102067b0e6878c4e3bcfa6e6e0d517b2f03cbce898e4f0a52903c537`.
+
+### Two physical defects removed at the transport/care boundaries
+
+1. The workbench consumed canonical DAT-gated `/v1/events`, whose `data:` field is a versioned `KoiEventWire`, but forwarded that whole envelope as the domain payload. Sentences therefore said `something`, and runtime subjects keyed on the wire event UUID instead of the stable container name; a start could never re-arm the stop subject. `decode_daemon_event` now validates version 1 and matching event type, unwraps the nested domain data, skips unknown versions/mismatches, and retains compatibility with the older bare-payload stream. Physical SSE capture proved the before shape; the installed fix rendered and pinned the stable subject `container:koi-notify-gate-4` and named its start/stop sentences correctly.
+2. The feed's 90-second flapping compaction returned before `watchedFade`/`watchedAlive`, suppressing care transitions during ordinary rapid lifecycle changes. Care now observes every lifecycle event before diary compaction. The new regression proves a watched start → stopped → start sequence inside the flapping window opens and re-arms the fade episode while the diary remains one row.
+
+### Installed-artifact gates
+
+- With Docker Desktop genuinely running and the installed daemon restarted through the real service-control path, the run-owned Alpine container was starred in the workbench, revived, and stopped with the workbench closed to its tray. Windows PushNotification-Platform recorded exactly one Koi toast, tracking ID `99713`: local receipt (2416), threadpool submission (2418), delivery begun (3052), and delivery complete (3153) to AppUserModelId `org.sylin.koi` on session 1 at `2026-09-02T18:07:38-04:00`. The host's Do Not Disturb policy suppressed the visible card, but the OS delivery pipeline accepted and delivered it; no Koi notification existed for the pre-fix attempts.
+- Closing the native window retained one process and its `127.0.0.1:5640` listener; the real tray menu reopened it and `Quit Koi` removed both process and listener. A normal second executable launch exited 0, revealed and focused the resident PID, and never produced a second workbench.
+- Lock/unlock preserved the exact pre-lock workbench PID `9572`, 5640 ownership, daemon PID `3260`, and HTTP 200. The subsequent controlled baseline restart changed only the daemon to PID `28460` after Docker shutdown.
+- The final candidate crossed a real sign-out/sign-in. The console logon began at `18:12:17`; the Run entry `C:\Users\onose\AppData\Local\Koi\koi-desktop.exe --minimized` launched the exact installed hash once at `18:13:14` as hidden PID `16604`, which solely owned 5640. A normal second launch exited 0 and made PID `16604` the foreground Koi window; native close returned that same PID to the tray.
+
+### Restoration and truthful remainder
+
+The only run-owned containers (`koi-notify-gate` and `koi-notify-gate-4`) were removed; the standing Docker Desktop buildkit container was not altered. Docker Desktop and `com.docker.backend` are both absent, the runtime endpoint reports `capability_disabled`, all test watches were removed through the UI, the workbench is left hidden and autostart-enabled, and there is exactly one healthy installed Koi. No token, DAT, credential, firewall, resolver, provider, service-registration, data-root, or peer state was journaled or retained. The earlier Phone/Pond physical peer remained test-01; this continuation required no peer-side mutation.
+
+**Shifted ADR-040 remains unclaimed by design.** No genuine non-Koi incumbent owns the standard trio on this host, and fleet policy forbids manufacturing one or launching an alternate test daemon. The next dependency-ready work is dispatch item 4's installed Windows mDNS/NIC/profile/lock/sleep coordination with physical Avahi/native peers, unless a legitimate coexistence condition appears first.
+
 ## 2026-09-02 (12) — PH-001 installed Windows workbench checkpoint; session-transition and legitimate-shift gates remain
 
 commit: koi `eebd739`; koi-desktop `7cd2dca` | gates: desktop UI 37/37; Rust 11 pass/1 environment-gated; strict all-target clippy; release + NSIS bundle; physical install/tray/singleton/Phone/Pond/upgrade/uninstall-reinstall through the installed artifacts
