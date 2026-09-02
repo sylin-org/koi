@@ -322,6 +322,26 @@ No other module should contain `println!`-based presentation functions.
 
 ---
 
+## Crypto Domain Types (`koi-crypto`)
+
+### `koi_crypto::unlock_slots`
+
+| Type / operation | Purpose |
+| ---------------- | ------- |
+| `SlotTable` | Persistent envelope-unlock aggregate; reconciles interrupted credential cleanup on load |
+| `UnlockSlot` | Passphrase, auto-unlock, or TOTP master-key wrapper |
+| `SlotTable::add_totp_slot(path, master_key, secret)` | Transactional TOTP add/replace with durable exact-label ownership |
+| `SlotTable::remove_totp_slot(path)` | Transactional removal and idempotent owned-label retirement |
+
+### `koi_crypto::tpm`
+
+| Type | Purpose |
+| ---- | ------- |
+| `CredentialDelete` | Typed exact-label deletion result (`Removed` or `Absent`) |
+| `TpmError` | Platform credential-store availability, operation, and missing-material errors |
+
+---
+
 ## Certmesh Domain Types (`koi-certmesh`)
 
 ### `koi_certmesh` (re-exports from `lib.rs`)

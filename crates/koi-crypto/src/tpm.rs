@@ -23,6 +23,15 @@ pub enum TpmError {
     NotFound(String),
 }
 
+/// Outcome of deleting an exact platform credential label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialDelete {
+    /// A credential existed and was removed.
+    Removed,
+    /// No credential existed for the label.
+    Absent,
+}
+
 #[cfg(feature = "keyring")]
 const SERVICE_NAME: &str = "koi-certmesh";
 
@@ -81,14 +90,28 @@ pub fn unseal_key_material(label: &str) -> Result<Vec<u8>, TpmError> {
 ///
 /// Called during `certmesh destroy` to clean up.
 #[cfg(feature = "keyring")]
-pub fn delete_key_material(label: &str) -> Result<(), TpmError> {
+pub fn delete_key_material(label: &str) -> Result<CredentialDelete, TpmError> {
     let entry = keyring::Entry::new(SERVICE_NAME, label)
         .map_err(|e| TpmError::NotAvailable(e.to_string()))?;
-    entry
-        .delete_credential()
-        .map_err(|e| TpmError::Failure(format!("delete failed for '{label}': {e}")))?;
-    tracing::debug!(label, "Sealed key material deleted from credential store");
-    Ok(())
+    match entry.get_secret() {
+        Err(keyring::Error::NoEntry) => return Ok(CredentialDelete::Absent),
+        Err(e) => {
+            return Err(TpmError::Failure(format!(
+                "cannot inspect credential before deleting '{label}': {e}"
+            )))
+        }
+        Ok(_) => {}
+    }
+    match entry.delete_credential() {
+        Ok(()) => {
+            tracing::debug!(label, "Sealed key material deleted from credential store");
+            Ok(CredentialDelete::Removed)
+        }
+        Err(keyring::Error::NoEntry) => Ok(CredentialDelete::Absent),
+        Err(e) => Err(TpmError::Failure(format!(
+            "delete failed for '{label}': {e}"
+        ))),
+    }
 }
 
 // ── Stubs when the `keyring` feature is disabled ────────────────────
@@ -117,14 +140,22 @@ pub fn unseal_key_material(label: &str) -> Result<Vec<u8>, TpmError> {
 }
 
 #[cfg(not(feature = "keyring"))]
-pub fn delete_key_material(_label: &str) -> Result<(), TpmError> {
+pub fn delete_key_material(_label: &str) -> Result<CredentialDelete, TpmError> {
     // Nothing was sealed without the credential store — destroy is a no-op.
-    Ok(())
+    Ok(CredentialDelete::Absent)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct CredentialGuard(String);
+
+    impl Drop for CredentialGuard {
+        fn drop(&mut self) {
+            let _ = delete_key_material(&self.0);
+        }
+    }
 
     #[test]
     fn is_available_returns_bool() {
@@ -141,15 +172,23 @@ mod tests {
             eprintln!("platform credential store not available, skipping");
             return;
         }
-        let label = "koi-test-round-trip";
+        let label = format!("koi-test-round-trip-{}", std::process::id());
+        let _guard = CredentialGuard(label.clone());
         let data = b"test-secret-material-1234";
 
-        seal_key_material(label, data).expect("seal should succeed");
-        let recovered = unseal_key_material(label).expect("unseal should succeed");
+        seal_key_material(&label, data).expect("seal should succeed");
+        let recovered = unseal_key_material(&label).expect("unseal should succeed");
         assert_eq!(&recovered, data);
 
-        delete_key_material(label).expect("delete should succeed");
-        assert!(unseal_key_material(label).is_err());
+        assert_eq!(
+            delete_key_material(&label).expect("delete should succeed"),
+            CredentialDelete::Removed
+        );
+        assert_eq!(
+            delete_key_material(&label).expect("repeat delete should succeed"),
+            CredentialDelete::Absent
+        );
+        assert!(unseal_key_material(&label).is_err());
     }
 
     #[test]

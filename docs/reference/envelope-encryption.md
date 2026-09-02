@@ -53,9 +53,14 @@ method ships today; FIDO2 unlock is not yet implemented.
         "nonce": "base64..."
       }
     }
-  ]
+  ],
+  "pending_totp_credentials": []
 }
 ```
+
+`pending_totp_credentials` is normally omitted. During a TOTP-slot transaction it
+durably records only Koi-derived credential identifiers that must be retired. A
+load reconciles an interrupted transaction before returning the table.
 
 ---
 
@@ -66,7 +71,8 @@ method ships today; FIDO2 unlock is not yet implemented.
 | `new_with_passphrase(master_key, passphrase)` | Bootstrap with slot 0 |
 | `unwrap_with_passphrase(passphrase)` | Derive KEK, unwrap master key |
 | `add_auto_unlock()` / `remove_auto_unlock()` | Toggle unattended boot |
-| `add_totp_slot(master_key, secret)` | Add TOTP unlock slot |
+| `add_totp_slot(path, master_key, secret)` | Transactionally add or replace a TOTP slot and persist its credential ownership |
+| `remove_totp_slot(path)` | Transactionally remove a TOTP slot and retire its exact platform labels |
 | `unwrap_with_totp(code)` | Unlock via TOTP code |
 | `available_methods()` | List active slot types |
 
@@ -76,7 +82,7 @@ method ships today; FIDO2 unlock is not yet implemented.
 
 A single-passphrase key is transparently upgraded to the envelope format on first load via `migrate_to_envelope()`: it decrypts with the passphrase, generates a fresh master key, re-encrypts under that master key, and writes a slot table with a passphrase slot.
 
-Version 2 derives a stable platform-credential label from each TOTP slot's random wrapped ciphertext. This keeps isolated Koi data roots from overwriting one another's TOTP secret. Version 1 tables remain readable through their legacy machine-global labels and move to version 2 when their TOTP slot is replaced.
+Version 2 derives a stable platform-credential label from each TOTP slot's random wrapped ciphertext. This keeps isolated Koi data roots from overwriting one another's TOTP secret. Add, replacement, removal, interrupted persistence, and certmesh destruction retain an exact durable ownership record until idempotent cleanup succeeds; no credential-store enumeration is used. Version 1 tables remain readable through their legacy machine-global labels and move to version 2 when their TOTP slot is replaced.
 
 ---
 

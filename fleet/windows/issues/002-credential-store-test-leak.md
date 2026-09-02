@@ -1,7 +1,7 @@
 # Issue 002 — TOTP slot ownership and tests leak platform credentials until the store quota is exhausted
 
 **Opened:** 2026-09-02 (PH-001 dispatch 2, Windows gate)
-**Status:** open — residue cleaned on this machine; product and test lifecycle fix belongs to the shared crate
+**Status:** resolved by the shared slot-aggregate transaction in the 2026-09-02 Windows PH-001 session
 
 ## Observed
 
@@ -49,3 +49,21 @@ already has enough information to derive every label it owns before discarding t
 
 Deleted exactly the 576 `LegacyGeneric:target=koi-certmesh-*` entries (the git
 push credential and all foreign entries untouched); suite green after cleanup.
+
+## Resolution
+
+The slot table now persists an exact, validated ownership ledger before either
+per-slot credential label can be written. Add/replace commits the new active slot
+before retiring the old labels; remove and certmesh destroy persist retirement
+before deletion; interrupted cleanup is reconciled on load. Platform deletion is
+typed `Removed | Absent`, uses exact labels only, and never enumerates in product
+code. The secret-file writer now atomically replaces existing files on Windows so
+the transaction phases can durably overwrite the slot table.
+
+Deterministic fake-store/fake-persistence tests cover pre-seal persistence failure,
+seal failure, failed new-slot commit, failed replacement commit, interrupted
+post-commit cleanup, retryable deletion, removal, and invalid ownership data.
+Real-store tests carry unwind-safe exact-label guards and exercise add, replacement,
+remove, isolation, and certmesh destroy. The Windows acceptance workbook ran the
+19-test slot suite three times plus real certmesh destroy; the exact hashed target
+set returned to its zero baseline after every phase. No product endpoint was added.

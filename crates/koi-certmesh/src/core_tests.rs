@@ -196,6 +196,84 @@ async fn posture_watch_observes_transitions_and_coalesces() {
     assert!(!rx.borrow_and_update().signed);
 }
 
+#[tokio::test]
+async fn destroy_preserves_slot_ledger_when_owned_label_is_invalid() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().to_path_buf());
+    let master_key = koi_crypto::unlock_slots::generate_master_key();
+    let table =
+        koi_crypto::unlock_slots::SlotTable::new_with_passphrase(&master_key, "pass").unwrap();
+    let slot_path = paths.slot_table_path();
+    table.save(&slot_path).unwrap();
+
+    let mut json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&slot_path).unwrap()).unwrap();
+    json["pending_totp_credentials"] = serde_json::json!([{
+        "version": 2,
+        "credential_id": "../foreign",
+        "secret": true,
+        "fallback": true
+    }]);
+    std::fs::write(&slot_path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+    let core = CertmeshCore::uninitialized_with_paths(paths.clone());
+    let error = core.destroy().await.unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("invalid TOTP credential ownership id"));
+    assert!(
+        slot_path.exists(),
+        "destroy must retain the ownership ledger"
+    );
+    assert!(paths.certmesh_dir().exists());
+}
+
+#[cfg(feature = "keyring")]
+#[tokio::test]
+async fn destroy_retires_real_store_totp_slot_before_removing_ledger() {
+    struct Cleanup {
+        slot_path: std::path::PathBuf,
+        probe_label: String,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            if self.slot_path.exists() {
+                if let Ok(mut table) = koi_crypto::unlock_slots::SlotTable::load(&self.slot_path) {
+                    let _ = table.remove_totp_slot(&self.slot_path);
+                }
+            }
+            let _ = koi_crypto::tpm::delete_key_material(&self.probe_label);
+            let _ = koi_crypto::tpm::delete_key_material("koi-certmesh-ca");
+        }
+    }
+
+    let probe_label = format!("koi-certmesh-destroy-probe-{}", std::process::id());
+    if koi_crypto::tpm::seal_key_material(&probe_label, b"probe").is_err() {
+        return;
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let paths = CertmeshPaths::with_data_dir(temp.path().to_path_buf());
+    let (ca, master_key) = ca::create_ca("test-pass", &[17u8; 32], &paths).unwrap();
+    let slot_path = paths.slot_table_path();
+    let cleanup = Cleanup {
+        slot_path: slot_path.clone(),
+        probe_label,
+    };
+    let mut table = koi_crypto::unlock_slots::SlotTable::load(&slot_path).unwrap();
+    let secret = koi_crypto::totp::generate_secret();
+    table
+        .add_totp_slot(&slot_path, &master_key, secret.as_bytes())
+        .unwrap();
+
+    let core = CertmeshCore::new_with_paths(ca, Roster::empty(), None, paths.clone());
+    core.destroy().await.unwrap();
+
+    assert!(!slot_path.exists());
+    assert!(!paths.certmesh_dir().exists());
+    drop(cleanup);
+}
+
 fn test_paths() -> CertmeshPaths {
     CertmeshPaths::with_data_dir(koi_common::test::ensure_data_dir("koi-certmesh-core-tests"))
 }

@@ -1,5 +1,27 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-02 (8) — PH-001 TOTP credential ownership and exact cleanup closed physically
+
+commit: this commit, on top of `c9cba31` | gates: fmt clean; full-workspace strict clippy clean; deterministic slot failure matrix green; focused real-store slot suite 19/19 and certmesh destroy slice green; full `cargo test --locked` green; locked release build green; release SHA-256 `4c92b163784da7bc28d44d3b5a957139a99faf6f4950386a3939d3922ea4453b`; serial workbook `20260902T173700Z-credential` PASS
+
+koi state now: exact release candidate installed at `C:\Program Files\Koi\koi.exe`, SCM service RUNNING as PID `18300`, canonical product-path descriptor retained, one `koi.exe`, health 200 after settle, hashed TOTP credential count `0`, no installed certmesh slot table, and no SCM manifest or installer backup residue.
+
+### Shared ownership transaction
+
+- `SlotTable` now encapsulates its slot collection and persists a validated per-slot credential identifier before either exact label can be written. Add/replacement commits the new active slot before deleting the old labels; removal persists retirement before deletion. A crash at either durable boundary leaves enough aggregate state to clean the attempted or retired labels on the next load.
+- Credential cleanup derives only `koi-certmesh-unlock-totp-<id>` and `koi-certmesh-totp-fallback-key-<id>` (or the exact v1 legacy labels) from aggregate-owned state. There is no product enumeration, wildcard deletion, process-ID naming workaround, or acceptance-only endpoint. Corrupt ownership identifiers fail before any store call.
+- Platform deletion is typed `Removed | Absent`; Windows absence is classified by an exact entry read before `CredDeleteW`, making retry cleanup idempotent. `write_secret_file` now stages a unique restricted file and uses the shared atomic replace primitive, including overwrite on Windows.
+- Certmesh destroy loads/reconciles the ownership ledger and removes the TOTP slot before deleting the slot table or clearing live state. A deterministic invalid-ledger regression proves destroy retains the file and returns an error instead of forgetting credentials.
+- Fake store/persistence tests cover seal failure, persistence before seal, failed initial commit, failed replacement commit with the old slot retained, interrupted post-commit cleanup, deletion retry, exact replacement/removal, and foreign-label rejection. Every real-store test has an exact-label `Drop` guard; real replacement, remove, isolation, and destroy paths are included.
+
+### Windows credential-store proof (`.tmp/ph001-credential-20260902T173700Z`)
+
+The first external inventory found 24 stale hashed entries from pre-fix test runs. The installed product had no slot table, so those exact 24 TOTP labels were removed without touching foreign credentials; the clean baseline was zero. One non-elevated serial workbook then ran the complete 19-test unlock-slot suite three times and compared the full sorted target set after each iteration, followed by the real-store certmesh-destroy test. Every checkpoint returned to the exact zero baseline; the subsequent full locked workspace suite also left zero hashed TOTP and zero TPM-test entries.
+
+The same workbook installed the exact release candidate. Its first elevated invocation was deliberately/accidentally interrupted by PowerShell output handling immediately after service stop; the armed v2 manifest retained the old binary and the next invocation recovered it to PID `24008`. A wrong operator-name input then failed before installation and rolled back to the healthy old PID `8540`. With the recorded SID supplied, the ordinary upgrade succeeded at PID `18300`. Final independent inspection after 12 seconds proved candidate hash equality, one healthy process, credential baseline zero, and no manifest/backup residue.
+
+Next dependency-ready assignment: dispatch item 3, the shifted-port ADR-040 pipe path and installed workbench fresh-login/tray/notification/Phone/Pond/lock-resume/upgrade/uninstall-reinstall gates.
+
 ## 2026-09-02 (7) — PH-001 typed firewall adapter and legacy recovery boundary closed physically
 
 commit: this commit, on top of `4a8f441` | gates: fmt clean; strict `koi-serve` + `koi-net` clippy clean; shared dependency architecture gate green; adapter suite 8 passed / 1 live NetSecurity facility test ignored in the normal suite and passed explicitly; Windows platform suite 8 passed; full locked workspace suite green; release SHA-256 `7827d4c764e7c00e83c29c32f1c28dbf0dd74f7a734a5d854509a6cf968761b3`; elevated serial workbook `20260902T155528Z-firewall` PASS

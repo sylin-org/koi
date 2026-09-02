@@ -5,7 +5,9 @@
 //! decrypt after each daemon restart.
 
 use std::fmt;
+use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -262,34 +264,42 @@ pub fn write_secret_file(path: &Path, data: &[u8]) -> Result<(), CryptoError> {
         std::fs::create_dir_all(parent)?;
     }
 
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut tmp_name = path.as_os_str().to_os_string();
+    tmp_name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let tmp_path = std::path::PathBuf::from(tmp_name);
+
     #[cfg(unix)]
-    {
-        use std::fs::OpenOptions;
-        use std::io::Write;
+    let mut file = {
         use std::os::unix::fs::OpenOptionsExt;
-
-        let mut file = OpenOptions::new()
+        std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
-            .open(path)?;
-        file.write_all(data)?;
-    }
-
+            .open(&tmp_path)?
+    };
     #[cfg(not(unix))]
-    {
-        // Write to a uniquely-named .tmp file, apply ACL, then rename
-        // atomically to avoid a TOCTOU window where the file is
-        // world-readable. The thread ID suffix prevents races when
-        // parallel tests write to the same target path.
-        let tid = std::thread::current().id();
-        let tmp_ext = format!("tmp-{tid:?}");
-        let tmp_path = path.with_extension(tmp_ext);
-        std::fs::write(&tmp_path, data)?;
-        #[cfg(windows)]
-        restrict_windows_acl(&tmp_path);
-        std::fs::rename(&tmp_path, path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp_path)?;
+
+    let write_result = file.write_all(data).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(error.into());
+    }
+    #[cfg(windows)]
+    restrict_windows_acl(&tmp_path);
+
+    if let Err(error) = koi_common::persist::replace_file(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(error.into());
     }
 
     Ok(())
@@ -537,6 +547,18 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_secret_file_atomically_replaces_existing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("secret");
+
+        write_secret_file(&path, b"first").unwrap();
+        write_secret_file(&path, b"second").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 
     #[test]

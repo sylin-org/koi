@@ -310,11 +310,17 @@ impl CertmeshState {
 
     /// Destroy all certmesh state - shared by CertmeshCore::destroy() and the HTTP handler.
     pub(crate) async fn destroy(&self) -> Result<(), CertmeshError> {
-        // Clear in-memory state first
-        *self.ca.lock().await = None;
-        *self.auth.lock().await = None;
-        *self.pending_challenge.lock().await = None;
-        *self.roster.lock().await = Roster::empty();
+        // A slot table is the ownership ledger for its platform credentials.
+        // Retire those exact labels before removing the ledger from disk; a
+        // failure leaves the table intact so the operation can be retried.
+        let slot_path = self.paths.slot_table_path();
+        if slot_path.exists() {
+            let mut table = koi_crypto::unlock_slots::SlotTable::load(&slot_path)
+                .map_err(|error| CertmeshError::Crypto(error.to_string()))?;
+            table
+                .remove_totp_slot(&slot_path)
+                .map_err(|error| CertmeshError::Crypto(error.to_string()))?;
+        }
 
         // Remove platform-sealed key material (best-effort)
         if let Err(e) = koi_crypto::tpm::delete_key_material("koi-certmesh-ca") {
@@ -350,6 +356,13 @@ impl CertmeshState {
         })
         .await
         .map_err(|e| CertmeshError::Internal(format!("destroy task: {e}")))?;
+
+        // Clear in-memory state only after persistent state and credential
+        // ownership have been retired successfully.
+        *self.ca.lock().await = None;
+        *self.auth.lock().await = None;
+        *self.pending_challenge.lock().await = None;
+        *self.roster.lock().await = Roster::empty();
 
         tracing::info!("Certmesh state destroyed");
         self.republish_posture();
