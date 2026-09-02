@@ -1,5 +1,26 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-02 (7) — PH-001 typed firewall adapter and legacy recovery boundary closed physically
+
+commit: this commit, on top of `4a8f441` | gates: fmt clean; strict `koi-serve` + `koi-net` clippy clean; shared dependency architecture gate green; adapter suite 8 passed / 1 live NetSecurity facility test ignored in the normal suite and passed explicitly; Windows platform suite 8 passed; full locked workspace suite green; release SHA-256 `7827d4c764e7c00e83c29c32f1c28dbf0dd74f7a734a5d854509a6cf968761b3`; elevated serial workbook `20260902T155528Z-firewall` PASS
+
+koi state now: installed product-path SCM service RUNNING, PID `25736`, canonical descriptor `"C:\Program Files\Koi\koi.exe" --daemon`, installed bytes equal the release candidate, API `127.0.0.1:5641/healthz` 200, six intended Koi-managed firewall rule objects, Pond disabled after its assessment check, exactly one koi.exe, and no SCM manifest, installer backup, rollback probe rule, or test residue.
+
+### One firewall boundary
+
+- `koi-serve::windows_firewall` is now the single typed adapter used by the SCM installer, durable rollback, uninstall, and Pond assessment. NetSecurity inspection/deletion is locale-independent and fail-closed; each rule's application, port, and profile filters stay correlated. Pond consumes the typed `open | inactive | blocked` verdict instead of owning a second PowerShell seam.
+- Deletion returns `Removed | Absent | error`. Replacement never adds after a failed delete; rollback validates the complete snapshot, removes every target display name before the first recreation, and preserves multiple prior same-name rules without accumulating duplicates. Install, rollback, and uninstall propagate query/delete/add errors rather than warning or reporting false success.
+- The transaction wire accepts the actual v1 JSON shape from `a34be05`, including absent `descriptor` and absent firewall `profile`. Legacy SCM fields still rebuild the prior descriptor. An armed v1 transaction with any profile-less rule now stops before file, SCM, or firewall mutation and reports that the manifest/backups were retained; no code invents `Any`. A v1 transaction with no firewall state remains recoverable because its prior semantics are provable.
+- Regressions cover raw legacy JSON, nonzero command failure, command-spawn failure, `Removed` versus `Absent`, delete-before-add ordering, pre-command profile refusal, correlated assessment, complete v2 parsing, and duplicate-name restoration ordering/profile exactness. The live ignored adapter test also enumerated the real Windows Firewall successfully.
+
+### Physical firewall rollback (`.tmp/ph001-firewall-20260902T155528Z`)
+
+One elevated PowerShell workbook deployed the exact release candidate, changed only the installed firewall baseline by making `Koi Pond (TCP 5644)` Private-only, captured the complete typed rule set, armed an authentic v2 manifest and file backups, then removed all Koi rules and installed one Public-profile probe rule. The candidate's next `install` recovered the transaction before the deliberate invalid-operator refusal: it removed the divergent set, restored the Private-scoped snapshot semantically exactly, removed the probe, restarted and image-verified the installed SCM service, passed health, and committed the manifest/backups. The subsequent ordinary install restored the intended managed baseline.
+
+Because Pond's implementation seam changed, the same workbook performed only its affected assessment slice: enabled the already-published Pond surface, observed `desired=true`, `running=true`, firewall `open` through the shared adapter, then disabled it again. The earlier peer/public-route and cooperative-DNS journeys were not repeated. Independent final inspection proved PID `25736`, one product-path process, candidate hash equality, six intended managed rules, Pond disabled, and zero manifest/backup/probe residue.
+
+Next dependency-ready assignment: `fleet/windows/issues/002-credential-store-test-leak.md`, owned as a shared slot-lifecycle defect per dispatch item 2.
+
 ## 2026-09-02 (6) — PH-001 interruption-safe SCM recovery and profile-exact firewall rollback closed physically
 
 commit: this commit, on top of `05b66a4` | gates: fmt clean; strict koi binary clippy clean; focused Windows platform suite 12 passed / 1 live-facility test ignored; full locked workspace suite green; release candidate SHA-256 `684a87fe4f6d4c3cac45ba57ae1430a033d17b134841112de2abad7785f4e6c3`; elevated serial workbook `20260902T134536Z-scm` PASS

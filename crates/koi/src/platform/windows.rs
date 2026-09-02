@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use std::collections::HashSet;
 
+use anyhow::Context;
+
 use windows_service::service::{
     ServiceAccess, ServiceAction, ServiceActionType, ServiceControl, ServiceControlAccept,
     ServiceDependency, ServiceErrorControl, ServiceExitCode, ServiceFailureActions,
@@ -13,6 +15,8 @@ use windows_service::service::{
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_service::{define_windows_service, service_dispatcher};
+
+use koi_serve::windows_firewall::{self, Removal, RuleSnapshot as FirewallRuleSnapshot};
 
 const SERVICE_NAME: &str = "koi";
 const DISPLAY_NAME: &str = "Koi Network Toolkit";
@@ -37,10 +41,6 @@ const SERVICE_LOG_FILENAME: &str = "koi.log";
 const TRANSACTION_VERSION: u16 = 2;
 const TRANSACTION_FILENAME: &str = "scm-install-transaction.json";
 const BACKUP_SUFFIX: &str = ".koi-install-backup";
-/// Rules the installer owns share this display-name prefix; it is also the
-/// rollback boundary for firewall restoration.
-const FIREWALL_RULE_PREFIX: &str = "Koi ";
-
 // Reuse shutdown constants from crate root (defined once in main.rs).
 use crate::{SHUTDOWN_DRAIN, SHUTDOWN_TIMEOUT};
 
@@ -225,31 +225,20 @@ pub fn install(
         // what was new.
         let config = crate::cli::Config::from_service_launch();
         let ports = firewall_ports_for_config(&config);
-        let _ = remove_firewall_rule(FIREWALL_RULE_MDNS_LEGACY);
-        let _ = remove_firewall_rule(FIREWALL_RULE_HTTP_LEGACY);
-        let mut ok = Vec::new();
-        let mut failed = Vec::new();
+        windows_firewall::remove(FIREWALL_RULE_MDNS_LEGACY)?;
+        windows_firewall::remove(FIREWALL_RULE_HTTP_LEGACY)?;
         for port in &ports {
             let rule_name = firewall_rule_name(port);
             transaction.mark_rule_created(&rule_name)?;
-            if create_firewall_rule(&rule_name, port.protocol.as_str(), port.port, &bin_path) {
-                ok.push(port.clone());
-            } else {
-                failed.push(port.clone());
-            }
+            windows_firewall::replace_managed(
+                &rule_name,
+                port.protocol.as_str(),
+                port.port,
+                &bin_path,
+            )?;
         }
-        if !ok.is_empty() {
-            println!("  Firewall rules set ({})", firewall_ports_summary(&ok));
-        }
-        if !failed.is_empty() {
-            for port in &failed {
-                println!(
-                    "  Warning: could not set firewall rule for {} {} ({})",
-                    port.protocol.as_str(),
-                    port.port,
-                    port.name
-                );
-            }
+        if !ports.is_empty() {
+            println!("  Firewall rules set ({})", firewall_ports_summary(&ports));
         }
 
         println!(
@@ -687,19 +676,6 @@ impl FileSnapshot {
     }
 }
 
-/// One Koi-owned firewall rule with the parameters needed to recreate it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct FirewallRuleSnapshot {
-    name: String,
-    enabled: bool,
-    direction: String,
-    action: String,
-    protocol: String,
-    local_port: String,
-    program: String,
-    profile: String,
-}
-
 /// The durable record of an in-flight installation. Present on disk with
 /// `Armed` = mutations may have started; the next `koi install` recovers.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -733,7 +709,7 @@ impl ScmInstallTransaction {
         service: ServiceSnapshot,
     ) -> anyhow::Result<Self> {
         let path = transaction_path(data_dir);
-        let firewall = snapshot_koi_firewall_rules()?;
+        let firewall = windows_firewall::snapshot_managed()?;
         let files = [
             bin_path.to_path_buf(),
             config_path.to_path_buf(),
@@ -892,10 +868,37 @@ fn recover_interrupted(path: &std::path::Path) -> anyhow::Result<()> {
     }
 }
 
+/// Prove that an armed transaction contains everything needed for exact
+/// recovery before touching files, the SCM object, or firewall policy.
+fn validate_recovery_boundary(
+    path: &std::path::Path,
+    manifest: &InstallManifest,
+) -> anyhow::Result<()> {
+    if let Some(rule) = manifest.firewall.iter().find(|rule| {
+        rule.profile
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+    }) {
+        let generation = if manifest.version == 1 {
+            "version-1 manifests predate firewall profile capture"
+        } else {
+            "the firewall snapshot is incomplete"
+        };
+        anyhow::bail!(
+            "cannot recover interrupted installation safely: {generation}; rule '{}' has no provable prior profile. Recovery stopped before any mutation; manifest and backups remain at {}",
+            rule.name,
+            path.display()
+        );
+    }
+    windows_firewall::validate_snapshots(&manifest.firewall)
+        .context("cannot recover interrupted installation safely from its firewall snapshot")
+}
+
 /// Restore the exact prior installation: service registration and lifecycle,
 /// product binary, operator policy, config substrate, and Koi-owned
 /// firewall rules.
 fn restore_manifest(path: &std::path::Path, manifest: &InstallManifest) -> anyhow::Result<()> {
+    validate_recovery_boundary(path, manifest)?;
     for file in &manifest.files {
         file.validate_backup()?;
     }
@@ -986,16 +989,10 @@ fn restore_manifest(path: &std::path::Path, manifest: &InstallManifest) -> anyho
         Err(error) => return Err(error.into()),
     }
 
-    // Firewall: remove rules this install added, then recreate every prior
-    // Koi-owned rule from its snapshot (same-name rules now carry the new
-    // parameters and must be replaced).
-    for name in &manifest.added_rules {
-        let _ = remove_firewall_rule(name);
-    }
-    for rule in &manifest.firewall {
-        let _ = remove_firewall_rule(&rule.name);
-        recreate_firewall_rule(rule)?;
-    }
+    // Firewall restoration is convergent: validate every prior semantic
+    // snapshot, delete the complete target-name set, then recreate. Any
+    // delete/add failure retains the transaction for a safe retry.
+    windows_firewall::restore_snapshot_set(&manifest.added_rules, &manifest.firewall)?;
 
     // Restart the restored registration BEFORE committing: the manifest and
     // backups stay on disk until the restored start, identity, and health
@@ -1218,6 +1215,21 @@ pub fn uninstall() -> anyhow::Result<()> {
     ensure_elevated("uninstall")?;
     println!("Uninstalling Koi service...");
 
+    // Resolve and remove the complete owned firewall set before stopping or
+    // deleting the service. Query/delete failures abort uninstall explicitly;
+    // they cannot be reported as a successful teardown.
+    let firewall = windows_firewall::snapshot_managed()?;
+    let mut seen = HashSet::new();
+    let mut removed = 0usize;
+    for name in firewall.iter().map(|rule| rule.name.as_str()) {
+        if seen.insert(name) && windows_firewall::remove(name)? == Removal::Removed {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        println!("  Firewall rules removed ({removed})");
+    }
+
     // Best-effort graceful shutdown via HTTP (before SCM stop)
     if let Some(bc) = koi_config::breadcrumb::read_breadcrumb() {
         let client = crate::client::KoiClient::with_token(&bc.endpoint, &bc.token);
@@ -1253,26 +1265,6 @@ pub fn uninstall() -> anyhow::Result<()> {
             println!("  Service not found, cleaning up remaining files...");
         }
         Err(e) => return Err(e.into()),
-    }
-
-    // Firewall rules (best-effort). Same resolution the installer used.
-    let config = crate::cli::Config::from_service_launch();
-    let ports = firewall_ports_for_config(&config);
-    let mut removed = Vec::new();
-    for port in &ports {
-        if remove_firewall_rule(&firewall_rule_name(port)) {
-            removed.push(port.clone());
-        }
-    }
-    let legacy_removed = remove_firewall_rule(FIREWALL_RULE_MDNS_LEGACY)
-        | remove_firewall_rule(FIREWALL_RULE_HTTP_LEGACY);
-    if !removed.is_empty() {
-        println!(
-            "  Firewall rules removed ({})",
-            firewall_ports_summary(&removed)
-        );
-    } else if legacy_removed {
-        println!("  Firewall rules removed");
     }
 
     // Daemon discovery file
@@ -1566,176 +1558,6 @@ fn run_service(_arguments: Vec<OsString>) -> anyhow::Result<()> {
 }
 
 // ── Firewall helpers ────────────────────────────────────────────────
-
-/// Create a firewall rule. Returns `true` on success.
-fn create_firewall_rule(name: &str, protocol: &str, port: u16, exe_path: &std::path::Path) -> bool {
-    use std::process::Command;
-
-    // Delete first for idempotency (ignore errors - rule may not exist)
-    let _ = Command::new("netsh")
-        .args(["advfirewall", "firewall", "delete", "rule"])
-        .arg(format!("name={name}"))
-        .output();
-
-    let result = Command::new("netsh")
-        .args(["advfirewall", "firewall", "add", "rule"])
-        .arg(format!("name={name}"))
-        .args(["dir=in", "action=allow"])
-        .arg(format!("protocol={protocol}"))
-        .arg(format!("localport={port}"))
-        .arg(format!("program={}", exe_path.display()))
-        .output();
-
-    matches!(result, Ok(output) if output.status.success())
-}
-
-/// Remove a firewall rule. Returns `true` if the rule was found and removed.
-fn remove_firewall_rule(name: &str) -> bool {
-    use std::process::Command;
-
-    let result = Command::new("netsh")
-        .args(["advfirewall", "firewall", "delete", "rule"])
-        .arg(format!("name={name}"))
-        .output();
-
-    matches!(result, Ok(output) if output.status.success())
-}
-
-/// Enumerate the Koi-owned inbound firewall rules as JSON through the
-/// NetSecurity module. Property names are locale-independent (unlike `netsh
-/// advfirewall firewall show rule` labels, which are localized on non-English
-/// Windows), so the rollback snapshot is identical on every host language.
-/// Parsing stays fail-closed: an unanswerable or unparseable enumeration
-/// aborts the install before any mutation rather than promising a rollback it
-/// cannot deliver.
-fn snapshot_koi_firewall_rules() -> anyhow::Result<Vec<FirewallRuleSnapshot>> {
-    use std::process::Command;
-
-    let script = format!(
-        r#"
-$ErrorActionPreference = 'Stop'
-Get-NetFirewallRule -ErrorAction Stop |
-  Where-Object {{ $_.Direction -eq 'Inbound' -and $_.DisplayName -like '{prefix}*' }} |
-  ForEach-Object {{
-    $app = $_ | Get-NetFirewallApplicationFilter -ErrorAction Stop
-    $port = $_ | Get-NetFirewallPortFilter -ErrorAction Stop
-    [pscustomobject]@{{
-      name = [string]$_.DisplayName
-      enabled = [bool]($_.Enabled -eq 'True')
-      direction = [string]$_.Direction
-      action = [string]$_.Action
-      protocol = [string]$port.Protocol
-      local_port = [string](@($port.LocalPort) -join ',')
-      program = [string](@($app.Program) -join ',')
-      profile = [string]$_.Profile
-    }}
-  }} | ConvertTo-Json -Compress
-"#,
-        prefix = FIREWALL_RULE_PREFIX
-    );
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "could not enumerate firewall rules (NetSecurity query exited with {:?})",
-            output.status.code()
-        );
-    }
-    parse_snapshot_json(&String::from_utf8_lossy(&output.stdout))
-}
-
-/// Map the NetSecurity JSON (one bare object for a single-element pipeline,
-/// an array otherwise) onto snapshots with normalized casing.
-fn parse_snapshot_json(text: &str) -> anyhow::Result<Vec<FirewallRuleSnapshot>> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Ok(Vec::new());
-    }
-    let parsed: serde_json::Value = serde_json::from_str(text).map_err(|error| {
-        anyhow::anyhow!("firewall enumeration returned unparseable JSON: {error}")
-    })?;
-    let values = match parsed {
-        serde_json::Value::Array(values) => values,
-        one @ serde_json::Value::Object(_) => vec![one],
-        other => anyhow::bail!("firewall enumeration returned unexpected JSON: {other}"),
-    };
-    values
-        .into_iter()
-        .map(|value| {
-            let rule: FirewallRuleSnapshot =
-                serde_json::from_value(value).map_err(|error| {
-                    anyhow::anyhow!(
-                        "firewall rule snapshot is missing fields needed for rollback restoration: {error}"
-                    )
-                })?;
-            Ok(FirewallRuleSnapshot {
-                direction: rule.direction.to_ascii_lowercase(),
-                action: rule.action.to_ascii_lowercase(),
-                protocol: rule.protocol.to_ascii_lowercase(),
-                profile: rule.profile.to_ascii_lowercase(),
-                ..rule
-            })
-        })
-        .collect()
-}
-
-/// Translate one typed NetSecurity snapshot to netsh's mutation vocabulary.
-/// NetSecurity reports `Inbound`; netsh accepts only `dir=in`. Profiles are
-/// carried per rule so rollback cannot widen a Private-only rule to Any.
-fn firewall_restore_args(rule: &FirewallRuleSnapshot) -> anyhow::Result<Vec<String>> {
-    let direction = match rule.direction.as_str() {
-        "inbound" | "in" => "in",
-        "outbound" | "out" => "out",
-        other => anyhow::bail!("unsupported firewall direction '{other}'"),
-    };
-    let action = match rule.action.as_str() {
-        "allow" => "allow",
-        "block" => "block",
-        other => anyhow::bail!("unsupported firewall action '{other}'"),
-    };
-    if rule.profile.trim().is_empty() {
-        anyhow::bail!("firewall snapshot has no profile");
-    }
-    let mut args = vec![
-        "advfirewall".to_string(),
-        "firewall".to_string(),
-        "add".to_string(),
-        "rule".to_string(),
-        format!("name={}", rule.name),
-        format!("dir={direction}"),
-        format!("action={action}"),
-        format!("enable={}", if rule.enabled { "yes" } else { "no" }),
-        format!("profile={}", rule.profile.replace(' ', "")),
-    ];
-    if !rule.protocol.is_empty() && !rule.protocol.eq_ignore_ascii_case("any") {
-        args.push(format!("protocol={}", rule.protocol));
-    }
-    if !rule.local_port.is_empty() && !rule.local_port.eq_ignore_ascii_case("any") {
-        args.push(format!("localport={}", rule.local_port));
-    }
-    if !rule.program.is_empty() && !rule.program.eq_ignore_ascii_case("any") {
-        args.push(format!("program={}", rule.program));
-    }
-    Ok(args)
-}
-
-/// Recreate one prior rule from its complete typed snapshot.
-fn recreate_firewall_rule(rule: &FirewallRuleSnapshot) -> anyhow::Result<()> {
-    use std::process::Command;
-
-    let args = firewall_restore_args(rule)?;
-    let output = Command::new("netsh").args(&args).output()?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "could not restore firewall rule {}: netsh exited {:?}: {}",
-            rule.name,
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(())
-}
 
 fn firewall_ports_for_config(
     config: &crate::cli::Config,
@@ -2040,78 +1862,6 @@ mod tests {
     }
 
     #[test]
-    fn netsecurity_json_parses_into_snapshots() {
-        // Shape mirrors the NetSecurity `ConvertTo-Json -Compress` pipeline
-        // (locale-independent property names).
-        let dump = r#"[
-{"name":"Koi mDNS (UDP 5353)","enabled":true,"direction":"Inbound","action":"Allow","protocol":"UDP","local_port":"5353","program":"C:\\Program Files\\Koi\\koi.exe","profile":"Domain, Private"},
-{"name":"Koi Pond (TCP 5644)","enabled":false,"direction":"Inbound","action":"Allow","protocol":"TCP","local_port":"5644,5645","program":"Any","profile":"Public"}
-]"#;
-        let rules = parse_snapshot_json(dump).unwrap();
-        assert_eq!(rules.len(), 2);
-        assert_eq!(rules[0].name, "Koi mDNS (UDP 5353)");
-        assert!(rules[0].enabled);
-        assert_eq!(rules[0].protocol, "udp");
-        assert_eq!(rules[0].local_port, "5353");
-        assert_eq!(rules[0].program, r"C:\Program Files\Koi\koi.exe");
-        assert_eq!(rules[0].direction, "inbound");
-        assert_eq!(rules[0].action, "allow");
-        assert_eq!(rules[0].profile, "domain, private");
-        assert!(!rules[1].enabled, "disabled rules keep their state");
-        assert_eq!(
-            rules[1].local_port, "5644,5645",
-            "multi-port filters survive"
-        );
-    }
-
-    #[test]
-    fn single_rule_pipeline_emits_one_bare_object() {
-        let dump = r#"{"name":"Koi HTTP (TCP 5641)","enabled":true,"direction":"Inbound","action":"Allow","protocol":"TCP","local_port":"5641","program":"Any","profile":"Any"}"#;
-        let rules = parse_snapshot_json(dump).unwrap();
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].name, "Koi HTTP (TCP 5641)");
-    }
-
-    #[test]
-    fn koi_rule_missing_rollback_fields_fails_closed() {
-        let dump = r#"{"name":"Koi broken","enabled":true}"#;
-        assert!(parse_snapshot_json(dump).is_err());
-        assert!(parse_snapshot_json("").unwrap().is_empty());
-    }
-
-    #[test]
-    fn firewall_restore_uses_netsh_vocabulary_and_preserves_profiles() {
-        let rule = FirewallRuleSnapshot {
-            name: "Koi scoped".to_string(),
-            enabled: false,
-            direction: "inbound".to_string(),
-            action: "allow".to_string(),
-            protocol: "tcp".to_string(),
-            local_port: "5641,5644".to_string(),
-            program: r"C:\Program Files\Koi\koi.exe".to_string(),
-            profile: "domain, private".to_string(),
-        };
-        let args = firewall_restore_args(&rule).unwrap();
-        assert!(args.iter().any(|arg| arg == "dir=in"));
-        assert!(args.iter().any(|arg| arg == "action=allow"));
-        assert!(args.iter().any(|arg| arg == "enable=no"));
-        assert!(args.iter().any(|arg| arg == "profile=domain,private"));
-        assert!(args.iter().any(|arg| arg == "localport=5641,5644"));
-        assert!(!args.iter().any(|arg| arg == "dir=inbound"));
-    }
-
-    #[test]
-    #[ignore = "enumerates the live firewall through the NetSecurity module"]
-    fn live_snapshot_enumerates_managed_rules() {
-        let rules = snapshot_koi_firewall_rules().unwrap();
-        for rule in &rules {
-            assert!(rule.name.starts_with(FIREWALL_RULE_PREFIX));
-            assert!(!rule.direction.is_empty());
-            assert!(!rule.action.is_empty());
-        }
-    }
-
-    #[test]
     fn launch_command_lines_preserve_quoted_arguments_losslessly() {
         assert_eq!(
             split_launch_command(OsStr::new(
@@ -2169,17 +1919,38 @@ mod tests {
     }
 
     #[test]
-    fn version_one_manifest_descriptor_remains_recoverable() {
-        let mut manifest = test_manifest(PathBuf::from(r"F:\unused\koi.exe"));
-        manifest.version = 1;
-        manifest.service.descriptor = None;
-        manifest.service.legacy_executable_path = Some(r"F:\legacy path\koi.exe".to_string());
-        manifest.service.legacy_launch_arguments = Some(vec![
-            "--daemon".to_string(),
-            "--label=Koi Alpha".to_string(),
-        ]);
-        manifest.service.legacy_start_type = Some("demand".to_string());
-
+    fn actual_version_one_json_deserializes_but_missing_profile_blocks_armed_recovery() {
+        // Exact v1 wire fields from a34be05: there is no service descriptor
+        // and firewall snapshots have no profile member.
+        let raw = r#"{
+  "version": 1,
+  "phase": "Armed",
+  "http_port": 5641,
+  "service": {
+    "existed": true,
+    "executable_path": "F:\\legacy path\\koi.exe",
+    "launch_arguments": ["--daemon", "--label=Koi Alpha"],
+    "start_type": "demand",
+    "was_active": true
+  },
+  "files": [],
+  "firewall": [{
+    "name": "Koi Pond (TCP 5644)",
+    "enabled": true,
+    "direction": "inbound",
+    "action": "allow",
+    "protocol": "tcp",
+    "local_port": "5644",
+    "program": "F:\\legacy path\\koi.exe"
+  }],
+  "added_rules": [],
+  "created_service": false,
+  "temporary_paths": []
+}"#;
+        let manifest: InstallManifest = serde_json::from_str(raw).unwrap();
+        assert_eq!(manifest.version, 1);
+        assert!(manifest.service.descriptor.is_none());
+        assert_eq!(manifest.firewall[0].profile, None);
         let info = restored_service_info(&manifest).unwrap();
         assert_eq!(
             info.executable_path,
@@ -2193,6 +1964,17 @@ mod tests {
                 OsString::from("--label=Koi Alpha")
             ]
         );
+
+        let path = PathBuf::from(r"F:\ProgramData\koi\state\scm-install-transaction.json");
+        let error = validate_recovery_boundary(&path, &manifest).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("version-1 manifests predate firewall profile capture"));
+        assert!(message.contains("stopped before any mutation"));
+        assert!(message.contains("manifest and backups remain"));
+
+        let mut provable = manifest;
+        provable.firewall.clear();
+        validate_recovery_boundary(&path, &provable).unwrap();
     }
 
     fn test_manifest(executable: PathBuf) -> InstallManifest {
@@ -2249,7 +2031,7 @@ mod tests {
             protocol: "udp".to_string(),
             local_port: "5353".to_string(),
             program: r"F:\repo\koi.exe".to_string(),
-            profile: "private".to_string(),
+            profile: Some("private".to_string()),
         }];
         manifest.added_rules = vec!["Koi Pond (TCP 5644)".to_string()];
         write_manifest(&path, &manifest).unwrap();
