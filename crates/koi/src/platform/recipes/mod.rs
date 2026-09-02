@@ -24,6 +24,8 @@ pub mod manual;
 pub mod openrc;
 #[cfg(target_os = "linux")]
 pub mod systemd;
+#[cfg(target_os = "linux")]
+mod transaction;
 
 // ── Init detection (capability-keyed, root-parameterized for tests) ─
 
@@ -67,10 +69,14 @@ pub fn install(user: bool, operator: Option<&str>, data_dir: &Path) -> anyhow::R
     }
 
     let init = detect();
-    if init == InitSystem::Systemd && !user {
-        // The systemd recipe owns a durable transaction which must include
-        // operator policy alongside the binary, unit, and service config.
-        return systemd::install_system(operator, data_dir);
+    if !user {
+        // System service recipes own durable transactions which must include
+        // operator policy alongside the binary, registration, and config.
+        match init {
+            InitSystem::Systemd => return systemd::install_system(operator, data_dir),
+            InitSystem::Openrc => return openrc::install_system(operator, data_dir),
+            InitSystem::None => {}
+        }
     }
 
     // Other recipes retain the in-process operator rollback introduced by
@@ -80,7 +86,9 @@ pub fn install(user: bool, operator: Option<&str>, data_dir: &Path) -> anyhow::R
     let result = match (init, user) {
         (InitSystem::Systemd, false) => unreachable!("handled by the durable system transaction"),
         (InitSystem::Systemd, true) => systemd::install_user(),
-        (InitSystem::Openrc, false) => openrc::install_system(),
+        (InitSystem::Openrc, false) => {
+            unreachable!("handled by the durable OpenRC transaction")
+        }
         (InitSystem::Openrc, true) => manual::install_user(),
         (InitSystem::None, user) => {
             if user {

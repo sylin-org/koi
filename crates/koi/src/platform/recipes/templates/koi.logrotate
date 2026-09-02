@@ -1,0 +1,9 @@
+/var/log/koi/daemon.log {
+    size 1M
+    rotate 5
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

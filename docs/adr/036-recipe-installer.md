@@ -77,7 +77,7 @@ Distro names drift; capabilities don't.
 | `scm` | Windows | existing SCM installer (P1-proven) |
 | `systemd` | `/run/systemd/system` present | system unit, `Type=notify`, drop-ins honored |
 | `systemd --user` | same + `--user` | `~/.config/systemd/user` unit, linger enabled |
-| `openrc` | `rc-update` present | `/etc/init.d/koi` (openrc-run), `rc-update add … default` |
+| `openrc` | `rc-update` present | `/etc/init.d/koi` (`supervise-daemon`, bounded respawn + health checks), `rc-update add … default` |
 | `launchd` | macOS | LaunchDaemon plist (config env aligned with the above) |
 | `manual` | nothing detected | **no service is pretended.** The binary is staged, exact run instructions (nohup line, cron `@reboot`) are printed, and the command exits non-zero so automation cannot mistake guidance for installation. |
 
@@ -91,9 +91,18 @@ Full install (service registered + healthz verified) → 0. Partial (binary
 staged, no service possible) → non-zero with the exact manual steps. A cleanup
 failure remains a failed operation with the remedy printed (standing doctrine).
 
+Systemd and OpenRC system installs are durable transactions. Before either
+manager is mutated, Koi checkpoints the installed binary, registration,
+configuration, local-operator policy, and prior active/enabled state under the
+machine data root. A failed enable, start, process-identity check, or `/healthz`
+probe returns non-zero and restores the previous healthy service; an interrupted
+transaction is recovered before a later install begins. OpenRC additionally
+requires `supervise-daemon` and `logrotate`, writes a bounded rotation policy,
+and refuses to claim installation when either facility is unavailable.
+
 ## Consequences
 
-- Alpine installs work; unknown inits degrade honestly; upgrades from the
+- Alpine installs use bounded native crash supervision and rotated logs; unknown inits degrade honestly; upgrades from the
   installed path work; occupied ports are chosen, recorded, and printed — not
   crashed on later.
 - The fleet's manual env drop-ins keep working and are now *honored inputs* on

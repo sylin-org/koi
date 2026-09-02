@@ -57,14 +57,15 @@ That's the whole command on every platform. It requires elevation — Koi refuse
 
 `koi install` is idempotent and upgrade-aware. If a service is already registered it stops the old one, replaces the binary/registration, and restarts — so re-running it after a `koi` upgrade is the supported way to update the installed service.
 
-On systemd Linux, replacement is transactional. Koi checkpoints the installed
-binary, unit, durable port configuration, local-operator policy, and prior
-active/enabled state before stopping the service. Enable, start, and `/healthz`
-verification failures return non-zero and restore the previous healthy service.
-If the installer itself is interrupted after that checkpoint is armed, the next
-`koi install` recovers it before beginning another change. Do not delete the
-reported recovery manifest or backup files by hand; a corrupt or incomplete
-checkpoint fails closed with its exact path.
+On systemd and OpenRC Linux, replacement is transactional. Koi checkpoints the
+installed binary, service registration, durable port configuration,
+local-operator policy, and prior active/enabled state before stopping the
+service. Enable, start, process-identity, and `/healthz` verification failures
+return non-zero and restore the previous healthy service. If the installer
+itself is interrupted after that checkpoint is armed, the next `koi install`
+recovers it before beginning another change. Do not delete the reported recovery
+manifest or backup files by hand; a corrupt or incomplete checkpoint fails
+closed with its exact path.
 
 On success you'll see the modules-enabled summary and `the local waters are calm`. All capabilities are enabled by default; disable any with `--no-<name>` at install time (see [Changing the port or bind](#changing-the-port-or-bind) — the same mechanism applies to capability flags).
 
@@ -73,7 +74,8 @@ On success you'll see the modules-enabled summary and `the local waters are calm
 | OS | Service manager | Name / label | Registration |
 | -- | --------------- | ------------ | ------------ |
 | **Windows** | Service Control Manager (`sc.exe`) | service `koi` (display name *Koi Network Toolkit*) | Own-process service, **AutoStart**, recovery policy: restart after 5s, then 10s, then stop (failure count resets after 24h) |
-| **Linux** | systemd (`systemctl`) | unit `koi.service` | Copies the binary to `/usr/local/bin/koi`, writes `/etc/systemd/system/koi.service` (`Type=notify`, `Restart=on-failure`, `RestartSec=5s`), runs `daemon-reload`, `enable` (start on boot), and `start` |
+| **Linux (systemd)** | systemd (`systemctl`) | unit `koi.service` | Copies the binary to `/usr/local/bin/koi`, writes `/etc/systemd/system/koi.service` (`Type=notify`, `Restart=on-failure`, `RestartSec=5s`), runs `daemon-reload`, `enable` (start on boot), and `start` |
+| **Linux (OpenRC)** | OpenRC (`supervise-daemon`) | service `koi` | Preserves package ownership when run from `/usr/bin/koi`, otherwise copies to `/usr/local/bin/koi`; writes `/etc/init.d/koi`, enables the default runlevel, starts, and verifies one exact daemon plus `/healthz`. Three crashes inside 60 seconds are retried after 5 seconds before OpenRC marks the service failed; a periodic local status check restarts an unhealthy daemon. Requires `logrotate`. |
 | **macOS** | launchd (`launchctl`) | LaunchDaemon `org.sylin.koi` | Copies the binary to `/usr/local/bin/koi` (root:wheel, 755), writes `/Library/LaunchDaemons/org.sylin.koi.plist` (root:wheel, 644), bootstraps it into the `system` domain. `RunAtLoad` + `KeepAlive` on non-success exit |
 
 All three register the service to **start on boot** and start it immediately. The service runs the binary as `<binary> --daemon`.
@@ -104,6 +106,8 @@ systemctl status koi
 sudo launchctl list | grep org.sylin.koi
 ```
 
+On OpenRC Linux, use `rc-service koi status`.
+
 ---
 
 ## Manage the service
@@ -130,6 +134,19 @@ sudo systemctl status koi
 ```
 
 The unit is `Restart=on-failure`, so systemd restarts the daemon if it exits with an error.
+
+### Linux (OpenRC)
+
+```sh
+sudo rc-service koi start
+sudo rc-service koi stop
+sudo rc-service koi restart
+sudo rc-service koi status
+```
+
+OpenRC's `supervise-daemon` restarts unexpected exits with a bounded policy and
+runs Koi's local status check every 30 seconds after an initial 10-second delay.
+An intentional `rc-service koi stop` stops both supervisor and daemon.
 
 ### macOS (launchd)
 
@@ -162,7 +179,8 @@ Inside that directory: `certs/`, `state/`, and `logs/`. Override the root for te
 | OS | Service logs |
 | -- | ------------ |
 | **Windows** | `%ProgramData%\koi\logs\koi.log` |
-| **Linux** | `journalctl -u koi` (the systemd journal) |
+| **Linux (systemd)** | `journalctl -u koi` (the systemd journal) |
+| **Linux (OpenRC)** | `/var/log/koi/daemon.log`, rotated at 1 MiB with five compressed generations |
 | **macOS** | `/var/log/koi.log` (stdout) and `/var/log/koi.err` (stderr) |
 
 ```powershell

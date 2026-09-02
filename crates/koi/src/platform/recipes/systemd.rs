@@ -4,13 +4,13 @@
 //! machine on the fleet. Port decisions are honored from drop-ins or
 //! `config.toml`; a shifted plan persists in the config substrate.
 
-use std::ffi::OsString;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
+use super::transaction::{staged_restore_path, FileSnapshot};
 use super::{
     append_config_ports, healthz_wait, honor_existing_config, honor_existing_linux, persist_plan,
     persist_plan_checked, plan_ports, write_config_new, Existing,
@@ -19,8 +19,6 @@ use super::{
 const SERVICE_NAME: &str = "koi";
 const TRANSACTION_VERSION: u16 = 1;
 const TRANSACTION_FILENAME: &str = "systemd-install-transaction.json";
-const BACKUP_SUFFIX: &str = ".koi-install-backup";
-
 const UNIT_TEMPLATE: &str = include_str!("templates/koi.service");
 const USER_UNIT_TEMPLATE: &str = include_str!("templates/koi-user.service");
 
@@ -51,119 +49,6 @@ fn render(template: &str, bin: &std::path::Path) -> String {
 enum TransactionPhase {
     Preparing,
     Armed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct FileSnapshot {
-    path: PathBuf,
-    backup: PathBuf,
-    existed: bool,
-    mode: Option<u32>,
-    uid: Option<u32>,
-    gid: Option<u32>,
-}
-
-impl FileSnapshot {
-    fn inspect(path: PathBuf) -> anyhow::Result<Self> {
-        let backup = backup_path(&path);
-        if backup.exists() {
-            // With no manifest this can only be debris after a committed
-            // transaction. The manifest is the authority for rollback.
-            std::fs::remove_file(&backup).map_err(|error| {
-                anyhow::anyhow!(
-                    "could not remove stale installer backup {}: {error}",
-                    backup.display()
-                )
-            })?;
-        }
-        match std::fs::metadata(&path) {
-            Ok(metadata) => {
-                if !metadata.is_file() {
-                    anyhow::bail!(
-                        "refusing to replace non-file installation target {}",
-                        path.display()
-                    );
-                }
-                Ok(Self {
-                    path,
-                    backup,
-                    existed: true,
-                    mode: Some(metadata.mode()),
-                    uid: Some(metadata.uid()),
-                    gid: Some(metadata.gid()),
-                })
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self {
-                path,
-                backup,
-                existed: false,
-                mode: None,
-                uid: None,
-                gid: None,
-            }),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    fn prepare(&self) -> anyhow::Result<()> {
-        if !self.existed {
-            return Ok(());
-        }
-        if let Some(parent) = self.backup.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(&self.path, &self.backup)?;
-        self.apply_metadata(&self.backup)?;
-        std::fs::File::open(&self.backup)?.sync_all()?;
-        Ok(())
-    }
-
-    fn validate_backup(&self) -> anyhow::Result<()> {
-        if self.existed && !self.backup.is_file() {
-            anyhow::bail!(
-                "installer recovery is incomplete: expected backup {} for {}",
-                self.backup.display(),
-                self.path.display()
-            );
-        }
-        Ok(())
-    }
-
-    fn restore(&self) -> anyhow::Result<()> {
-        if !self.existed {
-            match std::fs::remove_file(&self.path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-            return Ok(());
-        }
-
-        let staged = staged_restore_path(&self.path);
-        std::fs::copy(&self.backup, &staged)?;
-        self.apply_metadata(&staged)?;
-        std::fs::File::open(&staged)?.sync_all()?;
-        koi_common::persist::replace_file(&staged, &self.path)?;
-        Ok(())
-    }
-
-    fn apply_metadata(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(mode) = self.mode {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
-        }
-        if let (Some(uid), Some(gid)) = (self.uid, self.gid) {
-            chown(path, uid, gid)?;
-        }
-        Ok(())
-    }
-
-    fn cleanup(&self) -> anyhow::Result<()> {
-        match std::fs::remove_file(&self.backup) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -419,18 +304,6 @@ fn persist_effective_system_plan(
     }
 }
 
-fn backup_path(path: &Path) -> PathBuf {
-    let mut value: OsString = path.as_os_str().to_os_string();
-    value.push(BACKUP_SUFFIX);
-    PathBuf::from(value)
-}
-
-fn staged_restore_path(path: &Path) -> PathBuf {
-    let mut value: OsString = path.as_os_str().to_os_string();
-    value.push(".koi-install-restore");
-    PathBuf::from(value)
-}
-
 fn staged_binary_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.new", path.display()))
 }
@@ -612,19 +485,6 @@ fn systemctl_checked_output(args: &[&str], action: &str) -> anyhow::Result<std::
         );
     }
     Ok(output)
-}
-
-fn chown(path: &Path, uid: u32, gid: u32) -> anyhow::Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-
-    let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
-    // SAFETY: `path` is a live NUL-terminated string and chown has no other
-    // pointer preconditions.
-    if unsafe { libc::chown(path.as_ptr(), uid, gid) } == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error().into())
-    }
 }
 
 /// Install as a user service (no root — running with sudo is refused).

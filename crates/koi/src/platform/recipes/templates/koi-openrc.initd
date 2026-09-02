@@ -1,16 +1,28 @@
 #!/sbin/openrc-run
 # Koi Network Toolkit daemon — OpenRC recipe (ADR-036).
-# Config resolves at /etc/koi/config.toml (the env prefix below makes that
-# true for the daemon process); port choices live there, not here.
+# Config resolves at /etc/koi/config.toml; port choices live there, not here.
 description="Koi Network Toolkit daemon"
 
-command="/usr/bin/env"
-command_args="XDG_CONFIG_HOME=/etc {{BIN}} --daemon"
+export XDG_CONFIG_HOME=/etc
+command="{{BIN}}"
+command_args="--daemon"
 
-command_background="yes"
-pidfile="/run/koi.pid"
+# OpenRC owns the foreground daemon, restarts bounded crash bursts, and uses
+# Koi's authenticated local status path as its periodic health signal.
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=3
+respawn_period=60
+healthcheck_delay=10
+healthcheck_timer=30
+retry="TERM/20/KILL/5"
+
 output_log="/var/log/koi/daemon.log"
 error_log="/var/log/koi/daemon.log"
+
+healthcheck() {
+    "$command" status --json >/dev/null 2>&1
+}
 
 depend() {
     need net
