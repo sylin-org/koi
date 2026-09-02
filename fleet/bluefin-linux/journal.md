@@ -70,3 +70,15 @@ findings:
 2. The real user GNOME/Wayland session launched one workbench at session initialization. GNOME Shell's live `org.kde.StatusNotifierWatcher` reports exactly `:1.48@/org/ayatana/NotificationItem/tray_icon_tray_app_koi`, with the host registered; no duplicate Koi process or item exists.
 3. The daemon became ready at boot with PID `2211`, reports Koi `v1.0.0-rc.2`, healthy authenticated local control, Avahi routes, cooperative DNS, and disabled Pond. The only startup warning is the truthful absence of an optional Docker/Podman runtime backend.
 4. This entry is the durable post-reboot checkpoint: the 0.1.2 activation must not be repeated by a later agent continuation.
+
+## 2026-09-02 00:32 EDT — PH-2 GNOME lock recovery and shared-candidate native gates
+
+commit: this commit, based on `a98c8d7`; installed daemon SHA-256 `d50ebc19e3f32b722dac0cebb4ab233665044d2a7892e743ee297ffa3df93fc9`; installed desktop RPM `koi-0.1.2-1.x86_64`, SHA-256 `89c74984af61f35d5a5d06905547963c67936364356b5f084c3d15d41ebd7ca2` | gates: fmt; strict all-target clippy; full locked workspace tests/doctests; release `koi-net` build; real GNOME lock/unlock; singleton UI poke; post-retry-interval service/UI health
+koi state now: exactly one enabled system daemon, unchanged PID `2211`, with zero systemd restarts; exactly one `/usr/bin/koi-desktop --minimized`, unchanged PID `2975`; the unlocked GNOME shell reports exactly one Koi StatusNotifier item; operator HTTP is healthy on `127.0.0.1:5641`; Pond remains disabled and 5644 closed; Avahi owns publish/browse/resolve; cooperative DNS retains `127.0.0.1:53` and `192.168.1.95:53`.
+peers/run: none — local PH-2 session recovery and native candidate gates; no cross-host assertion or peer mutation
+restoration: GNOME session 2 returned to active and `LockedHint=no`; daemon, desktop, service unit, installed artifacts, Avahi, resolved, firewalld, interfaces, firewall rules, and Pond desire were not mutated. The attempted privileged crash injection was refused before mutation because this non-interactive session has no administrator authorization.
+findings:
+
+1. Locking the real GNOME/Wayland session changed `LockedHint` to yes while daemon PID `2211` and desktop PID `2975` remained unchanged. GNOME Shell's StatusNotifier watcher was unavailable while the shell was locked, then immediately restored the same single `:1.48@/org/ayatana/NotificationItem/tray_icon_tray_app_koi` registration after unlock. `koi-desktop --poke` acknowledged the existing process without creating a duplicate.
+2. Bluefin independently found that shared commit `c658cde` failed `cargo fmt --check` in the new Windows Bonjour label decoder. The shared correction is rustfmt-only (one expression, no semantic or wire change); strict clippy, the complete locked workspace suite, doctests, and the optimized `koi-net` build pass in the Fedora 44 `koi-dev` toolbox afterward.
+3. Crash, provider-service, firewalld, primary-interface, and suspend mutations require administrator authorization unavailable to this agent session. No gate is claimed for them, and no host policy was weakened to manufacture one.

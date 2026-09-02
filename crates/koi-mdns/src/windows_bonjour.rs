@@ -1768,9 +1768,7 @@ fn unescape_dnssd_label(value: &str) -> String {
             width += 1;
         }
         if width > 0 {
-            let decoded: u32 = value[cursor + 1..cursor + 1 + width]
-                .parse()
-                .unwrap_or(256);
+            let decoded: u32 = value[cursor + 1..cursor + 1 + width].parse().unwrap_or(256);
             if decoded <= 255 {
                 out.push(decoded as u8);
             } else {
