@@ -1,5 +1,37 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-02 (6) — PH-001 interruption-safe SCM recovery and profile-exact firewall rollback closed physically
+
+commit: this commit, on top of `05b66a4` | gates: fmt clean; strict koi binary clippy clean; focused Windows platform suite 12 passed / 1 live-facility test ignored; full locked workspace suite green; release candidate SHA-256 `684a87fe4f6d4c3cac45ba57ae1430a033d17b134841112de2abad7785f4e6c3`; elevated serial workbook `20260902T134536Z-scm` PASS
+
+koi state now: installed product-path service RUNNING, PID `7744`, canonical descriptor `"C:\Program Files\Koi\koi.exe" --daemon`, installed bytes equal the release candidate, API `127.0.0.1:5641/healthz` 200, standard managed firewall state restored, exactly one koi.exe, and no SCM transaction manifest, installer backup, probe rule, SYSTEM recovery task, or recovery-copy residue.
+
+### Transaction closure
+
+- Manifest version 2 captures a complete UTF-16 SCM descriptor (executable, lossless quoted arguments, display name, service type, start type, error control, dependencies, and account); v1 manifests remain recoverable. A same-name noncanonical service fails closed instead of being adopted.
+- Every recovery-state transition is fallible and durable before its external mutation. `set_http_port`, firewall-rule intent, and service-creation intent can no longer advance memory after a failed manifest write. Stop/update/restore and lifecycle-policy calls no longer discard errors.
+- Delete/recreate closes all service handles before waiting for SCM deletion. Recovery recreates an expected-but-missing prior service from the complete descriptor, reapplies description/failure actions/non-crash policy/log directory, and verifies SCM Running + nonzero PID + canonical process image before `/healthz` and commit.
+- Windows command lines are split through `CommandLineToArgvW`, preserving embedded spaces and quoted arguments. The installed process image is measured with `OpenProcess` + `QueryFullProcessImageNameW` rather than inferred from the configured path.
+- A physical interruption exposed one earlier boundary: the CLI parsed the transaction-owned, deliberately corrupted config before entering installer recovery. Windows install now performs durable recovery from the CLI/environment-selected data root before normal config-file parsing, then retains the in-installer check for custom roots.
+
+### Physical interruption and rollback (`.tmp/ph001-scm-20260902T134536Z`)
+
+One elevated PowerShell workbook armed a ten-minute SYSTEM recovery action before mutation; captured the installed binary/config/operator policy, complete SCM registration, and all Koi-owned firewall semantics; made the Pond rule Private-only; then stopped Koi, changed its launch descriptor to include a quoted spaced argument, corrupted all three backed-up files, removed the owned firewall rules, added a probe rule, deleted the SCM service, and waited for the final handle to drain. The release candidate's next `install`:
+
+1. detected the armed manifest before parsing the corrupted config;
+2. recreated the missing canonical service and lifecycle policy;
+3. restored exact binary/config/policy bytes and the profile-scoped firewall set;
+4. started PID `24792`, verified image `C:\Program Files\Koi\koi.exe`, and passed health before removing recovery state;
+5. entered a second transaction with deliberately invalid `--operator not-a-sid`, refused it nonzero, and restored the prior service again (PID `8536`) with no residue.
+
+Assertions then proved one running process, byte-identical files, semantically identical typed firewall rules including the Private-only Pond profile, probe removal, no manifest/backups, and health 200. A final valid install restored the intended managed `Any` profile state and candidate bytes (PID `7744`). The workbook removed its scheduled task and recovery copies; an independent `schtasks /Query` returned not found.
+
+### Firewall rollback closure and residue
+
+- NetSecurity enumeration now fails closed (`$ErrorActionPreference='Stop'` plus per-cmdlet `-ErrorAction Stop`) and correlates each rule with its own application, port, and profile filters. The typed snapshot preserves enabled/direction/action/protocol/ports/program/profile.
+- Restore maps PowerShell `Inbound`/`Outbound` to valid `netsh dir=in/out`, preserves profile scope instead of widening to all profiles, and propagates recreation failures. Deterministic tests pin the vocabulary and profile behavior; the physical Private-only rollback proves semantic equality.
+- The shared-adapter consolidation between installer snapshot/restore and Pond assessment remains the next Windows code seam. `issues/001-scm-service-object-wedge.md` remains open for the original transient mechanism; this run closes expected-missing recreation, not the unknown wedge cause.
+
 ## 2026-09-02 (5) — PH-001 dispatch 2: firewall facts locale-independent and executable/profile-scoped; Pond and cooperative DNS closed physically
 
 commit: this commit, on top of ee76cac | gates: fmt/clippy `-D warnings` clean, koi-net platform suite 8/8 plus the live NetSecurity-enumeration ignored test, full workspace suite green after the credential-store remediation below; deployed through the transactional installer

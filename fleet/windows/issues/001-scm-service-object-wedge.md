@@ -3,7 +3,7 @@
 **Opened:** 2026-09-02 (PH-001, brief assignment 2 exercise)
 **Status:** open — recovery fallback armed against the observed signature; mechanism not reproducible on demand
 **Machine:** stone-leaded-sparkle
-**Updated:** 2026-09-02 (repro matrix + hardened recovery, see below)
+**Updated:** 2026-09-02 (repro matrix + hardened and physically exercised recreation, see below)
 
 ## Observed
 
@@ -50,12 +50,10 @@ repro is required before any automatic delete+recreate is trusted.
 
 ## Product gap
 
-`restore_manifest` restores configuration faithfully but cannot repair a wedged
-service object; it currently reports "rollback is incomplete — re-run
-`koi install`". That instruction happens to work only because a *fresh* install
-path recreates the object when recovery finds it missing — but the wedge leaves
-the object present, so `koi install` alone would not have recreated it; the
-operator had to delete it manually first. Candidate designs (need the repro):
+Before the recovery fallback landed, `restore_manifest` restored configuration
+faithfully but could not repair a wedged service object; it reported "rollback is
+incomplete — re-run `koi install`". That instruction worked only after the operator
+manually deleted the wedged object. The implemented design is:
 
 1. Recovery path: when a restored service persistently refuses to start with
    access-denied, delete + recreate the service object (registry-backed config
@@ -106,3 +104,21 @@ retried by the next `koi install` instead of being orphaned.
 The destructive failed-candidate transaction re-run after this hardening rolls back
 cleanly (byte-exact restore, restart, healthz, then commit) without touching the
 fallback — see journal 2026-09-02 (4).
+
+## Physical recreation boundary (2026-09-02)
+
+Workbook `20260902T134536Z-scm` exercised the descriptor-driven recreation path without
+claiming to reproduce the unknown wedge mechanism. With an armed v2 manifest it changed
+the SCM command line to include a quoted spaced argument, corrupted the backed-up
+binary/config/operator-policy files, removed the Koi firewall rules, deleted the `koi`
+service, and waited for the last SCM handle to drain. The next `koi install` recovered
+before parsing the corrupted config, recreated the expected-but-missing service from the
+complete descriptor, reapplied lifecycle policy, restored exact files and profile-scoped
+firewall semantics, and reported `Restored SCM process: PID 24792, image C:\Program
+Files\Koi\koi.exe` before health and commit. A subsequent deliberately invalid install
+rolled back and reverified the same boundary again. Final state was healthy with no
+manifest, backup, firewall probe, scheduled task, or recovery-copy residue.
+
+This closes the expected-missing and complete-descriptor mechanics that the fallback
+depends on. Status remains open because the original present-but-wedged
+`ERROR_ACCESS_DENIED` signature has still not recurred under the fallback.

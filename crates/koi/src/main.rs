@@ -71,6 +71,23 @@ fn main() -> anyhow::Result<()> {
         return config_file::run_action(action, cli.config.as_deref());
     }
 
+    // An interrupted Windows installer may have replaced the config substrate
+    // before it was interrupted. Recover its durable transaction from the
+    // CLI/environment-selected data root before parsing that possibly invalid
+    // file; the regular install path checks again after config precedence is
+    // applied for non-default/custom data roots.
+    #[cfg(windows)]
+    if matches!(
+        &cli.command,
+        Some(Command::Install {
+            user: false,
+            operator: _
+        })
+    ) {
+        let bootstrap_config = Config::from_cli(&cli);
+        platform::windows::recover_install_before_config(&bootstrap_config.data_dir)?;
+    }
+
     let config_file_path =
         config_file::discover(cli.config.as_deref()).map_err(|e| anyhow::anyhow!(e))?;
 

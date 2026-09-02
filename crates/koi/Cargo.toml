@@ -107,3 +107,4 @@ libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
+windows-sys.workspace = true
