@@ -476,11 +476,14 @@ truth. It is the shared typed query and interpretation boundary used by Pond and
 daemon startup diagnostics. Match its `Assessment::{Open, Inactive, Blocked}` and
 `BlockReason` values; do not add a text parser or a second command runner.
 Use `assess_managed_rules` when several verdicts are needed at once so they share
-one operating-system query.
+one operating-system query. Assessment reads the effective Windows Firewall
+`ActiveStore`, including its associated application and port filters; do not replace
+that with the default local `PersistentStore` view.
 
 The same module owns exact managed-rule snapshot, replacement, removal, validation,
 and restoration through `RuleSnapshot`, `Removal`, `snapshot_managed`,
-`replace_managed`, `remove`, `validate_snapshots`, and `restore_snapshot_set`.
+`replace_managed`, `remove`, `validate_snapshots`, and `restore_snapshot_set`. Those
+lifecycle operations are intentionally limited to Koi's local `PersistentStore` rules.
 
 ---
 

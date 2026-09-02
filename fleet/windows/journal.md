@@ -1,5 +1,27 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-02 (10) — PH-001 effective Windows Firewall policy truth closed
+
+commit: this commit, on top of `a8b91ff` | gates: fmt clean; full-workspace strict all-target clippy clean; focused Windows firewall adapter 16/16 green (one unrelated live snapshot test ignored); ordinary parallel `cargo test --locked` green, including all three `two_daemon_certmesh` cases; locked release build green; release SHA-256 `452f3ae7ed16fb1adea3c548af6b78a5ec2e50e4bc70ba7d7d05995d79cae0ee`; elevated serial workbook `20260902T192334Z-active-store` product verdict PASS
+
+koi state now: exact release candidate installed at `C:\Program Files\Koi\koi.exe`, SCM service RUNNING as PID `26680`, one `koi.exe`, health 200 on `127.0.0.1:5641`, Public active with effective firewall enabled, Pond restored disabled, and no SCM transaction, manifest, or backup residue.
+
+### Effective read policy, local mutation ownership
+
+- The shared startup/Pond assessment now queries `Get-NetFirewallProfile`, `Get-NetFirewallRule`, `Get-NetFirewallApplicationFilter`, and `Get-NetFirewallPortFilter` with `-PolicyStore ActiveStore`. This is the effective resultant policy after applicable stores, so a local rule is no longer mistaken for an admitted path when organizational policy changes the outcome. Typed `Open`, `Inactive`, blocked, and query-error behavior is unchanged.
+- Installer snapshot and deletion now say `-PolicyStore PersistentStore` explicitly; replacement and restore remain the existing local `netsh` lifecycle. Deterministic command-shape tests pin both halves, preventing assessment from silently falling back to the default persistent view and preventing lifecycle cleanup from reaching effective/GPO-owned rules.
+- Microsoft documents that [`Get-NetFirewallRule -PolicyStore ActiveStore`](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallrule) returns the collection of all applicable policy stores while an omitted selector reads `PersistentStore`; the [`Get-NetFirewallProfile`](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallprofile), [`Get-NetFirewallApplicationFilter`](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallapplicationfilter), and [`Get-NetFirewallPortFilter`](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallportfilter) contracts expose the same store boundary for resultant profiles and associated filters.
+
+### Installed observation (`.tmp/20260902T192334Z-active-store`)
+
+The elevated serial workbook captured PID `5176`, one process, prior installed hash `1edfc72d...`, prior Pond desire `false`, Public active, three effective profiles enabled with inbound Block/outbound Allow, and six Koi rules sourced as `Local / PersistentStore`. It installed the exact candidate through `koi install --operator S-1-5-21-...-1001`; the transaction stopped the old service, replaced the product-path bytes, restored the managed local rules, started PID `26680`, image-verified it, and passed health.
+
+The installed startup emitted five same-timestamp effective-policy `managed rule admits` verdicts (UDP 5353, TCP 5641, TCP 5644, UDP 53, TCP 53). Pond then returned `desired=true`, `running=true`, `http://192.168.1.137:5644/`, firewall `open`, and detail `Windows Firewall managed rule admits TCP 5644`; DELETE restored the exact prior disabled desire. Before/after comparisons found no semantic profile or Koi-rule difference, and no host firewall/profile setting was changed to manufacture the result. Final independent inspection matched candidate/installed hashes, health 200, one PID `26680`, Pond disabled, and zero transaction/backup residue.
+
+The workbook's final summary serializer recursively expanded a CIM-backed object after all product assertions and consumed 4.2 GB; only that exact elevated PowerShell evidence-writer PID was terminated. Koi PID `26680` was untouched, and the verdict was reconstructed from the already-written baseline, install, effective-policy, Pond, and startup evidence plus the independent final inspection.
+
+Next dependency-ready assignment: dispatch item 2, replace the `two_daemon_certmesh` check-then-use `free_port()` harness with lifetime-owned reservations and actionable early-exit stderr, then prove repeated default-parallel runs.
+
 ## 2026-09-02 (9) — PH-001 startup and Pond firewall truth unified; active-profile semantics closed
 
 commit: this commit, on top of `f8b52e9` | gates: fmt clean; full-workspace strict clippy clean; adapter suite 14/14 plus live NetSecurity enumeration green; the ordinary parallel workspace run exposed one existing two-daemon listener race and its exact test passed alone; full `cargo test --locked -- --test-threads=1` green including named-pipe and all three two-daemon cases; locked release build green; release SHA-256 `1edfc72d07752681f57493238918291c25f271613653292718c26631d60ca540`; elevated serial workbook `20260902T185542Z-firewall-truth` PASS

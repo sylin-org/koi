@@ -1,8 +1,10 @@
 //! Typed Windows Firewall adapter shared by platform lifecycle operations and Pond.
 //!
-//! NetSecurity owns locale-independent inspection and deletion. `netsh` remains the
-//! mutation vocabulary because it can recreate the exact snapshot fields, but every
-//! command result is checked and deletion distinguishes `Removed` from `Absent`.
+//! NetSecurity owns locale-independent inspection and deletion. Applicability reads the
+//! effective `ActiveStore`; lifecycle snapshot and deletion stay in Koi's local
+//! `PersistentStore`. `netsh` remains the mutation vocabulary because it can recreate the
+//! exact snapshot fields, but every command result is checked and deletion distinguishes
+//! `Removed` from `Absent`.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -132,7 +134,7 @@ fn snapshot_managed_with(runner: &impl CommandRunner) -> anyhow::Result<Vec<Rule
         r#"
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
-Get-NetFirewallRule -ErrorAction Stop |
+Get-NetFirewallRule -PolicyStore PersistentStore -ErrorAction Stop |
   Where-Object {{ $_.DisplayName -like {pattern} }} |
   ForEach-Object {{
     $rule = $_
@@ -161,7 +163,7 @@ fn remove_with(runner: &impl CommandRunner, name: &str) -> anyhow::Result<Remova
     let script = format!(
         r#"
 $ErrorActionPreference = 'Stop'
-$rules = @(Get-NetFirewallRule -ErrorAction Stop | Where-Object {{ $_.DisplayName -eq {name} }})
+$rules = @(Get-NetFirewallRule -PolicyStore PersistentStore -ErrorAction Stop | Where-Object {{ $_.DisplayName -eq {name} }})
 if ($rules.Count -eq 0) {{ Write-Output 'KOI_ABSENT'; exit 0 }}
 $rules | Remove-NetFirewallRule -ErrorAction Stop
 Write-Output 'KOI_REMOVED'
@@ -316,14 +318,14 @@ fn assess_managed_rules_with(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
 $names = @({names})
-$enabled = @(Get-NetFirewallProfile -ErrorAction Stop | Where-Object {{ $_.Enabled -eq 'True' }} | ForEach-Object {{ [string]$_.Name }})
+$enabled = @(Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop | Where-Object {{ $_.Enabled -eq 'True' }} | ForEach-Object {{ [string]$_.Name }})
 $active = @(Get-NetConnectionProfile -ErrorAction Stop | ForEach-Object {{ [string]$_.NetworkCategory }} | Sort-Object -Unique)
-$rules = @(Get-NetFirewallRule -ErrorAction Stop |
+$rules = @(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop |
   Where-Object {{ $names -contains [string]$_.DisplayName }} |
   ForEach-Object {{
     $rule = $_
-    $app = @($rule | Get-NetFirewallApplicationFilter -ErrorAction Stop)
-    $port = @($rule | Get-NetFirewallPortFilter -ErrorAction Stop)
+    $app = @($rule | Get-NetFirewallApplicationFilter -PolicyStore ActiveStore -ErrorAction Stop)
+    $port = @($rule | Get-NetFirewallPortFilter -PolicyStore ActiveStore -ErrorAction Stop)
     [pscustomobject]@{{
       name = [string]$rule.DisplayName
       enabled = [bool]($rule.Enabled -eq 'True')
@@ -727,6 +729,65 @@ mod tests {
             ]
         );
         assert_eq!(runner.calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn assessment_queries_only_the_effective_active_store() {
+        let json = r#"{"enabled_profiles":[],"active_profiles":[],"rules":[]}"#;
+        let runner = FakeRunner::new(vec![ok(json)]);
+
+        assess_managed_with(
+            &runner,
+            "Koi Pond",
+            "TCP",
+            5644,
+            Path::new(r"C:\Program Files\Koi\koi.exe"),
+        )
+        .unwrap();
+
+        let calls = runner.calls.borrow();
+        let script = calls[0].1.last().unwrap();
+        for cmdlet in [
+            "Get-NetFirewallProfile",
+            "Get-NetFirewallRule",
+            "Get-NetFirewallApplicationFilter",
+            "Get-NetFirewallPortFilter",
+        ] {
+            let line = script
+                .lines()
+                .find(|line| line.contains(cmdlet))
+                .unwrap_or_else(|| panic!("assessment script omitted {cmdlet}"));
+            assert!(
+                line.contains("-PolicyStore ActiveStore"),
+                "assessment {cmdlet} must query effective policy: {line}"
+            );
+            assert!(!line.contains("PersistentStore"));
+        }
+    }
+
+    #[test]
+    fn lifecycle_queries_remain_scoped_to_the_local_persistent_store() {
+        let snapshot_runner = FakeRunner::new(vec![ok("")]);
+        snapshot_managed_with(&snapshot_runner).unwrap();
+        let snapshot_calls = snapshot_runner.calls.borrow();
+        let snapshot_script = snapshot_calls[0].1.last().unwrap();
+        let snapshot_query = snapshot_script
+            .lines()
+            .find(|line| line.contains("Get-NetFirewallRule"))
+            .unwrap();
+        assert!(snapshot_query.contains("-PolicyStore PersistentStore"));
+        assert!(!snapshot_query.contains("ActiveStore"));
+
+        let remove_runner = FakeRunner::new(vec![ok("KOI_ABSENT")]);
+        remove_with(&remove_runner, "Koi Pond").unwrap();
+        let remove_calls = remove_runner.calls.borrow();
+        let remove_script = remove_calls[0].1.last().unwrap();
+        let remove_query = remove_script
+            .lines()
+            .find(|line| line.contains("Get-NetFirewallRule"))
+            .unwrap();
+        assert!(remove_query.contains("-PolicyStore PersistentStore"));
+        assert!(!remove_query.contains("ActiveStore"));
     }
 
     #[test]
