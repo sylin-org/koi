@@ -21,7 +21,7 @@ documentation needed to make its platform work; those changes go directly to
 |---|---|---|---|---|
 | `cachyos-linux` | test-01 (.109) | KDE Plasma 6, Wayland | `/run/media/test/WORKBENCH/repos/github/sylin-org/koi` | Plasma systemtray hosts SNI natively → Koi tray lamp belongs there; XDG autostart honored; Plasma notifications |
 | `bluefin-linux` | bluefin / test-02 (.95) | Bluefin 44, GNOME 50.3, Wayland (2026-09-01) | `~/repos/github/sylin-org/koi` | immutable Fedora image: system Koi in `/usr/local`, native RPM layered with rpm-ostree, XDG autostart, SNI through GNOME's watcher, GNOME notifications |
-| `alpine-linux` | test-03 (.221) | KDE Plasma, Wayland, **musl** | `~/repos/github/sylin-org/koi` | Plasma tray + XDG autostart as on cachyos; the open question is webkit2gtk on musl for the native workbench — the pond UI in a browser is the honest fallback until proven |
+| `alpine-linux` | test-03 (.221) | KDE Plasma, Wayland, **musl** | `~/repos/github/sylin-org/koi` | Plasma tray + XDG autostart as on cachyos; shared-musl WebKitGTK workbench builds and runs natively; Pond remains the universal browser surface |
 | `debian-linux` | halcyon-savanna (.112) | headless | `~/repos/github/sylin-org/koi` | no desktop by design: the surface is the daemon + HTTP API + pond UI; UX = everything reachable and truthful without a GUI |
 
 Non-agent machines: brook/granite are lab production (hands off);
@@ -210,6 +210,13 @@ test, or a process that merely started.
   open. Record firewall assessment and do not change host policy merely to turn a
   red result green; any coordinated test change captures and restores exact prior
   state. End with the desired Pond state documented and exactly one Koi process.
+  Current three-host reference run `20260902T002655Z-542877` used test-01's
+  installed artifact SHA-256
+  `8e3b94a9cfcaaa66f8c751bbb10e59f5b2196a2057d848c0ff8020d9395e24c3` and
+  independent peers test-02 and test-03. Its sole PID changed `542572→542996`
+  only at the required serial restart-recovery step; both peers exercised every
+  allowlisted read and refused every excluded/mutation route before and after the
+  restart. Exact UFW files were restored and the original disabled desire remained.
 - **Desktop provenance and visual proof:** before enabling login startup, prove
   the executable is installed at a durable product-owned path rather than inside
   a source checkout. Capture the visible workbench and compare its window frame,
@@ -228,12 +235,12 @@ test, or a process that merely started.
   not gates. Linux runs
   `scripts/integration/mdns-provider-transition.sh`; the precise contract and
   Windows adaptation are in `docs/testing/mdns-provider-transition.md`.
-  Current Linux reference pass `20260901T205042Z-45196` used the unchanged
-  installed Bluefin subject PID `37751` (SHA-256
-  `8a0a14dda27b49dbd72f0bfeb79efc3e73cb3392c144c74924f2443f73bb6b27`)
-  and test-01 peer PID `404624` (SHA-256
-  `1a994a78b8b40218bd27abf76f992db60b9fc42124187a43cf782c8ca887581c`),
-  with generations 9–13; use its structured evidence shape as the minimum
+  Current Linux reference pass `20260902T004825Z-546815` used the unchanged
+  installed test-01 subject PID `542996` (SHA-256
+  `8e3b94a9cfcaaa66f8c751bbb10e59f5b2196a2057d848c0ff8020d9395e24c3`)
+  and Bluefin peer PID `9720` (SHA-256
+  `89bc5ed0f0edfa7fd9163847a5cab0b23fa3a03fed9fc32789e39ea4d690658f`),
+  with generations 1–5; use its structured evidence shape as the minimum
   Windows gate.
 - **Windows local control:** the workbench gate also uses the one installed service.
   Reinstall/upgrade it through `koi install` so ADR-040 records the interactive SID,

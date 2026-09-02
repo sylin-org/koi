@@ -92,7 +92,7 @@ systemd-resolved+native → avahi`; every phase held three desired and three
 established publications with zero pending/failed, and cleanup restored all
 captured unit, socket, enablement, and resolved-link facts.
 
-The current CachyOS/Bluefin reference execution
+The Bluefin reimage reference execution
 `20260901T205042Z-45196` repeated the gate after test-02 was reimaged. The
 unchanged Bluefin subject was system PID `37751`, SHA-256
 `8a0a14dda27b49dbd72f0bfeb79efc3e73cb3392c144c74924f2443f73bb6b27`;
@@ -107,6 +107,18 @@ peer resolution. Missing JSON keys must therefore be compared to provider
 capabilities, not interpreted as a crashed control plane. Cleanup restored
 resolved's original global/link `MulticastDNS=no`, all activation sockets, and
 Avahi exactly.
+
+The current candidate reference execution `20260902T004825Z-546815` ran from
+CachyOS against Bluefin after ADR-042 deployment. The unchanged test-01 subject
+was system PID `542996`, SHA-256
+`8e3b94a9cfcaaa66f8c751bbb10e59f5b2196a2057d848c0ff8020d9395e24c3`;
+the unchanged Bluefin peer was system PID `9720`, SHA-256
+`89bc5ed0f0edfa7fd9163847a5cab0b23fa3a03fed9fc32789e39ea4d690658f`.
+Generations 1–5 again selected `avahi → systemd-resolved+native → native →
+systemd-resolved+native → avahi`, with three desired/established publications
+and zero pending/failed throughout. The gate restored Avahi, resolved, their
+activation sockets, global/link mDNS configuration, both Koi units, PIDs, and
+artifact hashes to the captured baseline.
 
 On Windows, preserve the same story and invariants while substituting its catalog:
 official Windows DNS-SD, installed Apple Bonjour/mDNSResponder, then native Koi.

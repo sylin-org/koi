@@ -1,5 +1,7 @@
 # Pond needs an independently managed read-only LAN listener
 
+**Status: resolved by ADR-042 and koi `dbd2466`.**
+
 ## Impact
 
 The workbench's **Phone** action says it will open the same view “on any screen
@@ -53,3 +55,20 @@ action:
 This is the minimum meaningful separation: one Pond adapter and one deliberate
 read-only router, composed by the existing serving layer. It should not become a
 second domain model or a generic remote copy of the operator API.
+
+## Resolution
+
+`PondRuntime` is now one desired-state adapter inside the installed daemon. The
+authenticated operator router owns publish/enable/disable intent; a separate fixed
+router exposes only the five UI assets, health, reduced status, mDNS snapshot, and
+DNS entries on derived port `http+3`. It never mounts DAT mutations, OpenAPI, MCP,
+or the operator API. The returned URL comes from the reconciled bound socket, and
+desire persists across a serial service restart.
+
+Physical run `20260902T004557Z-9528` exercised Bluefin's installed artifact
+(SHA-256 `89bc5ed0f0edfa7fd9163847a5cab0b23fa3a03fed9fc32789e39ea4d690658f`)
+from both test-01 and test-03, including every allowlisted and refused route,
+explicit stop, and restart recovery (`5889→9720`). Test-01 run
+`20260902T002655Z-542877` repeated the gate from both other servers and restored
+its exact UFW baseline. All three hosts ended with Pond disabled and exactly one
+installed Koi.
