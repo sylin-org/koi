@@ -265,7 +265,12 @@ INITIAL_HASH="$(executable_hash "$INITIAL_EXE")"
 refresh_access
 curl -fsS --max-time 5 "$API/healthz" >/dev/null
 BASELINE="$(operator_request GET /v1/pond)"
-BASE_DESIRED="$(jq -er '.desired' <<<"$BASELINE")"
+BASE_DESIRED="$(jq -er '
+  if .desired == true then "true"
+  elif .desired == false then "false"
+  else error("Pond status is missing a desired boolean")
+  end
+' <<<"$BASELINE")"
 jq 'del(.url, .urls)' <<<"$BASELINE" >"$EVIDENCE_DIR/baseline.json"
 
 HTTP_PORT="$(sed -E 's#.*:([0-9]+)/?$#\1#' <<<"$API")"
