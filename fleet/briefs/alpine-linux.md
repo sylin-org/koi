@@ -3,21 +3,29 @@
 Repo: ~/repos/github/sylin-org/koi (+ koi-desktop beside it).
 You are the musl truth: the libc nothing else in the fleet compiles for.
 
-## PH-001 assignment (current)
+Measured evidence (2026-09-02): the workbench and daemon are APK-owned; real OpenRC
+controls, bounded supervision/logs, crash recovery, failed-install rollback, ordinary
+APK upgrade/removal/reinstall, native musl gates, and Pond are green. Avahi is installed
+but stopped and must be restored to that exact baseline after any provider gate.
 
-1. Replace the desktop workbench's unconditional `systemctl` calls with the
-   shared, small service-manager boundary described in PH-001. OpenRC assessment,
-   status, start, and stop must be real; `Run once` must refuse a second Koi.
-2. Make the installed daemon an APK-owned, OpenRC-supervised product: use native
-   crash supervision with bounded respawn, make enable/start/health failures fail
-   and roll back installation, bound logs, and prove ordinary `apk upgrade` and
-   removal. Acceptance uses no checkout executable.
-3. On that artifact, prove cold boot, SIGKILL recovery, fresh Plasma login, one
-   tray item, notification, lock/unlock, suspend/resume, and exact service controls.
-4. Prove provider choice and recovery by capability: Avahi when usable, native Koi
-   after loss, Avahi again after return, plus interface churn, with one unchanged
-   physical peer and exact baseline restoration. Then retain full native musl and
-   Pond gates for the frozen candidate.
+## PH-001 next dispatch (after `3a5a6d1`)
+
+1. Start now with the exact installed APK artifacts: prove cold boot, a genuinely fresh
+   Plasma login/autostart, one SNI item, notification, native window, authenticated
+   service controls, lock/unlock, suspend/resume, and singleton daemon/workbench state.
+   Do not substitute the checkout executable or a pre-existing desktop session.
+2. From that accepted baseline, run one provider/interface workbook against an unchanged
+   physical peer: start Avahi and prove selection, make it genuinely unavailable and
+   prove native continuity, restore it and prove promotion, then churn the primary
+   interface. Restore Avahi to installed-but-stopped and every OpenRC/network fact to
+   the captured bytes/state.
+3. After the shared ownership-aware installer correction lands, upgrade the package-owned
+   service through the corrected product path and prove the standing shifted configuration
+   is retained rather than replanned. Re-run full locked musl gates and the physical Pond
+   gate only when that shared candidate changes their relevant artifact.
+4. Preserve the resulting exact APK candidate for Alpine's frozen matrix/soak share; no
+   temporary repository, signing key, autologin, provider enablement, or test package may
+   survive.
 
 ## Retained baseline gates
 

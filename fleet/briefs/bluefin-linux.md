@@ -11,20 +11,29 @@ GNOME Shell 50.3 on Wayland. Exactly one enabled system `koi.service` runs
 rpm-ostree-layered native RPM `/usr/bin/koi-desktop`; XDG autostart launches it
 once minimized, and its SNI is registered with GNOME's StatusNotifier watcher.
 
-## PH-001 assignment (current)
+The native RPM/rpm-ostree lifecycle, fresh GNOME session, crash, lock, suspend,
+primary-interface churn, Avahi/resolved/native recovery, wrong-UID local control, and
+Pond/firewalld gate are already physically green. Do not repeat those gates against an
+unchanged artifact.
 
-1. Build in `koi-dev`, then prove a product-owned Koi service and native desktop
-   RPM through rpm-ostree install, in-place upgrade, rollback, reboot, removal,
-   and reinstall. Build dependencies remain in the toolbox; acceptance artifacts
-   and startup entries never point into a checkout.
-2. From a fresh GNOME login, prove one autostarted workbench, SNI reveal,
-   notification, native decoration, local control, lock/unlock, suspend/resume,
-   and no duplicate process or status item.
-3. Exercise firewalld applicability and Avahi/resolved/native route recovery after
-   service and primary-interface churn. Capture and restore the exact host policy;
-   coordinate provider assertions with an unchanged physical peer.
-4. Independently validate shared PH fixes and run the immutable-workstation share
-   of the frozen installed-candidate matrix and soak.
+## PH-001 next dispatch (after `3a5a6d1`)
+
+1. Start now with the remaining PH-3 hostile-input/resource-bound gate on the one
+   installed immutable-workstation Koi. Use an independent physical peer to exercise
+   malformed/truncated mDNS, DNS, and denied Pond/operator requests at a bounded rate;
+   sample RSS, descriptors, threads, retry rate, provider generations, and process
+   identity before/during/after. Prove no crash, privilege widening, secret exposure,
+   unbounded growth, or manual re-arming. Extend the existing `koi-lab` surface only
+   when reusable traffic generation is needed—no helper daemon or fake endpoint.
+2. Correct any defect at its owning parser/adapter/router boundary and rerun the focused
+   native gates plus the real installed assertion. Leave firewalld, Avahi, resolved,
+   NetworkManager, login, and rpm-ostree state exact.
+3. After the shared ownership-aware installer correction lands, independently prove on
+   the immutable host that an upgrade does not shift around its own running Koi, a real
+   foreign listener still causes a safe decision, failure restores the prior deployment,
+   and reboot activates the intended product artifact.
+4. Then run the Bluefin share of the frozen installed-candidate matrix and soak; earlier
+   byte-identical GNOME/Pond/provider evidence remains valid input, not work to repeat.
 
 ## Retained baseline gates
 

@@ -13,18 +13,30 @@ oracle, not the member node's empty local-CA roster. The old
 `~/koi-dogfood/runtime/daemon.pid` is stale. Treat measured state as truth and
 correct it in place—do not revive the old user daemon or run a second Koi.
 
-## PH-001 assignment (current)
+Current safety fact (2026-09-02): this host has no `/etc/koi/config.toml`; its standing
+Koi owns the standard ports. At `3a5a6d1`, systemd/OpenRC installation plans ports while
+that service is still listening, so deploying that candidate can mistake Koi for a
+foreign collision and manufacture a shifted config. Do not install it before the shared
+ownership-aware planning correction lands.
 
-1. Act as the Plasma integration driver: keep Arch package install/upgrade/
-   uninstall/reinstall, native window decoration, one SNI tray item, notifications,
-   XDG autostart, and authenticated local control green on durable installed paths.
-2. Prove login, lock/unlock, suspend/resume, and primary-interface churn without a
-   duplicate daemon or workbench. Exercise UFW blocked→open→restored assessment and
-   Avahi/resolved/native provider loss/return with byte-exact host restoration.
-3. Close the local-control wrong-user, Pond route-exclusion, installer rollback,
-   and other PH-3 negative gates on this reference workstation.
-4. Drive the frozen-candidate cross-host provider and Pond gates, while leaving
-   each peer's system mutation to that peer's own hat.
+## PH-001 next dispatch (after `3a5a6d1`)
+
+1. Start now by correcting endpoint planning once at the shared installer boundary.
+   An existing Koi being upgraded is not a foreign port collision: preserve its explicit
+   or effective run, while a fresh install still shifts around a genuinely foreign
+   listener. Have systemd and OpenRC consume the same ownership-aware decision; expose
+   the narrow contract Windows needs without copying platform recipes. Arm durable
+   recovery before any service stop, and cover no-config legacy installs, explicit
+   config, foreign listeners, and interrupted re-entry deterministically.
+2. Deploy that exact merged candidate serially through `koi install` on this one service.
+   Prove it stays on `5641:5644` without manufacturing `/etc/koi/config.toml`, preserves
+   identity/operator policy, and restores byte-exact prior state after a failed candidate.
+3. On the accepted artifact, close the remaining Plasma login, lock/unlock,
+   suspend/resume, primary-interface churn, and wrong-user boundary. Keep the already
+   proven package, decoration, SNI, notification, UFW/Pond, and provider gates green,
+   but do not repeat them unless the relevant code or artifact changed.
+4. Drive this hat's share of the frozen cross-host provider/Pond matrix only after the
+   local correction and the other hats' lifecycle gates settle.
 
 ## Retained baseline gates
 

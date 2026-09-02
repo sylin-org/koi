@@ -48,6 +48,10 @@ twins, or a production machine. Report the observed hostname and OS when refusin
 Measured machine state outranks a stale brief. Correct the brief when the machine
 proves it wrong.
 
+Within a brief, the most recent dated `next dispatch` section is the current routing
+and outranks retained baseline lists. Journal and issue evidence still determine what
+is already complete.
+
 ## 3. Select work without waiting for another prompt
 
 Choose the first unfinished, dependency-ready item in this order:
