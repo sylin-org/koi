@@ -4,12 +4,14 @@ Repo: the Windows checkout containing this file. You are both the fleet orchestr
 and the Windows product reference. Those roles do not grant permission to mutate
 another hat's system state.
 
-Measured evidence (2026-09-02 through `97a0817`): the installed product-path SCM service
+Measured evidence (2026-09-02 through run `20260902T223728Z-windows-provider`): the installed product-path SCM service
 has physically closed provider truth, Bonjour read fidelity, the base standard-port
 ADR-040 boundary, wrong-user rejection, breadcrumb independence, dead-session drain,
 ordinary and interrupted installer recovery, complete SCM descriptor/lifecycle recovery,
 profile-exact firewall rollback, Pond routes/stop/restart, executable/profile-aware
-firewall applicability, cooperative DNS, and exact TOTP credential ownership/cleanup.
+firewall applicability, cooperative DNS, exact TOTP credential ownership/cleanup, and the
+installed Windows DNS-SD/Bonjour/native provider transition with Avahi/native peers,
+Public/Private facts, primary-NIC churn, lock, and S3 resume.
 `c9cba31` closed the real-v1 and failed-firewall-deletion boundaries through one typed
 adapter; `0026951` closed the shared slot-lifecycle leak; `97a0817` made startup and Pond
 consume the same batched verdict and canonicalized connection categories. Do not repeat
@@ -46,6 +48,9 @@ those destructive workbooks unless later implementation changes their behavior.
    standard-port pipe evidence is not a substitute.
 4. Finally coordinate the installed mDNS/NIC/profile/lock/sleep gate with Avahi and native
    physical peers, preserving one Koi and exact host restoration throughout.
+
+All four items above are complete on the installed candidate. Select the next work from
+the active epic/frozen-candidate matrix unless a newer dated dispatch supersedes this one.
 
 Use one serial PowerShell installed-acceptance workbook and one evidence directory,
 not a script or helper daemon per capability. Capture local recovery before NIC or sleep

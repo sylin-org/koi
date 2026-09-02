@@ -105,6 +105,12 @@ These are observed defects, not speculative framework work.
   sleep/resume. Protected Dnscache and LLMNR policy are not test levers.
 - Complete desktop install/upgrade/uninstall, fresh login, tray, notification, and
   one-process gates, followed by an installed-product soak.
+- Windows local PH-2 gate green on 2026-09-02: one installed candidate retained its PID
+  through Windows DNS-SD reads/native publication, verified Bonjour promotion/loss/return,
+  Public/Private categories, primary-NIC disable/enable, lock, and real S3 resume while
+  unchanged CachyOS/Avahi and Alpine/native peers provided bidirectional publications and
+  reads. Provider packages, profile/link state, Dnscache/LLMNR policy, recovery tasks, and
+  peer registrations restored exactly.
 
 ### Alpine — retainable musl workstation
 
