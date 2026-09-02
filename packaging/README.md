@@ -13,6 +13,13 @@ guessed (RL-2: registries are immutable; a wrong pin is forever).
 | AUR | [`aur/PKGBUILD`](aur/PKGBUILD) | `pkgver=1.0.0`, sha256sums from the Linux archives; publish as `koi-bin` (or hand to a community maintainer) |
 | Scoop | [`scoop/koi.json`](scoop/koi.json) | Windows archive URLs + hashes into a `sylin-org/scoops`-style bucket |
 
+The [`alpine/APKBUILD`](alpine/APKBUILD) is the physically verified pre-release
+recipe for Alpine's native `koi` and `koi-openrc` packages. It builds from a
+pinned source commit; `koi-openrc` owns the init script and bounded log-rotation
+policy. Package installation does not guess an interactive operator: run
+`sudo koi install --operator <desktop-user>` once to transactionally enable,
+start, and verify the service.
+
 ## Release-day checklist (per channel)
 
 1. Tag → hosted release workflow produces archives + checksums + manifest + attestations.

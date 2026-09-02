@@ -1,0 +1,11 @@
+#!/bin/sh
+
+if rc-service koi status >/dev/null 2>&1; then
+	rc-service koi stop || exit 1
+fi
+
+if [ -L /etc/runlevels/default/koi ]; then
+	rc-update del koi default || exit 1
+fi
+
+exit 0

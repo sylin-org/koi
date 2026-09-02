@@ -1,0 +1,61 @@
+# Maintainer: Sylin <hello@sylin.org>
+
+pkgname=koi
+pkgver=1.0.0_rc2_git20260902
+pkgrel=1
+pkgdesc="Local connectivity substrate for discovering, trusting, and connecting a LAN"
+url="https://github.com/sylin-org/koi"
+arch="x86_64 aarch64"
+license="MIT OR Apache-2.0"
+makedepends="
+	build-base
+	cargo
+	git
+	rust
+	"
+subpackages="$pkgname-openrc::noarch $pkgname-doc"
+install="$pkgname-openrc.post-install $pkgname-openrc.pre-deinstall"
+# Cargo fetches the locked dependency graph during local package builds.
+options="net"
+_commit=72dc7e170d6b948613329ce5e02c1ca0c8cc4d51
+source="$pkgname-$_commit.tar.gz::$url/archive/$_commit.tar.gz"
+builddir="$srcdir/$pkgname-$_commit"
+
+build() {
+	CARGO_TARGET_DIR="$srcdir/target" \
+		cargo build --locked --release -p koi-net
+}
+
+check() {
+	CARGO_TARGET_DIR="$srcdir/target" \
+		cargo test --locked -p koi-net platform::recipes
+}
+
+package() {
+	install -Dm755 "$srcdir/target/release/koi" \
+		"$pkgdir/usr/bin/koi"
+
+	install -d "$pkgdir/etc/init.d"
+	sed 's|{{BIN}}|/usr/bin/koi|g' \
+		crates/koi/src/platform/recipes/templates/koi-openrc.initd \
+		>"$pkgdir/etc/init.d/koi"
+	chmod 755 "$pkgdir/etc/init.d/koi"
+	install -Dm644 crates/koi/src/platform/recipes/templates/koi.logrotate \
+		"$pkgdir/etc/logrotate.d/koi"
+
+	install -Dm644 README.md "$pkgdir/usr/share/doc/koi/README.md"
+	install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/koi/LICENSE-APACHE"
+	install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/koi/LICENSE-MIT"
+}
+
+openrc() {
+	pkgdesc="$pkgdesc (OpenRC service)"
+	depends="$pkgname=$pkgver-r$pkgrel openrc logrotate"
+	install_if="$pkgname=$pkgver-r$pkgrel openrc"
+	amove etc/init.d/koi
+	amove etc/logrotate.d/koi
+}
+
+sha512sums="
+eb0bc73d67e9f0c88d25465f00e63ffe20d845dfeff2f10e77445368b4d2775cc89a1e3a021726cd068f075db871131d879fcd38cb49fc61e3fc90fee0e07b1d  koi-72dc7e170d6b948613329ce5e02c1ca0c8cc4d51.tar.gz
+"

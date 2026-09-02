@@ -1,0 +1,9 @@
+#!/bin/sh
+
+cat <<-EOF
+ * Koi is installed but is not enabled automatically.
+ * Configure, enable, start, and verify it with:
+ *   sudo koi install --operator <desktop-user>
+EOF
+
+exit 0
