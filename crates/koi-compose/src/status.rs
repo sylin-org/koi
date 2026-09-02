@@ -66,12 +66,12 @@ impl CapabilityReport {
 }
 
 /// Assemble the capability ladder in the canonical order:
-/// mdns, certmesh, dns, health, proxy, udp, runtime.
+/// mdns, certmesh, dns, health, proxy, udp, runtime, ipc, pond.
 ///
 /// DNS and health distinguish running / stopped / disabled; proxy is always healthy when
 /// present (its summary is the listener count); the rest are present-or-disabled.
 pub async fn assemble_capabilities(cores: &Cores) -> Vec<CapabilityReport> {
-    let mut caps = Vec::with_capacity(7);
+    let mut caps = Vec::with_capacity(9);
 
     // mDNS
     caps.push(match &cores.mdns {
@@ -185,9 +185,32 @@ pub async fn assemble_capabilities(cores: &Cores) -> Vec<CapabilityReport> {
     };
     caps.push(ipc);
 
+    // Pond is a serving adapter rather than a domain core. Its desired-state
+    // controller publishes live observation into the shared note registry.
+    let pond_note = notes.iter().rev().find(|note| note.capability == "pond");
+    let pond = match pond_note {
+        Some(note) => CapabilityReport {
+            status: CapabilityStatus {
+                name: "pond".to_string(),
+                summary: if note.state == "running" {
+                    note.reason.clone()
+                } else {
+                    format!("{}: {}", note.state, note.reason)
+                },
+                healthy: note.state == "running",
+            },
+            enabled: note.state != "disabled",
+        },
+        None => CapabilityReport::disabled("pond"),
+    };
+    caps.push(pond);
+
     // Merge assembly notes into the rungs they describe: a capability that
     // carries a note wears the note's reason as its summary (ADR-035).
     for cap in caps.iter_mut() {
+        if cap.status.name == "pond" {
+            continue;
+        }
         if let Some(note) = notes
             .iter()
             .find(|note| note.capability == cap.status.name && note.state != "mounted")
@@ -206,11 +229,11 @@ mod tests {
     static NOTES_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[tokio::test]
-    async fn all_disabled_ladder_is_the_canonical_eight_rungs() {
+    async fn all_disabled_ladder_is_the_canonical_nine_rungs() {
         let _notes_guard = NOTES_TEST_LOCK.lock().await;
         koi_common::capability::clear_notes();
 
-        // Golden contract: with no cores, the ladder is exactly these eight rungs, in this
+        // Golden contract: with no cores, the ladder is exactly these nine rungs, in this
         // order, each disabled. This is the shape /v1/status, the dashboard, and embedded
         // all serialize — locking the three projections to one source. (The ipc rung joined
         // in ADR-035: it bridges the mDNS core and reports its own skip state.)
@@ -237,8 +260,31 @@ mod tests {
                 ("udp", "disabled", false, false),
                 ("runtime", "disabled", false, false),
                 ("ipc", "disabled", false, false),
+                ("pond", "disabled", false, false),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn pond_live_note_becomes_a_healthy_adapter_rung() {
+        let _notes_guard = NOTES_TEST_LOCK.lock().await;
+        koi_common::capability::clear_notes();
+        koi_common::capability::set_note(koi_common::capability::CapabilityNote {
+            capability: "pond".to_string(),
+            state: "running".to_string(),
+            reason: "read-only listener at http://192.168.1.2:5644/".to_string(),
+            depends_on: vec!["http".to_string()],
+        });
+
+        let caps = assemble_capabilities(&Cores::default()).await;
+        koi_common::capability::clear_notes();
+        let pond = caps
+            .iter()
+            .find(|capability| capability.status.name == "pond")
+            .expect("pond rung");
+        assert!(pond.enabled);
+        assert!(pond.status.healthy);
+        assert!(pond.status.summary.contains("192.168.1.2:5644"));
     }
 
     #[tokio::test]

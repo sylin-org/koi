@@ -196,9 +196,20 @@ test, or a process that merely started.
   close/reopen and lock/unlock. Check for duplicate processes, stale tray items,
   startup races, missing runtime environment, and terminal-only success.
   Exercise Phone/Pond from a second physical host. Preserve loopback as the
-  default for the full operator API; if Pond cannot be reached without exposing
-  that API, file the missing read-only listener as an architecture defect rather
-  than silently broadening the bind.
+  default for the full operator API; Pond uses the separately armed read-only
+  adapter in ADR-042 and the workbench must display its returned URL, never a
+  guessed operator endpoint.
+- **Pond physical gate:** use the one installed Koi and its real data root. Through
+  authenticated local control, publish the fixed bundle and arm Pond; assert the
+  operator API still listens only where configured and the derived fourth port is
+  the only new LAN socket. From at least one independent physical server, open every
+  returned URL, load all five assets plus health, status, mDNS snapshot, and DNS
+  entries, and prove mutation and excluded operator routes are absent. Stop sharing
+  and prove the socket closes. Re-arm, restart the installed service, and prove
+  persisted desire restores the same narrow surface without the workbench staying
+  open. Record firewall assessment and do not change host policy merely to turn a
+  red result green; any coordinated test change captures and restores exact prior
+  state. End with the desired Pond state documented and exactly one Koi process.
 - **Desktop provenance and visual proof:** before enabling login startup, prove
   the executable is installed at a durable product-owned path rather than inside
   a source checkout. Capture the visible workbench and compare its window frame,

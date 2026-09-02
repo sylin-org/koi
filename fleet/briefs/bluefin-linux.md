@@ -25,7 +25,6 @@ once minimized, and its SNI is registered with GNOME's StatusNotifier watcher.
 3. Validate from a real GNOME login: one autostarted process, SNI reveal, window
    geometry/decorations, notification path, all workbench panes, authenticated
    local-control discovery, exact daemon-reported data root, and a fresh boot.
-4. Publish Pond from the workbench and open its QR URL from an independent LAN
-   host. The full daemon API remains loopback by default; a separate read-only
-   Pond listener is required before mobile access can pass without weakening
-   that security boundary.
+4. Run the ADR-042 Pond physical gate from an independent LAN host. The full
+   daemon API remains loopback; the only LAN HTTP surface is the separately armed,
+   allowlisted Pond router on the derived fourth port.

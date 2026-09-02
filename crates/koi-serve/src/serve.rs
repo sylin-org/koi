@@ -65,8 +65,8 @@ pub struct ServeConfig {
     /// switch owns the loopback tool surface; this one owns the mutually
     /// authenticated remote surface the trust plane mounts.
     pub no_mgmt_mcp: bool,
-    /// Published pond UI directory (ADR-035 mobile access). `Some` mounts
-    /// `GET /` + assets and `PUT /v1/ui` on the HTTP adapter.
+    /// Published Pond UI directory. `Some` enables the in-process Pond
+    /// desired-state adapter and its authenticated operator controls.
     pub ui_dir: Option<PathBuf>,
 }
 
@@ -121,6 +121,60 @@ pub fn serve(
         .as_ref()
         .map(|mdns| koi_dashboard::browser::build_state(mdns.clone(), cancel.clone()));
 
+    // ── Pond: operator-armed, read-only LAN presentation adapter ──
+    // Pond remains part of this serving monolith. Its public listener is a narrow
+    // projection of the same cores, while intent and control stay on the full HTTP
+    // adapter. A derived fourth port keeps deployment configuration coherent.
+    let pond = if cfg.no_http {
+        koi_common::capability::set_note(koi_common::capability::CapabilityNote {
+            capability: "pond".to_string(),
+            state: "disabled".to_string(),
+            reason: "requires the operator HTTP adapter".to_string(),
+            depends_on: vec!["http".to_string()],
+        });
+        None
+    } else {
+        match (
+            cfg.ui_dir.clone(),
+            crate::pond::port_for_http(cfg.http_port),
+        ) {
+            (Some(ui_dir), Some(port)) => {
+                let runtime = crate::pond::PondRuntime::new(crate::pond::PondConfig {
+                    port,
+                    ui_dir,
+                    intent_path: cfg.data_root.join("state/pond.json"),
+                    started_at,
+                    browser: browser_state.clone(),
+                    dns: cores.dns.clone(),
+                    parent_cancel: cancel.clone(),
+                });
+                let supervisor = runtime.clone();
+                tasks.push(tokio::spawn(async move {
+                    supervisor.supervise().await;
+                }));
+                Some(runtime)
+            }
+            (None, _) => {
+                koi_common::capability::set_note(koi_common::capability::CapabilityNote {
+                    capability: "pond".to_string(),
+                    state: "disabled".to_string(),
+                    reason: "no published UI directory is configured".to_string(),
+                    depends_on: vec!["http".to_string()],
+                });
+                None
+            }
+            (_, None) => {
+                koi_common::capability::set_note(koi_common::capability::CapabilityNote {
+                    capability: "pond".to_string(),
+                    state: "error".to_string(),
+                    reason: "HTTP port leaves no room for the derived Pond port".to_string(),
+                    depends_on: vec!["http".to_string()],
+                });
+                None
+            }
+        }
+    };
+
     // ── HTTP adapter (the full daemon surface: dashboard, DAT auth, MCP, admin-shutdown,
     // OpenAPI) ──
     if !cfg.no_http {
@@ -139,7 +193,7 @@ pub fn serve(
             admin_shutdown: true,
             api_docs: true,
             daemon: true,
-            ui_dir: cfg.ui_dir.clone(),
+            pond,
             ready: None,
         };
         tasks.push(tokio::spawn(async move {

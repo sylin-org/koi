@@ -44,8 +44,41 @@ pub fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> Result<(), io:
     ));
     let tmp = PathBuf::from(tmp_name);
     std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)?;
+    replace_file(&tmp, path)?;
     Ok(())
+}
+
+/// Replace `target` with a staged file from the same filesystem.
+///
+/// Unix `rename(2)` already replaces atomically. Windows' Rust `rename` refuses
+/// an existing destination, so use the native replace flag rather than deleting
+/// the durable file first and creating a crash window.
+#[cfg(not(windows))]
+pub fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
+    std::fs::rename(source, target)
+}
+
+#[cfg(windows)]
+pub fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
+    use std::iter;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect::<Vec<_>>();
+    if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_REPLACE_EXISTING) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

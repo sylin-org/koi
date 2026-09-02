@@ -11,7 +11,7 @@ use axum::extract::{ConnectInfo, Extension};
 use axum::http::{header, HeaderName, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, post};
 use axum::Router;
 use serde::Serialize;
 use subtle::ConstantTimeEq;
@@ -77,9 +77,6 @@ struct AppState {
     webhook_sinks: usize,
     /// `/v1/status` `daemon` field - a full daemon (`true`) vs an embedded instance.
     daemon: bool,
-    /// Published pond UI directory (ADR-035 mobile access). `Some` mounts
-    /// `GET /` + assets and the DAT-gated `PUT /v1/ui` publish door.
-    ui_dir: Option<std::path::PathBuf>,
 }
 
 // ── Entrypoint ──────────────────────────────────────────────────────
@@ -113,9 +110,9 @@ pub struct HttpConfig {
     pub api_docs: bool,
     /// `/v1/status` `daemon` field — a full daemon (`true`) vs an embedded instance.
     pub daemon: bool,
-    /// Directory holding the published pond UI (index.html + assets). `Some` mounts
-    /// `GET /` + assets (LAN read-only view) and `PUT /v1/ui` (DAT-gated publish).
-    pub ui_dir: Option<std::path::PathBuf>,
+    /// In-process Pond desired-state adapter. `Some` mounts only its authenticated
+    /// publish/control routes here; its read-only LAN router owns a separate socket.
+    pub pond: Option<crate::pond::PondRuntime>,
     /// One-shot to report the actually-bound `SocketAddr` once the listener is up.
     /// Lets an embedded host that passed `port: 0` learn the OS-assigned port. The
     /// daemon leaves this `None` — it already knows its fixed port.
@@ -143,7 +140,7 @@ pub async fn start(
         admin_shutdown,
         api_docs,
         daemon,
-        ui_dir,
+        pond,
         ready,
     } = cfg;
     let webhook_sinks = webhooks.len();
@@ -164,7 +161,6 @@ pub async fn start(
         mcp_http_enabled,
         webhook_sinks,
         daemon,
-        ui_dir: ui_dir.clone(),
     };
 
     // ── System endpoints (always mounted) ──
@@ -181,30 +177,23 @@ pub async fn start(
         app = app.route(paths::SHUTDOWN, post(shutdown_handler));
     }
 
-    // ── Dashboard + pond UI root. The root serves ONE interface: the published
-    // pond UI when mobile access is configured (ADR-035), otherwise the
-    // dashboard page. The dashboard data routes stay mounted either way. ──
-    if ui_dir.is_some() {
-        app = app
-            .route("/", get(ui_index_handler))
-            .route("/app.js", get(ui_asset_app))
-            .route("/styles.css", get(ui_asset_styles))
-            .route("/sentences.js", get(ui_asset_sentences))
-            .route("/koi.png", get(ui_asset_png))
-            .route("/v1/ui", put(ui_publish_handler));
+    // ── Operator surface + dashboard. Pond's public read model never merges here;
+    // only its DAT-gated intent and fixed-bundle publish doors do. ──
+    let pond_enabled = pond.is_some();
+    if let Some(runtime) = pond {
+        app = app.merge(crate::pond::operator_routes(runtime));
     }
     if dashboard_state.is_some() {
-        app = app.route(
-            "/v1/dashboard/snapshot",
-            get(koi_dashboard::dashboard::get_snapshot),
-        );
-        if ui_dir.is_none() {
-            app = app.route("/", get(koi_dashboard::dashboard::get_dashboard));
-        }
-        app = app.route(
-            "/v1/dashboard/events",
-            get(koi_dashboard::dashboard::get_events),
-        );
+        app = app
+            .route("/", get(koi_dashboard::dashboard::get_dashboard))
+            .route(
+                "/v1/dashboard/snapshot",
+                get(koi_dashboard::dashboard::get_snapshot),
+            )
+            .route(
+                "/v1/dashboard/events",
+                get(koi_dashboard::dashboard::get_events),
+            );
     }
 
     // ── Unified event stream (wishlist 1.1/1.2 — always mounted, 503 when no dashboard) ──
@@ -331,7 +320,7 @@ pub async fn start(
     // ── OpenAPI spec + Scalar docs (conditional) ──
     if api_docs {
         // Composed from domain-owned specs via nest().
-        let openapi = build_openapi();
+        let openapi = build_openapi_for(pond_enabled);
         // Serve interactive API docs at /docs and the raw spec at /openapi.json.
         app = app.merge(Scalar::with_url("/docs", openapi.clone()));
         let spec_json = match openapi.to_pretty_json() {
@@ -500,6 +489,10 @@ struct KoiSchemas;
 /// handlers and `paths(...)` in its `ApiDoc`. The `nest()` call prepends the
 /// domain prefix to all paths.
 pub fn build_openapi() -> utoipa::openapi::OpenApi {
+    build_openapi_for(true)
+}
+
+fn build_openapi_for(include_pond: bool) -> utoipa::openapi::OpenApi {
     use utoipa::openapi::external_docs::ExternalDocs;
     use utoipa::openapi::tag::TagBuilder;
     use utoipa::openapi::{InfoBuilder, LicenseBuilder};
@@ -617,9 +610,18 @@ pub fn build_openapi() -> utoipa::openapi::OpenApi {
             ))
             .external_docs(Some(ExternalDocs::new(format!("{base}/guide-runtime.md"))))
             .build(),
+        TagBuilder::new()
+            .name("pond")
+            .description(Some(
+                "Operator control for Koi's read-only LAN presentation adapter.",
+            ))
+            .build(),
     ];
 
     let mut openapi = openapi;
+    if include_pond {
+        openapi.merge(crate::pond::PondApiDoc::openapi());
+    }
     openapi.info = info;
     openapi.tags = Some(tags);
     openapi
@@ -656,136 +658,9 @@ fn is_loopback_origin(origin: &str) -> bool {
 /// except for `/v1/mcp` and `/v1/certmesh/log` (token required even on GET), the
 /// `/v1/udp/` surface, and the protected zone/posture reads
 /// (`/v1/certmesh/diagnose`, `/v1/dns/{list,zone}`) which stay exempt only for a
-/// loopback peer and require the token from a remote one. All other methods
-/// The five file names a pond UI publish may write — fixed, so the door can
-/// never become an arbitrary file write even with a valid DAT.
-const POND_UI_FILES: [&str; 5] = [
-    "index.html",
-    "app.js",
-    "styles.css",
-    "sentences.js",
-    "koi.png",
-];
-
-fn ui_file_response(state: &AppState, name: &str, content_type: &str) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    let Some(dir) = &state.ui_dir else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(serde_json::json!({
-                "error": "capability_disabled",
-                "message": "no pond UI published — open koi-desktop and enable mobile access"
-            })),
-        )
-            .into_response();
-    };
-    match std::fs::read(dir.join(name)) {
-        Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response(),
-        Err(_) => (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(serde_json::json!({
-                "error": "capability_disabled",
-                "message": "pond UI not published yet"
-            })),
-        )
-            .into_response(),
-    }
-}
-
-async fn ui_index_handler(Extension(state): Extension<AppState>) -> axum::response::Response {
-    ui_file_response(&state, "index.html", "text/html; charset=utf-8")
-}
-
-async fn ui_asset_app(Extension(state): Extension<AppState>) -> axum::response::Response {
-    ui_file_response(&state, "app.js", "text/javascript; charset=utf-8")
-}
-
-async fn ui_asset_styles(Extension(state): Extension<AppState>) -> axum::response::Response {
-    ui_file_response(&state, "styles.css", "text/css; charset=utf-8")
-}
-
-async fn ui_asset_sentences(Extension(state): Extension<AppState>) -> axum::response::Response {
-    ui_file_response(&state, "sentences.js", "text/javascript; charset=utf-8")
-}
-
-async fn ui_asset_png(Extension(state): Extension<AppState>) -> axum::response::Response {
-    ui_file_response(&state, "koi.png", "image/png")
-}
-
-#[derive(serde::Deserialize)]
-pub struct PondUiFile {
-    pub path: String,
-    pub content: String,
-}
-
-#[derive(serde::Deserialize)]
-pub struct PondUiPublish {
-    pub files: Vec<PondUiFile>,
-}
-
-/// `PUT /v1/ui` — publish the pond UI (workbench-owned; DAT-gated by the
-/// mutation middleware). Fixed filename set: the door is not an arbitrary
-/// file write even with a valid DAT.
-async fn ui_publish_handler(
-    Extension(state): Extension<AppState>,
-    axum::Json(publish): axum::Json<PondUiPublish>,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    let Some(dir) = &state.ui_dir else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(serde_json::json!({
-                "error": "capability_disabled",
-                "message": "pond UI serving is not configured on this daemon"
-            })),
-        )
-            .into_response();
-    };
-    if std::fs::create_dir_all(dir).is_err() {
-        return (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(serde_json::json!({"error": "could not create ui dir"})),
-        )
-            .into_response();
-    }
-    let mut published = 0usize;
-    for file in &publish.files {
-        if !POND_UI_FILES.contains(&file.path.as_str()) {
-            return (
-                axum::http::StatusCode::BAD_REQUEST,
-                axum::Json(serde_json::json!({
-                    "error": format!("unknown pond UI file: {}", file.path)
-                })),
-            )
-                .into_response();
-        }
-    }
-    for file in &publish.files {
-        let outcome = if file.path.ends_with(".png") {
-            use base64::Engine as _;
-            base64::engine::general_purpose::STANDARD
-                .decode(file.content.as_bytes())
-                .map_err(|e| format!("koi.png: {e}"))
-                .and_then(|bytes| {
-                    std::fs::write(dir.join(&file.path), bytes).map_err(|e| format!("koi.png: {e}"))
-                })
-        } else {
-            std::fs::write(dir.join(&file.path), file.content.as_bytes())
-                .map_err(|e| format!("{}: {e}", file.path))
-        };
-        if let Err(e) = outcome {
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
-        published += 1;
-    }
-    axum::Json(serde_json::json!({ "published": published, "ok": true })).into_response()
-}
-
-/// require a valid `x-koi-token` header. Uses constant-time comparison to
+/// loopback peer and require the token from a remote one. Pond control is also
+/// token-gated on every method. All other methods require a valid
+/// `x-koi-token` header. Uses constant-time comparison to
 /// prevent timing attacks.
 pub(crate) async fn dat_auth_middleware(
     req: Request<Body>,
@@ -817,6 +692,9 @@ pub(crate) async fn dat_auth_middleware(
     // `/v1/mcp` it is a GET that opens a persistent live channel rather than
     // returning a static document, so it must carry the token on every request.
     let is_events_stream = path == paths::EVENTS;
+    // Pond desire is operator state. Even its GET is intentionally absent from
+    // the broad read exemption; the public projection lives on Pond's own router.
+    let is_pond_control = path == "/v1/pond";
     // The UDP surface is carved out of the GET exemption too: `/v1/udp/status`
     // enumerates every binding's id and `/v1/udp/recv/{id}` streams a binding's
     // inbound datagrams — both expose other token-holders' bindings, so reading
@@ -860,6 +738,7 @@ pub(crate) async fn dat_auth_middleware(
         && !is_audit_log
         && !is_posture
         && !is_events_stream
+        && !is_pond_control
         && !is_udp
         && protected_ok;
     // OPTIONS is always let through, even on a gated path: a CORS preflight carries no
@@ -966,41 +845,13 @@ async fn unified_status_handler(Extension(state): Extension<AppState>) -> Json<s
 /// default route (matched by its source IP), or — failing that — every
 /// non-loopback, non-link-local IPv4 interface.
 fn default_lan_interfaces() -> Vec<NetworkInterface> {
-    let all = if_addrs::get_if_addrs().unwrap_or_default();
-
-    if let Some(ip) = default_route_ipv4() {
-        if let Some(iface) = all.iter().find(|i| i.addr.ip() == std::net::IpAddr::V4(ip)) {
-            return vec![NetworkInterface {
-                name: iface.name.clone(),
-                ip: ip.to_string(),
-            }];
-        }
-    }
-
-    all.into_iter()
-        .filter(|iface| !iface.is_loopback())
-        .filter_map(|iface| match iface.addr.ip() {
-            std::net::IpAddr::V4(v4) if !v4.is_link_local() => Some(NetworkInterface {
-                name: iface.name,
-                ip: v4.to_string(),
-            }),
-            _ => None,
+    crate::network::lan_ipv4_interfaces()
+        .into_iter()
+        .map(|interface| NetworkInterface {
+            name: interface.name,
+            ip: interface.address.to_string(),
         })
         .collect()
-}
-
-/// The IPv4 source address the OS would use to reach the public internet — i.e.
-/// the address of the default-route interface. A UDP socket "connected" to a
-/// public IP sends no traffic; it only makes the kernel resolve its
-/// source-address choice, which `local_addr()` then reports. Returns `None`
-/// when there is no usable default route.
-fn default_route_ipv4() -> Option<std::net::Ipv4Addr> {
-    let sock = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
-    sock.connect(("8.8.8.8", 80)).ok()?;
-    match sock.local_addr().ok()?.ip() {
-        std::net::IpAddr::V4(v4) if !v4.is_unspecified() => Some(v4),
-        _ => None,
-    }
 }
 
 #[utoipa::path(get, path = "/v1/host", tag = "system",
@@ -1456,6 +1307,36 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn pond_control_get_requires_the_daemon_token() {
+        let expected = Arc::new("secret-token".to_string());
+        let app = Router::new()
+            .route("/v1/pond", get(|| async { "ok" }))
+            .route("/healthz", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                let expected = expected.clone();
+                dat_auth_middleware(req, next, expected)
+            }));
+
+        let response = app
+            .clone()
+            .oneshot(Request::get("/v1/pond").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = app
+            .oneshot(
+                Request::get("/v1/pond")
+                    .header(DAT_HEADER, "secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     // ── Protected zone/posture reads: loopback-exempt, remote-gated ──
     // /v1/certmesh/diagnose and /v1/dns/{list,zone,entries} carry zone + trust-posture
     // info: token-free for a loopback peer (local tooling), token-required from a
@@ -1645,6 +1526,8 @@ mod tests {
             "missing /v1/status: {paths:?}"
         );
         assert!(paths.contains(&"/v1/host"), "missing /v1/host: {paths:?}");
+        assert!(paths.contains(&"/v1/pond"), "missing /v1/pond: {paths:?}");
+        assert!(paths.contains(&"/v1/ui"), "missing /v1/ui: {paths:?}");
         // MCP is JSON-RPC over Streamable HTTP, not a utoipa surface — like ACME it
         // is deliberately excluded from /openapi.json.
         assert!(
@@ -1655,6 +1538,13 @@ mod tests {
             paths.contains(&"/v1/admin/shutdown"),
             "missing /v1/admin/shutdown: {paths:?}"
         );
+    }
+
+    #[test]
+    fn embedded_openapi_does_not_claim_unmounted_pond_routes() {
+        let spec = build_openapi_for(false);
+        assert!(!spec.paths.paths.contains_key("/v1/pond"));
+        assert!(!spec.paths.paths.contains_key("/v1/ui"));
     }
 
     #[test]
@@ -1712,7 +1602,6 @@ mod tests {
             mcp_http_enabled: false,
             webhook_sinks: 0,
             daemon: true,
-            ui_dir: None,
         }
     }
 

@@ -521,12 +521,16 @@ async fn assert_aggregation_surface(http: &reqwest::Client, daemon: &Daemon) {
         .collect();
     assert_eq!(
         status_names.len(),
-        8,
-        "the complete capability ladder (incl. the ipc rung) is visible"
+        9,
+        "the complete capability ladder (including IPC and Pond) is visible"
     );
     assert!(
         status_names.contains(&"ipc"),
         "the ipc rung is declared even when unmounted (ADR-035)"
+    );
+    assert!(
+        status_names.contains(&"pond"),
+        "the Pond rung is declared even when unmounted (ADR-042)"
     );
 
     let host = http

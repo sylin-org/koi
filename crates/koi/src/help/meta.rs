@@ -461,9 +461,10 @@ and otherwise stages the binary, prints how to run it, and exits non-zero;
 macOS uses a launchd plist. With --user, a per-user systemd service is
 installed instead (no sudo needed; linger is enabled) where one is possible.
 
-The standard port trio (5641/5642/5643) is probed first; when occupied, a
-free run is chosen and recorded in the config file the service reads. Port
-decisions already declared in a config file or systemd drop-in are honored.
+The standard port run (5641/5642/5643, plus derived Pond port 5644) is probed
+first; when occupied, a free run is chosen and the three configurable ports are
+recorded in the config file the service reads. Port decisions already declared
+in a config file or systemd drop-in are honored.
 
 Requires elevated privileges (Administrator / sudo) for system installs.",
         category: KoiCategory::Core,

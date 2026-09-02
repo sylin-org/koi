@@ -16,7 +16,7 @@ containers or other hosts, start the daemon with `--http-bind bridge` / `<ip>` /
 
 **Daemon Access Token (DAT):**
 At startup, the daemon generates a fresh random token and writes it to the breadcrumb file (`koi.endpoint`) with owner-only permissions.
-- **GET / HEAD / OPTIONS** requests are unauthenticated (exempt from token checks) — **except `/v1/mcp`** (live channel), **`/v1/certmesh/log`** (the CA audit trail), and the **`/v1/udp/*`** surface (binding enumeration + datagram streams), which all require the token on *every* method, on *every* peer.
+- **GET / HEAD / OPTIONS** requests are unauthenticated (exempt from token checks) — **except `/v1/mcp`** (live channel), **`/v1/certmesh/log`** (the CA audit trail), **`/v1/pond`** (operator desire), and the **`/v1/udp/*`** surface (binding enumeration + datagram streams), which all require the token on *every* method, on *every* peer.
 - **Peer-gated reads:** `/v1/certmesh/diagnose` and `/v1/dns/{list,zone,entries}` are GET-exempt for a **loopback** peer (local CLI / dashboard) but require the token from a **non-loopback** peer; when the peer address is unknown they fail closed. By contrast, `/v1/certmesh/status` and `/v1/certmesh/trust-bundle` stay open on *every* peer — they are load-bearing in the unauthenticated cross-host protocol (a joining node reads `ca_fingerprint` from status before it holds any credential; members pull the ES256-signed, self-verifying trust-bundle over plain HTTP).
 - **All mutations (POST, PUT, DELETE)** require the token to be sent in the `x-koi-token` header (except `/v1/certmesh/join`, which uses standard TOTP credentials during bootstrap).
 - **Server-Sent Events (SSE)** endpoints are `GET`, so they are unauthenticated on the open methods above — except `/v1/mcp`'s server→client SSE stream and `/v1/udp/recv/{id}`, which require the `x-koi-token` header.
@@ -45,6 +45,18 @@ Interactive API docs are available at `GET /docs` (Scalar UI).
 | GET    | `/.well-known/mcp/server-card.json` | Public MCP discovery descriptor (unauthenticated) |
 | GET    | `/openapi.json`      | OpenAPI specification                      |
 | GET    | `/docs`              | Interactive API documentation              |
+
+### Pond operator control and public projection
+
+The full operator adapter exposes DAT-gated `PUT /v1/ui` (publish the exact
+five-file browser bundle) and `GET|PUT|DELETE /v1/pond` (inspect, desire, and
+stop the adapter). `PUT /v1/pond` returns the observed `url` only after a real
+bind, interface observation, and supported firewall assessment settle.
+
+Pond itself is a different, read-only router on `http_port + 3` (normally
+5644). It exposes only `/`, the four assets, `/healthz`, a privacy-reduced
+`/v1/status`, `/v1/mdns/browser/snapshot`, and `/v1/dns/entries`. It does not
+mount the full router, mutation routes, OpenAPI, audit history, or the DAT.
 
 ### MCP over Streamable HTTP (not in OpenAPI)
 

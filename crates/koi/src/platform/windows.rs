@@ -733,6 +733,14 @@ fn firewall_ports_for_config(
             config.http_port,
         ));
     }
+    // Pond is separately operator-armed, but its listener is intentionally LAN-bound.
+    // Provision the managed rule at install time so activation never needs elevation or
+    // mutates host policy. With Pond disabled there is no socket behind the open port.
+    if !config.no_http {
+        if let Some(port) = koi_serve::pond::port_for_http(config.http_port) {
+            ports.push(FirewallPort::new("Pond", FirewallProtocol::Tcp, port));
+        }
+    }
     if !config.no_dns {
         ports.extend(koi_dns::firewall_ports(&config.dns_config()));
     }

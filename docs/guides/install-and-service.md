@@ -179,8 +179,12 @@ On Windows, `koi install` manages inbound firewall rules with `netsh advfirewall
 
 - **mDNS** (UDP 5353) and **DNS** (when the DNS capability is enabled) — these bind broadly, so they get rules.
 - **The HTTP API port — only when it's exposed.** By default the HTTP API binds loopback (`127.0.0.1`), and loopback traffic never crosses the firewall, so **no HTTP rule is created**. A rule is added only when you bind it off-loopback (`--http-bind bridge`, a specific NIC IP, or `0.0.0.0`).
+- **Pond** (TCP `http_port + 3`, normally 5644) — the rule is installed in
+  advance because the separately armed read-only listener is deliberately
+  reachable from the LAN. When Pond is disabled no socket is behind the rule;
+  enabling it later does not need elevation or mutate firewall policy.
 
-`koi uninstall` removes the rules it created (and cleans up rules from older versions). Linux and macOS don't auto-manage the firewall — open ports with your distro's firewall tooling if you expose the daemon.
+`koi uninstall` removes the rules it created (and cleans up rules from older versions). Linux and macOS don't auto-manage the firewall. Pond observes firewalld and UFW on Linux, reporting blocked or unknown state without changing either; operators retain control of that policy.
 
 > Exposing the HTTP port does **not** relax authentication. Mutating requests still require the daemon access token regardless of bind address — see the [security model](../reference/security-model.md).
 

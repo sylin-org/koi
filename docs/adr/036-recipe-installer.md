@@ -15,7 +15,7 @@ universal — static-pie, zero dependencies on every distro tried — and the co
 substrate (ADR-031) is universal. What varies is exactly three things:
 
 1. **how the daemon is supervised** (SCM / systemd / OpenRC / launchd / nothing),
-2. **which ports are free** (machine state — twice the standard trio was already
+2. **which ports are free** (machine state — twice the standard run was already
    held by another product),
 3. **what tools exist for verification** (curl is missing on half the fleet).
 
@@ -52,9 +52,11 @@ Distro names drift; capabilities don't.
    rename and the installer says exactly what to do instead of a raw OS error.
 2. **Detect the init system** → pick a recipe. Unknown is a recipe too (below),
    never an ENOENT stack trace.
-3. **Port pre-flight.** Probe the standard trio by binding it. All free →
-   standard plan. Occupied → shift the whole trio by tens
-   (5641/2/3 → 5651/2/3 → …) until a free run is found. Existing machine
+3. **Port pre-flight.** Probe the standard configured trio plus Pond's derived
+   fourth port (`http + 3`) by binding all four. All free → standard plan.
+   Occupied → shift the whole run by tens (5641/2/3/4 → 5651/2/3/4 → …)
+   until a free run is found. Only the existing three configurable ports are
+   persisted; Pond remains derived. Existing machine
    decisions win: a systemd drop-in or a `config.toml` that already declares
    ports is honored verbatim and printed, never re-planned.
 4. **Persist a shifted plan in the config substrate**, not in ad-hoc env

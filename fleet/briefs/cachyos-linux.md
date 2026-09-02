@@ -27,5 +27,7 @@ correct it in place—do not revive the old user daemon or run a second Koi.
    entry that points into a source checkout. On Wayland, compare the visible
    decoration and controls with the established Ghostlight implementation on
    this same machine; a successful renderer launch is not sufficient visual proof.
-3. Pond UI on this machine: publish from the workbench, open in the
-   default browser, verify parity of the read-only view.
+3. Install the native `koi-desktop-git` Arch package, then validate the autostart,
+   notification, and fresh-login path against `/usr/bin/koi-desktop`. Exercise the
+   ADR-042 Pond physical gate from an independent fleet server, including explicit
+   stop and restart recovery; do not use the checkout binary as acceptance evidence.

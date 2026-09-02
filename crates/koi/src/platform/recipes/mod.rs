@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 pub const STD_HTTP: u16 = 5641;
 pub const STD_MTLS: u16 = 5642;
 pub const STD_ACME: u16 = 5643;
-/// Shift the trio by tens when the standard run is occupied (max scan).
+/// Shift the contiguous port run by tens when the standard run is occupied (max scan).
 const MAX_SHIFT: u32 = 100;
 
 #[cfg(target_os = "linux")]
@@ -106,7 +106,8 @@ pub fn uninstall() -> anyhow::Result<()> {
 
 // ── Port planning ───────────────────────────────────────────────────
 
-/// The trio of daemon ports a machine will use, and why.
+/// The three configured daemon ports a machine will use, and why. Pond is the
+/// derived fourth port (`http + 3`) and deliberately is not another config key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortPlan {
     pub http: u16,
@@ -125,7 +126,7 @@ impl PortPlan {
         }
     }
 
-    /// The trio shifted by `n` tens; `None` on u16 overflow.
+    /// The configured ports shifted by `n` tens; `None` on u16 overflow.
     pub fn shift(n: u32) -> Option<Self> {
         // n is bounded by MAX_SHIFT (100) in planning; u32::MAX still
         // refuses cleanly via the multiply.
@@ -138,15 +139,28 @@ impl PortPlan {
         })
     }
 
-    /// One line the operator reads: the trio and, when shifted, why it matters.
+    /// One line the operator reads: the complete run and, when shifted, why it matters.
     pub fn describe(&self) -> String {
+        let pond = koi_serve::pond::port_for_http(self.http)
+            .map(|port| port.to_string())
+            .unwrap_or_else(|| "unavailable".to_string());
         if self.shifted {
             format!(
-                "{}:{}:{} (shifted — the standard {}:{}:{} was occupied)",
-                self.http, self.mtls, self.acme, STD_HTTP, STD_MTLS, STD_ACME
+                "{}:{}:{}:{} (shifted — the standard {}:{}:{}:{} was occupied)",
+                self.http,
+                self.mtls,
+                self.acme,
+                pond,
+                STD_HTTP,
+                STD_MTLS,
+                STD_ACME,
+                koi_serve::pond::DEFAULT_POND_PORT
             )
         } else {
-            format!("{}:{}:{} (standard)", self.http, self.mtls, self.acme)
+            format!(
+                "{}:{}:{}:{} (standard)",
+                self.http, self.mtls, self.acme, pond
+            )
         }
     }
 }
@@ -156,12 +170,14 @@ pub fn port_free(port: u16) -> bool {
     std::net::TcpListener::bind(("0.0.0.0", port)).is_ok()
 }
 
-/// Plan the trio against a probe. Pure w.r.t. the probe so tests can pin it.
+/// Plan the complete four-port run against a probe. Pure w.r.t. the probe so tests can pin it.
 pub fn plan_ports_with(is_free: impl Fn(u16) -> bool) -> PortPlan {
     for n in 0..=MAX_SHIFT {
-        if let Some(trio) = PortPlan::shift(n) {
-            if [trio.http, trio.mtls, trio.acme].into_iter().all(&is_free) {
-                return trio;
+        if let Some(plan) = PortPlan::shift(n) {
+            let configured_free = [plan.http, plan.mtls, plan.acme].into_iter().all(&is_free);
+            let pond_free = koi_serve::pond::port_for_http(plan.http).is_some_and(&is_free);
+            if configured_free && pond_free {
+                return plan;
             }
         }
     }
@@ -287,7 +303,7 @@ pub fn honor_existing_config(config_path: &Path) -> Existing {
 // ── Persisting a shifted plan in the config substrate ───────────────
 
 const INSTALLER_MARKER: &str =
-    "# --- koi install: standard ports were occupied; this trio was chosen ---";
+    "# --- koi install: standard ports were occupied; this port run was chosen ---";
 
 fn port_lines(plan: &PortPlan) -> String {
     format!(
@@ -322,7 +338,7 @@ pub fn write_config_new(path: &Path, plan: &PortPlan) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Append the port trio under the installer marker. Existing keys are never
+/// Append the configured ports under the installer marker. Existing keys are never
 /// modified; the caller has already verified none are declared.
 pub fn append_config_ports(path: &Path, plan: &PortPlan) -> anyhow::Result<()> {
     let mut body = std::fs::read_to_string(path)?;
@@ -348,11 +364,11 @@ pub fn persist_plan(existing: &Existing, planned: &PortPlan, fresh_path: &Path) 
             format!("ports stay as declared by {source}")
         }
         Existing::ConfigWithoutPorts(path) => match append_config_ports(path, planned) {
-            Ok(()) => format!("port trio appended to {}", path.display()),
+            Ok(()) => format!("port run appended to {}", path.display()),
             Err(e) => format!("warning: could not record ports in {}: {e}", path.display()),
         },
         Existing::Nothing => match write_config_new(fresh_path, planned) {
-            Ok(()) => format!("port trio written to {}", fresh_path.display()),
+            Ok(()) => format!("port run written to {}", fresh_path.display()),
             Err(e) => format!("warning: could not write {}: {e}", fresh_path.display()),
         },
     }
@@ -448,7 +464,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trio_shifts_by_tens() {
+    fn port_run_shifts_by_tens() {
         assert_eq!(PortPlan::shift(0), Some(PortPlan::standard()));
         let one = PortPlan::shift(1).unwrap();
         assert_eq!((one.http, one.mtls, one.acme), (5651, 5652, 5653));
@@ -469,6 +485,13 @@ mod tests {
         // Everything from the standard run through two shifts occupied.
         let wide_held = |p: u16| (STD_HTTP..=STD_ACME + 20).contains(&p);
         assert_eq!(plan_ports_with(|p| !wide_held(p)).http, STD_ACME + 30 - 2);
+    }
+
+    #[test]
+    fn plan_skips_a_run_when_only_pond_is_occupied() {
+        let plan = plan_ports_with(|port| port != koi_serve::pond::DEFAULT_POND_PORT);
+        assert_eq!((plan.http, plan.mtls, plan.acme), (5651, 5652, 5653));
+        assert!(plan.describe().starts_with("5651:5652:5653:5654"));
     }
 
     #[test]

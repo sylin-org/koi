@@ -36,6 +36,8 @@ pub mod http;
 pub mod local_ipc;
 pub mod mcp_http;
 pub mod mtls;
+pub mod network;
+pub mod pond;
 pub mod prometheus_sd;
 pub mod serve;
 pub mod stdio;

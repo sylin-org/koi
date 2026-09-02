@@ -12,4 +12,5 @@ You are the musl truth: the libc nothing else in the fleet compiles for.
    journal kickoff entry), retire the nohup shape, re-enroll.
 3. The webview question: attempt koi-desktop on musl (webkit2gtk). If it
    cannot build, that is a FINDING, not a failure — document precisely why
-   and confirm the pond UI in a browser as the honest Plasma surface here.
+   and run the ADR-042 Pond physical gate in a browser as the honest Plasma
+   surface here.
