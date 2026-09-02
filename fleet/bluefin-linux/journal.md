@@ -57,3 +57,16 @@ findings:
 2. The one installed daemon completed an in-place upgrade (`2225→15464`), real uninstall (unit absent, service inactive, installed binary intentionally preserved), and reinstall from `/usr/local/bin/koi` (`16294`). The operator remained UID 1000, the artifact hash matched throughout the final install, the desktop stayed singleton, and a 150-second final soak crossed the provider retry interval with no Koi warnings.
 3. The booted immutable deployment proved rollback from desktop RPM 0.1.2 to 0.1.1. rpm-ostree refused an unsafe same-name live replacement; its reset retained the booted 0.1.1 bytes and staged a normal 0.1.2 deployment. Activating and verifying that deployment requires the next real reboot and is not claimed by this entry.
 4. Measured trust state is Open (`CA not initialized`), contrary to the older authenticated-member journal state. No invite was available or reused, so this session preserved the measured state instead of inventing enrollment evidence.
+
+## 2026-09-02 00:21 EDT — PH-1 native RPM 0.1.2 reboot activation checkpoint
+
+commit: koi source `c658cde`; installed daemon SHA-256 `d50ebc19e3f32b722dac0cebb4ab233665044d2a7892e743ee297ffa3df93fc9`; koi-desktop source `4c05ed2`; installed RPM `koi-0.1.2-1.x86_64`; installed desktop SHA-256 `89c74984af61f35d5a5d06905547963c67936364356b5f084c3d15d41ebd7ca2` | gates: rpm-ostree staged-deployment activation; real boot; systemd readiness; GNOME XDG autostart; live SNI registration; CLI/HTTP health
+koi state now: boot ID `dfaf8186bef14923b35e124c938c09a8`; exactly one enabled system daemon, PID `2211`, `/usr/local/bin/koi --daemon`, with zero systemd restarts; exactly one `/usr/bin/koi-desktop --minimized`, PID `2975`, launched by the real GNOME session from product-owned XDG autostart; operator HTTP is `127.0.0.1:5641`; Pond is disabled and 5644 is closed; Avahi owns publish/browse/resolve; cooperative DNS owns UDP+TCP on `127.0.0.1:53` and `192.168.1.95:53`.
+peers/run: none — local post-reboot PH-1 activation checkpoint; no cross-host assertion or peer mutation
+restoration: no mutation in this continuation; the previously staged rpm-ostree deployment is now booted, no further staged deployment remains, and no temporary login, provider, firewall, credential, or test state was introduced.
+findings:
+
+1. The deferred 0.1.2 activation from the preceding entry is complete. `rpm -q` and ownership checks resolve `/usr/bin/koi-desktop` to `koi-0.1.2-1.x86_64`; the executable, desktop entry, and icon are package-owned, while the system daemon remains the recorded product-owned `/usr/local/bin/koi` candidate.
+2. The real user GNOME/Wayland session launched one workbench at session initialization. GNOME Shell's live `org.kde.StatusNotifierWatcher` reports exactly `:1.48@/org/ayatana/NotificationItem/tray_icon_tray_app_koi`, with the host registered; no duplicate Koi process or item exists.
+3. The daemon became ready at boot with PID `2211`, reports Koi `v1.0.0-rc.2`, healthy authenticated local control, Avahi routes, cooperative DNS, and disabled Pond. The only startup warning is the truthful absence of an optional Docker/Podman runtime backend.
+4. This entry is the durable post-reboot checkpoint: the 0.1.2 activation must not be repeated by a later agent continuation.
