@@ -46,6 +46,8 @@ pub struct ServeConfig {
     pub local_endpoint: Option<String>,
     /// Resolved daemon storage root handed only to the authorized local operator.
     pub data_root: PathBuf,
+    /// Config path selected by the host's launch precedence.
+    pub config_path: PathBuf,
     pub mtls_port: u16,
     pub acme_port: u16,
     pub no_acme: bool,
@@ -238,6 +240,11 @@ pub fn serve(
         });
         let mdns = cores.mdns.clone();
         let local_data_root = cfg.data_root.to_string_lossy().into_owned();
+        let local_info = koi_common::local_control::LocalDaemonInfo {
+            version: koi_common::local_control::LOCAL_CONTROL_VERSION,
+            data_root: local_data_root.clone(),
+            config_path: cfg.config_path.to_string_lossy().into_owned(),
+        };
         let local_cfg = crate::local_ipc::LocalControlConfig {
             path: cfg.pipe_path.clone(),
             operator: cfg.local_operator,
@@ -249,6 +256,7 @@ pub fn serve(
                     data_root: Some(local_data_root),
                 }
             }),
+            info: local_info,
         };
         let token = cancel.clone();
         tasks.push(tokio::spawn(async move {

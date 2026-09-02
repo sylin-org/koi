@@ -15,11 +15,19 @@ pub const LOCAL_CONTROL_VERSION: u16 = 1;
 pub enum LocalControlRequest {
     /// Return credentials for the currently running local daemon.
     Access { version: u16 },
+    /// Return non-secret facts about the currently running local daemon.
+    Info { version: u16 },
 }
 
 impl LocalControlRequest {
     pub fn access() -> Self {
         Self::Access {
+            version: LOCAL_CONTROL_VERSION,
+        }
+    }
+
+    pub fn info() -> Self {
+        Self::Info {
             version: LOCAL_CONTROL_VERSION,
         }
     }
@@ -38,6 +46,16 @@ pub struct LocalDaemonAccess {
     pub data_root: Option<String>,
 }
 
+/// Non-secret facts disclosed only across the authenticated local transport.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalDaemonInfo {
+    pub version: u16,
+    /// Resolved daemon storage root.
+    pub data_root: String,
+    /// Config path selected by the daemon's own launch precedence.
+    pub config_path: String,
+}
+
 /// One newline-delimited response from the local daemon.
 ///
 /// Intentionally does not implement `Debug`: the `Access` variant contains the DAT.
@@ -45,6 +63,7 @@ pub struct LocalDaemonAccess {
 #[serde(tag = "response", rename_all = "snake_case")]
 pub enum LocalControlResponse {
     Access(LocalDaemonAccess),
+    Info(LocalDaemonInfo),
     Error { code: String, message: String },
 }
 
@@ -74,6 +93,16 @@ mod tests {
     }
 
     #[test]
+    fn info_request_has_a_stable_versioned_wire_shape() {
+        let json = serde_json::to_string(&LocalControlRequest::info()).unwrap();
+        assert_eq!(json, r#"{"request":"info","version":1}"#);
+        assert!(
+            serde_json::from_str::<LocalControlRequest>(&json).unwrap()
+                == LocalControlRequest::info()
+        );
+    }
+
+    #[test]
     fn access_response_round_trips() {
         let response = LocalControlResponse::Access(LocalDaemonAccess {
             version: LOCAL_CONTROL_VERSION,
@@ -95,5 +124,16 @@ mod tests {
             panic!("expected access response");
         };
         assert_eq!(access.data_root, None);
+    }
+
+    #[test]
+    fn info_response_round_trips() {
+        let response = LocalControlResponse::Info(LocalDaemonInfo {
+            version: LOCAL_CONTROL_VERSION,
+            data_root: "/var/lib/koi".to_string(),
+            config_path: "/etc/koi/config.toml".to_string(),
+        });
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(serde_json::from_str::<LocalControlResponse>(&json).unwrap() == response);
     }
 }

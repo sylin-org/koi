@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use hickory_proto::rr::RecordType;
 use koi_common::local_control::{
-    LocalControlRequest, LocalControlResponse, LocalDaemonAccess, LOCAL_CONTROL_VERSION,
+    LocalControlRequest, LocalControlResponse, LocalDaemonAccess, LocalDaemonInfo,
+    LOCAL_CONTROL_VERSION,
 };
 use koi_common::mdns_protocol::{
     AdminRegistration, DaemonStatus, RegisterPayload, RegistrationResult, RenewalResult,
@@ -520,13 +521,61 @@ pub fn local_daemon_access() -> Result<LocalDaemonAccess> {
 }
 
 fn request_local_access() -> Result<LocalDaemonAccess> {
-    let request = serde_json::to_string(&LocalControlRequest::access())
-        .map_err(|error| ClientError::Decode(error.to_string()))?;
+    match request_local_control(&LocalControlRequest::access())? {
+        LocalControlResponse::Access(access)
+            if access.version == LOCAL_CONTROL_VERSION
+                && !access.endpoint.is_empty()
+                && !access.token.is_empty() =>
+        {
+            Ok(access)
+        }
+        LocalControlResponse::Access(_) => Err(ClientError::Decode(
+            "invalid local daemon access response".to_string(),
+        )),
+        LocalControlResponse::Info(_) => Err(ClientError::Decode(
+            "local daemon returned info to an access request".to_string(),
+        )),
+        LocalControlResponse::Error { code, message } => Err(ClientError::Api {
+            error: code,
+            message,
+        }),
+    }
+}
+
+/// Resolve non-secret facts from the authenticated local-control transport.
+///
+/// Unlike [`local_daemon_access`], this never falls back to the breadcrumb:
+/// the daemon itself is the authority for its launch-time config path.
+pub fn local_daemon_info() -> Result<LocalDaemonInfo> {
+    match request_local_control(&LocalControlRequest::info())? {
+        LocalControlResponse::Info(info)
+            if info.version == LOCAL_CONTROL_VERSION
+                && !info.data_root.is_empty()
+                && !info.config_path.is_empty() =>
+        {
+            Ok(info)
+        }
+        LocalControlResponse::Info(_) => Err(ClientError::Decode(
+            "invalid local daemon info response".to_string(),
+        )),
+        LocalControlResponse::Access(_) => Err(ClientError::Decode(
+            "local daemon returned access to an info request".to_string(),
+        )),
+        LocalControlResponse::Error { code, message } => Err(ClientError::Api {
+            error: code,
+            message,
+        }),
+    }
+}
+
+fn request_local_control(request: &LocalControlRequest) -> Result<LocalControlResponse> {
+    let request =
+        serde_json::to_string(request).map_err(|error| ClientError::Decode(error.to_string()))?;
 
     let mut last_error = None;
     for path in koi_config::breadcrumb::local_control_candidates() {
-        match request_local_access_at(&path, &request) {
-            Ok(access) => return Ok(access),
+        match request_local_control_at(&path, &request) {
+            Ok(response) => return Ok(response),
             Err(error) => last_error = Some(error),
         }
     }
@@ -535,7 +584,7 @@ fn request_local_access() -> Result<LocalDaemonAccess> {
     }))
 }
 
-fn request_local_access_at(path: &std::path::Path, request: &str) -> Result<LocalDaemonAccess> {
+fn request_local_control_at(path: &std::path::Path, request: &str) -> Result<LocalControlResponse> {
     #[cfg(unix)]
     let stream = {
         let stream = std::os::unix::net::UnixStream::connect(path)
@@ -574,24 +623,8 @@ fn request_local_access_at(path: &std::path::Path, request: &str) -> Result<Loca
         BufReader::new(stream)
             .read_line(&mut line)
             .map_err(|error| ClientError::Transport(error.to_string()))?;
-        match serde_json::from_str::<LocalControlResponse>(line.trim())
-            .map_err(|error| ClientError::Decode(error.to_string()))?
-        {
-            LocalControlResponse::Access(access)
-                if access.version == LOCAL_CONTROL_VERSION
-                    && !access.endpoint.is_empty()
-                    && !access.token.is_empty() =>
-            {
-                Ok(access)
-            }
-            LocalControlResponse::Access(_) => Err(ClientError::Decode(
-                "invalid local daemon access response".to_string(),
-            )),
-            LocalControlResponse::Error { code, message } => Err(ClientError::Api {
-                error: code,
-                message,
-            }),
-        }
+        serde_json::from_str::<LocalControlResponse>(line.trim())
+            .map_err(|error| ClientError::Decode(error.to_string()))
     }
 }
 

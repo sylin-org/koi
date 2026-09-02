@@ -785,17 +785,25 @@ pub struct Config {
     /// Machine-scoped data root, resolved once at the daemon composition root
     /// and injected into the domain cores (no ambient re-resolution).
     pub data_dir: PathBuf,
+    /// Config path selected by launch precedence, whether or not the default
+    /// file currently exists.
+    pub config_path: PathBuf,
 }
 
 impl Config {
     pub fn from_cli(cli: &Cli) -> Self {
         let pipe_path = cli.pipe.clone().unwrap_or_else(default_pipe_path);
+        let config_path = cli
+            .config
+            .clone()
+            .unwrap_or_else(crate::config_file::default_path);
         // Composition root: resolve the data dir once (honours KOI_DATA_DIR)
         // and thread it everywhere instead of re-resolving ad hoc.
         #[allow(clippy::disallowed_methods)]
         let data_dir = koi_common::paths::koi_data_dir();
         Self {
             data_dir,
+            config_path,
             http_port: cli.port,
             mtls_port: cli.mtls_port,
             acme_port: cli.acme_port,
@@ -945,9 +953,11 @@ impl Config {
         // Composition root: resolve the data dir once (honours KOI_DATA_DIR).
         #[allow(clippy::disallowed_methods)]
         let data_dir = koi_common::paths::koi_data_dir();
+        let config_path = crate::config_file::default_path();
 
         Self {
             data_dir,
+            config_path,
             http_port,
             mtls_port,
             acme_port,
@@ -983,6 +993,7 @@ impl Default for Config {
         let data_dir = koi_common::paths::koi_data_dir();
         Self {
             data_dir,
+            config_path: crate::config_file::default_path(),
             http_port: DEFAULT_HTTP_PORT,
             mtls_port: koi_serve::mtls::DEFAULT_MTLS_PORT,
             acme_port: koi_serve::acme::DEFAULT_ACME_PORT,
@@ -2056,5 +2067,20 @@ mod tests {
         assert!(!cfg.no_mcp_http);
         assert!(!cfg.announce_http);
         assert!(!cfg.dns_public);
+    }
+
+    #[test]
+    fn resolved_config_carries_explicit_or_platform_path() {
+        let cli = Cli::try_parse_from(["koi", "--config", "chosen.toml"]).unwrap();
+        assert_eq!(
+            Config::from_cli(&cli).config_path,
+            PathBuf::from("chosen.toml")
+        );
+
+        let cli = Cli::try_parse_from(["koi"]).unwrap();
+        assert_eq!(
+            Config::from_cli(&cli).config_path,
+            crate::config_file::default_path()
+        );
     }
 }

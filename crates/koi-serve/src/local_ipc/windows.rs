@@ -57,9 +57,12 @@ pub(super) async fn start(
                 }
                 let mdns = mdns.clone();
                 let access = config.access.clone();
+                let info = config.info.clone();
                 tokio::spawn(async move {
                     let (reader, writer) = split_stream(server);
-                    if let Err(error) = super::handle_connection(mdns, reader, writer, access).await {
+                    if let Err(error) =
+                        super::handle_connection(mdns, reader, writer, access, info).await
+                    {
                         tracing::debug!(%error, "Local-control connection closed with an error");
                     }
                 });

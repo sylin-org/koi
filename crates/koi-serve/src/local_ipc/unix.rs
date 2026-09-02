@@ -36,15 +36,18 @@ pub(super) async fn start(
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
                 let peer_uid = stream.peer_cred()?.uid();
-                if peer_uid != expected_uid {
+                if !peer_is_authorized(peer_uid, expected_uid) {
                     tracing::warn!(peer_uid, expected_uid, "Rejected unauthorized local-control peer");
                     continue;
                 }
                 let mdns = mdns.clone();
                 let access = config.access.clone();
+                let info = config.info.clone();
                 tokio::spawn(async move {
                     let (reader, writer) = split_stream(stream);
-                    if let Err(error) = super::handle_connection(mdns, reader, writer, access).await {
+                    if let Err(error) =
+                        super::handle_connection(mdns, reader, writer, access, info).await
+                    {
                         tracing::debug!(%error, "Local-control connection closed with an error");
                     }
                 });
@@ -57,6 +60,12 @@ pub(super) async fn start(
     remove_owned_socket(&config.path);
     tracing::debug!("Local control stopped (Unix socket)");
     Ok(())
+}
+
+fn peer_is_authorized(peer_uid: u32, expected_uid: u32) -> bool {
+    // Root already has read access to the owner-private breadcrumb and is the
+    // Unix counterpart to SYSTEM/Administrators in the Windows pipe DACL.
+    peer_uid == expected_uid || peer_uid == 0
 }
 
 fn remove_stale_socket(path: &Path) -> anyhow::Result<()> {
@@ -97,5 +106,17 @@ fn chown_socket(path: &Path, uid: u32) -> anyhow::Result<()> {
         Ok(())
     } else {
         Err(std::io::Error::last_os_error().into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::peer_is_authorized;
+
+    #[test]
+    fn local_control_accepts_operator_and_root_only() {
+        assert!(peer_is_authorized(1000, 1000));
+        assert!(peer_is_authorized(0, 1000));
+        assert!(!peer_is_authorized(65534, 1000));
     }
 }

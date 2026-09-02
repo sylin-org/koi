@@ -29,11 +29,14 @@ not a helper process or second service.
    `state/local-access.json`; it contains no secret.
 2. The daemon keeps the DAT breadcrumb owner-only. A versioned `access` request returns the
    running HTTP endpoint, DAT, and resolved data root only over the authenticated local
-   transport. The data root is additive and optional on the wire: older clients ignore it,
-   while newer clients talking to an older daemon report it as unknown and never infer an OS
-   default. A disabled HTTP adapter returns a real typed error.
+   transport. A separate non-secret `info` request returns the daemon's resolved data root and
+   launch-selected config path even when HTTP is disabled. The data root on `access` remains
+   additive and optional: older clients ignore it, while newer clients talking to an older
+   daemon report unavailable facts as unknown and never infer an OS default. A disabled HTTP
+   adapter returns a real typed error only for `access`.
 3. The Unix socket is `0600`, owned by the recorded UID, and every accepted connection's peer
-   UID is verified. The Windows pipe has an explicit protected DACL for SYSTEM,
+   UID is verified as that operator or root (which already owns the private breadcrumb). The
+   Windows pipe has an explicit protected DACL for SYSTEM,
    Administrators, and the recorded SID; remote clients are rejected and the connected
    process token SID is verified before any bytes are answered. Authorization failure is a
    silent connection rejection and never a token-bearing response.
@@ -60,6 +63,9 @@ desktop's single `local_daemon` module. No HTTP endpoint bypasses DAT authentica
 - The workbench can show a custom or platform-default data root exactly as the running daemon
   resolved it. Public `/v1/status` and the LAN Pond bundle do not disclose that machine-local
   path; browser mode hides the tile.
+- `koi config path/show` can name the installed service's real config without guessing from the
+  invoking user's environment. Explicit `--config` still wins, and user services report their
+  natural per-user path.
 - Service upgrades should run through `koi install` once to capture the desired operator.
   A pre-policy foreground daemon safely falls back to its own identity and logs that fact.
 - Another local account cannot use the socket merely because it knows the path. Root and
@@ -70,8 +76,8 @@ desktop's single `local_daemon` module. No HTTP endpoint bypasses DAT authentica
 
 ## Validation
 
-- Wire tests pin the versioned request, current access response, and deserialization of a
-  legacy response without `data_root`.
+- Wire tests pin both versioned requests, current access/info responses, and deserialization of
+  a legacy response without `data_root`.
 - Client and serving-stack suites exercise both breadcrumb and authenticated transport paths;
   strict clippy covers the shared implementation and a Windows GNU target check covers the
   Windows service composition root.

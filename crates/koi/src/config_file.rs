@@ -202,6 +202,56 @@ pub fn init(path: &Path, force: bool) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionPathSource {
+    Explicit,
+    ActiveDaemon,
+    InvocationDefault,
+}
+
+struct ActionPath {
+    path: PathBuf,
+    source: ActionPathSource,
+}
+
+fn select_action_path(
+    explicit: Option<PathBuf>,
+    active_daemon: Option<PathBuf>,
+    invocation_default: PathBuf,
+) -> ActionPath {
+    if let Some(path) = explicit {
+        return ActionPath {
+            path,
+            source: ActionPathSource::Explicit,
+        };
+    }
+    if let Some(path) = active_daemon {
+        return ActionPath {
+            path,
+            source: ActionPathSource::ActiveDaemon,
+        };
+    }
+    ActionPath {
+        path: invocation_default,
+        source: ActionPathSource::InvocationDefault,
+    }
+}
+
+fn resolve_action_path(explicit: Option<&Path>) -> anyhow::Result<ActionPath> {
+    let explicit = match explicit {
+        Some(path) => discover(Some(path)).map_err(anyhow::Error::msg)?,
+        None => None,
+    };
+    let active_daemon = if explicit.is_none() {
+        koi_client::local_daemon_info()
+            .ok()
+            .map(|info| PathBuf::from(info.config_path))
+    } else {
+        None
+    };
+    Ok(select_action_path(explicit, active_daemon, default_path()))
+}
+
 /// Execute `koi config init|show|path`.
 pub fn run_action(
     action: &crate::cli::ConfigAction,
@@ -218,25 +268,30 @@ pub fn run_action(
             println!("Wrote {}", written.display());
         }
         ConfigAction::Show => {
-            let path = discover(explicit).map_err(|e| anyhow::anyhow!(e))?;
-            match path {
-                Some(p) => {
-                    println!("# {}", p.display());
-                    let body = std::fs::read_to_string(&p)
-                        .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", p.display()))?;
+            let resolved = resolve_action_path(explicit)?;
+            match std::fs::read_to_string(&resolved.path) {
+                Ok(body) => {
+                    println!("# {}", resolved.path.display());
                     print!("{body}");
                 }
-                None => {
-                    println!("none (default location: {})", default_path().display());
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let label = match resolved.source {
+                        ActionPathSource::ActiveDaemon => "active daemon location",
+                        ActionPathSource::InvocationDefault => "default location",
+                        ActionPathSource::Explicit => {
+                            anyhow::bail!(
+                                "--config {} disappeared before it could be read",
+                                resolved.path.display()
+                            )
+                        }
+                    };
+                    println!("none ({label}: {})", resolved.path.display());
                 }
+                Err(error) => anyhow::bail!("cannot read {}: {error}", resolved.path.display()),
             }
         }
         ConfigAction::Path => {
-            let path = discover(explicit).map_err(|e| anyhow::anyhow!(e))?;
-            match path {
-                Some(p) => println!("{}", p.display()),
-                None => println!("{}", default_path().display()),
-            }
+            println!("{}", resolve_action_path(explicit)?.path.display());
         }
     }
     Ok(())
@@ -358,5 +413,28 @@ no_webhooks = true
         assert!(init(&path, false).is_err(), "second init refuses");
         assert!(load(&path).is_ok(), "written template loads");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn action_path_precedence_is_explicit_then_daemon_then_default() {
+        let explicit = PathBuf::from("/explicit/config.toml");
+        let daemon = PathBuf::from("/service/config.toml");
+        let fallback = PathBuf::from("/user/config.toml");
+
+        let selected = select_action_path(
+            Some(explicit.clone()),
+            Some(daemon.clone()),
+            fallback.clone(),
+        );
+        assert_eq!(selected.path, explicit);
+        assert_eq!(selected.source, ActionPathSource::Explicit);
+
+        let selected = select_action_path(None, Some(daemon.clone()), fallback.clone());
+        assert_eq!(selected.path, daemon);
+        assert_eq!(selected.source, ActionPathSource::ActiveDaemon);
+
+        let selected = select_action_path(None, None, fallback.clone());
+        assert_eq!(selected.path, fallback);
+        assert_eq!(selected.source, ActionPathSource::InvocationDefault);
     }
 }

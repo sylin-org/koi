@@ -528,7 +528,8 @@ Refuses to overwrite an existing file unless --force is passed.",
         summary: "Print the config file in effect",
         long_description: "\
 Prints the resolved config file with its location, or \"none\" when this
-installation runs on built-in defaults.",
+installation runs on built-in defaults. Without --config, an authenticated
+local daemon's launch path wins over the invoking user's default path.",
         category: KoiCategory::Core,
         tags: &[KoiTag::ReadOnly],
         scope: KoiScope::Public,
@@ -544,7 +545,8 @@ installation runs on built-in defaults.",
         name: "config path",
         summary: "Print the config file path",
         long_description: "\
-Prints the path this installation would use for its TOML config file.",
+Prints the explicit --config path, otherwise the authenticated local daemon's
+launch path when available, otherwise this invocation's platform default.",
         category: KoiCategory::Core,
         tags: &[KoiTag::ReadOnly],
         scope: KoiScope::Public,

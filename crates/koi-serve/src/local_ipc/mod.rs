@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use koi_common::local_control::{
-    LocalControlRequest, LocalControlResponse, LocalDaemonAccess, LOCAL_CONTROL_VERSION,
+    LocalControlRequest, LocalControlResponse, LocalDaemonAccess, LocalDaemonInfo,
+    LOCAL_CONTROL_VERSION,
 };
 use koi_config::local_access::LocalOperator;
 use koi_mdns::MdnsCore;
@@ -34,6 +35,7 @@ pub struct LocalControlConfig {
     pub path: PathBuf,
     pub operator: LocalOperator,
     pub access: Option<LocalDaemonAccess>,
+    pub info: LocalDaemonInfo,
 }
 
 pub async fn start(
@@ -61,6 +63,7 @@ async fn handle_connection<R, W>(
     reader: R,
     mut writer: W,
     access: Option<LocalDaemonAccess>,
+    info: LocalDaemonInfo,
 ) -> anyhow::Result<()>
 where
     R: AsyncBufRead + Unpin,
@@ -82,6 +85,9 @@ where
                 LocalControlRequest::Access { version } if version != LOCAL_CONTROL_VERSION => {
                     LocalControlResponse::unsupported_version(version)
                 }
+                LocalControlRequest::Info { version } if version != LOCAL_CONTROL_VERSION => {
+                    LocalControlResponse::unsupported_version(version)
+                }
                 LocalControlRequest::Access { .. } => match &access {
                     Some(access) => LocalControlResponse::Access(access.clone()),
                     None => LocalControlResponse::Error {
@@ -89,6 +95,7 @@ where
                         message: "the local daemon is not serving HTTP".to_string(),
                     },
                 },
+                LocalControlRequest::Info { .. } => LocalControlResponse::Info(info.clone()),
             };
             write_json_line(&mut writer, &response).await?;
             continue;
@@ -131,4 +138,44 @@ where
 {
     let (reader, writer) = tokio::io::split(stream);
     (BufReader::new(reader), writer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn info_is_available_when_http_access_is_disabled() {
+        let info = LocalDaemonInfo {
+            version: LOCAL_CONTROL_VERSION,
+            data_root: "/var/lib/koi".to_string(),
+            config_path: "/etc/koi/config.toml".to_string(),
+        };
+        let (client, server) = tokio::io::duplex(4096);
+        let (server_reader, server_writer) = tokio::io::split(server);
+        let task = tokio::spawn(handle_connection(
+            None,
+            BufReader::new(server_reader),
+            server_writer,
+            None,
+            info.clone(),
+        ));
+
+        let (client_reader, mut client_writer) = tokio::io::split(client);
+        client_writer
+            .write_all(b"{\"request\":\"info\",\"version\":1}\n")
+            .await
+            .unwrap();
+        client_writer.flush().await.unwrap();
+        let mut line = String::new();
+        BufReader::new(client_reader)
+            .read_line(&mut line)
+            .await
+            .unwrap();
+        drop(client_writer);
+
+        let response: LocalControlResponse = serde_json::from_str(line.trim()).unwrap();
+        assert!(response == LocalControlResponse::Info(info));
+        task.await.unwrap().unwrap();
+    }
 }

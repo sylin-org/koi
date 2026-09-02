@@ -63,6 +63,14 @@ fn main() -> anyhow::Result<()> {
         Err(e) => e.exit(),
     };
 
+    // Config inspection resolves its own explicit > active daemon > invocation
+    // default precedence. Do this before loading the invoking user's config so
+    // an unrelated stale/invalid file cannot hide the installed service fact,
+    // and `config init --config <new path>` can create its target.
+    if let Some(Command::Config { action }) = &cli.command {
+        return config_file::run_action(action, cli.config.as_deref());
+    }
+
     let config_file_path =
         config_file::discover(cli.config.as_deref()).map_err(|e| anyhow::anyhow!(e))?;
 
@@ -92,9 +100,6 @@ fn main() -> anyhow::Result<()> {
     // ── Trivially synchronous subcommands ────────────────────────────
     if let Some(command) = &cli.command {
         match command {
-            Command::Config { action } => {
-                return config_file::run_action(action, cli.config.as_deref());
-            }
             Command::Install { user, operator } => {
                 return {
                     #[cfg(windows)]
