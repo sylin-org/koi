@@ -20,14 +20,13 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc as tokio_mpsc, watch};
 use tokio_util::sync::CancellationToken;
-use windows_sys::Win32::Foundation::{ERROR_INVALID_PARAMETER, ERROR_SUCCESS};
+use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
 use windows_sys::Win32::NetworkManagement::Dns::{
     DnsServiceBrowse, DnsServiceBrowseCancel, DnsServiceFreeInstance, DnsServiceResolve,
     DnsServiceResolveCancel, DNS_RECORDW, DNS_SERVICE_BROWSE_REQUEST, DNS_SERVICE_CANCEL,
     DNS_SERVICE_INSTANCE, DNS_SERVICE_RESOLVE_REQUEST, DNS_TYPE_PTR,
 };
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD};
 use windows_sys::Win32::System::Services::{
     CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_MANAGER_CONNECT,
     SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_STATUS_PROCESS,
@@ -65,17 +64,15 @@ const DESCRIPTOR: ProviderDescriptor = ProviderDescriptor::new(
     },
 );
 
-/// The dnsapi DNS-SD entry points this provider needs. Every one must resolve
-/// for the facility to count as installed.
+/// The dnsapi DNS-SD entry points the read routes actually call. Publication
+/// exports are deliberately not required: this adapter claims browse and
+/// resolve only, so a Windows build without the registration surface still
+/// counts as installed for the routes Koi arms.
 const REQUIRED_EXPORTS: &[&str] = &[
-    "DnsServiceRegister",
-    "DnsServiceDeRegister",
     "DnsServiceBrowse",
     "DnsServiceBrowseCancel",
     "DnsServiceResolve",
     "DnsServiceResolveCancel",
-    "DnsServiceConstructInstance",
-    "DnsServiceCopyInstance",
     "DnsServiceFreeInstance",
 ];
 
@@ -137,9 +134,8 @@ fn inspect() -> std::result::Result<DnsApiInspection, MdnsProviderReport> {
     }
 
     let running = dnscache_running();
-    let enabled = multicast_enabled();
 
-    let availability = if running && enabled != ProbeFact::No {
+    let availability = if running {
         ProviderAvailability::Ready
     } else {
         ProviderAvailability::Unavailable
@@ -151,13 +147,16 @@ fn inspect() -> std::result::Result<DnsApiInspection, MdnsProviderReport> {
         MdnsCapabilities::default()
     };
 
+    // No registry multicast policy is claimed as an mDNS fact:
+    // DNSClient\EnableMulticast is Microsoft's documented LLMNR switch
+    // (ADMX "Turn off multicast name resolution"), not an mDNS control.
     let report = MdnsProviderReport {
         name: DESCRIPTOR.name.to_string(),
         priority: DESCRIPTOR.priority,
         api: DESCRIPTOR.api,
         availability,
         installed: ProbeFact::Yes,
-        configured: enabled,
+        configured: ProbeFact::NotApplicable,
         running: if running {
             ProbeFact::Yes
         } else {
@@ -166,15 +165,10 @@ fn inspect() -> std::result::Result<DnsApiInspection, MdnsProviderReport> {
         capabilities,
         session: None,
         detail: format!(
-            "official Windows DNS-SD via dnsapi.dll; DNS Client (Dnscache) {}; mDNS multicast {}; \
+            "official Windows DNS-SD via dnsapi.dll; DNS Client (Dnscache) {}; \
              read routes only: the OS responder answers no peer queries for registered records \
              (lab probe 2026-09-01), so publication stays with another provider",
             if running { "running" } else { "stopped" },
-            match enabled {
-                ProbeFact::Yes => "enabled".to_string(),
-                ProbeFact::No => "disabled by policy".to_string(),
-                _ => "state unknown".to_string(),
-            }
         ),
     };
     Ok(DnsApiInspection {
@@ -245,46 +239,6 @@ pub(crate) fn service_running(name: &str) -> bool {
 /// Whether the DNS Client service, which hosts the mDNS responder, is running.
 fn dnscache_running() -> bool {
     service_running("Dnscache")
-}
-
-/// Whether mDNS multicast is enabled by policy. Absent values mean the OS
-/// default, which is enabled.
-fn multicast_enabled() -> ProbeFact {
-    let sources = [
-        (
-            r"SOFTWARE\Policies\Microsoft\Windows NT\DNSClient",
-            "EnableMulticast",
-        ),
-        (
-            r"SYSTEM\CurrentControlSet\Services\Dnscache\Parameters",
-            "EnableMulticast",
-        ),
-    ];
-    for (key, value) in sources {
-        match reg_dword(key, value) {
-            Some(0) => return ProbeFact::No,
-            Some(_) => return ProbeFact::Yes,
-            None => continue,
-        }
-    }
-    ProbeFact::Yes
-}
-
-fn reg_dword(subkey: &str, value: &str) -> Option<u32> {
-    let mut data: u32 = 0;
-    let mut size = std::mem::size_of::<u32>() as u32;
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            wide(subkey).as_ptr(),
-            wide(value).as_ptr(),
-            RRF_RT_REG_DWORD,
-            std::ptr::null_mut(),
-            &mut data as *mut u32 as *mut core::ffi::c_void,
-            &mut size,
-        )
-    };
-    (status == ERROR_SUCCESS).then_some(data)
 }
 
 // ── session ───────────────────────────────────────────────────────────

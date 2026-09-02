@@ -85,10 +85,16 @@ mod tests {
 
     #[test]
     fn policy_round_trips_at_an_injected_machine_root() {
+        // The libtest thread name is the module-qualified test path; its `::`
+        // separators are invalid in Windows filenames, so derive uniqueness
+        // the way persist's tests do instead of naming the directory after it.
         let root = std::env::temp_dir().join(format!(
             "koi-local-access-{}-{}",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
         ));
         let policy = LocalAccessPolicy::new(LocalOperator::UnixUid { uid: 1000 });
         save(&root, &policy).unwrap();

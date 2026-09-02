@@ -62,7 +62,15 @@ pub fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
 pub fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
     use std::iter;
     use std::os::windows::ffi::OsStrExt;
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
     use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
+
+    /// Concurrent replacers of one target transiently deny access to one
+    /// another (sharing-violation class); a racing writer must cost latency,
+    /// not a failed persist.
+    const RETRY_WINDOW: Duration = Duration::from_secs(2);
+    const RETRY_SLEEP: Duration = Duration::from_millis(10);
 
     let source = source
         .as_os_str()
@@ -74,10 +82,23 @@ pub fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
         .encode_wide()
         .chain(iter::once(0))
         .collect::<Vec<_>>();
-    if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_REPLACE_EXISTING) } == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
+    let deadline = Instant::now() + RETRY_WINDOW;
+    loop {
+        if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_REPLACE_EXISTING) } != 0
+        {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        let transient = matches!(
+            error.raw_os_error(),
+            Some(code)
+                if code == ERROR_ACCESS_DENIED as i32
+                    || code == ERROR_SHARING_VIOLATION as i32
+        );
+        if !transient || Instant::now() + RETRY_SLEEP >= deadline {
+            return Err(error);
+        }
+        std::thread::sleep(RETRY_SLEEP);
     }
 }
 

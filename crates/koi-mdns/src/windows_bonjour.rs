@@ -2,11 +2,15 @@
 //! mDNSResponder service is genuinely installed.
 //!
 //! Bonjour is a full provider on Windows: it publishes acknowledged
-//! registrations, browses with add/remove events, and resolves by name. It
-//! deliberately does not claim explicit-address publication — `DNSServiceRegister`
-//! pins records to the host identity, not to caller-chosen addresses. When
-//! Bonjour is absent, `assess` reports `Absent` with the exact missing facts
-//! and the control plane never opens a session.
+//! registrations, browses with add/remove events, and resolves by name —
+//! completing each resolution with `DNSServiceGetAddrInfo` so resolved
+//! services carry real addresses with the interface identity the callbacks
+//! reported, and browse-driven resolves use the domain the browse callback
+//! returned instead of an assumed one. It deliberately does not claim
+//! explicit-address publication — `DNSServiceRegister` pins records to the
+//! host identity, not to caller-chosen addresses. When Bonjour is absent,
+//! `assess` reports `Absent` with the exact missing facts and the control
+//! plane never opens a session.
 //!
 //! Threading: every dnssd connection is born, processed, and retired on one
 //! owner thread. Leases only signal that owner. This is required by Bonjour's
@@ -31,8 +35,8 @@ use crate::adapter::{
 };
 use crate::error::{MdnsError, ProviderFailure, ProviderOperation};
 use crate::provider::{
-    provider_error, Announcement, BrowseLease, ProviderBrowse, ProviderEvent, ProviderService,
-    ProviderSession, PublicationLease,
+    provider_error, Announcement, BrowseLease, ProviderAddress, ProviderBrowse, ProviderEvent,
+    ProviderService, ProviderSession, PublicationLease,
 };
 use crate::Result;
 
@@ -66,7 +70,12 @@ const DNSSD_CANDIDATE_PATHS: &[&str] = &[
 
 const K_DNSSERVICE_ERR_NO_ERROR: i32 = 0;
 const K_DNSSERVICE_ERR_NAMECONFLICT: i32 = -65548;
-const K_DNSSERVICE_FLAGS_ADD: u32 = 0x1;
+// Flag and protocol values from Apple's dns_sd.h. The Add bit is 0x2 — 0x1 is
+// kDNSServiceFlagsMoreComing — so misreading it inverts browse add/remove.
+const K_DNSSERVICE_FLAGS_MORECOMING: u32 = 0x1;
+const K_DNSSERVICE_FLAGS_ADD: u32 = 0x2;
+const K_DNSSERVICE_PROTOCOL_IPV4: u32 = 0x01;
+const K_DNSSERVICE_PROTOCOL_IPV6: u32 = 0x02;
 
 #[derive(Debug, Default)]
 pub struct WindowsBonjourAdapter;
@@ -190,6 +199,17 @@ type ResolveReply = unsafe extern "system" fn(
     context: *mut core::ffi::c_void,
 );
 
+type GetAddrInfoReply = unsafe extern "system" fn(
+    sd_ref: SdRef,
+    flags: u32,
+    interface_index: u32,
+    error_code: i32,
+    hostname: *const u8,
+    address: *const SOCKADDR,
+    ttl: u32,
+    context: *mut core::ffi::c_void,
+);
+
 /// The dnssd entry points, bound at runtime: the Bonjour SDK ships no import
 /// library here, and a missing Bonjour install must be an assessment fact,
 /// not a load failure of Koi itself.
@@ -199,8 +219,8 @@ struct DnssdApi {
     _library: usize,
     register: unsafe extern "system" fn(
         sdref: *mut SdRef,
-        interfaceindex: u32,
         flags: u32,
+        interfaceindex: u32,
         name: *const u8,
         regtype: *const u8,
         domain: *const u8,
@@ -213,8 +233,8 @@ struct DnssdApi {
     ) -> i32,
     browse: unsafe extern "system" fn(
         sdref: *mut SdRef,
-        interfaceindex: u32,
         flags: u32,
+        interfaceindex: u32,
         regtype: *const u8,
         domain: *const u8,
         callback: BrowseReply,
@@ -222,12 +242,21 @@ struct DnssdApi {
     ) -> i32,
     resolve: unsafe extern "system" fn(
         sdref: *mut SdRef,
-        interfaceindex: u32,
         flags: u32,
+        interfaceindex: u32,
         name: *const u8,
         regtype: *const u8,
         domain: *const u8,
         callback: ResolveReply,
+        context: *mut core::ffi::c_void,
+    ) -> i32,
+    get_addr_info: unsafe extern "system" fn(
+        sdref: *mut SdRef,
+        flags: u32,
+        interfaceindex: u32,
+        protocols: u32,
+        hostname: *const u8,
+        callback: GetAddrInfoReply,
         context: *mut core::ffi::c_void,
     ) -> i32,
     ref_sock_fd: unsafe extern "system" fn(sdref: SdRef) -> SOCKET,
@@ -273,6 +302,7 @@ fn load_dnssd() -> std::result::Result<DnssdApi, String> {
             register: symbol(library, "DNSServiceRegister")?,
             browse: symbol(library, "DNSServiceBrowse")?,
             resolve: symbol(library, "DNSServiceResolve")?,
+            get_addr_info: symbol(library, "DNSServiceGetAddrInfo")?,
             ref_sock_fd: symbol(library, "DNSServiceRefSockFD")?,
             process_result: symbol(library, "DNSServiceProcessResult")?,
             ref_deallocate: symbol(library, "DNSServiceRefDeallocate")?,
@@ -680,16 +710,19 @@ impl ProviderSession for BonjourSession {
         let domain = domain_of(&regtype);
         let name = name.to_string();
         let connections = self.connections.clone();
-        tokio::task::spawn_blocking(move || resolve_native(&name, &regtype, &domain, connections))
-            .await
-            .map_err(|error| {
-                provider_error(
-                    DESCRIPTOR.name,
-                    ProviderOperation::Resolve,
-                    ProviderFailure::Lost,
-                    format!("resolve task failed: {error}"),
-                )
-            })?
+        // A direct resolve has no browse context: query on any interface.
+        tokio::task::spawn_blocking(move || {
+            resolve_native(&name, &regtype, &domain, 0, connections)
+        })
+        .await
+        .map_err(|error| {
+            provider_error(
+                DESCRIPTOR.name,
+                ProviderOperation::Resolve,
+                ProviderFailure::Lost,
+                format!("resolve task failed: {error}"),
+            )
+        })?
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -978,8 +1011,19 @@ struct BrowseRuntime {
 }
 
 enum BrowseObservation {
-    Add { name: String, regtype: String },
-    Remove { name: String, regtype: String },
+    /// One browse callback add: the reported instance identity plus the
+    /// interface and domain the callback delivered, retained for the
+    /// follow-up resolve instead of assuming interface-any/local.
+    Add {
+        name: String,
+        regtype: String,
+        domain: String,
+        interface_index: u32,
+    },
+    Remove {
+        name: String,
+        regtype: String,
+    },
     Failed(i32),
 }
 
@@ -995,11 +1039,11 @@ async fn open_bonjour_browse(
     unsafe extern "system" fn browse_reply(
         _sd_ref: SdRef,
         flags: u32,
-        _interface_index: u32,
+        interface_index: u32,
         error_code: i32,
         service_name: *const u8,
         regtype: *const u8,
-        _reply_domain: *const u8,
+        reply_domain: *const u8,
         context: *mut core::ffi::c_void,
     ) {
         let runtime = unsafe { &*(context as *const BrowseRuntime) };
@@ -1017,8 +1061,18 @@ async fn open_bonjour_browse(
             } else {
                 unsafe { read_cstr(regtype) }
             };
+            let domain = if reply_domain.is_null() {
+                String::new()
+            } else {
+                unsafe { read_cstr(reply_domain) }
+            };
             if flags & K_DNSSERVICE_FLAGS_ADD != 0 {
-                BrowseObservation::Add { name, regtype: typ }
+                BrowseObservation::Add {
+                    name,
+                    regtype: typ,
+                    domain,
+                    interface_index,
+                }
             } else {
                 BrowseObservation::Remove { name, regtype: typ }
             }
@@ -1136,12 +1190,17 @@ async fn open_bonjour_browse(
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
             let emitted = match observation {
-                BrowseObservation::Add { name, regtype } => {
+                BrowseObservation::Add {
+                    name,
+                    regtype,
+                    domain,
+                    interface_index,
+                } => {
                     if is_meta {
                         // Meta observations enumerate service types; the type
                         // name itself is the record Koi surfaces.
                         event_tx.blocking_send(ProviderEvent::Found(ProviderService {
-                            name: trim_local(&name),
+                            name: unescape_dnssd_label(&trim_local(&name)),
                             service_type: String::new(),
                             host: None,
                             addresses: Vec::new(),
@@ -1149,8 +1208,21 @@ async fn open_bonjour_browse(
                             txt: HashMap::new(),
                         }))
                     } else {
-                        let domain = domain_of(&regtype);
-                        match resolve_native(&name, &regtype, &domain, worker_connections.clone()) {
+                        // Resolve on the interface and in the domain the
+                        // browse callback reported; fall back to the default
+                        // domain only when the callback carried none.
+                        let domain = if domain.is_empty() {
+                            domain_of(&regtype)
+                        } else {
+                            domain
+                        };
+                        match resolve_native(
+                            &name,
+                            &regtype,
+                            &domain,
+                            interface_index,
+                            worker_connections.clone(),
+                        ) {
                             Ok(service) => event_tx.blocking_send(ProviderEvent::Resolved(service)),
                             Err(error) => {
                                 tracing::debug!(
@@ -1166,7 +1238,7 @@ async fn open_bonjour_browse(
                 }
                 BrowseObservation::Remove { name, regtype } => {
                     event_tx.blocking_send(ProviderEvent::Removed {
-                        name,
+                        name: unescape_dnssd_label(&name),
                         service_type: trim_local(&regtype),
                     })
                 }
@@ -1233,6 +1305,7 @@ impl Drop for BonjourBrowseLease {
 #[derive(Debug)]
 struct ResolveOutcome {
     error_code: i32,
+    interface_index: u32,
     fullname: String,
     host: String,
     port: u16,
@@ -1240,11 +1313,18 @@ struct ResolveOutcome {
 }
 
 /// Resolve one instance with `DNSServiceResolve` on a dedicated connection,
-/// returning full service data only after the completion reply.
+/// returning full service data only after the completion reply. Addresses are
+/// completed through `DNSServiceGetAddrInfo` on the reply's interface, so the
+/// surfaced record carries real native answers rather than a bare host name.
+///
+/// `interface_index` scopes the query: browse-driven resolves pass the
+/// interface the browse callback reported (0 = any interface for direct
+/// resolves).
 fn resolve_native(
     name: &str,
     regtype: &str,
     domain: &str,
+    interface_index: u32,
     connections: ConnectionRegistry,
 ) -> Result<ProviderService> {
     struct ResolveRuntime {
@@ -1254,7 +1334,7 @@ fn resolve_native(
     unsafe extern "system" fn resolve_reply(
         _sd_ref: SdRef,
         _flags: u32,
-        _interface_index: u32,
+        interface_index: u32,
         error_code: i32,
         fullname: *const u8,
         hosttarget: *const u8,
@@ -1266,6 +1346,7 @@ fn resolve_native(
         let runtime = unsafe { &*(context as *const ResolveRuntime) };
         let outcome = ResolveOutcome {
             error_code,
+            interface_index,
             fullname: if fullname.is_null() {
                 String::new()
             } else {
@@ -1310,7 +1391,7 @@ fn resolve_native(
                 (api.resolve)(
                     &mut reference,
                     0,
-                    0,
+                    interface_index,
                     name_c.as_ptr(),
                     regtype_c.as_ptr(),
                     domain_c.as_ptr(),
@@ -1388,15 +1469,241 @@ fn resolve_native(
             ));
         }
     };
-    let instance = instance_label(&outcome.fullname).unwrap_or_else(|| name.to_string());
+    let instance = instance_label(&outcome.fullname)
+        .map(|label| unescape_dnssd_label(&label))
+        .unwrap_or_else(|| unescape_dnssd_label(name));
+    // Complete the SRV answer with real addresses for the reported host on
+    // the interface the resolve reply named. A failure here degrades to a
+    // host-only record instead of discarding the resolved SRV/TXT data.
+    let addresses = if outcome.host.is_empty() {
+        Vec::new()
+    } else {
+        match get_addr_info_native(&outcome.host, outcome.interface_index, &connections) {
+            Ok(addresses) => addresses,
+            Err(error) => {
+                tracing::debug!(
+                    provider = DESCRIPTOR.name,
+                    host = %outcome.host,
+                    interface = outcome.interface_index,
+                    %error,
+                    "native address completion failed; record stays host-only"
+                );
+                Vec::new()
+            }
+        }
+    };
     Ok(ProviderService {
         name: instance,
         service_type: trim_local(regtype),
         host: non_empty(outcome.host),
         port: (outcome.port != 0).then_some(outcome.port),
-        addresses: Vec::new(),
+        addresses,
         txt: parse_txt(&outcome.txt),
     })
+}
+
+/// Query the addresses of one resolved host through `DNSServiceGetAddrInfo`,
+/// scoped to the interface the resolve reply reported. The connection is
+/// owned and retired like every other dnssd session resource.
+fn get_addr_info_native(
+    hostname: &str,
+    interface_index: u32,
+    connections: &ConnectionRegistry,
+) -> Result<Vec<ProviderAddress>> {
+    struct AddrInfoRuntime {
+        reply: mpsc::Sender<AddrInfoObservation>,
+    }
+
+    enum AddrInfoObservation {
+        Address {
+            address: std::net::IpAddr,
+            interface_index: u32,
+        },
+        /// The final reply carried no MoreComing flag, or the query failed.
+        Done(i32),
+    }
+
+    unsafe extern "system" fn addr_info_reply(
+        _sd_ref: SdRef,
+        flags: u32,
+        interface_index: u32,
+        error_code: i32,
+        _hostname: *const u8,
+        address: *const SOCKADDR,
+        _ttl: u32,
+        context: *mut core::ffi::c_void,
+    ) {
+        let runtime = unsafe { &*(context as *const AddrInfoRuntime) };
+        if error_code != K_DNSSERVICE_ERR_NO_ERROR {
+            let _ = runtime.reply.send(AddrInfoObservation::Done(error_code));
+            return;
+        }
+        if let Some(address) = unsafe { sockaddr_address(address) } {
+            let _ = runtime.reply.send(AddrInfoObservation::Address {
+                address,
+                interface_index,
+            });
+        }
+        if flags & K_DNSSERVICE_FLAGS_MORECOMING == 0 {
+            let _ = runtime
+                .reply
+                .send(AddrInfoObservation::Done(K_DNSSERVICE_ERR_NO_ERROR));
+        }
+    }
+
+    let api = match dnssd() {
+        Ok(api) => api,
+        Err(missing) => return Err(dnssd_missing(ProviderOperation::Resolve, &missing)),
+    };
+    let control = ConnectionControl::new();
+    connections.track(control.clone());
+    let owner = control.clone();
+    let (result_tx, result_rx) = mpsc::sync_channel::<Result<Vec<ProviderAddress>>>(1);
+    let owner_host = hostname.to_string();
+    let thread = std::thread::Builder::new()
+        .name("koi-mdns-bonjour-addrinfo".to_string())
+        .spawn(move || {
+            let (reply_tx, reply_rx) = mpsc::channel::<AddrInfoObservation>();
+            let mut runtime = Box::new(AddrInfoRuntime { reply: reply_tx });
+            let host_c = cstr(&owner_host);
+            let mut reference: SdRef = std::ptr::null_mut();
+            let error = unsafe {
+                (api.get_addr_info)(
+                    &mut reference,
+                    0,
+                    interface_index,
+                    K_DNSSERVICE_PROTOCOL_IPV4 | K_DNSSERVICE_PROTOCOL_IPV6,
+                    host_c.as_ptr(),
+                    addr_info_reply,
+                    (&mut *runtime as *mut AddrInfoRuntime).cast(),
+                )
+            };
+            if error != K_DNSSERVICE_ERR_NO_ERROR || reference.is_null() {
+                let _ = result_tx.send(Err(dnssd_error(
+                    ProviderOperation::Resolve,
+                    error,
+                    "DNSServiceGetAddrInfo",
+                )));
+                retire_owned(api, reference, runtime, &owner);
+                return;
+            }
+
+            let deadline = Instant::now() + RESOLVE_WAIT;
+            let mut addresses: Vec<ProviderAddress> = Vec::new();
+            loop {
+                if let Ok(observation) = reply_rx.try_recv() {
+                    match observation {
+                        AddrInfoObservation::Address {
+                            address,
+                            interface_index,
+                        } => {
+                            if addresses.iter().all(|existing| existing.address != address) {
+                                addresses.push(ProviderAddress {
+                                    address,
+                                    interface_index: (interface_index != 0)
+                                        .then_some(interface_index),
+                                    interface_name: None,
+                                });
+                            }
+                        }
+                        AddrInfoObservation::Done(status) => {
+                            if status == K_DNSSERVICE_ERR_NO_ERROR || !addresses.is_empty() {
+                                let _ = result_tx.send(Ok(addresses));
+                            } else {
+                                let _ = result_tx.send(Err(dnssd_error(
+                                    ProviderOperation::Resolve,
+                                    status,
+                                    "DNSServiceGetAddrInfo reply",
+                                )));
+                            }
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                if owner.close_requested() {
+                    let _ = result_tx.send(Err(provider_error(
+                        DESCRIPTOR.name,
+                        ProviderOperation::Resolve,
+                        ProviderFailure::Lost,
+                        "address completion was cancelled before the daemon finished",
+                    )));
+                    break;
+                }
+                let Some(wait) = remaining_slice(deadline) else {
+                    // No final marker arrived; surface whatever the daemon
+                    // delivered rather than discarding real answers.
+                    let _ = result_tx.send(Ok(addresses));
+                    tracing::debug!(
+                        provider = DESCRIPTOR.name,
+                        "address completion ended at the deadline without a final reply"
+                    );
+                    break;
+                };
+                if let Err(error) = drive_once(api, reference, wait) {
+                    if !addresses.is_empty() {
+                        let _ = result_tx.send(Ok(addresses));
+                    } else {
+                        let _ = result_tx.send(Err(provider_error(
+                            DESCRIPTOR.name,
+                            ProviderOperation::Resolve,
+                            ProviderFailure::Lost,
+                            error.to_string(),
+                        )));
+                    }
+                    break;
+                }
+            }
+            retire_owned(api, reference, runtime, &owner);
+        });
+    if let Err(error) = thread {
+        control.finish();
+        return Err(provider_error(
+            DESCRIPTOR.name,
+            ProviderOperation::Resolve,
+            ProviderFailure::Lost,
+            format!("could not start Bonjour connection owner: {error}"),
+        ));
+    }
+    match result_rx.recv_timeout(RESOLVE_WAIT + SOCKET_POLL_SLICE) {
+        Ok(result) => result,
+        Err(_) => {
+            control.request_close();
+            Err(provider_error(
+                DESCRIPTOR.name,
+                ProviderOperation::Resolve,
+                ProviderFailure::Timeout,
+                format!("Bonjour address completion exceeded {RESOLVE_WAIT:?}"),
+            ))
+        }
+    }
+}
+
+/// Project a Winsock sockaddr onto a provider-neutral address.
+///
+/// # Safety
+/// `sockaddr` must be null or point to a valid Winsock sockaddr from dnssd.
+unsafe fn sockaddr_address(sockaddr: *const SOCKADDR) -> Option<std::net::IpAddr> {
+    if sockaddr.is_null() {
+        return None;
+    }
+    let bytes = sockaddr.cast::<u8>();
+    let family = unsafe { u16::from_ne_bytes([*bytes, *bytes.add(1)]) };
+    match family {
+        AF_INET => {
+            let octets = unsafe { std::slice::from_raw_parts(bytes.add(4), 4) };
+            Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                octets[0], octets[1], octets[2], octets[3],
+            )))
+        }
+        AF_INET6 => {
+            let octets = unsafe { std::slice::from_raw_parts(bytes.add(8), 16) };
+            <[u8; 16]>::try_from(octets)
+                .ok()
+                .map(|octets| std::net::IpAddr::V6(std::net::Ipv6Addr::from(octets)))
+        }
+        _ => None,
+    }
 }
 
 // ── shared helpers ────────────────────────────────────────────────────
@@ -1412,15 +1719,12 @@ fn regtype_from(service_type: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-fn domain_of(regtype: &str) -> String {
-    if regtype.to_ascii_lowercase().ends_with(".local") {
-        regtype
-            .rsplit_once('.')
-            .map(|(_, domain)| domain.to_string())
-            .unwrap_or_else(|| "local".to_string())
-    } else {
-        "local".to_string()
-    }
+/// The default browsing domain for a direct resolve. dnssd matches the
+/// qualified form: an unqualified "local" never answers on the observed
+/// mDNSResponder (the probe's direct resolves timed out until the trailing
+/// dot was kept), while browse callbacks deliver "local." themselves.
+fn domain_of(_regtype: &str) -> String {
+    "local.".to_string()
 }
 
 fn trim_local(value: &str) -> String {
@@ -1435,6 +1739,51 @@ fn instance_label(full_name: &str) -> Option<String> {
     full_name
         .find("._")
         .map(|index| full_name[..index].to_string())
+}
+
+/// Decode dnssd's presentation escaping. Callbacks deliver instance names
+/// with non-alphanumeric bytes as `\DDD` octal (a space arrives as `\032`),
+/// while every other adapter surfaces real characters; provider-neutral
+/// names must agree or the hub cannot correlate removals with resolved
+/// records across providers.
+fn unescape_dnssd_label(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        let byte = bytes[cursor];
+        if byte != b'\\' {
+            out.push(byte);
+            cursor += 1;
+            continue;
+        }
+        // `\` followed by one to three decimal digits is one byte (dnssd
+        // escapes a space as `\032` — decimal 32, the RFC 1035 presentation
+        // form, not octal).
+        let mut width = 0usize;
+        while width < 3
+            && cursor + 1 + width < bytes.len()
+            && bytes[cursor + 1 + width].is_ascii_digit()
+        {
+            width += 1;
+        }
+        if width > 0 {
+            let decoded: u32 = value[cursor + 1..cursor + 1 + width]
+                .parse()
+                .unwrap_or(256);
+            if decoded <= 255 {
+                out.push(decoded as u8);
+            } else {
+                // Not a byte escape after all; keep the whole run literal.
+                out.extend_from_slice(&bytes[cursor..cursor + 1 + width]);
+            }
+            cursor += 1 + width;
+        } else {
+            out.push(byte);
+            cursor += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn non_empty(value: String) -> Option<String> {
@@ -1532,8 +1881,8 @@ fn wide(value: &str) -> Vec<u16> {
 
 use windows_sys::Win32::Foundation::FreeLibrary;
 use windows_sys::Win32::Networking::WinSock::{
-    WSAGetLastError, WSAPoll, INVALID_SOCKET, POLLERR, POLLHUP, POLLNVAL, POLLRDNORM, SOCKET,
-    SOCKET_ERROR, WSAPOLLFD,
+    WSAGetLastError, WSAPoll, AF_INET, AF_INET6, INVALID_SOCKET, POLLERR, POLLHUP, POLLNVAL,
+    POLLRDNORM, SOCKADDR, SOCKET, SOCKET_ERROR, WSAPOLLFD,
 };
 use windows_sys::Win32::System::LibraryLoader::{
     GetProcAddress, LoadLibraryExW, LoadLibraryW, LOAD_LIBRARY_SEARCH_SYSTEM32,
@@ -1600,6 +1949,64 @@ mod tests {
     }
 
     #[test]
+    fn flag_bits_match_apples_dns_sd_header() {
+        // 0x1 is MoreComing and 0x2 is Add; swapping them inverts browse
+        // add/remove classification.
+        assert_eq!(K_DNSSERVICE_FLAGS_MORECOMING, 0x1);
+        assert_eq!(K_DNSSERVICE_FLAGS_ADD, 0x2);
+    }
+
+    #[test]
+    fn winsock_sockaddr_projects_to_addresses() {
+        // sockaddr_in: family(2) port(2) address(4) zero(8)
+        let mut v4 = [0u8; 16];
+        v4[0..2].copy_from_slice(&AF_INET.to_ne_bytes());
+        v4[4..8].copy_from_slice(&[192, 168, 1, 137]);
+        assert_eq!(
+            unsafe { sockaddr_address(v4.as_ptr() as *const SOCKADDR) },
+            Some("192.168.1.137".parse().unwrap())
+        );
+        // sockaddr_in6: family(2) port(2) flowinfo(4) address(16) scope(4)
+        let mut v6 = [0u8; 28];
+        v6[0..2].copy_from_slice(&AF_INET6.to_ne_bytes());
+        v6[8..12].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8]);
+        assert_eq!(
+            unsafe { sockaddr_address(v6.as_ptr() as *const SOCKADDR) },
+            Some("2001:db8::".parse().unwrap())
+        );
+        // Unknown families and null yield nothing.
+        let mut other = [0u8; 16];
+        other[0..2].copy_from_slice(&17u16.to_ne_bytes());
+        assert_eq!(
+            unsafe { sockaddr_address(other.as_ptr() as *const SOCKADDR) },
+            None
+        );
+        assert_eq!(unsafe { sockaddr_address(std::ptr::null()) }, None);
+    }
+
+    #[test]
+    fn direct_resolves_use_a_qualified_default_domain() {
+        // dnssd answers only the qualified form; browse callbacks themselves
+        // deliver "local.".
+        assert_eq!(domain_of("_mcp._tcp"), "local.");
+        assert_eq!(domain_of("_mcp._tcp.local"), "local.");
+    }
+
+    #[test]
+    fn dnssd_presentation_escapes_decode_to_real_characters() {
+        assert_eq!(
+            unescape_dnssd_label("Koi\\032MCP\\032(test-03)"),
+            "Koi MCP (test-03)"
+        );
+        assert_eq!(unescape_dnssd_label("plain-name"), "plain-name");
+        assert_eq!(unescape_dnssd_label("back\\092slash"), "back\\slash");
+        // A lone backslash and non-digit tails stay literal, as does an
+        // out-of-range decimal run.
+        assert_eq!(unescape_dnssd_label("a\\b"), "a\\b");
+        assert_eq!(unescape_dnssd_label("a\\999b"), "a\\999b");
+    }
+
+    #[test]
     fn lease_signals_owner_and_waits_for_owner_acknowledgement() {
         let control = ConnectionControl::new();
         let owner = control.clone();
@@ -1650,7 +2057,11 @@ mod tests {
             assert_eq!(report.running, ProbeFact::Yes);
             assert!(report.capabilities.publish);
         } else {
-            assert_eq!(report.running, ProbeFact::No);
+            // Without a ready responder the library may still be present
+            // (service stopped: running = No) or wholly absent (the
+            // responder cannot be probed: running = Unknown). Capabilities
+            // must be empty in both shapes.
+            assert!(matches!(report.running, ProbeFact::No | ProbeFact::Unknown));
             assert_eq!(report.capabilities, MdnsCapabilities::default());
         }
     }

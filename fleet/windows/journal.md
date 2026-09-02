@@ -1,5 +1,39 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-02 (1) — PH-001 provider truth: LLMNR inference removed, Bonjour read fidelity completed and physically exercised
+
+commit: this commit, on top of 5c1b96c | gates: fmt/clippy `-D warnings` clean, full `cargo test --locked` green (incl. the 3 real-facility ignored tests run live), release `koi-net` built and deployed through the installed service path; acceptance exercised through the one installed daemon's authenticated API plus the real Bonjour adapter session against the live mDNSResponder; peer evidence from test-01 (Avahi)
+
+koi state now: **installed service runs the PH-001 provider-truth candidate** — `koi.service` Running, PID `12496`, binary SHA-256 `428f138b467c8529b80cbd54b62b753ebd992e7e59fe8e9f5c6644c44cce5283` (deployed file equals the final tree build; intermediate builds `a0f502c6`/`08023fbe` from this session retained in `target/` as rollback material), API `127.0.0.1:5641` healthy, control plane gen 1 `ready` with the baseline composite `publish=native explicit_publish=native browse=windows-dns-sd resolve=windows-dns-sd`, one desired/established permanent `_mcp._tcp` self-publication, zero pending/failed. Apple Bonjour **uninstalled** (baseline restored: service 1060, no dnssd.dll, no Program Files\Bonjour, staged installers removed). Dnscache untouched (protected). One koi.exe process exactly.
+
+### Corrections landed (epic "Immediate correctness work" Windows 1+2)
+
+1. **`EnableMulticast` is not an mDNS fact** (windows_dnsapi.rs). Microsoft's ADMX mapping (`Turn_Off_Multicast` → `Software\Policies\Microsoft\Windows NT\DNSClient!EnableMulticast`, re-verified against learn.microsoft.com this session) documents the value as the **LLMNR** switch. The registry inference is deleted; `configured` is now `NotApplicable` and the detail no longer claims "mDNS multicast enabled". Verified through the deployed service: the pre-fix baseline reported `configured: yes` + "mDNS multicast enabled"; the new candidate reports `configured: notapplicable` with the same routes.
+2. **DNSAPI exports narrowed to the read routes** actually called (`Browse/BrowseCancel/Resolve/ResolveCancel/FreeInstance`); the four registration exports are no longer required for a facility that claims browse/resolve only.
+3. **Bonjour `kDNSServiceFlagsAdd` was 0x1 — that is `kDNSServiceFlagsMoreComing`** (Apple dns_sd.h: Add = 0x2). The inverted bit misclassified browse adds/removes; never caught because the armed composite routes reads to windows-dns-sd (priority 200 > 150). Fixed, pinned by a unit test against the header values, and physically discriminated: the meta browse now surfaces adds (17 types found on a quiet morning LAN) where the old bit would have turned single-result adds into removes.
+4. **Bonjour read fidelity completed**: browse callbacks now retain interface and domain identity (browse-driven resolves resolve on the reported interface and in the reported domain instead of assuming any/local), and every resolve completes through `DNSServiceGetAddrInfo` (IPv4+IPv6, interface-scoped, single-owner connection, acknowledged teardown) so Bonjour-resolved records carry real addresses with `interface_index` — matching Avahi/resolved/native fidelity. Two further defects this exposed and fixed:
+   - Direct resolves timed out: `domain_of` returned unqualified `local`; dnssd answers only the qualified `local.` form (browse callbacks deliver `local.` themselves). Fixed + test.
+   - dnssd delivers names in `\DDD` **decimal** presentation escapes (`Koi\032MCP\032(test-03)`); every other adapter surfaces real characters, so the hub could not correlate Bonjour records with the same peer's records from other providers. Names are now decoded at the adapter boundary (Resolved, Removed, and meta Found), pinned by tests. First decode attempt assumed octal (`\032`→0x1A) — the live probe's mangled output exposed it; the wire truth (space = 32 decimal) settled it.
+
+### Physical exercise (one installed Koi throughout, no parallel daemon)
+
+- **Deploy**: baseline PID 5380 (SHA `8239719A`, session-3 artifact) → rename-running-image swap → serial Stop/Start cutover → PID 7756 (`a0f502c6`) → post-probe fixes → PID 14512 (`08023fbe`) → cosmetic clippy swap → PID 12496 (`428f138b`, final tree). healthz green at every step; each intermediate retained as rollback material.
+- **Bonjour cycle on the final tree** (verified Apple MSIs, hashes match session 2: Bonjour64 `db86c7cc…`, BonjourPS64 `a8f6ced6…`): install (both MSI exits 0) → the installed service promoted live to gen 2 `publish=bonjour` (and post-crash reboot armed gen 1 `publish=bonjour` directly, re-proving boot-time selection) → **`win32_bonjour_session_probe` (new lab example) drove the real `WindowsBonjourAdapter` session against the live mDNSResponder: PASS** — meta browse 17 types, `_mcp._tcp` browse resolved 5 instances with addresses + interface indices (e.g. `test-03` → `192.168.1.221`, `fd1c:…:ea09`, `fe80::…:ea09`, all ifindex 4), direct resolve returned full SRV/TXT/A data with clean names, teardown acknowledged → test-01 resolved the Bonjour-published self-announcement (`stone-leaded-sparkle.local / 192.168.1.137 / 5641` + full TXT; this install registered under the machine name, no `-2` conflict rename) → uninstall (both exits 0) → live degradation to gen 2 `publish=native`, bonjour `unavailable`/no session, desired=established=1, no restart, no strands → test-01 resolved the record again under the native identity.
+- **Peer**: test-01 (Avahi) carried every observation; password auth per local/NOTES.md, host key pinned from lab.json.
+- **Machine crash mid-session**: the workstation crashed during the first probe run; SCM auto-recovery restarted koi (new PID) and Bonjour auto-started, the worktree survived intact, cargo's crashed artifacts (one corrupt syn rlib, one LNK1207 PDB) were deleted and rebuilt. The post-reboot boot-arming observation above came from this.
+
+### Shared-boundary defects found by the Windows gate (fixed here)
+
+- `koi_common::persist::replace_file` lost races under concurrent writers to one path (`MoveFileExW(REPLACE_EXISTING)` → `ERROR_ACCESS_DENIED`/sharing violation); the pond bundle writer (`koi-serve/src/pond.rs:926`) and `write_json_pretty` share this path. Now retries sharing-class errors for a bounded 2 s window; the pond regression test failed 5/5 before, 8/8 green after.
+- `koi_config::local_access` test named a temp directory after the libtest thread name — the module-qualified test path contains `::`, invalid in Windows filenames (`ERROR_INVALID_FILENAME`, deterministic). Uniqueness now derives from pid + nanos like persist's tests.
+
+### Residue / next
+
+1. The two-host installed-service Windows transition run and the sleep/resume + firewall-profile matrix remain (driver-level, operator present).
+2. Epic items 3–6 (pipe DACL contract closure, transactional SCM install, Pond firewall applicability, cooperative DNS) are next in the brief's order.
+3. `target/` rollback chain now holds `koi.exe.pre-adr039`, `koi.exe.pre-ph001`, `koi.exe.a0f502`, `koi.exe.08023f` — prune at the next accepted baseline.
+
+
 ## 2026-09-01 (3) — candidate deployed through the installed service; first installed-service acceptance evidence
 
 commit: this commit, on top of 007cee4 (single-owner Bonjour connections) | gates: candidate built from the exact `dev` tree (`cargo build --release -p koi-net`), deployed through the product service path, and exercised only through the installed daemon's authenticated API; peer observations from test-01 (Avahi); clippy 0 / 114 tests on the pulled tree before deploy
