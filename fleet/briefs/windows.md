@@ -4,48 +4,47 @@ Repo: the Windows checkout containing this file. You are both the fleet orchestr
 and the Windows product reference. Those roles do not grant permission to mutate
 another hat's system state.
 
-Measured evidence (2026-09-02 through `8042821`): the installed product-path SCM service
+Measured evidence (2026-09-02 through `0026951`): the installed product-path SCM service
 has physically closed provider truth, Bonjour read fidelity, the base standard-port
 ADR-040 boundary, wrong-user rejection, breadcrumb independence, dead-session drain,
-ordinary failed-candidate rollback, interruption recovery through expected-missing SCM
-recreation, complete descriptor/lifecycle restoration, pre-config recovery, profile-exact
-firewall rollback, Pond routes/stop/restart, executable/profile-aware firewall
-applicability, and cooperative DNS. The exercised v2 path is sound evidence; it does not
-prove deserialization of a real v1 manifest or rollback behavior when firewall deletion
-itself fails.
+ordinary and interrupted installer recovery, complete SCM descriptor/lifecycle recovery,
+profile-exact firewall rollback, Pond routes/stop/restart, executable/profile-aware
+firewall applicability, cooperative DNS, and exact TOTP credential ownership/cleanup.
+`c9cba31` closed the real-v1 and failed-firewall-deletion boundaries through one typed
+adapter; `0026951` closed the shared slot-lifecycle leak. Do not repeat those destructive
+workbooks unless later implementation changes their behavior.
 
-## PH-001 next dispatch (after `8042821`)
+## 2026-09-02 next dispatch (after `0026951`)
 
-1. Start now by finishing one typed Windows firewall adapter shared by installer,
-   rollback, uninstall, and Pond assessment. Preserve the green v2/private-profile proof,
-   then close both unexercised transaction edges:
+1. Close the two remaining Windows firewall-truth seams found in the independent
+   post-merge review:
 
-   - deserialize fixtures containing the actual v1 wire shape, not a v2 structure whose
-     version field was changed in memory. A v1 firewall snapshot never stored `profile`;
-     recover only when prior semantics are provable. Otherwise retain manifest/backups,
-     stop before further mutation, and report the precise recovery boundary—never default
-     the missing profile to `Any` or claim all v1 manifests are recoverable;
-   - replace boolean/best-effort rule deletion with a typed `removed | absent | error`
-     result. Propagate errors before replacement and throughout rollback/uninstall so a
-     failed delete cannot leave duplicates, widen access, or be followed by a false
-     successful restoration.
+   - remove the separate `netsh` text/substring scan in
+     `platform::windows::check_firewall`. Startup diagnostics must consume the same typed
+     `koi_serve::windows_firewall` assessment as Pond, including `open`, `inactive`, both
+     blocked reasons, and query failure. There is one firewall interpretation boundary;
+     do not retain a compatibility parser or add another command runner;
+   - canonicalize connection categories inside that adapter before making a verdict.
+     `Get-NetConnectionProfile` reports a domain network as `DomainAuthenticated`, while
+     Windows Firewall names the corresponding profile `Domain`. Map those identities
+     explicitly, keep `Private`/`Public` exact, and fail closed on an unknown category.
+     Determine applicability from the active networks: if no active network uses an
+     enabled firewall profile, report `Inactive`; do not infer activity merely because a
+     different, inactive-network profile is enabled globally.
 
-   Keep each rule's application/port/profile filters correlated, keep NetSecurity errors
-   fail-closed, and remove the duplicated Pond assessment seam. Add raw legacy-JSON and
-   command-failure regressions, then physically rerun only the firewall rollback slice on
-   the installed service and prove semantic equality plus zero residue. The already-green
-   Pond/DNS journey need not be repeated unless this consolidation changes its behavior.
-2. Resolve `issues/002-credential-store-test-leak.md` as a shared product ownership bug,
-   not a Windows-only cleanup script. A TOTP slot owns every platform credential label it
-   creates; replace, remove, failed persistence, and certmesh destroy must retire exactly
-   those labels without enumeration or foreign-entry risk. Real-store tests use scoped
-   cleanup that survives failures. Prove repeated suites and every currently exposed slot
-   lifecycle leave the Windows credential count at baseline; do not add a product endpoint
-   solely to make an acceptance test possible.
-3. Then close the shifted-port ADR-040 pipe path and the installed workbench's fresh-login,
+   Add deterministic adapter regressions for `DomainAuthenticated -> Domain`, an active
+   profile whose firewall is disabled while another profile is enabled, mixed active
+   profiles, and unknown categories. Preserve per-rule application/port/profile
+   correlation and the existing command-failure behavior. Run the native gates and full
+   Windows target gates, deploy the exact candidate through the normal product path, and
+   exercise only the affected installed startup-diagnostic/Pond assessment slice against
+   the real current profile. This is an observation test: do not mutate firewall or domain
+   policy to manufacture a green state. Record the authoritative Microsoft profile
+   semantics and prove one installed Koi plus zero residue.
+2. Then close the shifted-port ADR-040 pipe path and the installed workbench's fresh-login,
    tray, notification, Phone/Pond, lock/resume, upgrade, and uninstall/reinstall gates;
    standard-port pipe evidence is not a substitute.
-4. Finally coordinate the installed mDNS/NIC/profile/lock/sleep gate with Avahi and native
+3. Finally coordinate the installed mDNS/NIC/profile/lock/sleep gate with Avahi and native
    physical peers, preserving one Koi and exact host restoration throughout.
 
 Use one serial PowerShell installed-acceptance workbook and one evidence directory,
