@@ -330,6 +330,7 @@ done
 
 operator_request PUT /v1/pond >/dev/null
 "${PRIV[@]}" "${SERVICE_RESTART[@]}"
+RECOVERED='{}'
 for _ in {1..60}; do
   if refresh_access >/dev/null 2>&1 && curl -fsS --max-time 2 "$API/healthz" >/dev/null 2>&1; then
     RECOVERED="$(operator_request GET /v1/pond 2>/dev/null || true)"
@@ -341,7 +342,7 @@ for _ in {1..60}; do
   sleep 0.5
 done
 jq -e '.desired == true and .running == true and .state == "running"' \
-  <<<"${RECOVERED:-{}}" >"$EVIDENCE_DIR/recovered.json"
+  <<<"$RECOVERED" >"$EVIDENCE_DIR/recovered.json"
 mapfile -t POND_URLS < <(jq -er '.urls[]' <<<"$RECOVERED")
 for peer in "${PEERS[@]}"; do
   for url in "${POND_URLS[@]}"; do
