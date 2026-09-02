@@ -231,13 +231,17 @@ on Windows, Linux, and macOS.
 
 | Platform | mDNS engine | Service integration |
 | -------- | ----------- | ------------------- |
-| Windows | Built-in native provider; official Windows DNS-SD and installed Bonjour adapters in the Windows workstream | Windows Service (SCM) + firewall rules |
-| Linux | Capability-aware Avahi, systemd-resolved, and built-in native providers | systemd unit or OpenRC `supervise-daemon` |
-| macOS | Built-in native provider | launchd plist |
+| Windows | Built-in native publication (including explicit addresses); official Windows DNS-SD browse/resolve; Bonjour only when its service and client library are genuinely installed and running | Windows Service (SCM) + program-scoped firewall rules, including the separately armed Pond listener |
+| Linux | Capability-routed Avahi, systemd-resolved, and built-in native providers | systemd unit or OpenRC `supervise-daemon` |
+| macOS | Built-in native provider | launchd LaunchDaemon |
 
 One binary continuously uses the best live platform capabilities, without requiring
 Avahi or Bonjour to be installed. Native Koi is always catalogued as the lowest-priority
 provider and — unusual for this space — **Windows is a first-class citizen**.
+Provider names are not capability claims: on current Windows, the official DNS-SD
+adapter owns read routes while native Koi owns publication because physical peer probes
+showed that Windows registrations were not answered off-box. `koi mdns admin status
+--json` reports the exact live route owners and why a candidate was or was not selected.
 
 ## Installation
 

@@ -1,6 +1,10 @@
 ﻿# JSON Wire Protocol
 
-Koi uses the same JSON protocol across HTTP, IPC (Named Pipe / Unix Domain Socket), and stdin/stdout. The top-level key is the verb - the JSON _is_ the intent.
+Koi's mDNS commands use the same JSON protocol across HTTP, IPC (Named Pipe / Unix
+Domain Socket), and stdin/stdout. The top-level key is the verb - the JSON _is_ the
+intent. The authenticated local IPC transport additionally accepts the small,
+versioned local-control contract documented below; those requests are not HTTP or
+stdin commands.
 
 ---
 
@@ -89,6 +93,23 @@ Lifecycle events from `subscribe`:
 Protocol: NDJSON (newline-delimited JSON). One JSON object per line. Streaming operations keep the connection open.
 
 IPC registrations use **session-based leases**. The OS connection lifecycle is the liveness signal - when the connection drops, Koi starts a grace period.
+
+An installed machine service also uses this transport to hand facts to its recorded
+interactive operator without making its breadcrumb world-readable. Version 1 accepts:
+
+```json
+{ "request": "access", "version": 1 }
+{ "request": "info", "version": 1 }
+```
+
+`access` returns the running daemon's matching endpoint and token, plus its optional
+resolved data root. It fails with `http_disabled` when the daemon has no HTTP adapter.
+`info` returns the non-secret resolved data root and launch-selected configuration
+path even when HTTP is disabled. The pipe/socket authenticates the peer before parsing
+either request. Windows gives the pipe a protected DACL for SYSTEM, Administrators,
+and the recorded operator, then returns bytes only when the connected process token
+has the exact recorded operator SID. Unix admits root and the one recorded UID.
+Neither response is exposed by Pond or public HTTP status.
 
 ---
 

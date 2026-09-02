@@ -15,6 +15,7 @@
 | **5641** | HTTP API + dashboard + in-process MCP — all `/v1/*`, `/`, `/mdns-browser`, `/docs`, `/v1/mcp` | `127.0.0.1` (loopback) | `--port` / `KOI_PORT`; bind with `--http-bind` / `KOI_HTTP_BIND` | `--no-http` / `KOI_NO_HTTP` (whole adapter) | Always (unless gated off) | Rule **only when exposed** off-loopback; loopback stays closed |
 | **5642** | Inter-node mTLS — certmesh enrollment sync, roster, promotion. Client cert required; CN-authorized | `0.0.0.0` | `--mtls-port` / `KOI_MTLS_PORT` | (none — gated by certmesh state, not a flag) | Conditional: once a CA exists **and** is unlocked (posture-reactive — comes up/withdraws as posture flips) | **Not opened** — open it yourself for a CA / standby node |
 | **5643** | ACME (RFC 8555) server — lets standard ACME clients (Caddy, Traefik, lego, certbot) get certs from the CA. Server-auth TLS, dns-01 only | `0.0.0.0` | `--acme-port` / `KOI_ACME_PORT` | `--no-acme` / `KOI_NO_ACME` | Conditional: CA initialized **and** unlocked **and** DNS enabled | **Not opened** — open it yourself if ACME clients are off-box |
+| **5644** | Pond read-only phone/browser surface — fixed UI assets, liveness, privacy-reduced status, mDNS snapshot, and DNS entries only | `0.0.0.0` (IPv4) | Derived as `HTTP port + 3`; no independent knob | (none — armed/disarmed by the desktop operator flow) | Conditional: only while Pond desire is enabled and its listener is healthy | Program-scoped rule installed in advance; no socket listens while Pond is disabled |
 | **53** | Local DNS resolver — `koi dns serve`. Answers in-zone + static names | `0.0.0.0`, but replies to **private clients only** unless `--dns-public` | `--dns-port` / `KOI_DNS_PORT`; rate `--dns-qps` / `KOI_DNS_QPS` (default 200 q/s per source IP); zone `--dns-zone` / `KOI_DNS_ZONE` | `--no-dns` / `KOI_NO_DNS` | Conditional: when the DNS resolver is started | Rule opened (UDP **and** TCP on the DNS port) when DNS is enabled |
 | **per-proxy** | TLS-terminating reverse proxy listeners — one per entry | `0.0.0.0` on the entry's listen port | `koi proxy add --listen <port>` (per entry) | `--no-proxy` / `KOI_NO_PROXY` | Conditional: per configured proxy entry | **Not opened** — open each proxy listen port yourself |
 
@@ -80,6 +81,9 @@ ports that are actually reachable from off-box**:
 - **The HTTP API port — only when exposed.** Loopback traffic never crosses the
   firewall, so no HTTP rule is created at the default bind; a rule is added only
   when you bind off-loopback (`--http-bind bridge` / `<ip>` / `0.0.0.0`).
+- **Pond** (TCP `HTTP port + 3`, normally 5644) — installed in advance so the
+  operator can arm the narrow read-only listener without elevation. A disabled
+  Pond has no listening socket behind the rule.
 
 `koi install` does **not** open 5642 (mTLS), 5643 (ACME), or any per-proxy listen
 port — those are conditional listeners whose exposure you opt into. If you run a

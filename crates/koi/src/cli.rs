@@ -227,9 +227,9 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Install Koi as a system service (or a per-user service with --user)
+    /// Install Koi as a system service (`--user` is systemd Linux only)
     Install {
-        /// Install a per-user service instead of a system service
+        /// Install a systemd Linux per-user service instead of a system service
         #[arg(long)]
         user: bool,
         /// Interactive operator allowed to control the installed local daemon.
@@ -237,7 +237,7 @@ pub enum Command {
         #[arg(long, value_name = "USER_OR_SID")]
         operator: Option<String>,
     },
-    /// Uninstall the Koi service (system or user shape, whichever is found)
+    /// Uninstall the Koi service (system, or systemd Linux user shape)
     Uninstall,
     /// Manage the TOML configuration file (ADR-031)
     Config {
@@ -1796,6 +1796,19 @@ mod tests {
                 operator: None
             })
         ));
+    }
+
+    #[test]
+    fn install_help_limits_user_services_to_systemd_linux() {
+        let top = Cli::try_parse_from(["koi", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(top.contains("`--user` is systemd Linux only"));
+
+        let install = Cli::try_parse_from(["koi", "install", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(install.contains("Install a systemd Linux per-user service"));
     }
 
     #[test]

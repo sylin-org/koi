@@ -17,6 +17,19 @@ publication. Native Koi is always present in the catalog at the lowest priority.
 Routes never overlap, transitions retire the old owner before arming a replacement,
 and `koi status` names the live route owners and evidence.
 
+On Windows these are deliberately separate capabilities. The built-in provider owns
+ordinary and explicit-address publication. The official Windows DNS-SD adapter owns
+continuous browse and direct resolution, but does not claim publication: independent
+peer probes found that the OS responder did not answer for records registered through
+that API. Bonjour can own the full route set only when both its DNS-SD client library
+and `mDNSResponder` service are genuinely installed and running. Koi never installs,
+starts, stops, or reconfigures Bonjour or the Windows DNS Client to improve selection.
+Inspect the current evidence and route assignment with:
+
+```powershell
+koi mdns admin status --json
+```
+
 ---
 
 ## Discovering what's on the network

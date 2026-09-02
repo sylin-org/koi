@@ -1,5 +1,27 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-02 (15) — PH-0 advertised Windows contract reconciled
+
+commit: this commit, rebased on `8d6d3d6`; Koi Desktop `cbe5519` | gates: Koi fmt clean, strict full-workspace all-target clippy clean, focused help regressions green, full locked workspace tests green; desktop UI 38/38 and Rust 15 pass/1 environment-gated | installed artifacts intentionally unchanged
+
+koi state now: the installed SCM service remains RUNNING as the sole Koi daemon, PID `29016`, from `C:\Program Files\Koi\koi.exe --daemon`, SHA-256 `7dfb0630454c7042471a3c7e4544dac175aed6567a48262240b9f8b10f08df09`, with health 200 on `127.0.0.1:5641`. Its control plane remains Ready at generation 5 with `publish=native explicit_publish=native browse=windows-dns-sd resolve=windows-dns-sd`, one desired/established permanent publication, runtime disabled, and Pond disabled. The installed workbench remains PID `16604`, SHA-256 `bb07bb2c232f1ea7398348b1cb4a215dc7d2de04c9c21461bc6fe092de05e245`, at `C:\Users\onose\AppData\Local\Koi\koi-desktop.exe`, owning only `127.0.0.1:5640` with the same durable `--minimized` Run entry.
+
+### Public contract reconciliation
+
+1. The platform matrix and mDNS guide now describe the measured Windows composition precisely: native publication, native explicit-address publication, and official Windows DNS-SD browse/resolve, with Bonjour conditional on both its service and runtime library. Provider names are no longer presented as blanket capability claims.
+2. The authentication and wire references now distinguish the DAT breadcrumb from the authenticated local-control transport. They record the Windows named-pipe DACL and exact recorded-operator-SID authorization, the Unix owner/root boundary, versioned local-control requests, the HTTP-disabled path, and the installed workbench's breadcrumb-first behavior.
+3. The port reference now includes Pond's derived HTTP+3 listener, read-only allowlist, disabled/no-socket truth, and advance program-scoped firewall rule alongside the DNS, operator HTTP, and mDNS rules.
+4. The desktop contract now records authenticated named-pipe operation, one-operator ownership, one-shot watched-fade notifications, Windows notification-policy suppression, and Pond as a separate daemon-returned listener rather than a guessed operator URL.
+5. A real public-help defect was corrected: Windows/macOS install and uninstall help no longer imply that `--user` services are supported. The text and a regression now state that per-user service mode is systemd Linux only; the existing Windows runtime rejection remains unchanged.
+6. Installed lifecycle claims matched the physical baseline: Public Ethernet, enabled block-inbound firewalls, program-scoped installed rules, standard listeners on 53/5641, no 5644 listener, and no service or workbench duplication. No installed deployment was needed or performed during this reconciliation.
+
+### Honest boundary and residue
+
+- Shifted-port ADR-040 remains explicitly unclaimed because this host has no legitimate non-Koi incumbent on the standard trio. Fleet policy forbids manufacturing one, so the exact physical handoff stays for a genuine coexistence condition.
+- The unchanged installed Windows service/workbench remain the physical peer while the Linux hats converge. The source candidate waits for the later exact-freeze PH-4 whole-story matrix and PH-5 soak.
+- The full test run caused one automatic Windows Firewall TCP/UDP pair for the freshly rebuilt debug `koi.exe`. That exact current-run pair was removed and independently verified absent. A bounded inventory found older automatic rules under repository `target` roots; without a before-run ownership baseline they were not mass-deleted and are tracked in [issue 003](issues/003-cargo-test-firewall-rule-residue.md). Product-managed rules were untouched.
+- [Issue 001](issues/001-scm-service-object-wedge.md) remains open; this reconciliation did not alter its state. No peer, provider, resolver, network profile, service registration, installed artifact, listener, or credential state was mutated.
+
 ## 2026-09-02 (14) — PH-001 installed Windows provider, link/profile, lock, and S3 gate closed
 
 commit: this commit, on top of `569b67e` | candidate source `569b67e`, release SHA-256 `7dfb0630454c7042471a3c7e4544dac175aed6567a48262240b9f8b10f08df09` | gates: fmt clean, strict all-target clippy clean, full `cargo test --locked` green, locked release build green | run `20260902T223728Z-windows-provider` PASS | evidence `target/mdns-provider-transition/20260902T223728Z-windows-provider/`

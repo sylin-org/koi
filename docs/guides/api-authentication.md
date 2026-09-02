@@ -53,9 +53,10 @@ else in this guide is about the ordinary token-authenticated writes. See the
 
 ## Read the token
 
-The daemon writes its current token to a **breadcrumb file** at startup, with
-owner-only permissions. Two lines: the endpoint URL, then the token prefixed with
-`dat:`.
+The daemon writes its current token to a protected **breadcrumb file** at startup.
+Unix uses owner-only permissions. An installed Windows service restricts the ACL to
+SYSTEM, Administrators, and the one operator recorded by `koi install`. Two lines:
+the endpoint URL, then the token prefixed with `dat:`.
 
 ```
 http://localhost:5641
@@ -74,8 +75,12 @@ just the breadcrumb's line prefix, not part of the token. The examples below str
 
 ### Option A — parse the breadcrumb (local, zero dependencies)
 
-This is what the CLI does internally. Good for a script running on the same machine
-as the daemon, as a user who can read the file.
+This is the CLI's fast path. If the installed root/SYSTEM service owns a breadcrumb
+the caller cannot read, the CLI and workbench instead request the matching endpoint
+and token from the authenticated local-control socket/pipe. That transport admits
+root or the recorded UID on Unix; on Windows it answers only the exact operator SID
+recorded at install time. It is not a LAN API.
+Direct parsing remains useful for a local script that can read the file.
 
 ```bash
 # Linux / macOS
@@ -120,8 +125,9 @@ koi token write /run/koi/token
 TOKEN=$(cat /run/koi/token)
 ```
 
-Both commands read the token from the breadcrumb, so they require a running daemon;
-if none is running they exit with a clear error.
+Both commands resolve the same running local daemon through a readable breadcrumb or
+authenticated local control, so they require a running daemon; if none is running
+they exit with a clear error.
 
 ---
 
