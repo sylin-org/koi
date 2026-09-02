@@ -1,5 +1,36 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-02 (2) — PH-001 brief 2: transactional product-path SCM install; rollback exercised physically, port-planning and SCM-wedge defects found
+
+commit: this commit, on top of c658cde | gates: fmt/clippy `-D warnings` clean, full `cargo test --locked` green, release `koi-net` built and deployed through the new installer itself; all acceptance through the one installed service
+
+koi state now: **the installed service runs from the product-owned path** — `koi.service` RUNNING, PID `7712`, `BINARY_PATH_NAME : "C:\Program Files\Koi\koi.exe" --daemon`, binary SHA-256 `9104ca7bd8f25d8d7f95af5fe808ad95590dda3c45ee391c207b84791075e5fe` (byte-equal to the tree build; the checkout exe is no longer referenced by SCM), API `127.0.0.1:5641` healthy on the **standard** port run `5641:5642:5643:5644`, control plane gen 1 `ready` with the baseline composite (`publish=native`, browse/resolve `windows-dns-sd`), one desired/established permanent `_mcp._tcp` self-publication peer-resolved by test-01 during the session, config substrate back to its pre-session shape (operator's `http_bind = "0.0.0.0"` preserved, no port overrides), operator SID recorded in `state/local-access.json` (`S-1-5-21-…-1001`), exactly one koi.exe process, no transaction manifest or installer backups left, Koi firewall rules exactly the managed standard-port set (this session's shifted-run residue `Koi HTTP (TCP 5651)`/`Koi Pond (TCP 5654)` deleted; pre-existing legacy `Koi Web UI (tcp 5641)` left for operator-gated cleanup).
+
+### What landed (brief assignment 2 / epic immediate item 4)
+
+`koi install` on Windows is now a durable transaction mirroring the systemd recipe (`c83c01b`): binary staged to a **fixed product path** `%ProgramFiles%\Koi\koi.exe` (never the checkout the installer ran from — SCM no longer points into `target\`), prior **binary + service config (launch command/start type via ChangeServiceConfig, no delete/recreate gap) + operator policy + config substrate + exact Koi-owned firewall rules** are snapshotted to `<data>\state\scm-install-transaction.json` before the first mutation and roll back together when any step fails — including the health gate, which now **fails the install** (exit non-zero) instead of printing "NOT answering yet" and reporting success. Interrupted installs recover on the next run (Preparing/Armed manifest phases). `koi uninstall` removes the product binary, its directory when Koi-owned, and any manifest residue. Firewall snapshot parsing is fail-closed (an unparseable Koi rule aborts before mutation; noted locale limitation). 6 new unit tests (product path, netsh block parsing, fail-closed missing fields, start-type round-trip, manifest serde round-trip).
+
+### Physical exercise (one installed Koi throughout)
+
+1. **Real migration**: ran the new installer from the checkout against the standing checkout-registered service → in-place upgrade to the product path, healthz green, transaction committed clean (no manifest/backups).
+2. **Port-planning defect caught by that run**: the healthy 5641 machine was shifted to `5651:5654` because ADR-036 port planning ran **while the old service still held the standard trio** (the old installer had the same latent order; no prior install ever ran against a live holder). Fixed: capture the pre-stop snapshot, stop the service being replaced, then plan. Machine restored to the standard run; the appended port block was removed from `config.toml` (operator's `http_bind` untouched; backup in `.tmp/config-with-shifted-ports.toml`).
+3. **Failed-health rollback**: built a deliberately broken daemon (`run_service` exits before reporting; scratch git worktree, no product-code test hook) containing the same transactional installer, ran its `install` elevated → staging + start + health gate failed → rollback restored the prior binary **byte-exact** (hash-verified), config/policy/service config intact, manifest and backups gone, exit non-zero with the honest restoration message.
+4. **Second rollback + the wedge**: re-ran with a start-retry build (first run exposed that a one-shot restart raced SCM recovery timing). The restart was still denied — and stayed denied for every later start: the SCM had **wedged the `koi` service object** (event 7000 access-denied per launch) while the identical binary at the identical path ran fine as a freshly created throwaway service. Sane DACL/registry/file ACLs/binary verified; remedy proven: `reg export` backup → `sc delete koi` → `koi install` fresh-install path → RUNNING, healthy, peer-visible. Filed as `issues/001-scm-service-object-wedge.md` (mechanism needs a controlled repro before any automatic delete+recreate is trusted).
+
+### Defects fixed this session (shared/platform)
+
+- Install exit semantics: success after failed health check (epic item 4 / PH-3 minimum "never report success after a failed start/health check").
+- Port planning ordered after the replaced service's stop.
+- Rollback restart: bounded retry (`ERROR_SERVICE_ALREADY_RUNNING` tolerated) and `{:?}` error formatting so raw OS codes survive reporting.
+- `persist_plan` annotated for the Windows target (only the non-transactional recipes use it).
+
+### Residue / next
+
+1. `issues/001-scm-service-object-wedge.md` — repro + automatic last-resort recreation design.
+2. Brief 3 (pipe DACL/wrong-user closure — ADR-040 already records the operator SID now), then brief 4 (Pond firewall applicability + cooperative DNS), then the two-host transition run and sleep/resume matrix (operator present).
+3. Older rollback chain in `target/` (`koi.exe.pre-adr039`, `koi.exe.pre-ph001`, `koi.exe.a0f502`, `koi.exe.08023f`, `koi.exe.428f13`) now historical — SCM no longer references any of them; prune at leisure.
+
+
 ## 2026-09-02 (1) — PH-001 provider truth: LLMNR inference removed, Bonjour read fidelity completed and physically exercised
 
 commit: this commit, on top of 5c1b96c | gates: fmt/clippy `-D warnings` clean, full `cargo test --locked` green (incl. the 3 real-facility ignored tests run live), release `koi-net` built and deployed through the installed service path; acceptance exercised through the one installed daemon's authenticated API plus the real Bonjour adapter session against the live mDNSResponder; peer evidence from test-01 (Avahi)

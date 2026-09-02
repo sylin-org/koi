@@ -74,7 +74,7 @@ Distro names drift; capabilities don't.
 
 | recipe | trigger | shape |
 |---|---|---|
-| `scm` | Windows | existing SCM installer (P1-proven) |
+| `scm` | Windows | transactional installer: binary staged to `%ProgramFiles%\Koi\koi.exe` (never the checkout the installer ran from), prior binary/service config/operator policy/config substrate/Koi-owned firewall rules roll back together on a failed health check; interrupted installs recover on the next run |
 | `systemd` | `/run/systemd/system` present | system unit, `Type=notify`, drop-ins honored |
 | `systemd --user` | same + `--user` | `~/.config/systemd/user` unit, linger enabled |
 | `openrc` | `rc-update` present | `/etc/init.d/koi` (`supervise-daemon`, bounded respawn + health checks), `rc-update add … default` |

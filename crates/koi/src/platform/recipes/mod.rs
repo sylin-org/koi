@@ -429,6 +429,7 @@ pub fn append_config_ports(path: &Path, plan: &PortPlan) -> anyhow::Result<()> {
 
 /// Persist a shifted plan per ADR-036: honor what exists, write only when
 /// shifted. Returns a human line for the summary (empty when nothing needed).
+#[cfg_attr(windows, allow(dead_code))] // only the non-transactional recipes use it
 pub fn persist_plan(existing: &Existing, planned: &PortPlan, fresh_path: &Path) -> String {
     persist_plan_checked(existing, planned, fresh_path).unwrap_or_else(|error| match existing {
         Existing::ConfigWithoutPorts(path) => {

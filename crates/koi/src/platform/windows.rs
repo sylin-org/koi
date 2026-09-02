@@ -31,6 +31,15 @@ const SERVICE_STOP_POLL: Duration = Duration::from_millis(500);
 
 const SERVICE_LOG_FILENAME: &str = "koi.log";
 
+// ── Transactional install state (ADR-036 discipline, SCM recipe) ──────
+
+const TRANSACTION_VERSION: u16 = 1;
+const TRANSACTION_FILENAME: &str = "scm-install-transaction.json";
+const BACKUP_SUFFIX: &str = ".koi-install-backup";
+/// Rules the installer owns share this display-name prefix; it is also the
+/// rollback boundary for firewall restoration.
+const FIREWALL_RULE_PREFIX: &str = "Koi ";
+
 // Reuse shutdown constants from crate root (defined once in main.rs).
 use crate::{SHUTDOWN_DRAIN, SHUTDOWN_TIMEOUT};
 
@@ -52,6 +61,8 @@ pub fn service_data_dir() -> PathBuf {
 
 /// Win32 ERROR_SERVICE_DOES_NOT_EXIST (1060).
 const ERROR_SERVICE_NOT_FOUND: i32 = 1060;
+/// Win32 ERROR_SERVICE_ALREADY_RUNNING (1056).
+const ERROR_SERVICE_ALREADY_RUNNING: i32 = 1056;
 
 // Generate the extern "system" function that the SCM expects.
 define_windows_service!(ffi_service_main, service_main);
@@ -60,11 +71,12 @@ define_windows_service!(ffi_service_main, service_main);
 
 /// Install Koi as a Windows Service.
 ///
-/// Handles fresh installs and upgrades (different exe path, service
-/// already running). Configures recovery policy, description, firewall
-/// rules, and the service log directory. Port planning follows ADR-036:
-/// the operator's config wins; an occupied standard trio shifts and the
-/// choice is recorded in the config substrate the service reads.
+/// A durable transaction wraps every mutation (ADR-036 discipline, mirroring
+/// the systemd recipe): the binary stages to a fixed product-owned path —
+/// never the source checkout the installer ran from — and the prior binary,
+/// service config, operator policy, config substrate, and exact Koi-owned
+/// firewall rules roll back together when any step fails, including the
+/// final health check. An interrupted install recovers on the next run.
 pub fn install(
     user: bool,
     operator: Option<&str>,
@@ -77,10 +89,46 @@ pub fn install(
         );
     }
     ensure_elevated("install")?;
-    record_windows_operator(operator, data_dir)?;
     let exe_path = std::env::current_exe()?;
-    println!("Installing Koi service...");
+    let bin_path = install_bin_path();
+    println!("Installing Koi service (SCM)...");
     println!("  Binary: {}", exe_path.display());
+    println!("  Install path: {}", bin_path.display());
+
+    // Recovery may restore the service from stopped/broken back to its prior
+    // state, so measure lifecycle state only after it completes.
+    recover_interrupted(&transaction_path(data_dir))?;
+
+    // Stop the service being replaced BEFORE planning ports: the plan probes
+    // the standard trio, and the daemon this very install is replacing must
+    // not make the trio look occupied (the 2026-09-02 run shifted a healthy
+    // 5641 machine to 5651 exactly this way). The pre-stop truth goes into
+    // the snapshot first so rollback still restores a running service.
+    let service_snapshot = ServiceSnapshot::capture();
+    let manager = ServiceManager::local_computer(
+        None::<&str>,
+        ServiceManagerAccess::CREATE_SERVICE | ServiceManagerAccess::CONNECT,
+    )?;
+    let mut needs_restart = false;
+    let existing_service = manager.open_service(
+        SERVICE_NAME,
+        ServiceAccess::QUERY_STATUS
+            | ServiceAccess::QUERY_CONFIG
+            | ServiceAccess::STOP
+            | ServiceAccess::CHANGE_CONFIG
+            | ServiceAccess::START,
+    );
+    if let Ok(service) = &existing_service {
+        if let Ok(status) = service.query_status() {
+            if status.current_state != ServiceState::Stopped {
+                print!("  Stopping running service...");
+                let _ = service.stop();
+                wait_for_stop(service)?;
+                println!(" done.");
+                needs_restart = true;
+            }
+        }
+    }
 
     // ADR-036 port pre-flight: honor the existing config verbatim; when the
     // standard trio is occupied, plan a free run and persist it (the service
@@ -91,184 +139,156 @@ pub fn install(
         crate::platform::recipes::Existing::Declared(plan, _) => *plan,
         _ => crate::platform::recipes::plan_ports(),
     };
-    let persisted = crate::platform::recipes::persist_plan(&existing, &planned, &config_path);
-
-    let manager = ServiceManager::local_computer(
-        None::<&str>,
-        ServiceManagerAccess::CREATE_SERVICE | ServiceManagerAccess::CONNECT,
+    let policy_path = koi_config::local_access::policy_path(data_dir);
+    let mut transaction = ScmInstallTransaction::begin(
+        data_dir,
+        &bin_path,
+        &config_path,
+        &policy_path,
+        planned.http,
+        service_snapshot,
     )?;
-    let mut needs_restart = false;
 
-    // Try to open an existing service for upgrade
-    let service = match manager.open_service(
-        SERVICE_NAME,
-        ServiceAccess::QUERY_STATUS
-            | ServiceAccess::STOP
-            | ServiceAccess::DELETE
-            | ServiceAccess::CHANGE_CONFIG
-            | ServiceAccess::START,
-    ) {
-        Ok(existing) => {
-            println!("  Existing service found, updating...");
+    let result = (|| -> anyhow::Result<String> {
+        record_windows_operator(operator, data_dir)?;
 
-            // Stop if running
-            if let Ok(status) = existing.query_status() {
-                if status.current_state != ServiceState::Stopped {
-                    print!("  Stopping running service...");
-                    let _ = existing.stop();
-                    wait_for_stop(&existing)?;
-                    println!(" done.");
-                    needs_restart = true;
-                }
+        let service = match existing_service {
+            Ok(existing) => {
+                println!("  Existing service found, updating...");
+                // Update in place: keeping the service identity avoids the
+                // delete/recreate gap the old installer could strand a
+                // machine in when recreation failed.
+                existing.change_config(&build_service_info(&bin_path))?;
+                println!("  Service updated");
+                existing
             }
+            Err(windows_service::Error::Winapi(ref e))
+                if e.raw_os_error() == Some(ERROR_SERVICE_NOT_FOUND) =>
+            {
+                // Fresh install
+                let info = build_service_info(&bin_path);
+                let svc = manager.create_service(
+                    &info,
+                    ServiceAccess::CHANGE_CONFIG
+                        | ServiceAccess::START
+                        | ServiceAccess::QUERY_STATUS,
+                )?;
+                transaction.mark_service_created();
+                println!("  Service installed (AutoStart)");
+                svc
+            }
+            Err(e) => return Err(anyhow::anyhow!("{e}")),
+        };
 
-            existing.delete()?;
-            drop(existing);
+        apply_service_policy(&service)?;
 
-            // The SCM marks deleted services for deferred removal.
-            // Poll until the old entry is fully purged before recreating.
-            wait_for_delete(&manager)?;
-
-            // Re-create with updated config
-            let info = build_service_info(&exe_path);
-            let svc = manager.create_service(
-                &info,
-                ServiceAccess::CHANGE_CONFIG | ServiceAccess::START | ServiceAccess::QUERY_STATUS,
-            )?;
-            println!("  Service updated");
-            svc
-        }
-        Err(windows_service::Error::Winapi(ref e))
-            if e.raw_os_error() == Some(ERROR_SERVICE_NOT_FOUND) =>
-        {
-            // Fresh install
-            let info = build_service_info(&exe_path);
-            let svc = manager.create_service(
-                &info,
-                ServiceAccess::CHANGE_CONFIG | ServiceAccess::START | ServiceAccess::QUERY_STATUS,
-            )?;
-            println!("  Service installed (AutoStart)");
-            svc
-        }
-        Err(e) => return Err(e.into()),
-    };
-
-    // Description (best-effort, non-critical)
-    if let Err(e) = service.set_description(SERVICE_DESCRIPTION) {
-        println!("  Warning: could not set description: {e}");
-    }
-
-    // Recovery policy: restart after 5s, restart after 10s, then nothing
-    let failure_actions = ServiceFailureActions {
-        reset_period: ServiceFailureResetPeriod::After(RECOVERY_RESET_SECS),
-        reboot_msg: None,
-        command: None,
-        actions: Some(vec![
-            ServiceAction {
-                action_type: ServiceActionType::Restart,
-                delay: RECOVERY_DELAY_FIRST,
-            },
-            ServiceAction {
-                action_type: ServiceActionType::Restart,
-                delay: RECOVERY_DELAY_SECOND,
-            },
-            ServiceAction {
-                action_type: ServiceActionType::None,
-                delay: Duration::ZERO,
-            },
-        ]),
-    };
-    match service.update_failure_actions(failure_actions) {
-        Ok(()) => println!(
-            "  Recovery policy: restart after {}s, {}s, then stop (resets after 24h)",
-            RECOVERY_DELAY_FIRST.as_secs(),
-            RECOVERY_DELAY_SECOND.as_secs()
-        ),
-        Err(e) => println!("  Warning: could not set recovery policy: {e}"),
-    }
-    // Also trigger recovery on non-crash failures (e.g. non-zero exit)
-    let _ = service.set_failure_actions_on_non_crash_failures(true);
-
-    // Log directory
-    let log_dir = service_log_dir();
-    match std::fs::create_dir_all(&log_dir) {
-        Ok(()) => println!("  Log directory: {}", log_dir.display()),
-        Err(e) => println!("  Warning: could not create log directory: {e}"),
-    }
-
-    // Firewall rules (best-effort, never abort). The launch-line config
-    // (CLI > env > file) keeps the rules honest with the port the daemon
-    // will actually bind — including a config-file port.
-    let config = crate::cli::Config::from_service_launch();
-    let ports = firewall_ports_for_config(&config);
-    let mut ok = Vec::new();
-    let mut failed = Vec::new();
-
-    // Clean up legacy rule names so we don't leave duplicates behind.
-    let _ = remove_firewall_rule(FIREWALL_RULE_MDNS_LEGACY);
-    let _ = remove_firewall_rule(FIREWALL_RULE_HTTP_LEGACY);
-
-    for port in &ports {
-        let rule_name = firewall_rule_name(port);
-        if create_firewall_rule(&rule_name, port.protocol.as_str(), port.port, &exe_path) {
-            ok.push(port.clone());
+        // Stage after the stop: the running service must not hold the
+        // product path. Installing from the installed path is a no-op.
+        print!("  Staging {}...", bin_path.display());
+        if stage_binary(&exe_path, &bin_path)? {
+            println!(" done.");
         } else {
-            failed.push(port.clone());
+            println!(" already in place.");
         }
-    }
 
-    if !ok.is_empty() {
-        println!("  Firewall rules set ({})", firewall_ports_summary(&ok));
-    }
-    for port in &failed {
-        println!(
-            "  Warning: could not set firewall rule for {} {} ({})",
-            port.protocol.as_str(),
-            port.port,
-            port.name
-        );
-    }
+        let persisted =
+            crate::platform::recipes::persist_plan_checked(&existing, &planned, &config_path)?;
 
-    // Start the service
-    match service.start::<OsString>(&[]) {
-        Ok(()) => {
-            if needs_restart {
-                println!("  Service restarted");
+        // Firewall rules. The transaction snapshots the exact prior Koi-owned
+        // set, so a later rollback recreates what was replaced and removes
+        // what was new.
+        let config = crate::cli::Config::from_service_launch();
+        let ports = firewall_ports_for_config(&config);
+        let _ = remove_firewall_rule(FIREWALL_RULE_MDNS_LEGACY);
+        let _ = remove_firewall_rule(FIREWALL_RULE_HTTP_LEGACY);
+        let mut ok = Vec::new();
+        let mut failed = Vec::new();
+        for port in &ports {
+            let rule_name = firewall_rule_name(port);
+            if create_firewall_rule(&rule_name, port.protocol.as_str(), port.port, &bin_path) {
+                transaction.mark_rule_created(&rule_name);
+                ok.push(port.clone());
             } else {
-                println!("  Service started");
+                failed.push(port.clone());
             }
         }
-        Err(e) => {
-            println!("  Warning: could not start service: {e}");
-            // Query status to help diagnose the failure
-            match service.query_status() {
-                Ok(status) => println!(
-                    "  Service state: {:?}, exit code: {:?}",
-                    status.current_state, status.exit_code
-                ),
-                Err(qe) => println!("  Could not query status: {qe}"),
-            }
-            println!("  Binary: {}", exe_path.display());
-            println!("  Try: sc start koi  (or check Event Viewer > Windows Logs > System)");
+        if !ok.is_empty() {
+            println!("  Firewall rules set ({})", firewall_ports_summary(&ok));
         }
-    }
+        if !failed.is_empty() {
+            for port in &failed {
+                println!(
+                    "  Warning: could not set firewall rule for {} {} ({})",
+                    port.protocol.as_str(),
+                    port.port,
+                    port.name
+                );
+            }
+        }
 
-    // Self-verify with koi's own client (ADR-036: never assume third-party
-    // tools for verification).
-    print!("  Verifying (healthz on {})...", planned.http);
-    if crate::platform::recipes::healthz_wait(planned.http, Duration::from_secs(20)) {
+        println!(
+            "  Service {}",
+            if needs_restart {
+                "restarted"
+            } else {
+                "started"
+            }
+        );
+        service.start::<OsString>(&[])?;
+
+        print!("  Verifying (healthz on {})...", planned.http);
+        std::io::Write::flush(&mut std::io::stdout())?;
+        if !crate::platform::recipes::healthz_wait(planned.http, Duration::from_secs(20)) {
+            println!(" failed.");
+            anyhow::bail!(
+                "service did not answer /healthz on {} within 20s; check {} and the Windows event log",
+                planned.http,
+                service_log_path().display()
+            );
+        }
         println!(" healthy.");
-    } else {
-        println!(" NOT answering yet — check the service log");
-    }
+        Ok(persisted)
+    })();
+
+    let persisted = match result {
+        Ok(persisted) => match transaction.commit() {
+            Ok(()) => persisted,
+            Err(commit_error) => {
+                eprintln!("  Could not commit installation state: {commit_error}");
+                eprintln!("  Restoring the previous installation...");
+                return match transaction.rollback() {
+                    Ok(()) => Err(anyhow::anyhow!(
+                        "installation verification passed, but its durable commit failed and the previous Koi installation was restored: {commit_error}"
+                    )),
+                    Err(rollback_error) => Err(anyhow::anyhow!(
+                        "installation verification passed, but commit failed ({commit_error}) and automatic rollback is incomplete ({rollback_error}). Re-run `koi install` to retry recovery before making manual changes"
+                    )),
+                };
+            }
+        },
+        Err(install_error) => {
+            eprintln!("  Installation failed: {install_error}");
+            eprintln!("  Restoring the previous installation...");
+            return match transaction.rollback() {
+                Ok(()) => Err(anyhow::anyhow!(
+                    "installation failed and the previous Koi installation was restored: {install_error}"
+                )),
+                Err(rollback_error) => Err(anyhow::anyhow!(
+                    "installation failed ({install_error}); automatic rollback is incomplete ({rollback_error}). Re-run `koi install` to retry recovery before making manual changes"
+                )),
+            };
+        }
+    };
 
     println!();
     println!("Koi service installed.");
+    println!("  Binary: {}", bin_path.display());
     println!("  Ports: {}", planned.describe());
     if !persisted.is_empty() {
         println!("  {persisted}");
     }
     println!("  Config: {} (koi config show)", config_path.display());
+    println!("  Logs: {}", service_log_path().display());
     println!("  Use `koi status` to see module state.");
 
     Ok(())
@@ -328,6 +348,548 @@ fn build_service_info(exe_path: &std::path::Path) -> ServiceInfo {
         account_name: None,
         account_password: None,
     }
+}
+
+/// Description, recovery policy, and the service log directory — applied
+/// identically on fresh installs and upgrades, and reapplied after a
+/// rollback restores an earlier launch command.
+fn apply_service_policy(service: &windows_service::service::Service) -> anyhow::Result<()> {
+    if let Err(e) = service.set_description(SERVICE_DESCRIPTION) {
+        println!("  Warning: could not set description: {e}");
+    }
+    let failure_actions = ServiceFailureActions {
+        reset_period: ServiceFailureResetPeriod::After(RECOVERY_RESET_SECS),
+        reboot_msg: None,
+        command: None,
+        actions: Some(vec![
+            ServiceAction {
+                action_type: ServiceActionType::Restart,
+                delay: RECOVERY_DELAY_FIRST,
+            },
+            ServiceAction {
+                action_type: ServiceActionType::Restart,
+                delay: RECOVERY_DELAY_SECOND,
+            },
+            ServiceAction {
+                action_type: ServiceActionType::None,
+                delay: Duration::ZERO,
+            },
+        ]),
+    };
+    match service.update_failure_actions(failure_actions) {
+        Ok(()) => println!(
+            "  Recovery policy: restart after {}s, {}s, then stop (resets after 24h)",
+            RECOVERY_DELAY_FIRST.as_secs(),
+            RECOVERY_DELAY_SECOND.as_secs()
+        ),
+        Err(e) => println!("  Warning: could not set recovery policy: {e}"),
+    }
+    // Also trigger recovery on non-crash failures (e.g. non-zero exit)
+    let _ = service.set_failure_actions_on_non_crash_failures(true);
+    let log_dir = service_log_dir();
+    match std::fs::create_dir_all(&log_dir) {
+        Ok(()) => println!("  Log directory: {}", log_dir.display()),
+        Err(e) => println!("  Warning: could not create log directory: {e}"),
+    }
+    Ok(())
+}
+
+// ── Transactional install (SCM recipe) ───────────────────────────────
+
+/// The fixed product-owned binary path. SCM must never point into a source
+/// checkout: the checkout moves, gets cleaned, and is not a product surface.
+pub fn install_bin_path() -> PathBuf {
+    let program_files =
+        std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".to_string());
+    PathBuf::from(program_files).join("Koi").join("koi.exe")
+}
+
+fn transaction_path(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("state").join(TRANSACTION_FILENAME)
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+enum TransactionPhase {
+    Preparing,
+    Armed,
+}
+
+/// The prior SCM registration, captured before the first mutation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ServiceSnapshot {
+    existed: bool,
+    /// Full launch command line (`lpBinaryPathName`), including arguments.
+    launch_command: Option<String>,
+    /// `auto` | `demand` | `disabled`.
+    start_type: Option<String>,
+    was_active: bool,
+}
+
+impl ServiceSnapshot {
+    fn capture() -> Self {
+        let Ok(manager) =
+            ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        else {
+            return Self {
+                existed: false,
+                launch_command: None,
+                start_type: None,
+                was_active: false,
+            };
+        };
+        let Ok(service) = manager.open_service(
+            SERVICE_NAME,
+            ServiceAccess::QUERY_STATUS | ServiceAccess::QUERY_CONFIG,
+        ) else {
+            return Self {
+                existed: false,
+                launch_command: None,
+                start_type: None,
+                was_active: false,
+            };
+        };
+        let was_active = service
+            .query_status()
+            .map(|status| status.current_state == ServiceState::Running)
+            .unwrap_or(false);
+        let config = service.query_config().ok();
+        Self {
+            existed: true,
+            launch_command: config
+                .as_ref()
+                .map(|config| config.executable_path.to_string_lossy().into_owned()),
+            start_type: config
+                .as_ref()
+                .and_then(|config| start_type_token(config.start_type).map(str::to_string)),
+            was_active,
+        }
+    }
+}
+
+fn start_type_token(start_type: ServiceStartType) -> Option<&'static str> {
+    match start_type {
+        ServiceStartType::AutoStart => Some("auto"),
+        ServiceStartType::OnDemand => Some("demand"),
+        ServiceStartType::Disabled => Some("disabled"),
+        _ => None,
+    }
+}
+
+fn start_type_from_token(token: &str) -> anyhow::Result<ServiceStartType> {
+    match token {
+        "auto" => Ok(ServiceStartType::AutoStart),
+        "demand" => Ok(ServiceStartType::OnDemand),
+        "disabled" => Ok(ServiceStartType::Disabled),
+        other => anyhow::bail!("unsupported prior service start type: {other}"),
+    }
+}
+
+/// One file the installer may replace, with its prior bytes parked beside it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct FileSnapshot {
+    path: PathBuf,
+    backup: PathBuf,
+    existed: bool,
+}
+
+impl FileSnapshot {
+    fn inspect(path: PathBuf) -> Self {
+        let backup = backup_path(&path);
+        let existed = path.is_file();
+        Self {
+            path,
+            backup,
+            existed,
+        }
+    }
+
+    /// Park the prior bytes. A stale backup can only be debris after a
+    /// committed transaction; the manifest is the rollback authority.
+    fn prepare(&self) -> anyhow::Result<()> {
+        if !self.existed {
+            return Ok(());
+        }
+        if let Some(parent) = self.backup.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&self.path, &self.backup)?;
+        Ok(())
+    }
+
+    fn validate_backup(&self) -> anyhow::Result<()> {
+        if self.existed && !self.backup.is_file() {
+            anyhow::bail!(
+                "installer recovery is incomplete: expected backup {} for {}",
+                self.backup.display(),
+                self.path.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn restore(&self) -> anyhow::Result<()> {
+        if !self.existed {
+            match std::fs::remove_file(&self.path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            return Ok(());
+        }
+        let staged = staged_path(&self.path);
+        std::fs::copy(&self.backup, &staged)?;
+        koi_common::persist::replace_file(&staged, &self.path)?;
+        Ok(())
+    }
+
+    fn cleanup(&self) -> anyhow::Result<()> {
+        for path in [&self.backup, &staged_path(&self.path)] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One Koi-owned firewall rule with the parameters needed to recreate it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct FirewallRuleSnapshot {
+    name: String,
+    enabled: bool,
+    direction: String,
+    action: String,
+    protocol: String,
+    local_port: String,
+    program: String,
+}
+
+/// The durable record of an in-flight installation. Present on disk with
+/// `Armed` = mutations may have started; the next `koi install` recovers.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct InstallManifest {
+    version: u16,
+    phase: TransactionPhase,
+    http_port: u16,
+    service: ServiceSnapshot,
+    files: Vec<FileSnapshot>,
+    firewall: Vec<FirewallRuleSnapshot>,
+    /// Rule names this installation created that did not exist before.
+    added_rules: Vec<String>,
+    /// Set once CreateService succeeded for a service that did not exist.
+    created_service: bool,
+    temporary_paths: Vec<PathBuf>,
+}
+
+struct ScmInstallTransaction {
+    path: PathBuf,
+    manifest: InstallManifest,
+}
+
+impl ScmInstallTransaction {
+    fn begin(
+        data_dir: &std::path::Path,
+        bin_path: &std::path::Path,
+        config_path: &std::path::Path,
+        policy_path: &std::path::Path,
+        http_port: u16,
+        service: ServiceSnapshot,
+    ) -> anyhow::Result<Self> {
+        let path = transaction_path(data_dir);
+        let firewall = snapshot_koi_firewall_rules()?;
+        let files = [
+            bin_path.to_path_buf(),
+            config_path.to_path_buf(),
+            policy_path.to_path_buf(),
+        ]
+        .into_iter()
+        .map(FileSnapshot::inspect)
+        .collect::<Vec<_>>();
+        let mut manifest = InstallManifest {
+            version: TRANSACTION_VERSION,
+            phase: TransactionPhase::Preparing,
+            http_port,
+            service,
+            files,
+            firewall,
+            added_rules: Vec::new(),
+            created_service: false,
+            temporary_paths: Vec::new(),
+        };
+        write_manifest(&path, &manifest)?;
+        for file in &manifest.files {
+            if let Err(error) = file.prepare() {
+                for prepared in &manifest.files {
+                    let _ = prepared.cleanup();
+                }
+                let _ = std::fs::remove_file(&path);
+                return Err(error);
+            }
+        }
+        manifest.phase = TransactionPhase::Armed;
+        write_manifest(&path, &manifest)?;
+        Ok(Self { path, manifest })
+    }
+
+    /// Rule names created by this install (tracked for exact rollback).
+    fn mark_rule_created(&mut self, name: &str) {
+        if !self.manifest.added_rules.iter().any(|n| n == name)
+            && !self.manifest.firewall.iter().any(|rule| rule.name == name)
+        {
+            self.manifest.added_rules.push(name.to_string());
+            let _ = write_manifest(&self.path, &self.manifest);
+        }
+    }
+
+    fn mark_service_created(&mut self) {
+        self.manifest.created_service = true;
+        let _ = write_manifest(&self.path, &self.manifest);
+    }
+
+    /// Removing the manifest commits the new state. Leftover backups are
+    /// harmless debris removed by this or the next install.
+    fn commit(&self) -> anyhow::Result<()> {
+        std::fs::remove_file(&self.path)?;
+        for file in &self.manifest.files {
+            if let Err(error) = file.cleanup() {
+                eprintln!(
+                    "  Warning: could not remove committed installer backup {}: {error}",
+                    file.backup.display()
+                );
+            }
+        }
+        cleanup_temporary_paths(&self.manifest.temporary_paths);
+        Ok(())
+    }
+
+    fn rollback(self) -> anyhow::Result<()> {
+        restore_manifest(&self.path, &self.manifest)
+    }
+}
+
+fn write_manifest(path: &std::path::Path, manifest: &InstallManifest) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    koi_common::persist::write_json_pretty(path, manifest)?;
+    Ok(())
+}
+
+fn backup_path(path: &std::path::Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(BACKUP_SUFFIX);
+    PathBuf::from(name)
+}
+
+fn staged_path(path: &std::path::Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".koi-install-staged");
+    PathBuf::from(name)
+}
+
+/// Recover an interrupted installation before starting a new one.
+fn recover_interrupted(path: &std::path::Path) -> anyhow::Result<()> {
+    let manifest = match koi_common::persist::read_json::<InstallManifest>(path) {
+        Ok(manifest) => manifest,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            anyhow::bail!(
+                "cannot recover interrupted installation: {} is unreadable: {error}",
+                path.display()
+            )
+        }
+    };
+    if manifest.version != TRANSACTION_VERSION {
+        anyhow::bail!(
+            "cannot recover interrupted installation: {} has version {}, expected {}",
+            path.display(),
+            manifest.version,
+            TRANSACTION_VERSION
+        );
+    }
+    match manifest.phase {
+        TransactionPhase::Preparing => {
+            println!(
+                "  Cleaning an interrupted pre-mutation checkpoint at {}...",
+                path.display()
+            );
+            for file in &manifest.files {
+                file.cleanup()?;
+            }
+            cleanup_temporary_paths(&manifest.temporary_paths);
+            std::fs::remove_file(path)?;
+            println!(" done.");
+            Ok(())
+        }
+        TransactionPhase::Armed => {
+            println!(
+                "  Recovering an interrupted SCM installation from {}...",
+                path.display()
+            );
+            restore_manifest(path, &manifest)?;
+            println!(" done.");
+            Ok(())
+        }
+    }
+}
+
+/// Restore the exact prior installation: service registration and lifecycle,
+/// product binary, operator policy, config substrate, and Koi-owned
+/// firewall rules.
+fn restore_manifest(path: &std::path::Path, manifest: &InstallManifest) -> anyhow::Result<()> {
+    for file in &manifest.files {
+        file.validate_backup()?;
+    }
+    let manager = ServiceManager::local_computer(
+        None::<&str>,
+        ServiceManagerAccess::CREATE_SERVICE | ServiceManagerAccess::CONNECT,
+    )?;
+    let service = manager.open_service(
+        SERVICE_NAME,
+        ServiceAccess::QUERY_STATUS
+            | ServiceAccess::QUERY_CONFIG
+            | ServiceAccess::STOP
+            | ServiceAccess::CHANGE_CONFIG
+            | ServiceAccess::START
+            | ServiceAccess::DELETE,
+    );
+
+    if let Ok(service) = &service {
+        // A crash-looping replacement restarts behind the SCM recovery
+        // manager while we restore; clear the policy first so the stop
+        // below is final, then reapply it after the config is back.
+        let no_actions = ServiceFailureActions {
+            reset_period: ServiceFailureResetPeriod::After(Duration::ZERO),
+            reboot_msg: None,
+            command: None,
+            actions: Some(Vec::new()),
+        };
+        let _ = service.update_failure_actions(no_actions);
+        let _ = service.set_failure_actions_on_non_crash_failures(false);
+        if let Ok(status) = service.query_status() {
+            if status.current_state != ServiceState::Stopped {
+                print!("  Stopping service for restore...");
+                let _ = service.stop();
+                wait_for_stop(service)?;
+                println!(" done.");
+            }
+        }
+    }
+
+    for file in &manifest.files {
+        file.restore()?;
+    }
+
+    // Service registration restore. An arm that keeps the handle parks it
+    // for the lifecycle restore at the end.
+    let mut live_service = None;
+    match service {
+        // The service existed before and still exists: point it back at the
+        // prior launch command and start type.
+        Ok(service) if manifest.service.existed => {
+            let launch_command = manifest
+                .service
+                .launch_command
+                .clone()
+                .unwrap_or_else(|| install_bin_path().to_string_lossy().into_owned());
+            let start_type =
+                start_type_from_token(manifest.service.start_type.as_deref().unwrap_or("auto"))?;
+            let mut info = build_service_info(std::path::Path::new(&launch_command));
+            info.launch_arguments = vec![]; // the snapshot already carries them
+            info.start_type = start_type;
+            service.change_config(&info)?;
+            apply_service_policy(&service)?;
+            live_service = Some(service);
+        }
+        // We created the service and the prior state had none: remove it.
+        Ok(service) if manifest.created_service => {
+            service.delete()?;
+            wait_for_delete(&manager)?;
+        }
+        Ok(_) => {}
+        // Prior service is gone but the manifest expects one: recreation is
+        // the installer's own fresh-install path, not a rollback guess.
+        Err(_) if manifest.service.existed => {
+            eprintln!(
+                "  Warning: prior koi service registration is missing; skipping service config restore"
+            );
+        }
+        Err(_) => {}
+    }
+
+    // Firewall: remove rules this install added, then recreate every prior
+    // Koi-owned rule from its snapshot (same-name rules now carry the new
+    // parameters and must be replaced).
+    for name in &manifest.added_rules {
+        let _ = remove_firewall_rule(name);
+    }
+    for rule in &manifest.firewall {
+        let _ = remove_firewall_rule(&rule.name);
+        if !recreate_firewall_rule(rule) {
+            anyhow::bail!("could not restore firewall rule {}", rule.name);
+        }
+    }
+
+    // The manifest is removed first to commit restoration. Orphaned backup
+    // copies are cleanup-only and cannot trigger a later rollback.
+    std::fs::remove_file(path)?;
+    for file in &manifest.files {
+        file.cleanup()?;
+    }
+    cleanup_temporary_paths(&manifest.temporary_paths);
+
+    if let Some(service) = &live_service {
+        if manifest.service.was_active {
+            start_with_retry(service)?;
+            if !crate::platform::recipes::healthz_wait(manifest.http_port, Duration::from_secs(20))
+            {
+                anyhow::bail!(
+                    "restored service did not answer /healthz on {}",
+                    manifest.http_port
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_temporary_paths(paths: &[PathBuf]) {
+    for path in paths {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {}
+        }
+    }
+}
+
+/// Stage the installer's binary into the product path. Returns false when
+/// source and destination are the same file (upgrade from the installed
+/// path). A destination another process holds fails with the precise cause.
+fn stage_binary(exe: &std::path::Path, bin: &std::path::Path) -> anyhow::Result<bool> {
+    let same = exe
+        .canonicalize()
+        .ok()
+        .zip(bin.canonicalize().ok())
+        .is_some_and(|(s, d)| s == d);
+    if same {
+        return Ok(false);
+    }
+    if let Some(parent) = bin.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let staged = staged_path(bin);
+    std::fs::copy(exe, &staged)?;
+    if let Err(error) = koi_common::persist::replace_file(&staged, bin) {
+        let _ = std::fs::remove_file(&staged);
+        anyhow::bail!(
+            "could not stage {} (a running process may hold it — stop the koi service first): {error}",
+            bin.display()
+        );
+    }
+    Ok(true)
 }
 
 // ── Uninstall ───────────────────────────────────────────────────────
@@ -416,6 +978,37 @@ pub fn uninstall() -> anyhow::Result<()> {
 
     // Daemon discovery file
     koi_config::breadcrumb::delete_breadcrumb();
+
+    // Product-owned binary from the transactional installer. Older installs
+    // registered a path elsewhere; those binaries stay where they are.
+    let bin = install_bin_path();
+    if bin.is_file() {
+        match std::fs::remove_file(&bin) {
+            Ok(()) => println!("  Binary removed: {}", bin.display()),
+            Err(e) => println!(
+                "  Warning: could not remove {} (a process may hold it): {e}",
+                bin.display()
+            ),
+        }
+    }
+    if let Some(parent) = bin.parent() {
+        // Remove the product directory only when the installer owns it
+        // entirely; anything else placed there stays.
+        let _ = std::fs::remove_dir(parent);
+    }
+
+    // An interrupted transaction cannot outlive the installation it belonged
+    // to; its backups are inert but should not outlive it either.
+    let manifest = transaction_path(&service_data_dir());
+    if manifest.is_file() {
+        if let Ok(record) = koi_common::persist::read_json::<InstallManifest>(&manifest) {
+            for file in &record.files {
+                let _ = file.cleanup();
+            }
+            cleanup_temporary_paths(&record.temporary_paths);
+        }
+        let _ = std::fs::remove_file(&manifest);
+    }
 
     // Log directory - remove only if empty, otherwise inform the user
     let log_dir = service_log_dir();
@@ -709,6 +1302,101 @@ fn remove_firewall_rule(name: &str) -> bool {
     matches!(result, Ok(output) if output.status.success())
 }
 
+/// Parse `netsh advfirewall firewall show rule` output into snapshots of the
+/// Koi-owned rules. Parsing is fail-closed: an unparseable dump aborts the
+/// install before any mutation rather than promising a rollback it cannot
+/// deliver. (netsh keys are localized on non-English Windows; those hosts
+/// get the same explicit refusal instead of a silent partial snapshot.)
+fn snapshot_koi_firewall_rules() -> anyhow::Result<Vec<FirewallRuleSnapshot>> {
+    use std::process::Command;
+
+    let output = Command::new("netsh")
+        .args([
+            "advfirewall",
+            "firewall",
+            "show",
+            "rule",
+            "name=all",
+            "dir=in",
+        ])
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!("could not enumerate firewall rules (netsh exited unsuccessfully)");
+    }
+    parse_koi_rules(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_koi_rules(text: &str) -> anyhow::Result<Vec<FirewallRuleSnapshot>> {
+    let mut rules = Vec::new();
+    for block in text.split("\r\n\r\n") {
+        let fields = parse_rule_block(block);
+        let Some(name) = fields.get("Rule Name").cloned() else {
+            continue;
+        };
+        if !name.starts_with(FIREWALL_RULE_PREFIX) {
+            continue;
+        }
+        let (Some(enabled), Some(direction), Some(action), Some(protocol)) = (
+            fields.get("Enabled").cloned(),
+            fields.get("Direction").cloned(),
+            fields.get("Action").cloned(),
+            fields.get("Protocol").cloned(),
+        ) else {
+            anyhow::bail!(
+                "firewall rule '{name}' is missing fields needed for rollback restoration"
+            );
+        };
+        rules.push(FirewallRuleSnapshot {
+            name,
+            enabled: enabled.eq_ignore_ascii_case("yes"),
+            direction: direction.to_ascii_lowercase(),
+            action: action.to_ascii_lowercase(),
+            protocol: protocol.to_ascii_lowercase(),
+            local_port: fields.get("LocalPort").cloned().unwrap_or_default(),
+            program: fields.get("Program").cloned().unwrap_or_default(),
+        });
+    }
+    Ok(rules)
+}
+
+/// One netsh rule block: `Key:  value` lines.
+fn parse_rule_block(block: &str) -> std::collections::HashMap<String, String> {
+    let mut fields = std::collections::HashMap::new();
+    for line in block.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        fields.insert(key.trim().to_string(), value.trim().to_string());
+    }
+    fields
+}
+
+/// Recreate one prior rule from its snapshot.
+fn recreate_firewall_rule(rule: &FirewallRuleSnapshot) -> bool {
+    use std::process::Command;
+
+    let mut command = Command::new("netsh");
+    command
+        .args(["advfirewall", "firewall", "add", "rule"])
+        .arg(format!("name={}", rule.name))
+        .arg(format!("dir={}", rule.direction))
+        .arg(format!("action={}", rule.action))
+        .arg(format!(
+            "enable={}",
+            if rule.enabled { "yes" } else { "no" }
+        ));
+    if !rule.protocol.is_empty() && !rule.protocol.eq_ignore_ascii_case("any") {
+        command.arg(format!("protocol={}", rule.protocol));
+    }
+    if !rule.local_port.is_empty() && !rule.local_port.eq_ignore_ascii_case("any") {
+        command.arg(format!("localport={}", rule.local_port));
+    }
+    if !rule.program.is_empty() && !rule.program.eq_ignore_ascii_case("any") {
+        command.arg(format!("program={}", rule.program));
+    }
+    matches!(command.output(), Ok(output) if output.status.success())
+}
+
 fn firewall_ports_for_config(
     config: &crate::cli::Config,
 ) -> Vec<koi_common::firewall::FirewallPort> {
@@ -864,6 +1552,27 @@ fn wait_for_stop(service: &windows_service::service::Service) -> anyhow::Result<
     }
 }
 
+/// Start a service, tolerating the SCM's transient states after a failed
+/// replacement: a queued auto-restart can race the explicit start and
+/// surface as a spurious error or already-running.
+fn start_with_retry(service: &windows_service::service::Service) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match service.start::<OsString>(&[]) {
+            Ok(()) => return Ok(()),
+            Err(windows_service::Error::Winapi(ref e))
+                if e.raw_os_error() == Some(ERROR_SERVICE_ALREADY_RUNNING) =>
+            {
+                return Ok(());
+            }
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(SERVICE_STOP_POLL);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
 /// Poll until a deleted service is fully purged from the SCM database.
 /// The SCM defers actual removal until all handles are closed and the
 /// internal state is flushed; attempting to recreate before that fails.
@@ -897,5 +1606,122 @@ mod tests {
         assert!(log_dir.starts_with(&data_dir));
         assert!(log_path.starts_with(&log_dir));
         assert!(log_path.ends_with("koi.log"));
+    }
+
+    #[test]
+    fn install_bin_path_is_product_owned_not_a_checkout() {
+        let bin = install_bin_path();
+        let text = bin.to_string_lossy().to_ascii_lowercase();
+        assert!(text.contains("program files"), "got {}", bin.display());
+        assert!(text.ends_with(r"\koi\koi.exe"), "got {}", bin.display());
+    }
+
+    #[test]
+    fn netsh_rule_blocks_parse_into_snapshots() {
+        // Shape mirrors `netsh advfirewall firewall show rule name=all dir=in`
+        // on an English host.
+        let dump = "\r\n\r\nRule Name:                             Koi mDNS (UDP 5353)\r\n\
+--------------------------------------------------------------------------\r\n\
+Enabled:                               Yes\r\n\
+Direction:                             In\r\n\
+Profiles:                              Domain, Private, Public\r\n\
+Protocol:                              UDP\r\n\
+LocalPort:                             5353\r\n\
+RemotePort:                            Any\r\n\
+Program:                               C:\\Program Files\\Koi\\koi.exe\r\n\
+Action:                                Allow\r\n\
+\r\n\
+Rule Name:                             Other Vendor Rule\r\n\
+Enabled:                               Yes\r\n\
+Direction:                             In\r\n\
+Protocol:                              TCP\r\n\
+LocalPort:                             8080\r\n\
+Program:                               Any\r\n\
+Action:                                Allow\r\n\
+\r\n\
+Rule Name:                             Koi Pond (TCP 5644)\r\n\
+Enabled:                               No\r\n\
+Direction:                             In\r\n\
+Protocol:                              TCP\r\n\
+LocalPort:                             5644\r\n\
+Program:                               Any\r\n\
+Action:                                Allow\r\n";
+        let rules = parse_koi_rules(dump).unwrap();
+        assert_eq!(rules.len(), 2, "non-Koi rules are excluded");
+        assert_eq!(rules[0].name, "Koi mDNS (UDP 5353)");
+        assert!(rules[0].enabled);
+        assert_eq!(rules[0].protocol, "udp");
+        assert_eq!(rules[0].local_port, "5353");
+        assert_eq!(rules[0].program, r"C:\Program Files\Koi\koi.exe");
+        assert_eq!(rules[0].direction, "in");
+        assert_eq!(rules[0].action, "allow");
+        assert!(!rules[1].enabled, "disabled rules keep their state");
+    }
+
+    #[test]
+    fn koi_rule_missing_rollback_fields_fails_closed() {
+        let dump = "\r\n\r\nRule Name:   Koi broken\r\nEnabled:     Yes\r\n";
+        assert!(parse_koi_rules(dump).is_err());
+    }
+
+    #[test]
+    fn service_start_type_tokens_round_trip() {
+        for start_type in [
+            ServiceStartType::AutoStart,
+            ServiceStartType::OnDemand,
+            ServiceStartType::Disabled,
+        ] {
+            let token = start_type_token(start_type).unwrap();
+            assert_eq!(start_type_from_token(token).unwrap(), start_type);
+        }
+    }
+
+    #[test]
+    fn install_manifest_round_trips_through_the_state_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "koi-scm-transaction-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let path = dir.join("state").join(TRANSACTION_FILENAME);
+        let manifest = InstallManifest {
+            version: TRANSACTION_VERSION,
+            phase: TransactionPhase::Armed,
+            http_port: 5641,
+            service: ServiceSnapshot {
+                existed: true,
+                launch_command: Some(r"F:\repo\koi.exe --daemon".to_string()),
+                start_type: Some("auto".to_string()),
+                was_active: true,
+            },
+            files: vec![FileSnapshot::inspect(dir.join("bin").join("koi.exe"))],
+            firewall: vec![FirewallRuleSnapshot {
+                name: "Koi mDNS (UDP 5353)".to_string(),
+                enabled: true,
+                direction: "in".to_string(),
+                action: "allow".to_string(),
+                protocol: "udp".to_string(),
+                local_port: "5353".to_string(),
+                program: r"F:\repo\koi.exe".to_string(),
+            }],
+            added_rules: vec!["Koi Pond (TCP 5644)".to_string()],
+            created_service: false,
+            temporary_paths: vec![],
+        };
+        write_manifest(&path, &manifest).unwrap();
+        let loaded: InstallManifest = koi_common::persist::read_json(&path).unwrap();
+        assert_eq!(loaded.version, TRANSACTION_VERSION);
+        assert_eq!(
+            loaded.service.launch_command.as_deref(),
+            Some(r"F:\repo\koi.exe --daemon")
+        );
+        assert_eq!(loaded.files.len(), 1);
+        assert!(!loaded.files[0].existed);
+        assert_eq!(loaded.firewall[0].local_port, "5353");
+        assert_eq!(loaded.added_rules, vec!["Koi Pond (TCP 5644)".to_string()]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
