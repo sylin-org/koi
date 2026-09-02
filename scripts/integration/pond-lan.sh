@@ -59,12 +59,20 @@ if ((${#PEERS[@]} == 0)); then
   exit 2
 fi
 
-for command in awk base64 curl grep jq pgrep readlink sed sha256sum socat sort ssh ss; do
+for command in awk base64 curl grep jq pgrep readlink sed sha256sum sort ssh ss; do
   command -v "$command" >/dev/null || {
     echo "missing required command: $command" >&2
     exit 2
   }
 done
+if command -v socat >/dev/null; then
+  LOCAL_CONTROL_CLIENT=socat
+elif command -v python3 >/dev/null; then
+  LOCAL_CONTROL_CLIENT=python3
+else
+  echo "local control requires socat or python3" >&2
+  exit 2
+fi
 
 ROOT="$(git rev-parse --show-toplevel)"
 UI_ROOT="${UI_ROOT:-$ROOT/../koi-desktop/ui}"
@@ -165,9 +173,30 @@ peer_run() {
 }
 
 access_json() {
-  printf '%s\n' '{"request":"access","version":1}' \
-    | socat -T 5 - "UNIX-CONNECT:$KOI_LOCAL_SOCKET" \
-    | jq -e 'select(.response == "access" and .version == 1)'
+  local response
+  if [[ "$LOCAL_CONTROL_CLIENT" == socat ]]; then
+    response="$(printf '%s\n' '{"request":"access","version":1}' \
+      | socat -T 5 - "UNIX-CONNECT:$KOI_LOCAL_SOCKET")"
+  else
+    response="$(python3 - "$KOI_LOCAL_SOCKET" <<'PY'
+import socket
+import sys
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(5)
+client.connect(sys.argv[1])
+client.sendall(b'{"request":"access","version":1}\n')
+response = bytearray()
+while b'\n' not in response:
+    chunk = client.recv(65536)
+    if not chunk:
+        break
+    response.extend(chunk)
+sys.stdout.buffer.write(response)
+PY
+)"
+  fi
+  jq -e 'select(.response == "access" and .version == 1)' <<<"$response"
 }
 
 refresh_access() {
