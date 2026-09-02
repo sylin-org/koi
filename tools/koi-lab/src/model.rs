@@ -885,6 +885,92 @@ pub struct BoundedSoakReport {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct InstalledServiceIdentity {
+    pub service_name: String,
+    pub active_state: String,
+    pub sub_state: String,
+    pub fragment_path: PathBuf,
+    pub exec_start: String,
+    pub pid: u32,
+    pub restart_count: u64,
+    pub binary: ArtifactIdentity,
+    pub version: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InstalledServiceCacheCounts {
+    pub static_entries: u64,
+    pub certmesh_entries: u64,
+    pub mdns_entries: u64,
+    pub total_entries: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InstalledServicePublicationCounts {
+    pub desired: u64,
+    pub established: u64,
+    pub pending: u64,
+    pub failed: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InstalledServiceTrafficSample {
+    pub attempts: u32,
+    pub retries: u32,
+    pub succeeded: bool,
+    pub latency_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InstalledServiceSample {
+    pub sampled_at: DateTime<Utc>,
+    pub elapsed_ms: u64,
+    pub pid: u32,
+    pub service_restart_count: u64,
+    pub rss_bytes: u64,
+    pub descriptor_count: u64,
+    pub thread_count: u64,
+    pub task_count: u64,
+    pub healthy: bool,
+    pub cache: InstalledServiceCacheCounts,
+    pub provider_generation: u64,
+    pub provider_routes: BTreeMap<String, String>,
+    pub publications: InstalledServicePublicationCounts,
+    pub traffic: InstalledServiceTrafficSample,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InstalledServiceTrafficTotals {
+    pub attempts: u64,
+    pub retries: u64,
+    pub successes: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InstalledServiceReport {
+    pub schema: u32,
+    pub run_id: RunId,
+    pub created_at: DateTime<Utc>,
+    pub source_commit: String,
+    pub service_node: String,
+    pub peer_node: String,
+    pub peer_endpoint: String,
+    pub target_duration_seconds: u64,
+    pub sample_interval_seconds: u64,
+    pub max_service_restarts: u64,
+    pub termination: String,
+    pub elapsed_ms: u64,
+    pub initial_identity: InstalledServiceIdentity,
+    pub final_identity: InstalledServiceIdentity,
+    pub service_restart_delta: u64,
+    pub service_restart_rate_per_hour: f64,
+    pub traffic_totals: InstalledServiceTrafficTotals,
+    pub samples: Vec<InstalledServiceSample>,
+    pub checks: Vec<CheckResult>,
+    pub secrets_redacted: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct ProfileCaseReport {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -966,6 +1052,7 @@ impl_evidence_report!(
     WindowsRecoveryReport,
     ServiceLifecycleReport,
     BoundedSoakReport,
+    InstalledServiceReport,
     ProfileReport,
     ProfileRecoveryReport,
 );

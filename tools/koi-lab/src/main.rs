@@ -3,6 +3,7 @@ mod certmesh_lifecycle_windows_ca;
 mod certmesh_recovery_windows;
 mod derived;
 mod evidence;
+mod installed_service;
 mod lab;
 mod mgmt_principal;
 mod model;
@@ -29,6 +30,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
+use crate::installed_service::InstalledServiceOptions;
 use crate::lab::Lab;
 use crate::model::{LabProfile, RunId, TrustRotation};
 use crate::profile::ProfileOptions;
@@ -242,6 +244,28 @@ enum LabCommand {
         /// Restart Koi with a live container every N iterations; zero disables restarts.
         #[arg(long, default_value_t = 5)]
         restart_every: u32,
+    },
+    /// Sample one real installed service and bounded physical-peer traffic.
+    InstalledServiceCollect {
+        #[arg(long)]
+        run_id: String,
+        #[arg(long, default_value = "koi.service")]
+        service: String,
+        #[arg(long, default_value = "/usr/local/bin/koi")]
+        binary: PathBuf,
+        #[arg(long, default_value_t = 30)]
+        duration_seconds: u64,
+        #[arg(long, default_value_t = 5)]
+        sample_interval_seconds: u64,
+        /// Maximum expected system-service restart delta during this collection.
+        #[arg(long, default_value_t = 0)]
+        max_service_restarts: u64,
+        /// Catalog node receiving the run-owned cross-host traffic probe.
+        #[arg(long)]
+        peer: String,
+        /// Peer TCP port used only for bounded liveness traffic.
+        #[arg(long, default_value_t = 22)]
+        peer_port: u16,
     },
     /// Run an unattended deploy/scenario/cleanup policy with aggregate evidence.
     RunProfile {
@@ -464,6 +488,34 @@ fn main() -> Result<()> {
                 max_minutes,
                 restart_every,
             )?)?;
+        }
+        LabCommand::InstalledServiceCollect {
+            run_id,
+            service,
+            binary,
+            duration_seconds,
+            sample_interval_seconds,
+            max_service_restarts,
+            peer,
+            peer_port,
+        } => {
+            let report = lab.installed_service_collect(
+                &RunId::parse(&run_id)?,
+                &InstalledServiceOptions {
+                    service_name: service,
+                    binary_path: binary,
+                    duration_seconds,
+                    sample_interval_seconds,
+                    max_service_restarts,
+                    peer_node: peer,
+                    peer_port,
+                },
+            )?;
+            let passed = report.checks.iter().all(|check| check.passed);
+            print_json(&report)?;
+            if !passed {
+                bail!("installed-service collection produced a red verdict");
+            }
         }
         LabCommand::RunProfile {
             profile,
