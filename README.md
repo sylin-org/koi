@@ -232,7 +232,7 @@ on Windows, Linux, and macOS.
 | Platform | mDNS engine | Service integration |
 | -------- | ----------- | ------------------- |
 | Windows | Built-in native provider; official Windows DNS-SD and installed Bonjour adapters in the Windows workstream | Windows Service (SCM) + firewall rules |
-| Linux | Capability-aware Avahi, systemd-resolved, and built-in native providers | systemd unit |
+| Linux | Capability-aware Avahi, systemd-resolved, and built-in native providers | systemd unit or OpenRC `supervise-daemon` |
 | macOS | Built-in native provider | launchd plist |
 
 One binary continuously uses the best live platform capabilities, without requiring

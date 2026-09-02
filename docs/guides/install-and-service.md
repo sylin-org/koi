@@ -78,7 +78,7 @@ On success you'll see the modules-enabled summary and `the local waters are calm
 | **Linux (OpenRC)** | OpenRC (`supervise-daemon`) | service `koi` | Preserves package ownership when run from `/usr/bin/koi`, otherwise copies to `/usr/local/bin/koi`; writes `/etc/init.d/koi`, enables the default runlevel, starts, and verifies one exact daemon plus `/healthz`. Three crashes inside 60 seconds are retried after 5 seconds before OpenRC marks the service failed; a periodic local status check restarts an unhealthy daemon. Requires `logrotate`. |
 | **macOS** | launchd (`launchctl`) | LaunchDaemon `org.sylin.koi` | Copies the binary to `/usr/local/bin/koi` (root:wheel, 755), writes `/Library/LaunchDaemons/org.sylin.koi.plist` (root:wheel, 644), bootstraps it into the `system` domain. `RunAtLoad` + `KeepAlive` on non-success exit |
 
-All three register the service to **start on boot** and start it immediately. The service runs the binary as `<binary> --daemon`.
+Every supported service recipe registers Koi to **start on boot** and starts it immediately. The service runs the binary as `<binary> --daemon`.
 
 > **macOS note:** Koi installs a system-wide **LaunchDaemon** (under `/Library/LaunchDaemons`, loaded into the `system` domain), not a per-user LaunchAgent. It runs at boot before any user logs in.
 
