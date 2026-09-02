@@ -291,8 +291,9 @@ PAYLOAD="$(jq -n \
     {path:"sentences.js",content:$sentences},
     {path:"koi.png",content:$png}
   ]}')"
-operator_request PUT /v1/ui -H 'content-type: application/json' --data-binary "$PAYLOAD" \
-  >"$EVIDENCE_DIR/publish.json"
+printf '%s' "$PAYLOAD" \
+  | operator_request PUT /v1/ui -H 'content-type: application/json' --data-binary @- \
+    >"$EVIDENCE_DIR/publish.json"
 ENABLED="$(operator_request PUT /v1/pond)"
 jq -e '.desired == true and .running == true and .state == "running" and (.urls | length > 0)' \
   <<<"$ENABLED" >"$EVIDENCE_DIR/enabled.json"
