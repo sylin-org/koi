@@ -142,8 +142,12 @@ if [[ -n "${PEER_SSH_ASKPASS:-}" ]]; then
     echo "PEER_SSH_ASKPASS is not executable: $PEER_SSH_ASKPASS" >&2
     exit 2
   }
+  SETSID_WAIT=()
+  if setsid --help 2>&1 | grep -q -- '-w'; then
+    SETSID_WAIT=(-w)
+  fi
   SSH_BASE=(env DISPLAY=koi-lab SSH_ASKPASS_REQUIRE=force \
-    SSH_ASKPASS="$PEER_SSH_ASKPASS" setsid -w "${SSH_BASE[@]}" \
+    SSH_ASKPASS="$PEER_SSH_ASKPASS" setsid "${SETSID_WAIT[@]}" "${SSH_BASE[@]}" \
     -o BatchMode=no -o NumberOfPasswordPrompts=1)
 else
   SSH_BASE+=(-o BatchMode=yes)
