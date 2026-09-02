@@ -1409,73 +1409,80 @@ fn remove_firewall_rule(name: &str) -> bool {
     matches!(result, Ok(output) if output.status.success())
 }
 
-/// Parse `netsh advfirewall firewall show rule` output into snapshots of the
-/// Koi-owned rules. Parsing is fail-closed: an unparseable dump aborts the
-/// install before any mutation rather than promising a rollback it cannot
-/// deliver. (netsh keys are localized on non-English Windows; those hosts
-/// get the same explicit refusal instead of a silent partial snapshot.)
+/// Enumerate the Koi-owned inbound firewall rules as JSON through the
+/// NetSecurity module. Property names are locale-independent (unlike `netsh
+/// advfirewall firewall show rule` labels, which are localized on non-English
+/// Windows), so the rollback snapshot is identical on every host language.
+/// Parsing stays fail-closed: an unanswerable or unparseable enumeration
+/// aborts the install before any mutation rather than promising a rollback it
+/// cannot deliver.
 fn snapshot_koi_firewall_rules() -> anyhow::Result<Vec<FirewallRuleSnapshot>> {
     use std::process::Command;
 
-    let output = Command::new("netsh")
-        .args([
-            "advfirewall",
-            "firewall",
-            "show",
-            "rule",
-            "name=all",
-            "dir=in",
-        ])
+    let script = format!(
+        r#"
+Get-NetFirewallRule -ErrorAction SilentlyContinue |
+  Where-Object {{ $_.Direction -eq 'Inbound' -and $_.DisplayName -like '{prefix}*' }} |
+  ForEach-Object {{
+    $app = $_ | Get-NetFirewallApplicationFilter
+    $port = $_ | Get-NetFirewallPortFilter
+    [pscustomobject]@{{
+      name = [string]$_.DisplayName
+      enabled = [bool]($_.Enabled -eq 'True')
+      direction = [string]$_.Direction
+      action = [string]$_.Action
+      protocol = [string]$port.Protocol
+      local_port = [string](@($port.LocalPort) -join ',')
+      program = [string]$app.Program
+    }}
+  }} | ConvertTo-Json -Compress
+"#,
+        prefix = FIREWALL_RULE_PREFIX
+    );
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .output()?;
     if !output.status.success() {
-        anyhow::bail!("could not enumerate firewall rules (netsh exited unsuccessfully)");
+        anyhow::bail!(
+            "could not enumerate firewall rules (NetSecurity query exited with {:?})",
+            output.status.code()
+        );
     }
-    parse_koi_rules(&String::from_utf8_lossy(&output.stdout))
+    parse_snapshot_json(&String::from_utf8_lossy(&output.stdout))
 }
 
-fn parse_koi_rules(text: &str) -> anyhow::Result<Vec<FirewallRuleSnapshot>> {
-    let mut rules = Vec::new();
-    for block in text.split("\r\n\r\n") {
-        let fields = parse_rule_block(block);
-        let Some(name) = fields.get("Rule Name").cloned() else {
-            continue;
-        };
-        if !name.starts_with(FIREWALL_RULE_PREFIX) {
-            continue;
-        }
-        let (Some(enabled), Some(direction), Some(action), Some(protocol)) = (
-            fields.get("Enabled").cloned(),
-            fields.get("Direction").cloned(),
-            fields.get("Action").cloned(),
-            fields.get("Protocol").cloned(),
-        ) else {
-            anyhow::bail!(
-                "firewall rule '{name}' is missing fields needed for rollback restoration"
-            );
-        };
-        rules.push(FirewallRuleSnapshot {
-            name,
-            enabled: enabled.eq_ignore_ascii_case("yes"),
-            direction: direction.to_ascii_lowercase(),
-            action: action.to_ascii_lowercase(),
-            protocol: protocol.to_ascii_lowercase(),
-            local_port: fields.get("LocalPort").cloned().unwrap_or_default(),
-            program: fields.get("Program").cloned().unwrap_or_default(),
-        });
+/// Map the NetSecurity JSON (one bare object for a single-element pipeline,
+/// an array otherwise) onto snapshots with normalized casing.
+fn parse_snapshot_json(text: &str) -> anyhow::Result<Vec<FirewallRuleSnapshot>> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(rules)
-}
-
-/// One netsh rule block: `Key:  value` lines.
-fn parse_rule_block(block: &str) -> std::collections::HashMap<String, String> {
-    let mut fields = std::collections::HashMap::new();
-    for line in block.lines() {
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        fields.insert(key.trim().to_string(), value.trim().to_string());
-    }
-    fields
+    let parsed: serde_json::Value = serde_json::from_str(text).map_err(|error| {
+        anyhow::anyhow!("firewall enumeration returned unparseable JSON: {error}")
+    })?;
+    let values = match parsed {
+        serde_json::Value::Array(values) => values,
+        one @ serde_json::Value::Object(_) => vec![one],
+        other => anyhow::bail!("firewall enumeration returned unexpected JSON: {other}"),
+    };
+    values
+        .into_iter()
+        .map(|value| {
+            let rule: FirewallRuleSnapshot =
+                serde_json::from_value(value).map_err(|error| {
+                    anyhow::anyhow!(
+                        "firewall rule snapshot is missing fields needed for rollback restoration: {error}"
+                    )
+                })?;
+            Ok(FirewallRuleSnapshot {
+                direction: rule.direction.to_ascii_lowercase(),
+                action: rule.action.to_ascii_lowercase(),
+                protocol: rule.protocol.to_ascii_lowercase(),
+                ..rule
+            })
+        })
+        .collect()
 }
 
 /// Recreate one prior rule from its snapshot.
@@ -1726,51 +1733,53 @@ mod tests {
     }
 
     #[test]
-    fn netsh_rule_blocks_parse_into_snapshots() {
-        // Shape mirrors `netsh advfirewall firewall show rule name=all dir=in`
-        // on an English host.
-        let dump = "\r\n\r\nRule Name:                             Koi mDNS (UDP 5353)\r\n\
---------------------------------------------------------------------------\r\n\
-Enabled:                               Yes\r\n\
-Direction:                             In\r\n\
-Profiles:                              Domain, Private, Public\r\n\
-Protocol:                              UDP\r\n\
-LocalPort:                             5353\r\n\
-RemotePort:                            Any\r\n\
-Program:                               C:\\Program Files\\Koi\\koi.exe\r\n\
-Action:                                Allow\r\n\
-\r\n\
-Rule Name:                             Other Vendor Rule\r\n\
-Enabled:                               Yes\r\n\
-Direction:                             In\r\n\
-Protocol:                              TCP\r\n\
-LocalPort:                             8080\r\n\
-Program:                               Any\r\n\
-Action:                                Allow\r\n\
-\r\n\
-Rule Name:                             Koi Pond (TCP 5644)\r\n\
-Enabled:                               No\r\n\
-Direction:                             In\r\n\
-Protocol:                              TCP\r\n\
-LocalPort:                             5644\r\n\
-Program:                               Any\r\n\
-Action:                                Allow\r\n";
-        let rules = parse_koi_rules(dump).unwrap();
-        assert_eq!(rules.len(), 2, "non-Koi rules are excluded");
+    fn netsecurity_json_parses_into_snapshots() {
+        // Shape mirrors the NetSecurity `ConvertTo-Json -Compress` pipeline
+        // (locale-independent property names).
+        let dump = r#"[
+{"name":"Koi mDNS (UDP 5353)","enabled":true,"direction":"Inbound","action":"Allow","protocol":"UDP","local_port":"5353","program":"C:\\Program Files\\Koi\\koi.exe"},
+{"name":"Koi Pond (TCP 5644)","enabled":false,"direction":"Inbound","action":"Allow","protocol":"TCP","local_port":"5644,5645","program":"Any"}
+]"#;
+        let rules = parse_snapshot_json(dump).unwrap();
+        assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].name, "Koi mDNS (UDP 5353)");
         assert!(rules[0].enabled);
         assert_eq!(rules[0].protocol, "udp");
         assert_eq!(rules[0].local_port, "5353");
         assert_eq!(rules[0].program, r"C:\Program Files\Koi\koi.exe");
-        assert_eq!(rules[0].direction, "in");
+        assert_eq!(rules[0].direction, "inbound");
         assert_eq!(rules[0].action, "allow");
         assert!(!rules[1].enabled, "disabled rules keep their state");
+        assert_eq!(
+            rules[1].local_port, "5644,5645",
+            "multi-port filters survive"
+        );
+    }
+
+    #[test]
+    fn single_rule_pipeline_emits_one_bare_object() {
+        let dump = r#"{"name":"Koi HTTP (TCP 5641)","enabled":true,"direction":"Inbound","action":"Allow","protocol":"TCP","local_port":"5641","program":"Any"}"#;
+        let rules = parse_snapshot_json(dump).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "Koi HTTP (TCP 5641)");
     }
 
     #[test]
     fn koi_rule_missing_rollback_fields_fails_closed() {
-        let dump = "\r\n\r\nRule Name:   Koi broken\r\nEnabled:     Yes\r\n";
-        assert!(parse_koi_rules(dump).is_err());
+        let dump = r#"{"name":"Koi broken","enabled":true}"#;
+        assert!(parse_snapshot_json(dump).is_err());
+        assert!(parse_snapshot_json("").unwrap().is_empty());
+    }
+
+    #[test]
+    #[ignore = "enumerates the live firewall through the NetSecurity module"]
+    fn live_snapshot_enumerates_managed_rules() {
+        let rules = snapshot_koi_firewall_rules().unwrap();
+        for rule in &rules {
+            assert!(rule.name.starts_with(FIREWALL_RULE_PREFIX));
+            assert!(!rule.direction.is_empty());
+            assert!(!rule.action.is_empty());
+        }
     }
 
     #[test]

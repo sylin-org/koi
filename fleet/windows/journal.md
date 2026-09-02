@@ -1,5 +1,35 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-02 (5) — PH-001 dispatch 2: firewall facts locale-independent and executable/profile-scoped; Pond and cooperative DNS closed physically
+
+commit: this commit, on top of ee76cac | gates: fmt/clippy `-D warnings` clean, koi-net platform suite 8/8 plus the live NetSecurity-enumeration ignored test, full workspace suite green after the credential-store remediation below; deployed through the transactional installer
+
+koi state now: installed service RUNNING, PID `9952`, `C:\Program Files\Koi\koi.exe --daemon`, binary SHA-256 `97000bb3d4e72a3edc4d098518aea99b69f454f98717c6cd4867db7f465e131c` (the final tree build), API `127.0.0.1:5641` healthy on standard ports, baseline mDNS composite, one permanent self-publication, exactly one koi.exe, Pond **disabled** (baseline restored: desired=false, socket closed, peer-refused verified), DNS incumbent posture unchanged (ICS SharedAccess Running, adapter DNS `192.168.1.1`, daemon holds 53 cooperatively).
+
+### Code (dispatch item 2, first half)
+
+- **Pond firewall applicability** (epic immediate item 5): the Windows assessment now requires the managed rule to be enabled/inbound/allow AND scoped to the **running executable** (exact program-path filter) AND to cover **every active network category** (`Get-NetConnectionProfile` vs the rule profile set) — a display-name match alone is no longer an open-path verdict; uncovered profiles report `blocked` with the precise reason.
+- **Installer rollback snapshot is locale-independent**: the Koi-owned rule enumeration switched from parsing localized `netsh` labels to a `NetSecurity` (`Get-NetFirewallRule` + filters) `ConvertTo-Json` pipeline with a single constant for the managed prefix; still fail-closed on unparseable output. New tests cover the single-object/array JSON shapes and missing-field refusal; a live ignored test enumerates the real store.
+
+### Physical: Pond gate closed through the one installed service (peer = test-01)
+
+Publish (`PUT /v1/ui`, 5 fixed files) → arm (`PUT /v1/pond`) → **running** on the derived fourth port `5644`, firewall verdict `open` under the hardened assessment → `netstat`: 5644 is the only new listener; the operator adapter stays on its configured bind → peer opened **all nine public routes 200 with byte-exact sizes** (/, 4 assets, /healthz, /v1/status, /v1/mdns/browser/snapshot, /v1/dns/entries) and every excluded route 404 (PUT/GET /v1/pond, PUT /v1/ui, /openapi.json) → explicit stop (DELETE) → peer connection refused + socket closed → re-arm → **full SCM stop/start cycle → Pond self-restored from persisted desire without any workbench** → final stop → baseline disabled, peer-refused re-verified. (Breadcrumb format note for future runs: the line is `endpoint` + `dat:<token>`; the pond operator routes take `x-koi-token`, not Bearer.)
+
+### Physical: cooperative DNS against the real incumbents (peer = test-01)
+
+`dig @192.168.1.137` from the peer: mDNS-bridged `test-03.local` answered **192.168.1.221 over both UDP and TCP** (served from Koi's mDNS cache, not the peer's own resolver); the `.internal` zone answered authoritatively (`stone-leaded-sparkle.internal` → 192.168.1.137); unknown names return a clean empty/NXDOMAIN shape. ICS (`SharedAccess`) stayed Running, the Ethernet adapter DNS stayed `192.168.1.1`, and no resolver/adapter policy was touched — the daemon holds 53 cooperatively (only koi holds TCP+UDP 53 this boot; earlier boots saw ICS with reuse semantics).
+
+### Windows-gate catch: credential-store quota exhaustion (`issues/002`)
+
+The full suite began failing deterministically in `koi-crypto::unlock_slots` (`CredWriteW` → Windows error 8). Root cause: **576 leaked `koi-certmesh-*` credentials** from repeated slot-table test runs had exhausted the user's credential-store quota; `keyring` has no enumeration API, so stranded labels are unreachable to product code. Deleted exactly the leaked labels (git push credential and all foreign entries untouched; the deterministic `koi-vault-master` label left in place) → suite green immediately. Test-hygiene fix candidates filed as `fleet/windows/issues/002-credential-store-test-leak.md`.
+
+### Residue / next
+
+1. Dispatch item 3 remainder: shifted-port ADR-040 pipe path + installed workbench tray/notification/Phone/Pond gates (operator-present session).
+2. Dispatch item 4: cross-host mDNS/NIC/profile/lock/sleep coordination with CachyOS/Alpine peers.
+3. `issues/002` for the shared crate owner; `issues/001` wedge mechanism remains open (signature-keyed recovery armed).
+
+
 ## 2026-09-02 (4) — PH-001 dispatch 1: SCM lifecycle hardened; wedge reproduction attempted; destructive transaction re-proven
 
 commit: this commit, on top of 27b3d03 | gates: fmt/clippy `-D warnings` clean, koi-net platform suite 7/7 (incl. new `launch_command_lines_split_into_semantic_parts`), full build deployed through the product path; every physical claim below ran on the one installed service

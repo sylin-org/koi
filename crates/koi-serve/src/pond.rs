@@ -671,6 +671,14 @@ fn assess_firewall_blocking(port: u16, _interface: &str) -> PondFirewallStatus {
     use std::process::Command;
 
     let rule = format!("Koi Pond (TCP {port})");
+    let exe = std::env::current_exe()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    // An open-path verdict requires the managed rule to be enabled, inbound,
+    // allow-action, scoped to this exact executable AND this TCP port, and to
+    // cover every currently active network category — a display-name match
+    // alone is not an open path.
     let script = format!(
         "$active=@(Get-NetFirewallProfile | Where-Object {{$_.Enabled -eq 'True'}}); \
          if ($active.Count -eq 0) {{ exit 10 }}; \
@@ -678,8 +686,16 @@ fn assess_firewall_blocking(port: u16, _interface: &str) -> PondFirewallStatus {
            Where-Object {{$_.Enabled -eq 'True' -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow'}}; \
          if (-not $rule) {{ exit 11 }}; \
          $port=$rule | Get-NetFirewallPortFilter | \
-           Where-Object {{$_.Protocol -eq 'TCP' -and $_.LocalPort -eq '{port}'}}; \
-         if (-not $port) {{ exit 11 }}"
+           Where-Object {{$_.Protocol -eq 'TCP' -and @($_.LocalPort) -contains '{port}'}}; \
+         if (-not $port) {{ exit 11 }}; \
+         $prog=$rule | Get-NetFirewallApplicationFilter | \
+           Where-Object {{$_.Program -eq '{exe}'}}; \
+         if (-not $prog) {{ exit 11 }}; \
+         $cats=@(Get-NetConnectionProfile | ForEach-Object {{$_.NetworkCategory}} | Sort-Object -Unique); \
+         foreach ($cat in $cats) {{ \
+           $covered=$rule | Where-Object {{$_.Profile -eq 'Any' -or @($_.Profile) -contains $cat}}; \
+           if (-not $covered) {{ exit 12 }} \
+         }}"
     );
     match Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
@@ -695,7 +711,15 @@ fn assess_firewall_blocking(port: u16, _interface: &str) -> PondFirewallStatus {
         },
         Ok(output) if output.status.code() == Some(11) => PondFirewallStatus {
             state: PondFirewallState::Blocked,
-            detail: format!("Windows Firewall managed rule for TCP {port} is absent or disabled"),
+            detail: format!(
+                "Windows Firewall managed rule for TCP {port} is absent, disabled, or not                  scoped to the running executable"
+            ),
+        },
+        Ok(output) if output.status.code() == Some(12) => PondFirewallStatus {
+            state: PondFirewallState::Blocked,
+            detail: format!(
+                "Windows Firewall managed rule for TCP {port} does not cover the active                  network profile"
+            ),
         },
         Ok(output) => PondFirewallStatus {
             state: PondFirewallState::Unknown,
