@@ -1,5 +1,29 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-02 (3) — PH-001 brief 3: authenticated local control physically closed under the installed service
+
+commit: this commit, on top of 9a4e0ee | gates: fmt/clippy green on the changed example; every assertion below ran against the one installed service through its real named pipe; no product code changed — the ADR-040 implementation on `dev` was complete, this session closed its physical gates
+
+koi state now: installed service RUNNING, PID `13384`, `C:\Program Files\Koi\koi.exe --daemon`, binary SHA-256 `fb8fa50c07a2cb0223366be9c7fe08c3c17caa0faa6aa3309c7fea91ca01bca1` (current-`dev` tree build, deployed through the transactional installer — an unplanned but real second in-place upgrade exercise), API `127.0.0.1:5641` healthy, standard ports, baseline mDNS composite (`publish=native`, browse/resolve `windows-dns-sd`), one permanent `_mcp._tcp` self-publication peer-resolved by test-01 during the session, operator SID `S-1-5-21-…-1001` recorded, exactly one koi.exe, no test residue (temp account deleted, public evidence file removed, breadcrumb restored).
+
+### Gates closed (new `win32_local_control_probe` lab example; DAT never printed, only its length)
+
+1. **Operator access over the pipe** — `access` hand-off returned endpoint (`http://127.0.0.1:5641`), DAT (len 43), and the resolved data root (`C:\ProgramData\koi`) without reading the owner-private breadcrumb. `info` returned data root + active config path. Explicit DACL in force per code: `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;<operator SID>)` with `reject_remote_clients` and a post-connect peer-token SID check.
+2. **Wrong unelevated account denied** — temp local user `koi_negtest` (created, exercised, deleted in one elevated script; `net user` confirms gone) running the probe's `expect-denied` phase got `Access is denied (os error 5)` at pipe open: the DACL rejects before any bytes are answered. Evidence captured via the probe's own cross-account evidence file (`C:\Users\Public`, removed after). Two infrastructure notes for the record: `schtasks /run` for a fresh local user never left state 0x41303 on this workstation, and `Start-Process -Credential` with output redirects deadlocks — the credential launch without redirects + self-evidencing probe is the working pattern.
+3. **Breadcrumb is not a dependency** — with `C:\ProgramData\koi\koi.endpoint` renamed away, `koi status` and `koi mdns admin status` both returned full live daemon state through `KoiClient::from_local()`'s authenticated pipe path (ladder, generation 1, provider facts); breadcrumb restored by the same script.
+4. **Broken client connection drains session registrations** — probe child registered a service over the pipe (admin status alive 1→2), died abruptly without goodbye after a 3 s hold, and the daemon drained the dead session back to baseline (alive→1) well inside the 25 s window. The register itself also proves mDNS session mutations through the pipe.
+
+### Finding worth recording
+
+The first `info` attempt fell through to the mDNS dispatcher with a parse error — the running daemon (built from pre-rebase `dev`) predated the `Info` variant (`c8b7887`, which landed during the Bluefin push wave). Not a defect: correct behavior for an older daemon meeting a newer client; resolved by upgrading the service to current `dev` through the transactional installer (which is exactly the seam ADR-040's versioned contract exists for).
+
+### Residue / next
+
+1. Brief 4 — Pond firewall applicability (executable/port/direction/action/active-profile facts) and cooperative DNS against the real port-53 incumbent.
+2. The workbench-side leg of ADR-040 (tray posture, pond publish via the pipe-obtained URL) rides the koi-desktop install gate — operator-present session.
+3. Remaining from earlier: `issues/001` SCM-wedge repro; two-host mDNS transition; sleep/resume matrix.
+
+
 ## 2026-09-02 (2) — PH-001 brief 2: transactional product-path SCM install; rollback exercised physically, port-planning and SCM-wedge defects found
 
 commit: this commit, on top of c658cde | gates: fmt/clippy `-D warnings` clean, full `cargo test --locked` green, release `koi-net` built and deployed through the new installer itself; all acceptance through the one installed service
