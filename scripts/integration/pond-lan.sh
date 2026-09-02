@@ -180,7 +180,18 @@ operator_request() {
 }
 
 single_koi() {
-  mapfile -t pids < <(pgrep -x koi)
+  local candidate executable
+  local -a candidates=() pids=()
+  # procps matches `-x` against the process comm while BusyBox matches argv[0],
+  # which is `/usr/local/bin/koi` for an OpenRC service. Use pgrep only to
+  # narrow the set, then make the executable itself authoritative.
+  mapfile -t candidates < <(pgrep -f '(^|/)koi([[:space:]]|$)' || true)
+  for candidate in "${candidates[@]}"; do
+    executable="$("${PRIV[@]}" readlink -f "/proc/$candidate/exe" 2>/dev/null || true)"
+    if [[ "${executable##*/}" == koi ]]; then
+      pids+=("$candidate")
+    fi
+  done
   ((${#pids[@]} == 1)) || {
     echo "expected exactly one koi process, found ${#pids[@]}" >&2
     return 1
