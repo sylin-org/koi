@@ -116,6 +116,16 @@ pub fn assess_managed(
     assess_managed_with(&SystemRunner, name, protocol, port, executable)
 }
 
+/// Assess several managed rules from one Windows Firewall query.
+///
+/// Each tuple is `(rule name, protocol, local port)`. Verdicts retain input order.
+pub fn assess_managed_rules(
+    rules: &[(&str, &str, u16)],
+    executable: &Path,
+) -> anyhow::Result<Vec<Assessment>> {
+    assess_managed_rules_with(&SystemRunner, rules, executable)
+}
+
 fn snapshot_managed_with(runner: &impl CommandRunner) -> anyhow::Result<Vec<RuleSnapshot>> {
     let pattern = powershell_quote(&format!("{MANAGED_RULE_PREFIX}*"));
     let script = format!(
@@ -283,15 +293,33 @@ fn assess_managed_with(
     port: u16,
     executable: &Path,
 ) -> anyhow::Result<Assessment> {
-    let name = powershell_quote(name);
+    assess_managed_rules_with(runner, &[(name, protocol, port)], executable)?
+        .pop()
+        .context("Windows Firewall assessment returned no verdict")
+}
+
+fn assess_managed_rules_with(
+    runner: &impl CommandRunner,
+    rules: &[(&str, &str, u16)],
+    executable: &Path,
+) -> anyhow::Result<Vec<Assessment>> {
+    if rules.is_empty() {
+        return Ok(Vec::new());
+    }
+    let names = rules
+        .iter()
+        .map(|(name, _, _)| powershell_quote(name))
+        .collect::<Vec<_>>()
+        .join(", ");
     let script = format!(
         r#"
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
+$names = @({names})
 $enabled = @(Get-NetFirewallProfile -ErrorAction Stop | Where-Object {{ $_.Enabled -eq 'True' }} | ForEach-Object {{ [string]$_.Name }})
 $active = @(Get-NetConnectionProfile -ErrorAction Stop | ForEach-Object {{ [string]$_.NetworkCategory }} | Sort-Object -Unique)
 $rules = @(Get-NetFirewallRule -ErrorAction Stop |
-  Where-Object {{ $_.DisplayName -eq {name} }} |
+  Where-Object {{ $names -contains [string]$_.DisplayName }} |
   ForEach-Object {{
     $rule = $_
     $app = @($rule | Get-NetFirewallApplicationFilter -ErrorAction Stop)
@@ -314,31 +342,35 @@ $rules = @(Get-NetFirewallRule -ErrorAction Stop |
     require_success("assess firewall rule", &output)?;
     let snapshot: AssessmentSnapshot = serde_json::from_str(output.stdout.trim())
         .context("Windows Firewall assessment returned unparseable JSON")?;
-    assess_snapshot(snapshot, protocol, port, executable)
+    rules
+        .iter()
+        .map(|(name, protocol, port)| assess_snapshot(&snapshot, name, protocol, *port, executable))
+        .collect()
 }
 
 fn assess_snapshot(
-    snapshot: AssessmentSnapshot,
+    snapshot: &AssessmentSnapshot,
+    name: &str,
     protocol: &str,
     port: u16,
     executable: &Path,
 ) -> anyhow::Result<Assessment> {
+    let active = snapshot
+        .active_profiles
+        .iter()
+        .map(|category| canonical_firewall_profile(category))
+        .collect::<anyhow::Result<Vec<_>>>()?;
     let enabled = snapshot
         .enabled_profiles
         .iter()
         .map(|profile| profile.to_ascii_lowercase())
         .collect::<HashSet<_>>();
-    if enabled.is_empty() {
-        return Ok(Assessment::Inactive);
-    }
-    let active = snapshot
-        .active_profiles
-        .iter()
-        .map(|profile| profile.to_ascii_lowercase())
+    let active = active
+        .into_iter()
         .filter(|profile| enabled.contains(profile))
         .collect::<Vec<_>>();
     if active.is_empty() {
-        anyhow::bail!("no active network connection uses an enabled Windows Firewall profile");
+        return Ok(Assessment::Inactive);
     }
 
     let port = port.to_string();
@@ -347,7 +379,8 @@ fn assess_snapshot(
         .rules
         .iter()
         .filter(|rule| {
-            rule.enabled
+            rule.name == name
+                && rule.enabled
                 && matches!(
                     rule.direction.to_ascii_lowercase().as_str(),
                     "inbound" | "in"
@@ -377,6 +410,17 @@ fn assess_snapshot(
     } else {
         Assessment::Blocked(BlockReason::ActiveProfileNotCovered)
     })
+}
+
+fn canonical_firewall_profile(network_category: &str) -> anyhow::Result<String> {
+    match network_category.trim() {
+        "DomainAuthenticated" => Ok("domain".to_string()),
+        "Private" => Ok("private".to_string()),
+        "Public" => Ok("public".to_string()),
+        unknown => anyhow::bail!(
+            "unknown active Windows network category '{unknown}'; refusing to infer a firewall profile"
+        ),
+    }
 }
 
 fn comma_values(value: &str) -> impl Iterator<Item = &str> {
@@ -569,11 +613,12 @@ mod tests {
         let mut wrong_profile = snapshot("Koi Pond", Some("public"));
         wrong_profile.program = r"C:\Program Files\Koi\koi.exe".to_string();
         let assessment = assess_snapshot(
-            AssessmentSnapshot {
+            &AssessmentSnapshot {
                 enabled_profiles: vec!["Private".to_string()],
                 active_profiles: vec!["Private".to_string()],
                 rules: vec![wrong_program, wrong_profile],
             },
+            "Koi Pond",
             "TCP",
             5644,
             Path::new(r"C:\Program Files\Koi\koi.exe"),
@@ -583,6 +628,126 @@ mod tests {
             assessment,
             Assessment::Blocked(BlockReason::ActiveProfileNotCovered)
         );
+    }
+
+    #[test]
+    fn assessment_maps_domain_authenticated_network_to_domain_firewall_profile() {
+        let assessment = assess_snapshot(
+            &AssessmentSnapshot {
+                enabled_profiles: vec!["Domain".to_string()],
+                active_profiles: vec!["DomainAuthenticated".to_string()],
+                rules: vec![snapshot("Koi Pond", Some("Domain"))],
+            },
+            "Koi Pond",
+            "TCP",
+            5644,
+            Path::new(r"C:\Program Files\Koi\koi.exe"),
+        )
+        .unwrap();
+
+        assert_eq!(assessment, Assessment::Open);
+    }
+
+    #[test]
+    fn assessment_is_inactive_when_only_an_inactive_network_profile_is_enabled() {
+        let assessment = assess_snapshot(
+            &AssessmentSnapshot {
+                enabled_profiles: vec!["Private".to_string()],
+                active_profiles: vec!["Public".to_string()],
+                rules: vec![snapshot("Koi Pond", Some("Public"))],
+            },
+            "Koi Pond",
+            "TCP",
+            5644,
+            Path::new(r"C:\Program Files\Koi\koi.exe"),
+        )
+        .unwrap();
+
+        assert_eq!(assessment, Assessment::Inactive);
+    }
+
+    #[test]
+    fn assessment_requires_rule_coverage_for_every_active_firewall_profile() {
+        let assessment = assess_snapshot(
+            &AssessmentSnapshot {
+                enabled_profiles: vec!["Private".to_string(), "Public".to_string()],
+                active_profiles: vec!["Private".to_string(), "Public".to_string()],
+                rules: vec![snapshot("Koi Pond", Some("Private"))],
+            },
+            "Koi Pond",
+            "TCP",
+            5644,
+            Path::new(r"C:\Program Files\Koi\koi.exe"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            assessment,
+            Assessment::Blocked(BlockReason::ActiveProfileNotCovered)
+        );
+    }
+
+    #[test]
+    fn assessment_fails_closed_on_unknown_active_network_category() {
+        let error = assess_snapshot(
+            &AssessmentSnapshot {
+                enabled_profiles: Vec::new(),
+                active_profiles: vec!["Unidentified".to_string()],
+                rules: Vec::new(),
+            },
+            "Koi Pond",
+            "TCP",
+            5644,
+            Path::new(r"C:\Program Files\Koi\koi.exe"),
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("unknown active Windows network category 'Unidentified'"));
+    }
+
+    #[test]
+    fn batch_assessment_queries_once_and_keeps_rule_names_correlated() {
+        let json = r#"{"enabled_profiles":["Private"],"active_profiles":["Private"],"rules":[{"name":"Koi first","enabled":true,"direction":"Inbound","action":"Allow","protocol":"TCP","local_port":"5644","program":"C:\\Program Files\\Koi\\koi.exe","profile":"Private"}]}"#;
+        let runner = FakeRunner::new(vec![ok(json)]);
+
+        let assessments = assess_managed_rules_with(
+            &runner,
+            &[("Koi first", "TCP", 5644), ("Koi second", "TCP", 5644)],
+            Path::new(r"C:\Program Files\Koi\koi.exe"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            assessments,
+            vec![
+                Assessment::Open,
+                Assessment::Blocked(BlockReason::MissingOrMismatchedRule)
+            ]
+        );
+        assert_eq!(runner.calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn assessment_query_spawn_failure_remains_an_error() {
+        let runner = FakeRunner::new(vec![Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "powershell missing",
+        ))]);
+
+        let error = assess_managed_with(
+            &runner,
+            "Koi Pond",
+            "TCP",
+            5644,
+            Path::new(r"C:\Program Files\Koi\koi.exe"),
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("could not query Windows Firewall"));
     }
 
     #[test]

@@ -1,5 +1,28 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-02 (9) — PH-001 startup and Pond firewall truth unified; active-profile semantics closed
+
+commit: this commit, on top of `f8b52e9` | gates: fmt clean; full-workspace strict clippy clean; adapter suite 14/14 plus live NetSecurity enumeration green; the ordinary parallel workspace run exposed one existing two-daemon listener race and its exact test passed alone; full `cargo test --locked -- --test-threads=1` green including named-pipe and all three two-daemon cases; locked release build green; release SHA-256 `1edfc72d07752681f57493238918291c25f271613653292718c26631d60ca540`; elevated serial workbook `20260902T185542Z-firewall-truth` PASS
+
+koi state now: exact release candidate installed at `C:\Program Files\Koi\koi.exe`, SCM service RUNNING as PID `5176`, one `koi.exe`, health 200 on `127.0.0.1:5641`, active Ethernet category still `Public`, all three firewall profiles still enabled, Pond restored disabled, hashed TOTP credential count `0`, and no SCM manifest or installer backup residue.
+
+### One verdict boundary, including startup
+
+- `platform::windows::check_firewall` no longer runs or parses `netsh`. Startup diagnostics and Pond now both consume `koi_serve::windows_firewall::Assessment`, preserving `Open`, `Inactive`, both typed blocked reasons, and query failure. The shared adapter has one batched entry point for startup's rule set, so five verdicts come from one OS query; Pond's single-rule call delegates to the same path.
+- The first focused integration run caught why batching matters: one PowerShell query per port delayed local control by about 13 seconds and failed the existing five-second named-pipe gate. The final batched implementation restores that gate without a timeout change. A deterministic regression proves one runner call and keeps display-name/filter correlation across results.
+- Connection categories are canonicalized before applicability: documented `DomainAuthenticated` maps to firewall `Domain`, while `Private` and `Public` retain their exact identities. Unknown categories return an error instead of guessing. Enabled firewall profiles are intersected with active networks; an enabled profile with no active network no longer makes the firewall appear active.
+- Deterministic tests pin Domain mapping, active-Public-disabled with only inactive Private enabled → `Inactive`, mixed active-profile complete-coverage behavior, unknown-category refusal, batch name correlation, command-spawn failure, and the pre-existing per-rule application/port/profile correlation.
+
+Microsoft's [Windows Firewall overview](https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/) identifies Domain, Private, and Public as firewall profiles and directs callers to `Get-NetConnectionProfile` for the active category. The [Get-NetConnectionProfile contract](https://learn.microsoft.com/en-us/powershell/module/netconnection/get-netconnectionprofile) names its documented categories as Public, Private, and DomainAuthenticated; the [Get-NetFirewallProfile contract](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallprofile) describes the separately configured Domain/Private/Public profiles. Those identities and the active/configured distinction are now explicit code rather than string coincidence.
+
+### Installed observation (`.tmp/ph001-firewall-truth-20260902T185542Z`)
+
+The one elevated PowerShell workbook captured the healthy baseline (PID `18300`, prior hash `4c92b163...`, Public active, Public firewall enabled, Pond disabled, zero credentials/residue), deployed the exact candidate through transactional `koi install`, and observed the candidate startup log. One timestamp emitted five typed `managed rule admits` facts for UDP 5353, TCP 5641, TCP 5644, UDP 53, and TCP 53 with no query failure. The installed Pond slice then returned `desired=true`, `running=true`, URL `http://192.168.1.137:5644/`, and firewall `open` with detail `Windows Firewall managed rule admits TCP 5644`; the workbook stopped sharing and restored `desired=false`.
+
+No network category or firewall policy was changed for acceptance. Independent final inspection matched installed/candidate hashes, health 200, one PID `5176`, Public still active/enabled, Pond disabled, zero hashed credentials, and no transaction or backup residue.
+
+Next dependency-ready assignment: dispatch item 2, the shifted-port ADR-040 pipe path and installed workbench fresh-login/tray/notification/Phone/Pond/lock-resume/upgrade/uninstall-reinstall gates.
+
 ## 2026-09-02 (8) — PH-001 TOTP credential ownership and exact cleanup closed physically
 
 commit: this commit, on top of `c9cba31` | gates: fmt clean; full-workspace strict clippy clean; deterministic slot failure matrix green; focused real-store slot suite 19/19 and certmesh destroy slice green; full `cargo test --locked` green; locked release build green; release SHA-256 `4c92b163784da7bc28d44d3b5a957139a99faf6f4950386a3939d3922ea4453b`; serial workbook `20260902T173700Z-credential` PASS

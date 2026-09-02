@@ -1623,50 +1623,67 @@ fn firewall_ports_summary(ports: &[koi_common::firewall::FirewallPort]) -> Strin
 /// Check firewall status for enabled capability ports.
 /// Called by startup_diagnostics in daemon mode.
 pub(crate) fn check_firewall(config: &crate::cli::Config) {
-    use std::process::Command;
-
     let ports = firewall_ports_for_config(config);
     if ports.is_empty() {
         return;
     }
 
-    let result = Command::new("netsh")
-        .args([
-            "advfirewall",
-            "firewall",
-            "show",
-            "rule",
-            "name=all",
-            "dir=in",
-        ])
-        .output();
-
-    match result {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for port in &ports {
-                let port_str = port.port.to_string();
-                let proto = port.protocol.as_str();
-                if stdout.contains(&port_str) && stdout.contains(proto) {
-                    tracing::info!("Firewall: {} {} rule found", proto, port.port);
-                } else {
-                    let rule_name = firewall_rule_name(port);
-                    tracing::warn!(
-                        "Koi may not receive {} traffic \u{2014} no {} {} inbound rule found.",
-                        port.name,
-                        proto,
-                        port.port
-                    );
-                    tracing::warn!("Run as administrator or execute:");
-                    tracing::warn!(
-                        "  netsh advfirewall firewall add rule name=\"{rule_name}\" dir=in action=allow protocol={proto} localport={}",
-                        port.port
-                    );
-                }
-            }
+    let executable = match std::env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "Firewall: could not resolve the running executable"
+            );
+            return;
         }
-        Err(e) => {
-            tracing::debug!(error = %e, "Could not check firewall rules");
+    };
+
+    let rule_names = ports.iter().map(firewall_rule_name).collect::<Vec<_>>();
+    let requests = ports
+        .iter()
+        .zip(&rule_names)
+        .map(|(port, rule_name)| (rule_name.as_str(), port.protocol.as_str(), port.port))
+        .collect::<Vec<_>>();
+    let assessments = match windows_firewall::assess_managed_rules(&requests, &executable) {
+        Ok(assessments) => assessments,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                rule_count = requests.len(),
+                "Firewall: could not query Windows Firewall"
+            );
+            return;
+        }
+    };
+
+    for (port, assessment) in ports.iter().zip(assessments) {
+        let protocol = port.protocol.as_str();
+        match assessment {
+            windows_firewall::Assessment::Open => tracing::info!(
+                "Firewall: managed rule admits {protocol} {} ({})",
+                port.port,
+                port.name
+            ),
+            windows_firewall::Assessment::Inactive => tracing::info!(
+                "Firewall: no enabled Windows Firewall profile applies to an active network for {protocol} {} ({})",
+                port.port,
+                port.name
+            ),
+            windows_firewall::Assessment::Blocked(
+                windows_firewall::BlockReason::MissingOrMismatchedRule,
+            ) => tracing::warn!(
+                "Firewall: managed rule for {protocol} {} ({}) is absent, disabled, or not scoped to the running executable",
+                port.port,
+                port.name
+            ),
+            windows_firewall::Assessment::Blocked(
+                windows_firewall::BlockReason::ActiveProfileNotCovered,
+            ) => tracing::warn!(
+                "Firewall: managed rule for {protocol} {} ({}) does not cover every active Windows Firewall profile",
+                port.port,
+                port.name
+            ),
         }
     }
 }

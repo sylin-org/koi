@@ -469,6 +469,21 @@ Daemon writes endpoint to breadcrumb file for client auto-discovery:
 
 ---
 
+## Windows Firewall Assessment (`koi_serve::windows_firewall`)
+
+Use `assess_managed(rule_name, protocol, port, executable)` for Windows Firewall
+truth. It is the shared typed query and interpretation boundary used by Pond and
+daemon startup diagnostics. Match its `Assessment::{Open, Inactive, Blocked}` and
+`BlockReason` values; do not add a text parser or a second command runner.
+Use `assess_managed_rules` when several verdicts are needed at once so they share
+one operating-system query.
+
+The same module owns exact managed-rule snapshot, replacement, removal, validation,
+and restoration through `RuleSnapshot`, `Removal`, `snapshot_managed`,
+`replace_managed`, `remove`, `validate_snapshots`, and `restore_snapshot_set`.
+
+---
+
 ## Error Codes (`koi_common::error::ErrorCode`)
 
 `koi-common/src/error.rs` is the source of truth (the `http_status()` match + the
