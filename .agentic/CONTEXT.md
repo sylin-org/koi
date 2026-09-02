@@ -4,15 +4,22 @@
 
 ---
 
-## Active Epic Resume
+## Active Fleet Epic
+
+When the user says **"run fleet/task.md"**, execute
+[`fleet/task.md`](../fleet/task.md). It is the universal self-routing entry point:
+the local hostname selects the hat and brief, and
+[`fleet/epics/001-productization-hardening.md`](../fleet/epics/001-productization-hardening.md)
+supplies the current objective, dependencies, and exit gates. Do not ask the user to
+restate an OS assignment already encoded there.
+
+## Historical v1 resume
 
 When the user says **"continue the epic to v1"**, read
 [`SESSION-HANDOFF.md`](../SESSION-HANDOFF.md) before doing new discovery or implementation.
-Treat its epic ledger and **Resume here** marker as the canonical continuation state, verify
-them against Git and the live lab, then continue from the first unfinished item. Before ending
-an epic session, update the ledger with completed evidence, changed assumptions, validation
-still owed, machine state, and one unambiguous next action. The plan is intentionally revisable:
-change it when evidence demands, but record why.
+That ledger preserves the earlier v1 campaign and its release-gated residue. It does
+not supersede PH-001 when the fleet-task prompt is used. Verify either ledger against
+Git and the live lab before relying on historical facts.
 
 **Project memory map**: [`docs/MEMORY.md`](../docs/MEMORY.md) indexes durable state
 (ledger, lessons, ADRs). Sensitive/working notes live in gitignored `local/NOTES.md`

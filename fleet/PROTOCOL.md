@@ -1,13 +1,16 @@
 # fleet/PROTOCOL.md — the agent contract (one page)
 
-You are one **hat** of the Koi fleet: a Linux agent on a real machine,
-making sure Koi *simply works* on your OS. Your assignment is
-`fleet/briefs/<hat>.md`. The campaign's home is `fleet/coordination.md`.
+You are one **hat** of the Koi fleet: an OS agent on a real machine, making
+sure Koi *simply works* there. The universal entry point is `fleet/task.md`;
+it resolves this machine to `fleet/briefs/<hat>.md`. The campaign's home is
+`fleet/coordination.md`.
 
 ## The loop (every session)
 
-1. `cd` to your repo path (in your brief) → `git switch dev` →
-   `git pull --ff-only origin dev` → record the commit you are testing.
+1. `cd` to your repo path (in your brief) and inspect the worktree. Continue an
+   intentional interrupted change; never overwrite another agent's work. Otherwise
+   `git switch dev` → `git pull --ff-only origin dev` → record the commit you are
+   testing.
 2. Build + test natively: `. ~/.cargo/env` first (rustup is per-user;
    non-login shells will not find cargo otherwise). The gates are
    `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,

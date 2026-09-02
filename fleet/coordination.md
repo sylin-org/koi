@@ -1,11 +1,16 @@
-# fleet/coordination.md — the campaign entry point
+# fleet/coordination.md — the shared campaign map
 
-**Execute this file.** It is the complete instruction for the orchestrator
-(the Windows workstation, `stone-leaded-sparkle`): run the fleet hats and
-watch the shared `dev` branch. Everything needed is here or referenced from
-here. KISS: one branch (`dev`), direct authenticated pushes from every agent,
-no patch harvesting and no orphan branches or local-only commits. A hat's work
-is not complete until its commit is present on `origin/dev`.
+This is the shared campaign map; [`fleet/task.md`](task.md) is the only agent
+entry point. The Windows workstation (`stone-leaded-sparkle`) may launch sessions
+and watch the shared `dev` branch, but it does not manufacture another hat's prompt
+or perform that hat's system mutations. KISS: one branch (`dev`), direct
+authenticated pushes from every agent, no patch harvesting and no orphan branches
+or local-only commits. A hat's work is not complete until its commit is present on
+`origin/dev`.
+
+Every agent receives the same prompt: **`run fleet/task.md`**. That file resolves
+the local hostname, loads the current epic and native brief, and executes the first
+unfinished dependency-ready assignment. Do not assemble per-hat prompts.
 
 ## The hats
 
@@ -19,14 +24,15 @@ documentation needed to make its platform work; those changes go directly to
 
 | hat | machine | desktop (last measured) | repo path | UX modus operandi |
 |---|---|---|---|---|
+| `windows` | stone-leaded-sparkle (.137) | Windows workstation | repository containing this file | SCM service + per-user native workbench; official DNS-SD/Bonjour when usable, native Koi fallback |
 | `cachyos-linux` | test-01 (.109) | KDE Plasma 6, Wayland | `/run/media/test/WORKBENCH/repos/github/sylin-org/koi` | Plasma systemtray hosts SNI natively → Koi tray lamp belongs there; XDG autostart honored; Plasma notifications |
 | `bluefin-linux` | bluefin / test-02 (.95) | Bluefin 44, GNOME 50.3, Wayland (2026-09-01) | `~/repos/github/sylin-org/koi` | immutable Fedora image: system Koi in `/usr/local`, native RPM layered with rpm-ostree, XDG autostart, SNI through GNOME's watcher, GNOME notifications |
 | `alpine-linux` | test-03 (.221) | KDE Plasma, Wayland, **musl** | `~/repos/github/sylin-org/koi` | Plasma tray + XDG autostart as on cachyos; shared-musl WebKitGTK workbench builds and runs natively; Pond remains the universal browser surface |
 | `debian-linux` | halcyon-savanna (.112) | headless | `~/repos/github/sylin-org/koi` | no desktop by design: the surface is the daemon + HTTP API + pond UI; UX = everything reachable and truthful without a GUI |
 
 Non-agent machines: brook/granite are lab production (hands off);
-limpid-dune/topaz-butte/silent-cascade are phase-two Debian twins;
-the Windows workstation is the orchestrator and dev box.
+limpid-dune/topaz-butte/silent-cascade are phase-two Debian twins. The Windows
+hat is also the orchestrator, but it still owns only its own system mutations.
 
 ## The UX charter (what "simply works" means on each hat)
 
@@ -75,52 +81,13 @@ outside the hat's permitted scope. Platform behavior observed on the real machin
 outranks an assumption in a brief, but the discrepancy must be reported explicitly
 and the brief corrected.
 
-## Windows mDNS control-plane workstream
+## Current epic
 
-The Windows workstation (`stone-leaded-sparkle`) makes Koi's provider architecture
-native to Windows; it does not build a second architecture. Pull ADR-039, ADR-040,
-and ADR-041 from `origin/dev`. The shared shape is adapter → stateful provider session →
-`MdnsControlPlane`, with registration intent in `RegistrationRegistry` and browse
-demand in `DiscoveryHub`.
-
-1. Record the real Windows/DNS Client/firewall/UDP 5353 baseline and exercise the
-   official `dnsapi.dll` DNS-SD calls against independent LAN peers. Check Bonjour
-   too when it is genuinely installed. Put evidence in `fleet/windows/journal.md`.
-2. Add one real adapter for the official Win32 DNS-SD facility and one for Bonjour
-   when present. Each owns read-only assessment, capability flags, a stateful
-   session, native callbacks and resource handles, owner/config recovery, and
-   acknowledged shutdown. Composition only lists them; the control plane already
-   appends native Koi as the reserved lowest-priority provider. Avahi is not Bonjour.
-3. Validate publish, browse, resolve, TXT/address/interface data, removal, provider
-   loss/recovery, sleep/resume, adapter changes, and relevant firewall profiles using
-   the one installed Koi service. Use at least one Avahi peer and one Bonjour-class
-   peer, restore the baseline, leave exactly one healthy Koi, then push to `dev`.
-
-The candidate under test must replace the installed service artifact before this
-workstream claims runtime evidence. Do not start a second `MdnsCore`, standalone
-Koi, alternate-port daemon, or control-plane example beside an untouched installed
-service. Direct Win32/Bonjour API probes that do not instantiate Koi may localize a
-platform defect, but they are diagnostic evidence only. Final acceptance exercises
-the exact candidate through the installed service's authenticated API, with its PID,
-binary hash, provider generations, peer observations, and restored baseline recorded.
-
-Capability claims must come from real operations—never a file-presence guess, stub,
-placeholder, or TODO. Publication returns only after a native registration exists;
-withdrawal, browse close, and shutdown are acknowledged. Provider-native types stay
-inside adapters; normalized Koi events, leases, cache, transports, and runtime route
-policy stay shared. Providers may collaborate only on non-overlapping routes, and a
-quiet DNS-SD stream is telemetry rather than a health failure. Session-local recovery
-must preserve desired publications and browse demand across service restart,
-sleep/resume, interface churn, and callback loss without asking the control plane to
-reopen the same healthy adapter. Fix a shared-contract defect in the shared contract
-instead of forking it. Reflectors, wide-area DNS-SD, and proprietary wire protocols
-are outside this workstream.
-
-Assess operations under the installed Windows service identity, including API ACL,
-firewall profile, and non-interactive authorization—not merely DLL/method presence.
-Keep independently usable capabilities when another operation is denied. Linux
-resolve1 is the reference: a user service denied `RegisterService` still contributes
-point resolution while native Koi supplies publication.
+[`fleet/epics/001-productization-hardening.md`](epics/001-productization-hardening.md)
+is the single current objective, dependency map, OS assignment, and exit contract.
+It freezes feature expansion while durable lifecycle, recovery, security boundaries,
+installed whole-story behavior, and a mixed-OS soak are completed. Evidence remains
+in the existing hat journals; there is no separate status service or per-lane ledger.
 
 ## Mechanics (hardened by the canary — v1's traps are protocol now)
 
@@ -138,9 +105,9 @@ point resolution while native Koi supplies publication.
   with `git pull --ff-only origin dev`. Before publishing a completed commit,
   run `git pull --rebase origin dev`; if another agent wins the push race,
   repeat the rebase and push. Never force-push.
-- **Launch (agent sessions)**: ship `fleet/briefs/<hat>.md` if changed, then
-  start headless in tmux: `tmux new-session -d -s koi-fleet 'codex exec ...'`.
-  Always `. ~/.cargo/env` first in any remote shell line.
+- **Launch (agent sessions)**: update the checkout, then use the same instruction
+  everywhere: `codex exec 'run fleet/task.md'` (inside tmux when headless). The task
+  resolves its own hat and brief. Always `. ~/.cargo/env` first in Linux remote shells.
 - **Publish**: each agent commits its owned change directly on `dev`, rebases
   onto the latest `origin/dev`, and pushes `HEAD:dev` itself. A rejected push
   is a synchronization event, not a reason to leave a local-only commit.

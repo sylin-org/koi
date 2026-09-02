@@ -1,5 +1,11 @@
 # Koi Epic to v1 — canonical continuation ledger
 
+> **Historical campaign ledger.** Current cross-OS productization work starts at
+> [`fleet/task.md`](fleet/task.md) and is governed by
+> [`fleet/epics/001-productization-hardening.md`](fleet/epics/001-productization-hardening.md).
+> Use this document for the explicit `continue the epic to v1` phrase and for
+> historical evidence/release-gated residue; it does not override PH-001.
+
 **Status:** active — V1-00 through V1-02 complete; V1-03 through V1-06 in progress; ADR-026/027/028 operator-ratified; **V1-10 webhooks COMPLETE** (embedded parity closed 2026-08-24 per D10; card/SURFACES/profile done); **V1-09 short-lived defaults implemented + physically green both rotations** (diagnosis semantics fixed per D9); **V1-08 principal identity COMPLETE 2026-08-24** — implementation, Tier-2 real-binary lifecycle, and physical mgmt-principal lane green both Linux rotations; **V1-11 step 1 COMPLETE** (Agent-Door spec + executable vector) and **step 2 scaffolded** (TS + Python SDK betas, read-side, tested); owed: SDK enroll-side + publication gating
 **Last updated:** 2026-08-27
 **Resume phrase:** continue the epic to v1 - lessons ledger at docs/lessons-learned.md (RL-1..RL-18)

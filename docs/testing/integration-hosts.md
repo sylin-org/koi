@@ -1,5 +1,13 @@
 # Real-world integration hosts
 
+> **PH-001 acceptance rule (2026-09-02):** The isolated, high-port `koi-lab`
+> scenarios below remain valuable historical regression evidence, but they cannot
+> close the current productization epic. PH-001 acceptance follows
+> [`fleet/task.md`](../../fleet/task.md): exactly one installed Koi per physical
+> machine, product-owned paths and native lifecycle, peer identities/artifact hashes,
+> and exact restoration under the fleet protocol. Do not revive a parallel lab daemon
+> to turn a current gate green.
+
 > **Directive (operator, 2026-06-20):** local Windows `cargo test`/clippy/fmt and
 > single-host cross-process tests (`two_daemon_certmesh`) are fine *during*
 > development, but **closing any major phase requires a full two-box Linux
