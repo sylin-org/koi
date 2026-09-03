@@ -8,6 +8,24 @@ controls, bounded supervision/logs, crash recovery, failed-install rollback, ord
 APK upgrade/removal/reinstall, native musl gates, and Pond are green. Avahi is installed
 but stopped and must be restored to that exact baseline after any provider gate.
 
+## 2026-09-03 08:16 EDT convergence dispatch (after `4ce6a40`)
+
+1. The exact re-frozen APK/OpenRC artifact and installed whole-story journey are green
+   in the 05:56 UTC journal entry. Do not rebuild, reinstall, start Avahi, or repeat a
+   destructive local gate.
+2. Remain the unchanged native peer for Windows transaction
+   `ph4-5c89-win-native-01`. The Windows driver owns its run-owned publications and
+   reads through installed Koi APIs; it may not mutate this host's provider, network,
+   service, package, firewall, or login state. Do not start an independent overlapping
+   transaction. If invoked before the Windows run begins, verify readiness read-only,
+   report the dependency, and leave the machine untouched.
+3. After Windows publishes the shared run, independently verify this host still has
+   the accepted artifact hash, one daemon/workbench, native Ready routes, Avahi stopped,
+   original interface/default route, zero run-owned publications, and no credential or
+   recovery residue. Add a journal entry only if this agent captured material peer-side
+   evidence; otherwise do not manufacture a commit.
+4. Stay ready for the later CachyOS Avahi/resolve1↔native run. PH-5 remains prohibited.
+
 ## 2026-09-03 PH-4 dispatch (frozen source `5c89e9de11bf23ab81fd8b5b0778c58477359360`)
 
 1. Produce signed/indexed APKs from a clean source archive of the exact frozen commit,

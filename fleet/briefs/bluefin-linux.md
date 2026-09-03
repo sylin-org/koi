@@ -16,6 +16,28 @@ primary-interface churn, Avahi/resolved/native recovery, wrong-UID local control
 Pond/firewalld gate are already physically green. Do not repeat those gates against an
 unchanged artifact.
 
+## 2026-09-03 08:16 EDT convergence dispatch (after `4ce6a40`)
+
+1. The installed `f53d568` PH-4 artifact is invalidated. Build from a clean detached
+   worktree/export of exact source
+   `5c89e9de11bf23ab81fd8b5b0778c58477359360` inside `koi-dev`, run full locked
+   native gates, and serially install it through the public systemd path. Do not rebuild
+   the unchanged workbench RPM or layer build dependencies onto the host.
+2. Under coordination key `ph4-5c89-bluefin-local-02`, repeat the installed local
+   Find → Name → Trust → Serve/Pond journey because product bytes changed. Exercise
+   authenticated local control, real Avahi/resolve1/native and DNS/mDNS state, honest
+   Open trust posture, supported health/proxy behavior, restoration-gated Pond from an
+   independent physical reader, service restart reconstruction/removal, and one
+   GNOME workbench/SNI. A genuinely unavailable certificate-backed proxy remains an
+   explicit unavailable result, not a reason to invent identity or use an isolated Koi.
+3. Use the pinned peer identity and test-lab credential already documented locally;
+   do not treat an unset convenience variable as missing authorization. Keep secrets
+   out of argv/evidence, use exactly one installed daemon, and restore all run-owned
+   DNS/mDNS/health/proxy/Pond state plus credentials and build staging.
+4. Record full source/artifact/PID/workbench provenance and exact restoration, commit,
+   rebase, and push directly to `dev`. Then remain an unchanged Avahi/resolve1 peer for
+   the CachyOS driver; do not repeat old immutable lifecycle gates or begin PH-5.
+
 ## 2026-09-03 PH-4 dispatch (frozen source `5c89e9de11bf23ab81fd8b5b0778c58477359360`)
 
 1. Build Koi from a clean export/detached worktree of the exact frozen source inside

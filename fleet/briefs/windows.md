@@ -17,6 +17,26 @@ adapter; `0026951` closed the shared slot-lifecycle leak; `97a0817` made startup
 consume the same batched verdict and canonicalized connection categories. Do not repeat
 those destructive workbooks unless later implementation changes their behavior.
 
+## 2026-09-03 08:16 EDT convergence dispatch (after `4ce6a40`)
+
+1. The exact `5c89e9de11bf23ab81fd8b5b0778c58477359360` Windows artifact and
+   installed local journey are green in journal entry 17. Do not rebuild, reinstall,
+   or repeat the local Pond/proxy/SCM/workbench transaction.
+2. Own and execute the remaining Windows↔Alpine/native provider transaction under the
+   shared coordination key `ph4-5c89-win-native-01`. Reuse the accepted single-service
+   Windows workbook and Alpine `test-03` (`192.168.1.221`) as the unchanged physical
+   native peer. Use the pinned host identity and test-lab credential from the local
+   catalog; do not ask for interactive elevation/SSH when that supported credential
+   path is available, and never record it or put it in argv.
+3. Prove bidirectional run-owned publication, browse/resolve, address/TXT/interface
+   data, long-lived observation, withdrawal, Windows provider loss/fallback/return,
+   generation/count truth, PID/hash invariants, and exact cleanup. Only this Windows
+   hat may mutate Bonjour/DNS-SD/native selection, SCM, NIC/profile, or firewall here.
+   Leave Alpine Avahi stopped, its network/service untouched, and its one installed
+   artifact unchanged. No second Koi or overlapping provider transaction is allowed.
+4. Append one evidence entry and push it directly to `dev`, then remain unchanged for
+   the later CachyOS-coordinated Windows↔Avahi run. Do not begin PH-5.
+
 ## 2026-09-03 PH-4 dispatch (frozen source `5c89e9de11bf23ab81fd8b5b0778c58477359360`)
 
 1. Build the locked release from a clean checkout/export of the exact frozen source,

@@ -11,6 +11,26 @@ green: installed-service Avahi/resolved/native loss and return, pre-armed primar
 recovery, honest no-backend firewall reporting, independent-peer Pond policy, and
 bounded hostile DNS/mDNS/HTTP input. Do not repeat these gates on an unchanged artifact.
 
+## 2026-09-03 08:16 EDT convergence dispatch (after `4ce6a40`)
+
+1. The exact re-frozen daemon, local Find/Name/Trust/Serve journey, restart/removal
+   behavior, and short collector are green in the 06:03 UTC journal entry. Do not
+   rebuild, reinstall, or repeat them. The sole remaining local PH-4 item is the
+   independent-peer Pond transaction.
+2. Run `scripts/integration/pond-lan.sh` against this one installed Debian service with
+   CachyOS `test@192.168.1.109` as the unchanged Python reader, under coordination key
+   `ph4-5c89-debian-pond-01`. Use the pinned host key and test-lab credential recorded
+   in `local/NOTES.md`/`tools/koi-lab/lab.json`; the previously unset
+   `KOI_TEST01_PASSWORD` convenience variable is not a blocker. Supply credentials only
+   through mode-0700 askpass helpers, never argv or evidence, and remove them afterward.
+3. Use the accepted five-file workbench UI bundle and record its hashes. Require every
+   allowlisted read and excluded/mutation denial, explicit stop, systemd restart
+   reconstruction, peer refusal after stop/restoration, unchanged artifact, restored
+   false desire, closed 24444, loopback-only operator API, and exact service/provider/
+   config/identity state. Do not mutate CachyOS or manufacture a firewall result.
+4. Append the completed physical evidence, commit/rebase/push it directly to `dev`, and
+   remain the stable collector peer. Do not start the six-to-24-hour PH-5 soak.
+
 ## 2026-09-03 PH-4 dispatch (frozen source `5c89e9de11bf23ab81fd8b5b0778c58477359360`)
 
 1. Build a locked release from a clean export/detached worktree of the exact frozen

@@ -107,6 +107,37 @@ rebuild every affected artifact, and rerun the affected PH-4 slices. Never silen
 test different revisions under the same candidate name. PH-5 starts only after all five
 hat journals show the frozen artifact and PH-4 is reconciled green.
 
+### 2026-09-03 08:16 EDT PH-4 convergence dispatch
+
+The final re-freeze remains `5c89e9de11bf23ab81fd8b5b0778c58477359360`.
+Windows, Alpine, and Debian have exact-source installed artifacts and green local
+journeys. Bluefin's recorded PH-4 artifact came from the invalidated first freeze and
+must be rebuilt; CachyOS still owns its exact-source installation/local journey and the
+final coordination. The next work is deliberately small and dependency-ready:
+
+1. Bluefin rebuilds and installs the exact re-freeze, repeats its installed local
+   journey, and publishes artifact readiness under coordination key
+   `ph4-5c89-bluefin-local-02`.
+2. Debian keeps its accepted artifact and runs only its missing restoration-gated Pond
+   transaction, using CachyOS as the unchanged physical reader under
+   `ph4-5c89-debian-pond-01`. An unset convenience environment variable is not a
+   credential blocker: use the test-lab credential and pinned host identity already
+   recorded in `local/NOTES.md` and `tools/koi-lab/lab.json`, without recording the
+   secret or placing it in argv.
+3. Windows keeps its accepted artifact and owns the serial Windows↔Alpine/native
+   provider transaction `ph4-5c89-win-native-01`. Its driver may create only run-owned
+   Koi API traffic on Alpine; all provider/service/profile changes remain Windows-local.
+   Alpine stays on its accepted native artifact with Avahi stopped and does not launch
+   a competing transaction.
+4. CachyOS builds/installs the re-freeze locally, then publishes the remaining shared
+   run IDs for Windows↔Avahi and Avahi/resolve1↔Alpine/native. It reconciles PH-4 only
+   after Bluefin, Debian Pond, and all provider rotations are green.
+
+These three remote lanes may proceed while CachyOS builds because they do not overlap
+system mutations. Every lane ends with exact service/provider/network/firewall/Pond
+restoration, one installed Koi, secret-redacted evidence, and a direct push to `dev`.
+Do not repeat an already-green local journey or begin PH-5 merely to keep an agent busy.
+
 ### 2026-09-03 convergence checkpoint
 
 Windows, CachyOS, Bluefin, Debian, and Alpine have closed their current local PH-2/PH-3
