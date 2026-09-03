@@ -184,6 +184,10 @@ test, or a process that merely started.
   only at the required serial restart-recovery step; both peers exercised every
   allowlisted read and refused every excluded/mutation route before and after the
   restart. Exact UFW files were restored and the original disabled desire remained.
+  A gate may write PASS only after it has re-read and verified the original desired
+  state; a disabled baseline additionally requires the listener closed and peer
+  access refused. Signal or ordinary-exit cleanup failure makes the gate fail rather
+  than leaving restoration as an unaudited afterthought.
 - **Desktop provenance and visual proof:** before enabling login startup, prove
   the executable is installed at a durable product-owned path rather than inside
   a source checkout. Capture the visible workbench and compare its window frame,

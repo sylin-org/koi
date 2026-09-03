@@ -311,27 +311,72 @@ REMOTE
 }
 
 BASE_DESIRED=""
+BASELINE_RESTORED=0
 API=""
 TOKEN=""
 POND_URLS=()
 CLEANING=0
-cleanup() {
-  local result=$?
-  ((CLEANING == 0)) || exit "$result"
-  CLEANING=1
-  if [[ -n "$BASE_DESIRED" ]]; then
-    refresh_access >/dev/null 2>&1 || true
-    if [[ -n "$TOKEN" ]]; then
-      if [[ "$BASE_DESIRED" == true ]]; then
-        operator_request PUT /v1/pond >/dev/null 2>&1 || true
-      else
-        operator_request DELETE /v1/pond >/dev/null 2>&1 || true
+
+restore_baseline() {
+  local deadline status port
+  if [[ -z "$BASE_DESIRED" ]]; then
+    BASELINE_RESTORED=1
+    return 0
+  fi
+
+  refresh_access || {
+    echo "could not reacquire local control while restoring Pond" >&2
+    return 1
+  }
+  if [[ "$BASE_DESIRED" == true ]]; then
+    operator_request PUT /v1/pond >/dev/null
+  else
+    operator_request DELETE /v1/pond >/dev/null
+  fi
+
+  deadline=$((SECONDS + 15))
+  while ((SECONDS < deadline)); do
+    status="$(operator_request GET /v1/pond 2>/dev/null || true)"
+    if [[ "$BASE_DESIRED" == true ]]; then
+      if jq -e '
+          .desired == true and .running == true and .state == "running"
+          and (.urls | length > 0)
+        ' <<<"$status" >/dev/null 2>&1; then
+        printf '%s\n' "$status" | jq . >"$EVIDENCE_DIR/final-restoration.json"
+        BASELINE_RESTORED=1
+        return 0
+      fi
+    elif jq -e '
+        .desired == false and .running == false and .state == "disabled"
+      ' <<<"$status" >/dev/null 2>&1; then
+      port="$(jq -er '.port' <<<"$status")"
+      if ! ss -lntH "sport = :$port" | grep -q .; then
+        printf '%s\n' "$status" | jq . >"$EVIDENCE_DIR/final-restoration.json"
+        BASELINE_RESTORED=1
+        return 0
       fi
     fi
+    sleep 0.25
+  done
+
+  printf '%s\n' "${status:-unavailable}" >"$EVIDENCE_DIR/final-restoration-error.txt"
+  echo "Pond did not return to baseline desired=$BASE_DESIRED" >&2
+  return 1
+}
+
+cleanup() {
+  local result="${1:-$?}"
+  ((CLEANING == 0)) || exit "$result"
+  CLEANING=1
+  trap - EXIT INT TERM
+  if [[ "$BASELINE_RESTORED" != 1 ]] && ! restore_baseline; then
+    result=1
   fi
   exit "$result"
 }
-trap cleanup EXIT INT TERM
+trap 'cleanup $?' EXIT
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
 
 for peer in "${PEERS[@]}"; do
   peer_run "$peer" command -v python3 >/dev/null
@@ -374,7 +419,8 @@ printf '%s' "$PAYLOAD" \
     >"$EVIDENCE_DIR/publish.json"
 ENABLED="$(operator_request PUT /v1/pond)"
 jq -e '.desired == true and .running == true and .state == "running" and (.urls | length > 0)' \
-  <<<"$ENABLED" >"$EVIDENCE_DIR/enabled.json"
+  <<<"$ENABLED" >/dev/null
+printf '%s\n' "$ENABLED" | jq . >"$EVIDENCE_DIR/enabled.json"
 mapfile -t POND_URLS < <(jq -er '.urls[]' <<<"$ENABLED")
 
 AFTER_HTTP_BIND="$(ss -lntH "sport = :$HTTP_PORT" | awk '{print $4}' | sort -u)"
@@ -420,13 +466,23 @@ for _ in {1..60}; do
   sleep 0.5
 done
 jq -e '.desired == true and .running == true and .state == "running"' \
-  <<<"$RECOVERED" >"$EVIDENCE_DIR/recovered.json"
+  <<<"$RECOVERED" >/dev/null
+printf '%s\n' "$RECOVERED" | jq . >"$EVIDENCE_DIR/recovered.json"
 mapfile -t POND_URLS < <(jq -er '.urls[]' <<<"$RECOVERED")
 for peer in "${PEERS[@]}"; do
   for url in "${POND_URLS[@]}"; do
     peer_public_gate "$peer" "$url" recovered
   done
 done
+
+restore_baseline
+if [[ "$BASE_DESIRED" == false ]]; then
+  for peer in "${PEERS[@]}"; do
+    for url in "${POND_URLS[@]}"; do
+      peer_stopped_gate "$peer" "$url"
+    done
+  done
+fi
 
 FINAL_PID="$(single_koi)"
 FINAL_EXE="$(process_executable "$FINAL_PID")"
@@ -437,10 +493,15 @@ FINAL_HASH="$(executable_hash "$FINAL_EXE")"
 }
 jq -n \
   --arg run_id "$RUN_ID" --arg initial_pid "$INITIAL_PID" --arg final_pid "$FINAL_PID" \
-  --arg sha256 "$FINAL_HASH" --argjson peers "$(printf '%s\n' "${PEERS[@]}" | jq -R . | jq -s .)" \
+  --arg sha256 "$FINAL_HASH" --argjson baseline_desired "$BASE_DESIRED" \
+  --argjson final_desired "$(jq '.desired' "$EVIDENCE_DIR/final-restoration.json")" \
+  --argjson peers "$(printf '%s\n' "${PEERS[@]}" | jq -R . | jq -s .)" \
   '{run_id:$run_id, initial_pid:($initial_pid|tonumber), final_pid:($final_pid|tonumber),
-    sha256:$sha256, peers:$peers, result:"pass"}' >"$EVIDENCE_DIR/verdict.json"
+    sha256:$sha256, peers:$peers, baseline_desired:$baseline_desired,
+    final_desired:$final_desired, restoration:"pass", result:"pass"}' \
+  >"$EVIDENCE_DIR/verdict.json"
 
+trap - EXIT INT TERM
 echo "Pond LAN gate PASS: $RUN_ID"
 echo "  peers: ${PEERS[*]}"
 echo "  service PID: $INITIAL_PID -> $FINAL_PID"
