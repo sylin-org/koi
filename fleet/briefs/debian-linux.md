@@ -11,6 +11,20 @@ green: installed-service Avahi/resolved/native loss and return, pre-armed primar
 recovery, honest no-backend firewall reporting, independent-peer Pond policy, and
 bounded hostile DNS/mDNS/HTTP input. Do not repeat these gates on an unchanged artifact.
 
+## 2026-09-03 14:02 EDT next dispatch — systemd canary green; await refreeze
+
+1. Debian's headless correction and shared collector core are complete. The exact
+   corrected release is installed through the product systemd path at the retained
+   shifted ports, and the ordinary-user `pond status|start|stop` journey is green.
+2. Systemd canary `v1-ph5-debian-systemd-canary-01` passed against the unchanged
+   physical CachyOS Koi on `test-01`; retain its evidence and do not repeat it unless
+   the observer contract or installed artifact changes.
+3. PH-4 remains reopened because the shipped CLI changed. Keep this one healthy
+   Debian deployment available for read-only peer work, but do not begin the long
+   soak until an explicit new freeze and all exact-artifact replacements/canaries are
+   green. Windows owns the SCM observer, Alpine owns OpenRC, and CachyOS coordinates
+   the eventual canary ring and serial fault schedule.
+
 ## 2026-09-03 13:48 EDT PH-4 reopen and Debian validation dispatch
 
 1. The neutral installed-entry journey exposed a shipped CLI defect: a headless
