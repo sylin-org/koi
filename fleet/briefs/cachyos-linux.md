@@ -19,6 +19,21 @@ was accepted through the real installed service: upgrade retained `5641:5644` wi
 manufacturing a config, and a deliberately unhealthy replacement restored the exact
 prior deployment.
 
+## 2026-09-03 11:36 EDT final PH-4 lane wait
+
+1. Accepted since the prior checkpoint: Windows↔CachyOS/Avahi run
+   `ph4-e49b-win-avahi-01`, Bluefin's exact-source artifact, and Debian's exact-source
+   artifact plus `ph4-e49b-debian-pond-01`. Alpine then published its exact-`e49bfe2`
+   APK/OpenRC artifact and native-provider baseline. Do not repeat any of them.
+2. A read-only post-peer and post-reboot audit is green in the 11:36 EDT journal entry:
+   exact artifact, one healthy daemon, Ready Avahi routes, permanent publication,
+   Authenticated identity, disabled Pond, exact UFW files, and one package-owned
+   workbench/SNI. No local mutation or peer cleanup remains.
+3. Wait only for Windows to publish `ph4-e49b-win-native-02` against unchanged Alpine.
+   Then perform the final journal reconciliation, mark PH-4 green if all evidence
+   remains coherent, and dispatch PH-5. Do not start a local gate or the soak before
+   that lane closes.
+
 ## 2026-09-03 10:28 EDT Windows peer result
 
 1. Windows run `ph4-e49b-win-avahi-01` passed against this host's unchanged exact-source

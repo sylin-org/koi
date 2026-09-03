@@ -49,6 +49,42 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 | PH-4 | Installed whole-story matrix | **active — source re-frozen at `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`** | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
 | PH-5 | Onboarding, diagnostics, and soak | collector ready; waits on PH-4 | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
 
+### 2026-09-03 11:36 EDT PH-4 narrowed to the final Windows/native lane
+
+Three exact-source results landed and passed reconciliation. Windows↔CachyOS/Avahi
+run `ph4-e49b-win-avahi-01` closed the corrected withdrawal lane with both installed
+PIDs/hashes fixed and exact cleanup. Bluefin rebuilt and installed exact `e49bfe2` at
+SHA-256 `288362b8ae909d655f683f290f2b34bd5d8cb802a1184a0cebf27a1b3219e200`
+without repeating unaffected Linux gates. Debian rebuilt and installed exact `e49bfe2`
+at SHA-256 `51682d682f155139f0e0d4c7f2bdce6b2e237f6bbf464ccdbfc7b30a7251cbbb`,
+then passed physical Pond run `ph4-e49b-debian-pond-01` against unchanged CachyOS and
+restored its shifted service, disabled desire, credentials, packages, and peer boundary
+exactly. Alpine rebuilt signed/indexed `e49bfe2` APKs and upgraded the one OpenRC
+deployment to `koi-1.0.0_rc2_git20260903-r3`; its stripped installed executable is
+SHA-256 `095371b9ed13cde254214155aa231db9333342c35255717654299fcd514e9941`.
+The shifted `5651:5654` plan, native routes, stopped/disabled Avahi, singleton daemon
+and workbench, durable state, package ownership, repository, and network baseline were
+all exact after installation. None found a product defect or moved the freeze.
+
+CachyOS then passed a read-only post-peer audit after an ordinary machine reboot. The
+exact installed artifact remained SHA-256
+`f0e999b0077eb25935f1ad563aee33f2e659ffde915d3f3c55f5aa568691682b`;
+systemd started exactly one healthy PID `721` with zero restarts, Avahi retained all
+four routes and one permanent publication, trust remained HEALTHY/Authenticated, Pond
+remained disabled and closed, UFW files remained byte-exact, and the real Plasma
+session held one package-owned workbench and one SNI item. The previous PID `962933`
+was the exact process observed by both completed peer transactions before that reboot,
+so the lifecycle change is expected rather than unexplained drift.
+
+The only remaining PH-4 path is now serial and explicit:
+
+1. Windows runs only `ph4-e49b-win-native-02` against the unchanged exact-source
+   Alpine peer and
+   publishes its final withdrawal/restoration evidence.
+2. CachyOS reconciles the five exact-source artifacts and completed physical lanes,
+   marks PH-4 green, and dispatches PH-5. No completed gate is repeated and the soak
+   does not begin before that lane closes.
+
 ### 2026-09-03 10:28 EDT Windows↔Avahi exact-source acceptance checkpoint
 
 Windows run `ph4-e49b-win-avahi-01` passed against CachyOS's unchanged exact-source
