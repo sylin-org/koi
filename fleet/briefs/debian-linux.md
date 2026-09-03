@@ -11,6 +11,23 @@ green: installed-service Avahi/resolved/native loss and return, pre-armed primar
 recovery, honest no-backend firewall reporting, independent-peer Pond policy, and
 bounded hostile DNS/mDNS/HTTP input. Do not repeat these gates on an unchanged artifact.
 
+## 2026-09-03 13:48 EDT PH-4 reopen and Debian validation dispatch
+
+1. The neutral installed-entry journey exposed a shipped CLI defect: a headless
+   operator had no supported command for Pond state, start/stop, or the returned URL.
+   The shared CLI correction reopens PH-4; do not treat `e49bfe2` as the active
+   candidate and do not begin the duration soak.
+2. Complete the in-progress shared correction and systemd observer, pass the full
+   locked native gates, install the exact corrected artifact through the existing
+   product path, and prove the ordinary-user Pond journey from a neutral directory.
+3. Run one short systemd collector canary against an independently installed peer's
+   real Koi `/healthz` surface. Preserve one daemon and the shifted `24441:24444`
+   deployment, restore Pond and all run-scoped peer access exactly, and publish the
+   observer contract for the Windows and Alpine adapters.
+4. Record the source/artifact/PID, full gate results, canary verdict and exact
+   restoration. Then wait for an explicit new fleet freeze and the remaining observer
+   adapters; do not start a long soak.
+
 ## 2026-09-03 12:03 EDT PH-5 collector and headless-entry dispatch
 
 1. PH-4 is green. Retain the exact shifted systemd deployment and collector baseline;

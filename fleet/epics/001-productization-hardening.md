@@ -46,8 +46,30 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 | PH-1 | Platform truth and durable lifecycle | **green fleet-wide** | Clean install, in-place upgrade, failed-upgrade recovery, reboot, uninstall, and reinstall use product-owned paths and preserve intended identity/configuration. |
 | PH-2 | Environmental recovery | **green fleet-wide** | Process crash, provider loss/return, link/IP churn, firewall change, runtime disconnect, boot, lock, and sleep/resume recover without duplicates or manual re-arming. |
 | PH-3 | Security-boundary hardening | **green fleet-wide** | Local-control identity, Pond allowlist, operator auth, installer privilege, key custody, hostile LAN input, and resource bounds have executable negative gates; no unresolved critical/high finding remains. |
-| PH-4 | Installed whole-story matrix | **green fleet-wide at `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`** | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
-| PH-5 | Onboarding, diagnostics, and soak | **active — installed-entry and collector convergence** | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
+| PH-4 | Installed whole-story matrix | **reopened — new freeze required after headless-entry correction** | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
+| PH-5 | Onboarding, diagnostics, and soak | **collector convergence active; duration gate blocked on PH-4 refreeze** | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
+
+### 2026-09-03 13:48 EDT PH-5 entry defect reopens PH-4
+
+Debian's required neutral-shell journey found that the installed CLI could diagnose
+status, provider selection, and trust, but had no Pond command. A headless operator
+therefore could not inspect sharing state, start sharing, or receive Koi's selected
+Pond URL without manually discovering the authenticated HTTP API. That is a product
+entry defect, not a harness limitation.
+
+The shared correction adds authenticated `koi pond status|start|stop` commands through
+local daemon discovery; `start` prints the daemon-returned URL and fails non-zero with
+the daemon's recovery explanation when the listener is unavailable. The same change
+evolves `installed-service-collect` to one neutral bounded sampler and verdict model,
+with a thin systemd observer, explicit OpenRC/SCM adapter seams, honest unavailable
+counters, transition/resource-growth evidence, and semantic `/healthz` traffic to an
+independently installed Koi peer instead of a raw SSH-port connection.
+
+Because the CLI is shipped product behavior, `e49bfe2` is no longer the active
+candidate. PH-4 is reopened and an explicit new freeze plus exact-artifact replacement
+on every hat is required before the coordinated PH-5 duration run. Short collector
+canaries may continue to validate the new contract, but they do not authorize the soak
+or relabel any `e49bfe2` evidence.
 
 ### 2026-09-03 12:03 EDT PH-4 green; PH-5 dispatched
 

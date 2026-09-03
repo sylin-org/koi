@@ -2272,6 +2272,7 @@ dependencies = [
  "chrono",
  "clap",
  "instant-acme",
+ "koi-client",
  "koi-mdns",
  "mdns-sd",
  "pem",
@@ -2281,6 +2282,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "url",
  "windows-sys 0.61.2",
  "x509-parser 0.16.0",
 ]

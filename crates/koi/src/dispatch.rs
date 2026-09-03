@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::cli::{
     CertmeshSubcommand, Cli, Command, Config, DnsSubcommand, DnsTxtSubcommand, HealthSubcommand,
-    McpSubcommand, MdnsSubcommand, ProxySubcommand, TrustSubcommand, UdpSubcommand,
+    McpSubcommand, MdnsSubcommand, PondSubcommand, ProxySubcommand, TrustSubcommand, UdpSubcommand,
 };
 use crate::commands::status::try_daemon_status;
 use crate::daemon::daemon_mode;
@@ -23,6 +23,11 @@ pub(crate) async fn run(cli: Cli, config: Config) -> anyhow::Result<()> {
                 anyhow::bail!("config subcommand is handled in main")
             }
             Command::Status => commands::status::status(&cli, &config),
+            Command::Pond(pond_cmd) => match &pond_cmd.command {
+                PondSubcommand::Status => commands::pond::status(&cli),
+                PondSubcommand::Start => commands::pond::start(&cli),
+                PondSubcommand::Stop => commands::pond::stop(&cli),
+            },
             Command::Mdns(mdns_cmd) => {
                 config.require_capability("mdns")?;
                 match &mdns_cmd.command {

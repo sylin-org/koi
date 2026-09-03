@@ -1,37 +1,68 @@
 use std::collections::BTreeMap;
-use std::fs;
-use std::net::{IpAddr, SocketAddr, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
+use clap::ValueEnum;
 use serde::Deserialize;
+use url::Url;
 
+use crate::installed_service_systemd::SystemdObserver;
 use crate::lab::Lab;
 use crate::model::{
-    output_path, ArtifactIdentity, CheckResult, InstalledServiceCacheCounts,
-    InstalledServiceIdentity, InstalledServicePublicationCounts, InstalledServiceReport,
-    InstalledServiceSample, InstalledServiceTrafficSample, InstalledServiceTrafficTotals, RunId,
+    output_path, CheckResult, InstalledServiceCacheCounts, InstalledServiceIdentity,
+    InstalledServicePublicationCounts, InstalledServiceReport, InstalledServiceResourceGrowth,
+    InstalledServiceSample, InstalledServiceTrafficSample, InstalledServiceTrafficTotals,
+    InstalledServiceTransitions, ObservedU64, RunId,
 };
 
 const MAX_DURATION_SECONDS: u64 = 24 * 60 * 60;
 const MAX_SAMPLE_INTERVAL_SECONDS: u64 = 60 * 60;
 const TRAFFIC_ATTEMPTS: u32 = 3;
-const TRAFFIC_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const TRAFFIC_RETRY_DELAY: Duration = Duration::from_millis(200);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum ObserverKind {
+    Systemd,
+    Openrc,
+    Scm,
+}
 
 #[derive(Clone, Debug)]
 pub struct InstalledServiceOptions {
+    pub observer: ObserverKind,
     pub service_name: String,
     pub binary_path: PathBuf,
     pub duration_seconds: u64,
     pub sample_interval_seconds: u64,
     pub max_service_restarts: u64,
-    pub peer_node: String,
-    pub peer_port: u16,
+    pub max_unavailable_samples: u64,
+    pub max_consecutive_unavailable_samples: u64,
+    pub max_rss_growth_bytes: u64,
+    pub max_descriptor_growth: u64,
+    pub max_thread_growth: u64,
+    pub max_task_growth: u64,
+    pub peer_surface: String,
+}
+
+pub(super) trait ServiceObserver {
+    fn name(&self) -> &'static str;
+    fn identity(&self) -> Result<InstalledServiceIdentity>;
+    fn sample(&self) -> Result<NativeServiceSample>;
+}
+
+#[derive(Debug)]
+pub(super) struct NativeServiceSample {
+    pub pid: u32,
+    pub restart_count: ObservedU64,
+    pub rss_bytes: ObservedU64,
+    pub descriptor_count: ObservedU64,
+    pub thread_count: ObservedU64,
+    pub task_count: ObservedU64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,24 +82,6 @@ struct DnsRecordCounts {
     mdns_entries: u64,
 }
 
-#[derive(Debug)]
-struct SystemdSnapshot {
-    active_state: String,
-    sub_state: String,
-    fragment_path: PathBuf,
-    exec_start: String,
-    pid: u32,
-    restart_count: u64,
-    task_count: u64,
-}
-
-#[derive(Debug)]
-struct ProcSnapshot {
-    rss_bytes: u64,
-    descriptor_count: u64,
-    thread_count: u64,
-}
-
 impl Lab {
     pub fn installed_service_collect(
         &self,
@@ -76,18 +89,14 @@ impl Lab {
         options: &InstalledServiceOptions,
     ) -> Result<InstalledServiceReport> {
         validate_options(options)?;
-        let peer = self.config().node(&options.peer_node)?;
-        let peer_ip: IpAddr = peer
-            .address()
-            .parse()
-            .with_context(|| format!("peer {} has an invalid address", peer.id()))?;
-        let peer_endpoint = SocketAddr::new(peer_ip, options.peer_port);
         let binary_path = options
             .binary_path
             .canonicalize()
             .with_context(|| format!("could not resolve {}", options.binary_path.display()))?;
+        let observer = observer(options, binary_path.clone())?;
+        let peer_surface = canonical_peer_surface(&options.peer_surface)?;
 
-        let initial_identity = service_identity(&options.service_name, &binary_path)?;
+        let initial_identity = observer.identity()?;
         let source_commit = self.git_commit()?;
         let service_node = local_hostname()?;
         let started = Instant::now();
@@ -97,10 +106,10 @@ impl Lab {
         loop {
             samples.push(sample_installed_service(
                 started,
-                &options.service_name,
+                observer.as_ref(),
                 &binary_path,
-                peer_endpoint,
-            )?);
+                &peer_surface,
+            ));
             let now = Instant::now();
             if now >= deadline {
                 break;
@@ -108,20 +117,22 @@ impl Lab {
             thread::sleep(Duration::from_secs(options.sample_interval_seconds).min(deadline - now));
         }
 
-        // Every traffic probe owns only a scoped TCP socket. Reaching this point proves
-        // all sockets have been dropped; no peer process, registration, or firewall rule
-        // was created and therefore there is no remote state to unwind.
-        let final_identity = service_identity(&options.service_name, &binary_path)?;
+        let final_identity = observer.identity()?;
         let elapsed = started.elapsed();
-        let restart_delta = final_identity
-            .restart_count
-            .saturating_sub(initial_identity.restart_count);
-        let elapsed_hours = elapsed.as_secs_f64() / 3600.0;
-        let restart_rate = if elapsed_hours > 0.0 {
-            restart_delta as f64 / elapsed_hours
-        } else {
-            0.0
-        };
+        let restart_delta = observed_delta(
+            &initial_identity.restart_count,
+            &final_identity.restart_count,
+        );
+        let restart_rate = restart_delta.map(|delta| {
+            let elapsed_hours = elapsed.as_secs_f64() / 3600.0;
+            if elapsed_hours > 0.0 {
+                delta as f64 / elapsed_hours
+            } else {
+                0.0
+            }
+        });
+        let transitions = transition_summary(&samples);
+        let resource_growth = resource_growth(&samples);
         let traffic_totals = traffic_totals(&samples);
         let checks = report_checks(
             &initial_identity,
@@ -129,25 +140,35 @@ impl Lab {
             &samples,
             &traffic_totals,
             restart_delta,
-            options.max_service_restarts,
+            &transitions,
+            &resource_growth,
+            options,
         );
         let report = InstalledServiceReport {
-            schema: 1,
+            schema: 2,
             run_id: run_id.clone(),
             created_at: Utc::now(),
             source_commit,
             service_node,
-            peer_node: peer.id().to_owned(),
-            peer_endpoint: peer_endpoint.to_string(),
+            observer: observer.name().to_owned(),
+            peer_surface,
             target_duration_seconds: options.duration_seconds,
             sample_interval_seconds: options.sample_interval_seconds,
             max_service_restarts: options.max_service_restarts,
+            max_unavailable_samples: options.max_unavailable_samples,
+            max_consecutive_unavailable_samples: options.max_consecutive_unavailable_samples,
+            max_rss_growth_bytes: options.max_rss_growth_bytes,
+            max_descriptor_growth: options.max_descriptor_growth,
+            max_thread_growth: options.max_thread_growth,
+            max_task_growth: options.max_task_growth,
             termination: "duration_limit".to_owned(),
             elapsed_ms: millis(elapsed),
             initial_identity,
             final_identity,
             service_restart_delta: restart_delta,
             service_restart_rate_per_hour: restart_rate,
+            transitions,
+            resource_growth,
             traffic_totals,
             samples,
             checks,
@@ -157,6 +178,24 @@ impl Lab {
         let evidence_path = self.write_evidence(&path, &report)?;
         eprintln!("installed-service evidence: {}", evidence_path.display());
         Ok(report)
+    }
+}
+
+fn observer(
+    options: &InstalledServiceOptions,
+    binary_path: PathBuf,
+) -> Result<Box<dyn ServiceObserver>> {
+    match options.observer {
+        ObserverKind::Systemd => Ok(Box::new(SystemdObserver::new(
+            options.service_name.clone(),
+            binary_path,
+        ))),
+        ObserverKind::Openrc => bail!(
+            "OpenRC observation is not available in this revision; the alpine-linux hat owns that adapter behind the shared observer contract"
+        ),
+        ObserverKind::Scm => bail!(
+            "Windows SCM observation is not available in this revision; the windows hat owns that adapter behind the shared observer contract"
+        ),
     }
 }
 
@@ -172,13 +211,11 @@ fn validate_options(options: &InstalledServiceOptions) -> Result<()> {
             "sample interval must be between 1 second and the duration (at most {MAX_SAMPLE_INTERVAL_SECONDS} seconds)"
         );
     }
-    if options.peer_port == 0 {
-        bail!("peer traffic port must be non-zero");
-    }
     validate_service_name(&options.service_name)?;
     if !options.binary_path.is_absolute() {
         bail!("installed binary path must be absolute");
     }
+    canonical_peer_surface(&options.peer_surface)?;
     Ok(())
 }
 
@@ -188,290 +225,146 @@ fn validate_service_name(service_name: &str) -> Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'@' | b'_' | b'-'))
     {
-        bail!("unsafe systemd service name {service_name:?}");
+        bail!("unsafe service name {service_name:?}");
     }
     Ok(())
 }
 
-fn service_identity(
-    service_name: &str,
-    expected_binary: &Path,
-) -> Result<InstalledServiceIdentity> {
-    let systemd = systemd_snapshot(service_name)?;
-    if systemd.active_state != "active" || systemd.sub_state != "running" {
-        bail!(
-            "{service_name} is not an active running installed service: {}/{}",
-            systemd.active_state,
-            systemd.sub_state
-        );
+fn canonical_peer_surface(value: &str) -> Result<String> {
+    let parsed = Url::parse(value).context("peer surface must be an absolute HTTP URL")?;
+    if parsed.scheme() != "http" {
+        bail!("peer surface must use http");
     }
-    let proc_exe = PathBuf::from(format!("/proc/{}/exe", systemd.pid));
-    let process_binary = process_binary_path(systemd.pid, &proc_exe)?;
-    if process_binary != expected_binary {
-        bail!(
-            "{service_name} pid {} runs {}, expected {}",
-            systemd.pid,
-            process_binary.display(),
-            expected_binary.display()
-        );
+    if parsed.host().is_none() || parsed.port().is_none() {
+        bail!("peer surface must include an explicit host and port");
     }
-    let version = checked_output(expected_binary, &["--version"])?;
-    Ok(InstalledServiceIdentity {
-        service_name: service_name.to_owned(),
-        active_state: systemd.active_state,
-        sub_state: systemd.sub_state,
-        fragment_path: systemd.fragment_path,
-        exec_start: systemd.exec_start,
-        pid: systemd.pid,
-        restart_count: systemd.restart_count,
-        binary: process_artifact(&proc_exe, &process_binary)?,
-        version,
-    })
-}
-
-fn process_binary_path(pid: u32, proc_exe: &Path) -> Result<PathBuf> {
-    match proc_exe.canonicalize() {
-        Ok(path) => Ok(path),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            let output = checked_command(
-                "sudo",
-                &[
-                    "-n",
-                    "readlink",
-                    "-f",
-                    proc_exe
-                        .to_str()
-                        .context("proc executable path is not UTF-8")?,
-                ],
-            )?;
-            if output.ends_with(" (deleted)") {
-                bail!("pid {pid} is running a deleted executable");
-            }
-            let path = PathBuf::from(output);
-            if !path.is_absolute() {
-                bail!("pid {pid} executable did not resolve to an absolute path");
-            }
-            Ok(path)
-        }
-        Err(error) => {
-            Err(error).with_context(|| format!("could not resolve executable for pid {pid}"))
-        }
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        bail!("peer surface must not contain credentials, query parameters, or a fragment");
     }
-}
-
-fn process_artifact(proc_exe: &Path, resolved_path: &Path) -> Result<ArtifactIdentity> {
-    match ArtifactIdentity::from_path(proc_exe) {
-        Ok(mut artifact) => {
-            artifact.path = resolved_path.to_path_buf();
-            Ok(artifact)
-        }
-        Err(_) => {
-            let proc_exe = proc_exe
-                .to_str()
-                .context("proc executable path is not UTF-8")?;
-            let size_bytes = checked_command("sudo", &["-n", "stat", "-Lc", "%s", proc_exe])?
-                .parse()
-                .context("process executable size is not an integer")?;
-            let sha_output = checked_command("sudo", &["-n", "sha256sum", proc_exe])?;
-            let sha256 = sha_output
-                .split_whitespace()
-                .next()
-                .context("sha256sum returned no digest")?;
-            if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                bail!("sha256sum returned an invalid process executable digest");
-            }
-            Ok(ArtifactIdentity {
-                path: resolved_path.to_path_buf(),
-                size_bytes,
-                sha256: sha256.to_owned(),
-            })
-        }
+    if parsed.path() != "/" && !parsed.path().is_empty() {
+        bail!("peer surface must identify the Koi root URL");
     }
+    Ok(value.trim_end_matches('/').to_owned())
 }
 
 fn sample_installed_service(
     started: Instant,
-    service_name: &str,
-    binary_path: &Path,
-    peer_endpoint: SocketAddr,
-) -> Result<InstalledServiceSample> {
-    let systemd = systemd_snapshot(service_name)?;
-    let process = proc_snapshot(systemd.pid)?;
-    let status: UnifiedStatus = command_json(binary_path, &["--json", "status"])?;
-    let dns: DnsStatus = command_json(binary_path, &["--json", "dns", "status"])?;
-    let mdns: koi_mdns::protocol::DaemonStatus =
-        command_json(binary_path, &["--json", "mdns", "admin", "status"])?;
-    let traffic = probe_peer(peer_endpoint);
-    let cache_total = dns
-        .records
-        .static_entries
-        .saturating_add(dns.records.certmesh_entries)
-        .saturating_add(dns.records.mdns_entries);
-    let routes = mdns.control_plane.routes;
-    let provider_routes = [
-        ("publish", routes.publish),
-        ("explicit_publish", routes.explicit_publish),
-        ("browse", routes.browse),
-        ("resolve", routes.resolve),
-    ]
-    .into_iter()
-    .filter_map(|(name, provider)| provider.map(|provider| (name.to_owned(), provider)))
-    .collect();
-    let publications = mdns.control_plane.publications;
+    observer: &dyn ServiceObserver,
+    binary_path: &std::path::Path,
+    peer_surface: &str,
+) -> InstalledServiceSample {
+    let mut unavailable = BTreeMap::new();
+    let native = observer.sample();
+    let (pid, service_restart_count, rss_bytes, descriptor_count, thread_count, task_count) =
+        match native {
+            Ok(sample) => (
+                Some(sample.pid),
+                sample.restart_count,
+                sample.rss_bytes,
+                sample.descriptor_count,
+                sample.thread_count,
+                sample.task_count,
+            ),
+            Err(error) => {
+                let reason = format!("{error:#}");
+                unavailable.insert("native_service".to_owned(), reason.clone());
+                (
+                    None,
+                    ObservedU64::unavailable(reason.clone()),
+                    ObservedU64::unavailable(reason.clone()),
+                    ObservedU64::unavailable(reason.clone()),
+                    ObservedU64::unavailable(reason.clone()),
+                    ObservedU64::unavailable(reason),
+                )
+            }
+        };
 
-    Ok(InstalledServiceSample {
-        sampled_at: Utc::now(),
-        elapsed_ms: millis(started.elapsed()),
-        pid: systemd.pid,
-        service_restart_count: systemd.restart_count,
-        rss_bytes: process.rss_bytes,
-        descriptor_count: process.descriptor_count,
-        thread_count: process.thread_count,
-        task_count: systemd.task_count,
-        healthy: status.daemon,
-        cache: InstalledServiceCacheCounts {
+    let healthy = match command_json::<UnifiedStatus>(binary_path, &["--json", "status"]) {
+        Ok(status) => Some(status.daemon),
+        Err(error) => {
+            unavailable.insert("status".to_owned(), format!("{error:#}"));
+            None
+        }
+    };
+
+    let cache = match command_json::<DnsStatus>(binary_path, &["--json", "dns", "status"]) {
+        Ok(dns) => Some(InstalledServiceCacheCounts {
             static_entries: dns.records.static_entries,
             certmesh_entries: dns.records.certmesh_entries,
             mdns_entries: dns.records.mdns_entries,
-            total_entries: cache_total,
-        },
-        provider_generation: mdns.control_plane.generation,
-        provider_routes,
-        publications: InstalledServicePublicationCounts {
-            desired: usize_to_u64(publications.desired),
-            established: usize_to_u64(publications.established),
-            pending: usize_to_u64(publications.pending),
-            failed: usize_to_u64(publications.failed),
-        },
-        traffic,
-    })
-}
+            total_entries: dns
+                .records
+                .static_entries
+                .saturating_add(dns.records.certmesh_entries)
+                .saturating_add(dns.records.mdns_entries),
+        }),
+        Err(error) => {
+            unavailable.insert("dns_status".to_owned(), format!("{error:#}"));
+            None
+        }
+    };
 
-fn systemd_snapshot(service_name: &str) -> Result<SystemdSnapshot> {
-    let output = checked_command(
-        "systemctl",
-        &[
-            "show",
-            service_name,
-            "--no-pager",
-            "--property=ActiveState,SubState,FragmentPath,ExecStart,MainPID,NRestarts,TasksCurrent",
-        ],
-    )?;
-    let properties = parse_properties(&output);
-    Ok(SystemdSnapshot {
-        active_state: required_property(&properties, "ActiveState")?.to_owned(),
-        sub_state: required_property(&properties, "SubState")?.to_owned(),
-        fragment_path: PathBuf::from(required_property(&properties, "FragmentPath")?),
-        exec_start: required_property(&properties, "ExecStart")?.to_owned(),
-        pid: parse_property(&properties, "MainPID")?,
-        restart_count: parse_property(&properties, "NRestarts")?,
-        task_count: parse_property(&properties, "TasksCurrent")?,
-    })
-}
-
-fn proc_snapshot(pid: u32) -> Result<ProcSnapshot> {
-    let status_path = PathBuf::from(format!("/proc/{pid}/status"));
-    let status = fs::read_to_string(&status_path)
-        .with_context(|| format!("could not read {}", status_path.display()))?;
-    let values = parse_proc_status(&status)?;
-    Ok(ProcSnapshot {
-        rss_bytes: values.0,
-        thread_count: values.1,
-        descriptor_count: descriptor_count(pid)?,
-    })
-}
-
-fn descriptor_count(pid: u32) -> Result<u64> {
-    let path = PathBuf::from(format!("/proc/{pid}/fd"));
-    match fs::read_dir(&path) {
-        Ok(entries) => {
-            let mut count = 0_u64;
-            for entry in entries {
-                entry.with_context(|| format!("could not enumerate {}", path.display()))?;
-                count = count.saturating_add(1);
+    let (provider_generation, provider_routes, publications) =
+        match command_json::<koi_mdns::protocol::DaemonStatus>(
+            binary_path,
+            &["--json", "mdns", "admin", "status"],
+        ) {
+            Ok(mdns) => {
+                let routes = mdns.control_plane.routes;
+                let provider_routes = [
+                    ("publish", routes.publish),
+                    ("explicit_publish", routes.explicit_publish),
+                    ("browse", routes.browse),
+                    ("resolve", routes.resolve),
+                ]
+                .into_iter()
+                .filter_map(|(name, provider)| provider.map(|p| (name.to_owned(), p)))
+                .collect();
+                let counts = mdns.control_plane.publications;
+                (
+                    Some(mdns.control_plane.generation),
+                    provider_routes,
+                    Some(InstalledServicePublicationCounts {
+                        desired: usize_to_u64(counts.desired),
+                        established: usize_to_u64(counts.established),
+                        pending: usize_to_u64(counts.pending),
+                        failed: usize_to_u64(counts.failed),
+                    }),
+                )
             }
-            Ok(count)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            let output = checked_command(
-                "sudo",
-                &[
-                    "-n",
-                    "find",
-                    path.to_str().context("proc fd path is not UTF-8")?,
-                    "-mindepth",
-                    "1",
-                    "-maxdepth",
-                    "1",
-                    "-printf",
-                    ".\\n",
-                ],
-            )?;
-            Ok(usize_to_u64(output.lines().count()))
-        }
-        Err(error) => Err(error).with_context(|| format!("could not enumerate {}", path.display())),
+            Err(error) => {
+                unavailable.insert("mdns_status".to_owned(), format!("{error:#}"));
+                (None, BTreeMap::new(), None)
+            }
+        };
+
+    InstalledServiceSample {
+        sampled_at: Utc::now(),
+        elapsed_ms: millis(started.elapsed()),
+        pid,
+        service_restart_count,
+        rss_bytes,
+        descriptor_count,
+        thread_count,
+        task_count,
+        healthy,
+        cache,
+        provider_generation,
+        provider_routes,
+        publications,
+        traffic: probe_peer_surface(peer_surface),
+        unavailable,
     }
 }
 
-fn parse_proc_status(status: &str) -> Result<(u64, u64)> {
-    let mut rss_kib = None;
-    let mut threads = None;
-    for line in status.lines() {
-        if let Some(value) = line.strip_prefix("VmRSS:") {
-            rss_kib = Some(parse_first_u64(value, "VmRSS")?);
-        } else if let Some(value) = line.strip_prefix("Threads:") {
-            threads = Some(parse_first_u64(value, "Threads")?);
-        }
-    }
-    Ok((
-        rss_kib
-            .context("process status omitted VmRSS")?
-            .saturating_mul(1024),
-        threads.context("process status omitted Threads")?,
-    ))
-}
-
-fn parse_first_u64(value: &str, label: &str) -> Result<u64> {
-    value
-        .split_whitespace()
-        .next()
-        .with_context(|| format!("{label} is empty"))?
-        .parse()
-        .with_context(|| format!("{label} is not an integer"))
-}
-
-fn parse_properties(output: &str) -> BTreeMap<String, String> {
-    output
-        .lines()
-        .filter_map(|line| line.split_once('='))
-        .map(|(name, value)| (name.to_owned(), value.to_owned()))
-        .collect()
-}
-
-fn required_property<'a>(properties: &'a BTreeMap<String, String>, name: &str) -> Result<&'a str> {
-    let value = properties
-        .get(name)
-        .with_context(|| format!("systemctl omitted {name}"))?;
-    if value.is_empty() {
-        bail!("systemctl reported an empty {name}");
-    }
-    Ok(value)
-}
-
-fn parse_property<T>(properties: &BTreeMap<String, String>, name: &str) -> Result<T>
-where
-    T: std::str::FromStr,
-    T::Err: std::fmt::Display,
-{
-    required_property(properties, name)?
-        .parse()
-        .map_err(|error| anyhow::anyhow!("systemctl {name} is invalid: {error}"))
-}
-
-fn probe_peer(peer_endpoint: SocketAddr) -> InstalledServiceTrafficSample {
+fn probe_peer_surface(peer_surface: &str) -> InstalledServiceTrafficSample {
     let started = Instant::now();
     for attempt in 1..=TRAFFIC_ATTEMPTS {
-        if TcpStream::connect_timeout(&peer_endpoint, TRAFFIC_CONNECT_TIMEOUT).is_ok() {
+        if koi_client::KoiClient::new(peer_surface).health().is_ok() {
             return InstalledServiceTrafficSample {
                 attempts: attempt,
                 retries: attempt - 1,
@@ -489,6 +382,79 @@ fn probe_peer(peer_endpoint: SocketAddr) -> InstalledServiceTrafficSample {
         succeeded: false,
         latency_ms: None,
     }
+}
+
+fn observation_available(sample: &InstalledServiceSample) -> bool {
+    sample.pid.is_some()
+        && sample.healthy == Some(true)
+        && sample.cache.is_some()
+        && sample.provider_generation.is_some()
+        && sample.publications.is_some()
+}
+
+fn transition_summary(samples: &[InstalledServiceSample]) -> InstalledServiceTransitions {
+    let mut prior_pid = None;
+    let mut prior_available = true;
+    let mut pid_changes = 0_u64;
+    let mut unavailable_samples = 0_u64;
+    let mut consecutive = 0_u64;
+    let mut max_consecutive = 0_u64;
+    let mut recovery_events = 0_u64;
+
+    for sample in samples {
+        if let Some(pid) = sample.pid {
+            if prior_pid.is_some_and(|prior| prior != pid) {
+                pid_changes = pid_changes.saturating_add(1);
+            }
+            prior_pid = Some(pid);
+        }
+        let available = observation_available(sample);
+        if available {
+            if !prior_available {
+                recovery_events = recovery_events.saturating_add(1);
+            }
+            consecutive = 0;
+        } else {
+            unavailable_samples = unavailable_samples.saturating_add(1);
+            consecutive = consecutive.saturating_add(1);
+            max_consecutive = max_consecutive.max(consecutive);
+        }
+        prior_available = available;
+    }
+
+    InstalledServiceTransitions {
+        pid_changes,
+        unavailable_samples,
+        max_consecutive_unavailable_samples: max_consecutive,
+        recovery_events,
+    }
+}
+
+fn resource_growth(samples: &[InstalledServiceSample]) -> InstalledServiceResourceGrowth {
+    InstalledServiceResourceGrowth {
+        rss_bytes: metric_growth(samples, |sample| sample.rss_bytes.value),
+        descriptor_count: metric_growth(samples, |sample| sample.descriptor_count.value),
+        thread_count: metric_growth(samples, |sample| sample.thread_count.value),
+        task_count: metric_growth(samples, |sample| sample.task_count.value),
+    }
+}
+
+fn metric_growth(
+    samples: &[InstalledServiceSample],
+    metric: impl Fn(&InstalledServiceSample) -> Option<u64>,
+) -> Option<i64> {
+    let first = samples.iter().find_map(&metric)?;
+    let last = samples.iter().rev().find_map(metric)?;
+    Some(signed_difference(last, first))
+}
+
+fn signed_difference(final_value: u64, initial_value: u64) -> i64 {
+    let difference = i128::from(final_value) - i128::from(initial_value);
+    difference.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+}
+
+fn observed_delta(initial: &ObservedU64, final_value: &ObservedU64) -> Option<u64> {
+    Some(final_value.value?.saturating_sub(initial.value?))
 }
 
 fn traffic_totals(samples: &[InstalledServiceSample]) -> InstalledServiceTrafficTotals {
@@ -510,37 +476,66 @@ fn traffic_totals(samples: &[InstalledServiceSample]) -> InstalledServiceTraffic
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn report_checks(
     initial: &InstalledServiceIdentity,
     final_identity: &InstalledServiceIdentity,
     samples: &[InstalledServiceSample],
     traffic: &InstalledServiceTrafficTotals,
-    restart_delta: u64,
-    max_service_restarts: u64,
+    restart_delta: Option<u64>,
+    transitions: &InstalledServiceTransitions,
+    growth: &InstalledServiceResourceGrowth,
+    options: &InstalledServiceOptions,
 ) -> Vec<CheckResult> {
     let artifact_stable = initial.binary.sha256 == final_identity.binary.sha256
         && initial.binary.path == final_identity.binary.path;
+    let observed_restarts = restart_delta
+        .unwrap_or(transitions.pid_changes)
+        .max(transitions.pid_changes);
     let service_live = final_identity.active_state == "active"
         && final_identity.sub_state == "running"
-        && restart_delta <= max_service_restarts;
-    let health_good = !samples.is_empty() && samples.iter().all(|sample| sample.healthy);
+        && observed_restarts <= options.max_service_restarts;
+    let health_good = !samples.is_empty()
+        && samples
+            .iter()
+            .filter_map(|sample| sample.healthy)
+            .all(|healthy| healthy)
+        && samples.iter().any(|sample| sample.healthy.is_some());
+    let resource_counters = samples.iter().flat_map(|sample| {
+        [
+            &sample.rss_bytes,
+            &sample.descriptor_count,
+            &sample.thread_count,
+            &sample.task_count,
+        ]
+    });
+    let resource_shapes_valid = resource_counters.clone().all(observation_shape_valid);
     let resources_observed = !samples.is_empty()
-        && samples.iter().all(|sample| {
-            sample.rss_bytes > 0
-                && sample.descriptor_count > 0
-                && sample.thread_count > 0
-                && sample.task_count > 0
-        });
+        && resource_shapes_valid
+        && resource_counters
+            .filter(|counter| counter.value.is_some())
+            .count()
+            > 0;
     let provider_observed = !samples.is_empty()
         && samples
             .iter()
-            .all(|sample| !sample.provider_routes.is_empty());
+            .filter(|sample| sample.provider_generation.is_some())
+            .all(|sample| !sample.provider_routes.is_empty())
+        && samples
+            .iter()
+            .any(|sample| sample.provider_generation.is_some());
     let publication_sync = !samples.is_empty()
-        && samples.iter().all(|sample| {
-            sample.publications.desired == sample.publications.established
-                && sample.publications.pending == 0
-                && sample.publications.failed == 0
-        });
+        && samples
+            .iter()
+            .filter_map(|sample| sample.publications.as_ref())
+            .all(|counts| {
+                counts.desired == counts.established && counts.pending == 0 && counts.failed == 0
+            })
+        && samples.iter().any(|sample| sample.publications.is_some());
+    let availability_bounded = transitions.unavailable_samples <= options.max_unavailable_samples
+        && transitions.max_consecutive_unavailable_samples
+            <= options.max_consecutive_unavailable_samples;
+    let recovered = samples.last().is_some_and(observation_available);
     let cross_host = traffic.successes == usize_to_u64(samples.len()) && traffic.successes > 0;
 
     vec![
@@ -558,46 +553,96 @@ fn report_checks(
             "service_identity",
             service_live,
             format!(
-                "service ended {}/{} at pid {} with {restart_delta} restart(s), allowed {max_service_restarts}",
-                final_identity.active_state, final_identity.sub_state, final_identity.pid
+                "service ended {}/{} at pid {} with {observed_restarts} observed restart/PID transition(s), allowed {}",
+                final_identity.active_state,
+                final_identity.sub_state,
+                final_identity.pid,
+                options.max_service_restarts
             ),
         ),
         check(
             "health",
             health_good,
-            "every local-control status sample reported a live daemon".to_owned(),
+            "every available local-control status sample reported a live daemon".to_owned(),
         ),
         check(
             "resource_samples",
             resources_observed,
-            "every sample recorded RSS, descriptors, threads, and service tasks".to_owned(),
+            "resource counters were observed; unsupported counters remain explicitly unavailable"
+                .to_owned(),
         ),
         check(
             "provider_routes",
             provider_observed,
-            "every sample recorded provider generation and concrete routes".to_owned(),
+            "every available provider sample recorded a generation and concrete routes".to_owned(),
         ),
         check(
             "publication_sync",
             publication_sync,
-            "every sample had desired publications established with no pending or failed work"
+            "every available publication sample was converged with no pending or failed work"
                 .to_owned(),
         ),
         check(
-            "cross_host_traffic",
+            "bounded_unavailability",
+            availability_bounded,
+            format!(
+                "{} unavailable sample(s), maximum consecutive {}; allowed {}/{}",
+                transitions.unavailable_samples,
+                transitions.max_consecutive_unavailable_samples,
+                options.max_unavailable_samples,
+                options.max_consecutive_unavailable_samples
+            ),
+        ),
+        check(
+            "transition_recovery",
+            recovered,
+            format!(
+                "final sample was available after {} PID change(s) and {} recovery event(s)",
+                transitions.pid_changes, transitions.recovery_events
+            ),
+        ),
+        growth_check("rss_growth", growth.rss_bytes, options.max_rss_growth_bytes),
+        growth_check(
+            "descriptor_growth",
+            growth.descriptor_count,
+            options.max_descriptor_growth,
+        ),
+        growth_check(
+            "thread_growth",
+            growth.thread_count,
+            options.max_thread_growth,
+        ),
+        growth_check("task_growth", growth.task_count, options.max_task_growth),
+        check(
+            "cross_host_koi_surface",
             cross_host,
             format!(
-                "{} successful bounded peer connections from {} attempts and {} retries",
+                "{} successful Koi /healthz reads from {} attempts and {} retries",
                 traffic.successes, traffic.attempts, traffic.retries
             ),
         ),
         check(
             "run_owned_traffic_restored",
             true,
-            "all run-owned sockets were scoped to one probe and closed; no peer state was created"
-                .to_owned(),
+            "semantic probes were read-only Koi health requests and left no peer state".to_owned(),
         ),
     ]
+}
+
+fn growth_check(name: &str, growth: Option<i64>, allowed: u64) -> CheckResult {
+    let passed = growth.is_none_or(|value| value <= allowed.min(i64::MAX as u64) as i64);
+    check(
+        name,
+        passed,
+        match growth {
+            Some(value) => format!("observed growth {value}, allowed {allowed}"),
+            None => "counter unavailable on this observer; no zero value was fabricated".to_owned(),
+        },
+    )
+}
+
+fn observation_shape_valid(counter: &ObservedU64) -> bool {
+    counter.value.is_some() != counter.unavailable.is_some()
 }
 
 fn check(name: &str, passed: bool, detail: String) -> CheckResult {
@@ -608,7 +653,10 @@ fn check(name: &str, passed: bool, detail: String) -> CheckResult {
     }
 }
 
-fn command_json<T: for<'de> Deserialize<'de>>(binary: &Path, args: &[&str]) -> Result<T> {
+fn command_json<T: for<'de> Deserialize<'de>>(
+    binary: &std::path::Path,
+    args: &[&str],
+) -> Result<T> {
     let output = checked_output(binary, args)?;
     serde_json::from_str(&output).with_context(|| {
         format!(
@@ -619,31 +667,15 @@ fn command_json<T: for<'de> Deserialize<'de>>(binary: &Path, args: &[&str]) -> R
     })
 }
 
-fn checked_output(binary: &Path, args: &[&str]) -> Result<String> {
+fn checked_output(binary: &std::path::Path, args: &[&str]) -> Result<String> {
     let output = Command::new(binary)
         .args(args)
         .output()
         .with_context(|| format!("failed to start {}", binary.display()))?;
-    checked_process_output(&binary.display().to_string(), args, output)
-}
-
-fn checked_command(program: &str, args: &[&str]) -> Result<String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to start {program}"))?;
-    checked_process_output(program, args, output)
-}
-
-fn checked_process_output(
-    program: &str,
-    args: &[&str],
-    output: std::process::Output,
-) -> Result<String> {
     if !output.status.success() {
         bail!(
             "{} {} failed (exit {}): {}",
-            program,
+            binary.display(),
             args.join(" "),
             output.status.code().unwrap_or(-1),
             String::from_utf8_lossy(&output.stderr).trim()
@@ -653,7 +685,13 @@ fn checked_process_output(
 }
 
 fn local_hostname() -> Result<String> {
-    checked_command("hostnamectl", &["--static"])
+    let output = Command::new("hostname")
+        .output()
+        .context("failed to start hostname")?;
+    if !output.status.success() {
+        bail!("hostname failed");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 fn usize_to_u64(value: usize) -> u64 {
@@ -669,16 +707,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn options_are_hard_bounded_and_paths_are_explicit() {
-        let options = InstalledServiceOptions {
-            service_name: "koi.service".to_owned(),
-            binary_path: std::env::temp_dir().join("koi-installed-service-test"),
-            duration_seconds: 10,
-            sample_interval_seconds: 2,
-            max_service_restarts: 0,
-            peer_node: "test01".to_owned(),
-            peer_port: 22,
-        };
+    fn options_are_hard_bounded_and_peer_surface_is_secret_free() {
+        let options = options();
         assert!(validate_options(&options).is_ok());
         let mut invalid = options.clone();
         invalid.duration_seconds = MAX_DURATION_SECONDS + 1;
@@ -689,71 +719,124 @@ mod tests {
         let mut invalid = options.clone();
         invalid.binary_path = PathBuf::from("koi");
         assert!(validate_options(&invalid).is_err());
-        let mut invalid = options;
+        let mut invalid = options.clone();
         invalid.service_name = "koi; reboot".to_owned();
+        assert!(validate_options(&invalid).is_err());
+        let mut invalid = options;
+        invalid.peer_surface = "http://user:secret@192.0.2.1:5644".to_owned();
         assert!(validate_options(&invalid).is_err());
     }
 
     #[test]
-    fn parses_systemd_and_proc_shapes_without_human_summary_text() {
-        let properties =
-            parse_properties("MainPID=24507\nNRestarts=2\nActiveState=active\nSubState=running\n");
-        assert_eq!(
-            parse_property::<u32>(&properties, "MainPID").unwrap(),
-            24507
-        );
-        assert_eq!(parse_property::<u64>(&properties, "NRestarts").unwrap(), 2);
-        assert_eq!(
-            required_property(&properties, "ActiveState").unwrap(),
-            "active"
-        );
-
-        let (rss, threads) =
-            parse_proc_status("Name:\tkoi\nVmRSS:\t  28916 kB\nThreads:\t8\n").unwrap();
-        assert_eq!(rss, 28_916 * 1024);
-        assert_eq!(threads, 8);
-        assert!(parse_proc_status("Threads:\t8\n").is_err());
-    }
-
-    #[test]
     fn traffic_totals_keep_retries_distinct_from_service_restarts() {
-        let samples = vec![sample(true, 1, 0), sample(true, 2, 1), sample(false, 3, 2)];
+        let samples = vec![sample(true, 1, 0, Some(1)), sample(true, 2, 1, Some(1))];
         let totals = traffic_totals(&samples);
-        assert_eq!(totals.attempts, 6);
-        assert_eq!(totals.retries, 3);
+        assert_eq!(totals.attempts, 3);
+        assert_eq!(totals.retries, 1);
         assert_eq!(totals.successes, 2);
     }
 
-    fn sample(succeeded: bool, attempts: u32, retries: u32) -> InstalledServiceSample {
+    #[test]
+    fn transition_and_growth_evidence_are_bounded_and_honest() {
+        let samples = vec![
+            sample(true, 1, 0, Some(10)),
+            sample(false, 3, 2, None),
+            sample(true, 1, 0, Some(11)),
+        ];
+        let transitions = transition_summary(&samples);
+        assert_eq!(transitions.pid_changes, 1);
+        assert_eq!(transitions.unavailable_samples, 1);
+        assert_eq!(transitions.max_consecutive_unavailable_samples, 1);
+        assert_eq!(transitions.recovery_events, 1);
+        let growth = resource_growth(&samples);
+        assert_eq!(growth.rss_bytes, Some(8));
+        assert_eq!(growth.descriptor_count, Some(1));
+    }
+
+    #[test]
+    fn observed_counter_round_trips_available_and_unavailable_shapes() {
+        for observed in [
+            ObservedU64::available(42),
+            ObservedU64::unavailable("SCM exposes no restart counter"),
+        ] {
+            let json = serde_json::to_string(&observed).unwrap();
+            assert_eq!(
+                serde_json::from_str::<ObservedU64>(&json).unwrap(),
+                observed
+            );
+        }
+    }
+
+    fn options() -> InstalledServiceOptions {
+        InstalledServiceOptions {
+            observer: ObserverKind::Systemd,
+            service_name: "koi.service".to_owned(),
+            binary_path: std::env::temp_dir().join("koi-installed-service-test"),
+            duration_seconds: 10,
+            sample_interval_seconds: 2,
+            max_service_restarts: 0,
+            max_unavailable_samples: 0,
+            max_consecutive_unavailable_samples: 0,
+            max_rss_growth_bytes: 64 * 1024 * 1024,
+            max_descriptor_growth: 16,
+            max_thread_growth: 8,
+            max_task_growth: 8,
+            peer_surface: "http://192.0.2.1:5644".to_owned(),
+        }
+    }
+
+    fn sample(
+        succeeded: bool,
+        attempts: u32,
+        retries: u32,
+        pid: Option<u32>,
+    ) -> InstalledServiceSample {
+        let available = pid.is_some();
+        let observed = |value| {
+            if available {
+                ObservedU64::available(value)
+            } else {
+                ObservedU64::unavailable("sample unavailable")
+            }
+        };
         InstalledServiceSample {
             sampled_at: Utc::now(),
             elapsed_ms: 0,
-            pid: 1,
-            service_restart_count: 0,
-            rss_bytes: 1,
-            descriptor_count: 1,
-            thread_count: 1,
-            task_count: 1,
-            healthy: true,
-            cache: InstalledServiceCacheCounts {
+            pid,
+            service_restart_count: observed(0),
+            rss_bytes: observed(if pid == Some(11) { 18 } else { 10 }),
+            descriptor_count: observed(if pid == Some(11) { 2 } else { 1 }),
+            thread_count: observed(1),
+            task_count: observed(1),
+            healthy: available.then_some(true),
+            cache: available.then_some(InstalledServiceCacheCounts {
                 static_entries: 0,
                 certmesh_entries: 0,
                 mdns_entries: 0,
                 total_entries: 0,
+            }),
+            provider_generation: available.then_some(1),
+            provider_routes: if available {
+                BTreeMap::from([("browse".to_owned(), "native".to_owned())])
+            } else {
+                BTreeMap::new()
             },
-            provider_generation: 1,
-            provider_routes: BTreeMap::from([("browse".to_owned(), "native".to_owned())]),
-            publications: InstalledServicePublicationCounts {
+            publications: available.then_some(InstalledServicePublicationCounts {
                 desired: 0,
                 established: 0,
                 pending: 0,
                 failed: 0,
-            },
+            }),
             traffic: InstalledServiceTrafficSample {
                 attempts,
                 retries,
                 succeeded,
                 latency_ms: None,
+            },
+            unavailable: if available {
+                BTreeMap::new()
+            } else {
+                BTreeMap::from([("native_service".to_owned(), "sample unavailable".to_owned())])
             },
         }
     }

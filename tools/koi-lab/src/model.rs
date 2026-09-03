@@ -884,15 +884,40 @@ pub struct BoundedSoakReport {
     pub secrets_redacted: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ObservedU64 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+}
+
+impl ObservedU64 {
+    pub fn available(value: u64) -> Self {
+        Self {
+            value: Some(value),
+            unavailable: None,
+        }
+    }
+
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            value: None,
+            unavailable: Some(reason.into()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct InstalledServiceIdentity {
+    pub observer: String,
     pub service_name: String,
     pub active_state: String,
     pub sub_state: String,
-    pub fragment_path: PathBuf,
+    pub service_definition: PathBuf,
     pub exec_start: String,
     pub pid: u32,
-    pub restart_count: u64,
+    pub restart_count: ObservedU64,
     pub binary: ArtifactIdentity,
     pub version: String,
 }
@@ -925,18 +950,25 @@ pub struct InstalledServiceTrafficSample {
 pub struct InstalledServiceSample {
     pub sampled_at: DateTime<Utc>,
     pub elapsed_ms: u64,
-    pub pid: u32,
-    pub service_restart_count: u64,
-    pub rss_bytes: u64,
-    pub descriptor_count: u64,
-    pub thread_count: u64,
-    pub task_count: u64,
-    pub healthy: bool,
-    pub cache: InstalledServiceCacheCounts,
-    pub provider_generation: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    pub service_restart_count: ObservedU64,
+    pub rss_bytes: ObservedU64,
+    pub descriptor_count: ObservedU64,
+    pub thread_count: ObservedU64,
+    pub task_count: ObservedU64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub healthy: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache: Option<InstalledServiceCacheCounts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_generation: Option<u64>,
     pub provider_routes: BTreeMap<String, String>,
-    pub publications: InstalledServicePublicationCounts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publications: Option<InstalledServicePublicationCounts>,
     pub traffic: InstalledServiceTrafficSample,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unavailable: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -947,23 +979,47 @@ pub struct InstalledServiceTrafficTotals {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct InstalledServiceTransitions {
+    pub pid_changes: u64,
+    pub unavailable_samples: u64,
+    pub max_consecutive_unavailable_samples: u64,
+    pub recovery_events: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InstalledServiceResourceGrowth {
+    pub rss_bytes: Option<i64>,
+    pub descriptor_count: Option<i64>,
+    pub thread_count: Option<i64>,
+    pub task_count: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct InstalledServiceReport {
     pub schema: u32,
     pub run_id: RunId,
     pub created_at: DateTime<Utc>,
     pub source_commit: String,
     pub service_node: String,
-    pub peer_node: String,
-    pub peer_endpoint: String,
+    pub observer: String,
+    pub peer_surface: String,
     pub target_duration_seconds: u64,
     pub sample_interval_seconds: u64,
     pub max_service_restarts: u64,
+    pub max_unavailable_samples: u64,
+    pub max_consecutive_unavailable_samples: u64,
+    pub max_rss_growth_bytes: u64,
+    pub max_descriptor_growth: u64,
+    pub max_thread_growth: u64,
+    pub max_task_growth: u64,
     pub termination: String,
     pub elapsed_ms: u64,
     pub initial_identity: InstalledServiceIdentity,
     pub final_identity: InstalledServiceIdentity,
-    pub service_restart_delta: u64,
-    pub service_restart_rate_per_hour: f64,
+    pub service_restart_delta: Option<u64>,
+    pub service_restart_rate_per_hour: Option<f64>,
+    pub transitions: InstalledServiceTransitions,
+    pub resource_growth: InstalledServiceResourceGrowth,
     pub traffic_totals: InstalledServiceTrafficTotals,
     pub samples: Vec<InstalledServiceSample>,
     pub checks: Vec<CheckResult>,

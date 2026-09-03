@@ -644,6 +644,74 @@ mode, it reads local state files directly.",
         confirmation: None,
     },
     CommandMeta {
+        name: "pond status",
+        summary: "Show Pond sharing state and its exact LAN URL",
+        long_description: "\
+Reads Pond's desired and observed state through authenticated local control.
+The result includes the actual listener URL selected by Koi, the firewall
+assessment, and an actionable reason when sharing is unavailable.",
+        category: KoiCategory::Core,
+        tags: &[KoiTag::ReadOnly],
+        scope: KoiScope::Admin,
+        examples: &[
+            Example {
+                command: "koi pond status",
+                description: "Show Pond state and firewall truth",
+            },
+            Example {
+                command: "koi pond status --json",
+                description: "Machine-readable Pond state",
+            },
+        ],
+        see_also: &["pond start", "pond stop", "status"],
+        api: &[ApiEndpoint {
+            method: "GET",
+            path: "/v1/pond",
+        }],
+        confirmation: None,
+    },
+    CommandMeta {
+        name: "pond start",
+        summary: "Start the read-only Pond LAN surface",
+        long_description: "\
+Persists Pond sharing desire, waits for Koi's listener reconciliation, and
+prints the exact socket-backed URL returned by the daemon. If Koi cannot
+share, the command exits non-zero with the daemon's recovery explanation.",
+        category: KoiCategory::Core,
+        tags: &[KoiTag::Mutating],
+        scope: KoiScope::Admin,
+        examples: &[Example {
+            command: "koi pond start",
+            description: "Start sharing and print the exact URL",
+        }],
+        see_also: &["pond status", "pond stop"],
+        api: &[ApiEndpoint {
+            method: "PUT",
+            path: "/v1/pond",
+        }],
+        confirmation: None,
+    },
+    CommandMeta {
+        name: "pond stop",
+        summary: "Stop Pond sharing and close its listener",
+        long_description: "\
+Clears Pond sharing desire and closes the read-only LAN listener. The local
+operator API remains loopback-only and unaffected.",
+        category: KoiCategory::Core,
+        tags: &[KoiTag::Mutating],
+        scope: KoiScope::Admin,
+        examples: &[Example {
+            command: "koi pond stop",
+            description: "Stop sharing Pond",
+        }],
+        see_also: &["pond status", "pond start"],
+        api: &[ApiEndpoint {
+            method: "DELETE",
+            path: "/v1/pond",
+        }],
+        confirmation: None,
+    },
+    CommandMeta {
         name: "token show",
         summary: "Print the daemon access token",
         long_description: "\

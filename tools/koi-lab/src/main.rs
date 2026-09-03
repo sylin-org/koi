@@ -4,6 +4,7 @@ mod certmesh_recovery_windows;
 mod derived;
 mod evidence;
 mod installed_service;
+mod installed_service_systemd;
 mod lab;
 mod mgmt_principal;
 mod model;
@@ -30,7 +31,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
-use crate::installed_service::InstalledServiceOptions;
+use crate::installed_service::{InstalledServiceOptions, ObserverKind};
 use crate::lab::Lab;
 use crate::model::{LabProfile, RunId, TrustRotation};
 use crate::profile::ProfileOptions;
@@ -245,10 +246,13 @@ enum LabCommand {
         #[arg(long, default_value_t = 5)]
         restart_every: u32,
     },
-    /// Sample one real installed service and bounded physical-peer traffic.
+    /// Sample one real installed service and a semantic physical-peer Koi surface.
     InstalledServiceCollect {
         #[arg(long)]
         run_id: String,
+        /// Native service observer. OpenRC and SCM are explicit adapter seams.
+        #[arg(long, value_enum, default_value = "systemd")]
+        observer: ObserverKind,
         #[arg(long, default_value = "koi.service")]
         service: String,
         #[arg(long, default_value = "/usr/local/bin/koi")]
@@ -260,12 +264,23 @@ enum LabCommand {
         /// Maximum expected system-service restart delta during this collection.
         #[arg(long, default_value_t = 0)]
         max_service_restarts: u64,
-        /// Catalog node receiving the run-owned cross-host traffic probe.
+        /// Maximum samples whose essential service/product observation may be unavailable.
+        #[arg(long, default_value_t = 0)]
+        max_unavailable_samples: u64,
+        /// Maximum consecutive unavailable essential observations.
+        #[arg(long, default_value_t = 0)]
+        max_consecutive_unavailable_samples: u64,
+        #[arg(long, default_value_t = 67_108_864)]
+        max_rss_growth_bytes: u64,
+        #[arg(long, default_value_t = 16)]
+        max_descriptor_growth: u64,
+        #[arg(long, default_value_t = 8)]
+        max_thread_growth: u64,
+        #[arg(long, default_value_t = 8)]
+        max_task_growth: u64,
+        /// Root URL returned by an independently installed peer's Koi Pond surface.
         #[arg(long)]
-        peer: String,
-        /// Peer TCP port used only for bounded liveness traffic.
-        #[arg(long, default_value_t = 22)]
-        peer_port: u16,
+        peer_surface: String,
     },
     /// Run an unattended deploy/scenario/cleanup policy with aggregate evidence.
     RunProfile {
@@ -491,24 +506,36 @@ fn main() -> Result<()> {
         }
         LabCommand::InstalledServiceCollect {
             run_id,
+            observer,
             service,
             binary,
             duration_seconds,
             sample_interval_seconds,
             max_service_restarts,
-            peer,
-            peer_port,
+            max_unavailable_samples,
+            max_consecutive_unavailable_samples,
+            max_rss_growth_bytes,
+            max_descriptor_growth,
+            max_thread_growth,
+            max_task_growth,
+            peer_surface,
         } => {
             let report = lab.installed_service_collect(
                 &RunId::parse(&run_id)?,
                 &InstalledServiceOptions {
+                    observer,
                     service_name: service,
                     binary_path: binary,
                     duration_seconds,
                     sample_interval_seconds,
                     max_service_restarts,
-                    peer_node: peer,
-                    peer_port,
+                    max_unavailable_samples,
+                    max_consecutive_unavailable_samples,
+                    max_rss_growth_bytes,
+                    max_descriptor_growth,
+                    max_thread_growth,
+                    max_task_growth,
+                    peer_surface,
                 },
             )?;
             let passed = report.checks.iter().all(|check| check.passed);

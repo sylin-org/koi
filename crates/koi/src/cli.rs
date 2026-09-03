@@ -250,6 +250,8 @@ pub enum Command {
     Launch,
     /// Show status of all capabilities
     Status,
+    /// Share the read-only Pond surface on the LAN
+    Pond(PondCommand),
     /// mDNS service discovery
     Mdns(MdnsCommand),
     /// Certificate mesh (private CA, enrollment, trust)
@@ -277,6 +279,22 @@ pub enum Command {
 pub struct TokenCommand {
     #[command(subcommand)]
     pub command: Option<TokenSubcommand>,
+}
+
+#[derive(Args, Debug)]
+pub struct PondCommand {
+    #[command(subcommand)]
+    pub command: PondSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PondSubcommand {
+    /// Show Pond's desired state, listener, URL, and firewall assessment
+    Status,
+    /// Start sharing and print the exact URL selected by Koi
+    Start,
+    /// Stop sharing and close the Pond listener
+    Stop,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1211,6 +1229,22 @@ mod tests {
     }
 
     // ── CLI parsing tests ───────────────────────────────────────────
+
+    #[test]
+    fn parse_pond_commands() {
+        for (name, expected) in [("status", "status"), ("start", "start"), ("stop", "stop")] {
+            let cli = Cli::try_parse_from(["koi", "pond", name]).unwrap();
+            let Some(Command::Pond(PondCommand { command })) = cli.command else {
+                panic!("expected Pond command for {name}");
+            };
+            let actual = match command {
+                PondSubcommand::Status => "status",
+                PondSubcommand::Start => "start",
+                PondSubcommand::Stop => "stop",
+            };
+            assert_eq!(actual, expected);
+        }
+    }
 
     #[test]
     fn parse_certmesh_promote_no_endpoint() {

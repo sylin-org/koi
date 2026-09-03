@@ -15,6 +15,7 @@ pub mod factory_reset;
 pub mod health;
 pub mod mcp;
 pub mod mdns;
+pub mod pond;
 pub mod proxy;
 pub mod status;
 pub mod token;

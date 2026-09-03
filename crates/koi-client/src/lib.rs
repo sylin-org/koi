@@ -236,6 +236,23 @@ impl KoiClient {
             .map_err(|e| ClientError::Decode(e.to_string()))
     }
 
+    // ── Pond operations ────────────────────────────────────────────
+
+    /// Read the authenticated desired and observed Pond state.
+    pub fn pond_status(&self) -> Result<serde_json::Value> {
+        self.get_json("/v1/pond")
+    }
+
+    /// Persistently enable Pond and return the socket-backed URL selected by Koi.
+    pub fn pond_enable(&self) -> Result<serde_json::Value> {
+        self.put_json("/v1/pond", &serde_json::json!({}))
+    }
+
+    /// Persistently disable Pond and close its LAN listener.
+    pub fn pond_disable(&self) -> Result<serde_json::Value> {
+        self.delete_json("/v1/pond", &serde_json::json!({}))
+    }
+
     // ── DNS operations (Phase 6) ───────────────────────────────────
 
     pub fn dns_status(&self) -> Result<serde_json::Value> {
