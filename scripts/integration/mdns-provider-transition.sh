@@ -2,11 +2,11 @@
 # ADR-039 installed-service, two-host provider transition gate.
 #
 # The subject is the machine running this script. It keeps the one installed Koi
-# service alive while Avahi and systemd-resolved are removed/restored underneath
+# service alive while the host's real provider facilities are changed underneath
 # it. The peer contributes its one installed Koi service, so every publication,
 # browse, resolve, and withdrawal crosses both the LAN and a real Koi boundary.
-# The resolve1 phase also injects a real late SRV conflict from that peer and
-# proves truthful pending state plus automatic publication recovery.
+# The systemd-resolved profile also injects a real late SRV conflict from that
+# peer and proves truthful pending state plus automatic publication recovery.
 # This script never starts a Koi process and never mutates the peer's providers.
 set -Eeuo pipefail
 
@@ -22,6 +22,9 @@ Required:
 Optional environment:
   KOI_API                  Installed Koi API (default http://127.0.0.1:5641)
   KOI_SERVICE_SCOPE        Installed unit scope: system or user (default system)
+  KOI_SERVICE_MANAGER      auto, systemd, or openrc (default auto)
+  MDNS_PROVIDER_PROFILE    auto, systemd-resolved, or openrc-avahi-native
+                           (default follows KOI_SERVICE_MANAGER)
   KOI_BREADCRUMB           Endpoint breadcrumb (default follows service scope)
   PEER_KOI_API             Peer-local Koi API (default http://127.0.0.1:5641)
   PEER_KOI_SERVICE_SCOPE   Peer unit scope: system or user (default system)
@@ -69,7 +72,7 @@ if [[ "$ALLOW_MUTATION" != 1 || -z "$PEER" ]]; then
   exit 2
 fi
 
-for command in curl jq ssh sha256sum systemctl pgrep flock ss ip readlink resolvectl; do
+for command in curl jq ssh sha256sum pgrep flock ss ip readlink; do
   command -v "$command" >/dev/null || {
     echo "missing required command: $command" >&2
     exit 2
@@ -78,12 +81,84 @@ done
 
 KOI_API="${KOI_API:-http://127.0.0.1:5641}"
 KOI_SERVICE_SCOPE="${KOI_SERVICE_SCOPE:-system}"
+KOI_SERVICE_MANAGER="${KOI_SERVICE_MANAGER:-auto}"
+if [[ "$KOI_SERVICE_MANAGER" == auto ]]; then
+  if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null; then
+    KOI_SERVICE_MANAGER=systemd
+  elif command -v rc-service >/dev/null && command -v rc-update >/dev/null; then
+    KOI_SERVICE_MANAGER=openrc
+  else
+    echo "could not detect systemd or OpenRC; set KOI_SERVICE_MANAGER" >&2
+    exit 2
+  fi
+fi
+case "$KOI_SERVICE_MANAGER" in
+  systemd)
+    for command in systemctl resolvectl; do
+      command -v "$command" >/dev/null || {
+        echo "systemd provider profile requires $command" >&2
+        exit 2
+      }
+    done
+    ;;
+  openrc)
+    [[ "$KOI_SERVICE_SCOPE" == system ]] || {
+      echo "OpenRC supports only KOI_SERVICE_SCOPE=system" >&2
+      exit 2
+    }
+    [[ -x /etc/init.d/koi ]] || {
+      echo "OpenRC gate requires an installed /etc/init.d/koi" >&2
+      exit 2
+    }
+    [[ -x /etc/init.d/avahi-daemon ]] || {
+      echo "OpenRC gate requires installed avahi-daemon" >&2
+      exit 2
+    }
+    ;;
+  *)
+    echo "KOI_SERVICE_MANAGER must be auto, systemd, or openrc" >&2
+    exit 2
+    ;;
+esac
+MDNS_PROVIDER_PROFILE="${MDNS_PROVIDER_PROFILE:-auto}"
+if [[ "$MDNS_PROVIDER_PROFILE" == auto ]]; then
+  case "$KOI_SERVICE_MANAGER" in
+    systemd) MDNS_PROVIDER_PROFILE=systemd-resolved ;;
+    openrc) MDNS_PROVIDER_PROFILE=openrc-avahi-native ;;
+  esac
+fi
+case "$MDNS_PROVIDER_PROFILE" in
+  systemd-resolved)
+    [[ "$KOI_SERVICE_MANAGER" == systemd ]] || {
+      echo "systemd-resolved profile requires KOI_SERVICE_MANAGER=systemd" >&2
+      exit 2
+    }
+    ;;
+  openrc-avahi-native)
+    [[ "$KOI_SERVICE_MANAGER" == openrc ]] || {
+      echo "openrc-avahi-native profile requires KOI_SERVICE_MANAGER=openrc" >&2
+      exit 2
+    }
+    ;;
+  *)
+    echo "MDNS_PROVIDER_PROFILE must be auto, systemd-resolved, or openrc-avahi-native" >&2
+    exit 2
+    ;;
+esac
 case "$KOI_SERVICE_SCOPE" in
   system)
-    KOI_SYSTEMCTL=(systemctl)
+    if [[ "$KOI_SERVICE_MANAGER" == systemd ]]; then
+      KOI_SYSTEMCTL=(systemctl)
+    else
+      KOI_SYSTEMCTL=()
+    fi
     DEFAULT_KOI_BREADCRUMB=/run/koi.endpoint
     ;;
   user)
+    [[ "$KOI_SERVICE_MANAGER" == systemd ]] || {
+      echo "KOI_SERVICE_SCOPE=user requires KOI_SERVICE_MANAGER=systemd" >&2
+      exit 2
+    }
     if ((EUID == 0)); then
       echo "KOI_SERVICE_SCOPE=user must run as the user who owns koi.service" >&2
       exit 2
@@ -176,8 +251,15 @@ if [[ -n "${PEER_SSH_ASKPASS:-}" ]]; then
     echo "PEER_SSH_ASKPASS is not executable: $PEER_SSH_ASKPASS" >&2
     exit 2
   }
-  SSH=(env SSH_ASKPASS_REQUIRE=force SSH_ASKPASS="$PEER_SSH_ASKPASS" DISPLAY=koi-lab \
-    setsid -w "${SSH[@]}" -o BatchMode=no -o NumberOfPasswordPrompts=1)
+  if setsid --help 2>&1 | grep -q -- '-w'; then
+    SSH=(env SSH_ASKPASS_REQUIRE=force SSH_ASKPASS="$PEER_SSH_ASKPASS" DISPLAY=koi-lab \
+      setsid -w "${SSH[@]}" -o BatchMode=no -o NumberOfPasswordPrompts=1)
+  else
+    # BusyBox setsid has no wait mode and may return before its child. Forced
+    # askpass does not need a detached session when this gate has no tty.
+    SSH=(env SSH_ASKPASS_REQUIRE=force SSH_ASKPASS="$PEER_SSH_ASKPASS" DISPLAY=koi-lab \
+      "${SSH[@]}" -o BatchMode=no -o NumberOfPasswordPrompts=1)
+  fi
 else
   SSH+=(-o BatchMode=yes)
 fi
@@ -225,9 +307,19 @@ read_token() {
   fi
 }
 
+http_get() {
+  python3 - "$1" <<'PY'
+import sys
+import urllib.request
+
+with urllib.request.urlopen(sys.argv[1], timeout=8) as response:
+    sys.stdout.write(response.read().decode())
+PY
+}
+
 case "$operation" in
   probe)
-    for command in curl jq sha256sum systemctl pgrep awk python3; do
+    for command in sha256sum systemctl pgrep awk python3; do
       command -v "$command" >/dev/null || {
         echo "peer is missing required command: $command" >&2
         exit 2
@@ -235,27 +327,71 @@ case "$operation" in
     done
     token="$(read_token)"
     [ -n "$token" ]
-    curl -fsS --max-time 5 "$api/healthz" >/dev/null
-    curl -fsS --max-time 5 "$api/v1/mdns/admin/status" >/dev/null
+    http_get "$api/healthz" >/dev/null
+    http_get "$api/v1/mdns/admin/status" >/dev/null
+    ;;
+  status)
+    http_get "$api/v1/mdns/admin/status"
+    ;;
+  resolve)
+    instance="$1"
+    python3 - "$api" "$instance" <<'PY'
+import sys
+import urllib.parse
+import urllib.request
+
+query = urllib.parse.urlencode({"name": sys.argv[2]})
+with urllib.request.urlopen(f"{sys.argv[1]}/v1/mdns/resolve?{query}", timeout=8) as response:
+    sys.stdout.write(response.read().decode())
+PY
     ;;
   register)
     name="$1"
     service_type="$2"
     run_id="$3"
     token="$(read_token)"
-    payload="$(jq -n \
-      --arg name "$name" --arg type "$service_type" --arg run "$run_id" \
-      '{name:$name, type:$type, port:43192, lease_secs:600,
-        txt:{run:$run, side:"peer-koi"}}')"
-    curl -fsS --max-time 8 -X POST \
-      -H "x-koi-token: $token" -H 'content-type: application/json' \
-      --data "$payload" "$api/v1/mdns/announce"
+    KOI_GATE_TOKEN="$token" python3 - "$api" "$name" "$service_type" "$run_id" <<'PY'
+import json
+import os
+import sys
+import urllib.request
+
+payload = json.dumps({
+    "name": sys.argv[2],
+    "type": sys.argv[3],
+    "port": 43192,
+    "lease_secs": 600,
+    "txt": {"run": sys.argv[4], "side": "peer-koi"},
+}).encode()
+request = urllib.request.Request(
+    f"{sys.argv[1]}/v1/mdns/announce",
+    data=payload,
+    method="POST",
+    headers={
+        "content-type": "application/json",
+        "x-koi-token": os.environ["KOI_GATE_TOKEN"],
+    },
+)
+with urllib.request.urlopen(request, timeout=8) as response:
+    sys.stdout.write(response.read().decode())
+PY
     ;;
   unregister)
     id="$1"
     token="$(read_token)"
-    curl -fsS --max-time 8 -X DELETE \
-      -H "x-koi-token: $token" "$api/v1/mdns/unregister/$id" >/dev/null
+    KOI_GATE_TOKEN="$token" python3 - "$api" "$id" <<'PY'
+import os
+import sys
+import urllib.request
+
+request = urllib.request.Request(
+    f"{sys.argv[1]}/v1/mdns/unregister/{sys.argv[2]}",
+    method="DELETE",
+    headers={"x-koi-token": os.environ["KOI_GATE_TOKEN"]},
+)
+with urllib.request.urlopen(request, timeout=8) as response:
+    response.read()
+PY
     ;;
   conflict)
     name="$1"
@@ -316,14 +452,12 @@ REMOTE
 }
 
 peer_status() {
-  "${SSH[@]}" curl -fsS --max-time 5 \
-    "$PEER_KOI_API/v1/mdns/admin/status"
+  peer_mutation status
 }
 
 peer_resolve() {
   local instance="$1"
-  "${SSH[@]}" curl -GsS --max-time 8 \
-    "$PEER_KOI_API/v1/mdns/resolve" --data-urlencode "name=$instance"
+  peer_mutation resolve "$instance"
 }
 
 peer_control_facts() {
@@ -393,31 +527,86 @@ if [[ -z "$LAN_LINK" ]]; then
   echo "cannot determine the LAN interface used to reach $PEER_HOST" >&2
   exit 2
 fi
-for unit in systemd-resolved-varlink.socket systemd-resolved-monitor.socket; do
-  if [[ "$(systemctl show "$unit" -p LoadState --value 2>/dev/null || true)" == loaded ]]; then
-    RESOLVED_TRIGGER_UNITS+=("$unit")
-  fi
-done
+if [[ "$MDNS_PROVIDER_PROFILE" == systemd-resolved ]]; then
+  for unit in systemd-resolved-varlink.socket systemd-resolved-monitor.socket; do
+    if [[ "$(systemctl show "$unit" -p LoadState --value 2>/dev/null || true)" == loaded ]]; then
+      RESOLVED_TRIGGER_UNITS+=("$unit")
+    fi
+  done
+fi
 
 unit_active() {
-  systemctl is-active "$1" 2>/dev/null || true
+  local unit="$1"
+  if [[ "$KOI_SERVICE_MANAGER" == openrc ]]; then
+    case "$unit" in
+      avahi-daemon.service)
+        if rc-service avahi-daemon status >/dev/null 2>&1; then
+          echo active
+        else
+          echo inactive
+        fi
+        ;;
+      *) echo absent ;;
+    esac
+  else
+    systemctl is-active "$unit" 2>/dev/null || true
+  fi
 }
 
 unit_enabled() {
-  systemctl is-enabled "$1" 2>/dev/null || true
+  local unit="$1"
+  if [[ "$KOI_SERVICE_MANAGER" == openrc ]]; then
+    case "$unit" in
+      avahi-daemon.service)
+        if rc-update show default 2>/dev/null \
+            | grep -Eq '^[[:space:]]*avahi-daemon[[:space:]]*\|.*default'; then
+          echo enabled
+        else
+          echo disabled
+        fi
+        ;;
+      *) echo absent ;;
+    esac
+  else
+    systemctl is-enabled "$unit" 2>/dev/null || true
+  fi
 }
 
 koi_unit_active() {
-  "${KOI_SYSTEMCTL[@]}" is-active koi.service 2>/dev/null || true
+  if [[ "$KOI_SERVICE_MANAGER" == openrc ]]; then
+    if rc-service koi status >/dev/null 2>&1; then
+      echo active
+    else
+      echo inactive
+    fi
+  else
+    "${KOI_SYSTEMCTL[@]}" is-active koi.service 2>/dev/null || true
+  fi
 }
 
 koi_unit_enabled() {
-  "${KOI_SYSTEMCTL[@]}" is-enabled koi.service 2>/dev/null || true
+  if [[ "$KOI_SERVICE_MANAGER" == openrc ]]; then
+    if rc-update show default 2>/dev/null \
+        | grep -Eq '^[[:space:]]*koi[[:space:]]*\|.*default'; then
+      echo enabled
+    else
+      echo disabled
+    fi
+  else
+    "${KOI_SYSTEMCTL[@]}" is-enabled koi.service 2>/dev/null || true
+  fi
 }
 
 restore_active() {
   local unit="$1" baseline="$2"
-  if [[ "$baseline" == active || "$baseline" == activating ]]; then
+  if [[ "$KOI_SERVICE_MANAGER" == openrc ]]; then
+    [[ "$unit" == avahi-daemon.service ]] || return 0
+    if [[ "$baseline" == active || "$baseline" == activating ]]; then
+      "${PRIV[@]}" rc-service avahi-daemon start
+    else
+      "${PRIV[@]}" rc-service avahi-daemon stop
+    fi
+  elif [[ "$baseline" == active || "$baseline" == activating ]]; then
     "${PRIV[@]}" systemctl start "$unit"
   else
     "${PRIV[@]}" systemctl stop "$unit"
@@ -425,6 +614,10 @@ restore_active() {
 }
 
 stop_avahi_for_gate() {
+  if [[ "$KOI_SERVICE_MANAGER" == openrc ]]; then
+    "${PRIV[@]}" rc-service avahi-daemon stop
+    return
+  fi
   # The service requires the socket, and the socket can activate the service.
   # Mask both activation paths first, then stop them in dependency order.
   AVAHI_RUNTIME_MASKED=1
@@ -435,6 +628,10 @@ stop_avahi_for_gate() {
 }
 
 restore_avahi_baseline() {
+  if [[ "$KOI_SERVICE_MANAGER" == openrc ]]; then
+    restore_active avahi-daemon.service "$BASE_AVAHI_SERVICE_ACTIVE"
+    return
+  fi
   if [[ "$AVAHI_RUNTIME_MASKED" == 1 ]]; then
     "${PRIV[@]}" systemctl --runtime unmask \
       avahi-daemon.service avahi-daemon.socket
@@ -445,11 +642,19 @@ restore_avahi_baseline() {
 }
 
 resolved_global_mdns() {
+  if [[ "$MDNS_PROVIDER_PROFILE" != systemd-resolved ]]; then
+    echo absent
+    return
+  fi
   resolvectl mdns 2>/dev/null | awk '$1 == "Global:" {print $2; exit}' || true
 }
 
 resolved_link_mdns() {
   local link="$1"
+  if [[ "$MDNS_PROVIDER_PROFILE" != systemd-resolved ]]; then
+    echo absent
+    return
+  fi
   resolvectl mdns 2>/dev/null \
     | awk -v target="($link):" '$3 == target {print $4; exit}' || true
 }
@@ -522,6 +727,10 @@ unmask_resolved_for_gate() {
 }
 
 restore_resolved_baseline() {
+  if [[ "$MDNS_PROVIDER_PROFILE" != systemd-resolved ]]; then
+    RESOLVED_BASELINE_RESTORED=1
+    return
+  fi
   if [[ "$RESOLVED_BASELINE_RESTORED" == 1 ]]; then
     return 0
   fi
@@ -577,8 +786,13 @@ enter_provider_phase() {
   local phase="$1"
   case "$phase" in
     avahi)
+      if [[ "$MDNS_PROVIDER_PROFILE" == openrc-avahi-native ]]; then
+        "${PRIV[@]}" rc-service avahi-daemon start
+      fi
       require_unit_activity avahi-daemon.service active
-      require_unit_activity avahi-daemon.socket active
+      if [[ "$MDNS_PROVIDER_PROFILE" == systemd-resolved ]]; then
+        require_unit_activity avahi-daemon.socket active
+      fi
       ;;
     resolved)
       stop_avahi_for_gate
@@ -588,10 +802,15 @@ enter_provider_phase() {
       require_unit_activity systemd-resolved.service active
       ;;
     native)
-      require_unit_activity avahi-daemon.service inactive
-      require_unit_activity avahi-daemon.socket inactive
-      stop_resolved_for_gate
-      require_unit_activity systemd-resolved.service inactive
+      if [[ "$MDNS_PROVIDER_PROFILE" == openrc-avahi-native ]]; then
+        stop_avahi_for_gate
+        require_unit_activity avahi-daemon.service inactive
+      else
+        require_unit_activity avahi-daemon.service inactive
+        require_unit_activity avahi-daemon.socket inactive
+        stop_resolved_for_gate
+        require_unit_activity systemd-resolved.service inactive
+      fi
       ;;
     resolved-restored)
       require_unit_activity avahi-daemon.service inactive
@@ -600,13 +819,18 @@ enter_provider_phase() {
       require_unit_activity systemd-resolved.service active
       ;;
     avahi-restored)
-      # Remove every gate-owned resolved announcement before Avahi rejoins the
-      # network. A baseline that already enabled both is preserved verbatim.
-      restore_resolved_baseline
-      require_resolved_baseline
-      restore_avahi_baseline
-      require_unit_activity avahi-daemon.socket "$BASE_AVAHI_SOCKET_ACTIVE"
-      require_unit_activity avahi-daemon.service "$BASE_AVAHI_SERVICE_ACTIVE"
+      if [[ "$MDNS_PROVIDER_PROFILE" == openrc-avahi-native ]]; then
+        "${PRIV[@]}" rc-service avahi-daemon start
+        require_unit_activity avahi-daemon.service active
+      else
+        # Remove every gate-owned resolved announcement before Avahi rejoins
+        # the network. A baseline that enabled both is preserved verbatim.
+        restore_resolved_baseline
+        require_resolved_baseline
+        restore_avahi_baseline
+        require_unit_activity avahi-daemon.socket "$BASE_AVAHI_SOCKET_ACTIVE"
+        require_unit_activity avahi-daemon.service "$BASE_AVAHI_SERVICE_ACTIVE"
+      fi
       ;;
     *)
       echo "unknown provider lifecycle phase: $phase" >&2
@@ -625,7 +849,15 @@ token() {
 }
 
 koi_pid() {
-  "${KOI_SYSTEMCTL[@]}" show koi.service --property MainPID --value
+  if [[ "$KOI_SERVICE_MANAGER" == openrc ]]; then
+    local -a pids=()
+    mapfile -t pids < <(pgrep -f '^[^ ]*/koi --daemon$' || true)
+    if ((${#pids[@]} == 1)); then
+      echo "${pids[0]}"
+    fi
+  else
+    "${KOI_SYSTEMCTL[@]}" show koi.service --property MainPID --value
+  fi
 }
 
 assert_single_koi() {
@@ -635,7 +867,11 @@ assert_single_koi() {
     echo "installed $KOI_SERVICE_SCOPE koi.service has no live MainPID" >&2
     return 1
   }
-  mapfile -t koi_pids < <(pgrep -x koi || true)
+  if [[ "$KOI_SERVICE_MANAGER" == openrc ]]; then
+    mapfile -t koi_pids < <(pgrep -f '^[^ ]*/koi --daemon$' || true)
+  else
+    mapfile -t koi_pids < <(pgrep -x koi || true)
+  fi
   if ((${#koi_pids[@]} != 1)) || [[ "${koi_pids[0]:-}" != "$pid" ]]; then
     echo "expected exactly one koi process (service PID $pid), saw: ${koi_pids[*]:-none}" >&2
     return 1
@@ -661,6 +897,8 @@ snapshot() {
     echo "koi_pid=$(koi_pid)"
     echo "koi_hash=$INITIAL_HASH"
     echo "koi_scope=$KOI_SERVICE_SCOPE"
+    echo "koi_service_manager=$KOI_SERVICE_MANAGER"
+    echo "mdns_provider_profile=$MDNS_PROVIDER_PROFILE"
     echo "koi_active=$(koi_unit_active)"
     echo "avahi_service_active=$(unit_active avahi-daemon.service)"
     echo "avahi_socket_active=$(unit_active avahi-daemon.socket)"
@@ -1049,12 +1287,22 @@ if [[ "$BASE_KOI_ACTIVE" != active ]]; then
   exit 2
 fi
 
-if [[ "$BASE_AVAHI_SERVICE_ACTIVE" != active \
-   || "$BASE_AVAHI_SOCKET_ACTIVE" != active \
-   || "$BASE_RESOLVED_ACTIVE" != active ]]; then
-  echo "this Linux transition profile requires active Avahi service/socket and systemd-resolved at baseline" >&2
-  exit 2
-fi
+case "$MDNS_PROVIDER_PROFILE" in
+  systemd-resolved)
+    if [[ "$BASE_AVAHI_SERVICE_ACTIVE" != active \
+       || "$BASE_AVAHI_SOCKET_ACTIVE" != active \
+       || "$BASE_RESOLVED_ACTIVE" != active ]]; then
+      echo "systemd-resolved profile requires active Avahi service/socket and systemd-resolved at baseline" >&2
+      exit 2
+    fi
+    ;;
+  openrc-avahi-native)
+    if [[ "$BASE_AVAHI_SERVICE_ACTIVE" != inactive ]]; then
+      echo "openrc-avahi-native profile requires Avahi installed and stopped at baseline" >&2
+      exit 2
+    fi
+    ;;
+esac
 
 curl -fsS --max-time 5 "$KOI_API/healthz" >/dev/null
 peer_mutation probe
@@ -1070,6 +1318,8 @@ assert_peer_koi_unchanged
   echo "subject=$(hostname)"
   echo "peer=$PEER"
   echo "koi_scope=$KOI_SERVICE_SCOPE"
+  echo "koi_service_manager=$KOI_SERVICE_MANAGER"
+  echo "mdns_provider_profile=$MDNS_PROVIDER_PROFILE"
   echo "koi_pid=$INITIAL_PID"
   echo "koi_hash=$INITIAL_HASH"
   echo "koi_executable=$("${PRIV[@]}" readlink -f "/proc/$INITIAL_PID/exe")"
@@ -1128,21 +1378,35 @@ curl -GsSN "$KOI_API/v1/mdns/subscribe" \
   >"$EVIDENCE_DIR/subject-subscription.sse" 2>"$EVIDENCE_DIR/subject-subscription.err" &
 SUBSCRIBE_PID=$!
 
-enter_provider_phase avahi
-assert_phase avahi avahi avahi avahi avahi
+case "$MDNS_PROVIDER_PROFILE" in
+  systemd-resolved)
+    enter_provider_phase avahi
+    assert_phase avahi avahi avahi avahi avahi
 
-enter_provider_phase resolved
-assert_phase resolved-native systemd-resolved native native systemd-resolved
-assert_resolved_late_conflict
+    enter_provider_phase resolved
+    assert_phase resolved-native systemd-resolved native native systemd-resolved
+    assert_resolved_late_conflict
 
-enter_provider_phase native
-assert_phase native-only native native native none
+    enter_provider_phase native
+    assert_phase native-only native native native none
 
-enter_provider_phase resolved-restored
-assert_phase resolved-restored systemd-resolved native native systemd-resolved
+    enter_provider_phase resolved-restored
+    assert_phase resolved-restored systemd-resolved native native systemd-resolved
 
-enter_provider_phase avahi-restored
-assert_phase avahi-restored avahi avahi avahi avahi
+    enter_provider_phase avahi-restored
+    assert_phase avahi-restored avahi avahi avahi avahi
+    ;;
+  openrc-avahi-native)
+    enter_provider_phase avahi
+    assert_phase openrc-avahi avahi avahi avahi avahi
+
+    enter_provider_phase native
+    assert_phase openrc-native native native native none
+
+    enter_provider_phase avahi-restored
+    assert_phase openrc-avahi-restored avahi avahi avahi avahi
+    ;;
+esac
 
 unregister_subject
 remote_stop_publisher

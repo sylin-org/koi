@@ -13,9 +13,10 @@ scripts/integration/mdns-provider-transition.sh \
   --peer user@independent-lan-host
 ```
 
-Both hosts need exactly one installed `koi.service`, its normal loopback API and
+Both hosts need exactly one installed Koi service, its normal loopback API and
 breadcrumb, plus preconfigured SSH authentication. The subject also needs Avahi,
-systemd-resolved, `curl`, `jq`, `ss`, and service-control privilege. The peer login
+`curl`, `jq`, `ss`, and service-control privilege. The default systemd profile
+additionally requires systemd-resolved. The peer login
 must read its breadcrumb and hash its running service executable directly, through
 passwordless sudo, or through a peer-local `PEER_SUDO_ASKPASS` helper. The DAT and
 sudo credential are consumed on the peer and never cross SSH. Optional environment
@@ -41,6 +42,26 @@ The system scope uses `/run/koi.endpoint`; the user scope uses
 `$XDG_RUNTIME_DIR/koi.endpoint` by default. Provider mutations remain system-level
 in both modes and therefore still require local service-control privilege.
 
+On an OpenRC host with Avahi installed but stopped as its normal baseline, select
+the capability-appropriate profile (the manager is auto-detected, but spelling it
+out makes retained evidence self-describing):
+
+```bash
+KOI_SERVICE_MANAGER=openrc \
+MDNS_PROVIDER_PROFILE=openrc-avahi-native \
+scripts/integration/mdns-provider-transition.sh \
+  --allow-system-mutation \
+  --peer user@independent-lan-host
+```
+
+That profile starts Avahi and proves all routes select it, stops Avahi and proves
+native publish/browse continuity, then starts Avahi again and proves promotion.
+Cleanup returns Avahi to the captured stopped/enablement state. It reports the absent
+activation socket and resolved provider as absent instead of manufacturing either
+facility. The cross-host publication, explicit-address publication, long-lived
+subscription, removal, synchronization, process-identity, and peer-restoration
+assertions are identical to the systemd profile.
+
 The gate captures the service/socket enablement, activity, and resolved mDNS
 configuration baseline before any mutation and installs cleanup before it starts.
 If resolved is running with mDNS disabled, the gate uses a run-owned volatile
@@ -57,7 +78,7 @@ phase; its own runtime-only mask prevents D-Bus or socket activation from quietl
 restarting it during peer traffic. Configuration, service, trigger-socket, and
 runtime-mask baselines are all restored exactly, including on failure. Restoration
 is idempotent so cleanup cannot re-arm a provider after the final phase. It never
-launches Koi. It asserts that both installed Koi unit scopes,
+launches Koi. It asserts that both installed Koi service scopes,
 activity, enablement, PIDs, and executable hashes remain unchanged; the peer's
 provider services must also remain byte-for-byte equal to their captured facts.
 Route decisions are checked through `control_plane` fields on
@@ -119,6 +140,20 @@ systemd-resolved+native → avahi`, with three desired/established publications
 and zero pending/failed throughout. The gate restored Avahi, resolved, their
 activation sockets, global/link mDNS configuration, both Koi units, PIDs, and
 artifact hashes to the captured baseline.
+
+The Alpine OpenRC reference execution `20260903T014605Z-1730` ran from test-03
+against the unchanged Debian test-04 peer. The Alpine subject stayed on supervised
+PID `2688`, SHA-256
+`8cedf10927a75189ac1e98262116b157138a9a994c55e650d292107202af3003`;
+the Debian peer stayed on system PID `24507`, SHA-256
+`a74edba5e75402fef9f5364b87ef2a60dac2ddd01c432371314a0df313ce491f`.
+Generations 2–4 selected `avahi → native → avahi`, with three desired and three
+established publications and zero pending/failed in every phase. Cleanup returned
+test-03 to generation 5 native routing with Avahi installed but stopped and
+disabled. A separately pre-armed `ifup` then recovered a real `eth0` down/up cycle
+to the captured `192.168.1.221/24` lease and default route; both Koi PIDs and bytes
+remained unchanged, bidirectional publication/read/removal passed again, and neither
+host retained a run-owned registration.
 
 On Windows, preserve the same story and invariants while substituting its catalog:
 official Windows DNS-SD, installed Apple Bonjour/mDNSResponder, then native Koi.

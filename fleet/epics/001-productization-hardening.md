@@ -78,12 +78,16 @@ lock/unlock, primary-interface loss/return, and a real suspend/resume. A fresh
 Plasma Login Manager session armed exactly one minimized workbench from its native
 package, and an unrelated UID remained outside authenticated local control.
 
-Alpine, Bluefin, and Debian now validate the shared installer decision on their one
-real deployment while completing their remaining local gates; Windows consumes the
-same final-before-mutation contract through SCM. Debian prepares the reusable PH-5
-collector without starting the soak. CachyOS remains an unchanged integration peer.
-Then PH-0 through PH-3 are reconciled once, one exact `dev` revision is frozen, and
-PH-4 begins.
+Alpine has also closed its provider/interface recovery gate on the installed OpenRC
+service: physical run `20260903T014605Z-1730` held one daemon through
+`avahi → native → avahi`, restored installed-but-stopped Avahi, and recovered a
+pre-armed primary-interface down/up cycle with bidirectional Debian-peer discovery
+and withdrawal. Alpine still owes its local PH-3 boundary and corrected-installer
+upgrade. Bluefin and Debian validate the shared installer decision on their one real
+deployment; Windows consumes the same final-before-mutation contract through SCM.
+Debian prepares the reusable PH-5 collector without starting the soak. CachyOS
+remains an unchanged integration peer. Then PH-0 through PH-3 are reconciled once,
+one exact `dev` revision is frozen, and PH-4 begins.
 
 ## Immediate correctness work
 
