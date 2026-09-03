@@ -17,6 +17,25 @@ adapter; `0026951` closed the shared slot-lifecycle leak; `97a0817` made startup
 consume the same batched verdict and canonicalized connection categories. Do not repeat
 those destructive workbooks unless later implementation changes their behavior.
 
+## 2026-09-03 09:20 EDT withdrawal correction and exact-source handoff
+
+1. Production correction `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef` is the new PH-4
+   freeze. Its exact clean-build artifact is installed as the sole SCM daemon, PID
+   `26508`, SHA-256
+   `9c4998461d3d0760a75c78dc2075d8d095666aa91626146af794f68d49e4b588`.
+   Do not rebuild, reinstall, or repeat the unaffected local whole-story transaction.
+2. `ph4-e49b-win-native-01` passed the corrected five-generation Windows provider
+   transaction and exact cleanup against unchanged Alpine, including the previously
+   missing long-lived removal event. It is correction evidence, but Alpine still ran
+   the invalidated source, so it is not the final exact-source pair verdict.
+3. Wait read-only for Alpine to publish an exact-`e49bfe2` installed artifact, then run
+   only `ph4-e49b-win-native-02`. Wait for CachyOS's exact-`e49bfe2` artifact, then run
+   the outstanding `ph4-e49b-win-avahi-01`. Use the accepted serial workbook and retain
+   every address/TXT/interface, long-lived lifecycle, generation/count, PID/hash, and
+   exact-restoration assertion. Only this hat mutates Windows provider/system state.
+4. Publish each completed exact-source lane directly to `dev`, then remain unchanged
+   for CachyOS reconciliation. Do not begin PH-5.
+
 ## 2026-09-03 09:04 EDT final PH-4 provider dispatch
 
 1. Keep the accepted exact-source service/workbench. Do not rebuild, reinstall, or

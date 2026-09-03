@@ -46,8 +46,57 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 | PH-1 | Platform truth and durable lifecycle | **green fleet-wide** | Clean install, in-place upgrade, failed-upgrade recovery, reboot, uninstall, and reinstall use product-owned paths and preserve intended identity/configuration. |
 | PH-2 | Environmental recovery | **green fleet-wide** | Process crash, provider loss/return, link/IP churn, firewall change, runtime disconnect, boot, lock, and sleep/resume recover without duplicates or manual re-arming. |
 | PH-3 | Security-boundary hardening | **green fleet-wide** | Local-control identity, Pond allowlist, operator auth, installer privilege, key custody, hostile LAN input, and resource bounds have executable negative gates; no unresolved critical/high finding remains. |
-| PH-4 | Installed whole-story matrix | **active — source re-frozen at `5c89e9de11bf23ab81fd8b5b0778c58477359360`** | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
+| PH-4 | Installed whole-story matrix | **active — source re-frozen at `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`** | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
 | PH-5 | Onboarding, diagnostics, and soak | collector ready; waits on PH-4 | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
+
+### 2026-09-03 09:20 EDT Windows withdrawal correction and final re-freeze
+
+The exact Koi source candidate is now
+`e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`. It includes the Windows DNS-SD
+withdrawal correction plus the already-landed CachyOS, Bluefin, and Debian evidence
+commits. It supersedes and invalidates
+`5c89e9de11bf23ab81fd8b5b0778c58477359360`; every final PH-4 installed daemon or
+package must be rebuilt from a clean export/detached worktree of this exact source.
+Unchanged separately versioned workbench artifacts retain their prior provenance.
+
+Windows run `ph4-5c89-win-native-01` reached every provider phase but exposed that
+the official `DnsServiceBrowse` API never delivers peer removal callbacks. The same
+long-lived subscription therefore retained Alpine after its acknowledged withdrawal,
+and a point resolve returned stale Windows cache data. The Windows adapter now owns an
+indefinite `DnsStartMulticastQuery` PTR query, preserves TTL-zero goodbye responses,
+normalizes them to the existing provider-neutral `Removed` event, and stops/reclaims
+the native query as one lease-owned lifetime. The shared discovery cache and event
+projection already owned eviction and needed no OS-specific imitation.
+
+Focused Windows adapter tests, strict clippy, the full locked workspace tests, and a
+direct live multicast resolve/withdrawal test passed. A clean exact-source release was
+installed through the SCM product path at SHA-256
+`9c4998461d3d0760a75c78dc2075d8d095666aa91626146af794f68d49e4b588`.
+Physical run `ph4-e49b-win-native-01` then passed generations 1–5 across native,
+Bonjour promotion, provider loss/fallback, return, and native restoration; the one
+pre-existing Windows subscription observed Alpine resolution and removal. Windows PID
+`26508` and Alpine PID `24201`/hash
+`4db6a257b9303157bd8dff03887b478b2c8f5a20f777166d35a59f77436a95e9`
+stayed fixed, and both hosts restored exact service/provider/network/firewall/count
+baselines with no credential or recovery residue. Because Alpine still ran the now
+invalidated source during that diagnostic/acceptance proof, the final exact-source
+Windows↔native lane waits for Alpine's replacement artifact rather than relabeling it.
+
+The narrowed critical path is:
+
+1. Alpine, CachyOS, Bluefin, and Debian build their native artifact/package from exact
+   source `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`, run their locked native gates,
+   install through their existing product path, and publish artifact/PID/baseline
+   readiness. The correction is Windows-gated, so do not repeat already-green Linux
+   whole-story, desktop, lifecycle, or provider workbooks solely to create activity.
+2. Once Alpine is exact-source ready, Windows reruns only its affected native-peer lane
+   as `ph4-e49b-win-native-02`. Once CachyOS is ready, Windows runs the outstanding
+   Avahi lane as `ph4-e49b-win-avahi-01`. Only Windows mutates its providers in both.
+3. Debian completes its still-pending Pond transaction from the new exact artifact as
+   `ph4-e49b-debian-pond-01` after its approved private credential handoff. CachyOS
+   remains the read-only peer.
+4. CachyOS reconciles PH-4 only after all five exact-source artifact entries and the
+   three remaining transactions above are green. PH-5 remains prohibited until then.
 
 ### 2026-09-03 PH-4 source re-freeze and execution contract
 

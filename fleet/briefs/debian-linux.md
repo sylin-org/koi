@@ -11,6 +11,20 @@ green: installed-service Avahi/resolved/native loss and return, pre-armed primar
 recovery, honest no-backend firewall reporting, independent-peer Pond policy, and
 bounded hostile DNS/mDNS/HTTP input. Do not repeat these gates on an unchanged artifact.
 
+## 2026-09-03 09:20 EDT exact-source replacement and Pond dispatch
+
+1. Replace the invalidated daemon with a clean locked build from exact source
+   `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`. Run full native gates and install
+   through the existing systemd product path, preserving the explicit `24441:24444`
+   plan, service/config/operator/member identity, and one daemon. Publish exact
+   source/artifact/PID and restoration facts; do not repeat unaffected local workbooks.
+2. After the approved CachyOS credential reaches the private session, run the still
+   outstanding restoration-gated Pond transaction as `ph4-e49b-debian-pond-01` from
+   that exact artifact. Keep the credential out of argv/evidence and remove its
+   mode-0700 helper. CachyOS remains an unchanged reader.
+3. Publish directly to `dev`, return to the collector-ready baseline, and do not begin
+   PH-5.
+
 ## 2026-09-03 09:04 EDT Pond retry dispatch
 
 1. The 12:23 UTC attempt was a clean preflight refusal, not a product or Pond failure.

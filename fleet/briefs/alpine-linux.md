@@ -8,6 +8,20 @@ controls, bounded supervision/logs, crash recovery, failed-install rollback, ord
 APK upgrade/removal/reinstall, native musl gates, and Pond are green. Avahi is installed
 but stopped and must be restored to that exact baseline after any provider gate.
 
+## 2026-09-03 09:20 EDT exact-source replacement dispatch
+
+1. The former `5c89e9d` freeze is invalidated by a Windows-only DNS-SD withdrawal
+   correction. Build signed/indexed APKs from clean exact source
+   `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`, run the locked musl gates, and upgrade
+   the sole package-owned daemon through APK/OpenRC. Preserve `5651:5654`, native
+   Ready routes, Avahi stopped/disabled, one daemon/workbench, and all durable state.
+2. Publish source/APK/installed hashes, PID, supervisor/package/index identity, and
+   exact baseline restoration. The changed code is Windows-gated: do not repeat the
+   green Alpine whole-story, Plasma, lifecycle, or provider-mutation workbooks.
+3. Then remain unchanged as the native peer for Windows run
+   `ph4-e49b-win-native-02`; permit only run-owned Koi API traffic. Windows owns all
+   mutation. Verify final readiness after its journal lands and do not begin PH-5.
+
 ## 2026-09-03 09:04 EDT peer handoff
 
 1. CachyOS provider run `20260903T125812Z-925941` passed against this unchanged

@@ -1,5 +1,77 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-03 (18) — PH-4 Windows withdrawal defect closed; source re-frozen
+
+commit: exact corrected/frozen product source
+`e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`; implementation first committed before
+the concurrent fleet rebase as `45524440c082e91df5ae7fbd35ce008ac5640401` | gates:
+focused `koi-mdns` Windows suite; strict all-target clippy; full locked
+workspace/all-target/all-feature clippy and tests with ordinary parallelism; clean
+locked release build; direct live multicast resolve/withdrawal test; exact installed
+provider transaction — all PASS
+
+koi state now: exactly one AutoStart LocalSystem SCM service, PID `26508`, product
+path `C:\Program Files\Koi\koi.exe --daemon`, clean exact-source release/installed
+SHA-256 `9c4998461d3d0760a75c78dc2075d8d095666aa91626146af794f68d49e4b588`
+(39,507,456 bytes), health 200 on standard port 5641. Control generation 5 is Ready
+with native publish/explicit-publish and Windows DNS-SD browse/resolve; publications
+are desired=established=permanent=1, pending=failed=0. The unchanged installed
+workbench remains the sole PID `22668`, SHA-256
+`bb07bb2c232f1ea7398348b1cb4a215dc7d2de04c9c21461bc6fe092de05e245`.
+Bonjour is absent on disk and from SCM/MSI; the still-running process truthfully retains
+its successfully loaded DLL fact until restart.
+
+peers/runs: the frozen `5c89e9d` transaction reached generations 1–5 but returned FAIL
+when its long-lived Windows subscription never received Alpine withdrawal. After the
+fix, direct adapter run `lowlevel-probe` passed real resolve then TTL-zero removal.
+Regression run `ph4-4552-win-native-01` passed on the pre-rebase candidate. Final
+exact-source run `ph4-e49b-win-native-01` PASS used Windows PID `26508`/hash above and
+unchanged Alpine `test-03` PID `24201`, `/usr/bin/koi` SHA-256
+`4db6a257b9303157bd8dff03887b478b2c8f5a20f777166d35a59f77436a95e9`,
+OpenRC active+enabled, native Ready, Avahi installed but stopped+disabled, `eth0`
+`192.168.1.221/24`, and its original default route. Structured evidence is retained
+locally at `target/mdns-provider-transition/ph4-e49b-win-native-01/`.
+
+findings:
+
+1. Windows `DnsServiceBrowse` supplies PTR discoveries but not service-removal events,
+   so the existing provider-neutral removal/cache eviction path could never run. The
+   first physical lane proved the failure rather than timing out a harmless fixture:
+   Alpine acknowledged unregister, Windows retained no `Removed` event, and point
+   resolution returned a stale cached record. Microsoft's API contract provides the
+   indefinite callback query and callback-owned record list needed to observe response
+   TTLs ([DnsStartMulticastQuery](https://learn.microsoft.com/en-us/windows/win32/api/windns/nf-windns-dnsstartmulticastquery),
+   [MDNS query callback](https://learn.microsoft.com/en-us/windows/win32/api/windns/nc-windns-mdns_query_callback),
+   [DNS_RECORDW](https://learn.microsoft.com/en-us/windows/win32/api/windns/ns-windnsdef-dns_recordw)).
+2. The Windows adapter now owns one `DnsStartMulticastQuery` PTR handle per browse,
+   projects TTL-zero goodbyes to the existing `ProviderEvent::Removed`, and stops the
+   native query before reclaiming callback state. Successful callbacks free their
+   callback-owned record lists; a failed stop deliberately leaks the context rather
+   than racing a late native callback. No new orchestration type, cache, or Windows-only
+   event path was added. Unit tests pin ordinary/meta removal normalization.
+3. A run-owned Alpine `_koi-lowlevel._tcp` publication proved the real adapter first
+   resolved the full record and then emitted removal through the same subscription
+   after exact unregister. The final installed workbook then proved bidirectional
+   ordinary and explicit-address publication, address/TXT/interface resolution, and
+   one long-lived Windows subscription across native generation 1, Bonjour promotion
+   2, loss/fallback 3, return 4, and native restoration 5. After peer unregister that
+   subscription observed `Removed`; after both Windows withdrawals Alpine returned no
+   record for either instance.
+4. Signed Bonjour installation/uninstall used the retained pinned wrapper/core/print
+   inputs. Every phase retained the same Windows and Alpine daemon PID/hash and exact
+   synchronized counts. Cleanup restored byte-exact Windows config/operator policy,
+   adapter/IP/DNS/profile/firewall facts, Dnscache, SharedAccess, Alpine service/
+   provider/network/workbench facts, and both hosts' one permanent publication. No
+   Bonjour service/product/directory, installer manifest, run-owned registration,
+   firewall rule, recovery task, or credential remains. The exact DAT did not enter
+   evidence; a marker scan found only MSI's masked `Password=**********` field.
+5. Because this product correction invalidates the prior freeze, PH-4 is explicitly
+   re-frozen at `e49bfe2`. This run proves the corrected exact Windows artifact, but
+   Alpine still carried the invalidated source. The final exact-source native pair is
+   therefore dispatched as `ph4-e49b-win-native-02` after Alpine rebuilds; the pending
+   Windows↔CachyOS lane is `ph4-e49b-win-avahi-01`. This entry does not relabel the
+   mixed-source run or permit PH-5.
+
 ## 2026-09-03 (17) — PH-4 exact-freeze Windows artifact ready
 
 commit: exact frozen product source `5c89e9de11bf23ab81fd8b5b0778c58477359360`; Windows shared-config correction `9134b32`; run `20260903T054726Z-windows-ph4-local` | verdict: **PASS — artifact ready for CachyOS-coordinated shared provider rotations**

@@ -16,6 +16,17 @@ primary-interface churn, Avahi/resolved/native recovery, wrong-UID local control
 Pond/firewalld gate are already physically green. Do not repeat those gates against an
 unchanged artifact.
 
+## 2026-09-03 09:20 EDT exact-source replacement dispatch
+
+1. Replace the now-invalidated daemon with a clean toolbox build from exact source
+   `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`. Run full locked native gates and
+   install serially through the public systemd path; keep build dependencies in
+   `koi-dev` and keep the unchanged package-owned workbench/SNI provenance.
+2. Publish release/installed hash, PID, service/operator/port facts, provider/Pond
+   baseline, singleton processes, and exact cleanup. The correction is Windows-only,
+   so do not repeat the green local whole-story, immutable lifecycle, desktop, or Pond
+   workbooks. Remain an unchanged peer and do not begin PH-5.
+
 ## 2026-09-03 08:16 EDT convergence dispatch (after `4ce6a40`)
 
 1. The installed `f53d568` PH-4 artifact is invalidated. Build from a clean detached

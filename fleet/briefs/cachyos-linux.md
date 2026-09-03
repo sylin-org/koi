@@ -19,6 +19,21 @@ was accepted through the real installed service: upgrade retained `5641:5644` wi
 manufacturing a config, and a deliberately unhealthy replacement restored the exact
 prior deployment.
 
+## 2026-09-03 09:20 EDT exact-source replacement and coordination
+
+1. The former freeze is invalidated by the Windows withdrawal correction. Build from
+   clean exact source `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`, run full locked
+   native gates, and install through the existing systemd product path. Publish the
+   release/installed hash, PID, exact service/provider/Pond baseline, and unchanged
+   workbench provenance. Do not repeat the already-green local whole story or the
+   Avahi/resolve1↔native lane; their Linux code paths did not change.
+2. Remain unchanged as the Avahi peer for Windows run
+   `ph4-e49b-win-avahi-01` and the Pond reader for Debian run
+   `ph4-e49b-debian-pond-01`; those hats own their system mutations.
+3. Reconcile PH-4 only after every hat publishes an exact-`e49bfe2` installed artifact,
+   Windows publishes both final provider lanes, and Debian publishes its Pond lane.
+   Do not begin PH-5 early.
+
 ## 2026-09-03 09:04 EDT PH-4 acceptance and final coordination
 
 1. This hat's exact-source build/install and installed local journey are green in the
