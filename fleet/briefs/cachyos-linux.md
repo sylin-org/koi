@@ -19,6 +19,25 @@ was accepted through the real installed service: upgrade retained `5641:5644` wi
 manufacturing a config, and a deliberately unhealthy replacement restored the exact
 prior deployment.
 
+## 2026-09-03 pre-freeze dispatch (after `d54a1c0`)
+
+1. Regression-accept the shared harness changes from the Alpine convergence work on
+   this systemd workstation. Run the generalized provider transition through the real
+   Avahi/resolve1/native profile and the generalized Pond workbook through its Python
+   peer path, using this host's sole installed Koi and one unchanged physical peer.
+   Require the existing structured convergence, PID/hash, negative-route, and exact
+   provider/network/Pond restoration verdicts; script portability may not weaken them.
+2. Fix any harness or product defect at its owning shared boundary, run the affected
+   native gates, and publish the CachyOS evidence. Do not reinstall or repeat unrelated
+   desktop/package gates when their bytes are unchanged.
+3. Watch `dev` for the Windows, Bluefin, and Debian installer verdicts. When all three
+   are green, reconcile PH-0 through PH-3 once, ensure no production correction is
+   still in flight, and record one exact source revision as the PH-4 candidate. Do not
+   start the soak or silently move the candidate after recording it.
+4. Then drive the serial PH-4 cross-provider and Pond matrix. Each peer owns its own
+   OS mutations; this hat coordinates run IDs and product traffic and never launches a
+   second Koi on any host.
+
 ## 2026-09-02 convergence dispatch (after `911c590`)
 
 1. **Complete (`41ad76b`).** Correct endpoint planning once at the shared installer

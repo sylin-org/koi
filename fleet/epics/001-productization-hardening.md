@@ -42,12 +42,12 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 
 | ID | Workstream | State | Exit gate |
 |---|---|---|---|
-| PH-0 | Freeze and reconcile the product contract | in progress | Every advertised capability, OS, artifact, and install path maps to a current real gate or an explicit unverified/unsupported state; stale claims are corrected. |
-| PH-1 | Platform truth and durable lifecycle | ready per hat | Clean install, in-place upgrade, failed-upgrade recovery, reboot, uninstall, and reinstall use product-owned paths and preserve intended identity/configuration. |
-| PH-2 | Environmental recovery | waits on local PH-1 | Process crash, provider loss/return, link/IP churn, firewall change, runtime disconnect, boot, lock, and sleep/resume recover without duplicates or manual re-arming. |
-| PH-3 | Security-boundary hardening | ready after local PH-0 | Local-control identity, Pond allowlist, operator auth, installer privilege, key custody, hostile LAN input, and resource bounds have executable negative gates; no unresolved critical/high finding remains. |
-| PH-4 | Installed whole-story matrix | waits on PH-1/2/3 | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
-| PH-5 | Onboarding, diagnostics, and soak | waits on PH-4 | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
+| PH-0 | Freeze and reconcile the product contract | local evidence assembled; fleet reconciliation pending | Every advertised capability, OS, artifact, and install path maps to a current real gate or an explicit unverified/unsupported state; stale claims are corrected. |
+| PH-1 | Platform truth and durable lifecycle | CachyOS and Alpine green; current Windows, Bluefin, and Debian acceptance pending | Clean install, in-place upgrade, failed-upgrade recovery, reboot, uninstall, and reinstall use product-owned paths and preserve intended identity/configuration. |
+| PH-2 | Environmental recovery | local fleet gates green | Process crash, provider loss/return, link/IP churn, firewall change, runtime disconnect, boot, lock, and sleep/resume recover without duplicates or manual re-arming. |
+| PH-3 | Security-boundary hardening | local fleet gates green | Local-control identity, Pond allowlist, operator auth, installer privilege, key custody, hostile LAN input, and resource bounds have executable negative gates; no unresolved critical/high finding remains. |
+| PH-4 | Installed whole-story matrix | waits on pre-freeze convergence | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
+| PH-5 | Onboarding, diagnostics, and soak | collector ready; waits on PH-4 | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
 
 ### 2026-09-03 convergence checkpoint
 
@@ -96,6 +96,27 @@ through SCM.
 Debian prepares the reusable PH-5 collector without starting the soak. CachyOS
 remains an unchanged integration peer. Then PH-0 through PH-3 are reconciled once,
 one exact `dev` revision is frozen, and PH-4 begins.
+
+### Pre-freeze critical path
+
+1. **Windows, Bluefin, and Debian own the remaining PH-1 acceptance.** Each validates
+   the ownership-aware final-before-mutation install decision through its sole real
+   deployment, including exact failed-candidate recovery and the platform-specific
+   lifecycle named in its brief. A real foreign listener is exercised serially; it
+   is never another Koi.
+2. **CachyOS owns integration regression and the freeze.** Re-run the newly generalized
+   provider and Pond workbooks through the systemd/Avahi/resolve1 path with one
+   installed Koi and an unchanged physical peer. Once the three installer verdicts
+   are on `dev`, reconcile PH-0 through PH-3 and record one exact source revision as
+   the PH-4 candidate.
+3. **Alpine is complete for this dispatch.** Keep its accepted APK/OpenRC deployment
+   unchanged and available for run-owned peer observations. Rebuild from the frozen
+   source only when PH-4 starts; do not manufacture another local task meanwhile.
+4. **PH-4 and PH-5 are fleet gates.** Every hat installs an artifact from the same
+   frozen source and owns its own system mutations. CachyOS drives the serial
+   cross-provider/Pond matrix; Debian runs the installed-service collector while
+   every hat supplies its controlled-fault slice. The long soak starts only after
+   the whole-story matrix is green.
 
 ## Immediate correctness work
 

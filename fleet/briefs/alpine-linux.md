@@ -8,6 +8,21 @@ controls, bounded supervision/logs, crash recovery, failed-install rollback, ord
 APK upgrade/removal/reinstall, native musl gates, and Pond are green. Avahi is installed
 but stopped and must be restored to that exact baseline after any provider gate.
 
+## 2026-09-03 pre-freeze dispatch (after `d54a1c0`)
+
+1. This hat's convergence dispatch is complete. The accepted APK/OpenRC deployment,
+   provider/interface recovery, Plasma lifecycle, PH-3 boundary, ownership-aware
+   upgrade, failed-candidate rollback, musl gates, and Debian-peer Pond gate are green.
+   Pulling task updates must not trigger another install or destructive workbook.
+2. Keep the exact installed service/workbench and retained package index healthy and
+   unchanged. Supply run-owned Koi publications, reads, and observations when another
+   hat names Alpine as a peer; do not mutate providers, networking, login state, or the
+   service for that peer's gate.
+3. Wait for CachyOS to record the frozen source revision. Then build APKs from exactly
+   that source, install them serially through the real package/OpenRC path, and execute
+   Alpine's PH-4 Find → Name → Trust → Serve/Pond and cross-provider slice. Only that
+   frozen artifact begins Alpine's soak participation.
+
 ## 2026-09-02 convergence dispatch (after `911c590`)
 
 1. Start now from the exact installed APK artifacts. Prove a cold boot and genuinely

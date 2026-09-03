@@ -16,6 +16,23 @@ primary-interface churn, Avahi/resolved/native recovery, wrong-UID local control
 Pond/firewalld gate are already physically green. Do not repeat those gates against an
 unchanged artifact.
 
+## 2026-09-03 pre-freeze dispatch (after `d54a1c0`)
+
+1. Pull current `dev`, build in the existing toolbox, and accept the ownership-aware
+   installer through the sole installed system service. Its own live standard-port run
+   must remain the same decision; a genuinely fresh deployment with a serially staged
+   non-Koi incumbent must still choose a safe free run. Never overlap two Koi daemons.
+2. Require an unhealthy candidate to restore the exact binary, unit, configuration,
+   operator policy, activity/enablement, and port decision. Complete the intended
+   immutable lifecycle through reboot activation and prove the one GNOME workbench and
+   one service still target durable product-owned paths.
+3. Correct defects only at their owning shared installer/systemd boundary, run the
+   affected focused and full native gates, journal the physical verdict, and push it.
+   The already-green provider, Pond, hostile-input, and desktop gates are retained
+   evidence unless relevant bytes change.
+4. Leave the accepted deployment ready and unchanged. Its next destructive work is
+   the Bluefin PH-4 slice after CachyOS records the frozen source revision.
+
 ## 2026-09-02 convergence dispatch (after `911c590`)
 
 The hostile-input/resource gate named by the prior dispatch is physically green in

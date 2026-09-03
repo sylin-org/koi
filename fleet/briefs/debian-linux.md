@@ -11,6 +11,24 @@ green: installed-service Avahi/resolved/native loss and return, pre-armed primar
 recovery, honest no-backend firewall reporting, independent-peer Pond policy, and
 bounded hostile DNS/mDNS/HTTP input. Do not repeat these gates on an unchanged artifact.
 
+## 2026-09-03 pre-freeze dispatch (after `d54a1c0`)
+
+1. Pull current `dev` and accept the ownership-aware installer through the sole real
+   systemd service. Preserve the standing `24441:24444` explicit/drop-in decision
+   through in-place upgrade; replacing Koi must not probe itself as a foreign owner or
+   manufacture a new configuration.
+2. Exercise both a deliberately unhealthy candidate and the existing interrupted or
+   corrupt transaction recovery boundary. Require exact restoration of installed
+   binary, unit, active configuration, operator policy, activity/enablement, identity,
+   and port run with no transaction residue and no second Koi.
+3. Fix defects at the shared recipe/systemd boundary, run affected focused and full
+   native gates, journal the installed verdict, and push it. Do not repeat the already
+   green provider/link/Pond/hostile-input workbooks unless relevant product bytes
+   change.
+4. Keep the accepted service and the proven `installed-service-collect` command ready.
+   After CachyOS freezes the source and PH-4 passes, this hat runs the bounded PH-5
+   collector as the soak anchor; the six-to-24-hour run must not start earlier.
+
 ## 2026-09-02 convergence dispatch (after `911c590`)
 
 1. Own the small reusable PH-5 installed-service collector now, following the existing

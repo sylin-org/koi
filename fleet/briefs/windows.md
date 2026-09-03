@@ -17,6 +17,26 @@ adapter; `0026951` closed the shared slot-lifecycle leak; `97a0817` made startup
 consume the same batched verdict and canonicalized connection categories. Do not repeat
 those destructive workbooks unless later implementation changes their behavior.
 
+## 2026-09-03 pre-freeze dispatch (after `d54a1c0`)
+
+1. Pull current `dev` and accept the ownership-aware installer change in `41ad76b`
+   through the sole installed SCM service. Prove the captured service object makes an
+   existing Koi a `ReplacingOwned` deployment before any mutation, preserves its
+   explicit or effective port run without manufacturing a new decision, and arms the
+   durable transaction before stopping it.
+2. Exercise one deliberately unhealthy candidate and require byte-exact and descriptor-exact
+   restoration of binary, configuration, operator policy, SCM service and lifecycle
+   policy, and Koi-owned firewall rules. Exercise the genuinely fresh/foreign-listener
+   decision only as a serial recoverable lifecycle—never with a second Koi—and require
+   no manifest, backup, recovery-copy, task, or firewall residue.
+3. Correct a defect at the shared recipe or SCM adapter that owns it, then run focused
+   and full native gates and publish one evidence-dense journal entry. Do not repeat
+   the already-green provider, NIC, profile, workbench, or S3 workbooks unless the
+   accepted fix changes their bytes or behavior.
+4. After the verdict lands, retain the installed service/workbench as an unchanged
+   peer. Its next destructive work is the Windows PH-4 slice on the source revision
+   frozen by the CachyOS integration driver.
+
 ## 2026-09-02 convergence dispatch (after `911c590`)
 
 The dated Windows correction, workbench, provider, link/profile, lock, and S3

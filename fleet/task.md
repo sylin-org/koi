@@ -68,6 +68,11 @@ are operator approval to implement and exercise the selected in-scope item. Comp
 the repository's required exploration/plan step, then proceed without asking for the
 same approval again. A plan or status summary alone is not a completed session.
 
+If the newest dispatch says this hat is complete and waiting for the frozen source,
+perform only the named read-only readiness or peer role. Report the dependency and
+leave the deployment and repository unchanged; do not invent work, evidence, or a
+commit merely to make the session look active.
+
 If an observed defect belongs to shared architecture, fix it once at the lowest
 correct shared boundary. Do not create an OS-local imitation. Breaking and rebuilding
 pre-1.0 code is authorized when it yields fewer, clearer moving parts.
