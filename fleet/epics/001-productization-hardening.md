@@ -43,7 +43,7 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 | ID | Workstream | State | Exit gate |
 |---|---|---|---|
 | PH-0 | Freeze and reconcile the product contract | local evidence assembled; fleet reconciliation pending | Every advertised capability, OS, artifact, and install path maps to a current real gate or an explicit unverified/unsupported state; stale claims are corrected. |
-| PH-1 | Platform truth and durable lifecycle | Windows, CachyOS, Alpine, and Debian green; Bluefin post-reboot acceptance pending | Clean install, in-place upgrade, failed-upgrade recovery, reboot, uninstall, and reinstall use product-owned paths and preserve intended identity/configuration. |
+| PH-1 | Platform truth and durable lifecycle | local fleet gates green | Clean install, in-place upgrade, failed-upgrade recovery, reboot, uninstall, and reinstall use product-owned paths and preserve intended identity/configuration. |
 | PH-2 | Environmental recovery | local fleet gates green | Process crash, provider loss/return, link/IP churn, firewall change, runtime disconnect, boot, lock, and sleep/resume recover without duplicates or manual re-arming. |
 | PH-3 | Security-boundary hardening | local fleet gates green | Local-control identity, Pond allowlist, operator auth, installer privilege, key custody, hostile LAN input, and resource bounds have executable negative gates; no unresolved critical/high finding remains. |
 | PH-4 | Installed whole-story matrix | waits on pre-freeze convergence | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
@@ -91,8 +91,8 @@ ordinary indexed upgrade, a deliberately unhealthy candidate restored the exact
 accepted deployment, and the full locked musl plus physical Debian-peer Pond gates
 passed. Alpine's dispatch is complete and its exact installed APK/index are retained
 as a PH-4 candidate. Debian accepted the shared installer decision on its one real
-deployment. Bluefin's install, rollback, and serial real-incumbent phases are green;
-its staged base-image update still needs one post-reboot verification. Windows accepted the same final-before-mutation contract
+deployment. Bluefin's install, rollback, serial real-incumbent, and immutable reboot
+activation phases are green. Windows accepted the same final-before-mutation contract
 through SCM: its owned no-config deployment retained the standard run, an unhealthy
 `StartPending` candidate rolled back exactly after image-verified termination, and a
 serial real foreign listener moved a genuinely fresh install to `5651:5654` before
