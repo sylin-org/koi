@@ -9,6 +9,9 @@
 //! queries for `DnsServiceRegister` records on this network, so claiming the
 //! publication route would strand every announcement. Publication returns to
 //! this provider only when a probe proves peers can resolve its records.
+//! Browse uses the lower-level multicast query because `DnsServiceBrowse` does
+//! not surface removal callbacks; the multicast response retains the TTL-zero
+//! goodbye needed for exact cache eviction and subscriber lifecycle events.
 //!
 //! All dnsapi types stay inside this module; provider-neutral values cross the
 //! session boundary.
@@ -22,9 +25,10 @@ use tokio::sync::{mpsc as tokio_mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
 use windows_sys::Win32::NetworkManagement::Dns::{
-    DnsServiceBrowse, DnsServiceBrowseCancel, DnsServiceFreeInstance, DnsServiceResolve,
-    DnsServiceResolveCancel, DNS_RECORDW, DNS_SERVICE_BROWSE_REQUEST, DNS_SERVICE_CANCEL,
-    DNS_SERVICE_INSTANCE, DNS_SERVICE_RESOLVE_REQUEST, DNS_TYPE_PTR,
+    DnsFree, DnsFreeRecordList, DnsServiceFreeInstance, DnsServiceResolve, DnsServiceResolveCancel,
+    DnsStartMulticastQuery, DnsStopMulticastQuery, DNS_QUERY_RESULT, DNS_RECORDW,
+    DNS_SERVICE_CANCEL, DNS_SERVICE_INSTANCE, DNS_SERVICE_RESOLVE_REQUEST, DNS_TYPE_PTR,
+    MDNS_QUERY_HANDLE, MDNS_QUERY_REQUEST,
 };
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows_sys::Win32::System::Services::{
@@ -44,7 +48,6 @@ use crate::provider::{
 use crate::Result;
 
 const DNSAPI_PRIORITY: u16 = 200;
-const CALL_WAIT: Duration = Duration::from_secs(7);
 const HEALTH_INTERVAL: Duration = Duration::from_secs(2);
 const RESOLVE_WAIT: Duration = Duration::from_secs(6);
 const EVENT_BRIDGE_POLL: Duration = Duration::from_millis(50);
@@ -69,8 +72,8 @@ const DESCRIPTOR: ProviderDescriptor = ProviderDescriptor::new(
 /// resolve only, so a Windows build without the registration surface still
 /// counts as installed for the routes Koi arms.
 const REQUIRED_EXPORTS: &[&str] = &[
-    "DnsServiceBrowse",
-    "DnsServiceBrowseCancel",
+    "DnsStartMulticastQuery",
+    "DnsStopMulticastQuery",
     "DnsServiceResolve",
     "DnsServiceResolveCancel",
     "DnsServiceFreeInstance",
@@ -383,20 +386,21 @@ impl ProviderSession for DnsApiSession {
 
 // ── browse ────────────────────────────────────────────────────────────
 
-/// Callback-side state for one live `DnsServiceBrowse`. dnsapi invokes the
+/// Callback-side state for one live `DnsStartMulticastQuery`. dnsapi invokes the
 /// callback on its own worker thread, so the context is moved through a raw
-/// pointer reclaimed only after the terminal status.
+/// pointer reclaimed only after the query is stopped.
 struct BrowseContext {
     events: mpsc::Sender<BrowseObservation>,
 }
 
 enum BrowseObservation {
-    /// One PTR observation: (target name, owning query name).
+    /// One PTR response, including the TTL-zero goodbye signal.
     Ptr {
         target: String,
         query_name: String,
+        removed: bool,
     },
-    Terminal(u32),
+    Terminal(i32),
 }
 
 /// # Safety
@@ -414,15 +418,15 @@ unsafe fn reclaim_context(raw: *mut std::ffi::c_void) {
     drop(Box::from_raw(raw as *mut BrowseContext));
 }
 
-/// The cancel token dnsapi filled when the browse started. Its address must
-/// stay stable until `DnsServiceBrowseCancel`. Send is sound because the token
-/// is an opaque handle only dnsapi dereferences.
-struct CancelToken(DNS_SERVICE_CANCEL);
-unsafe impl Send for CancelToken {}
-
 struct BrowseRuntime {
-    cancel: Mutex<CancelToken>,
+    handle: Mutex<MulticastHandle>,
+    cancel: CancellationToken,
 }
+
+/// The opaque query handle may move between Koi's control threads, but only
+/// dnsapi dereferences its internal pointers while the query is running.
+struct MulticastHandle(Box<MDNS_QUERY_HANDLE>);
+unsafe impl Send for MulticastHandle {}
 
 struct BridgeRegistration {
     cancel: CancellationToken,
@@ -435,13 +439,13 @@ async fn open_dnsapi_browse(
 ) -> Result<(ProviderBrowse, BridgeRegistration)> {
     let (event_tx, event_rx) = tokio_mpsc::channel(BROWSE_CHANNEL_CAPACITY);
     let (observation_tx, observation_rx) = mpsc::channel::<BrowseObservation>();
-    let (terminal_tx, terminal_rx) = mpsc::channel::<()>();
 
     let query_name = service_type.trim_end_matches('.').to_string();
+    let cancel = CancellationToken::new();
+    let mut handle = Box::new(MDNS_QUERY_HANDLE::default());
     let runtime = Arc::new(BrowseRuntime {
-        cancel: Mutex::new(CancelToken(DNS_SERVICE_CANCEL {
-            reserved: std::ptr::null_mut(),
-        })),
+        handle: Mutex::new(MulticastHandle(Box::default())),
+        cancel: cancel.clone(),
     });
 
     let context_ptr = unsafe {
@@ -451,16 +455,29 @@ async fn open_dnsapi_browse(
     };
 
     unsafe extern "system" fn browse_callback(
-        status: u32,
         query_context: *const std::ffi::c_void,
-        record: *const DNS_RECORDW,
+        _query_handle: *mut MDNS_QUERY_HANDLE,
+        query_results: *mut DNS_QUERY_RESULT,
     ) {
         let context = unsafe { &*(query_context as *const BrowseContext) };
-        if status != DNS_CB_SUCCESS || record.is_null() {
-            let _ = context.events.send(BrowseObservation::Terminal(status));
+        if query_results.is_null() {
+            let _ = context.events.send(BrowseObservation::Terminal(-1));
             return;
         }
-        let mut current = record;
+        let results = unsafe { &mut *query_results };
+        let records = results.pQueryRecords;
+        if results.QueryStatus != DNS_CALL_SUCCESS {
+            let _ = context
+                .events
+                .send(BrowseObservation::Terminal(results.QueryStatus));
+            if !records.is_null() {
+                unsafe { DnsFree(records.cast(), DnsFreeRecordList) };
+            }
+            return;
+        }
+        // MDNS_QUERY_REQUEST is the wide-character API even though the generated
+        // DNS_QUERY_RESULT binding names its generic record pointer `DNS_RECORDA`.
+        let mut current = records.cast::<DNS_RECORDW>();
         while !current.is_null() {
             let entry = unsafe { &*current };
             if entry.wType == DNS_TYPE_PTR {
@@ -472,47 +489,51 @@ async fn open_dnsapi_browse(
                         .send(BrowseObservation::Ptr {
                             target,
                             query_name: query,
+                            removed: ptr_is_removed(entry.dwTtl),
                         })
                         .is_err()
                 {
-                    return;
+                    break;
                 }
             }
             current = entry.pNext;
         }
+        if !records.is_null() {
+            unsafe { DnsFree(records.cast(), DnsFreeRecordList) };
+        }
     }
 
     let query_wide = wide(&query_name);
-    let request = DNS_SERVICE_BROWSE_REQUEST {
+    let request = MDNS_QUERY_REQUEST {
         Version: 1,
+        ulRefCount: 0,
+        Query: query_wide.as_ptr(),
+        QueryType: DNS_TYPE_PTR,
+        QueryOptions: 0,
         InterfaceIndex: 0,
-        QueryName: query_wide.as_ptr(),
-        Anonymous: windows_sys::Win32::NetworkManagement::Dns::DNS_SERVICE_BROWSE_REQUEST_0 {
-            pBrowseCallback: Some(browse_callback),
-        },
-        pQueryContext: context_ptr,
+        pQueryCallback: Some(browse_callback),
+        pQueryContext: context_ptr.cast(),
+        fAnswerReceived: 0,
+        ulResendCount: 0,
     };
-    let call_status = {
-        let mut cancel = runtime
-            .cancel
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        unsafe { DnsServiceBrowse(&request, &mut cancel.0) }
-    };
-    if call_status != DNS_CALL_SUCCESS && call_status != DNS_CALL_PENDING {
+    let call_status = unsafe { DnsStartMulticastQuery(&request, &mut *handle) };
+    if call_status != DNS_CALL_SUCCESS {
         unsafe { reclaim_context(context_ptr) };
         return Err(dnsapi_error(
             ProviderOperation::Browse,
             call_status,
-            "DnsServiceBrowse rejected the query",
+            "DnsStartMulticastQuery rejected the query",
         ));
     }
+    *runtime
+        .handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = MulticastHandle(handle);
 
     // Reap observations on a blocking thread: meta observations surface service
     // types, ordinary observations are resolved (the Apple browse+resolve
     // two-step) before surfacing. The cancel token breaks the wait so shutdown
     // cannot hang on a silent channel.
-    let cancel = CancellationToken::new();
     let reap_cancel = cancel.clone();
     let reaper = tokio::task::spawn_blocking(move || {
         loop {
@@ -524,11 +545,22 @@ async fn open_dnsapi_browse(
                     tracing::debug!(
                         provider = DESCRIPTOR.name,
                         status,
-                        "dnsapi browse stream ended"
+                        "dnsapi multicast browse stream ended"
                     );
                     break;
                 }
-                Ok(BrowseObservation::Ptr { target, query_name }) => {
+                Ok(BrowseObservation::Ptr {
+                    target,
+                    query_name,
+                    removed,
+                }) => {
+                    if removed {
+                        let event = removed_ptr_event(is_meta, &target, &query_name);
+                        if event_tx.blocking_send(event).is_err() {
+                            break;
+                        }
+                        continue;
+                    }
                     if is_meta {
                         // Meta observations enumerate service types; the type
                         // name itself is the record Koi surfaces.
@@ -561,7 +593,6 @@ async fn open_dnsapi_browse(
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
-        let _ = terminal_tx.send(());
     });
 
     let browse = ProviderBrowse::new(
@@ -569,7 +600,6 @@ async fn open_dnsapi_browse(
         Box::new(DnsApiBrowseLease {
             runtime: Arc::clone(&runtime),
             context_ptr: Some(ContextPtr(context_ptr)),
-            terminal_rx: Mutex::new(Some(terminal_rx)),
         }),
     );
     Ok((browse, BridgeRegistration { cancel, reaper }))
@@ -582,15 +612,32 @@ fn trim_local(value: &str) -> String {
         .to_string()
 }
 
-/// Owned raw context pointer handed to dnsapi. Send is sound because only our
-/// code dereferences it, and only after the terminal callback.
+fn removed_ptr_event(is_meta: bool, target: &str, query_name: &str) -> ProviderEvent {
+    if is_meta {
+        ProviderEvent::Removed {
+            name: trim_local(target),
+            service_type: String::new(),
+        }
+    } else {
+        ProviderEvent::Removed {
+            name: instance_label(target),
+            service_type: trim_local(query_name),
+        }
+    }
+}
+
+fn ptr_is_removed(ttl: u32) -> bool {
+    ttl == 0
+}
+
+/// Owned raw context pointer handed to dnsapi. Send is sound because the query
+/// is stopped before the owning lease reclaims it.
 struct ContextPtr(*mut std::ffi::c_void);
 unsafe impl Send for ContextPtr {}
 
 struct DnsApiBrowseLease {
     runtime: Arc<BrowseRuntime>,
     context_ptr: Option<ContextPtr>,
-    terminal_rx: Mutex<Option<mpsc::Receiver<()>>>,
 }
 
 #[async_trait::async_trait]
@@ -600,37 +647,29 @@ impl BrowseLease for DnsApiBrowseLease {
     }
 
     async fn close(&mut self) -> Result<()> {
-        {
-            let cancel = self
+        let status = {
+            let mut handle = self
                 .runtime
-                .cancel
+                .handle
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            unsafe { DnsServiceBrowseCancel(&cancel.0) };
+            unsafe { DnsStopMulticastQuery(&mut *handle.0) }
+        };
+        self.runtime.cancel.cancel();
+        if status != DNS_CALL_SUCCESS {
+            // Keep the callback context alive when dnsapi could still own the
+            // query. Leaking is safer than racing a late callback.
+            let _ = self.context_ptr.take();
+            return Err(dnsapi_error(
+                ProviderOperation::Browse,
+                status,
+                "DnsStopMulticastQuery failed",
+            ));
         }
-        // Wait for the terminal callback so dnsapi no longer references the
-        // context before it is reclaimed. On timeout the context is leaked
-        // instead of racing the callback thread.
-        let terminal_rx = self
-            .terminal_rx
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        if let Some(terminal_rx) = terminal_rx {
-            let observed =
-                tokio::task::spawn_blocking(move || terminal_rx.recv_timeout(CALL_WAIT).is_ok())
-                    .await
-                    .unwrap_or(false);
-            if observed {
-                if let Some(context_ptr) = self.context_ptr.take() {
-                    unsafe { reclaim_context(context_ptr.0) };
-                }
-            } else {
-                tracing::debug!(
-                    provider = DESCRIPTOR.name,
-                    "browse cancel produced no terminal callback; context leaked by design"
-                );
-            }
+        if let Some(context_ptr) = self.context_ptr.take() {
+            // DnsStopMulticastQuery synchronously stops the indefinite query;
+            // after it succeeds dnsapi will not invoke this query's callback.
+            unsafe { reclaim_context(context_ptr.0) };
         }
         Ok(())
     }
@@ -862,6 +901,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ttl_zero_ptrs_normalize_to_removed_events() {
+        assert!(ptr_is_removed(0));
+        assert!(!ptr_is_removed(1));
+        assert_eq!(
+            removed_ptr_event(
+                false,
+                "Peer One._koi-ph4._tcp.local.",
+                "_koi-ph4._tcp.local."
+            ),
+            ProviderEvent::Removed {
+                name: "Peer One".to_string(),
+                service_type: "_koi-ph4._tcp".to_string(),
+            }
+        );
+        assert_eq!(
+            removed_ptr_event(
+                true,
+                "_koi-ph4._tcp.local.",
+                "_services._dns-sd._udp.local."
+            ),
+            ProviderEvent::Removed {
+                name: "_koi-ph4._tcp".to_string(),
+                service_type: String::new(),
+            }
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires the Windows DNS Client facility"]
     async fn real_dnsapi_report_declares_read_routes_only() {
@@ -871,5 +938,41 @@ mod tests {
         assert_eq!(report.running, ProbeFact::Yes);
         assert!(report.capabilities.continuous_browse);
         assert!(!report.capabilities.publish);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live physical DNS-SD peer and KOI_REAL_MDNS_TEST_TYPE/NAME"]
+    async fn real_multicast_browse_observes_resolve_and_withdrawal() {
+        let service_type = std::env::var("KOI_REAL_MDNS_TEST_TYPE")
+            .expect("KOI_REAL_MDNS_TEST_TYPE must name a live physical service type");
+        let expected_name = std::env::var("KOI_REAL_MDNS_TEST_NAME")
+            .expect("KOI_REAL_MDNS_TEST_NAME must name the run-owned physical publication");
+        let (mut browse, registration) = open_dnsapi_browse(&service_type, false)
+            .await
+            .expect("open multicast browse");
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                match browse.recv().await.expect("browse stream ended") {
+                    ProviderEvent::Resolved(service) if service.name == expected_name => break,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("network resolution timeout");
+        println!("READY_FOR_WITHDRAWAL");
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match browse.recv().await.expect("browse stream ended") {
+                    ProviderEvent::Removed { name, .. } if name == expected_name => break,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("network withdrawal timeout");
+        browse.close().await.expect("close multicast browse");
+        registration.cancel.cancel();
+        registration.reaper.await.expect("join browse reaper");
     }
 }
