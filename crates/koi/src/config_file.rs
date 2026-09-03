@@ -166,7 +166,16 @@ pub fn discover(explicit: Option<&Path>) -> Result<Option<PathBuf>, String> {
 /// Parse + validate a config file body. Unknown keys fail loudly; a wrong
 /// `version` fails loudly with the supported version named.
 pub fn parse(body: &str) -> Result<FileConfig, String> {
-    let cfg: FileConfig = toml::from_str(body).map_err(|e| format!("invalid config file: {e}"))?;
+    let mut root: toml::Table =
+        toml::from_str(body).map_err(|e| format!("invalid config file: {e}"))?;
+    if let Some(proxy) = root.remove("proxy") {
+        let _: koi_proxy::config::ProxyConfig = proxy
+            .try_into()
+            .map_err(|e| format!("invalid config file: {e}"))?;
+    }
+    let cfg: FileConfig = toml::Value::Table(root)
+        .try_into()
+        .map_err(|e| format!("invalid config file: {e}"))?;
     if cfg.version != CONFIG_VERSION {
         return Err(format!(
             "unsupported config version {} (supported: {CONFIG_VERSION})",
@@ -395,6 +404,24 @@ no_webhooks = true
     #[test]
     fn unknown_keys_are_a_loud_error() {
         let err = parse("version = 1\nno_such_key = true\n").unwrap_err();
+        assert!(err.contains("unknown field"), "{err}");
+    }
+
+    #[test]
+    fn proxy_owned_section_parses_without_weakening_top_level_validation() {
+        parse(
+            r#"
+version = 1
+
+[proxy]
+entries = [
+  { name = "dashboard", listen_port = 8443, backend = "127.0.0.1:3000" },
+]
+"#,
+        )
+        .expect("the proxy-owned section written by koi-proxy must remain launchable");
+
+        let err = parse("version = 1\n[proxy]\nunknown = true\n").unwrap_err();
         assert!(err.contains("unknown field"), "{err}");
     }
 

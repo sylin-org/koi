@@ -13,10 +13,12 @@ pub struct ProxyEntry {
     pub allow_remote: bool,
 }
 
+/// The proxy-owned section of Koi's shared `config.toml` substrate.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct ProxySection {
+#[serde(deny_unknown_fields)]
+pub struct ProxyConfig {
     #[serde(default)]
-    entries: Vec<ProxyEntry>,
+    pub entries: Vec<ProxyEntry>,
 }
 
 // Phase 2: migrate onto an injected data root like certmesh did.
@@ -51,7 +53,7 @@ fn load_entries_from(path: &std::path::Path) -> Result<Vec<ProxyEntry>, ProxyErr
         .get("proxy")
         .cloned()
         .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
-    let proxy: ProxySection = proxy
+    let proxy: ProxyConfig = proxy
         .try_into()
         .map_err(|e| ProxyError::Config(format!("Invalid proxy section: {e}")))?;
     Ok(proxy.entries)
@@ -74,7 +76,7 @@ fn save_entries_to(entries: &[ProxyEntry], path: &std::path::Path) -> Result<(),
         toml::Value::Table(toml::map::Map::new())
     };
 
-    let proxy = ProxySection {
+    let proxy = ProxyConfig {
         entries: entries.to_vec(),
     };
     let proxy_value = toml::Value::try_from(proxy)
@@ -148,11 +150,11 @@ mod tests {
             backend: "http://localhost:3000".to_string(),
             allow_remote: false,
         };
-        let proxy = ProxySection {
+        let proxy = ProxyConfig {
             entries: vec![entry.clone()],
         };
         let value = toml::Value::try_from(proxy).unwrap();
-        let decoded: ProxySection = value.try_into().unwrap();
+        let decoded: ProxyConfig = value.try_into().unwrap();
         assert_eq!(decoded.entries[0], entry);
     }
 }
