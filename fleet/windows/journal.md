@@ -2,7 +2,7 @@
 
 ## 2026-09-03 (16) — PH-1 ownership-aware SCM lifecycle accepted
 
-commit: this commit, on top of `48f8e3e` | gates: fmt clean; full-workspace strict all-target clippy clean; focused Windows/recipe suites green; full locked all-target workspace suite green; locked release build green | run `20260903T031639Z-windows-installer` PASS | evidence `.tmp/20260903T031639Z-windows-installer/rerun-raw-scm/`
+commit: implementation/docs `40e21fa`, rebased onto fleet head `df9b141`; the accepted production tree began at `48f8e3e` | gates: fmt clean; full-workspace strict all-target clippy clean; focused Windows/recipe suites green; full locked all-target workspace suite green; locked release build green | run `20260903T031639Z-windows-installer` PASS | evidence `.tmp/20260903T031639Z-windows-installer/rerun-raw-scm/`
 
 koi state now: the exact accepted candidate is installed through the product SCM path at `C:\Program Files\Koi\koi.exe`, RUNNING as the sole Koi PID `19408`, SHA-256 `5863c27cd74a1b24163642ee2c2cad4baacdecc28b43ec44b5b095cb0d97e217`, with health 200 on `127.0.0.1:5641`. The byte-exact baseline config and local-access policy are restored, the config again contains no explicit port decision, the canonical AutoStart LocalSystem descriptor and restart policy are restored, and the five product-managed firewall rules again name only the installed image. The unchanged installed workbench remains PID `20444`, SHA-256 `bb07bb2c232f1ea7398348b1cb4a215dc7d2de04c9c21461bc6fe092de05e245`, with its exact `--minimized` Run entry.
 
