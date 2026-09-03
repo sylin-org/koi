@@ -122,6 +122,11 @@ and refuses to claim installation when either facility is unavailable.
 - Reinstalling a live, no-config Koi no longer manufactures a shifted config
   by classifying Koi's own sockets as foreign. Fresh machines still yield to a
   real incumbent, and every platform recipe consumes the same pure decision.
+- CachyOS physical acceptance installed candidate `41ad76b` through the sole
+  standing system service while it owned the standard ports. The transaction
+  retained `5641:5644`, did not create `/etc/koi/config.toml`, and a deliberately
+  mismatched candidate health port drove rollback of the exact binary, unit,
+  operator policy, config absence, and active/enabled state.
 
 ## Deferred
 

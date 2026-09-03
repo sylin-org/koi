@@ -51,11 +51,11 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 
 ### 2026-09-02 convergence checkpoint
 
-Windows, Bluefin, and Debian have closed their current local PH-2/PH-3 physical
-gates. Alpine has closed package ownership, transactional OpenRC supervision, the
-native musl foundation, and its installed Plasma/session lifecycle, but still owes
-its provider/interface and local security gates. CachyOS remains the integration
-driver and owns the two shared corrections that block a responsible candidate freeze:
+Windows, CachyOS, Bluefin, and Debian have closed their current local PH-2/PH-3
+physical gates. Alpine has closed package ownership, transactional OpenRC
+supervision, the native musl foundation, and its installed Plasma/session lifecycle,
+but still owes its provider/interface and local security gates. The two shared
+corrections formerly owned by the CachyOS integration driver landed in `41ad76b`:
 
 1. Linux install planning must distinguish the Koi deployment being replaced from a
    genuinely foreign port owner. Systemd and OpenRC must preserve an existing
@@ -67,12 +67,23 @@ driver and owns the two shared corrections that block a responsible candidate fr
    publication and drive ordinary provider reconciliation rather than leave Koi
    reporting a withdrawn record as established.
 
-While those shared changes land, Alpine executes its remaining local gates, Debian
-prepares the reusable PH-5 collector without starting the soak, and Windows/Bluefin
-reconcile their advertised platform contracts and remain unchanged physical peers.
-After the correction lands, CachyOS, Alpine, Bluefin, and Debian each exercise the
-relevant installer path on their one real deployment. Then PH-0 through PH-3 are
-reconciled once, one exact `dev` revision is frozen, and PH-4 begins.
+CachyOS accepted both corrections on its one real deployment: an in-place upgrade
+kept `5641:5644` without creating a config, a deliberately unhealthy candidate
+restored the exact prior deployment, and physical run
+`20260903T000933Z-837819` observed a late resolve1 conflict as
+`desired=3, established=1, pending=2` before automatic recovery to `3/3/0`.
+The Koi PID stayed fixed and both hosts' provider state was restored exactly.
+CachyOS then retained that daemon and its one packaged Plasma workbench through
+lock/unlock, primary-interface loss/return, and a real suspend/resume. A fresh
+Plasma Login Manager session armed exactly one minimized workbench from its native
+package, and an unrelated UID remained outside authenticated local control.
+
+Alpine, Bluefin, and Debian now validate the shared installer decision on their one
+real deployment while completing their remaining local gates; Windows consumes the
+same final-before-mutation contract through SCM. Debian prepares the reusable PH-5
+collector without starting the soak. CachyOS remains an unchanged integration peer.
+Then PH-0 through PH-3 are reconciled once, one exact `dev` revision is frozen, and
+PH-4 begins.
 
 ## Immediate correctness work
 

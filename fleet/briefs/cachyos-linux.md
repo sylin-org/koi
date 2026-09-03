@@ -14,33 +14,37 @@ oracle, not the member node's empty local-CA roster. The old
 correct it in place—do not revive the old user daemon or run a second Koi.
 
 Current safety fact (2026-09-02): this host has no `/etc/koi/config.toml`; its standing
-Koi owns the standard ports. At `3a5a6d1`, systemd/OpenRC installation plans ports while
-that service is still listening, so deploying that candidate can mistake Koi for a
-foreign collision and manufacture a shifted config. Do not install it before the shared
-ownership-aware planning correction lands.
+Koi owns the standard ports. The ownership-aware correction landed in `41ad76b` and
+was accepted through the real installed service: upgrade retained `5641:5644` without
+manufacturing a config, and a deliberately unhealthy replacement restored the exact
+prior deployment.
 
 ## 2026-09-02 convergence dispatch (after `911c590`)
 
-1. Correct endpoint planning once at the shared Linux installer boundary. Model the
+1. **Complete (`41ad76b`).** Correct endpoint planning once at the shared installer
+   boundary. Model the
    deployment being replaced as owned state: preserve its explicit or effective port
    run even while its listener is live, but continue to shift a fresh install around a
    genuinely foreign owner. Systemd and OpenRC consume that one decision. Cover
    no-config legacy installs, explicit config/drop-ins, real foreign listeners,
    failed replacement, and interrupted re-entry without another platform facade.
-2. Complete `systemd-resolved` publication ownership in `koi-mdns`. Quiet initial
+2. **Complete (`41ad76b`).** Complete `systemd-resolved` publication ownership in
+   `koi-mdns`. Quiet initial
    settlement may acknowledge a lease, but conflict observation lives until withdrawal;
    a later `Conflicted` signal or dead signal stream invalidates the publication and
    reaches the existing session/control-plane reconciliation path. Avoid polling,
    provider-specific orchestration, and a second recovery owner. Exercise the real
    resolved/Avahi/native transition with an unchanged physical peer after focused tests.
-3. Deploy the exact merged candidate through this host's one installed system service.
-   Prove standard `5641:5644` survives upgrade without creating `/etc/koi/config.toml`,
-   a broken candidate restores the exact deployment, and provider conflict/loss/return
-   preserves truthful desired/established counts. Then close fresh Plasma login,
-   lock/unlock, suspend/resume, primary-interface churn, and wrong-UID local control.
-4. Reconcile this hat's PH-0 claims and leave the accepted artifact ready for the
-   frozen PH-4 matrix. Do not begin the soak or repeat already-green package,
-   decoration, notification, Pond, or Avahi gates unless relevant bytes changed.
+3. **Complete.** The exact merged candidate is installed
+   through this host's one system service. Standard `5641:5644` survived without
+   `/etc/koi/config.toml`; a broken candidate restored the exact deployment; and run
+   `20260903T000933Z-837819` proved truthful late-conflict counts and recovery. The
+   installed package also passed fresh Plasma login, lock/unlock, real suspend/resume,
+   primary-interface down/up with peer observation, and wrong-UID local control.
+4. **Local reconciliation complete.** This hat's PH-0 claims and surface ledger match
+   the accepted artifact. Remain an unchanged peer until the fleet converges and one
+   revision is frozen for PH-4; do not begin the soak or repeat already-green package,
+   decoration, notification, Pond, or Avahi gates unless relevant bytes change.
 
 ## Prior PH-001 dispatch (after `3a5a6d1`)
 

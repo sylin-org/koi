@@ -5,6 +5,8 @@
 # service alive while Avahi and systemd-resolved are removed/restored underneath
 # it. The peer contributes its one installed Koi service, so every publication,
 # browse, resolve, and withdrawal crosses both the LAN and a real Koi boundary.
+# The resolve1 phase also injects a real late SRV conflict from that peer and
+# proves truthful pending state plus automatic publication recovery.
 # This script never starts a Koi process and never mutates the peer's providers.
 set -Eeuo pipefail
 
@@ -119,6 +121,8 @@ PEER_REGISTRATION_ID=""
 REGULAR_ID=""
 EXPLICIT_ID=""
 SUBSCRIBE_PID=""
+CONFLICT_PID=""
+LATE_CONFLICT_LINK_MODE=""
 INITIAL_PID=""
 INITIAL_HASH=""
 LAST_GENERATION=-1
@@ -223,7 +227,7 @@ read_token() {
 
 case "$operation" in
   probe)
-    for command in curl jq sha256sum systemctl pgrep awk; do
+    for command in curl jq sha256sum systemctl pgrep awk python3; do
       command -v "$command" >/dev/null || {
         echo "peer is missing required command: $command" >&2
         exit 2
@@ -252,6 +256,56 @@ case "$operation" in
     token="$(read_token)"
     curl -fsS --max-time 8 -X DELETE \
       -H "x-koi-token: $token" "$api/v1/mdns/unregister/$id" >/dev/null
+    ;;
+  conflict)
+    name="$1"
+    service_type="$2"
+    source_ip="$3"
+    # Emit a real conflicting SRV answer, then answer resolve1's verification
+    # probes with a lexicographically dominant proposed record. This drives
+    # systemd-resolved's documented DnssdService.Conflicted signal after the
+    # publication's initial settlement window; no second Koi is launched.
+    python3 - "$name" "$service_type" "$source_ip" <<'PY'
+import socket
+import struct
+import sys
+import time
+
+name, service_type, source_ip = sys.argv[1:]
+instance = f"{name}.{service_type}.local."
+target = "zzzz-koi-conflict.local."
+
+def wire_name(value):
+    labels = value.rstrip(".").split(".")
+    return b"".join(bytes([len(label.encode())]) + label.encode() for label in labels) + b"\0"
+
+def srv_record(ttl, cache_flush):
+    rdata = struct.pack("!HHH", 65535, 65535, 65535) + wire_name(target)
+    rr_class = 0x8001 if cache_flush else 1
+    return wire_name(instance) + struct.pack("!HHIH", 33, rr_class, ttl, len(rdata)) + rdata
+
+response = struct.pack("!HHHHHH", 0, 0x8400, 0, 1, 0, 0) + srv_record(1, True)
+question = wire_name(instance) + struct.pack("!HH", 255, 1)
+probe = struct.pack("!HHHHHH", 0, 0, 1, 0, 1, 0) + question + srv_record(1, False)
+goodbye = struct.pack("!HHHHHH", 0, 0x8400, 0, 1, 0, 0) + srv_record(0, True)
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+if hasattr(socket, "SO_REUSEPORT"):
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+sock.bind(("", 5353))
+sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(source_ip))
+sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+
+destination = ("224.0.0.251", 5353)
+for _ in range(48):
+    sock.sendto(response, destination)
+    time.sleep(0.1)
+    sock.sendto(probe, destination)
+    time.sleep(0.15)
+sock.sendto(goodbye, destination)
+sock.close()
+PY
     ;;
   *)
     echo "unknown peer mutation: $operation" >&2
@@ -674,6 +728,67 @@ await_routes() {
   return 1
 }
 
+await_resolved_conflict_recovery() {
+  local deadline=$((SECONDS + 30)) status
+  : >"$EVIDENCE_DIR/resolved-late-conflict-status.ndjson"
+  while ((SECONDS < deadline)); do
+    status="$(mdns_status 2>/dev/null || true)"
+    printf '%s\n' "$status" \
+      >>"$EVIDENCE_DIR/resolved-late-conflict-status.ndjson"
+    if jq -e '
+        .state == "degraded"
+        and .publications.established < .publications.desired
+        and .publications.pending > 0
+        and any(.providers[];
+          .name == "systemd-resolved" and .session == "recovering")
+      ' <<<"$status" >/dev/null 2>&1; then
+      printf '%s\n' "$status" | jq . \
+        >"$EVIDENCE_DIR/resolved-late-conflict-observed.json"
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "late resolve1 conflict never reached truthful recovering/pending state" >&2
+  return 1
+}
+
+assert_resolved_late_conflict() {
+  local journal_since
+  LATE_CONFLICT_LINK_MODE="$(resolved_link_mdns "$LAN_LINK")"
+  if [[ "$LATE_CONFLICT_LINK_MODE" != yes ]]; then
+    echo "late-conflict gate requires resolved publish mode on $LAN_LINK, got $LATE_CONFLICT_LINK_MODE" >&2
+    return 1
+  fi
+  journal_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  peer_mutation conflict "$KOI_NAME" "$SERVICE_TYPE" "$PEER_HOST" \
+    >"$EVIDENCE_DIR/resolved-late-conflict-emitter.txt" 2>&1 &
+  CONFLICT_PID=$!
+  sleep 1
+  "${PRIV[@]}" resolvectl mdns "$LAN_LINK" no
+  sleep 1
+  "${PRIV[@]}" resolvectl mdns "$LAN_LINK" yes
+  await_resolved_conflict_recovery
+  wait "$CONFLICT_PID"
+  CONFLICT_PID=""
+
+  await_routes resolved-conflict-recovered \
+    systemd-resolved native native systemd-resolved 0
+  heartbeat
+  assert_single_koi
+  assert_peer_koi_unchanged
+  peer_observes_subject resolved-conflict-recovered
+  "${PRIV[@]}" journalctl -u koi.service --since "$journal_since" --no-pager \
+    >"$EVIDENCE_DIR/resolved-late-conflict-journal.txt"
+  grep -F "late mDNS conflict" \
+    "$EVIDENCE_DIR/resolved-late-conflict-journal.txt" >/dev/null || {
+      echo "Koi did not record the late resolve1 conflict" >&2
+      return 1
+    }
+  "${PRIV[@]}" resolvectl mdns "$LAN_LINK" "$LATE_CONFLICT_LINK_MODE"
+  LATE_CONFLICT_LINK_MODE=""
+  echo "PASS resolved late-conflict recovery"
+}
+
 heartbeat() {
   local auth id
   auth="$(token)"
@@ -840,6 +955,16 @@ cleanup() {
   CLEANING=1
   trap - EXIT INT TERM
   [[ -z "$SUBSCRIBE_PID" ]] || kill "$SUBSCRIBE_PID" 2>/dev/null || true
+  if [[ -n "$CONFLICT_PID" ]]; then
+    kill "$CONFLICT_PID" 2>/dev/null || true
+    wait "$CONFLICT_PID" 2>/dev/null || true
+    CONFLICT_PID=""
+  fi
+  if [[ -n "$LATE_CONFLICT_LINK_MODE" ]] \
+     && [[ "$(unit_active systemd-resolved.service)" == active ]]; then
+    "${PRIV[@]}" resolvectl mdns "$LAN_LINK" "$LATE_CONFLICT_LINK_MODE" || true
+    LATE_CONFLICT_LINK_MODE=""
+  fi
   unregister_subject
   if ! remote_stop_publisher; then
     echo "ERROR: run-owned peer Koi registration did not clean up" >&2
@@ -1008,6 +1133,7 @@ assert_phase avahi avahi avahi avahi avahi
 
 enter_provider_phase resolved
 assert_phase resolved-native systemd-resolved native native systemd-resolved
+assert_resolved_late_conflict
 
 enter_provider_phase native
 assert_phase native-only native native native none

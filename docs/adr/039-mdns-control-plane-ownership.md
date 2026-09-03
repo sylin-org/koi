@@ -188,3 +188,11 @@ remain inside their adapter modules. `mdns-sd` remains isolated to `native.rs`.
    exercise status and mutations through that one service. A second `MdnsCore`, a
    standalone Koi, or an example that leaves the installed daemon untouched is a
    diagnostic only and cannot satisfy this gate.
+
+CachyOS run `20260903T000933Z-837819` exercises the complete resolve1 ownership
+lifetime in the installed two-host gate. A real conflicting SRV answer emitted by
+the unchanged peer, followed by link-level mDNS reprobe, caused resolve1's late
+`Conflicted` signal. Structured state moved from ready to recovering with three
+desired, one established, and two pending publications, then returned to three
+established without a Koi restart. Both machines retained one installed Koi and
+their exact provider configuration after cleanup.
