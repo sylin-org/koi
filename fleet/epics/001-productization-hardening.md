@@ -46,18 +46,26 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 | PH-1 | Platform truth and durable lifecycle | **green fleet-wide** | Clean install, in-place upgrade, failed-upgrade recovery, reboot, uninstall, and reinstall use product-owned paths and preserve intended identity/configuration. |
 | PH-2 | Environmental recovery | **green fleet-wide** | Process crash, provider loss/return, link/IP churn, firewall change, runtime disconnect, boot, lock, and sleep/resume recover without duplicates or manual re-arming. |
 | PH-3 | Security-boundary hardening | **green fleet-wide** | Local-control identity, Pond allowlist, operator auth, installer privilege, key custody, hostile LAN input, and resource bounds have executable negative gates; no unresolved critical/high finding remains. |
-| PH-4 | Installed whole-story matrix | **active — source frozen at `f53d568a871e952576988e543126160bfd41aaaa`** | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
+| PH-4 | Installed whole-story matrix | **active — source re-frozen at `9134b32c87db990f18b09c56038d8c6255607ffa`** | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
 | PH-5 | Onboarding, diagnostics, and soak | collector ready; waits on PH-4 | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
 
-### 2026-09-03 PH-4 source freeze and execution contract
+### 2026-09-03 PH-4 source re-freeze and execution contract
 
 The exact Koi source candidate is
-`f53d568a871e952576988e543126160bfd41aaaa`. It is already present on
+`9134b32c87db990f18b09c56038d8c6255607ffa`. It is already present on
 `origin/dev`. Every PH-4 daemon/package artifact must be built from a clean export or
 detached worktree of that commit, even while later journal and dispatch commits advance
 `dev`. Record both the full source SHA and installed artifact SHA-256. Existing native
 workbench artifacts may remain only where their own source and installed bytes are
 unchanged; record that separate provenance explicitly.
+
+This supersedes and invalidates `f53d568a871e952576988e543126160bfd41aaaa`.
+Windows's installed PH-4 transaction proved that the proxy API persisted its supported
+`[proxy]` section into the shared `config.toml`, while that same candidate's strict
+launch parser rejected the section during the next install or restart. The shared
+parser now recognizes and validates the proxy-owned schema without weakening unknown
+top-level-key rejection. Any PH-4 artifact or local verdict built from the invalidated
+source must be rebuilt and rerun from the exact re-freeze above.
 
 PH-0 through PH-3 are reconciled green at this boundary. Their final pre-freeze input
 includes the accepted Windows SCM recovery correction, Bluefin immutable reboot,

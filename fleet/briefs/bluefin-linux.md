@@ -16,7 +16,7 @@ primary-interface churn, Avahi/resolved/native recovery, wrong-UID local control
 Pond/firewalld gate are already physically green. Do not repeat those gates against an
 unchanged artifact.
 
-## 2026-09-03 PH-4 dispatch (frozen source `f53d568a871e952576988e543126160bfd41aaaa`)
+## 2026-09-03 PH-4 dispatch (frozen source `9134b32c87db990f18b09c56038d8c6255607ffa`)
 
 1. Build Koi from a clean export/detached worktree of the exact frozen source inside
    `koi-dev`, run the full locked native gates there, and install it serially through

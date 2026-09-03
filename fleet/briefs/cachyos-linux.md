@@ -19,7 +19,7 @@ was accepted through the real installed service: upgrade retained `5641:5644` wi
 manufacturing a config, and a deliberately unhealthy replacement restored the exact
 prior deployment.
 
-## 2026-09-03 PH-4 dispatch (frozen source `f53d568a871e952576988e543126160bfd41aaaa`)
+## 2026-09-03 PH-4 dispatch (frozen source `9134b32c87db990f18b09c56038d8c6255607ffa`)
 
 1. Build a release artifact from a clean export or detached worktree of the exact
    frozen source, run its full locked native gates, and install it serially through the

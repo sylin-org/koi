@@ -17,7 +17,7 @@ adapter; `0026951` closed the shared slot-lifecycle leak; `97a0817` made startup
 consume the same batched verdict and canonicalized connection categories. Do not repeat
 those destructive workbooks unless later implementation changes their behavior.
 
-## 2026-09-03 PH-4 dispatch (frozen source `f53d568a871e952576988e543126160bfd41aaaa`)
+## 2026-09-03 PH-4 dispatch (frozen source `9134b32c87db990f18b09c56038d8c6255607ffa`)
 
 1. Build the locked release from a clean checkout/export of the exact frozen source,
    run the full native Windows gates with ordinary parallelism, and install it through
