@@ -133,3 +133,16 @@ findings:
 1. The public surface ledger omitted Bluefin from platform supervision even though this journal already proves the immutable composition: toolbox-only build dependencies, transactional `/usr/local/bin/koi` systemd lifecycle, rpm-ostree desktop install/upgrade/rollback/activation, and singleton GNOME autostart/SNI. The ledger now records that evidence and its journal guard.
 2. The README described Linux service integration as systemd-only despite the shipped OpenRC recipe. Its platform matrix now advertises both systemd and OpenRC `supervise-daemon`; the service guide's stale “all three” count now describes every supported recipe without inventing a platform count.
 3. Workbench, provider, firewall, local-control, Pond, and lifecycle claims otherwise match the installed Bluefin evidence. The ownership-aware Linux installer correction remains a shared CachyOS-owned blocker, so no new rpm-ostree/systemd upgrade proof or PH-4 soak is claimed here.
+
+## 2026-09-02 23:20 EDT — PH-1 ownership-aware installer pre-reboot checkpoint
+
+commit: source `48f8e3e44569a49e20c4349793b101126e7f9536`; accepted release/installed daemon SHA-256 `d5faa755a15b27985992e296d9c8ffc0ddfaec1ab3668b19961cfe9dff7c047f` | gates: fmt; locked all-target/all-feature strict clippy; locked all-target/all-feature workspace tests; release build; real installed upgrade; forced failed-candidate rollback; fresh foreign-listener planning
+koi state now: exactly one enabled system `koi.service`, PID `71224`, `NRestarts=0`, `/usr/local/bin/koi --daemon`; standard `5641:5644`; `/etc/koi/config.toml` absent; exactly one unchanged `/usr/bin/koi-desktop --minimized`, PID `2975`, from `koi-0.1.2-1.x86_64`.
+peers/run: none — host-local serial PH-1 installer acceptance
+restoration: the non-Koi incumbent, fault fixture/drop-in, shifted test deployment, transaction files, and test-created config are absent. The accepted standard-port candidate is active and matches the release artifact. Root rollback snapshot `/var/tmp/koi-bluefin-prefreeze` remains until post-reboot verification.
+findings:
+
+1. Upgrading the standing legacy no-config service recognized product ownership, retained `5641:5644`, created no config, and changed the sole daemon from PID `19596` to the accepted PID lineage without overlapping Koi processes.
+2. A distinct executable candidate (SHA-256 `2e9a708597ea278732ae99124becb49cc1341c424fb0916f881562912d885a5c`) was made unhealthy only after its transaction armed: systemd started it on 6541 while verification expected 5641. Install returned 1 and restored the exact accepted binary, unit, local-operator policy, config absence, active/enabled state, and standard endpoint; no manifest, backup, staging file, or fault drop-in remains.
+3. With the Koi unit serially uninstalled, a real Python process owned TCP `5641:5644`. A genuinely fresh install selected `5651:5654`, persisted that decision, and ran beside the incumbent. The shifted service was then uninstalled, the incumbent stopped, its test-created config removed, and the accepted candidate reinstalled on the original standard run.
+4. Bluefin has an automatic base-image deployment `44.20260901` staged with the same native desktop RPM. The next continuation must verify activation after one reboot and must not repeat the installer, rollback, or foreign-listener gates recorded above.
