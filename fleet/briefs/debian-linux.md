@@ -11,7 +11,7 @@ green: installed-service Avahi/resolved/native loss and return, pre-armed primar
 recovery, honest no-backend firewall reporting, independent-peer Pond policy, and
 bounded hostile DNS/mDNS/HTTP input. Do not repeat these gates on an unchanged artifact.
 
-## 2026-09-03 PH-4 dispatch (frozen source `9134b32c87db990f18b09c56038d8c6255607ffa`)
+## 2026-09-03 PH-4 dispatch (frozen source `5c89e9de11bf23ab81fd8b5b0778c58477359360`)
 
 1. Build a locked release from a clean export/detached worktree of the exact frozen
    source, run full native gates, and install it serially through the public systemd

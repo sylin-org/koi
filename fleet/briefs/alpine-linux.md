@@ -8,7 +8,7 @@ controls, bounded supervision/logs, crash recovery, failed-install rollback, ord
 APK upgrade/removal/reinstall, native musl gates, and Pond are green. Avahi is installed
 but stopped and must be restored to that exact baseline after any provider gate.
 
-## 2026-09-03 PH-4 dispatch (frozen source `9134b32c87db990f18b09c56038d8c6255607ffa`)
+## 2026-09-03 PH-4 dispatch (frozen source `5c89e9de11bf23ab81fd8b5b0778c58477359360`)
 
 1. Produce signed/indexed APKs from a clean source archive of the exact frozen commit,
    run the full locked musl gates, and upgrade the sole package-owned daemon/workbench
