@@ -1002,6 +1002,7 @@ pub struct InstalledServiceReport {
     pub source_commit: String,
     pub service_node: String,
     pub observer: String,
+    pub peer_node: String,
     pub peer_surface: String,
     pub target_duration_seconds: u64,
     pub sample_interval_seconds: u64,

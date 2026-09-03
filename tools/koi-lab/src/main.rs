@@ -278,6 +278,9 @@ enum LabCommand {
         max_thread_growth: u64,
         #[arg(long, default_value_t = 8)]
         max_task_growth: u64,
+        /// Catalog identity of the independently installed Koi peer.
+        #[arg(long)]
+        peer: String,
         /// Root URL returned by an independently installed peer's Koi Pond surface.
         #[arg(long)]
         peer_surface: String,
@@ -518,6 +521,7 @@ fn main() -> Result<()> {
             max_descriptor_growth,
             max_thread_growth,
             max_task_growth,
+            peer,
             peer_surface,
         } => {
             let report = lab.installed_service_collect(
@@ -535,6 +539,7 @@ fn main() -> Result<()> {
                     max_descriptor_growth,
                     max_thread_growth,
                     max_task_growth,
+                    peer_node: peer,
                     peer_surface,
                 },
             )?;

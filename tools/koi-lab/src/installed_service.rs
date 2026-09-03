@@ -46,6 +46,7 @@ pub struct InstalledServiceOptions {
     pub max_descriptor_growth: u64,
     pub max_thread_growth: u64,
     pub max_task_growth: u64,
+    pub peer_node: String,
     pub peer_surface: String,
 }
 
@@ -151,6 +152,7 @@ impl Lab {
             source_commit,
             service_node,
             observer: observer.name().to_owned(),
+            peer_node: options.peer_node.clone(),
             peer_surface,
             target_duration_seconds: options.duration_seconds,
             sample_interval_seconds: options.sample_interval_seconds,
@@ -212,10 +214,23 @@ fn validate_options(options: &InstalledServiceOptions) -> Result<()> {
         );
     }
     validate_service_name(&options.service_name)?;
+    validate_peer_node(&options.peer_node)?;
     if !options.binary_path.is_absolute() {
         bail!("installed binary path must be absolute");
     }
     canonical_peer_surface(&options.peer_surface)?;
+    Ok(())
+}
+
+fn validate_peer_node(peer_node: &str) -> Result<()> {
+    if peer_node.is_empty()
+        || peer_node.len() > 128
+        || !peer_node
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        bail!("unsafe peer node {peer_node:?}");
+    }
     Ok(())
 }
 
@@ -781,6 +796,7 @@ mod tests {
             max_descriptor_growth: 16,
             max_thread_growth: 8,
             max_task_growth: 8,
+            peer_node: "test-01".to_owned(),
             peer_surface: "http://192.0.2.1:5644".to_owned(),
         }
     }
