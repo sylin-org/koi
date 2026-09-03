@@ -19,6 +19,25 @@ was accepted through the real installed service: upgrade retained `5641:5644` wi
 manufacturing a config, and a deliberately unhealthy replacement restored the exact
 prior deployment.
 
+## 2026-09-03 12:03 EDT PH-5 dispatch
+
+1. PH-4 is green. The final Windows/native lane passed and all five exact-source
+   artifacts plus required physical journeys are accepted. Do not repeat a PH-4 gate
+   or rebuild/reinstall unchanged product bytes.
+2. Prove the CachyOS installed-entry journey from the ordinary Plasma session and a
+   neutral working directory, using only `/usr/local/bin/koi`, the package-owned
+   workbench, trusted local control, and returned product URLs. Capture the visible
+   provider/trust/Pond diagnostics and one actionable unavailable state; preserve the
+   accepted identity and one service/workbench.
+3. After Debian lands the single neutral installed-service collector contract, accept
+   its systemd observer here with a short exact-artifact/Koi-peer canary. Do not create
+   a CachyOS-specific collector. Require real resource/provider/publication facts,
+   semantic Koi traffic, bounded recovery, and redaction.
+4. When systemd, OpenRC, and SCM canaries are green, assign one shared 24-hour-target
+   run ID (six-hour minimum), physical peer ring, and serial per-hat fault windows.
+   This hat owns only its scheduled Avahi→fallback→restoration mutation and exact local
+   cleanup, then reconciles PH-5. Do not start the long run early.
+
 ## 2026-09-03 11:36 EDT final PH-4 lane wait
 
 1. Accepted since the prior checkpoint: Windows↔CachyOS/Avahi run

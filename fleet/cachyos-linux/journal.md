@@ -160,3 +160,16 @@ findings:
 1. An initial process check falsely reported the desktop absent because it required the historical `--minimized` argument. The actual package-owned process was present as the sole `koi-desktop`; direct process, SNI, UI-health, package/hash, session-start timing, and singleton-poke checks all passed. No product correction is warranted from an over-specific observer.
 2. The sole daemon warning remains the truthful absence of optional Docker/Podman. No Koi error, second process, run-owned registration, provider residue, open Pond listener, firewall drift, or peer credential remains.
 3. PH-4 now waits only for Windows run `ph4-e49b-win-native-02` against unchanged exact-source Alpine; this host requires no further mutation before final reconciliation.
+
+## 2026-09-03 12:03 EDT — PH-4 fleet reconciliation complete
+
+commit: exact frozen source `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`; synchronized final Windows evidence `c7cbbd47576d8cc19563c1b5f55306ab69b752fe` | gates: all five exact-source artifact identities; installed whole-story and Pond entries; Windows↔Avahi, Windows↔native, and Avahi/resolve1↔native provider evidence; singleton/restoration/secret checks — **PASS, PH-4 GREEN**
+
+koi state now: unchanged post-reboot CachyOS baseline: one enabled+active `/usr/local/bin/koi --daemon`, PID `721`, `NRestarts=0`, installed SHA-256 `f0e999b0077eb25935f1ad563aee33f2e659ffde915d3f3c55f5aa568691682b`; Ready generation 1 with all routes on Avahi and one permanent desired/established publication; HEALTHY/Authenticated identity; loopback operator HTTP; Pond disabled/closed; one package-owned workbench PID `1150` and one SNI item.
+
+fleet evidence: Windows `9c4998461d3d0760a75c78dc2075d8d095666aa91626146af794f68d49e4b588`; CachyOS hash above; Bluefin `288362b8ae909d655f683f290f2b34bd5d8cb802a1184a0cebf27a1b3219e200`; Alpine `095371b9ed13cde254214155aa231db9333342c35255717654299fcd514e9941`; Debian `51682d682f155139f0e0d4c7f2bdce6b2e237f6bbf464ccdbfc7b30a7251cbbb`. Final run `ph4-e49b-win-native-02` held Windows PID `5312` and Alpine daemon/supervisor PIDs `2023`/`2022` through generations 1→5, bidirectional ordinary/explicit discovery, continuous resolution/removal, provider loss/return, and exact cleanup. The earlier exact-source Windows/Avahi and Debian/Pond runs plus the byte-identical Linux provider lane complete the physical matrix.
+
+findings:
+
+1. Every PH-4 exit condition is supported by installed physical evidence; no critical/high issue, source ambiguity, second Koi, credential leak, or unrestored system state remains. PH-4 is closed and must not be repeated on unchanged artifacts.
+2. PH-5 is dispatched as installed-entry/diagnostic proof followed by one coordinated installed-service soak. The existing collector remains the sole evidence boundary, but its generic SSH-port probe and systemd-only observation are insufficient for fleet acceptance; the shared core and native systemd/OpenRC/SCM observers must pass short Koi-traffic canaries before the six-to-24-hour run starts.

@@ -16,6 +16,23 @@ primary-interface churn, Avahi/resolved/native recovery, wrong-UID local control
 Pond/firewalld gate are already physically green. Do not repeat those gates against an
 unchanged artifact.
 
+## 2026-09-03 12:03 EDT PH-5 dispatch
+
+1. PH-4 is green. Preserve the exact system daemon and rpm-ostree-owned GNOME
+   workbench/SNI; do not repeat immutable lifecycle or whole-story gates.
+2. From the ordinary GNOME session and a neutral host directory, prove the installed
+   workbench/CLI entry and diagnostics without exposing toolbox, checkout, endpoint,
+   token, or alternate-root mechanics. Capture the first useful result, truthful
+   provider/trust/Pond state, and one actionable unavailable explanation.
+3. When Debian's neutral collector change lands, build the harness inside `koi-dev`
+   but run its short systemd observation canary against the real host installation and
+   a Koi-owned peer surface. Require exact artifact/PID, resources, provider and
+   publication counts, semantic traffic, one workbench/SNI, and no host build-package
+   layering. Do not create an immutable-host-specific collector.
+4. During the shared soak, own only Bluefin's assigned serial service/provider
+   recovery window and exact firewalld/session restoration. Do not start it before all
+   observer canaries and CachyOS's run ID are present.
+
 ## 2026-09-03 09:20 EDT exact-source replacement dispatch
 
 1. Replace the now-invalidated daemon with a clean toolbox build from exact source

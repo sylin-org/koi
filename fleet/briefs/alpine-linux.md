@@ -8,6 +8,23 @@ controls, bounded supervision/logs, crash recovery, failed-install rollback, ord
 APK upgrade/removal/reinstall, native musl gates, and Pond are green. Avahi is installed
 but stopped and must be restored to that exact baseline after any provider gate.
 
+## 2026-09-03 12:03 EDT PH-5 dispatch
+
+1. PH-4 is green. Keep the accepted r3 APK/OpenRC daemon, native provider baseline,
+   shifted ports, and package-owned workbench unchanged.
+2. From the ordinary Plasma session and a neutral directory, prove the installed musl
+   CLI/workbench entry journey without a checkout, Cargo path, endpoint/token override,
+   or second Koi. Capture useful provider/trust/Pond diagnostics and an actionable
+   unavailable state.
+3. Research the real OpenRC/supervise-daemon service, supervisor, child-process, RSS,
+   descriptor, thread/task, and restart facts available on this host. After Debian's
+   neutral collector contract lands, implement or accept one thin OpenRC observer
+   behind it; do not add an Alpine-only collector or fabricate systemd-shaped fields.
+   Pass a short exact-APK/Koi-peer canary and push it.
+4. During the coordinated soak, own only Alpine's assigned serial OpenRC/native
+   recovery window and exact restoration, including stopped/disabled Avahi. Do not
+   begin the duration run before all observer canaries and the shared run ID exist.
+
 ## 2026-09-03 09:20 EDT exact-source replacement dispatch
 
 1. The former `5c89e9d` freeze is invalidated by a Windows-only DNS-SD withdrawal

@@ -46,8 +46,74 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 | PH-1 | Platform truth and durable lifecycle | **green fleet-wide** | Clean install, in-place upgrade, failed-upgrade recovery, reboot, uninstall, and reinstall use product-owned paths and preserve intended identity/configuration. |
 | PH-2 | Environmental recovery | **green fleet-wide** | Process crash, provider loss/return, link/IP churn, firewall change, runtime disconnect, boot, lock, and sleep/resume recover without duplicates or manual re-arming. |
 | PH-3 | Security-boundary hardening | **green fleet-wide** | Local-control identity, Pond allowlist, operator auth, installer privilege, key custody, hostile LAN input, and resource bounds have executable negative gates; no unresolved critical/high finding remains. |
-| PH-4 | Installed whole-story matrix | **active — source re-frozen at `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`** | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
-| PH-5 | Onboarding, diagnostics, and soak | collector ready; waits on PH-4 | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
+| PH-4 | Installed whole-story matrix | **green fleet-wide at `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`** | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
+| PH-5 | Onboarding, diagnostics, and soak | **active — installed-entry and collector convergence** | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
+
+### 2026-09-03 12:03 EDT PH-4 green; PH-5 dispatched
+
+PH-4 is accepted. Every hat rebuilt and installed the exact frozen source, or an
+OS-native package whose payload came from that exact source, and recorded a healthy
+singleton deployment:
+
+| Hat | Installed artifact SHA-256 | Accepted physical closure |
+|---|---|---|
+| Windows | `9c4998461d3d0760a75c78dc2075d8d095666aa91626146af794f68d49e4b588` | local whole story; `ph4-e49b-win-avahi-01`; `ph4-e49b-win-native-02` |
+| CachyOS | `f0e999b0077eb25935f1ad563aee33f2e659ffde915d3f3c55f5aa568691682b` | installed whole story/Pond; Avahi/resolve1↔native lane; reboot and peer restoration |
+| Bluefin | `288362b8ae909d655f683f290f2b34bd5d8cb802a1184a0cebf27a1b3219e200` | immutable systemd/GNOME whole story and exact-source replacement |
+| Alpine | `095371b9ed13cde254214155aa231db9333342c35255717654299fcd514e9941` | signed APK/OpenRC/musl whole story and Windows native peer |
+| Debian | `51682d682f155139f0e0d4c7f2bdce6b2e237f6bbf464ccdbfc7b30a7251cbbb` | headless whole story and `ph4-e49b-debian-pond-01` |
+
+The final Windows/native run kept Windows PID `5312` and Alpine daemon/supervisor PIDs
+`2023`/`2022` fixed through five generations, bidirectional ordinary and
+explicit-address discovery, address/TXT/interface checks, a continuous subscription,
+real withdrawal, Bonjour loss/fallback/return, and exact restoration. Together with
+the accepted Windows/Avahi and Linux Avahi/resolve1/native lanes, this closes every
+frozen-candidate provider family. The Windows correction was the only product delta;
+unchanged Linux executable paths were rebuilt for exact provenance and their
+byte-identical physical evidence remained valid. No open critical/high finding or
+unrestored fleet state remains.
+
+PH-5 begins with two deliberately separate claims:
+
+1. **Installed entry and diagnostics.** Each hat starts from a normal user/session and
+   a neutral working directory with no checkout, Cargo, alternate data root, endpoint,
+   or token override in the user path. Use only the installed CLI, package/Start-menu
+   workbench, local-control discovery, and returned Pond URL. Prove that status,
+   provider selection, trust diagnosis, sharing state, and one representative
+   unavailable/recovery explanation lead a new operator to a useful next action. Do
+   not destroy the accepted machine identity merely to simulate freshness.
+2. **One installed-service observation model.** Evolve the existing
+   `installed-service-collect` boundary rather than adding per-hat scripts. One neutral
+   sampler/verdict/evidence core owns cadence, bounds, recovery decisions, redaction,
+   and aggregation. Thin systemd, OpenRC, and Windows SCM observers own only native
+   detection plus service/process/resource facts. Missing native counters are explicit,
+   never zero-filled. A cross-host success must exercise a real Koi surface; the former
+   TCP connection to peer SSH port 22 is useful reachability preflight but cannot close
+   the product soak.
+3. **Short canary before duration.** Every observer must pass a short run against the
+   exact installed artifact and a Koi-owned peer surface while proving PID/image,
+   health, RSS, handles/descriptors, threads/tasks where real, cache size, provider
+   generation/routes, retry and desired/established counts, and bounded recovery. The
+   product remains the sole installed daemon; a harness executable may come from the
+   checkout, but the user journey and Koi process may not.
+4. **One coordinated soak.** After all short canaries are green, CachyOS names one run
+   ID and Debian owns the aggregate timeline. Every hat samples its own installed
+   service while run-owned Koi traffic forms a physical peer ring. Use 24 hours for
+   release-quality evidence; six hours is the minimum engineering acceptance. Faults
+   are serial: each hat owns exactly one previously proven representative
+   service/provider/network recovery window, with explicit start/end markers and
+   bounded reconvergence. No two system mutations overlap.
+5. **Closure.** Restore Pond/firewall/provider/network/session and run-owned product
+   state exactly, remove credentials and recovery helpers, retain one healthy intended
+   Koi/workbench per machine, and rerun each platform's full locked native gates. A
+   harness-only correction does not move `e49bfe2`; any product, dependency,
+   installer, package-behavior, or shipped-asset correction reopens PH-4 and requires
+   an explicit new freeze.
+
+Ownership stays small: Debian owns the neutral collector/aggregate and its systemd
+observer; Windows owns SCM observation; Alpine owns OpenRC observation; CachyOS and
+Bluefin independently accept the systemd path and their desktop entry journeys;
+CachyOS coordinates the canary ring, serial fault schedule, and final reconciliation.
 
 ### 2026-09-03 11:48 EDT Windows↔native exact-source acceptance checkpoint
 

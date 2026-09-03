@@ -11,6 +11,27 @@ green: installed-service Avahi/resolved/native loss and return, pre-armed primar
 recovery, honest no-backend firewall reporting, independent-peer Pond policy, and
 bounded hostile DNS/mDNS/HTTP input. Do not repeat these gates on an unchanged artifact.
 
+## 2026-09-03 12:03 EDT PH-5 collector and headless-entry dispatch
+
+1. PH-4 is green. Retain the exact shifted systemd deployment and collector baseline;
+   do not repeat the installed whole story or Pond gate.
+2. From an ordinary SSH/operator shell and neutral directory, prove a useful headless
+   entry using only the installed CLI, local control, and returned Pond URL. Capture
+   truthful provider/trust/sharing diagnostics plus one actionable unavailable state;
+   no checkout path, Cargo environment, endpoint/token override, second daemon, or
+   alternate data root belongs in this user journey.
+3. Own the one shared `installed-service-collect` evolution. Separate its neutral
+   cadence/verdict/evidence core from native service observation; retain one systemd
+   observer and explicit seams for OpenRC and SCM. Model unavailable counters honestly,
+   add bounded transition/recovery and resource-growth evidence, and replace generic
+   peer-port reachability as the acceptance signal with a real Koi-owned surface. Do
+   not add another collector, remote-control plane, or platform logic to the product.
+4. Pass focused/full native gates and a short exact-artifact systemd/Koi-peer canary,
+   then publish the contract for Windows/Alpine adapter work and Bluefin/CachyOS
+   acceptance. After all canaries pass, this hat owns the aggregate timeline for the
+   single shared soak; CachyOS owns its run ID and serial fault schedule. Do not start
+   the six-to-24-hour run early.
+
 ## 2026-09-03 09:52 EDT exact-source Pond follow-up
 
 1. The 13:29 UTC `ph4-5c89-debian-pond-01` run is a useful PASS for the corrected

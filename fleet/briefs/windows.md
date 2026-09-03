@@ -17,6 +17,25 @@ adapter; `0026951` closed the shared slot-lifecycle leak; `97a0817` made startup
 consume the same batched verdict and canonicalized connection categories. Do not repeat
 those destructive workbooks unless later implementation changes their behavior.
 
+## 2026-09-03 12:03 EDT PH-5 dispatch
+
+1. PH-4 is green; both exact-source Windows provider lanes are accepted. Keep the sole
+   installed SCM daemon/workbench and native baseline unchanged.
+2. From an ordinary interactive account and neutral directory, exercise only the
+   installed CLI, Start-menu/workbench, named-pipe discovery, and returned Pond URL.
+   Capture the first useful result plus truthful provider, trust, sharing, and one
+   actionable unavailable/recovery explanation. No checkout path, explicit endpoint,
+   token override, second daemon, or disposable data root may enter the user journey.
+3. Research and record the exact SCM/process counters available without parsing
+   localized display text. After Debian's neutral collector contract lands, implement
+   or accept only the thin Windows observer behind it: service/image/PID, start policy,
+   restart evidence where real, RSS, handle and thread counts. Do not fork a Windows
+   collector or invent unsupported counters. Pass a short exact-artifact/Koi-peer
+   canary and publish directly to `dev`.
+4. During the later shared soak, own only Windows's assigned serial provider recovery
+   window and exact cleanup. Do not start the long run before every observer canary and
+   CachyOS's shared run ID are present.
+
 ## 2026-09-03 11:48 EDT PH-4 provider lanes complete
 
 1. Exact-source native-peer run `ph4-e49b-win-native-02` passed against Alpine's
