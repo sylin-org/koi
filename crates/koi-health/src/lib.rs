@@ -239,7 +239,11 @@ impl HealthCore {
             .map(|entry| HealthCheckConfig {
                 name: format!("proxy:{}", entry.name),
                 kind: ServiceCheckKind::Http,
-                target: entry.backend,
+                target: if entry.backend.contains("://") {
+                    entry.backend
+                } else {
+                    format!("http://{}", entry.backend)
+                },
                 interval_secs: DEFAULT_INTERVAL_SECS,
                 timeout_secs: DEFAULT_TIMEOUT_SECS,
             })
@@ -250,8 +254,78 @@ impl HealthCore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::ServiceCheckKind;
+    use crate::service::{validate_check, ServiceCheckKind};
     use crate::state::HealthCheckConfig;
+    use koi_common::integration::ProxyEntrySummary;
+    use std::sync::RwLock as StdRwLock;
+
+    struct MutableProxySnapshot {
+        entries: StdRwLock<Vec<ProxyEntrySummary>>,
+    }
+
+    impl ProxySnapshot for MutableProxySnapshot {
+        fn entries(&self) -> Vec<ProxyEntrySummary> {
+            self.entries
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_checks_normalize_bare_backends_to_http_urls() {
+        let proxy = Arc::new(MutableProxySnapshot {
+            entries: StdRwLock::new(vec![
+                ProxyEntrySummary {
+                    name: "bare".to_string(),
+                    listen_port: 8443,
+                    backend: "127.0.0.1:3000".to_string(),
+                },
+                ProxyEntrySummary {
+                    name: "url".to_string(),
+                    listen_port: 9443,
+                    backend: "https://localhost:3001/healthz".to_string(),
+                },
+            ]),
+        });
+        let core = HealthCore::new(None, None, None, Some(proxy)).await;
+
+        let checks = core.proxy_checks();
+        assert_eq!(checks[0].target, "http://127.0.0.1:3000");
+        assert_eq!(checks[1].target, "https://localhost:3001/healthz");
+        assert!(
+            checks.iter().all(|check| validate_check(check).is_ok()),
+            "every derived proxy check must satisfy the health domain's own contract"
+        );
+    }
+
+    #[tokio::test]
+    async fn removed_proxy_check_does_not_remain_in_capability_state() {
+        let proxy = Arc::new(MutableProxySnapshot {
+            entries: StdRwLock::new(vec![ProxyEntrySummary {
+                name: "removed".to_string(),
+                listen_port: 8443,
+                backend: "127.0.0.1:1".to_string(),
+            }]),
+        });
+        let core = HealthCore::new(None, None, None, Some(proxy.clone())).await;
+
+        core.run_checks_once().await;
+        assert!(core
+            .service_states
+            .read()
+            .await
+            .contains_key("proxy:removed"));
+
+        proxy
+            .entries
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        core.run_checks_once().await;
+
+        assert!(core.service_states.read().await.is_empty());
+    }
 
     /// Drives a real status transition through HealthCore: subscribe → add a TCP
     /// check pointing at a closed local port → run_checks_once() (real TCP attempt

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,6 +51,15 @@ pub async fn run_checks_once(
 ) {
     let mut checks = core.list_checks().await;
     checks.extend(core.proxy_checks());
+
+    // Proxy checks are derived rather than removed through `HealthCore::remove_check`,
+    // so reconcile the state map against the current sources on every tick. Otherwise a
+    // removed proxy remains counted by the capability ladder until the daemon restarts.
+    let active_names: HashSet<&str> = checks.iter().map(|check| check.name.as_str()).collect();
+    states
+        .write()
+        .await
+        .retain(|name, _| active_names.contains(name.as_str()));
     if checks.is_empty() {
         return;
     }

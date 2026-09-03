@@ -330,6 +330,9 @@ mod tests {
 
     #[tokio::test]
     async fn capability_status_projection_matches_v1_status_shape() {
+        let _notes_guard = NOTES_TEST_LOCK.lock().await;
+        koi_common::capability::clear_notes();
+
         // The `/v1/status` projection drops `enabled` and serializes {name, summary, healthy}.
         let caps = assemble_capabilities(&Cores::default()).await;
         let statuses: Vec<CapabilityStatus> = caps.into_iter().map(|c| c.status).collect();
