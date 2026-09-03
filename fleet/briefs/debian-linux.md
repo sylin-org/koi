@@ -11,6 +11,20 @@ green: installed-service Avahi/resolved/native loss and return, pre-armed primar
 recovery, honest no-backend firewall reporting, independent-peer Pond policy, and
 bounded hostile DNS/mDNS/HTTP input. Do not repeat these gates on an unchanged artifact.
 
+## 2026-09-03 09:52 EDT exact-source Pond follow-up
+
+1. The 13:29 UTC `ph4-5c89-debian-pond-01` run is a useful PASS for the corrected
+   physical workbook, credential discipline, and CachyOS reader, but its own evidence
+   records the superseded `5c89e9d` daemon. It does not satisfy the active exact-source
+   gate and must not be relabeled.
+2. Complete the already-dispatched clean build/install from
+   `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`, preserving the standing shifted-port
+   deployment. Then rerun only the affected Pond transaction as
+   `ph4-e49b-debian-pond-01` against unchanged CachyOS. Reuse the accepted harness
+   shape and private credential handling; do not repeat unrelated local workbooks.
+3. Publish the exact source/artifact/PID/restoration evidence directly to `dev`, leave
+   the collector baseline healthy, and do not begin PH-5.
+
 ## 2026-09-03 09:20 EDT exact-source replacement and Pond dispatch
 
 1. Replace the invalidated daemon with a clean locked build from exact source

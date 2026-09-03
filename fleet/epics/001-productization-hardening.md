@@ -49,6 +49,35 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 | PH-4 | Installed whole-story matrix | **active — source re-frozen at `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`** | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
 | PH-5 | Onboarding, diagnostics, and soak | collector ready; waits on PH-4 | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
 
+### 2026-09-03 09:52 EDT CachyOS exact-source acceptance checkpoint
+
+CachyOS rebuilt the release from a clean detached worktree at exact source
+`e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`, passed formatting, script syntax, the
+full locked workspace/all-target/all-feature suite, strict clippy, and the locked
+release build, then installed it through the public systemd path. The release and
+installed `/usr/local/bin/koi` are byte-identical at SHA-256
+`f0e999b0077eb25935f1ad563aee33f2e659ffde915d3f3c55f5aa568691682b`
+(54,184,944 bytes). Those bytes correctly equal the former Linux artifact because the
+source delta is confined to the Windows adapter; provenance was nevertheless rebuilt
+and proved from the new freeze rather than inferred.
+
+The serial install changed the sole daemon PID `924696→962933`, retained the standard
+port plan without creating `/etc/koi/config.toml`, and ended enabled, active, healthy,
+and at `NRestarts=0`. Generation 1 routes publish, explicit publish, browse, and resolve
+through Avahi with one desired/established permanent registration; resolve1 and native
+remain ready fallbacks. The Authenticated `test-01` identity diagnoses HEALTHY, Pond is
+disabled and closed, the UFW/state/unit hashes are exact, and the unchanged packaged
+Plasma workbench remains the sole desktop process. Per the Windows-gated change rule,
+the already-green Linux whole-story and provider-transition workbooks were not repeated.
+
+This makes CachyOS an unchanged dependency-ready peer for Windows run
+`ph4-e49b-win-avahi-01` and Debian run `ph4-e49b-debian-pond-01`. Debian's newly landed
+`ph4-5c89-debian-pond-01` PASS validates the physical workbook but explicitly used the
+superseded source, so it does not close the exact-source transaction and is dispatched
+for a narrow rerun after replacement. PH-4 remains active until every hat records its
+exact-source artifact, Windows records both final provider lanes, and Debian records
+the exact-source Pond lane.
+
 ### 2026-09-03 09:20 EDT Windows withdrawal correction and final re-freeze
 
 The exact Koi source candidate is now

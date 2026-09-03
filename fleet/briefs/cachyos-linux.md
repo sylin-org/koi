@@ -19,6 +19,25 @@ was accepted through the real installed service: upgrade retained `5641:5644` wi
 manufacturing a config, and a deliberately unhealthy replacement restored the exact
 prior deployment.
 
+## 2026-09-03 09:52 EDT exact-source artifact accepted
+
+1. Complete: clean exact source
+   `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef` passed the full locked native gates
+   and the public systemd install. The release and installed binary are byte-identical
+   at SHA-256 `f0e999b0077eb25935f1ad563aee33f2e659ffde915d3f3c55f5aa568691682b`;
+   the Linux bytes correctly remain identical to the former artifact because the
+   withdrawal correction is Windows-gated. The 09:52 EDT journal entry is the
+   authoritative installed baseline. Do not rebuild, reinstall, or repeat an
+   unaffected local workbook.
+2. Remain unchanged as the Avahi peer for Windows-owned run
+   `ph4-e49b-win-avahi-01` and the read-only peer for Debian-owned run
+   `ph4-e49b-debian-pond-01`. Permit only their run-owned product traffic; those hats
+   own every service/provider/Pond mutation.
+3. Pull and reconcile after Windows publishes both exact-source provider lanes,
+   Debian publishes the exact-source Pond rerun, and all remaining hats publish their
+   exact-`e49bfe2` installed artifact. Do not accept a superseded-source run or begin
+   PH-5 early.
+
 ## 2026-09-03 09:20 EDT exact-source replacement and coordination
 
 1. The former freeze is invalidated by the Windows withdrawal correction. Build from
