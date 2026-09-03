@@ -17,6 +17,22 @@ adapter; `0026951` closed the shared slot-lifecycle leak; `97a0817` made startup
 consume the same batched verdict and canonicalized connection categories. Do not repeat
 those destructive workbooks unless later implementation changes their behavior.
 
+## 2026-09-03 10:28 EDT Avahi accepted; native-peer wait
+
+1. Exact-source run `ph4-e49b-win-avahi-01` passed against CachyOS's unchanged Avahi
+   artifact, including bidirectional ordinary/explicit discovery, address/TXT/interface
+   truth, long-lived resolution and removal, provider promotion/loss/fallback/return,
+   converged counts, fixed PIDs/hashes, and exact cleanup. Do not repeat it on unchanged
+   artifacts.
+2. Keep the sole installed SCM daemon at PID `26508`, SHA-256
+   `9c4998461d3d0760a75c78dc2075d8d095666aa91626146af794f68d49e4b588`,
+   native generation 9, with Bonjour and recovery residue absent.
+3. Wait read-only for Alpine to publish its exact-`e49bfe2` artifact, then run only
+   `ph4-e49b-win-native-02` using the accepted serial assertions. If Alpine is not
+   ready, report the dependency and leave the host and repository unchanged.
+4. Remain unchanged after the native lane for CachyOS reconciliation. Do not begin
+   PH-5.
+
 ## 2026-09-03 09:20 EDT withdrawal correction and exact-source handoff
 
 1. Production correction `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef` is the new PH-4

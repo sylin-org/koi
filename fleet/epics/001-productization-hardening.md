@@ -49,6 +49,35 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 | PH-4 | Installed whole-story matrix | **active — source re-frozen at `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`** | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
 | PH-5 | Onboarding, diagnostics, and soak | collector ready; waits on PH-4 | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
 
+### 2026-09-03 10:28 EDT Windows↔Avahi exact-source acceptance checkpoint
+
+Windows run `ph4-e49b-win-avahi-01` passed against CachyOS's unchanged exact-source
+Avahi peer. The installed Windows SCM daemon remained sole PID `26508` at SHA-256
+`9c4998461d3d0760a75c78dc2075d8d095666aa91626146af794f68d49e4b588`;
+CachyOS remained systemd PID `962933` at SHA-256
+`f0e999b0077eb25935f1ad563aee33f2e659ffde915d3f3c55f5aa568691682b`.
+Bidirectional ordinary and explicit-address discovery preserved address, TXT, and
+interface truth through native baseline, Bonjour promotion, provider loss/native
+fallback, Bonjour return, and final native restoration. One Windows subscription
+survived all generations and observed the CachyOS removal; CachyOS independently
+proved both Windows records absent after withdrawal. Counts converged with no pending
+or failed materializations, neither daemon restarted, and both hosts restored their
+exact service, provider, network, firewall, publication, and workbench baselines.
+
+The first attempt stopped cleanly on a harness-only false identity mismatch because
+raw `ip -o addr` output included decreasing DHCP lifetime counters. The accepted rerun
+compared stable interface/address identity separately from the exact default route and
+retained all product assertions. No product, dependency, installer, or shipped asset
+changed, so the frozen source does not move.
+
+The remaining PH-4 critical path is:
+
+1. Alpine, Bluefin, and Debian publish exact-`e49bfe2` installed artifacts.
+2. After Alpine is ready, Windows runs only `ph4-e49b-win-native-02`; the accepted
+   Avahi lane must not be repeated on unchanged artifacts.
+3. Debian reruns only `ph4-e49b-debian-pond-01` from its exact-source artifact.
+4. CachyOS reconciles PH-4 after those entries are green. PH-5 remains prohibited.
+
 ### 2026-09-03 09:52 EDT CachyOS exact-source acceptance checkpoint
 
 CachyOS rebuilt the release from a clean detached worktree at exact source

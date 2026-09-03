@@ -1,5 +1,66 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-03 (19) — PH-4 exact-source Windows↔CachyOS/Avahi lane accepted
+
+commit: exact frozen product source
+`e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`; fleet instructions synchronized at
+`767288e` | run `ph4-e49b-win-avahi-01` | verdict: **PASS — final exact-source
+Windows↔Avahi provider lane closed**
+
+koi state now: unchanged exact-source AutoStart LocalSystem SCM service, sole PID
+`26508`, `C:\Program Files\Koi\koi.exe --daemon`, SHA-256
+`9c4998461d3d0760a75c78dc2075d8d095666aa91626146af794f68d49e4b588`,
+health 200 on standard port 5641. Control generation 9 is Ready with native
+publish/explicit-publish plus Windows DNS-SD browse/resolve and exactly one permanent
+desired/established publication. The unchanged installed workbench remains sole PID
+`22668`, SHA-256
+`bb07bb2c232f1ea7398348b1cb4a215dc7d2de04c9c21461bc6fe092de05e245`.
+Bonjour is absent from SCM, System32, MSI, and its program directory; no installer
+manifest or recovery task remains.
+
+peer: unchanged exact-source CachyOS `test-01` (`192.168.1.109`), systemd PID
+`962933`, `/usr/local/bin/koi` SHA-256
+`f0e999b0077eb25935f1ad563aee33f2e659ffde915d3f3c55f5aa568691682b`.
+Its Koi and Avahi services remained active+enabled, Avahi owned all four routes at
+generation 1, its one permanent publication returned exactly after cleanup, and the
+package-owned Plasma workbench remained PID `854105`. Windows created only the peer's
+run-owned Koi API publication; no CachyOS provider, service, network, package, firewall,
+or login state was mutated.
+
+evidence and findings:
+
+1. One Windows ordinary publication and one explicit `192.168.1.137` publication plus
+   one CachyOS Avahi publication carried the shared run ID, exact interface name, side,
+   ports, and TXT. Windows resolved the CachyOS address/TXT/interface, while CachyOS
+   resolved both Windows records, in every settled phase. Counts converged with no
+   pending/failed materializations on both hosts.
+2. The one installed Windows PID advanced `native generation 5 → Bonjour 6 → provider
+   loss/native fallback 7 → Bonjour return 8 → native restoration 9`. Signed retained
+   Bonjour inputs installed/promoted, stopped/fell back, restarted/promoted, and
+   uninstalled without restarting Koi. Both daemon PIDs and hashes remained fixed.
+3. A Windows subscription opened before any run publication stayed connected through
+   every generation, observed the CachyOS record resolved, and received its removal
+   after acknowledged Avahi withdrawal. After both Windows withdrawals, CachyOS twice
+   returned no record for either ordinary or explicit instance.
+4. The first attempt stopped after the initial traffic phase on a harness-only false
+   identity mismatch: raw `ip -o addr` text included decreasing DHCP
+   `valid_lft/preferred_lft` counters. It mutated no peer state and cleaned every
+   run-owned publication, Bonjour product, and recovery task. The retained attempt is
+   `target/mdns-provider-transition/ph4-e49b-win-avahi-01-attempt1-harness-fail/`.
+   The rerun compared stable interface/address identity separately from the default
+   route and retained every product assertion; it passed. Accepted structured evidence
+   is `target/mdns-provider-transition/ph4-e49b-win-avahi-01/`.
+5. Final comparison restored Windows config/operator policy, adapter/IP/DNS/profile,
+   effective and product firewall facts, Dnscache, SharedAccess, registration counts,
+   and workbench identity exactly. CachyOS PID/hash, service/Avahi enablement and
+   activity, interface/address/default route, workbench, routes, and counts matched its
+   baseline. The exact DAT did not enter evidence; the only credential marker is MSI's
+   masked `Password=**********` field.
+
+Windows now waits read-only for Alpine's exact-`e49bfe2` artifact, then runs only
+`ph4-e49b-win-native-02`. The Windows↔Avahi lane must not be repeated on unchanged
+artifacts, and PH-5 remains gated on the remaining exact-source fleet work.
+
 ## 2026-09-03 (18) — PH-4 Windows withdrawal defect closed; source re-frozen
 
 commit: exact corrected/frozen product source

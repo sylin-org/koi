@@ -19,6 +19,20 @@ was accepted through the real installed service: upgrade retained `5641:5644` wi
 manufacturing a config, and a deliberately unhealthy replacement restored the exact
 prior deployment.
 
+## 2026-09-03 10:28 EDT Windows peer result
+
+1. Windows run `ph4-e49b-win-avahi-01` passed against this host's unchanged exact-source
+   Avahi artifact. PID `962933`, installed hash
+   `f0e999b0077eb25935f1ad563aee33f2e659ffde915d3f3c55f5aa568691682b`,
+   Koi/Avahi enablement and activity, interface/address/route, workbench, routes, and
+   the one permanent publication all matched baseline after withdrawal. Do not repeat
+   the accepted peer transaction or its local artifact gates.
+2. Remain unchanged as Debian's read-only Pond reader. Debian owns every Pond/service
+   mutation for `ph4-e49b-debian-pond-01`.
+3. Reconcile PH-4 only after Alpine, Bluefin, and Debian publish exact-`e49bfe2`
+   artifacts, Windows publishes `ph4-e49b-win-native-02`, and Debian publishes the
+   exact-source Pond rerun. PH-5 remains prohibited.
+
 ## 2026-09-03 09:52 EDT exact-source artifact accepted
 
 1. Complete: clean exact source
