@@ -64,6 +64,10 @@ pub fn service_data_dir() -> PathBuf {
 const ERROR_SERVICE_NOT_FOUND: i32 = 1060;
 /// Win32 ERROR_SERVICE_ALREADY_RUNNING (1056).
 const ERROR_SERVICE_ALREADY_RUNNING: i32 = 1056;
+/// Win32 ERROR_INVALID_SERVICE_CONTROL (1052).
+const ERROR_INVALID_SERVICE_CONTROL: i32 = 1052;
+/// Win32 ERROR_SERVICE_CANNOT_ACCEPT_CTRL (1061).
+const ERROR_SERVICE_CANNOT_ACCEPT_CONTROL: i32 = 1061;
 /// Win32 ERROR_SERVICE_NOT_ACTIVE (1062).
 const ERROR_SERVICE_NOT_ACTIVE: i32 = 1062;
 /// Win32 ERROR_ACCESS_DENIED (5).
@@ -906,18 +910,7 @@ fn restore_manifest(path: &std::path::Path, manifest: &InstallManifest) -> anyho
         };
         service.update_failure_actions(no_actions)?;
         service.set_failure_actions_on_non_crash_failures(false)?;
-        let status = service.query_status()?;
-        if status.current_state != ServiceState::Stopped {
-            print!("  Stopping service for restore...");
-            match service.stop() {
-                Ok(_) => {}
-                Err(windows_service::Error::Winapi(ref error))
-                    if error.raw_os_error() == Some(ERROR_SERVICE_NOT_ACTIVE) => {}
-                Err(error) => return Err(error.into()),
-            }
-            wait_for_stop(service)?;
-            println!(" done.");
-        }
+        stop_service_for_restore(service)?;
     }
 
     for file in &manifest.files {
@@ -1709,6 +1702,196 @@ fn wait_for_stop(service: &windows_service::service::Service) -> anyhow::Result<
     }
 }
 
+/// Quiesce a replacement before restoring its files and descriptor.
+///
+/// A candidate can fail before registering its control handler. SCM then
+/// reports `StartPending`, but `ControlService(STOP)` returns 1052 or 1061 and
+/// can leave the transaction blocked for the manager's full start timeout.
+/// Failure actions are already disabled by the caller. In that one state we
+/// verify the process image from the same handle we terminate, then retain the
+/// normal bounded wait for SCM to publish `Stopped`.
+fn stop_service_for_restore(service: &windows_service::service::Service) -> anyhow::Result<()> {
+    print!("  Stopping service for restore...");
+    let deadline = std::time::Instant::now() + SERVICE_STOP_TIMEOUT;
+    loop {
+        let status = service.query_status()?;
+        if status.current_state == ServiceState::Stopped {
+            println!(" done.");
+            return Ok(());
+        }
+
+        match service.stop() {
+            Ok(_) => break,
+            Err(windows_service::Error::Winapi(ref error))
+                if error.raw_os_error() == Some(ERROR_SERVICE_NOT_ACTIVE) =>
+            {
+                break
+            }
+            Err(error) if start_pending_rejected_stop(status.current_state, &error) => {
+                // SCM can expose StartPending before it publishes the process
+                // id. Poll rather than guessing; forced recovery remains
+                // unavailable until the same status record names a process we
+                // can verify against the fixed product image.
+                if let Some(pid) = query_start_pending_process_id()? {
+                    terminate_verified_process(pid, &install_bin_path())?;
+                    println!(" terminated verified start-pending PID {pid}.");
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    anyhow::bail!(
+                        "SCM did not publish a process id for the start-pending replacement within {:?}; refusing to terminate an unverified process",
+                        SERVICE_STOP_TIMEOUT
+                    );
+                }
+                std::thread::sleep(SERVICE_STOP_POLL);
+            }
+            Err(windows_service::Error::Winapi(ref error))
+                if status.current_state == ServiceState::StopPending
+                    && error.raw_os_error() == Some(ERROR_SERVICE_CANNOT_ACCEPT_CONTROL) =>
+            {
+                break
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    wait_for_stop(service)?;
+    println!(" done.");
+    Ok(())
+}
+
+/// Read the raw `SERVICE_STATUS_PROCESS` because windows-service 0.8 omits
+/// `dwProcessId` from its safe status value unless the state is `Running`.
+/// A pending-state PID is explicitly untrusted until `terminate_verified_process`
+/// opens it and proves the image through that same handle.
+fn query_start_pending_process_id() -> anyhow::Result<Option<u32>> {
+    use windows_sys::Win32::System::Services::{
+        CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_MANAGER_CONNECT,
+        SERVICE_QUERY_STATUS, SERVICE_START_PENDING, SERVICE_STATUS_PROCESS,
+    };
+
+    let mut service_name = encode_os(OsStr::new(SERVICE_NAME));
+    service_name.push(0);
+    // SAFETY: both names are valid NUL-terminated inputs and every successful
+    // SCM/service handle is closed before returning.
+    let manager = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT) };
+    if manager.is_null() {
+        return Err(std::io::Error::last_os_error())
+            .context("could not open SCM while querying a start-pending replacement");
+    }
+
+    let result = (|| -> anyhow::Result<Option<u32>> {
+        // SAFETY: `manager` is an open SCM handle and `service_name` remains
+        // alive and NUL-terminated for this call.
+        let service = unsafe { OpenServiceW(manager, service_name.as_ptr(), SERVICE_QUERY_STATUS) };
+        if service.is_null() {
+            return Err(std::io::Error::last_os_error())
+                .context("could not open Koi service for raw process-status query");
+        }
+
+        let query_result = (|| -> anyhow::Result<Option<u32>> {
+            let mut status = unsafe { std::mem::zeroed::<SERVICE_STATUS_PROCESS>() };
+            let mut needed = 0;
+            // SAFETY: `service` has SERVICE_QUERY_STATUS access, and the output
+            // buffer exactly describes `status` for SC_STATUS_PROCESS_INFO (0).
+            let ok = unsafe {
+                QueryServiceStatusEx(
+                    service,
+                    0,
+                    &mut status as *mut SERVICE_STATUS_PROCESS as *mut u8,
+                    std::mem::size_of::<SERVICE_STATUS_PROCESS>() as u32,
+                    &mut needed,
+                )
+            };
+            if ok == 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("could not query raw Koi service process status");
+            }
+            Ok(
+                (status.dwCurrentState == SERVICE_START_PENDING && status.dwProcessId != 0)
+                    .then_some(status.dwProcessId),
+            )
+        })();
+        // SAFETY: `service` is the handle returned by OpenServiceW above.
+        unsafe { CloseServiceHandle(service) };
+        query_result
+    })();
+    // SAFETY: `manager` is the handle returned by OpenSCManagerW above.
+    unsafe { CloseServiceHandle(manager) };
+    result
+}
+
+fn start_pending_rejected_stop(state: ServiceState, error: &windows_service::Error) -> bool {
+    state == ServiceState::StartPending
+        && matches!(
+            error,
+            windows_service::Error::Winapi(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(ERROR_INVALID_SERVICE_CONTROL | ERROR_SERVICE_CANNOT_ACCEPT_CONTROL)
+                )
+        )
+}
+
+/// Terminate only the process whose already-open handle proves it is the
+/// transaction's fixed product image. Holding one handle across query and
+/// termination prevents PID reuse from widening this recovery boundary.
+fn terminate_verified_process(pid: u32, expected_image: &std::path::Path) -> anyhow::Result<()> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    };
+
+    // SAFETY: OpenProcess receives the SCM-provided PID. The returned handle
+    // is closed on every path below.
+    let process = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+            0,
+            pid,
+        )
+    };
+    if process.is_null() {
+        return Err(std::io::Error::last_os_error()).context(format!(
+            "could not open start-pending service PID {pid} for verified termination"
+        ));
+    }
+
+    let result = (|| -> anyhow::Result<()> {
+        let actual_image = process_image_path_from_handle(process)?;
+        let actual = std::fs::canonicalize(&actual_image).map_err(|error| {
+            anyhow::anyhow!(
+                "could not resolve start-pending process image {} for PID {pid}: {error}",
+                actual_image.display()
+            )
+        })?;
+        let expected = std::fs::canonicalize(expected_image).map_err(|error| {
+            anyhow::anyhow!(
+                "could not resolve expected service image {}: {error}",
+                expected_image.display()
+            )
+        })?;
+        if actual != expected {
+            anyhow::bail!(
+                "SCM start-pending PID {pid} runs {} instead of {}; refusing forced recovery",
+                actual.display(),
+                expected.display()
+            );
+        }
+
+        // SAFETY: `process` is an owned handle with PROCESS_TERMINATE access,
+        // and it was verified above against the transaction-owned image.
+        if unsafe { TerminateProcess(process, 1) } == 0 {
+            return Err(std::io::Error::last_os_error()).context(format!(
+                "could not terminate start-pending service PID {pid}"
+            ));
+        }
+        Ok(())
+    })();
+    // SAFETY: `process` is the handle returned by OpenProcess above.
+    unsafe { CloseHandle(process) };
+    result
+}
+
 /// Start a service, tolerating the SCM's transient states after a failed
 /// replacement: a queued auto-restart can race the explicit start and
 /// surface as a spurious error or already-running.
@@ -1780,11 +1963,8 @@ fn verify_service_process(
 }
 
 fn process_image_path(pid: u32) -> anyhow::Result<PathBuf> {
-    use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
     // SAFETY: these Win32 APIs receive a process id and owned output buffer;
     // the opened handle is closed on every exit path below.
@@ -1792,13 +1972,24 @@ fn process_image_path(pid: u32) -> anyhow::Result<PathBuf> {
     if process.is_null() {
         return Err(std::io::Error::last_os_error().into());
     }
+    let result = process_image_path_from_handle(process);
+    unsafe { CloseHandle(process) };
+    result
+}
+
+fn process_image_path_from_handle(
+    process: windows_sys::Win32::Foundation::HANDLE,
+) -> anyhow::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
+
     let mut buffer = vec![0_u16; 32_768];
     let mut length = buffer.len() as u32;
+    // SAFETY: `process` is open for query access and the mutable buffer and
+    // length describe its complete allocation.
     let ok = unsafe { QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length) };
-    let error = (ok == 0).then(std::io::Error::last_os_error);
-    unsafe { CloseHandle(process) };
-    if let Some(error) = error {
-        return Err(error.into());
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().into());
     }
     buffer.truncate(length as usize);
     Ok(PathBuf::from(OsString::from_wide(&buffer)))
@@ -1887,6 +2078,31 @@ mod tests {
             split_launch_command(OsStr::new(r"F:\bare\koi.exe")).unwrap(),
             (OsString::from(r"F:\bare\koi.exe"), Vec::new())
         );
+    }
+
+    #[test]
+    fn only_start_pending_control_rejection_allows_verified_termination() {
+        for raw in [
+            ERROR_INVALID_SERVICE_CONTROL,
+            ERROR_SERVICE_CANNOT_ACCEPT_CONTROL,
+        ] {
+            let error = windows_service::Error::Winapi(std::io::Error::from_raw_os_error(raw));
+            assert!(start_pending_rejected_stop(
+                ServiceState::StartPending,
+                &error
+            ));
+            assert!(!start_pending_rejected_stop(ServiceState::Running, &error));
+            assert!(!start_pending_rejected_stop(
+                ServiceState::StopPending,
+                &error
+            ));
+        }
+
+        let unrelated = windows_service::Error::Winapi(std::io::Error::from_raw_os_error(5));
+        assert!(!start_pending_rejected_stop(
+            ServiceState::StartPending,
+            &unrelated
+        ));
     }
 
     #[test]

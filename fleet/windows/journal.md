@@ -1,5 +1,29 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-03 (16) — PH-1 ownership-aware SCM lifecycle accepted
+
+commit: this commit, on top of `48f8e3e` | gates: fmt clean; full-workspace strict all-target clippy clean; focused Windows/recipe suites green; full locked all-target workspace suite green; locked release build green | run `20260903T031639Z-windows-installer` PASS | evidence `.tmp/20260903T031639Z-windows-installer/rerun-raw-scm/`
+
+koi state now: the exact accepted candidate is installed through the product SCM path at `C:\Program Files\Koi\koi.exe`, RUNNING as the sole Koi PID `19408`, SHA-256 `5863c27cd74a1b24163642ee2c2cad4baacdecc28b43ec44b5b095cb0d97e217`, with health 200 on `127.0.0.1:5641`. The byte-exact baseline config and local-access policy are restored, the config again contains no explicit port decision, the canonical AutoStart LocalSystem descriptor and restart policy are restored, and the five product-managed firewall rules again name only the installed image. The unchanged installed workbench remains PID `20444`, SHA-256 `bb07bb2c232f1ea7398348b1cb4a215dc7d2de04c9c21461bc6fe092de05e245`, with its exact `--minimized` Run entry.
+
+### Owned replacement and durable ordering
+
+- The elevated serial workbook captured the installed service, process, binary, config, local-access policy, SCM descriptor/DACL/failure policy, Koi firewall semantics, workbench artifact/process/autostart, and transaction residue before mutation. A SYSTEM recovery task and exact candidate/config/policy copies were armed before destructive work and removed at the end.
+- Reinstalling the sole owned, no-config service selected the standard `5641:5644` run and did not manufacture port keys. Concurrent manifest observation captured durable `Armed` state with `service.existed=true` and final HTTP port `5641` while the baseline service was still Running, proving the final ownership-aware decision persisted before shutdown. The installed bytes matched the candidate and SCM lifecycle semantics were unchanged.
+
+### Failed candidate exposed and closed an SCM rollback defect
+
+- A deliberately unhealthy candidate failed before registering its service control handler. Windows retained it in `StartPending`; `ControlService(STOP)` returned 1052, so the pre-existing rollback could not quiesce the replacement and correctly left its durable transaction for recovery. A first correction still failed because `windows-service` 0.8 deliberately omits `dwProcessId` outside `Running`, which the physical rerun exposed rather than masking.
+- The final SCM adapter uses `QueryServiceStatusEx` only after the exact `StartPending` plus 1052/1061 rejection. It treats the pending PID as untrusted, opens that process with query/terminate rights, verifies the image against Koi's fixed product path through the same handle, and only then terminates it; all other states/errors retain the ordinary stop path or fail closed. This follows Microsoft's pending-service control contract while compensating for the safe wrapper's lossy projection ([ControlService](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-controlservice), [SERVICE_STATUS_PROCESS](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_status_process)).
+- The accepted unhealthy run terminated verified PID `19264`, waited for SCM `Stopped`, and restored the candidate binary, config, operator policy, complete service descriptor/lifecycle policy, and firewall semantics exactly. PID `23464` was healthy on 5641, the installer reported completed rollback, and no manifest or backup survived.
+
+### Fresh foreign listener and exact restoration
+
+- The workbook then uninstalled Koi completely and proved zero Koi services/processes before starting one real non-Koi `TcpListener` on `0.0.0.0:5641`. A genuinely fresh install selected and persisted the complete shifted run `5651:5654`, installed only the exact candidate, reached health on 5651, and left no second Koi or transaction residue.
+- It serially removed that shifted deployment before removing the foreign listener, then reinstalled the intended candidate on standard `5641:5644` and restored the exact no-port baseline config/policy. Final comparisons proved the original SCM descriptor/lifecycle and firewall semantics, unchanged workbench state, one healthy installed Koi, and zero transaction, backup, recovery-task, recovery-copy, foreign-listener, or checkout-target firewall-rule residue. The full locked suite also left zero automatic ActiveStore filters for this checkout's `target` tree; the five installed product rules were untouched, so [issue 003](issues/003-cargo-test-firewall-rule-residue.md) remains the separately bounded historical-hygiene item.
+
+Windows PH-1 is green and this installed service/workbench now stays unchanged as a peer. Its next destructive assignment is the Windows PH-4 slice after CachyOS freezes the exact source revision; after the final rebase, only Bluefin's post-reboot verification remains on the PH-1 path.
+
 ## 2026-09-02 (15) — PH-0 advertised Windows contract reconciled
 
 commit: `eae2ea6`, synchronized with `dev` after `8d6d3d6`; Koi Desktop `cbe5519` | gates: Koi fmt clean, strict full-workspace all-target clippy clean, focused help regressions green, full locked workspace tests green; desktop UI 38/38 and Rust 15 pass/1 environment-gated | installed artifacts intentionally unchanged

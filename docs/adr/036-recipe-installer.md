@@ -119,6 +119,14 @@ and refuses to claim installation when either facility is unavailable.
   box.
 - Verification never assumes third-party tools; the installer's HTTP check is
   the same loopback surface the daemon serves.
+- Windows rollback first requests an ordinary SCM stop. If a replacement fails
+  before registering its control handler, SCM can retain it in `StartPending`
+  while rejecting `Stop`. Only for that exact state and control-rejection
+  result, recovery waits within the stop bound for SCM's raw process-status
+  record to publish a PID, treats that pending-state PID as untrusted, opens
+  the reported process, verifies its image through the same handle against
+  Koi's product path, terminates it, and waits for SCM to publish `Stopped`
+  before restoring bytes and the service descriptor.
 - Reinstalling a live, no-config Koi no longer manufactures a shifted config
   by classifying Koi's own sockets as foreign. Fresh machines still yield to a
   real incumbent, and every platform recipe consumes the same pure decision.

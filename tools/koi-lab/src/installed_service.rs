@@ -672,7 +672,7 @@ mod tests {
     fn options_are_hard_bounded_and_paths_are_explicit() {
         let options = InstalledServiceOptions {
             service_name: "koi.service".to_owned(),
-            binary_path: PathBuf::from("/usr/local/bin/koi"),
+            binary_path: std::env::temp_dir().join("koi-installed-service-test"),
             duration_seconds: 10,
             sample_interval_seconds: 2,
             max_service_restarts: 0,

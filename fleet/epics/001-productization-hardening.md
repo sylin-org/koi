@@ -43,7 +43,7 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 | ID | Workstream | State | Exit gate |
 |---|---|---|---|
 | PH-0 | Freeze and reconcile the product contract | local evidence assembled; fleet reconciliation pending | Every advertised capability, OS, artifact, and install path maps to a current real gate or an explicit unverified/unsupported state; stale claims are corrected. |
-| PH-1 | Platform truth and durable lifecycle | CachyOS and Alpine green; current Windows, Bluefin, and Debian acceptance pending | Clean install, in-place upgrade, failed-upgrade recovery, reboot, uninstall, and reinstall use product-owned paths and preserve intended identity/configuration. |
+| PH-1 | Platform truth and durable lifecycle | Windows, CachyOS, Alpine, and Debian green; Bluefin post-reboot acceptance pending | Clean install, in-place upgrade, failed-upgrade recovery, reboot, uninstall, and reinstall use product-owned paths and preserve intended identity/configuration. |
 | PH-2 | Environmental recovery | local fleet gates green | Process crash, provider loss/return, link/IP churn, firewall change, runtime disconnect, boot, lock, and sleep/resume recover without duplicates or manual re-arming. |
 | PH-3 | Security-boundary hardening | local fleet gates green | Local-control identity, Pond allowlist, operator auth, installer privilege, key custody, hostile LAN input, and resource bounds have executable negative gates; no unresolved critical/high finding remains. |
 | PH-4 | Installed whole-story matrix | waits on pre-freeze convergence | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
@@ -90,20 +90,24 @@ installer on dated APK source `32172ba`: its standing `5651:5654` decision survi
 ordinary indexed upgrade, a deliberately unhealthy candidate restored the exact
 accepted deployment, and the full locked musl plus physical Debian-peer Pond gates
 passed. Alpine's dispatch is complete and its exact installed APK/index are retained
-as a PH-4 candidate. Bluefin and Debian validate the shared installer decision on
-their one real deployment; Windows consumes the same final-before-mutation contract
-through SCM.
+as a PH-4 candidate. Debian accepted the shared installer decision on its one real
+deployment. Bluefin's install, rollback, and serial real-incumbent phases are green;
+its staged base-image update still needs one post-reboot verification. Windows accepted the same final-before-mutation contract
+through SCM: its owned no-config deployment retained the standard run, an unhealthy
+`StartPending` candidate rolled back exactly after image-verified termination, and a
+serial real foreign listener moved a genuinely fresh install to `5651:5654` before
+the intended standard deployment was restored without residue.
 Debian prepares the reusable PH-5 collector without starting the soak. CachyOS
 remains an unchanged integration peer. Then PH-0 through PH-3 are reconciled once,
 one exact `dev` revision is frozen, and PH-4 begins.
 
 ### Pre-freeze critical path
 
-1. **Windows, Bluefin, and Debian own the remaining PH-1 acceptance.** Each validates
-   the ownership-aware final-before-mutation install decision through its sole real
-   deployment, including exact failed-candidate recovery and the platform-specific
-   lifecycle named in its brief. A real foreign listener is exercised serially; it
-   is never another Koi.
+1. **Bluefin owns the remaining PH-1 post-reboot acceptance; Windows and Debian are green.**
+   Bluefin validates the activated staged deployment, sole installed service, and exact
+   restoration named in its brief without repeating the green installer, rollback, or
+   foreign-listener phases. Windows retains its accepted installed service/workbench as
+   an unchanged peer until the frozen PH-4 source is named.
 2. **CachyOS owns integration regression and the freeze.** Re-run the newly generalized
    provider and Pond workbooks through the systemd/Avahi/resolve1 path with one
    installed Koi and an unchanged physical peer. Once the three installer verdicts
