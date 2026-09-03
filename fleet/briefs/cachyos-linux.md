@@ -19,6 +19,32 @@ was accepted through the real installed service: upgrade retained `5641:5644` wi
 manufacturing a config, and a deliberately unhealthy replacement restored the exact
 prior deployment.
 
+## 2026-09-03 PH-4 dispatch (frozen source `f53d568a871e952576988e543126160bfd41aaaa`)
+
+1. Build a release artifact from a clean export or detached worktree of the exact
+   frozen source, run its full locked native gates, and install it serially through the
+   public systemd product path. Prove source/artifact identity, ownership, service
+   health, standard-port retention, existing member identity, and one daemon. Retain
+   the package-owned workbench only after recording its separate unchanged source and
+   installed hash.
+2. Drive this host's installed Find → Name → Trust → Serve/Pond journey with real
+   run-owned workload/API state and an independent physical reader. Use the standing
+   service and production endpoints; the isolated `koi-lab capability-story` mode is
+   not acceptance. Include local-control, DNS/mDNS, trust diagnosis, derived health or
+   proxy state where available, narrow Pond reads/denials/restart recovery, desktop
+   truth, and exact reverse cleanup.
+3. Read the other hats' newest PH-4 journal entries and coordinate the serial matrix
+   as soon as each exact artifact is ready: Windows↔this Avahi host,
+   Windows↔Alpine/native, and this Avahi/resolve1 host↔Alpine/native. Reuse the shared
+   provider/Pond workbooks, one run ID per coordinated transaction, and product API
+   traffic; every peer owns its provider/network mutations. Do not wait for a bespoke
+   prompt once dependencies are visible on `origin/dev`.
+4. Publish local and coordinated evidence directly to `dev`. If a product or package
+   correction is necessary, mark the candidate invalid in the epic and freeze a new
+   exact revision before continuing; a harness-only correction may land without moving
+   the product candidate. Reconcile PH-4 only after all five hats are green, and do not
+   start PH-5 early.
+
 ## 2026-09-03 pre-freeze dispatch (after `d54a1c0`)
 
 1. Regression-accept the shared harness changes from the Alpine convergence work on

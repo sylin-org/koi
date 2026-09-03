@@ -17,6 +17,31 @@ adapter; `0026951` closed the shared slot-lifecycle leak; `97a0817` made startup
 consume the same batched verdict and canonicalized connection categories. Do not repeat
 those destructive workbooks unless later implementation changes their behavior.
 
+## 2026-09-03 PH-4 dispatch (frozen source `f53d568a871e952576988e543126160bfd41aaaa`)
+
+1. Build the locked release from a clean checkout/export of the exact frozen source,
+   run the full native Windows gates with ordinary parallelism, and install it through
+   the transactional SCM product path. Record full source SHA, candidate and installed
+   hashes, service descriptor/recovery policy, operator SID policy, standard-port
+   decision, PID, and the separately versioned installed workbench provenance. Keep
+   exactly one service/workbench and no checkout path.
+2. Execute Windows's installed Find → Name → Trust → Serve/Pond slice through the real
+   named pipe and public surfaces. Include provider capability truth, cooperative DNS,
+   existing trust diagnosis, real derived health/proxy state where available, narrow
+   Pond from a physical Linux reader, tray/notification/local-control truth, SCM restart
+   recovery, and exact cleanup. Do not substitute the isolated multi-daemon story or a
+   second service.
+3. Coordinate directly with artifact-ready CachyOS/Avahi and Alpine/native peers under
+   shared run IDs. Own all Windows DNS-SD/Bonjour/native, NIC/profile, service, and
+   firewall mutations on this machine; peers supply their own product traffic and own
+   their OS changes. Prove bidirectional address/TXT/interface data, live browse,
+   withdrawal, provider fallback/return, and exact restoration without touching
+   protected Dnscache or LLMNR policy.
+4. Journal and push the verdict in the same session. A production, dependency,
+   installer, or package fix invalidates the fleet candidate and must be followed by an
+   explicit re-freeze; harness/evidence work alone does not. Remain available for the
+   CachyOS driver's final reconciliation and do not begin PH-5 until PH-4 is green.
+
 ## 2026-09-03 pre-freeze dispatch (after `d54a1c0`)
 
 1. Pull current `dev` and accept the ownership-aware installer change in `41ad76b`

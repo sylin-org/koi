@@ -11,6 +11,29 @@ green: installed-service Avahi/resolved/native loss and return, pre-armed primar
 recovery, honest no-backend firewall reporting, independent-peer Pond policy, and
 bounded hostile DNS/mDNS/HTTP input. Do not repeat these gates on an unchanged artifact.
 
+## 2026-09-03 PH-4 dispatch (frozen source `f53d568a871e952576988e543126160bfd41aaaa`)
+
+1. Build a locked release from a clean export/detached worktree of the exact frozen
+   source, run full native gates, and install it serially through the public systemd
+   path. Record source and artifact hashes, durable config/unit/operator-policy and
+   member-identity hashes, service PID/restarts, and preservation of the explicit
+   `24441:24444` run with exactly one daemon.
+2. Execute the headless installed Find → Name → Trust → Serve/Pond journey through
+   authenticated local control, CLI, and public APIs with real run-owned state and a
+   physical peer. Cover Avahi/resolve1/native truth, DNS/mDNS, current trust diagnosis,
+   derived health/proxy where available, Pond reads/denials/restart persistence,
+   actionable headless diagnostics, and exact cleanup. Do not run the isolated
+   multi-daemon capability story as acceptance.
+3. Act as the stable physical peer/observer for workstation PH-4 slices and capture a
+   short installed-service collector baseline on this exact artifact. Peer work may
+   create only run-owned product traffic; provider, link, firewall, and service
+   mutation stays with the owning hat. Do not start the six-to-24-hour PH-5 soak until
+   the epic records PH-4 green.
+4. Journal and push the complete local slice. If product or package/installer code must
+   change, invalidate the frozen candidate and require a new exact revision across the
+   fleet; harness-only evidence changes do not. End with the accepted service healthy
+   and the collector ready.
+
 ## 2026-09-03 pre-freeze dispatch (after `d54a1c0`)
 
 1. Pull current `dev` and accept the ownership-aware installer through the sole real

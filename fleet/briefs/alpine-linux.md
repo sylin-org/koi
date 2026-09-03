@@ -8,6 +8,28 @@ controls, bounded supervision/logs, crash recovery, failed-install rollback, ord
 APK upgrade/removal/reinstall, native musl gates, and Pond are green. Avahi is installed
 but stopped and must be restored to that exact baseline after any provider gate.
 
+## 2026-09-03 PH-4 dispatch (frozen source `f53d568a871e952576988e543126160bfd41aaaa`)
+
+1. Produce signed/indexed APKs from a clean source archive of the exact frozen commit,
+   run the full locked musl gates, and upgrade the sole package-owned daemon/workbench
+   through apk/OpenRC. Record source, APK, installed-binary, service/supervisor, desktop,
+   and retained-index identities; preserve the standing `5651:5654` decision and one
+   healthy process of each kind.
+2. Execute Alpine's installed Find → Name → Trust → Serve/Pond journey with real
+   run-owned state and a physical peer. Exercise authenticated OpenRC controls, native
+   fallback, DNS/mDNS, current trust diagnosis, derived health/proxy state where
+   available, the narrow Pond surface and denials, Plasma truth, service recovery, and
+   exact reversal. The isolated `koi-lab capability-story` mode cannot count.
+3. Participate directly in the serial Alpine/native rotations with Windows and
+   CachyOS/Avahi-resolve1 when their frozen artifacts are ready. This hat owns Avahi
+   start/stop, primary-interface, OpenRC, and local firewall/package state; restore
+   Avahi to installed-but-stopped and all network state exactly. Use the shared run ID
+   and installed Koi APIs, never a helper daemon.
+4. Journal and push the complete slice. If frozen product/package bytes require a fix,
+   invalidate and re-freeze the candidate before further acceptance; do not bless a
+   one-off APK. Leave the accepted artifact ready for final PH-4 reconciliation and the
+   later PH-5 soak.
+
 ## 2026-09-03 pre-freeze dispatch (after `d54a1c0`)
 
 1. This hat's convergence dispatch is complete. The accepted APK/OpenRC deployment,

@@ -52,6 +52,13 @@ Within a brief, the most recent dated `next dispatch` section is the current rou
 and outranks retained baseline lists. Journal and issue evidence still determine what
 is already complete.
 
+When the epic names a frozen source SHA, synchronized `dev` is the instruction and
+evidence branch, not an implicit replacement candidate. Verify that exact commit
+object locally and build product artifacts from its clean export or detached worktree.
+Never label a build from a later `dev` HEAD with the frozen SHA. Follow the epic's
+invalidation rule before accepting any product, dependency, installer/package-recipe,
+or shipped-asset correction.
+
 ## 3. Select work without waiting for another prompt
 
 Choose the first unfinished, dependency-ready item in this order:

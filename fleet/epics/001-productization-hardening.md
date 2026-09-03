@@ -42,12 +42,57 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 
 | ID | Workstream | State | Exit gate |
 |---|---|---|---|
-| PH-0 | Freeze and reconcile the product contract | local evidence assembled; fleet reconciliation pending | Every advertised capability, OS, artifact, and install path maps to a current real gate or an explicit unverified/unsupported state; stale claims are corrected. |
-| PH-1 | Platform truth and durable lifecycle | local fleet gates green | Clean install, in-place upgrade, failed-upgrade recovery, reboot, uninstall, and reinstall use product-owned paths and preserve intended identity/configuration. |
-| PH-2 | Environmental recovery | local fleet gates green | Process crash, provider loss/return, link/IP churn, firewall change, runtime disconnect, boot, lock, and sleep/resume recover without duplicates or manual re-arming. |
-| PH-3 | Security-boundary hardening | local fleet gates green | Local-control identity, Pond allowlist, operator auth, installer privilege, key custody, hostile LAN input, and resource bounds have executable negative gates; no unresolved critical/high finding remains. |
-| PH-4 | Installed whole-story matrix | waits on pre-freeze convergence | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
+| PH-0 | Freeze and reconcile the product contract | **green at frozen source** | Every advertised capability, OS, artifact, and install path maps to a current real gate or an explicit unverified/unsupported state; stale claims are corrected. |
+| PH-1 | Platform truth and durable lifecycle | **green fleet-wide** | Clean install, in-place upgrade, failed-upgrade recovery, reboot, uninstall, and reinstall use product-owned paths and preserve intended identity/configuration. |
+| PH-2 | Environmental recovery | **green fleet-wide** | Process crash, provider loss/return, link/IP churn, firewall change, runtime disconnect, boot, lock, and sleep/resume recover without duplicates or manual re-arming. |
+| PH-3 | Security-boundary hardening | **green fleet-wide** | Local-control identity, Pond allowlist, operator auth, installer privilege, key custody, hostile LAN input, and resource bounds have executable negative gates; no unresolved critical/high finding remains. |
+| PH-4 | Installed whole-story matrix | **active — source frozen at `f53d568a871e952576988e543126160bfd41aaaa`** | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
 | PH-5 | Onboarding, diagnostics, and soak | collector ready; waits on PH-4 | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
+
+### 2026-09-03 PH-4 source freeze and execution contract
+
+The exact Koi source candidate is
+`f53d568a871e952576988e543126160bfd41aaaa`. It is already present on
+`origin/dev`. Every PH-4 daemon/package artifact must be built from a clean export or
+detached worktree of that commit, even while later journal and dispatch commits advance
+`dev`. Record both the full source SHA and installed artifact SHA-256. Existing native
+workbench artifacts may remain only where their own source and installed bytes are
+unchanged; record that separate provenance explicitly.
+
+PH-0 through PH-3 are reconciled green at this boundary. Their final pre-freeze input
+includes the accepted Windows SCM recovery correction, Bluefin immutable reboot,
+Debian and Alpine ownership-aware installs, and CachyOS runs
+`20260903T041144Z-866860` (Avahi/resolve1/native) and
+`20260903T041803Z-869519` (Pond through Bluefin). Full native tests, strict clippy,
+surface/documentation/publish/embedded checks, one-process invariants, and exact host
+restoration are green. The first Pond diagnostic run is deliberately excluded because
+its old harness wrote PASS before verifying cleanup; the accepted rerun used the
+restoration-gated workbook in the frozen commit.
+
+PH-4 uses the real installed service and production ports. Its whole-story transaction
+drives authenticated local control and public product APIs against run-owned resources
+on the standing deployment. It must not use the legacy `koi-lab capability-story` mode
+as acceptance: that older mode stops standing services and launches isolated daemons.
+Preserve an existing enrolled identity rather than reinitializing certmesh merely for a
+test. Compose Find → Name → Trust → Serve/Pond through real workload/discovery,
+DNS/mDNS, current trust diagnosis and certificate paths, health/proxy where supported,
+and the narrow peer-read Pond surface; report a genuinely unavailable optional adapter
+without disabling independent routes.
+
+Local artifact installation may proceed concurrently across machines; destructive
+cross-host provider/network work remains serial and each hat mutates only its own OS.
+CachyOS coordinates the shared run IDs after peers publish artifact-ready evidence.
+Windows↔Avahi, Windows↔native, and Avahi/resolve1↔native are the minimum provider
+rotations. Every participant also proves withdrawal and exact restoration, while each
+Pond subject is read from an independent physical host. No second Koi, fake endpoint,
+alternate acceptance port, or checkout deployment is permitted.
+
+Evidence-only, harness-only, journal, and dispatcher commits after the freeze do not
+move the candidate. Any correction to product code, dependencies, installer/package
+recipes, or shipped assets invalidates it: update this section with one new exact SHA,
+rebuild every affected artifact, and rerun the affected PH-4 slices. Never silently
+test different revisions under the same candidate name. PH-5 starts only after all five
+hat journals show the frozen artifact and PH-4 is reconciled green.
 
 ### 2026-09-03 convergence checkpoint
 
@@ -97,28 +142,24 @@ through SCM: its owned no-config deployment retained the standard run, an unheal
 `StartPending` candidate rolled back exactly after image-verified termination, and a
 serial real foreign listener moved a genuinely fresh install to `5651:5654` before
 the intended standard deployment was restored without residue.
-Debian prepares the reusable PH-5 collector without starting the soak. CachyOS
-remains an unchanged integration peer. Then PH-0 through PH-3 are reconciled once,
-one exact `dev` revision is frozen, and PH-4 begins.
+Debian prepared the reusable PH-5 collector without starting the soak. CachyOS then
+accepted the generalized systemd provider and Pond workbooks, reconciled PH-0 through
+PH-3, and froze the exact PH-4 source named above.
 
-### Pre-freeze critical path
+### Pre-freeze critical path — complete
 
-1. **The fleet's local PH-1 acceptance is green.** Bluefin, Windows, and Debian retain
-   their accepted installed deployments unchanged and available as peers until the
-   frozen PH-4 source is named.
-2. **CachyOS owns integration regression and the freeze.** Re-run the newly generalized
-   provider and Pond workbooks through the systemd/Avahi/resolve1 path with one
-   installed Koi and an unchanged physical peer. Once the three installer verdicts
-   are on `dev`, reconcile PH-0 through PH-3 and record one exact source revision as
-   the PH-4 candidate.
-3. **Alpine is complete for this dispatch.** Keep its accepted APK/OpenRC deployment
-   unchanged and available for run-owned peer observations. Rebuild from the frozen
-   source only when PH-4 starts; do not manufacture another local task meanwhile.
-4. **PH-4 and PH-5 are fleet gates.** Every hat installs an artifact from the same
-   frozen source and owns its own system mutations. CachyOS drives the serial
-   cross-provider/Pond matrix; Debian runs the installed-service collector while
-   every hat supplies its controlled-fault slice. The long soak starts only after
-   the whole-story matrix is green.
+1. **Fleet PH-1 acceptance closed.** Bluefin, Windows, and Debian published their final
+   ownership-aware installed lifecycle verdicts on `dev`; Alpine and CachyOS had
+   already accepted the same shared decision.
+2. **The integration regression closed.** CachyOS passed the generalized systemd
+   provider and corrected Pond workbooks against Bluefin with one installed Koi per
+   host and exact restoration.
+3. **PH-0 through PH-3 reconciled.** All five hats' public-contract, lifecycle,
+   recovery, and adversarial evidence is green; the surface ledger and repository
+   contract gates pass.
+4. **Freeze handed off to PH-4.** The exact source is named above. Every hat now installs
+   its artifact from that revision and owns its system mutations; CachyOS drives the
+   serial cross-provider/Pond matrix. The long soak remains gated on PH-4.
 
 ## Immediate correctness work
 

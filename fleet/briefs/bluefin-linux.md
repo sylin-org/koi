@@ -16,6 +16,28 @@ primary-interface churn, Avahi/resolved/native recovery, wrong-UID local control
 Pond/firewalld gate are already physically green. Do not repeat those gates against an
 unchanged artifact.
 
+## 2026-09-03 PH-4 dispatch (frozen source `f53d568a871e952576988e543126160bfd41aaaa`)
+
+1. Build Koi from a clean export/detached worktree of the exact frozen source inside
+   `koi-dev`, run the full locked native gates there, and install it serially through
+   the public systemd path. Keep build dependencies inside the toolbox. Record source,
+   release/installed hashes, unit/port/operator facts, PID, and the separate unchanged
+   native RPM/rpm-ostree workbench provenance.
+2. Run the installed Find → Name → Trust → Serve/Pond slice using only the standing
+   service, production endpoints, real run-owned workload/API state, and an independent
+   physical reader. Include Avahi/resolve1/native truth, DNS/mDNS, current trust
+   diagnosis, health/proxy where available, narrow Pond and excluded routes, GNOME
+   workbench/local control, service recovery, and exact cleanup. The legacy isolated
+   capability-story mode is not acceptance.
+3. Supply this exact immutable-workstation artifact as the unchanged Avahi/resolve1,
+   firewalld, and Pond peer whenever the CachyOS driver names a shared PH-4 run. Own
+   every Bluefin provider/network/service mutation locally and retain toolbox/host
+   separation; never copy another distribution's mechanism onto the host.
+4. Push the evidence in the same session. A product or package-recipe defect invalidates
+   the candidate and requires an explicit fleet re-freeze; evidence/harness corrections
+   do not move it. Finish healthy with one service and one workbench, ready for PH-5
+   only after the whole matrix closes.
+
 ## 2026-09-03 pre-freeze dispatch (after `d54a1c0`)
 
 1. Pull current `dev`, build in the existing toolbox, and accept the ownership-aware
