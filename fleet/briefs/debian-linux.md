@@ -16,7 +16,7 @@ bounded hostile DNS/mDNS/HTTP input. Do not repeat these gates on an unchanged a
 1. Debian's headless correction and shared collector core are complete. The exact
    corrected release is installed through the product systemd path at the retained
    shifted ports, and the ordinary-user `pond status|start|stop` journey is green.
-2. Systemd canary `v1-ph5-debian-systemd-canary-01` passed against the unchanged
+2. Systemd canary `v1-ph5-debian-systemd-canary-02` passed against the unchanged
    physical CachyOS Koi on `test-01`; retain its evidence and do not repeat it unless
    the observer contract or installed artifact changes.
 3. PH-4 remains reopened because the shipped CLI changed. Keep this one healthy
