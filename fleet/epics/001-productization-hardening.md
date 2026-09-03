@@ -82,9 +82,13 @@ Alpine has also closed its provider/interface recovery gate on the installed Ope
 service: physical run `20260903T014605Z-1730` held one daemon through
 `avahi → native → avahi`, restored installed-but-stopped Avahi, and recovered a
 pre-armed primary-interface down/up cycle with bidirectional Debian-peer discovery
-and withdrawal. Alpine still owes its local PH-3 boundary and corrected-installer
-upgrade. Bluefin and Debian validate the shared installer decision on their one real
-deployment; Windows consumes the same final-before-mutation contract through SCM.
+and withdrawal. Alpine's local PH-3 gate is also closed: an unrelated UID was denied
+at the owner-private socket, and two bounded Debian-origin hostile-input passes left
+PID, resources, native routes, and publication state stable while every excluded
+Pond/operator route stayed unreachable. Alpine now owes only its corrected-installer
+upgrade in this dispatch. Bluefin and Debian validate the shared installer decision
+on their one real deployment; Windows consumes the same final-before-mutation
+contract through SCM.
 Debian prepares the reusable PH-5 collector without starting the soak. CachyOS
 remains an unchanged integration peer. Then PH-0 through PH-3 are reconciled once,
 one exact `dev` revision is frozen, and PH-4 begins.
