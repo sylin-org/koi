@@ -52,10 +52,10 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 ### 2026-09-02 convergence checkpoint
 
 Windows, Bluefin, and Debian have closed their current local PH-2/PH-3 physical
-gates. Alpine has closed package ownership, transactional OpenRC supervision, and
-the native musl foundation, but still owes its installed Plasma/session,
-provider/interface, and local security gates. CachyOS remains the integration driver
-and owns the two shared corrections that block a responsible candidate freeze:
+gates. Alpine has closed package ownership, transactional OpenRC supervision, the
+native musl foundation, and its installed Plasma/session lifecycle, but still owes
+its provider/interface and local security gates. CachyOS remains the integration
+driver and owns the two shared corrections that block a responsible candidate freeze:
 
 1. Linux install planning must distinguish the Koi deployment being replaced from a
    genuinely foreign port owner. Systemd and OpenRC must preserve an existing
