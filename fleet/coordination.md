@@ -206,13 +206,13 @@ test, or a process that merely started.
   not gates. Linux runs
   `scripts/integration/mdns-provider-transition.sh`; the precise contract and
   Windows adaptation are in `docs/testing/mdns-provider-transition.md`.
-  Current Linux reference pass `20260902T004825Z-546815` used the unchanged
-  installed test-01 subject PID `542996` (SHA-256
-  `8e3b94a9cfcaaa66f8c751bbb10e59f5b2196a2057d848c0ff8020d9395e24c3`)
-  and Bluefin peer PID `9720` (SHA-256
-  `89bc5ed0f0edfa7fd9163847a5cab0b23fa3a03fed9fc32789e39ea4d690658f`),
-  with generations 1–5; use its structured evidence shape as the minimum
-  Windows gate.
+  Current frozen-candidate Linux reference pass `20260903T125812Z-925941`
+  used the unchanged installed test-01 systemd subject PID `924696` (SHA-256
+  `f0e999b0077eb25935f1ad563aee33f2e659ffde915d3f3c55f5aa568691682b`)
+  and Alpine OpenRC peer PID `24201` (SHA-256
+  `4db6a257b9303157bd8dff03887b478b2c8f5a20f777166d35a59f77436a95e9`),
+  with generations 1–5, late-conflict recovery, and exact restoration on both
+  service managers; use its structured evidence shape as the minimum Windows gate.
 - **Windows local control:** the workbench gate also uses the one installed service.
   Reinstall/upgrade it through `koi install` so ADR-040 records the interactive SID,
   then prove the owner-private breadcrumb is not the workbench's dependency: shifted

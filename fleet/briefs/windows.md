@@ -17,6 +17,28 @@ adapter; `0026951` closed the shared slot-lifecycle leak; `97a0817` made startup
 consume the same batched verdict and canonicalized connection categories. Do not repeat
 those destructive workbooks unless later implementation changes their behavior.
 
+## 2026-09-03 09:04 EDT final PH-4 provider dispatch
+
+1. Keep the accepted exact-source service/workbench. Do not rebuild, reinstall, or
+   repeat the local whole-story transaction. CachyOS and Alpine are now frozen-artifact
+   ready, and their shared lane passed without changing either peer's accepted bytes.
+2. Execute the two remaining Windows-owned transactions serially, never concurrently:
+   first `ph4-5c89-win-native-01` against unchanged Alpine `test-03`
+   (`192.168.1.221`), then `ph4-5c89-win-avahi-01` against unchanged CachyOS `test-01`
+   (`192.168.1.109`). If the first run is already complete when this dispatch lands,
+   verify its journal evidence and continue with the second rather than repeating it.
+3. Reuse the accepted installed-service Windows workbook. Only this hat mutates Windows
+   DNS-SD/Bonjour/native selection, SCM, NIC/profile, or firewall state. Peers expose
+   run-owned Koi API traffic and observations only; never change their provider,
+   service, network, package, or firewall state. Use pinned host identities and the
+   approved test-lab credential through mode-0700 askpass, not argv, prompts, or evidence.
+4. Each run must prove bidirectional ordinary and explicit-address publication,
+   browse/resolve with address/TXT/interface data, long-lived lifecycle observation,
+   withdrawal, provider loss/fallback/return, generation and publication-count truth,
+   unchanged peer PID/hash, one Windows Koi, and exact cleanup. Publish one evidence
+   entry covering both serial runs, then remain unchanged for CachyOS reconciliation.
+   PH-5 remains prohibited until the epic records PH-4 green.
+
 ## 2026-09-03 08:16 EDT convergence dispatch (after `4ce6a40`)
 
 1. The exact `5c89e9de11bf23ab81fd8b5b0778c58477359360` Windows artifact and

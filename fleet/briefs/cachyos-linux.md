@@ -19,6 +19,23 @@ was accepted through the real installed service: upgrade retained `5641:5644` wi
 manufacturing a config, and a deliberately unhealthy replacement restored the exact
 prior deployment.
 
+## 2026-09-03 09:04 EDT PH-4 acceptance and final coordination
+
+1. This hat's exact-source build/install and installed local journey are green in the
+   09:04 EDT journal entry. Pond run `20260903T124749Z-924542` passed through Bluefin,
+   and provider run `20260903T125812Z-925941` closed the CachyOS
+   Avahi/resolve1/native↔Alpine/native lane. Do not rebuild, reinstall, or repeat
+   either destructive workbook on unchanged artifacts.
+2. Keep the accepted daemon/workbench and provider/network/firewall baseline unchanged
+   as the physical Avahi peer for Windows run `ph4-5c89-win-avahi-01` and as the Pond
+   reader for Debian run `ph4-5c89-debian-pond-01`. Those hats own their system
+   mutations; this host supplies only run-owned product reads/publications.
+3. Pull and reconcile once Windows has published both its Alpine/native and CachyOS/
+   Avahi transactions and Debian has published its Pond transaction. Require their
+   exact frozen artifact identities, withdrawal, singleton processes, and exact cleanup.
+   If all are green, mark PH-4 complete and dispatch PH-5; otherwise update only the
+   owning hat's next task. Do not start the soak early.
+
 ## 2026-09-03 PH-4 dispatch (frozen source `5c89e9de11bf23ab81fd8b5b0778c58477359360`)
 
 1. Build a release artifact from a clean export or detached worktree of the exact

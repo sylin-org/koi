@@ -8,6 +8,18 @@ controls, bounded supervision/logs, crash recovery, failed-install rollback, ord
 APK upgrade/removal/reinstall, native musl gates, and Pond are green. Avahi is installed
 but stopped and must be restored to that exact baseline after any provider gate.
 
+## 2026-09-03 09:04 EDT peer handoff
+
+1. CachyOS provider run `20260903T125812Z-925941` passed against this unchanged
+   installed OpenRC/native peer. It recorded PID `24201`, exact artifact SHA-256
+   `4db6a257b9303157bd8dff03887b478b2c8f5a20f777166d35a59f77436a95e9`, active+enabled
+   Koi, installed-but-stopped/disabled Avahi, and one permanent publication before and
+   after. Do not repeat or independently journal that CachyOS-owned lane.
+2. Remain unchanged for Windows run `ph4-5c89-win-native-01`. Permit only its run-owned
+   Koi API publications and reads; Windows owns every provider/profile/service mutation.
+   After its journal lands, verify readiness read-only and report only a real mismatch
+   or residue. Do not start PH-5.
+
 ## 2026-09-03 08:16 EDT convergence dispatch (after `4ce6a40`)
 
 1. The exact re-frozen APK/OpenRC artifact and installed whole-story journey are green

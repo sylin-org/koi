@@ -28,6 +28,8 @@ Optional environment:
   KOI_BREADCRUMB           Endpoint breadcrumb (default follows service scope)
   PEER_KOI_API             Peer-local Koi API (default http://127.0.0.1:5641)
   PEER_KOI_SERVICE_SCOPE   Peer unit scope: system or user (default system)
+  PEER_KOI_SERVICE_MANAGER Peer supervisor: auto, systemd, or openrc
+                           (default auto-detected on the peer)
   PEER_KOI_BREADCRUMB      Peer breadcrumb (default follows peer service scope)
   PEER_SUDO_ASKPASS        Executable askpass helper already present on the peer
   PEER_PORT                SSH port (default 22)
@@ -182,6 +184,14 @@ case "$PEER_KOI_SERVICE_SCOPE" in
     exit 2
     ;;
 esac
+PEER_KOI_SERVICE_MANAGER="${PEER_KOI_SERVICE_MANAGER:-auto}"
+case "$PEER_KOI_SERVICE_MANAGER" in
+  auto|systemd|openrc) ;;
+  *)
+    echo "PEER_KOI_SERVICE_MANAGER must be auto, systemd, or openrc" >&2
+    exit 2
+    ;;
+esac
 PEER_KOI_BREADCRUMB="${PEER_KOI_BREADCRUMB:-$DEFAULT_PEER_KOI_BREADCRUMB}"
 PEER_SUDO_ASKPASS="${PEER_SUDO_ASKPASS:-}"
 PEER_PORT="${PEER_PORT:-22}"
@@ -319,7 +329,7 @@ PY
 
 case "$operation" in
   probe)
-    for command in sha256sum systemctl pgrep awk python3; do
+    for command in awk python3; do
       command -v "$command" >/dev/null || {
         echo "peer is missing required command: $command" >&2
         exit 2
@@ -462,52 +472,161 @@ peer_resolve() {
 
 peer_control_facts() {
   local askpass_arg="${PEER_SUDO_ASKPASS:--}"
-  "${SSH[@]}" sh -s -- "$PEER_KOI_SERVICE_SCOPE" "$askpass_arg" <<'REMOTE'
+  "${SSH[@]}" sh -s -- \
+    "$PEER_KOI_SERVICE_SCOPE" "$PEER_KOI_SERVICE_MANAGER" "$askpass_arg" <<'REMOTE'
 set -eu
 scope="$1"
-askpass="$2"
+manager="$2"
+askpass="$3"
 if [ "$askpass" = - ]; then
   askpass=""
 fi
 
 sha256_process_executable() {
-  process_path="$1"
-  if sha256sum "$process_path" 2>/dev/null; then
-    return
+  process_pid="$1"
+  process_path="/proc/$process_pid/exe"
+  if hash_line="$(sha256sum "$process_path" 2>/dev/null)"; then
+    printf '%s process-exe\n' "$(printf '%s\n' "$hash_line" | awk '{print $1}')"
+    return 0
   fi
   if [ -n "$askpass" ]; then
     [ -x "$askpass" ] || {
       echo "peer askpass helper is not executable: $askpass" >&2
       return 1
     }
-    SUDO_ASKPASS="$askpass" sudo -A sha256sum "$process_path"
-  else
-    sudo -n sha256sum "$process_path"
+    if hash_line="$(SUDO_ASKPASS="$askpass" sudo -A sha256sum "$process_path" 2>/dev/null)"; then
+      printf '%s elevated-process-exe\n' "$(printf '%s\n' "$hash_line" | awk '{print $1}')"
+      return 0
+    fi
+  elif hash_line="$(sudo -n sha256sum "$process_path" 2>/dev/null)"; then
+    printf '%s elevated-process-exe\n' "$(printf '%s\n' "$hash_line" | awk '{print $1}')"
+    return 0
   fi
+  echo "cannot hash the peer's running Koi executable" >&2
+  return 1
 }
 
-if [ "$scope" = user ]; then
-  ctl() { systemctl --user "$@"; }
-else
-  ctl() { systemctl "$@"; }
-fi
-pid="$(ctl show koi.service --property MainPID --value)"
-case "$pid" in
-  ''|0|*[!0-9]*) echo "peer koi.service has no live MainPID" >&2; exit 1 ;;
-esac
-set -- $(pgrep -x koi || true)
-[ "$#" -eq 1 ] && [ "$1" = "$pid" ] || {
-  echo "expected exactly one peer Koi process (service PID $pid), saw: $*" >&2
-  exit 1
+koi_processes() {
+  ps -o pid=,comm= | awk '$2 == "koi" {print $1}'
 }
-printf 'koi_pid=%s\n' "$pid"
-printf 'koi_hash=%s\n' "$(sha256_process_executable "/proc/$pid/exe" | awk '{print $1}')"
-printf 'koi_active=%s\n' "$(ctl is-active koi.service 2>/dev/null || true)"
-printf 'koi_enabled=%s\n' "$(ctl is-enabled koi.service 2>/dev/null || true)"
-for unit in avahi-daemon.service avahi-daemon.socket systemd-resolved.service; do
-  printf '%s_active=%s\n' "$unit" "$(systemctl is-active "$unit" 2>/dev/null || true)"
-  printf '%s_enabled=%s\n' "$unit" "$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+
+for command in awk ps sha256sum; do
+  command -v "$command" >/dev/null 2>&1 || {
+    echo "peer service attestation is missing $command" >&2
+    exit 2
+  }
 done
+
+if [ "$manager" = auto ]; then
+  if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+    manager=systemd
+  elif command -v rc-service >/dev/null 2>&1 \
+      && command -v rc-update >/dev/null 2>&1; then
+    manager=openrc
+  else
+    echo "could not detect systemd or OpenRC on the peer" >&2
+    exit 2
+  fi
+fi
+
+case "$manager" in
+  systemd)
+    command -v systemctl >/dev/null 2>&1 || {
+      echo "systemd peer is missing systemctl" >&2
+      exit 2
+    }
+    if [ "$scope" = user ]; then
+      ctl() { systemctl --user "$@"; }
+    elif [ "$scope" = system ]; then
+      ctl() { systemctl "$@"; }
+    else
+      echo "peer systemd scope must be system or user" >&2
+      exit 2
+    fi
+    pid="$(ctl show koi.service --property MainPID --value)"
+    case "$pid" in
+      ''|0|*[!0-9]*) echo "peer koi.service has no live MainPID" >&2; exit 1 ;;
+    esac
+    set -- $(koi_processes)
+    [ "$#" -eq 1 ] && [ "$1" = "$pid" ] || {
+      echo "expected exactly one peer Koi process (service PID $pid), saw: $*" >&2
+      exit 1
+    }
+    koi_active="$(ctl is-active koi.service 2>/dev/null || true)"
+    koi_enabled="$(ctl is-enabled koi.service 2>/dev/null || true)"
+    ;;
+  openrc)
+    [ "$scope" = system ] || {
+      echo "OpenRC peer supports only system service scope" >&2
+      exit 2
+    }
+    for command in rc-service rc-update grep; do
+      command -v "$command" >/dev/null 2>&1 || {
+        echo "OpenRC peer is missing $command" >&2
+        exit 2
+      }
+    done
+    set -- $(koi_processes)
+    [ "$#" -eq 1 ] || {
+      echo "expected exactly one peer Koi process, saw: $*" >&2
+      exit 1
+    }
+    pid="$1"
+    if rc-service koi status >/dev/null 2>&1; then
+      koi_active=active
+    else
+      koi_active=inactive
+    fi
+    if rc-update show default 2>/dev/null \
+        | grep -Eq '^[[:space:]]*koi[[:space:]]*\|.*default'; then
+      koi_enabled=enabled
+    else
+      koi_enabled=disabled
+    fi
+    ;;
+  *)
+    echo "peer service manager must be auto, systemd, or openrc" >&2
+    exit 2
+    ;;
+esac
+
+printf 'koi_service_manager=%s\n' "$manager"
+printf 'koi_pid=%s\n' "$pid"
+set -- $(sha256_process_executable "$pid")
+printf 'koi_hash=%s\n' "$1"
+printf 'koi_hash_source=%s\n' "$2"
+printf 'koi_active=%s\n' "$koi_active"
+printf 'koi_enabled=%s\n' "$koi_enabled"
+
+if [ "$manager" = systemd ]; then
+  for unit in avahi-daemon.service avahi-daemon.socket systemd-resolved.service; do
+    printf '%s_active=%s\n' "$unit" "$(systemctl is-active "$unit" 2>/dev/null || true)"
+    printf '%s_enabled=%s\n' "$unit" "$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+  done
+else
+  if [ -x /etc/init.d/avahi-daemon ]; then
+    if rc-service avahi-daemon status >/dev/null 2>&1; then
+      avahi_active=active
+    else
+      avahi_active=inactive
+    fi
+    if rc-update show default 2>/dev/null \
+        | grep -Eq '^[[:space:]]*avahi-daemon[[:space:]]*\|.*default'; then
+      avahi_enabled=enabled
+    else
+      avahi_enabled=disabled
+    fi
+  else
+    avahi_active=absent
+    avahi_enabled=absent
+  fi
+  printf 'avahi-daemon.service_active=%s\n' "$avahi_active"
+  printf 'avahi-daemon.service_enabled=%s\n' "$avahi_enabled"
+  printf 'avahi-daemon.socket_active=absent\n'
+  printf 'avahi-daemon.socket_enabled=absent\n'
+  printf 'systemd-resolved.service_active=absent\n'
+  printf 'systemd-resolved.service_enabled=absent\n'
+fi
 REMOTE
 }
 

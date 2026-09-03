@@ -11,6 +11,21 @@ green: installed-service Avahi/resolved/native loss and return, pre-armed primar
 recovery, honest no-backend firewall reporting, independent-peer Pond policy, and
 bounded hostile DNS/mDNS/HTTP input. Do not repeat these gates on an unchanged artifact.
 
+## 2026-09-03 09:04 EDT Pond retry dispatch
+
+1. The 12:23 UTC attempt was a clean preflight refusal, not a product or Pond failure.
+   Do not repeat filesystem-wide credential discovery. The exact frozen service and
+   CachyOS reader remain ready and unchanged.
+2. As soon as the operator supplies the already-approved CachyOS lab login through this
+   agent's private session or an ignored machine-local handoff, create only run-scoped
+   mode-0700 askpass material and execute `ph4-5c89-debian-pond-01`. Never place the
+   credential in Git, argv, journal text, or evidence, and remove the helper afterward.
+   If no private credential source exists, report that single external handoff rather
+   than mutating Koi or inventing a substitute peer.
+3. Retain every assertion in the 08:16 dispatch, publish the completed evidence directly
+   to `dev`, and return to the collector baseline. Do not rebuild, reinstall, repeat the
+   local journey, or begin PH-5.
+
 ## 2026-09-03 08:16 EDT convergence dispatch (after `4ce6a40`)
 
 1. The exact re-frozen daemon, local Find/Name/Trust/Serve journey, restart/removal

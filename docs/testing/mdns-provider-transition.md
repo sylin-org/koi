@@ -29,6 +29,15 @@ peer is selected with `PEER_KOI_SERVICE_SCOPE=user`. Optional peer sudo remains
 peer-local, and an omitted `PEER_SUDO_ASKPASS` is transported as an explicit
 sentinel so OpenSSH cannot collapse the argument vector.
 
+The peer's supervisor is independent of the subject's. The gate auto-detects a
+live systemd runtime or an installed OpenRC toolset; set
+`PEER_KOI_SERVICE_MANAGER=systemd|openrc` only when evidence should pin that
+choice. A systemd peer is tied to its `MainPID`. An OpenRC peer must report the
+installed service active and enabled, expose exactly one `koi` process, and retain
+its captured Avahi activity/enablement. In both cases the gate hashes the running
+`/proc/<pid>/exe` directly or through peer-local sudo and rejects any PID, hash,
+service, or provider-state change.
+
 For a real per-user installation, run the gate as the unit-owning user and select
 the user service manager explicitly:
 
@@ -154,6 +163,20 @@ disabled. A separately pre-armed `ifup` then recovered a real `eth0` down/up cyc
 to the captured `192.168.1.221/24` lease and default route; both Koi PIDs and bytes
 remained unchanged, bidirectional publication/read/removal passed again, and neither
 host retained a run-owned registration.
+
+The frozen-candidate mixed-supervisor execution
+`20260903T125812Z-925941` ran from CachyOS against the unchanged Alpine OpenRC
+peer. The CachyOS subject stayed on system PID `924696`, SHA-256
+`f0e999b0077eb25935f1ad563aee33f2e659ffde915d3f3c55f5aa568691682b`;
+the Alpine peer stayed on PID `24201`, SHA-256
+`4db6a257b9303157bd8dff03887b478b2c8f5a20f777166d35a59f77436a95e9`.
+Generations 1–5 selected `avahi → systemd-resolved+native → native →
+systemd-resolved+native → avahi`. Every settled phase held three desired and
+three established publications with zero pending/failed. A real late resolve1
+conflict exposed `3/1/2/0` before automatic recovery to `3/3/0/0`. Cleanup
+returned CachyOS's services, activation sockets, and global/link mDNS modes and
+Alpine's installed-but-stopped Avahi state exactly; both inventories again held
+only their permanent publication.
 
 On Windows, preserve the same story and invariants while substituting its catalog:
 official Windows DNS-SD, installed Apple Bonjour/mDNSResponder, then native Koi.

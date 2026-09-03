@@ -138,6 +138,33 @@ system mutations. Every lane ends with exact service/provider/network/firewall/P
 restoration, one installed Koi, secret-redacted evidence, and a direct push to `dev`.
 Do not repeat an already-green local journey or begin PH-5 merely to keep an agent busy.
 
+### 2026-09-03 09:04 EDT PH-4 CachyOS acceptance checkpoint
+
+The final re-freeze remains `5c89e9de11bf23ab81fd8b5b0778c58477359360`.
+All five hats now have accepted exact-source artifacts and their completed local-slice
+evidence. Bluefin replaced its invalidated build under
+`ph4-5c89-bluefin-local-02`, and CachyOS closed its local journey plus Pond run
+`20260903T124749Z-924542`. CachyOS also closed
+the Avahi/resolve1↔Alpine/native provider lane in
+`20260903T125812Z-925941`: the installed systemd and OpenRC processes and hashes stayed
+fixed through generations 1–5, bidirectional address/TXT/lifecycle assertions and a
+real late resolve1 conflict passed, and both provider baselines restored exactly.
+
+That lane required one harness-only correction so a peer may be attested through
+systemd or OpenRC independently of the subject. It does not change product,
+dependencies, installers, packages, or shipped assets and therefore does not move the
+freeze. The remaining PH-4 critical path is now only:
+
+1. Windows owns serial `ph4-5c89-win-native-01` against unchanged Alpine, followed by
+   `ph4-5c89-win-avahi-01` against unchanged CachyOS. It mutates only Windows and proves
+   the same bidirectional provider/fallback/withdrawal and restoration contract.
+2. Debian owns `ph4-5c89-debian-pond-01` against unchanged CachyOS. Its earlier attempt
+   stopped before mutation because the peer credential had not reached that machine;
+   it resumes only from an operator-approved private credential handoff.
+3. CachyOS reconciles PH-4 green only after those journal entries land and every host
+   again reports its exact artifact, singleton deployment, and clean baseline. PH-5
+   remains gated until then.
+
 ### 2026-09-03 convergence checkpoint
 
 Windows, CachyOS, Bluefin, Debian, and Alpine have closed their current local PH-2/PH-3
