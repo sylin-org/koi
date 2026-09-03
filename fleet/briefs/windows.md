@@ -17,6 +17,20 @@ adapter; `0026951` closed the shared slot-lifecycle leak; `97a0817` made startup
 consume the same batched verdict and canonicalized connection categories. Do not repeat
 those destructive workbooks unless later implementation changes their behavior.
 
+## 2026-09-03 11:48 EDT PH-4 provider lanes complete
+
+1. Exact-source native-peer run `ph4-e49b-win-native-02` passed against Alpine's
+   unchanged native/OpenRC artifact. The earlier exact-source Avahi lane remains green;
+   all Windows-owned PH-4 work is complete. Do not repeat either lane on unchanged
+   artifacts.
+2. Keep the sole installed SCM daemon at PID `5312`, SHA-256
+   `9c4998461d3d0760a75c78dc2075d8d095666aa91626146af794f68d49e4b588`,
+   native generation 5, with one permanent publication and Bonjour/recovery residue
+   absent. The installed workbench remains sole PID `19524`.
+3. All five exact-source artifacts, both final Windows provider lanes, and Debian's
+   exact-source Pond rerun are present. Remain unchanged while CachyOS performs the
+   assigned PH-4 reconciliation. Do not begin PH-5 until the epic records PH-4 green.
+
 ## 2026-09-03 10:28 EDT Avahi accepted; native-peer wait
 
 1. Exact-source run `ph4-e49b-win-avahi-01` passed against CachyOS's unchanged Avahi

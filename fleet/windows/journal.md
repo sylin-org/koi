@@ -1,5 +1,65 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-03 (20) — PH-4 exact-source Windows↔Alpine/native lane accepted
+
+commit: exact frozen product source
+`e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`; synchronized Alpine artifact dispatch
+`1100e18` | run `ph4-e49b-win-native-02` | verdict: **PASS — final Windows
+provider lane closed**
+
+koi state now: unchanged exact-source AutoStart LocalSystem SCM service, sole PID
+`5312`, `C:\Program Files\Koi\koi.exe --daemon`, SHA-256
+`9c4998461d3d0760a75c78dc2075d8d095666aa91626146af794f68d49e4b588`,
+health 200 on standard port 5641. Control generation 5 is Ready with native
+publish/explicit-publish plus Windows DNS-SD browse/resolve and exactly one permanent
+desired/established publication. The unchanged installed workbench remains sole PID
+`19524`, SHA-256
+`bb07bb2c232f1ea7398348b1cb4a215dc7d2de04c9c21461bc6fe092de05e245`.
+Bonjour is absent from SCM, System32, and its program directory; no installer manifest
+or recovery task remains.
+
+peer: unchanged exact-source Alpine `test-03` (`192.168.1.221`), OpenRC daemon PID
+`2023` under supervisor PID `2022`, `/usr/bin/koi` SHA-256
+`095371b9ed13cde254214155aa231db9333342c35255717654299fcd514e9941`.
+Koi remained started in the default runlevel, Avahi remained stopped/disabled, native
+owned publish/explicit-publish/browse at generation 1, its one permanent publication
+returned exactly after cleanup, and the package-owned Plasma workbench remained PID
+`28433`. Windows created only the peer's run-owned Koi API publication; no Alpine
+provider, service, network, package, firewall, or login state was mutated.
+
+evidence and findings:
+
+1. One Windows ordinary publication and one explicit `192.168.1.137` publication plus
+   one Alpine native publication carried the shared run ID, exact interface name, side,
+   ports, and TXT. Windows resolved Alpine's exact address/TXT/interface, while Alpine
+   resolved both Windows records, in every settled phase. Counts converged with no
+   pending or failed materializations on either host.
+2. The one installed Windows PID advanced `native generation 1 → Bonjour 2 → provider
+   loss/native fallback 3 → Bonjour return 4 → native restoration 5`. Signed retained
+   Bonjour inputs installed/promoted, stopped/fell back, restarted/promoted, and
+   uninstalled without restarting Koi. Both daemon PIDs, Alpine's supervisor PID, and
+   both binary hashes remained fixed.
+3. A Windows subscription opened before any run publication stayed connected through
+   every generation, observed the Alpine record resolved, and received its removal
+   after acknowledged native withdrawal. After both Windows withdrawals, Alpine twice
+   returned no record for either ordinary or explicit instance.
+4. The first invocation stopped before its mutation boundary on a harness-only
+   StrictMode error while checking Alpine's correctly omitted unsupported direct-resolve
+   route. It changed no provider state and final assertions found both hosts exact. The
+   retained attempt is
+   `target/mdns-provider-transition/ph4-e49b-win-native-02-attempt1-harness-fail/`.
+   The corrected absence assertion retained every product check; accepted structured
+   evidence is `target/mdns-provider-transition/ph4-e49b-win-native-02/`.
+5. Final comparison restored Windows config/operator policy, adapter/IP/DNS/profile,
+   effective and product firewall facts, Dnscache, SharedAccess, registration counts,
+   and workbench identity exactly. Alpine PID/hash/supervisor, OpenRC and Avahi states,
+   interface/address/default route, workbench, routes, and counts matched baseline.
+   The exact DAT did not enter evidence.
+
+Both exact-source Windows provider lanes are complete. All five exact-source artifact
+entries and the required Debian Pond rerun are now present on `dev`; Windows remains
+unchanged for CachyOS PH-4 reconciliation and must not begin PH-5 early.
+
 ## 2026-09-03 (19) — PH-4 exact-source Windows↔CachyOS/Avahi lane accepted
 
 commit: exact frozen product source

@@ -49,6 +49,31 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 | PH-4 | Installed whole-story matrix | **active — source re-frozen at `e49bfe2b3e403fa87d4b8b237b49f3bb9e5cb5ef`** | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
 | PH-5 | Onboarding, diagnostics, and soak | collector ready; waits on PH-4 | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
 
+### 2026-09-03 11:48 EDT Windows↔native exact-source acceptance checkpoint
+
+Windows run `ph4-e49b-win-native-02` passed against Alpine's unchanged exact-source
+native/OpenRC peer. The installed Windows SCM daemon remained sole PID `5312` at
+SHA-256 `9c4998461d3d0760a75c78dc2075d8d095666aa91626146af794f68d49e4b588`;
+Alpine remained daemon PID `2023` under supervisor PID `2022` at SHA-256
+`095371b9ed13cde254214155aa231db9333342c35255717654299fcd514e9941`.
+Bidirectional ordinary and explicit-address discovery preserved exact address, TXT,
+and interface truth through native baseline, Bonjour promotion, provider loss/native
+fallback, Bonjour return, and final native restoration. One Windows subscription
+survived all five generations and observed Alpine removal; Alpine independently proved
+both Windows records absent after withdrawal. Counts converged with no pending/failed
+materializations, no daemon or supervisor restarted, and both hosts restored their
+exact service, provider, network, firewall, publication, and workbench baselines.
+
+The first invocation stopped before mutation on a harness-only StrictMode check of
+Alpine's intentionally absent direct-resolve route. The corrected rerun tested property
+absence and retained all product assertions. No product, dependency, installer,
+package recipe, or shipped asset changed, so the frozen source does not move.
+
+All five exact-source artifact entries, both final Windows provider lanes, Debian's
+exact-source Pond rerun, and the unchanged Linux provider evidence are now present on
+`dev`. CachyOS owns the final PH-4 reconciliation. PH-5 remains prohibited until that
+reconciliation marks PH-4 green.
+
 ### 2026-09-03 11:36 EDT PH-4 narrowed to the final Windows/native lane
 
 Three exact-source results landed and passed reconciliation. Windows↔CachyOS/Avahi
