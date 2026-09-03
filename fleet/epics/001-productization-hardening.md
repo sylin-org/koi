@@ -103,11 +103,9 @@ one exact `dev` revision is frozen, and PH-4 begins.
 
 ### Pre-freeze critical path
 
-1. **Bluefin owns the remaining PH-1 post-reboot acceptance; Windows and Debian are green.**
-   Bluefin validates the activated staged deployment, sole installed service, and exact
-   restoration named in its brief without repeating the green installer, rollback, or
-   foreign-listener phases. Windows retains its accepted installed service/workbench as
-   an unchanged peer until the frozen PH-4 source is named.
+1. **The fleet's local PH-1 acceptance is green.** Bluefin, Windows, and Debian retain
+   their accepted installed deployments unchanged and available as peers until the
+   frozen PH-4 source is named.
 2. **CachyOS owns integration regression and the freeze.** Re-run the newly generalized
    provider and Pond workbooks through the systemd/Avahi/resolve1 path with one
    installed Koi and an unchanged physical peer. Once the three installer verdicts
