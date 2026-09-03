@@ -49,12 +49,12 @@ PH-3 may run beside PH-1/2 but must close before the frozen-candidate matrix.
 | PH-4 | Installed whole-story matrix | waits on PH-1/2/3 | One frozen source revision completes Find → Name → Trust → Serve/Pond using installed artifacts across physical OS/provider families. |
 | PH-5 | Onboarding, diagnostics, and soak | waits on PH-4 | Fresh users reach a useful result without checkout/toolchain paths; the exact candidate survives a preferably 24-hour mixed-OS soak with bounded resources and exact restoration. |
 
-### 2026-09-02 convergence checkpoint
+### 2026-09-03 convergence checkpoint
 
-Windows, CachyOS, Bluefin, and Debian have closed their current local PH-2/PH-3
-physical gates. Alpine has closed package ownership, transactional OpenRC
-supervision, the native musl foundation, and its installed Plasma/session lifecycle,
-but still owes its provider/interface and local security gates. The two shared
+Windows, CachyOS, Bluefin, Debian, and Alpine have closed their current local PH-2/PH-3
+physical gates. Alpine has also closed package ownership, transactional OpenRC
+supervision, the native musl foundation, and its installed Plasma/session lifecycle.
+The two shared
 corrections formerly owned by the CachyOS integration driver landed in `41ad76b`:
 
 1. Linux install planning must distinguish the Koi deployment being replaced from a
@@ -85,10 +85,14 @@ pre-armed primary-interface down/up cycle with bidirectional Debian-peer discove
 and withdrawal. Alpine's local PH-3 gate is also closed: an unrelated UID was denied
 at the owner-private socket, and two bounded Debian-origin hostile-input passes left
 PID, resources, native routes, and publication state stable while every excluded
-Pond/operator route stayed unreachable. Alpine now owes only its corrected-installer
-upgrade in this dispatch. Bluefin and Debian validate the shared installer decision
-on their one real deployment; Windows consumes the same final-before-mutation
-contract through SCM.
+Pond/operator route stayed unreachable. Alpine then accepted the ownership-aware
+installer on dated APK source `32172ba`: its standing `5651:5654` decision survived
+ordinary indexed upgrade, a deliberately unhealthy candidate restored the exact
+accepted deployment, and the full locked musl plus physical Debian-peer Pond gates
+passed. Alpine's dispatch is complete and its exact installed APK/index are retained
+as a PH-4 candidate. Bluefin and Debian validate the shared installer decision on
+their one real deployment; Windows consumes the same final-before-mutation contract
+through SCM.
 Debian prepares the reusable PH-5 collector without starting the soak. CachyOS
 remains an unchanged integration peer. Then PH-0 through PH-3 are reconciled once,
 one exact `dev` revision is frozen, and PH-4 begins.

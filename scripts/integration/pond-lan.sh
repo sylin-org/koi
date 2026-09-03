@@ -27,7 +27,7 @@ Optional environment:
   EVIDENCE_ROOT          Output parent (default target/pond-lan)
 
 The local operator must be authorized for Koi's local-control socket. Every peer
-needs curl. The gate publishes and arms Pond, exercises all public routes and
+needs Python 3. The gate publishes and arms Pond, exercises all public routes and
 negative routes from every peer, stops it, re-arms it, restarts the installed
 service, verifies intent recovery, and restores the baseline desired state.
 It never records the daemon access token.
@@ -150,13 +150,15 @@ if [[ -n "${PEER_SSH_ASKPASS:-}" ]]; then
     echo "PEER_SSH_ASKPASS is not executable: $PEER_SSH_ASKPASS" >&2
     exit 2
   }
-  SETSID_WAIT=()
   if setsid --help 2>&1 | grep -q -- '-w'; then
-    SETSID_WAIT=(-w)
+    SSH_BASE=(env DISPLAY=koi-lab SSH_ASKPASS_REQUIRE=force \
+      SSH_ASKPASS="$PEER_SSH_ASKPASS" setsid -w "${SSH_BASE[@]}" \
+      -o BatchMode=no -o NumberOfPasswordPrompts=1)
+  else
+    SSH_BASE=(env DISPLAY=koi-lab SSH_ASKPASS_REQUIRE=force \
+      SSH_ASKPASS="$PEER_SSH_ASKPASS" "${SSH_BASE[@]}" \
+      -o BatchMode=no -o NumberOfPasswordPrompts=1)
   fi
-  SSH_BASE=(env DISPLAY=koi-lab SSH_ASKPASS_REQUIRE=force \
-    SSH_ASKPASS="$PEER_SSH_ASKPASS" setsid "${SETSID_WAIT[@]}" "${SSH_BASE[@]}" \
-    -o BatchMode=no -o NumberOfPasswordPrompts=1)
 else
   SSH_BASE+=(-o BatchMode=yes)
 fi
@@ -247,30 +249,62 @@ peer_public_gate() {
   local url_key output
   url_key="$(sed 's/[^A-Za-z0-9_.-]/_/g' <<<"$base")"
   output="$EVIDENCE_DIR/${peer//@/_}-$phase-$url_key.txt"
-  peer_run "$peer" sh -s -- "${base%/}" >"$output" <<'REMOTE'
-set -eu
-base="$1"
-command -v curl >/dev/null
-for path in / /app.js /styles.css /sentences.js /koi.png /healthz \
-  /v1/status /v1/mdns/browser/snapshot /v1/dns/entries; do
-  code="$(curl -sS --max-time 8 -o /dev/null -w '%{http_code}' "$base$path")"
-  [ "$code" = 200 ] || { echo "$path -> $code" >&2; exit 1; }
-  echo "$path -> $code"
-done
-for spec in 'POST /v1/dns/add' 'GET /v1/certmesh/log' 'GET /v1/pond' \
-  'GET /openapi.json'; do
-  method="${spec%% *}"
-  path="${spec#* }"
-  code="$(curl -sS --max-time 8 -X "$method" -o /dev/null -w '%{http_code}' "$base$path")"
-  [ "$code" = 404 ] || { echo "$method $path unexpectedly returned $code" >&2; exit 1; }
-  echo "$method $path -> absent"
-done
+  peer_run "$peer" python3 - "${base%/}" >"$output" <<'REMOTE'
+import sys
+import urllib.error
+import urllib.request
+
+base = sys.argv[1]
+
+def request(method, path):
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(base + path, method=method), timeout=8
+        ) as response:
+            response.read()
+            return response.status
+    except urllib.error.HTTPError as error:
+        error.read()
+        return error.code
+
+for path in (
+    "/",
+    "/app.js",
+    "/styles.css",
+    "/sentences.js",
+    "/koi.png",
+    "/healthz",
+    "/v1/status",
+    "/v1/mdns/browser/snapshot",
+    "/v1/dns/entries",
+):
+    code = request("GET", path)
+    if code != 200:
+        raise SystemExit(f"{path} -> {code}")
+    print(f"{path} -> {code}")
+for method, path in (
+    ("POST", "/v1/dns/add"),
+    ("GET", "/v1/certmesh/log"),
+    ("GET", "/v1/pond"),
+    ("GET", "/openapi.json"),
+):
+    code = request(method, path)
+    if code != 404:
+        raise SystemExit(f"{method} {path} unexpectedly returned {code}")
+    print(f"{method} {path} -> absent")
 REMOTE
 }
 
 peer_stopped_gate() {
   local peer="$1" base="$2"
-  if peer_run "$peer" curl -fsS --max-time 3 "${base%/}/healthz" >/dev/null 2>&1; then
+  if peer_run "$peer" python3 - "${base%/}" >/dev/null 2>&1 <<'REMOTE'
+import sys
+import urllib.request
+
+with urllib.request.urlopen(sys.argv[1] + "/healthz", timeout=3) as response:
+    response.read()
+REMOTE
+  then
     echo "$peer still reached stopped Pond at $base" >&2
     return 1
   fi
@@ -300,7 +334,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 for peer in "${PEERS[@]}"; do
-  peer_run "$peer" command -v curl >/dev/null
+  peer_run "$peer" command -v python3 >/dev/null
 done
 
 INITIAL_PID="$(single_koi)"
