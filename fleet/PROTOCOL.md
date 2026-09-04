@@ -52,7 +52,11 @@ it resolves this machine to `fleet/briefs/<hat>.md`. The campaign's home is
   for a test instance.
 - Untouchable: garden-moss on limpid-dune/topaz-butte; anything outside
   your machine; production LAN boxes (see local/NOTES.md).
-- Credentials: only your brief's. Never reuse another machine's.
+- Credentials: only your brief's. Never reuse another machine's. When the lab already provides
+  test credentials, pass them through the platform's noninteractive standard channel instead of
+  opening an operator-facing privilege dialog. Any askpass file, environment value, copied key,
+  or other credential material created for a run is volatile, untracked, excluded from evidence,
+  and removed before the run can pass.
 - Test latitude: on your own hat machine, install the platform/build
   dependencies and exercise the system services, responder/provider lifecycle,
   immutable deployment, firewall, trust store, and graphical-session surfaces

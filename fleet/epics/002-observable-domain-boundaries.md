@@ -1,6 +1,6 @@
 # Epic 002 — Observable domain boundaries
 
-- **Status:** active architecture rebuild; fleet execution paused
+- **Status:** OD-2 focused native validation dispatched
 - **Opened:** 2026-09-03
 - **Decision:** [ADR-043](../../docs/adr/043-observable-domain-boundaries.md)
 - **Supersedes as active dispatch:** Epic 001 PH-5 release/soak work
@@ -25,30 +25,52 @@ for the new development line.
 
 | Stage | State | Exit |
 | --- | --- | --- |
-| OD-0 — boundary implementation | **active in the shared development workspace** | ADR-043 types, feeds, mutation ordering, composition, protected certmesh status/public bootstrap, consumer migrations, lifecycle ownership, and transactional startup/install recovery are complete |
-| OD-1 — repository validation | **waiting on OD-0** | formatting, workspace check/test/clippy, architecture guards, serde/status/revision/lag/security tests all pass |
-| OD-2 — focused native validation | **paused; no fleet dispatch yet** | a later dated dispatch names the exact revision, hats, installed-product transitions, and status/auth assertions |
-| OD-3 — candidate matrix and soak | **withdrawn until OD-2 closes** | a new explicit freeze and acceptance contract; old PH-4/PH-5 state is never inherited implicitly |
+| OD-0 — boundary implementation | **complete at `2f967e4`** | ADR-043 types, feeds, mutation ordering, composition, protected certmesh status/public bootstrap, consumer migrations, lifecycle ownership, and transactional startup/install recovery are complete |
+| OD-1 — repository validation | **complete at `2f967e4`** | full locked workspace tests, strict clippy, formatting, architecture/status/security gates, Windows GNU checks, lean embedded builds, TypeScript tests, and documentation checks pass |
+| OD-2 — focused native validation | **active; dispatched 2026-09-04** | every hat closes its row below using one installed Koi and at least one independent physical peer |
+| OD-3 — candidate matrix and soak | **waiting on OD-2** | explicitly freeze the resulting source, run only the affected final matrix, then one coordinated installed-service soak through real native observers |
 
-## Current fleet dispatch — wait without mutation
+## Current fleet dispatch — 2026-09-04 OD-2
 
 This section outranks retained PH-5 sections in every hat brief.
 
-All fleet hats pause release, packaging, installed-entry, collector, canary, and soak work.
-Do not build or install `dev` onto the standing deployment, start a collector, mutate a
-provider/firewall/network/session, repeat a green physical gate, or label the former frozen
-artifact as the current candidate. Preserve each machine's last journaled healthy Koi state
-and the existing evidence.
+`2f967e4` is the shared OD-2 baseline, not a frozen release candidate. Pull the latest `dev`
+before starting; documentation-only commits do not invalidate its product evidence. A product,
+dependency, installer, package, or shipped-asset correction creates a new baseline: its owner
+tests and pushes it directly, and any hat whose uncompleted row is affected synchronizes before
+claiming a pass. Historical evidence remains true only for its recorded source and artifact.
 
-When invoked through `fleet/task.md`, a hat performs only a read-only readiness check: confirm
-the repository can synchronize normally, report that this epic is waiting on OD-0/OD-1, and
-leave the deployed product unchanged. Apart from the dispatcher's required fast-forward
-synchronization, do not create repository modifications. Do not create a journal entry or
-commit for an unchanged wait report.
+Every hat may research locally, in repository history, and online; install the dependencies
+needed by its own OS; and exercise its own provider, service manager, firewall, session, and
+network state under the protocol's capture-and-restore rules. Use the real deployment and real
+endpoints. There is exactly one installed Koi per host; no alternate-port twin, isolated data
+root, fake production capability, or second helper daemon can satisfy a gate.
 
-After OD-1, this epic will receive a dated OD-2 dispatch. It must state which old evidence is
-still applicable and which behaviors require fresh physical proof. No hat infers that scope
-from Epic 001.
+| Hat | Owned OD-2 delivery | Required physical proof |
+| --- | --- | --- |
+| `cachyos-linux` | Keep the accepted `2f967e4` install and Pond gate; close only the remaining systemd collector and Avahi/resolve1/native boundary slice. Fix a shared defect only at its owning domain boundary. | Use one real peer to observe cheap status/inventory revisions and provider generations across an actual provider loss/selection/recovery, then run the real systemd installed-service collector canary. Preserve one PID except where a planned installed-service restart is the behavior under test; restore Avahi, resolve1, UFW, Pond desire, and publications exactly. |
+| `windows` | Inspect current `dev`, then implement any still-missing real Windows SCM observer behind the neutral installed-service boundary. Close SCM install/recovery/readiness, authenticated named-pipe ownership/lifecycle, HostIdentity, and Bonjour/native-provider behavior without compatibility fakes. | One installed SCM service and one independent Linux Koi peer must prove status/inventory revision convergence, named-pipe control, provider selection/loss/recovery, discovery removal, and a short SCM collector canary. Prove the pipe DACL and denial from a different unelevated account; restore provider and service state. |
+| `alpine-linux` | Implement any still-missing real OpenRC observer behind the same neutral boundary. Close musl/OpenRC install and recovery, local IPC, HostIdentity, and Avahi/native-provider behavior. | One package-owned OpenRC service and one independent Koi peer must prove status/inventory revisions, provider selection/loss/recovery and removal, then a short OpenRC collector canary. Restore package, rc-service, Avahi, firewall, and publication state exactly. |
+| `bluefin-linux` | Accept the architecture through the real immutable-Fedora/systemd deployment. Exercise system-service ownership, local IPC inode/HostIdentity, status/inventory/Pond projections, and Avahi/resolve1/native transitions; fix only reproducible shared or platform-owned defects. | Install the exact tested bytes serially, use one real peer for provider and Pond assertions, and run the real systemd collector canary. Prove reboot/restart reconstruction where needed and restore rpm-ostree/package, provider, firewall, and Pond state exactly. |
+| `debian-linux` | Accept the architecture through the real headless systemd deployment, including shifted-port discovery only where the journaled non-Koi incumbent still requires it. Exercise CLI local control, status/inventory/Pond truth, HostIdentity, and the neutral systemd observer. | Use one real Koi peer for Pond and collector traffic, run the systemd collector canary, and prove service restart reconstruction plus exact config/identity/firewall restoration. Serve as a stable peer when its own state need not be mutated. |
+
+Cross-host evidence is coordinated, not simulated: use a shared run ID and retain both machines'
+source/artifact hash, service identity/PID, status revision/provider generation, traffic result,
+and restoration verdict. A hat owns mutations on its own host. The peer may perform run-owned Koi
+API publications and reads; provider, firewall, package, service, and session mutation requires
+the peer hat. Prefer available stable pairs (`Windows↔Alpine`, `Bluefin↔CachyOS`, and
+`Debian↔CachyOS/Bluefin`), but agents may choose another available fleet peer when that produces
+the same real assertion without waiting.
+
+Do not add a framework merely to coordinate the run. The cheap boundary snapshot, its coalescing
+change feed, the real native adapter, and an evidence-producing client are the meaningful pieces.
+If a native observer is absent, implement it; do not expose a guessed state. If a defect is found,
+fix it at the responsible boundary, add the smallest regression coverage, push it, and continue
+the physical gate on the corrected source. Add an ADR only when the architecture decision changes.
+
+A row closes only with a journal entry and direct push containing exact provenance, the real
+cross-host assertion, the short native collector result, and exact final restoration. Once all
+five rows close, update this epic once to dispatch OD-3; do not start the long soak independently.
 
 ## Validation contract for OD-0/OD-1
 
@@ -106,7 +128,7 @@ Repository validation must establish:
 
 ## Coordination and publication
 
-The fleet protocol remains one shared `dev` branch with direct authenticated pushes by the
-agent that owns an explicitly dispatched change. There is no patch-harvesting or alternate
-branch workflow. During the current wait dispatch, however, hats have no implementation or
-evidence mutation assigned and therefore have nothing to commit or push.
+The fleet protocol remains one shared `dev` branch with direct authenticated pushes by every
+agent that owns an explicitly dispatched change. There is no patch-harvesting, alternate branch,
+or local-only completion workflow. Rebase ordinary races, never force-push, and leave a completed
+session present on `origin/dev`.
