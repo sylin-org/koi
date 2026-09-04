@@ -84,6 +84,12 @@ perform only the named read-only readiness or peer role. Report the dependency a
 leave the deployment and repository unchanged; do not invent work, evidence, or a
 commit merely to make the session look active.
 
+When the current epic marks a coordinated run `scheduled` or `active`, every hat named
+in that run has an active assignment—including peer-host and coordinator roles that do
+not run a collector. Execute that epic assignment even when an older brief says
+`remain unchanged`, `await refreeze`, or `no further mutation`. A completed candidate
+row is the prerequisite for its soak assignment, not the end of the campaign.
+
 If an observed defect belongs to shared architecture, fix it once at the lowest
 correct shared boundary. Do not create an OS-local imitation. Breaking and rebuilding
 pre-1.0 code is authorized when it yields fewer, clearer moving parts.

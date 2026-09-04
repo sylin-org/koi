@@ -1,6 +1,6 @@
 # Epic 002 — Observable domain boundaries
 
-- **Status:** OD-2 complete; OD-3 frozen-candidate matrix active
+- **Status:** OD-2 complete; OD-3 soak scheduled for `2026-09-04T17:30:00Z`
 - **Opened:** 2026-09-03
 - **Decision:** [ADR-043](../../docs/adr/043-observable-domain-boundaries.md)
 - **Supersedes as active dispatch:** Epic 001 PH-5 release/soak work
@@ -28,7 +28,7 @@ for the new development line.
 | OD-0 — boundary implementation | **complete at `2f967e4`** | ADR-043 types, feeds, mutation ordering, composition, protected certmesh status/public bootstrap, consumer migrations, lifecycle ownership, and transactional startup/install recovery are complete |
 | OD-1 — repository validation | **complete at `2f967e4`** | full locked workspace tests, strict clippy, formatting, architecture/status/security gates, Windows GNU checks, lean embedded builds, TypeScript tests, and documentation checks pass |
 | OD-2 — focused native validation | **complete; 5/5 hats accepted 2026-09-04** | every hat closed its row below using one installed Koi and at least one independent physical peer |
-| OD-3 — candidate matrix and soak | **active; frozen at `b3eb47e`** | run only the affected final matrix, then one coordinated installed-service soak through real native observers |
+| OD-3 — candidate matrix and soak | **soak scheduled; frozen at `b3eb47e`; `T0=2026-09-04T17:30:00Z`** | complete one coordinated installed-service soak through real native observers and exact restoration |
 
 ## Current fleet dispatch — 2026-09-04 OD-2
 
@@ -97,10 +97,11 @@ OD-2's already-green provider, Pond, firewall, security, or workstation gates.
 | `alpine-linux` | Verify the installed APKs, payload hashes, recipe source pin, service identity, and aggregate/provider readiness against the frozen source. The exact `e64b50e` product and final recipe are already installed/accepted; do not rebuild or repeat destructive gates unless equivalence fails. | **READY 2026-09-04** — installed APK payload SHA-256 `a713968f…a5e6`, frozen recipe/pin and retained signed package hashes exact, one healthy OpenRC child PID `31872`, native publications `1/1/0/0`, no mutation |
 | `debian-linux` | Verify the installed binary/product-tree equivalence, systemd identity, and aggregate/provider readiness against the frozen source. The exact `e64b50e` product is already installed/accepted; do not repeat the just-completed Pond/collector gates unless equivalence fails. | **READY 2026-09-04** — installed/retained release SHA-256 `899d83ef…a1cc`, one healthy systemd PID `50905`, Avahi publications `1/1/0/0`, no mutation |
 
-Each hat records `READY` with the frozen SHA, installed artifact hash/PID, and exact final
-state in its journal and pushes directly. Once all five rows are ready, CachyOS records one
-UTC `T0` at least 15 minutes ahead and changes the OD-3 state to `soak scheduled`. No private
-soak starts before that readiness barrier.
+All five hats are ready. The coordinated soak uses `T0=2026-09-04T17:30:00Z` and targets
+completion at `2026-09-04T23:30:00Z`; collectors may finish slightly later because their
+six-hour duration starts when each process actually enters sampling. This scheduled run is
+the active task for every hat below. Pull the dispatch and perform the owned preflight now;
+do not report `no task` because the candidate row is complete or an older brief says to wait.
 
 The one soak lasts six hours with 60-second samples. It uses the real installed observers and
 one stable physical Bluefin Pond surface: Windows runs SCM collector
@@ -120,6 +121,23 @@ All three collectors must complete, make real reads from Bluefin on every sample
 their thresholds, and finish healthy. Bluefin then restores its exact pre-run Pond/firewall
 state; every hat records final service/artifact identity and pushes evidence. CachyOS closes
 OD-3 only after reconciling all four journals and the three canonical collector verdicts.
+
+| Hat | Active scheduled assignment |
+| --- | --- |
+| `bluefin-linux` | Capture exact service/artifact/Pond/firewalld baseline now. At `2026-09-04T17:25:00Z`, arm the installed Pond surface returned by Koi and prove it reachable at `192.168.1.95:5644`. Keep it stable until all three collectors finish; then stop sharing, prove the listener closed, restore exact firewall/Pond/service state, journal, and push. Do not restart Koi during the run. |
+| `windows` | Capture exact SCM/artifact/provider baseline and stage bounded local recovery now. At or immediately after `T0`, run the frozen `koi-lab.exe installed-service-collect` for 21,600 seconds with 60-second samples, observer `windows-scm`, service `koi`, binary `C:\Program Files\Koi\koi.exe`, run ID `v1-20260904-od3-b3eb47e-win`, Bluefin peer label/surface, and the published thresholds. Restart only the SCM Koi service at `2026-09-04T18:30:00Z`; remove scheduling/recovery residue, journal the canonical verdict and exact restoration, and push. |
+| `alpine-linux` | Capture exact OpenRC/APK/provider baseline and stage bounded local recovery now. At or immediately after `T0`, run the frozen `koi-lab installed-service-collect` for 21,600 seconds with 60-second samples, observer `openrc`, service `koi`, binary `/usr/bin/koi`, run ID `v1-20260904-od3-b3eb47e-alp`, Bluefin peer label/surface, and the published thresholds. Restart only the OpenRC Koi service at `2026-09-04T20:00:00Z`; remove scheduling/recovery residue, journal the canonical verdict and exact restoration, and push. |
+| `debian-linux` | Capture exact systemd/artifact/provider baseline and stage bounded local recovery now. At or immediately after `T0`, run the frozen `koi-lab installed-service-collect` for 21,600 seconds with 60-second samples, observer `systemd`, service `koi.service`, binary `/usr/local/bin/koi`, run ID `v1-20260904-od3-b3eb47e-deb`, Bluefin peer label/surface, and the published thresholds. Restart only `koi.service` at `2026-09-04T21:30:00Z`; remove scheduling/recovery residue, journal the canonical verdict and exact restoration, and push. |
+| `cachyos-linux` | Own the UTC timeline. Before `T0`, verify all hats remain on their recorded candidate identity and Bluefin Pond is physically reachable. During the run, observe the shared branch and Bluefin surface without starting another Koi or mutating another host. After all three collector entries and Bluefin restoration land, reconcile exact source/artifact/PID/restart/traffic/resource/restoration verdicts, close or precisely redispatch OD-3, and push. |
+
+For every collector invocation pass `--max-service-restarts 1`,
+`--max-unavailable-samples 2`, and `--max-consecutive-unavailable-samples 2`; retain the
+default resource-growth bounds. Launch the collector from the clean frozen worktree/export so
+its `source_commit` is exactly `b3eb47e08817045f9371703d780ada9aab00995d`. Use a native
+scheduled task/timer or a second owned shell for the timed restart while the collector remains
+foregrounded; the timing mechanism is run residue and must be removed. A late start does not
+compress six hours or move a fault earlier: perform a missed scheduled fault immediately after
+sampling begins, record the lateness, and retain the remaining serial order.
 
 ## Validation contract for OD-0/OD-1
 

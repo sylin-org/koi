@@ -85,10 +85,14 @@ and the brief corrected.
 
 [`fleet/epics/002-observable-domain-boundaries.md`](epics/002-observable-domain-boundaries.md)
 is the single current objective and dispatch. ADR-043's repository implementation and gates
-are complete; its dated OD-2 dispatch now assigns focused native implementation and physical
-validation to every hat. The former frozen release candidate and Epic 001 PH-5 soak are no
-longer active. Run only the first unfinished row owned by this machine; do not repeat accepted
-evidence or resurrect a retained brief's older dispatch.
+are complete, all five OD-3 frozen-candidate rows are ready, and the epic's one coordinated
+native-manager soak is **scheduled for `2026-09-04T17:30:00Z`**. Every hat now has active work:
+Bluefin owns the physical Pond peer lifetime, Windows/Alpine/Debian own their real native
+collectors and one scheduled restart each, and CachyOS owns coordination and reconciliation.
+The exact commands, run IDs, times, thresholds, and restoration gates live only in the epic.
+An older brief saying to remain unchanged or await refreeze does not cancel this scheduled
+assignment. The former frozen candidate and Epic 001 PH-5 dispatch are inactive; do not repeat
+accepted evidence or resurrect a retained brief's older dispatch.
 
 [`fleet/epics/001-productization-hardening.md`](epics/001-productization-hardening.md) and the
 hat journals remain the immutable evidence record for the exact artifacts and gates they
