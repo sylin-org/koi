@@ -4,6 +4,8 @@ mod certmesh_recovery_windows;
 mod derived;
 mod evidence;
 mod installed_service;
+mod installed_service_openrc;
+mod installed_service_process;
 mod installed_service_systemd;
 #[cfg(windows)]
 mod installed_service_windows;

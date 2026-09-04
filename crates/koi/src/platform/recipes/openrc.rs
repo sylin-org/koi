@@ -23,6 +23,8 @@ const INITD_TEMPLATE: &str = include_str!("templates/koi-openrc.initd");
 const LOGROTATE_TEMPLATE: &str = include_str!("templates/koi.logrotate");
 const LOG_DIR: &str = "/var/log/koi";
 const LOG_FILE: &str = "/var/log/koi/daemon.log";
+const SERVICE_PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const SERVICE_PROCESS_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 pub fn initd_path() -> PathBuf {
     PathBuf::from("/etc/init.d/koi")
@@ -711,6 +713,31 @@ fn stop_failed_replacement() -> anyhow::Result<()> {
 }
 
 fn verify_service_process(bin: &Path) -> anyhow::Result<()> {
+    wait_for_service_process_with(SERVICE_PROCESS_TIMEOUT, SERVICE_PROCESS_POLL, || {
+        verify_service_process_once(bin)
+    })
+}
+
+fn wait_for_service_process_with(
+    timeout: std::time::Duration,
+    poll: std::time::Duration,
+    mut observe: impl FnMut() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match observe() {
+            Ok(()) => return Ok(()),
+            Err(error) if std::time::Instant::now() >= deadline => {
+                return Err(error.context(format!(
+                    "OpenRC did not expose the supervised Koi child within {timeout:?}"
+                )));
+            }
+            Err(_) => std::thread::sleep(poll),
+        }
+    }
+}
+
+fn verify_service_process_once(bin: &Path) -> anyhow::Result<()> {
     if rc_service_state(false)? != OpenRcState::Started {
         anyhow::bail!("OpenRC does not report {SERVICE_NAME} started");
     }
@@ -958,6 +985,34 @@ mod tests {
         );
         assert!(classify_openrc_status(Some(8), true, "starting").is_err());
         assert!(classify_openrc_status(None, true, "signal").is_err());
+    }
+
+    #[test]
+    fn service_process_readiness_tolerates_delayed_supervisor_child() {
+        let mut observations = 0;
+        wait_for_service_process_with(
+            std::time::Duration::from_secs(1),
+            std::time::Duration::ZERO,
+            || {
+                observations += 1;
+                if observations < 3 {
+                    anyhow::bail!("supervisor is started but its child is not visible yet");
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(observations, 3);
+
+        let error = wait_for_service_process_with(
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+            || anyhow::bail!("child never appeared"),
+        )
+        .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains("within 0ns"));
+        assert!(error.contains("child never appeared"));
     }
 
     #[test]

@@ -10,6 +10,7 @@ use clap::ValueEnum;
 use serde::{Deserialize, Deserializer};
 use url::Url;
 
+use crate::installed_service_openrc::OpenRcObserver;
 use crate::installed_service_systemd::SystemdObserver;
 #[cfg(windows)]
 use crate::installed_service_windows::WindowsScmObserver;
@@ -29,6 +30,7 @@ const TRAFFIC_RETRY_DELAY: Duration = Duration::from_millis(200);
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
 pub enum ObserverKind {
+    Openrc,
     Systemd,
     WindowsScm,
 }
@@ -253,6 +255,10 @@ fn observer(
     binary_path: PathBuf,
 ) -> Result<Box<dyn ServiceObserver>> {
     match options.observer {
+        ObserverKind::Openrc => Ok(Box::new(OpenRcObserver::new(
+            options.service_name.clone(),
+            binary_path,
+        ))),
         ObserverKind::Systemd => Ok(Box::new(SystemdObserver::new(
             options.service_name.clone(),
             binary_path,
@@ -647,8 +653,9 @@ fn report_checks(
     let observed_restarts = restart_delta
         .unwrap_or(transitions.pid_changes)
         .max(transitions.pid_changes);
-    let service_live = final_identity.active_state == "active"
-        && final_identity.sub_state == "running"
+    let service_live = initial.observer == final_identity.observer
+        && initial.service_name == final_identity.service_name
+        && final_identity.pid > 0
         && observed_restarts <= options.max_service_restarts;
     let health_good = !samples.is_empty()
         && samples
