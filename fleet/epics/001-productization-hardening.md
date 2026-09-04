@@ -1,6 +1,6 @@
 # PH-001 — Productization hardening: delight under real conditions
 
-**Status:** active
+**Status:** superseded as active dispatch by Epic 002; retained historical evidence
 **Started:** 2026-09-02
 **Entry point:** `run fleet/task.md`
 **Scope:** Windows, CachyOS, Bluefin, Alpine/musl, and headless Debian
@@ -61,9 +61,10 @@ The shared correction adds authenticated `koi pond status|start|stop` commands t
 local daemon discovery; `start` prints the daemon-returned URL and fails non-zero with
 the daemon's recovery explanation when the listener is unavailable. The same change
 evolves `installed-service-collect` to one neutral bounded sampler and verdict model,
-with a thin systemd observer, explicit OpenRC/SCM adapter seams, honest unavailable
-counters, transition/resource-growth evidence, and semantic `/healthz` traffic to an
-independently installed Koi peer instead of a raw SSH-port connection.
+with a thin systemd observer, honest unavailable counters, transition/resource-growth
+evidence, and validation of an independently installed peer's public Pond `/v1/status`
+contract instead of a generic health response or raw SSH-port connection. OpenRC and SCM
+become selectable only when their hats contribute real observers.
 
 Because the CLI is shipped product behavior, `e49bfe2` is no longer the active
 candidate. PH-4 is reopened and an explicit new freeze plus exact-artifact replacement

@@ -211,6 +211,8 @@ ladder; it is not comparable across daemon restarts or hosts.
 Returns the MCP automation inventory (`status`, `health`, and `dns`) projected from one
 immutable `KoiStatus` revision. The daemon captures the aggregate once; it never joins
 independently timed domain endpoint reads. Missing or disabled domain projections are `null`.
+The `status` object includes the bounded `mdns` and `dns` runtime snapshots from that same
+revision, while the top-level `dns` member remains the DNS catalog projection.
 The route is token-free for a loopback peer and requires `x-koi-token` from a non-loopback
 peer; an unknown peer identity fails closed.
 

@@ -541,6 +541,13 @@ mod tests {
             revision: 41,
             capabilities: Vec::new(),
             domains: koi_compose::status::DomainStatuses {
+                mdns: Some(
+                    koi_mdns::MdnsStatus {
+                        revision: 9,
+                        ..Default::default()
+                    }
+                    .into(),
+                ),
                 health: Some(
                     koi_health::HealthSnapshot {
                         revision: 7,
@@ -563,6 +570,8 @@ mod tests {
         let inventory =
             crate::inventory::project(&status, None, 12, "127.0.0.1", true).expect("inventory");
         assert_eq!(inventory["status"]["revision"], 41);
+        assert_eq!(inventory["status"]["mdns"]["revision"], 9);
+        assert_eq!(inventory["status"]["dns"], serde_json::Value::Null);
         assert_eq!(inventory["health"]["revision"], 7);
         assert_eq!(inventory["dns"]["names"][0], "api.internal.");
     }

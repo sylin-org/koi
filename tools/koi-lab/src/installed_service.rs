@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use clap::ValueEnum;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use url::Url;
 
 use crate::installed_service_systemd::SystemdObserver;
@@ -28,8 +28,6 @@ const TRAFFIC_RETRY_DELAY: Duration = Duration::from_millis(200);
 #[value(rename_all = "kebab-case")]
 pub enum ObserverKind {
     Systemd,
-    Openrc,
-    Scm,
 }
 
 #[derive(Clone, Debug)]
@@ -46,7 +44,7 @@ pub struct InstalledServiceOptions {
     pub max_descriptor_growth: u64,
     pub max_thread_growth: u64,
     pub max_task_growth: u64,
-    pub peer_node: String,
+    pub peer_label: String,
     pub peer_surface: String,
 }
 
@@ -67,20 +65,85 @@ pub(super) struct NativeServiceSample {
 }
 
 #[derive(Debug, Deserialize)]
-struct UnifiedStatus {
+struct InventorySnapshot {
+    status: InventoryStatus,
+}
+
+#[derive(Debug, Deserialize)]
+struct InventoryStatus {
+    revision: u64,
     daemon: bool,
+    #[serde(deserialize_with = "required_nullable")]
+    mdns: Option<InventoryMdnsStatus>,
+    #[serde(deserialize_with = "required_nullable")]
+    dns: Option<InventoryDnsStatus>,
+}
+
+fn required_nullable<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 #[derive(Debug, Deserialize)]
-struct DnsStatus {
-    records: DnsRecordCounts,
+struct InventoryDnsStatus {
+    records: InventoryDnsRecordCounts,
 }
 
 #[derive(Debug, Deserialize)]
-struct DnsRecordCounts {
+struct InventoryDnsRecordCounts {
     static_entries: u64,
     certmesh_entries: u64,
     mdns_entries: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct InventoryMdnsStatus {
+    control_plane: InventoryMdnsControlPlane,
+}
+
+#[derive(Debug, Deserialize)]
+struct InventoryMdnsControlPlane {
+    generation: u64,
+    routes: InventoryMdnsRoutes,
+    publications: InventoryPublicationCounts,
+}
+
+#[derive(Debug, Deserialize)]
+struct InventoryMdnsRoutes {
+    publish: Option<String>,
+    explicit_publish: Option<String>,
+    browse: Option<String>,
+    resolve: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InventoryPublicationCounts {
+    desired: u64,
+    established: u64,
+    pending: u64,
+    failed: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PondPeerStatus {
+    version: String,
+    platform: String,
+    revision: u64,
+    daemon: bool,
+    surface: String,
+    capabilities: Vec<PondPeerCapability>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PondPeerCapability {
+    name: String,
+    #[serde(rename = "enabled")]
+    _enabled: bool,
+    #[serde(rename = "healthy")]
+    _healthy: bool,
 }
 
 impl Lab {
@@ -108,7 +171,6 @@ impl Lab {
             samples.push(sample_installed_service(
                 started,
                 observer.as_ref(),
-                &binary_path,
                 &peer_surface,
             ));
             let now = Instant::now();
@@ -146,13 +208,13 @@ impl Lab {
             options,
         );
         let report = InstalledServiceReport {
-            schema: 2,
+            schema: 3,
             run_id: run_id.clone(),
             created_at: Utc::now(),
             source_commit,
             service_node,
             observer: observer.name().to_owned(),
-            peer_node: options.peer_node.clone(),
+            peer_label: options.peer_label.clone(),
             peer_surface,
             target_duration_seconds: options.duration_seconds,
             sample_interval_seconds: options.sample_interval_seconds,
@@ -192,12 +254,6 @@ fn observer(
             options.service_name.clone(),
             binary_path,
         ))),
-        ObserverKind::Openrc => bail!(
-            "OpenRC observation is not available in this revision; the alpine-linux hat owns that adapter behind the shared observer contract"
-        ),
-        ObserverKind::Scm => bail!(
-            "Windows SCM observation is not available in this revision; the windows hat owns that adapter behind the shared observer contract"
-        ),
     }
 }
 
@@ -214,7 +270,7 @@ fn validate_options(options: &InstalledServiceOptions) -> Result<()> {
         );
     }
     validate_service_name(&options.service_name)?;
-    validate_peer_node(&options.peer_node)?;
+    validate_peer_label(&options.peer_label)?;
     if !options.binary_path.is_absolute() {
         bail!("installed binary path must be absolute");
     }
@@ -222,14 +278,13 @@ fn validate_options(options: &InstalledServiceOptions) -> Result<()> {
     Ok(())
 }
 
-fn validate_peer_node(peer_node: &str) -> Result<()> {
-    if peer_node.is_empty()
-        || peer_node.len() > 128
-        || !peer_node
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+fn validate_peer_label(peer_label: &str) -> Result<()> {
+    if peer_label.is_empty()
+        || peer_label.len() > 128
+        || peer_label.trim() != peer_label
+        || peer_label.chars().any(char::is_control)
     {
-        bail!("unsafe peer node {peer_node:?}");
+        bail!("unsafe peer provenance label {peer_label:?}");
     }
     Ok(())
 }
@@ -269,7 +324,6 @@ fn canonical_peer_surface(value: &str) -> Result<String> {
 fn sample_installed_service(
     started: Instant,
     observer: &dyn ServiceObserver,
-    binary_path: &std::path::Path,
     peer_surface: &str,
 ) -> InstalledServiceSample {
     let mut unavailable = BTreeMap::new();
@@ -298,62 +352,75 @@ fn sample_installed_service(
             }
         };
 
-    let healthy = match command_json::<UnifiedStatus>(binary_path, &["--json", "status"]) {
-        Ok(status) => Some(status.daemon),
-        Err(error) => {
-            unavailable.insert("status".to_owned(), format!("{error:#}"));
-            None
-        }
-    };
+    let (aggregate_revision, healthy, cache, provider_generation, provider_routes, publications) =
+        match local_inventory_snapshot() {
+            Ok(status) => {
+                let cache = status.dns.map(|dns| {
+                    let static_entries = dns.records.static_entries;
+                    let certmesh_entries = dns.records.certmesh_entries;
+                    let mdns_entries = dns.records.mdns_entries;
+                    InstalledServiceCacheCounts {
+                        static_entries,
+                        certmesh_entries,
+                        mdns_entries,
+                        total_entries: static_entries
+                            .saturating_add(certmesh_entries)
+                            .saturating_add(mdns_entries),
+                    }
+                });
+                if cache.is_none() {
+                    unavailable.insert(
+                        "dns_status".to_owned(),
+                        "aggregate inventory reported no DNS status".to_owned(),
+                    );
+                }
 
-    let cache = match command_json::<DnsStatus>(binary_path, &["--json", "dns", "status"]) {
-        Ok(dns) => Some(InstalledServiceCacheCounts {
-            static_entries: dns.records.static_entries,
-            certmesh_entries: dns.records.certmesh_entries,
-            mdns_entries: dns.records.mdns_entries,
-            total_entries: dns
-                .records
-                .static_entries
-                .saturating_add(dns.records.certmesh_entries)
-                .saturating_add(dns.records.mdns_entries),
-        }),
-        Err(error) => {
-            unavailable.insert("dns_status".to_owned(), format!("{error:#}"));
-            None
-        }
-    };
-
-    let (provider_generation, provider_routes, publications) =
-        match command_json::<koi_mdns::protocol::DaemonStatus>(
-            binary_path,
-            &["--json", "mdns", "admin", "status"],
-        ) {
-            Ok(mdns) => {
-                let routes = mdns.control_plane.routes;
-                let provider_routes = [
-                    ("publish", routes.publish),
-                    ("explicit_publish", routes.explicit_publish),
-                    ("browse", routes.browse),
-                    ("resolve", routes.resolve),
-                ]
-                .into_iter()
-                .filter_map(|(name, provider)| provider.map(|p| (name.to_owned(), p)))
-                .collect();
-                let counts = mdns.control_plane.publications;
+                let (provider_generation, provider_routes, publications) = status.mdns.map_or_else(
+                    || {
+                        unavailable.insert(
+                            "mdns_status".to_owned(),
+                            "aggregate inventory reported no mDNS status".to_owned(),
+                        );
+                        (None, BTreeMap::new(), None)
+                    },
+                    |mdns| {
+                        let routes = mdns.control_plane.routes;
+                        let provider_routes = [
+                            ("publish", routes.publish),
+                            ("explicit_publish", routes.explicit_publish),
+                            ("browse", routes.browse),
+                            ("resolve", routes.resolve),
+                        ]
+                        .into_iter()
+                        .filter_map(|(name, provider)| {
+                            provider.map(|provider| (name.to_owned(), provider))
+                        })
+                        .collect();
+                        let counts = mdns.control_plane.publications;
+                        (
+                            Some(mdns.control_plane.generation),
+                            provider_routes,
+                            Some(InstalledServicePublicationCounts {
+                                desired: counts.desired,
+                                established: counts.established,
+                                pending: counts.pending,
+                                failed: counts.failed,
+                            }),
+                        )
+                    },
+                );
                 (
-                    Some(mdns.control_plane.generation),
+                    Some(status.revision),
+                    Some(status.daemon),
+                    cache,
+                    provider_generation,
                     provider_routes,
-                    Some(InstalledServicePublicationCounts {
-                        desired: usize_to_u64(counts.desired),
-                        established: usize_to_u64(counts.established),
-                        pending: usize_to_u64(counts.pending),
-                        failed: usize_to_u64(counts.failed),
-                    }),
+                    publications,
                 )
             }
             Err(error) => {
-                unavailable.insert("mdns_status".to_owned(), format!("{error:#}"));
-                (None, BTreeMap::new(), None)
+                unavailable.insert("inventory_snapshot".to_owned(), format!("{error:#}"));
+                (None, None, None, None, BTreeMap::new(), None)
             }
         };
 
@@ -366,6 +433,7 @@ fn sample_installed_service(
         descriptor_count,
         thread_count,
         task_count,
+        aggregate_revision,
         healthy,
         cache,
         provider_generation,
@@ -376,15 +444,36 @@ fn sample_installed_service(
     }
 }
 
+fn local_inventory_snapshot() -> Result<InventoryStatus> {
+    let client = koi_client::KoiClient::from_local()
+        .context("could not authenticate to the installed local Koi service")?;
+    let snapshot = client
+        .inventory_snapshot()
+        .context("could not read the installed service aggregate inventory")?;
+    decode_inventory_snapshot(snapshot)
+}
+
+fn decode_inventory_snapshot(snapshot: serde_json::Value) -> Result<InventoryStatus> {
+    serde_json::from_value::<InventorySnapshot>(snapshot)
+        .map(|snapshot| snapshot.status)
+        .context("installed service inventory omitted or malformed a required consumed field")
+}
+
 fn probe_peer_surface(peer_surface: &str) -> InstalledServiceTrafficSample {
     let started = Instant::now();
+    let client = koi_client::KoiClient::new(peer_surface);
     for attempt in 1..=TRAFFIC_ATTEMPTS {
-        if koi_client::KoiClient::new(peer_surface).health().is_ok() {
+        let peer_revision = client
+            .unified_status()
+            .map_err(anyhow::Error::from)
+            .and_then(decode_pond_peer_status);
+        if let Ok(peer_revision) = peer_revision {
             return InstalledServiceTrafficSample {
                 attempts: attempt,
                 retries: attempt - 1,
                 succeeded: true,
                 latency_ms: Some(millis(started.elapsed())),
+                peer_revision: Some(peer_revision),
             };
         }
         if attempt < TRAFFIC_ATTEMPTS {
@@ -396,11 +485,50 @@ fn probe_peer_surface(peer_surface: &str) -> InstalledServiceTrafficSample {
         retries: TRAFFIC_ATTEMPTS - 1,
         succeeded: false,
         latency_ms: None,
+        peer_revision: None,
     }
+}
+
+fn decode_pond_peer_status(value: serde_json::Value) -> Result<u64> {
+    let status: PondPeerStatus = serde_json::from_value(value)
+        .context("peer /v1/status was not the required Pond status DTO")?;
+    if !status.daemon {
+        bail!("peer Pond status did not report a live daemon");
+    }
+    if status.surface != "pond" {
+        bail!(
+            "peer status surface was {:?}, expected \"pond\"",
+            status.surface
+        );
+    }
+    if status.version.trim().is_empty() || status.platform.trim().is_empty() {
+        bail!("peer Pond status omitted version or platform provenance");
+    }
+    if status.capabilities.is_empty() {
+        bail!("peer Pond status reported no capability entries");
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for capability in status.capabilities {
+        if capability.name.is_empty()
+            || capability.name.len() > 128
+            || capability.name.trim() != capability.name
+            || capability.name.chars().any(char::is_control)
+        {
+            bail!(
+                "peer Pond status contained invalid capability name {:?}",
+                capability.name
+            );
+        }
+        if !names.insert(capability.name.clone()) {
+            bail!("peer Pond status repeated capability {:?}", capability.name);
+        }
+    }
+    Ok(status.revision)
 }
 
 fn observation_available(sample: &InstalledServiceSample) -> bool {
     sample.pid.is_some()
+        && sample.aggregate_revision.is_some()
         && sample.healthy == Some(true)
         && sample.cache.is_some()
         && sample.provider_generation.is_some()
@@ -578,7 +706,7 @@ fn report_checks(
         check(
             "health",
             health_good,
-            "every available local-control status sample reported a live daemon".to_owned(),
+            "every available authenticated aggregate snapshot reported a live daemon".to_owned(),
         ),
         check(
             "resource_samples",
@@ -629,17 +757,12 @@ fn report_checks(
         ),
         growth_check("task_growth", growth.task_count, options.max_task_growth),
         check(
-            "cross_host_koi_surface",
+            "cross_host_pond_status",
             cross_host,
             format!(
-                "{} successful Koi /healthz reads from {} attempts and {} retries",
+                "{} valid peer Pond /v1/status reads from {} attempts and {} retries",
                 traffic.successes, traffic.attempts, traffic.retries
             ),
-        ),
-        check(
-            "run_owned_traffic_restored",
-            true,
-            "semantic probes were read-only Koi health requests and left no peer state".to_owned(),
         ),
     ]
 }
@@ -666,37 +789,6 @@ fn check(name: &str, passed: bool, detail: String) -> CheckResult {
         passed,
         detail,
     }
-}
-
-fn command_json<T: for<'de> Deserialize<'de>>(
-    binary: &std::path::Path,
-    args: &[&str],
-) -> Result<T> {
-    let output = checked_output(binary, args)?;
-    serde_json::from_str(&output).with_context(|| {
-        format!(
-            "{} {} returned invalid JSON",
-            binary.display(),
-            args.join(" ")
-        )
-    })
-}
-
-fn checked_output(binary: &std::path::Path, args: &[&str]) -> Result<String> {
-    let output = Command::new(binary)
-        .args(args)
-        .output()
-        .with_context(|| format!("failed to start {}", binary.display()))?;
-    if !output.status.success() {
-        bail!(
-            "{} {} failed (exit {}): {}",
-            binary.display(),
-            args.join(" "),
-            output.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 fn local_hostname() -> Result<String> {
@@ -737,9 +829,82 @@ mod tests {
         let mut invalid = options.clone();
         invalid.service_name = "koi; reboot".to_owned();
         assert!(validate_options(&invalid).is_err());
+        let mut invalid = options.clone();
+        invalid.peer_label = "bad\nlabel".to_owned();
+        assert!(validate_options(&invalid).is_err());
         let mut invalid = options;
         invalid.peer_surface = "http://user:secret@192.0.2.1:5644".to_owned();
         assert!(validate_options(&invalid).is_err());
+    }
+
+    #[test]
+    fn inventory_decode_requires_consumed_fields_and_accepts_extensions() {
+        let decoded = decode_inventory_snapshot(inventory_json()).unwrap();
+        assert_eq!(decoded.revision, 7);
+        assert!(decoded.daemon);
+        assert!(decoded.mdns.is_some());
+        assert_eq!(decoded.dns.unwrap().records.static_entries, 2);
+
+        for required in ["revision", "daemon", "mdns", "dns"] {
+            let mut value = inventory_json();
+            value["status"].as_object_mut().unwrap().remove(required);
+            assert!(
+                decode_inventory_snapshot(value).is_err(),
+                "missing {required} must not become a fabricated default"
+            );
+        }
+
+        for pointer in [
+            "/status/mdns/control_plane/generation",
+            "/status/mdns/control_plane/publications/desired",
+            "/status/dns/records/static_entries",
+        ] {
+            let mut value = inventory_json();
+            remove_json_pointer(&mut value, pointer);
+            assert!(
+                decode_inventory_snapshot(value).is_err(),
+                "missing consumed field {pointer} must fail decoding"
+            );
+        }
+
+        let mut disabled = inventory_json();
+        disabled["status"]["mdns"] = serde_json::Value::Null;
+        disabled["status"]["dns"] = serde_json::Value::Null;
+        let decoded = decode_inventory_snapshot(disabled).unwrap();
+        assert!(decoded.mdns.is_none());
+        assert!(decoded.dns.is_none());
+    }
+
+    #[test]
+    fn peer_probe_accepts_only_a_well_formed_pond_status() {
+        assert_eq!(decode_pond_peer_status(pond_status_json()).unwrap(), 11);
+        assert!(decode_pond_peer_status(serde_json::json!({"status": "ok"})).is_err());
+
+        for (field, invalid) in [
+            ("daemon", serde_json::json!(false)),
+            ("surface", serde_json::json!("operator")),
+            ("version", serde_json::json!("")),
+            ("platform", serde_json::json!(" ")),
+            ("capabilities", serde_json::json!([])),
+        ] {
+            let mut value = pond_status_json();
+            value[field] = invalid;
+            assert!(decode_pond_peer_status(value).is_err(), "invalid {field}");
+        }
+
+        let mut missing_bool = pond_status_json();
+        missing_bool["capabilities"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("healthy");
+        assert!(decode_pond_peer_status(missing_bool).is_err());
+
+        let mut duplicate = pond_status_json();
+        duplicate["capabilities"] = serde_json::json!([
+            {"name": "mdns", "enabled": true, "healthy": true},
+            {"name": "mdns", "enabled": false, "healthy": false}
+        ]);
+        assert!(decode_pond_peer_status(duplicate).is_err());
     }
 
     #[test]
@@ -782,6 +947,67 @@ mod tests {
         }
     }
 
+    fn inventory_json() -> serde_json::Value {
+        serde_json::json!({
+            "status": {
+                "version": "1.0.0-dev.0",
+                "platform": "linux",
+                "uptime_secs": 5,
+                "revision": 7,
+                "daemon": true,
+                "http_bind": "127.0.0.1",
+                "capabilities": [],
+                "mdns": serde_json::to_value(koi_mdns::MdnsStatus::default()).unwrap(),
+                "dns": {
+                    "revision": 3,
+                    "running": true,
+                    "desired": true,
+                    "state": "running",
+                    "endpoints": ["127.0.0.1:53"],
+                    "zone": "internal",
+                    "port": 53,
+                    "records": {
+                        "static_entries": 2,
+                        "certmesh_entries": 1,
+                        "mdns_entries": 3,
+                        "txt_names": 0
+                    },
+                    "future_dns_field": true
+                },
+                "future_status_field": {"accepted": true}
+            },
+            "health": null,
+            "dns": {"names": []},
+            "future_inventory_field": 42
+        })
+    }
+
+    fn pond_status_json() -> serde_json::Value {
+        serde_json::json!({
+            "version": "1.0.0-dev.0",
+            "platform": "linux",
+            "uptime_secs": 8,
+            "revision": 11,
+            "daemon": true,
+            "surface": "pond",
+            "capabilities": [
+                {"name": "mdns", "enabled": true, "healthy": true},
+                {"name": "dns", "enabled": true, "healthy": true}
+            ],
+            "future_public_field": "accepted"
+        })
+    }
+
+    fn remove_json_pointer(value: &mut serde_json::Value, pointer: &str) {
+        let (parent, field) = pointer.rsplit_once('/').unwrap();
+        value
+            .pointer_mut(parent)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+    }
+
     fn options() -> InstalledServiceOptions {
         InstalledServiceOptions {
             observer: ObserverKind::Systemd,
@@ -796,7 +1022,7 @@ mod tests {
             max_descriptor_growth: 16,
             max_thread_growth: 8,
             max_task_growth: 8,
-            peer_node: "test-01".to_owned(),
+            peer_label: "test-01 installed Koi".to_owned(),
             peer_surface: "http://192.0.2.1:5644".to_owned(),
         }
     }
@@ -824,6 +1050,7 @@ mod tests {
             descriptor_count: observed(if pid == Some(11) { 2 } else { 1 }),
             thread_count: observed(1),
             task_count: observed(1),
+            aggregate_revision: available.then_some(7),
             healthy: available.then_some(true),
             cache: available.then_some(InstalledServiceCacheCounts {
                 static_entries: 0,
@@ -848,6 +1075,7 @@ mod tests {
                 retries,
                 succeeded,
                 latency_ms: None,
+                peer_revision: succeeded.then_some(11),
             },
             unavailable: if available {
                 BTreeMap::new()

@@ -21,6 +21,8 @@ fn project_status(status: &KoiStatus, uptime_secs: u64, http_bind: &str, daemon:
         "daemon": daemon,
         "http_bind": http_bind,
         "capabilities": capabilities,
+        "mdns": &status.domains.mdns,
+        "dns": &status.domains.dns,
     })
 }
 

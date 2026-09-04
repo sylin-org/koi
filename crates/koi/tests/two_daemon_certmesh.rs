@@ -674,9 +674,9 @@ async fn assert_aggregation_surface(http: &reqwest::Client, daemon: &Daemon) {
         .filter_map(|capability| capability.get("name").and_then(|v| v.as_str()))
         .collect();
     assert_eq!(
-        status_names.len(),
-        9,
-        "the complete capability ladder (including IPC and Pond) is visible"
+        status_names,
+        koi_compose::status::CAPABILITY_LADDER,
+        "the complete canonical capability ladder is visible exactly once"
     );
     assert!(
         status_names.contains(&"ipc"),
@@ -782,16 +782,22 @@ async fn assert_aggregation_surface(http: &reqwest::Client, daemon: &Daemon) {
             "MCP resource list omitted {expected}"
         );
     }
-    let mdns = mcp
+    let mdns_error = mcp
         .read_resource(rmcp::model::ReadResourceRequestParams::new(
             "koi://mdns/services",
         ))
         .await
-        .expect("read live mDNS resource");
-    assert!(
-        !mdns.contents.is_empty(),
-        "MCP resource read returned no content"
-    );
+        .expect_err("disabled mDNS resource must fail honestly");
+    match mdns_error {
+        rmcp::ServiceError::McpError(error) => {
+            assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+            assert_eq!(
+                error.message,
+                "the 'mdns' capability is disabled on this daemon"
+            );
+        }
+        error => panic!("disabled mDNS resource returned an unexpected error: {error:?}"),
+    }
     let _ = mcp.cancel().await;
 }
 

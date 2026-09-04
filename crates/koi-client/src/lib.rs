@@ -71,9 +71,11 @@ pub type Result<T> = std::result::Result<T, ClientError>;
 
 /// Transport outcome for a Pond lifecycle command.
 ///
-/// Terminal daemon shutdown returns the same typed status with HTTP 503. Keeping
-/// that disposition prevents callers from confusing an observed unavailable
-/// runtime with an acknowledged command.
+/// HTTP 503 returns the same typed status as HTTP 200. It may describe either
+/// an admitted desire that has not reached its requested observation yet or a
+/// daemon whose command admission has closed. Keeping that disposition lets
+/// callers distinguish both cases from successful convergence without losing
+/// the domain-owned status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PondCommandOutcome {
     Succeeded(PondStatus),
@@ -1153,11 +1155,15 @@ fn decode_pond_command(
     response: std::result::Result<ureq::Response, ureq::Error>,
 ) -> Result<PondCommandOutcome> {
     match response {
-        Ok(response) => {
+        Ok(response) if response.status() == 200 => {
             decode_pond_status(response, "Pond command response").map(PondCommandOutcome::Succeeded)
         }
+        Ok(response) => Err(ClientError::Decode(format!(
+            "unexpected HTTP {} for Pond command; expected 200",
+            response.status()
+        ))),
         Err(ureq::Error::Status(503, response)) => {
-            decode_pond_status(response, "Pond terminal response")
+            decode_pond_status(response, "Pond unavailable response")
                 .map(PondCommandOutcome::Unavailable)
         }
         Err(error) => Err(map_error(error)),
@@ -1260,6 +1266,34 @@ fn extract<T: serde::de::DeserializeOwned>(json: &serde_json::Value, key: &str) 
 mod tests {
     use super::*;
 
+    const RUNNING_POND_STATUS: &str = r#"{
+        "revision": 9,
+        "generation": 3,
+        "accepting_commands": true,
+        "desired": true,
+        "running": true,
+        "state": "running",
+        "port": 5644,
+        "urls": ["http://192.0.2.10:5644/"],
+        "url": "http://192.0.2.10:5644/",
+        "firewall": {"state": "open", "detail": "port admitted"},
+        "ui": {"available": true, "revision": "sha256:test"}
+    }"#;
+
+    const TERMINAL_POND_STATUS: &str = r#"{
+        "revision": 10,
+        "generation": 3,
+        "accepting_commands": false,
+        "desired": false,
+        "running": false,
+        "state": "disabled",
+        "port": 5644,
+        "urls": [],
+        "firewall": {"state": "unknown", "detail": "daemon is shutting down"},
+        "ui": {"available": false},
+        "reason": "daemon is shutting down"
+    }"#;
+
     // ── Test helpers ────────────────────────────────────────────────
 
     fn cursor_stream(input: &str) -> SseStream {
@@ -1267,7 +1301,11 @@ mod tests {
         SseStream::new(Box::new(cursor))
     }
 
-    fn json_server_once(body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+    fn json_response_server_once(
+        status: u16,
+        reason: &'static str,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind stub server");
         let address = listener.local_addr().expect("stub address");
         let handle = std::thread::spawn(move || {
@@ -1284,7 +1322,7 @@ mod tests {
             }
             let request = String::from_utf8_lossy(&bytes).into_owned();
             let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
             );
             stream
@@ -1293,6 +1331,10 @@ mod tests {
             request
         });
         (format!("http://{address}"), handle)
+    }
+
+    fn json_server_once(body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        json_response_server_once(200, "OK", body)
     }
 
     fn error_server_once(status: u16, body: &'static str) -> (String, std::thread::JoinHandle<()>) {
@@ -1412,6 +1454,64 @@ mod tests {
                 if error == "provider_unavailable" && message == "native provider stopped"
         ));
         server.join().expect("error server joins");
+    }
+
+    #[test]
+    fn pond_enable_accepts_only_typed_http_200_convergence() {
+        let (endpoint, server) = json_server_once(RUNNING_POND_STATUS);
+        let outcome = KoiClient::with_token(&endpoint, "secret-token")
+            .pond_enable()
+            .expect("typed Pond convergence");
+        let PondCommandOutcome::Succeeded(status) = outcome else {
+            panic!("HTTP 200 must be successful Pond convergence")
+        };
+        assert_eq!(status.state, koi_common::pond::PondState::Running);
+        assert!(status.desired);
+        assert!(status.running);
+        assert_eq!(status.url.as_deref(), Some("http://192.0.2.10:5644/"));
+
+        let request = server
+            .join()
+            .expect("Pond enable stub joins")
+            .to_lowercase();
+        assert!(request.starts_with("put /v1/pond "));
+        assert!(request.contains("x-koi-token: secret-token\r\n"));
+    }
+
+    #[test]
+    fn pond_disable_preserves_typed_http_503_status() {
+        let (endpoint, server) =
+            json_response_server_once(503, "Service Unavailable", TERMINAL_POND_STATUS);
+        let outcome = KoiClient::with_token(&endpoint, "secret-token")
+            .pond_disable()
+            .expect("typed Pond unavailability");
+        let PondCommandOutcome::Unavailable(status) = outcome else {
+            panic!("HTTP 503 must remain typed Pond unavailability")
+        };
+        assert_eq!(status.state, koi_common::pond::PondState::Disabled);
+        assert!(!status.accepting_commands);
+        assert!(!status.desired);
+        assert!(!status.running);
+
+        let request = server
+            .join()
+            .expect("Pond disable stub joins")
+            .to_lowercase();
+        assert!(request.starts_with("delete /v1/pond "));
+        assert!(request.contains("x-koi-token: secret-token\r\n"));
+    }
+
+    #[test]
+    fn pond_command_rejects_an_unadvertised_success_status() {
+        let (endpoint, server) = json_response_server_once(201, "Created", RUNNING_POND_STATUS);
+        let error = KoiClient::new(&endpoint)
+            .pond_enable()
+            .expect_err("only the documented HTTP 200 is convergence");
+        assert!(matches!(
+            error,
+            ClientError::Decode(detail) if detail.contains("HTTP 201") && detail.contains("expected 200")
+        ));
+        server.join().expect("unexpected-status stub joins");
     }
 
     #[test]

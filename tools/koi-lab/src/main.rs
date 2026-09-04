@@ -250,7 +250,7 @@ enum LabCommand {
     InstalledServiceCollect {
         #[arg(long)]
         run_id: String,
-        /// Native service observer. OpenRC and SCM are explicit adapter seams.
+        /// Native installed-service observer. Only the implemented systemd observer is exposed.
         #[arg(long, value_enum, default_value = "systemd")]
         observer: ObserverKind,
         #[arg(long, default_value = "koi.service")]
@@ -278,9 +278,9 @@ enum LabCommand {
         max_thread_growth: u64,
         #[arg(long, default_value_t = 8)]
         max_task_growth: u64,
-        /// Catalog identity of the independently installed Koi peer.
+        /// Human-readable provenance label for the independently installed Koi peer.
         #[arg(long)]
-        peer: String,
+        peer_label: String,
         /// Root URL returned by an independently installed peer's Koi Pond surface.
         #[arg(long)]
         peer_surface: String,
@@ -521,7 +521,7 @@ fn main() -> Result<()> {
             max_descriptor_growth,
             max_thread_growth,
             max_task_growth,
-            peer,
+            peer_label,
             peer_surface,
         } => {
             let report = lab.installed_service_collect(
@@ -539,7 +539,7 @@ fn main() -> Result<()> {
                     max_descriptor_growth,
                     max_thread_growth,
                     max_task_growth,
-                    peer_node: peer,
+                    peer_label,
                     peer_surface,
                 },
             )?;

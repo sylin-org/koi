@@ -841,12 +841,12 @@ fn seal_projection(status: &koi_compose::status::KoiStatus) -> Option<&'static s
 
 /// `GET /v1/inventory` — one coherent product revision for transport-backed MCP.
 ///
-/// The handler captures the aggregate exactly once. Health and DNS details are
-/// projected from that same immutable value; the client must never join separate
-/// domain endpoint reads into a second product model.
+/// The handler captures the aggregate exactly once. Bounded mDNS/DNS runtime,
+/// Health, and DNS catalog details are projected from that same immutable value;
+/// the client must never join separate domain endpoint reads into a second model.
 #[utoipa::path(get, path = "/v1/inventory", tag = "system",
     summary = "Coherent aggregate inventory snapshot",
-    responses((status = 200, description = "Capability, health, and DNS inventory from one revision")))]
+    responses((status = 200, description = "Capability and domain inventory from one product revision")))]
 async fn inventory_handler(Extension(state): Extension<AppState>) -> Response {
     let status = state.system_status.status();
     match crate::inventory::project(
@@ -1766,6 +1766,8 @@ mod tests {
             .unwrap();
         let inventory: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(inventory["status"]["revision"], expected.revision);
+        assert_eq!(inventory["status"]["mdns"], serde_json::Value::Null);
+        assert_eq!(inventory["status"]["dns"], serde_json::Value::Null);
         assert_eq!(inventory["health"], serde_json::Value::Null);
         assert_eq!(inventory["dns"], serde_json::Value::Null);
         assert!(Arc::ptr_eq(&expected, &system_status.status()));

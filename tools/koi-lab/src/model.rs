@@ -944,6 +944,8 @@ pub struct InstalledServiceTrafficSample {
     pub retries: u32,
     pub succeeded: bool,
     pub latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_revision: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -957,6 +959,8 @@ pub struct InstalledServiceSample {
     pub descriptor_count: ObservedU64,
     pub thread_count: ObservedU64,
     pub task_count: ObservedU64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aggregate_revision: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub healthy: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1002,7 +1006,7 @@ pub struct InstalledServiceReport {
     pub source_commit: String,
     pub service_node: String,
     pub observer: String,
-    pub peer_node: String,
+    pub peer_label: String,
     pub peer_surface: String,
     pub target_duration_seconds: u64,
     pub sample_interval_seconds: u64,
