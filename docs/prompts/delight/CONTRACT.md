@@ -1,7 +1,7 @@
 # Epic 003 product contract and campaign handoff
 
 Contract version: **1**
-Status: **R01 contract complete; activation waits for inherited OD-3 verdict and restoration**
+Status: **R01 contract complete; activation waits for one Windows process-restoration check**
 
 This is the source contract for Epic 003. It is usable without conversation history.
 Names marked **existing** resolve in the tree at the R01 source revision. Names marked
@@ -26,16 +26,20 @@ not evidence that a second alternative owner should be created.
 - Windows physical evidence: reserved for a later operator-dispatched Windows hat.
   Linux implementation may become `linux_ready`; it cannot become Windows or full
   native acceptance.
-- Epic 002 disposition: **active, not inferred complete**. Frozen source
+- Epic 002 disposition: **collector campaign complete; failed candidate rejected;
+  handover cleanup pending**. Frozen source
   `b3eb47e08817045f9371703d780ada9aab00995d`, run
-  `v1-20260904-od3-b3eb47e`, began at `2026-09-04T17:30:00Z` and targets
-  `2026-09-04T23:30:00Z`, with collectors allowed to finish later based on their
-  actual sampling start. The five candidate rows were ready before launch. At this
-  contract revision, the three six-hour collector verdicts and Bluefin's exact final
-  Pond/firewall restoration were not yet published. The installed frozen candidate
-  and peer reservations remain unchanged. R01 stays `in_progress/pending` until
-  CachyOS reconciles the canonical Windows/OpenRC/systemd results and Bluefin cleanup,
-  or the operator explicitly supersedes the run and native restoration is verified.
+  `v1-20260904-od3-b3eb47e`, sampled for the full six hours. Debian and Alpine
+  passed 14/14 with 361/361 Bluefin reads and exact cleanup. Bluefin served all
+  1,083 reads and restored Pond/firewall/service state exactly. Windows passed
+  12/14 and all 361 reads but failed handle growth (`+1329`, limit 16) and thread
+  growth (`+280`, limit 8); issue 004 assigns the diagnosed DNSAPI PTR-owner defect
+  to R03 after activation. Windows removed run residue and preserved configuration,
+  policy, artifact, service, workbench, provider, and disabled-Pond identity, but its
+  live service process remained resource-elevated. R01 therefore remains
+  `implemented/pending` only until Windows restarts that unchanged SCM service once
+  and publishes the bounded restoration evidence dispatched by Epic 002. No rebuild,
+  corrected-candidate test, peer reservation, or second soak is part of that cleanup.
 
 ## Binding architecture
 
@@ -642,7 +646,8 @@ correlation and eviction fixtures, repository interruption/migration tests, loca
 remote authorization tests, and retained-owner cancellation/shutdown tests. Native and
 second-client evidence remains separate from those repository tests.
 
-Current next action: finish the inherited OD-3 run, obtain the three canonical
-collector verdicts and Bluefin restoration journal entry, reconcile them from
-CachyOS, then update this activation record, Epic 002/003, the R01 report, and
-LEDGER.md. Only that coherent publication sets `Campaign: active` and accepts R01.
+Current next action: Windows performs only Epic 002's unchanged-artifact SCM
+restart/resource restoration check and publishes its journal. CachyOS then closes
+Epic 002 with the preserved failed verdict, sets `Campaign: active`, accepts R01,
+and releases R02, R03, and R28 according to the ledger. R03 owns issue 004's product
+correction. No second six-hour soak is scheduled.

@@ -1,6 +1,6 @@
 # Epic 003 - Realign Koi around user delight
 
-- **Status:** execution authorized on Linux; R01 contract and inherited-run handover pending.
+- **Status:** execution authorized on Linux; R01 contract complete, handover pending one Windows process-restoration check.
 - **Opened:** 2026-09-04.
 - **Owner intent:** a comprehensive realignment of code, installation, product
   experience, documentation and contributor/release quality before the next 1.0 candidate.

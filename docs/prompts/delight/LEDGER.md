@@ -5,7 +5,7 @@ All rows are queued at creation. No implementation or native validation is impli
 
 ## Dispatch state
 
-- Campaign: authorized; handover pending.
+- Campaign: authorized; handover pending on one Windows process-restoration check.
 - Universal entry: [fleet/task.md](../../../fleet/task.md), routed through
   [Linux dispatch](../../../fleet/delight-dispatch.md).
 - Authorization: owner delegated execution to the Linux machines on 2026-09-04.
@@ -13,7 +13,7 @@ All rows are queued at creation. No implementation or native validation is impli
 - Product implementation: waits for R01 acceptance; no new approval needed afterward.
 - Active candidate: none for Epic 003; old native run retains its own exact artifacts.
 - Windows physical evidence: reserved for a later operator-dispatched Windows session.
-- Current iteration: R01 claimed by cachyos-linux at `e2c4a82`; contract preparation runs while the inherited OD-3 soak remains active.
+- Current iteration: R01 claimed by cachyos-linux at `e2c4a82`; the contract and OD-3 verdict reconciliation are complete. Windows must publish the narrow unchanged-artifact SCM restart/restoration evidence in Epic 002 before R01 acceptance.
 
 ## Status and selection rules
 
@@ -87,7 +87,7 @@ identity and complete hosted/native evidence, even if infrastructure tasks passe
 
 | ID | Dependencies | Status | Readiness | Owner | Evidence/report | Next action |
 |---|---|---|---|---|---|---|
-| [R01](R01-contract-and-handover.md) | - | in_progress | pending | cachyos-linux | [reports/R01.md](reports/R01.md) | Write ADR-044 and the exact ownership contract; then reconcile inherited-run closure/restoration |
+| [R01](R01-contract-and-handover.md) | - | implemented | pending | cachyos-linux | [reports/R01.md](reports/R01.md) | Wait only for Windows's unchanged-artifact SCM restart/resource restoration journal, then close Epic 002 failed and activate the campaign |
 | [R02](R02-critical-documentation-truth.md) | R01 | queued | pending | bluefin-linux | - | Wait for dependencies |
 | [R03](R03-discovery-record-correctness.md) | R01 | queued | pending | debian-linux | - | Wait for dependencies |
 | [R04](R04-service-catalog.md) | R01, R03 | queued | pending | debian-linux | - | Wait for dependencies |

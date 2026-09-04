@@ -1,6 +1,6 @@
 # Epic 002 — Observable domain boundaries
 
-- **Status:** OD-2 complete; OD-3 soak scheduled for `2026-09-04T17:30:00Z`
+- **Status:** OD-2 complete; OD-3 collectors complete with a Windows resource-gate failure; final Windows process restoration dispatched
 - **Opened:** 2026-09-03
 - **Decision:** [ADR-043](../../docs/adr/043-observable-domain-boundaries.md)
 - **Supersedes as active dispatch:** Epic 001 PH-5 release/soak work
@@ -28,7 +28,7 @@ for the new development line.
 | OD-0 — boundary implementation | **complete at `2f967e4`** | ADR-043 types, feeds, mutation ordering, composition, protected certmesh status/public bootstrap, consumer migrations, lifecycle ownership, and transactional startup/install recovery are complete |
 | OD-1 — repository validation | **complete at `2f967e4`** | full locked workspace tests, strict clippy, formatting, architecture/status/security gates, Windows GNU checks, lean embedded builds, TypeScript tests, and documentation checks pass |
 | OD-2 — focused native validation | **complete; 5/5 hats accepted 2026-09-04** | every hat closed its row below using one installed Koi and at least one independent physical peer |
-| OD-3 — candidate matrix and soak | **soak scheduled; frozen at `b3eb47e`; `T0=2026-09-04T17:30:00Z`** | complete one coordinated installed-service soak through real native observers and exact restoration |
+| OD-3 — candidate matrix and soak | **collector campaign complete; FAIL at frozen `b3eb47e`; Windows restoration follow-up active** | preserve the failed verdict, return the Windows installed process to its bounded baseline, then close the campaign without rerunning the soak |
 
 ## Current fleet dispatch — 2026-09-04 OD-2
 
@@ -138,6 +138,47 @@ scheduled task/timer or a second owned shell for the timed restart while the col
 foregrounded; the timing mechanism is run residue and must be removed. A late start does not
 compress six hours or move a fault earlier: perform a missed scheduled fault immediately after
 sampling begins, record the lateness, and retain the remaining serial order.
+
+## OD-3 reconciliation — 2026-09-04
+
+The coordinated run is complete and its canonical verdict is **FAIL**. Debian and
+Alpine passed all 14 checks across 361 samples apiece, including their one planned
+native-manager PID transition, bounded resources, 361/361 physical Bluefin reads,
+and exact cleanup. Bluefin remained stable for all 1,083 collector reads and restored
+its persisted Pond desire, listener, firewall, service, and run residue exactly.
+
+Windows passed 12/14 checks and all 361 physical peer reads, but handles grew
+`+1329` against a limit of 16 and threads grew `+280` against a limit of 8. The
+installed service stayed healthy on the frozen artifact and all scheduled-task,
+configuration, policy, Pond, Bonjour, detached-worktree, and second-process cleanup
+passed. Its final live process nevertheless remained at elevated resource counts, so
+that host did not make an exact green restoration claim. Issue
+[004](../windows/issues/004-windows-dnsapi-meta-browse-resource-growth.md) diagnoses
+the product defect: the Windows DNSAPI adapter forwards unrelated PTR owners from a
+query result, false service types accumulate, and the dashboard starts one native
+browse worker per false type. The failed candidate is rejected and must not be
+relabeled or reused.
+
+The only active Epic 002 work is this bounded Windows-owned restoration, resumed as
+the cleanup tail of the already authorized run:
+
+1. capture the current SCM descriptor, installed SHA-256, workbench identity,
+   provider/publication state, Pond state, and live handle/thread counts;
+2. restart only the existing `koi` SCM service once—no build, install, provider,
+   firewall, configuration, workbench, peer, or source mutation;
+3. over two one-minute observations, require exactly one healthy AutoStart service,
+   the same frozen installed hash, authenticated control, concrete DNS-SD routes,
+   converged `1/1/0/0` publications, disabled Pond, and process resources returned
+   to the recorded post-restart envelope (no more than 364 handles and 75 threads);
+4. record the final PID/counters and absence of recovery or scheduling residue in the
+   Windows journal and push it directly to `dev`.
+
+This is restoration evidence, not a corrected-candidate test. Do not run another
+six-hour soak or implement issue 004 under Epic 002. After that one journal entry
+lands, CachyOS closes Epic 002 as an unsuccessful candidate campaign, accepts R01's
+handover, and assigns the product correction to Epic 003 R03. If the reset cannot
+meet the envelope, preserve the exact measurements and keep the handover pending;
+do not raise the limits.
 
 ## Validation contract for OD-0/OD-1
 
