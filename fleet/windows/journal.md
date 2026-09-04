@@ -1,5 +1,71 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-04 (23) — OD-3 frozen Windows candidate READY
+
+commit: frozen source `b3eb47e08817045f9371703d780ada9aab00995d`;
+synchronized instruction head `88251e705e7e6fc3fd888384e81885b361683a57` | installed
+`C:\Program Files\Koi\koi.exe` SHA-256
+`d47138c58cb2117ca597ae6bb335079d160d42608816e63ea0785273768d7610`
+(48,950,784 bytes), PID `23304` | collector
+`v1-od3-win-20260904T163240Z` | verdict: **READY — exact frozen artifact
+installed and SCM canary 14/14 PASS**
+
+koi state now: exactly one AutoStart LocalSystem SCM service `koi`, command
+`"C:\Program Files\Koi\koi.exe" --daemon`, version `1.0.0-dev.0`, health 200,
+and trusted local control. Status and inventory share aggregate revision 468. mDNS
+generation 6 is Ready with `publish=native explicit_publish=native
+browse=windows-dns-sd resolve=windows-dns-sd` and publications
+desired=established=1, pending=failed=0. Pond is disabled. The unchanged installed
+workbench remains sole PID `26760` at its product path. Bonjour service, DLL, and
+program directory are absent, and no installer transaction remains.
+
+evidence and findings:
+
+1. A clean detached worktree at the complete frozen SHA passed formatting and the
+   locked release build of both Windows artifacts. The accepted build used
+   `koi-lab.exe` SHA-256
+   `b5eceda0dd93ddcbd0fd4f73a3bb0857e8bf764c3eb9007ea45a8fab2b535b19`
+   (10,245,120 bytes). `Cargo.lock` is unchanged from Windows OD-2; the intervening
+   source delta is OpenRC/package code plus a test-only certmesh await and evidence/docs,
+   with the OpenRC module excluded by Windows cfg.
+2. Byte equivalence could not honestly be claimed. The frozen PE differed from the
+   accepted installed hash `e7c007fe...`, and a same-command control rebuild of the
+   prior `9d43746` tree also failed to reproduce that installed PE; repeated frozen
+   builds produced the same size/version but different hashes. The conservative
+   mismatch branch was therefore taken rather than treating source-level Windows
+   equivalence as artifact equality.
+3. The product's transactional installer serially replaced the sole prior PID `12848`
+   and exact prior hash with the final frozen build above, started PID `23304`, verified
+   its canonical image and `/healthz`, and left the standard `5641:5644` plan. Config
+   SHA-256 `17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`
+   and operator-policy SHA-256
+   `14d3432b0efd0a52a697bb80adaa16bcd264c2ff79f57ac1156ac513decc9873`
+   remained byte-exact. The AutoStart/LocalSystem/own-process descriptor and five
+   product firewall rules remained exact, with no transaction residue.
+4. The native SCM collector sampled the exact installed frozen artifact seven times
+   over 30.978 seconds. All 14 checks passed: PID/hash and concrete provider routes
+   stayed fixed, every authenticated aggregate was live, publications remained
+   converged, and all 7/7 physical Bluefin Pond reads succeeded with zero retries.
+   There were zero PID changes, unavailable samples, or recovery events; RSS growth
+   was 77,824 bytes, handle growth -12, and thread growth -6. SCM restart count and
+   a distinct task count remained explicitly unavailable rather than zero-filled.
+   Canonical report SHA-256 is
+   `039e7c73fa52323c84e457ed9987d4b821467f107d70fb986cec51a5924a9493`.
+5. The independent Bluefin peer was source head
+   `c606d9462371412a165d45b0446591c4d689e53d`, installed Koi SHA-256
+   `298fb7208d7d4eb2f8da4f920e6a608efc4b2e61d88313fff712c7b2588f6750`,
+   systemd PID `207791`, restart count 0. After the canary it returned exactly to its
+   enabled/active service, unchanged desktop/firewall/source/hash/PID, and
+   Pond desired=false/running=false baseline. The first wrapper attempt used an
+   overlong run ID and failed validation before sampling; it also restored Bluefin
+   exactly. The volatile peer credential file is absent.
+
+The detached worktree and post-success binary/registry rollback copies were removed
+after the canonical report copy was hash-verified. Structured evidence is retained at
+`.lab-runs/v1-od3-win-20260904T163240Z/` and `.tmp/od3-windows/`. Windows is ready
+for the coordinated six-hour soak and must not start its private collector before the
+five-hat readiness barrier and CachyOS-owned UTC `T0` are published.
+
 ## 2026-09-04 (22) — OD-2 observable Windows boundaries accepted
 
 commit: tested product source `9d43746bf2b9127ad65b6d3d25476533f979d641`
