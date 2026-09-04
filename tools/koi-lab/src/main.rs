@@ -5,6 +5,8 @@ mod derived;
 mod evidence;
 mod installed_service;
 mod installed_service_systemd;
+#[cfg(windows)]
+mod installed_service_windows;
 mod lab;
 mod mgmt_principal;
 mod model;
@@ -35,6 +37,19 @@ use crate::installed_service::{InstalledServiceOptions, ObserverKind};
 use crate::lab::Lab;
 use crate::model::{LabProfile, RunId, TrustRotation};
 use crate::profile::ProfileOptions;
+
+#[cfg(not(windows))]
+const DEFAULT_INSTALLED_SERVICE_OBSERVER: &str = "systemd";
+#[cfg(windows)]
+const DEFAULT_INSTALLED_SERVICE_OBSERVER: &str = "windows-scm";
+#[cfg(not(windows))]
+const DEFAULT_INSTALLED_SERVICE_NAME: &str = "koi.service";
+#[cfg(windows)]
+const DEFAULT_INSTALLED_SERVICE_NAME: &str = "koi";
+#[cfg(not(windows))]
+const DEFAULT_INSTALLED_BINARY: &str = "/usr/local/bin/koi";
+#[cfg(windows)]
+const DEFAULT_INSTALLED_BINARY: &str = r"C:\Program Files\Koi\koi.exe";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -250,12 +265,12 @@ enum LabCommand {
     InstalledServiceCollect {
         #[arg(long)]
         run_id: String,
-        /// Native installed-service observer. Only the implemented systemd observer is exposed.
-        #[arg(long, value_enum, default_value = "systemd")]
+        /// Native installed-service observer for the service manager under test.
+        #[arg(long, value_enum, default_value = DEFAULT_INSTALLED_SERVICE_OBSERVER)]
         observer: ObserverKind,
-        #[arg(long, default_value = "koi.service")]
+        #[arg(long, default_value = DEFAULT_INSTALLED_SERVICE_NAME)]
         service: String,
-        #[arg(long, default_value = "/usr/local/bin/koi")]
+        #[arg(long, default_value = DEFAULT_INSTALLED_BINARY)]
         binary: PathBuf,
         #[arg(long, default_value_t = 30)]
         duration_seconds: u64,

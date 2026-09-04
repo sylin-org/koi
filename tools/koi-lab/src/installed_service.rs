@@ -11,6 +11,8 @@ use serde::{Deserialize, Deserializer};
 use url::Url;
 
 use crate::installed_service_systemd::SystemdObserver;
+#[cfg(windows)]
+use crate::installed_service_windows::WindowsScmObserver;
 use crate::lab::Lab;
 use crate::model::{
     output_path, CheckResult, InstalledServiceCacheCounts, InstalledServiceIdentity,
@@ -28,6 +30,7 @@ const TRAFFIC_RETRY_DELAY: Duration = Duration::from_millis(200);
 #[value(rename_all = "kebab-case")]
 pub enum ObserverKind {
     Systemd,
+    WindowsScm,
 }
 
 #[derive(Clone, Debug)]
@@ -254,6 +257,15 @@ fn observer(
             options.service_name.clone(),
             binary_path,
         ))),
+        #[cfg(windows)]
+        ObserverKind::WindowsScm => Ok(Box::new(WindowsScmObserver::new(
+            options.service_name.clone(),
+            binary_path,
+        ))),
+        #[cfg(not(windows))]
+        ObserverKind::WindowsScm => {
+            bail!("the windows-scm observer is available only on Windows")
+        }
     }
 }
 

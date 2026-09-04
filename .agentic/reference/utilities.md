@@ -152,6 +152,19 @@ No other module should contain `println!`-based presentation functions.
 | `plan_install_ports()` | One ownership-aware endpoint decision shared by systemd, OpenRC, SCM, and launchd. |
 | `plan_install_ports_with()` | Pure probe-injected form used for policy tests. |
 
+### Installed-service observation (`tools/koi-lab/src/installed_service.rs`)
+
+| Type / function | Purpose |
+| --------------- | ------- |
+| `ServiceObserver` | Neutral identity and resource-sample boundary for a real installed service. |
+| `SystemdObserver` | Structured systemd and `/proc` implementation; never parses human status text. |
+| `WindowsScmObserver` | Structured SCM/process implementation with exact command, PID, image, and AutoStart checks. |
+| `ObservedU64` | Represents either one measured counter or an explicit reason the native manager cannot expose it. |
+
+Keep unsupported native counters unavailable rather than manufacturing zero. The Windows SCM
+has no supported cumulative restart counter, so the neutral collector derives in-window restart
+evidence from PID transitions.
+
 ---
 
 ## Shared Types (`koi-common`)

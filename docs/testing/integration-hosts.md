@@ -72,6 +72,12 @@ cargo run -p koi-lab --locked -- service-lifecycle --run-id <run-id> `
 # Bounded churn/reconstruction soak. Defaults: 20 iterations, 15 minutes, restart every 5.
 cargo run -p koi-lab --locked -- bounded-soak --run-id <run-id>
 
+# Observe one real installed service plus an independent peer's Pond surface.
+# Select windows-scm / koi / the product path when running this command on Windows.
+cargo run -p koi-lab --locked -- installed-service-collect --run-id <run-id> `
+  --observer systemd --service koi.service --binary /usr/local/bin/koi `
+  --peer-label <peer-provenance> --peer-surface http://<peer>:<pond-port>
+
 # Unattended policies own fresh deployment + scenario + exact cleanup per case.
 cargo run -p koi-lab --locked -- run-profile smoke
 cargo run -p koi-lab --locked -- run-profile certmesh --allow-system-mutation
