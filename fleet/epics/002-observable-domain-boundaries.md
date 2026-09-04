@@ -27,15 +27,17 @@ for the new development line.
 | --- | --- | --- |
 | OD-0 — boundary implementation | **complete at `2f967e4`** | ADR-043 types, feeds, mutation ordering, composition, protected certmesh status/public bootstrap, consumer migrations, lifecycle ownership, and transactional startup/install recovery are complete |
 | OD-1 — repository validation | **complete at `2f967e4`** | full locked workspace tests, strict clippy, formatting, architecture/status/security gates, Windows GNU checks, lean embedded builds, TypeScript tests, and documentation checks pass |
-| OD-2 — focused native validation | **active; dispatched 2026-09-04** | every hat closes its row below using one installed Koi and at least one independent physical peer |
+| OD-2 — focused native validation | **active; 2/5 hats complete** | every hat closes its row below using one installed Koi and at least one independent physical peer |
 | OD-3 — candidate matrix and soak | **waiting on OD-2** | explicitly freeze the resulting source, run only the affected final matrix, then one coordinated installed-service soak through real native observers |
 
 ## Current fleet dispatch — 2026-09-04 OD-2
 
 This section outranks retained PH-5 sections in every hat brief.
 
-`2f967e4` is the shared OD-2 baseline, not a frozen release candidate. Pull the latest `dev`
-before starting; documentation-only commits do not invalidate its product evidence. A product,
+`e64b50e` is the current OD-2 product baseline, not a frozen release candidate. Its change after
+the Windows/CachyOS accepted product tree is isolated to the OpenRC installer, so it does not
+invalidate those completed systemd/SCM rows; Alpine must exercise it. Pull the latest `dev`
+before starting; documentation-only commits do not invalidate product evidence. A product,
 dependency, installer, package, or shipped-asset correction creates a new baseline: its owner
 tests and pushes it directly, and any hat whose uncompleted row is affected synchronizes before
 claiming a pass. Historical evidence remains true only for its recorded source and artifact.
@@ -49,7 +51,7 @@ root, fake production capability, or second helper daemon can satisfy a gate.
 | Hat | Owned OD-2 delivery | Required physical proof |
 | --- | --- | --- |
 | `cachyos-linux` | **Complete 2026-09-04.** The accepted Pond gate plus exact merged-tree systemd collector and Avahi/resolve1/native slices close this row. No further local mutation is assigned unless an affecting product change lands. | Provider run `20260904T133043Z-1223793` kept PID/hash fixed through generations `6→34`, real bidirectional peer traffic, conflict recovery, and exact provider restoration. Collector run `v1-20260904T133355Z-cachyos` captured seven healthy aggregate/peer samples with zero retry, restart, unavailable sample, or resource-threshold failure; Bluefin Pond and both hosts were restored exactly. |
-| `windows` | Inspect current `dev`, then implement any still-missing real Windows SCM observer behind the neutral installed-service boundary. Close SCM install/recovery/readiness, authenticated named-pipe ownership/lifecycle, HostIdentity, and Bonjour/native-provider behavior without compatibility fakes. | One installed SCM service and one independent Linux Koi peer must prove status/inventory revision convergence, named-pipe control, provider selection/loss/recovery, discovery removal, and a short SCM collector canary. Prove the pipe DACL and denial from a different unelevated account; restore provider and service state. |
+| `windows` | **Complete 2026-09-04.** The real SCM observer, transactional installed service, authenticated named-pipe lifecycle/DACL, HostIdentity, and Windows DNS-SD/Bonjour/native provider slices are accepted. No further local mutation is assigned unless an affecting product change lands. | Provider run `od2-9d-win-avahi-01` kept the one SCM PID/hash fixed across native, Bonjour promotion/loss/return, and restoration while exchanging real records with CachyOS. Collector run `v1-20260904T134802Z-windows-scm` passed all 14 checks and 7/7 Bluefin Pond reads; an unrelated unelevated SID was denied at the pipe, and all service/provider/firewall/peer state was restored. |
 | `alpine-linux` | Implement any still-missing real OpenRC observer behind the same neutral boundary. Close musl/OpenRC install and recovery, local IPC, HostIdentity, and Avahi/native-provider behavior. | One package-owned OpenRC service and one independent Koi peer must prove status/inventory revisions, provider selection/loss/recovery and removal, then a short OpenRC collector canary. Restore package, rc-service, Avahi, firewall, and publication state exactly. |
 | `bluefin-linux` | Accept the architecture through the real immutable-Fedora/systemd deployment. Exercise system-service ownership, local IPC inode/HostIdentity, status/inventory/Pond projections, and Avahi/resolve1/native transitions; fix only reproducible shared or platform-owned defects. | Install the exact tested bytes serially, use one real peer for provider and Pond assertions, and run the real systemd collector canary. Prove reboot/restart reconstruction where needed and restore rpm-ostree/package, provider, firewall, and Pond state exactly. |
 | `debian-linux` | Accept the architecture through the real headless systemd deployment, including shifted-port discovery only where the journaled non-Koi incumbent still requires it. Exercise CLI local control, status/inventory/Pond truth, HostIdentity, and the neutral systemd observer. | Use one real Koi peer for Pond and collector traffic, run the systemd collector canary, and prove service restart reconstruction plus exact config/identity/firewall restoration. Serve as a stable peer when its own state need not be mutated. |
