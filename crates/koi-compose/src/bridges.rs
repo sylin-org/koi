@@ -214,11 +214,14 @@ impl integration::AliasFeedback for AliasFeedbackBridge {
         hostname: &str,
         alias: &str,
     ) -> Result<(), integration::AliasFeedbackError> {
-        self.core
+        match self
+            .core
             .add_alias_sans(hostname, &[alias.to_string()])
             .await
-            .map(|_| ())
-            .map_err(|error| integration::AliasFeedbackError(error.to_string()))
+        {
+            Ok(_) | Err(koi_certmesh::CertmeshError::NotFound(_)) => Ok(()),
+            Err(error) => Err(integration::AliasFeedbackError(error.to_string())),
+        }
     }
 }
 
@@ -272,4 +275,30 @@ async fn keep_discovery_warm(core: Arc<koi_mdns::MdnsCore>, cancel: Cancellation
 
     drop(type_browses);
     drop(meta);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn alias_feedback_acknowledges_hosts_outside_the_certmesh_roster() {
+        let paths = koi_certmesh::CertmeshPaths::with_data_dir(
+            koi_common::test::ensure_data_dir("koi-compose-alias-feedback-tests").join(format!(
+                "unknown-host-{}",
+                koi_common::id::generate_short_id()
+            )),
+        );
+        let bridge = AliasFeedbackBridge::new(Arc::new(
+            koi_certmesh::CertmeshCore::uninitialized_with_paths(paths),
+        ));
+
+        integration::AliasFeedback::record_alias(
+            bridge.as_ref(),
+            "discovered-lan-host",
+            "http.internal",
+        )
+        .await
+        .expect("an unknown LAN host is not retryable certmesh work");
+    }
 }

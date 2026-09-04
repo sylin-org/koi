@@ -525,7 +525,7 @@ sha256_process_executable() {
 }
 
 koi_processes() {
-  ps -o pid=,comm= | awk '$2 == "koi" {print $1}'
+  ps -e -o pid=,comm= | awk '$2 == "koi" {print $1}'
 }
 
 for command in awk ps sha256sum; do
