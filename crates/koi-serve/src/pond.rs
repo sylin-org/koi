@@ -1276,22 +1276,34 @@ fn run_firewall_command(
 #[cfg(target_os = "linux")]
 fn assess_ufw_status(port: u16, status: &str) -> PondFirewallStatus {
     for line in status.lines().map(str::trim) {
-        let mut fields = line.split_whitespace();
-        let Some(target) = fields.next() else {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        let Some(action_index) = fields
+            .iter()
+            .position(|field| matches!(*field, "ALLOW" | "LIMIT" | "DENY" | "REJECT"))
+        else {
             continue;
         };
-        if !ufw_target_admits_tcp(target, port) {
+        // A bare UFW rule starts with `5644/tcp`. A safely scoped rule renders
+        // its destination first, for example
+        // `192.168.1.109 5644/tcp on enp0s31f6 ALLOW IN ...`. Only scan the
+        // `To` columns before the action so source-side text cannot be mistaken
+        // for the admitted destination port.
+        let Some(target) = fields[..action_index]
+            .iter()
+            .copied()
+            .find(|target| ufw_target_admits_tcp(target, port))
+        else {
             continue;
-        }
-        let action = fields.find(|field| matches!(*field, "ALLOW" | "LIMIT" | "DENY" | "REJECT"));
+        };
+        let action = fields[action_index];
         match action {
-            Some("ALLOW" | "LIMIT") => {
+            "ALLOW" | "LIMIT" => {
                 return PondFirewallStatus {
                     state: PondFirewallState::Open,
                     detail: format!("UFW rule {target} admits TCP {port}"),
                 };
             }
-            Some("DENY" | "REJECT") => {
+            "DENY" | "REJECT" => {
                 return PondFirewallStatus {
                     state: PondFirewallState::Blocked,
                     detail: format!("UFW rule {target} rejects TCP {port}"),
@@ -2645,6 +2657,13 @@ mod tests {
              5600:5700/tcp ALLOW IN 192.168.1.0/24\n",
         );
         assert_eq!(open.state, PondFirewallState::Open);
+
+        let scoped = assess_ufw_status(
+            DEFAULT_POND_PORT,
+            "Status: active\nDefault: deny (incoming), allow (outgoing)\n\
+             192.168.1.109 5644/tcp on enp0s31f6 ALLOW IN 192.168.1.95 # koi-pond-gate\n",
+        );
+        assert_eq!(scoped.state, PondFirewallState::Open);
 
         let udp_only = assess_ufw_status(
             DEFAULT_POND_PORT,

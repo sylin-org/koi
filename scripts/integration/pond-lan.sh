@@ -743,31 +743,38 @@ ufw_snapshots_match() {
 }
 
 restore_ufw_files_atomically() {
-  local path temporary expected_sha backup_sha
-  for path in /etc/ufw/user.rules /etc/ufw/user6.rules; do
-    expected_sha="$(<"$FIREWALL_BASELINE_DIR/${path##*/}.sha256")"
-    backup_sha="$("${PRIV[@]}" sha256sum \
-      "$FIREWALL_BASELINE_DIR/${path##*/}" | awk '{print $1}')"
-    [[ "$backup_sha" == "$expected_sha" ]] || {
-      echo "captured UFW backup changed before restore: ${path##*/}" >&2
-      return 1
-    }
-    temporary="${path}.koi-pond-${RUN_ID}.restore"
-    # RUN_ID contains only an internally generated UTC timestamp and PID. Clearing
-    # this one exact stage makes a failed first rollback retryable from the EXIT trap.
-    "${PRIV[@]}" rm -f -- "$temporary" || return 1
-    if ! "${PRIV[@]}" cp -a "$FIREWALL_BASELINE_DIR/${path##*/}" "$temporary"; then
-      "${PRIV[@]}" rm -f -- "$temporary" || true
-      return 1
+  local pass path temporary expected_sha backup_sha
+  # The first pass supplies UFW's supported reload boundary. UFW may rewrite the
+  # authoritative files while reloading, including their mtimes, so a second
+  # atomic pass restores the captured disk state after the runtime rules match it.
+  for pass in before-reload after-reload; do
+    for path in /etc/ufw/user.rules /etc/ufw/user6.rules; do
+      expected_sha="$(<"$FIREWALL_BASELINE_DIR/${path##*/}.sha256")"
+      backup_sha="$("${PRIV[@]}" sha256sum \
+        "$FIREWALL_BASELINE_DIR/${path##*/}" | awk '{print $1}')"
+      [[ "$backup_sha" == "$expected_sha" ]] || {
+        echo "captured UFW backup changed before restore: ${path##*/}" >&2
+        return 1
+      }
+      temporary="${path}.koi-pond-${RUN_ID}.restore"
+      # RUN_ID contains only an internally generated UTC timestamp and PID. Clearing
+      # this one exact stage makes a failed first rollback retryable from the EXIT trap.
+      "${PRIV[@]}" rm -f -- "$temporary" || return 1
+      if ! "${PRIV[@]}" cp -a "$FIREWALL_BASELINE_DIR/${path##*/}" "$temporary"; then
+        "${PRIV[@]}" rm -f -- "$temporary" || true
+        return 1
+      fi
+      if ! "${PRIV[@]}" mv -f "$temporary" "$path"; then
+        "${PRIV[@]}" rm -f -- "$temporary" || true
+        return 1
+      fi
+      "${PRIV[@]}" sync -f "$path" || return 1
+    done
+    "${PRIV[@]}" sync -f /etc/ufw || return 1
+    if [[ "$pass" == before-reload ]]; then
+      "${PRIV[@]}" ufw --force reload >/dev/null || return 1
     fi
-    if ! "${PRIV[@]}" mv -f "$temporary" "$path"; then
-      "${PRIV[@]}" rm -f -- "$temporary" || true
-      return 1
-    fi
-    "${PRIV[@]}" sync -f "$path" || return 1
   done
-  "${PRIV[@]}" sync -f /etc/ufw || return 1
-  "${PRIV[@]}" ufw --force reload >/dev/null
 }
 
 capture_firewalld_snapshot() {
@@ -781,7 +788,7 @@ capture_firewalld_snapshot() {
 }
 
 prepare_firewall() {
-  local port="$1" ufw_status source comment index=0
+  local port="$1" ufw_status ufw_numbered source comment index=0
   FIREWALL_PORT="$port"
   resolve_firewall_sources
   resolve_firewall_route
@@ -842,11 +849,13 @@ prepare_firewall() {
           from "$source" to "$FIREWALL_LOCAL_IP" port "$port" proto tcp \
           comment "$comment"
       done
-      ufw_status="$("${PRIV[@]}" ufw status verbose)"
-      ufw_allows_tcp_port "$port" "$ufw_status" || {
-        echo "temporary UFW rules did not admit Pond TCP $port" >&2
-        return 1
-      }
+      ufw_numbered="$("${PRIV[@]}" ufw status numbered)"
+      for comment in "${FIREWALL_RULE_COMMENTS[@]}"; do
+        grep -Fq -- "# $comment" <<<"$ufw_numbered" || {
+          echo "temporary UFW rule $comment was not installed" >&2
+          return 1
+        }
+      done
       return 0
     fi
   fi
