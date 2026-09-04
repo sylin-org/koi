@@ -1,5 +1,73 @@
 # fleet/windows/journal.md — stone-leaded-sparkle (Windows workstation, orchestrator)
 
+## 2026-09-04 (24) — OD-3 frozen Windows soak failed on native resource growth
+
+commit: frozen source `b3eb47e08817045f9371703d780ada9aab00995d`;
+synchronized instruction head `1c0f3c114c897737f6702fbad7301d31097f2efd` |
+installed `C:\Program Files\Koi\koi.exe` SHA-256
+`d47138c58cb2117ca597ae6bb335079d160d42608816e63ea0785273768d7610` |
+run `v1-20260904-od3-b3eb47e-win` | verdict: **FAIL — 12/14 checks
+passed; Windows DNS-SD browse resource growth exceeded both native limits**
+
+koi state now: exactly one AutoStart LocalSystem SCM service `koi`, command
+`"C:\Program Files\Koi\koi.exe" --daemon`, PID `22564`, version
+`1.0.0-dev.0`, health 200, authenticated local control, and the exact frozen
+artifact above. Provider generation 6 is Ready with
+`publish=native explicit_publish=native browse=windows-dns-sd
+resolve=windows-dns-sd` and publications `1/1/0/0`. The separately installed
+workbench remains the sole PID `26760`. Local Pond desire is disabled and port
+5644 is closed. Bonjour remains absent. The service is responding, but its live
+post-run process resources remain elevated and fluctuating, so this is not a
+green health/restoration claim.
+
+evidence and findings:
+
+1. The frozen `koi-lab.exe` SHA-256
+   `b5eceda0dd93ddcbd0fd4f73a3bb0857e8bf764c3eb9007ea45a8fab2b535b19`
+   entered sampling at `2026-09-04T17:30:04Z` and captured 361 samples through
+   `23:30:04Z` over 21,600,257 ms. The scheduled SCM fault ran at
+   `18:30:02Z`; PID `23304` became `22564`, the single unavailable sample was
+   followed by recovery, and the exact artifact, provider routes and converged
+   publication stayed intact.
+2. Twelve checks passed. Every one of 361 attempts read a valid physical Bluefin
+   Pond status with zero retries; service identity, aggregate health, concrete
+   provider routes, publication synchronization, bounded unavailability,
+   transition recovery and the 64 MiB RSS limit all passed. The collector
+   observed exactly one allowed PID transition and ended on a healthy available
+   sample.
+3. `descriptor_growth` and `thread_growth` failed. The canonical first-to-last
+   report delta was `+1329` handles and `+280` threads, against limits 16 and 8.
+   Within the post-restart PID alone, handles rose `279 -> 1693` (maximum 1749),
+   threads rose `50 -> 355` (maximum 429), and RSS rose
+   `39,669,760 -> 96,833,536` bytes. A post-run live sample still showed 1,729
+   handles and 344 threads, so the red result is not explained by one stale
+   pre-restart process.
+4. The lived-in mDNS browser exposed the source boundary. Its snapshot reported
+   64 supposed service types but only 27 instances; many type entries were
+   instance FQDNs such as `Koi MCP (bluefin)._mcp._tcp`, rotating Android labels,
+   and Google Cast instance names. In
+   `crates/koi-mdns/src/windows_dnsapi.rs`, the multicast callback emits every PTR
+   in `DNS_QUERY_RESULT` without checking that the record owner (`pName`) matches
+   the requested query. Additional-section PTRs from a meta-query are therefore
+   admitted as service types. The dashboard then starts a per-type browser for
+   each false type, which owns another blocking/native DNS worker. This exactly
+   explains the false-type accumulation and resource expansion; issue 004 records
+   the unresolved defect and required negative coverage.
+5. Run-owned scheduled tasks both returned 0 and were removed. Config SHA-256
+   `17fe9a664f76bb748da8beeb5c18fabf64da55d1901384772d1e7aecfab2c3ed`
+   and operator-policy SHA-256
+   `14d3432b0efd0a52a697bb80adaa16bcd264c2ff79f57ac1156ac513decc9873`
+   remain exact; there is no installer manifest, Bonjour service/DLL/directory,
+   local Pond listener, or second Koi process. The canonical report is retained
+   at `.lab-runs/v1-20260904-od3-b3eb47e-win/installed-service.json`, SHA-256
+   `adbf90cc4584497f7eb93c22baa28ec1d8d03cbf23cc84d84045e7b669d072d5`;
+   its detached frozen worktree was removed after the verified copy.
+6. Bluefin was still serving the reserved Pond surface at `23:43:34Z`, so its
+   owner-side restoration was not claimed here. Epic 003's R01 handover remains
+   pending and prohibits a new product build/deployment; no source fix or private
+   soak rerun was started. The exact next dependency is Bluefin's restoration
+   evidence plus CachyOS reconciliation of this failed collector and issue 004.
+
 ## 2026-09-04 (23) — OD-3 frozen Windows candidate READY
 
 commit: frozen source `b3eb47e08817045f9371703d780ada9aab00995d`;
