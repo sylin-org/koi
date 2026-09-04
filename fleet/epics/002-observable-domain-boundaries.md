@@ -1,6 +1,6 @@
 # Epic 002 — Observable domain boundaries
 
-- **Status:** OD-2 focused native validation dispatched
+- **Status:** OD-2 complete; OD-3 freeze coordination dispatched
 - **Opened:** 2026-09-03
 - **Decision:** [ADR-043](../../docs/adr/043-observable-domain-boundaries.md)
 - **Supersedes as active dispatch:** Epic 001 PH-5 release/soak work
@@ -27,8 +27,8 @@ for the new development line.
 | --- | --- | --- |
 | OD-0 — boundary implementation | **complete at `2f967e4`** | ADR-043 types, feeds, mutation ordering, composition, protected certmesh status/public bootstrap, consumer migrations, lifecycle ownership, and transactional startup/install recovery are complete |
 | OD-1 — repository validation | **complete at `2f967e4`** | full locked workspace tests, strict clippy, formatting, architecture/status/security gates, Windows GNU checks, lean embedded builds, TypeScript tests, and documentation checks pass |
-| OD-2 — focused native validation | **active; 4/5 hats complete** | every hat closes its row below using one installed Koi and at least one independent physical peer |
-| OD-3 — candidate matrix and soak | **waiting on OD-2** | explicitly freeze the resulting source, run only the affected final matrix, then one coordinated installed-service soak through real native observers |
+| OD-2 — focused native validation | **complete; 5/5 hats accepted 2026-09-04** | every hat closed its row below using one installed Koi and at least one independent physical peer |
+| OD-3 — candidate matrix and soak | **active; freeze coordination dispatched** | explicitly freeze the resulting source, run only the affected final matrix, then one coordinated installed-service soak through real native observers |
 
 ## Current fleet dispatch — 2026-09-04 OD-2
 
@@ -54,7 +54,7 @@ root, fake production capability, or second helper daemon can satisfy a gate.
 | `windows` | **Complete 2026-09-04.** The real SCM observer, transactional installed service, authenticated named-pipe lifecycle/DACL, HostIdentity, and Windows DNS-SD/Bonjour/native provider slices are accepted. No further local mutation is assigned unless an affecting product change lands. | Provider run `od2-9d-win-avahi-01` kept the one SCM PID/hash fixed across native, Bonjour promotion/loss/return, and restoration while exchanging real records with CachyOS. Collector run `v1-20260904T134802Z-windows-scm` passed all 14 checks and 7/7 Bluefin Pond reads; an unrelated unelevated SID was denied at the pipe, and all service/provider/firewall/peer state was restored. |
 | `alpine-linux` | **Complete 2026-09-04.** The real OpenRC observer, exact musl packages, package-replacement-aware transactional install, local IPC/HostIdentity, and Avahi/native behavior are accepted. No further local mutation is assigned unless an affecting product change lands. | Provider run `20260904T140752Z-28808` kept PID/hash fixed through generations `14→18→22`, bidirectional test-01 traffic, withdrawal, and exact Avahi restoration. Collector run `v1-20260904T1413Z-alpine-od2` passed all 14 checks with 7/7 physical Bluefin Pond reads, zero retries/restarts/unavailable samples, revision convergence, and bounded resources; restart reconstruction, unrelated-UID denial, and exact host/peer restoration passed. |
 | `bluefin-linux` | **Complete 2026-09-04.** The exact published-tree systemd deployment, authenticated local IPC/HostIdentity, status/inventory/Pond projections, and Avahi/resolve1/native transitions are accepted. No further local mutation is assigned unless an affecting product change lands. | Provider run `20260904T132001Z-205263` kept PID/hash fixed through generations `6→31`, real bidirectional test-01 traffic, conflict recovery, and exact provider restoration. Pond run `20260904T132300Z-207507` proved the physical allowlist and restart reconstruction. Collector run `v1-20260904T1503Z-bluefin-od2` passed all 14 checks with 7/7 physical Alpine Pond reads, zero retry/restart/unavailable sample, converged publications, and bounded resources; both hosts were restored exactly. |
-| `debian-linux` | Accept the architecture through the real headless systemd deployment, including shifted-port discovery only where the journaled non-Koi incumbent still requires it. Exercise CLI local control, status/inventory/Pond truth, HostIdentity, and the neutral systemd observer. | Use one real Koi peer for Pond and collector traffic, run the systemd collector canary, and prove service restart reconstruction plus exact config/identity/firewall restoration. Serve as a stable peer when its own state need not be mutated. |
+| `debian-linux` | **Complete 2026-09-04.** The synchronized headless systemd deployment, neutral CLI local control, aggregate status/inventory/Pond projections, HostIdentity, restart reconstruction, and neutral systemd observer are accepted. No further local mutation is assigned until OD-3 names the frozen source. | Pond run `20260904T154318Z-50711` proved the physical allowlist, generation retention, stop/restart reconstruction, and exact restoration against test-01. Collector run `v1-od2-e64-debian-systemd-canary-02` passed all 14 checks with 7/7 physical peer Pond reads, zero retry/restart/unavailable sample, revision convergence, and bounded resources; both hosts were restored exactly. |
 
 Cross-host evidence is coordinated, not simulated: use a shared run ID and retain both machines'
 source/artifact hash, service identity/PID, status revision/provider generation, traffic result,
@@ -73,6 +73,23 @@ the physical gate on the corrected source. Add an ADR only when the architecture
 A row closes only with a journal entry and direct push containing exact provenance, the real
 cross-host assertion, the short native collector result, and exact final restoration. Once all
 five rows close, update this epic once to dispatch OD-3; do not start the long soak independently.
+
+## OD-3 dispatch — freeze before matrix or soak mutation
+
+OD-2 is complete across all five native hats. The accepted development product baseline remains
+`e64b50e`; Debian's final follow-up is test/evidence-only and does not change shipped bytes. This
+is not itself a release freeze. CachyOS owns the coordinated next step: pull the final Debian
+acceptance publication, record one exact synchronized `dev` commit as the new frozen source, and
+publish the run ID and serial fault schedule. Any product, dependency, installer, package-recipe,
+or shipped-asset change before or during that freeze invalidates the affected native rows under
+the existing rule.
+
+After the explicit freeze, run only the final matrix slices affected since their owning OD-2
+proofs and require exact installed artifact identities on every participating host. When that
+matrix is green, execute one coordinated six-to-24-hour installed-service soak through the real
+SCM, systemd, and OpenRC observers. Debian remains the systemd anchor and aggregate timeline
+owner; CachyOS owns run coordination and the serial fault schedule. No hat starts a private soak
+or relabels OD-2 evidence as frozen-candidate evidence.
 
 ## Validation contract for OD-0/OD-1
 
